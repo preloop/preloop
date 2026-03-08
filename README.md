@@ -334,7 +334,7 @@ cd preloop
 docker compose up
 
 # Run with tagged release images (production)
-PRELOOP_VERSION=0.8.0-beta.2 SECRET_KEY=$(openssl rand -hex 32) \
+PRELOOP_VERSION=0.8.0-beta.3 SECRET_KEY=$(openssl rand -hex 32) \
   docker compose -f docker-compose.release.yaml up -d
 ```
 
@@ -348,7 +348,7 @@ curl -fsSL https://preloop.ai/install/cli | sh
 curl -fsSL https://preloop.ai/install/oss | sh
 ```
 
-Set `PRELOOP_VERSION=0.8.0-beta.1` before either command to pin a specific release, or use `https://preloop.ai/install/<script>?version=0.8.0-beta.1`.
+Set `PRELOOP_VERSION=0.8.0-beta.3 before either command to pin a specific release, or use `https://preloop.ai/install/<script>?version=0.8.0-beta.3`.
 
 The default `docker compose up` command uses `docker-compose.override.yml` for local development, so source changes in `backend/` and `frontend/` are mounted directly into the containers. The frontend runs via Vite on `http://localhost:5173`, while the backend API stays on `http://localhost:8000`.
 
@@ -359,7 +359,7 @@ See [`docker-compose.release.yaml`](docker-compose.release.yaml) for full config
 Use the release script to prepare a new version across the main release surfaces:
 
 ```bash
-./scripts/release.sh 0.8.0-beta.2
+./scripts/release.sh 0.8.0-beta.3
 ```
 
 The script can also optionally commit the release prep, create and push `v<version>`, and watch the GitHub `Release` workflow with `gh`.

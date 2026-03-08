@@ -6,10 +6,10 @@ description: A Helm chart for Preloop - The policy engine for AI agents with app
 type: application
 
 # Chart version
-version: 0.8.0-beta.2
+version: 0.8.0-beta.3
 
 # Application version
-appVersion: "0.8.0-beta.2"
+appVersion: "0.8.0-beta.3"
 
 # Keywords for the chart
 keywords:

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "preloop"
-version = "0.8.0-beta.2"
+version = "0.8.0-beta.3"
 description = "Preloop - Event-driven AI automation platform with built-in human-in-the-loop safety"
 authors = [{name = "Dimitris Moraitis", email = "dimitris@preloop.ai"}, {name = "Yannis Chatzikonstantinou", email = "yannis@preloop.ai"}]
 requires-python = ">=3.11"
