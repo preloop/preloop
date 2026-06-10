@@ -533,6 +533,9 @@ class RuntimeSessionOptimizationResponse(BaseModel):
     model_name: Optional[str] = None
     token_usage: GatewayTokenUsage = Field(default_factory=GatewayTokenUsage)
     estimated_optimization_cost: float = 0.0
+    generated_at: Optional[datetime] = None
+    from_cache: bool = False
+    llm_skipped_reason: Optional[str] = None
     suggestions: List[RuntimeSessionOptimizationSuggestion] = Field(
         default_factory=list
     )

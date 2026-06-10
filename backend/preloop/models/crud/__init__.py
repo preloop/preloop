@@ -24,6 +24,7 @@ from ..models import (
     ModelPriceOverride,
     RuntimeSession,
     RuntimeSessionActivity,
+    RuntimeSessionOptimizationResult,
 )
 from .account import CRUDAccount
 from .api_key import CRUDApiKey
@@ -94,6 +95,9 @@ from . import notification_preferences
 from .policy_snapshot import CRUDPolicySnapshot, crud_policy_snapshot
 from .runtime_session import CRUDRuntimeSession
 from .runtime_session_activity import CRUDRuntimeSessionActivity
+from .runtime_session_optimization_result import (
+    CRUDRuntimeSessionOptimizationResult,
+)
 from .secret_reference import CRUDSecretReference, crud_secret_reference
 from .budget import (
     CRUDBudgetPolicy,
@@ -133,6 +137,9 @@ crud_managed_agent_enrollment = CRUDManagedAgentEnrollment(ManagedAgentEnrollmen
 crud_model_price_override = CRUDModelPriceOverride(ModelPriceOverride)
 crud_runtime_session = CRUDRuntimeSession(RuntimeSession)
 crud_runtime_session_activity = CRUDRuntimeSessionActivity(RuntimeSessionActivity)
+crud_runtime_session_optimization_result = CRUDRuntimeSessionOptimizationResult(
+    RuntimeSessionOptimizationResult
+)
 crud_tool_configuration = CRUDToolConfiguration()  # Instantiate CRUDToolConfiguration
 crud_mcp_server = CRUDMCPServer()  # Instantiate CRUDMCPServer
 crud_mcp_tool = CRUDMCPTool()  # Instantiate CRUDMCPTool
@@ -244,6 +251,7 @@ __all__ = [
     "crud_policy_snapshot",
     "crud_runtime_session",
     "crud_runtime_session_activity",
+    "crud_runtime_session_optimization_result",
     "CRUDBudgetPolicy",
     "CRUDBudgetSpendActivity",
     "crud_budget_policy",

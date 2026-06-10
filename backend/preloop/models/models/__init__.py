@@ -47,6 +47,7 @@ from .github_oauth_token import OAuthToken, GitHubOAuthToken
 from .policy_snapshot import PolicySnapshot
 from .runtime_session import RuntimeSession
 from .runtime_session_activity import RuntimeSessionActivity
+from .runtime_session_optimization_result import RuntimeSessionOptimizationResult
 from .secret_reference import SecretReference
 from .oauth_mcp_client import OAuthMCPClient
 from .oauth_mcp_token import (
@@ -120,6 +121,7 @@ __all__ = [
     "PolicySnapshot",
     "RuntimeSession",
     "RuntimeSessionActivity",
+    "RuntimeSessionOptimizationResult",
     "SecretReference",
     "BudgetPolicy",
     "BudgetSpendActivity",

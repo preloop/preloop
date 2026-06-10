@@ -268,6 +268,10 @@ class Settings(BaseSettings):
         2.0,
         description="Maximum built-in hosted model spend allowed during trialing subscriptions",
     )
+    billing_session_optimization_daily_cap_usd: float = Field(
+        0.5,
+        description="Maximum daily per-account spend on session optimization model calls",
+    )
     billing_default_extra_credit_price_per_usd: float = Field(
         1.0,
         description="Customer-facing fallback price for each additional USD of hosted-model usage",
@@ -428,6 +432,9 @@ class Settings(BaseSettings):
             in ("true", "1", "t", "yes"),
             billing_trial_hosted_model_hard_cap_usd=float(
                 os.getenv("BILLING_TRIAL_HOSTED_MODEL_HARD_CAP_USD", "2.0")
+            ),
+            billing_session_optimization_daily_cap_usd=float(
+                os.getenv("BILLING_SESSION_OPTIMIZATION_DAILY_CAP_USD", "0.5")
             ),
             billing_default_extra_credit_price_per_usd=float(
                 os.getenv("BILLING_DEFAULT_EXTRA_CREDIT_PRICE_PER_USD", "1.0")

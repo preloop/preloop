@@ -850,6 +850,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         api_key_id: Optional[str] = None,
         runtime_principal_id: Optional[str] = None,
         model_alias: Optional[str] = None,
+        purpose: Optional[str] = None,
     ) -> float:
         query = db.query(func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0)).filter(
             ApiUsage.action_type == "model_gateway",
@@ -864,6 +865,8 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             query = query.filter(ApiUsage.runtime_principal_id == runtime_principal_id)
         if model_alias:
             query = query.filter(ApiUsage.model_alias == model_alias)
+        if purpose:
+            query = query.filter(ApiUsage.meta_data["purpose"].astext == purpose)
         return float(query.scalar() or 0.0)
 
     def get_dashboard_usage_stats(
