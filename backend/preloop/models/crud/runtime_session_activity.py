@@ -348,6 +348,41 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
         query = query.limit(limit).offset(max(offset, 0))
         return query.all()
 
+    def list_full_model_gateway_call_payloads_for_session(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        runtime_session_id: Any,
+        limit: int = 50,
+    ) -> list[Any]:
+        """Return latest-first gateway call rows with complete stored metadata.
+
+        Unlike :meth:`list_model_gateway_calls_for_session`, the returned
+        ``metadata_`` retains the captured ``request``/``response`` payloads so
+        callers can analyze full message and tool-schema content.
+
+        Args:
+            db: Database session.
+            account_id: Owning account id.
+            runtime_session_id: Runtime session id.
+            limit: Maximum number of rows (capped at 100).
+
+        Returns:
+            Rows of ``(id, timestamp, metadata_)`` ordered latest-first.
+        """
+        return (
+            db.query(self.model.id, self.model.timestamp, self.model.metadata_)
+            .filter(
+                self.model.account_id == account_id,
+                self.model.runtime_session_id == runtime_session_id,
+                self.model.activity_type == "model_gateway_call",
+            )
+            .order_by(self.model.timestamp.desc())
+            .limit(min(max(limit, 1), 100))
+            .all()
+        )
+
     def list_recent_model_gateway_call_payloads_for_session(
         self,
         db: Session,
