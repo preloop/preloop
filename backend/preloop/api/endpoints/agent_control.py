@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from starlette import status
 
 from preloop.api.auth import get_current_active_user
+from preloop.utils.permissions import require_permission
 from preloop.api.auth.jwt import (
     RuntimeBearerAuthContext,
     authenticate_runtime_bearer_token,
@@ -782,6 +783,7 @@ async def _route_managed_agent_prompt(
     response_model=AgentControlCommandResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
+@require_permission("control_managed_agent")
 async def send_managed_agent_command(
     agent_id: str,
     request: AgentControlSendMessageRequest,
@@ -802,6 +804,7 @@ async def send_managed_agent_command(
     response_model=AgentControlCommandResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
+@require_permission("control_managed_agent")
 async def send_managed_agent_prompt(
     agent_id: str,
     request: AgentControlSendMessageRequest,
@@ -822,6 +825,7 @@ async def send_managed_agent_prompt(
     response_model=AgentControlCommandResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
+@require_permission("control_managed_agent")
 async def send_managed_agent_voice_transcript(
     agent_id: str,
     request: AgentControlVoiceTranscriptRequest,

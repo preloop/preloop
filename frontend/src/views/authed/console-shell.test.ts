@@ -165,6 +165,35 @@ describe('ConsoleShell', () => {
     expect(mainContent).to.exist;
   });
 
+  it('highlights the active sidebar section for the current route', async () => {
+    const originalPath = window.location.pathname;
+    window.history.replaceState({}, '', '/console/tools');
+
+    const el = (await fixture(
+      html`<console-shell></console-shell>`
+    )) as ConsoleShell;
+
+    await waitUntil(
+      () =>
+        el.shadowRoot?.querySelector(
+          'a.sidebar-link.active[href="/console/tools"]'
+        ) !== null,
+      'Active tools link did not render'
+    );
+
+    const toolsLink = el.shadowRoot?.querySelector(
+      'a.sidebar-link.active[href="/console/tools"]'
+    );
+    expect(toolsLink?.getAttribute('aria-current')).to.equal('page');
+
+    const overviewLink = el.shadowRoot?.querySelector(
+      'a.sidebar-link[href="/console"]'
+    );
+    expect(overviewLink?.classList.contains('active')).to.be.false;
+
+    window.history.replaceState({}, '', originalPath);
+  });
+
   it('has sidebar menu with Overview and Tools links', async () => {
     const el = (await fixture(
       html`<console-shell></console-shell>`

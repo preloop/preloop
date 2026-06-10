@@ -545,6 +545,9 @@ export interface RuntimeSessionOptimizationResponse {
   model_name?: string | null;
   token_usage?: GatewayTokenUsage;
   estimated_optimization_cost?: number;
+  generated_at?: string | null;
+  from_cache?: boolean;
+  llm_skipped_reason?: string | null;
   suggestions: RuntimeSessionOptimizationSuggestion[];
 }
 

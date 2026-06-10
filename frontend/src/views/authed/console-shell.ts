@@ -1,4 +1,11 @@
-import { LitElement, html, css, unsafeCSS } from 'lit';
+import {
+  LitElement,
+  html,
+  css,
+  unsafeCSS,
+  nothing,
+  type TemplateResult,
+} from 'lit';
 import { customElement, query, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/menu/menu.js';
 import '@shoelace-style/shoelace/dist/components/menu-item/menu-item.js';
@@ -39,6 +46,9 @@ export class ConsoleShell extends LitElement {
 
   @state()
   private _fullBleed = false;
+
+  @state()
+  private _currentPath = window.location.pathname;
 
   private _mediaQuery?: MediaQueryList;
   private _mediaQueryHandler?: (e: MediaQueryListEvent) => void;
@@ -212,12 +222,36 @@ export class ConsoleShell extends LitElement {
         padding-left: 1.5rem;
       }
 
+      .sidebar-link {
+        display: block;
+        color: inherit;
+      }
+
+      .sidebar-link sl-menu-item::part(base) {
+        border-radius: var(--sl-border-radius-medium);
+      }
+
+      .sidebar-link.active sl-menu-item::part(base) {
+        background-color: var(--sl-color-primary-50);
+        color: var(--sl-color-primary-600);
+        font-weight: var(--sl-font-weight-semibold);
+      }
+
+      .sidebar-link.active sl-menu-item::part(prefix) {
+        color: var(--sl-color-primary-600);
+      }
+
       sl-menu-item {
         padding: 0.25em;
       }
 
       sl-details {
         padding-left: 1em;
+      }
+
+      sl-details.settings-section[open]::part(summary) {
+        color: var(--sl-color-primary-600);
+        font-weight: var(--sl-font-weight-semibold);
       }
     `,
   ];
@@ -245,6 +279,8 @@ export class ConsoleShell extends LitElement {
       }
     };
     this._mediaQuery.addEventListener('change', this._mediaQueryHandler);
+    window.addEventListener('popstate', this._handleLocationChanged);
+    this._currentPath = window.location.pathname;
 
     // Fetch enabled features
     try {
@@ -271,7 +307,46 @@ export class ConsoleShell extends LitElement {
 
   private _handleLocationChanged = () => {
     this._fullBleed = false;
+    this._currentPath = window.location.pathname;
   };
+
+  private _normalizePath(path: string): string {
+    if (path.length > 1 && path.endsWith('/')) {
+      return path.slice(0, -1);
+    }
+    return path;
+  }
+
+  private _isNavActive(href: string, exact = false): boolean {
+    const current = this._normalizePath(this._currentPath);
+    const target = this._normalizePath(href);
+    if (exact) {
+      return current === target;
+    }
+    return current === target || current.startsWith(`${target}/`);
+  }
+
+  private _isSettingsActive(): boolean {
+    return this._isNavActive('/console/settings');
+  }
+
+  private _renderNavLink(
+    href: string,
+    content: TemplateResult,
+    exact = false
+  ): TemplateResult {
+    const active = this._isNavActive(href, exact);
+    return html`
+      <a
+        href=${href}
+        class="sidebar-link ${active ? 'active' : ''}"
+        aria-current=${active ? 'page' : nothing}
+        @click=${this._closeSidebar}
+      >
+        ${content}
+      </a>
+    `;
+  }
 
   updated(changedProperties: Map<string, unknown>) {
     super.updated?.(changedProperties);
@@ -293,6 +368,7 @@ export class ConsoleShell extends LitElement {
       'vaadin-router-location-changed',
       this._handleLocationChanged
     );
+    window.removeEventListener('popstate', this._handleLocationChanged);
     this._mediaQuery?.removeEventListener('change', this._mediaQueryHandler!);
     super.disconnectedCallback();
   }
@@ -327,115 +403,135 @@ export class ConsoleShell extends LitElement {
               ></a>
             </div>
             <sl-menu style="font-size: 16px;">
-              <a href="/console" @click=${this._closeSidebar}>
-                <sl-menu-item>
-                  <sl-icon name="house" slot="prefix"></sl-icon>
-                  <span class="sidebar-label">Overview</span>
-                </sl-menu-item>
-              </a>
-              <a href="/console/agents" @click=${this._closeSidebar}>
-                <sl-menu-item>
-                  <sl-icon name="robot" slot="prefix"></sl-icon>
-                  <span class="sidebar-label">Agents</span>
-                </sl-menu-item>
-              </a>
-              <a href="/console/flows" @click=${this._closeSidebar}>
-                <sl-menu-item>
-                  <sl-icon src="/images/flow.svg" slot="prefix"></sl-icon>
-                  <span class="sidebar-label">Flows</span>
-                </sl-menu-item>
-              </a>
-              <a href="/console/tools" @click=${this._closeSidebar}>
-                <sl-menu-item>
-                  <sl-icon name="tools" slot="prefix"></sl-icon>
-                  <span class="sidebar-label">Tools</span>
-                </sl-menu-item>
-              </a>
-              <a href="/console/trackers" @click=${this._closeSidebar}>
-                <sl-menu-item>
-                  <sl-icon src="/images/git.svg" slot="prefix"></sl-icon>
-                  <span class="sidebar-label">Trackers</span>
-                </sl-menu-item>
-              </a>
-              <a href="/console/ai-models" @click=${this._closeSidebar}>
-                <sl-menu-item>
-                  <sl-icon name="cpu" slot="prefix"></sl-icon>
-                  <span class="sidebar-label">Models</span>
-                </sl-menu-item>
-              </a>
-              <a href="/console/runtime-sessions" @click=${this._closeSidebar}>
-                <sl-menu-item>
-                  <sl-icon name="collection" slot="prefix"></sl-icon>
-                  <span class="sidebar-label">Sessions</span>
-                </sl-menu-item>
-              </a>
-              <a href="/console/cost" @click=${this._closeSidebar}>
-                <sl-menu-item>
-                  <sl-icon name="cash-coin" slot="prefix"></sl-icon>
-                  <span class="sidebar-label">Cost</span>
-                </sl-menu-item>
-              </a>
-              <a href="/console/approvals" @click=${this._closeSidebar}>
-                <sl-menu-item>
-                  <sl-icon name="shield-check" slot="prefix"></sl-icon>
-                  <span class="sidebar-label">Approvals</span>
-                </sl-menu-item>
-              </a>
-              ${this._featuresLoaded
-                ? this.features['audit_logs']
-                  ? html`
-                      <a href="/console/audit" @click=${this._closeSidebar}>
-                        <sl-menu-item>
-                          <sl-icon name="journal-text" slot="prefix"></sl-icon>
-                          <span class="sidebar-label">Audit</span>
-                        </sl-menu-item>
-                      </a>
+              ${this._renderNavLink(
+                '/console',
+                html`
+                  <sl-menu-item>
+                    <sl-icon name="house" slot="prefix"></sl-icon>
+                    <span class="sidebar-label">Overview</span>
+                  </sl-menu-item>
+                `,
+                true
+              )}
+              ${this._renderNavLink(
+                '/console/agents',
+                html`
+                  <sl-menu-item>
+                    <sl-icon name="robot" slot="prefix"></sl-icon>
+                    <span class="sidebar-label">Agents</span>
+                  </sl-menu-item>
+                `
+              )}
+              ${this._renderNavLink(
+                '/console/flows',
+                html`
+                  <sl-menu-item>
+                    <sl-icon src="/images/flow.svg" slot="prefix"></sl-icon>
+                    <span class="sidebar-label">Flows</span>
+                  </sl-menu-item>
+                `
+              )}
+              ${this._renderNavLink(
+                '/console/tools',
+                html`
+                  <sl-menu-item>
+                    <sl-icon name="tools" slot="prefix"></sl-icon>
+                    <span class="sidebar-label">Tools</span>
+                  </sl-menu-item>
+                `
+              )}
+              ${this._renderNavLink(
+                '/console/trackers',
+                html`
+                  <sl-menu-item>
+                    <sl-icon src="/images/git.svg" slot="prefix"></sl-icon>
+                    <span class="sidebar-label">Trackers</span>
+                  </sl-menu-item>
+                `
+              )}
+              ${this._renderNavLink(
+                '/console/ai-models',
+                html`
+                  <sl-menu-item>
+                    <sl-icon name="cpu" slot="prefix"></sl-icon>
+                    <span class="sidebar-label">Models</span>
+                  </sl-menu-item>
+                `
+              )}
+              ${this._renderNavLink(
+                '/console/runtime-sessions',
+                html`
+                  <sl-menu-item>
+                    <sl-icon name="collection" slot="prefix"></sl-icon>
+                    <span class="sidebar-label">Sessions</span>
+                  </sl-menu-item>
+                `
+              )}
+              ${this._renderNavLink(
+                '/console/cost',
+                html`
+                  <sl-menu-item>
+                    <sl-icon name="cash-coin" slot="prefix"></sl-icon>
+                    <span class="sidebar-label">Cost</span>
+                  </sl-menu-item>
+                `
+              )}
+              ${this._renderNavLink(
+                '/console/approvals',
+                html`
+                  <sl-menu-item>
+                    <sl-icon name="shield-check" slot="prefix"></sl-icon>
+                    <span class="sidebar-label">Approvals</span>
+                  </sl-menu-item>
+                `
+              )}
+              ${this._featuresLoaded && this.features['audit_logs']
+                ? this._renderNavLink(
+                    '/console/audit',
+                    html`
+                      <sl-menu-item>
+                        <sl-icon name="journal-text" slot="prefix"></sl-icon>
+                        <span class="sidebar-label">Audit</span>
+                      </sl-menu-item>
                     `
-                  : ''
+                  )
                 : ''}
-              <sl-details>
+              <sl-details
+                class="settings-section"
+                ?open=${this._isSettingsActive()}
+              >
                 <span slot="summary">
                   <sl-icon name="gear" style="padding-right: 6px;"></sl-icon>
                   <span class="sidebar-label">Settings</span>
                 </span>
                 <sl-menu>
                   ${this.features.user_management
-                    ? html`<a
-                          href="/console/settings/account"
-                          @click=${this._closeSidebar}
-                        >
-                          <sl-menu-item>Account</sl-menu-item>
-                        </a>
-                        <a
-                          href="/console/settings/users"
-                          @click=${this._closeSidebar}
-                        >
-                          <sl-menu-item>Users</sl-menu-item>
-                        </a>`
+                    ? html`${this._renderNavLink(
+                        '/console/settings/account',
+                        html`<sl-menu-item>Account</sl-menu-item>`
+                      )}
+                      ${this._renderNavLink(
+                        '/console/settings/users',
+                        html`<sl-menu-item>Users</sl-menu-item>`
+                      )}`
                     : ''}
                   ${this.features.team_management
-                    ? html`<a
-                        href="/console/settings/teams"
-                        @click=${this._closeSidebar}
-                      >
-                        <sl-menu-item>Teams</sl-menu-item>
-                      </a>`
+                    ? this._renderNavLink(
+                        '/console/settings/teams',
+                        html`<sl-menu-item>Teams</sl-menu-item>`
+                      )
                     : ''}
                   ${this.features.user_management ||
                   this.features.team_management
-                    ? html`<a
-                        href="/console/settings/invitations"
-                        @click=${this._closeSidebar}
-                      >
-                        <sl-menu-item>Invitations</sl-menu-item>
-                      </a>`
+                    ? this._renderNavLink(
+                        '/console/settings/invitations',
+                        html`<sl-menu-item>Invitations</sl-menu-item>`
+                      )
                     : ''}
-                  <a
-                    href="/console/settings/api-keys"
-                    @click=${this._closeSidebar}
-                  >
-                    <sl-menu-item>API Keys</sl-menu-item>
-                  </a>
+                  ${this._renderNavLink(
+                    '/console/settings/api-keys',
+                    html`<sl-menu-item>API Keys</sl-menu-item>`
+                  )}
                 </sl-menu>
               </sl-details>
             </sl-menu>

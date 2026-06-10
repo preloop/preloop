@@ -331,9 +331,7 @@ export function summarizeSessionLocally(
  * no savings claims of its own.
  */
 export function suggestSessionOptimizations(
-  session: ObservedSession,
-  _events: FlowGatewayEvent[] = [],
-  _activity: RuntimeSessionActivityItem[] = []
+  session: ObservedSession
 ): SessionOptimizationSuggestion[] {
   const promptTokens = session.tokenUsage.prompt_tokens;
   const totalTokens = session.tokenUsage.total_tokens;

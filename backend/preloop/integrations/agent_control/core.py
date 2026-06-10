@@ -10,6 +10,7 @@ reply/status envelopes back to Preloop.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -254,12 +255,22 @@ class AgentControlClient:
                     async for message in websocket:
                         if self._stopped.is_set():
                             break
+                        envelope = _parse_inbound_message(message)
+                        if envelope is not None:
+                            await self._handle_text_message(websocket, envelope)
+                            continue
                         message_type = getattr(message, "type", None)
-                        if isinstance(message, dict):
-                            await self._handle_text_message(websocket, message)
-                        elif message_type == aiohttp.WSMsgType.TEXT:
-                            await self._handle_text_message(websocket, message.json())
-                        elif message_type in {
+                        if message_type == aiohttp.WSMsgType.TEXT:
+                            await self._send_json(
+                                websocket,
+                                _error_envelope(
+                                    str(uuid4()),
+                                    "invalid_json",
+                                    {"error": "malformed JSON message"},
+                                ),
+                            )
+                            continue
+                        if message_type in {
                             aiohttp.WSMsgType.CLOSE,
                             aiohttp.WSMsgType.CLOSED,
                             aiohttp.WSMsgType.ERROR,
@@ -402,6 +413,28 @@ def _unsupported_capabilities(
     if command.interrupt and not capabilities.supports_interrupt:
         unsupported.append("interrupt")
     return unsupported
+
+
+def _parse_inbound_message(message: Any) -> dict[str, Any] | None:
+    """Parse a WebSocket inbound frame into an envelope dict when possible."""
+
+    if isinstance(message, dict):
+        return message
+    message_type = getattr(message, "type", None)
+    if message_type != aiohttp.WSMsgType.TEXT:
+        return None
+    try:
+        parsed = message.json()
+    except json.JSONDecodeError:
+        logger.warning("Ignoring malformed agent-control JSON message", exc_info=True)
+        return None
+    if not isinstance(parsed, dict):
+        logger.warning(
+            "Ignoring non-object agent-control JSON message: %s",
+            type(parsed).__name__,
+        )
+        return None
+    return parsed
 
 
 def _error_envelope(

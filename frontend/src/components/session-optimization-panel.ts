@@ -98,8 +98,7 @@ export class SessionOptimizationPanel extends LitElement {
   render() {
     if (!this.session) return '';
     const suggestions =
-      this.suggestions ||
-      suggestSessionOptimizations(this.session, this.events, this.activity);
+      this.suggestions || suggestSessionOptimizations(this.session);
 
     return html`
       <div class="panel">

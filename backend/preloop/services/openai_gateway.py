@@ -3369,9 +3369,9 @@ class OpenAIGatewayService:
                 "gateway_attempt": gateway_attempt,
                 "is_retry": is_retry,
                 "retry_of_api_usage_id": retry_of_api_usage_id,
-                "purpose": (
-                    (request_payload or {}).get("metadata") or {}
-                ).get("purpose"),
+                "purpose": ((request_payload or {}).get("metadata") or {}).get(
+                    "purpose"
+                ),
             },
         )
         observed_at = usage_row.timestamp

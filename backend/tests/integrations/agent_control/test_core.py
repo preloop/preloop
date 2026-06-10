@@ -18,7 +18,20 @@ from preloop.integrations.agent_control import (
 )
 from preloop.integrations.agent_control.core import (
     _is_permanent_control_connection_error,
+    _parse_inbound_message,
 )
+
+
+def test_parse_inbound_message_accepts_dict_and_rejects_invalid_json() -> None:
+    assert _parse_inbound_message({"type": "ping"}) == {"type": "ping"}
+
+    class InvalidJsonTextMessage:
+        type = aiohttp.WSMsgType.TEXT
+
+        def json(self) -> dict[str, object]:
+            raise json.JSONDecodeError("Expecting value", "{bad", 0)
+
+    assert _parse_inbound_message(InvalidJsonTextMessage()) is None
 
 
 def test_permanent_control_connection_error_detects_auth_failures() -> None:

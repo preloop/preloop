@@ -20,7 +20,6 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from preloop.api.auth.permissions import require_permission
 from preloop.api.auth.jwt import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
     create_access_token,
@@ -960,7 +959,6 @@ def create_api_key(
     response_model=RuntimeSessionTokenResponse,
     status_code=status.HTTP_201_CREATED,
 )
-@require_permission("execute_tools")
 async def create_runtime_session_token(
     session_data: RuntimeSessionTokenCreate,
     current_user: UserModel = Depends(get_current_active_user),
