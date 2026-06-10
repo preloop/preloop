@@ -664,6 +664,7 @@ export class PreloopSessionObserver extends LitElement {
       confidence: suggestion.confidence as 'low' | 'medium' | 'high',
       actionLabel: suggestion.action_label,
       evidence: suggestion.evidence,
+      evidenceEventIds: suggestion.evidence_event_ids || [],
     }));
   }
 

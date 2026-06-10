@@ -1576,6 +1576,20 @@ export class SessionReplayPanel extends LitElement {
     const messages = this.getVisibleReplayMessages();
     if (!messages.length) return;
 
+    if (suggestion.evidenceEventIds?.length) {
+      const evidenceIds = new Set(suggestion.evidenceEventIds);
+      this.visibleReplayKinds = new Set(REPLAY_MARKER_KINDS);
+      const allMessages = this.getReplayMessages();
+      const evidenceIndex = allMessages.findIndex((message) =>
+        evidenceIds.has(message.event?.id || '')
+      );
+      if (evidenceIndex >= 0) {
+        this.replayIndex = evidenceIndex;
+        this.requestReplayCurrentEventDetail(allMessages[evidenceIndex]);
+        return;
+      }
+    }
+
     if (suggestion.id === 'fix-failures') {
       this.visibleReplayKinds = new Set(REPLAY_MARKER_KINDS);
       const allMessages = this.getReplayMessages();

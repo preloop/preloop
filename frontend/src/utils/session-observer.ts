@@ -71,6 +71,7 @@ export interface SessionOptimizationSuggestion {
   confidence: 'low' | 'medium' | 'high';
   actionLabel: string;
   evidence: string[];
+  evidenceEventIds?: string[];
 }
 
 const EMPTY_TOKEN_USAGE: GatewayTokenUsage = {
@@ -323,86 +324,41 @@ export function summarizeSessionLocally(
   };
 }
 
+/**
+ * Minimal offline fallback used only when no backend-generated
+ * suggestions are available. The backend response (grounded in the
+ * session context profile) is the source of truth; this fallback makes
+ * no savings claims of its own.
+ */
 export function suggestSessionOptimizations(
   session: ObservedSession,
-  events: FlowGatewayEvent[],
-  activity: RuntimeSessionActivityItem[] = []
+  _events: FlowGatewayEvent[] = [],
+  _activity: RuntimeSessionActivityItem[] = []
 ): SessionOptimizationSuggestion[] {
-  const suggestions: SessionOptimizationSuggestion[] = [];
   const promptTokens = session.tokenUsage.prompt_tokens;
   const totalTokens = session.tokenUsage.total_tokens;
-  const toolNames = new Set(
-    activity.map((item) => item.tool_name).filter(Boolean) as string[]
-  );
-  const capturedMessages = events.flatMap(getGatewayEventPreviewMessages);
-  const systemMessages = capturedMessages.filter(
-    (message) => message.role === 'system' || message.source === 'system'
-  );
-  const truncatedMessages = capturedMessages.filter(
-    (message) => message.truncated
-  );
 
   if (promptTokens > 0 && promptTokens / Math.max(totalTokens, 1) > 0.75) {
-    suggestions.push({
-      id: 'trim-context',
-      title: 'Trim prompt context',
-      description:
-        'Most tokens are prompt tokens. Review system prompt, skills, tools, and retrieved context before the next run.',
-      expectedSavingsTokens: Math.round(promptTokens * 0.25),
-      expectedSavingsUsd: session.estimatedCost * 0.2,
-      confidence: 'medium',
-      actionLabel: 'Review context segments',
-      evidence: [
-        `${formatNumber(promptTokens)} prompt tokens`,
-        `${Math.round((promptTokens / Math.max(totalTokens, 1)) * 100)}% of session tokens were prompt-side`,
-      ],
-    });
+    return [
+      {
+        id: 'trim-context',
+        title: 'Trim prompt context',
+        description:
+          'Most tokens are prompt tokens. Generate suggestions for a measured breakdown of where they went.',
+        expectedSavingsTokens: 0,
+        expectedSavingsUsd: 0,
+        confidence: 'medium',
+        actionLabel: 'Review context segments',
+        evidence: [
+          `${formatNumber(promptTokens)} prompt tokens`,
+          `${Math.round((promptTokens / Math.max(totalTokens, 1)) * 100)}% of session tokens were prompt-side`,
+        ],
+      },
+    ];
   }
 
-  if (toolNames.size > 8) {
-    suggestions.push({
-      id: 'scope-tools',
-      title: 'Narrow available tools',
-      description:
-        'The session touched many tool names. Agent-scoped tool governance can reduce tool schemas in future context windows.',
-      expectedSavingsTokens: Math.round(totalTokens * 0.1),
-      expectedSavingsUsd: session.estimatedCost * 0.08,
-      confidence: 'low',
-      actionLabel: 'Suggest scoped tool policy',
-      evidence: [`${toolNames.size} distinct tool names observed`],
-    });
-  }
-
-  if (systemMessages.length > 1) {
-    suggestions.push({
-      id: 'dedupe-instructions',
-      title: 'Deduplicate repeated instructions',
-      description:
-        'Multiple system-level messages were captured. Consolidating repeated instructions can lower prompt cost and make replay easier to read.',
-      expectedSavingsTokens: Math.round(totalTokens * 0.08),
-      expectedSavingsUsd: session.estimatedCost * 0.05,
-      confidence: 'medium',
-      actionLabel: 'Inspect system messages',
-      evidence: [`${systemMessages.length} system-level messages captured`],
-    });
-  }
-
-  if (truncatedMessages.length > 0) {
-    suggestions.push({
-      id: 'inspect-truncation',
-      title: 'Inspect truncated content',
-      description:
-        'Captured previews were truncated. The full event payload may reveal oversized context or large tool outputs.',
-      expectedSavingsTokens: Math.round(totalTokens * 0.05),
-      expectedSavingsUsd: session.estimatedCost * 0.03,
-      confidence: 'low',
-      actionLabel: 'Open raw event payloads',
-      evidence: [`${truncatedMessages.length} truncated preview messages`],
-    });
-  }
-
-  if (suggestions.length === 0) {
-    suggestions.push({
+  return [
+    {
       id: 'budget-guardrail',
       title: 'Add a scoped budget guardrail',
       description:
@@ -412,8 +368,6 @@ export function suggestSessionOptimizations(
       confidence: 'medium',
       actionLabel: 'Review budget policy',
       evidence: [`Current spend: ${formatCost(session.estimatedCost)}`],
-    });
-  }
-
-  return suggestions;
+    },
+  ];
 }

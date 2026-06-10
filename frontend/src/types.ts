@@ -535,6 +535,7 @@ export interface RuntimeSessionOptimizationSuggestion {
   confidence: 'low' | 'medium' | 'high' | string;
   action_label: string;
   evidence: string[];
+  evidence_event_ids?: string[];
 }
 
 export interface RuntimeSessionOptimizationResponse {

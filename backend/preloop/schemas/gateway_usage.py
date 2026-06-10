@@ -510,6 +510,7 @@ class RuntimeSessionOptimizationSuggestion(BaseModel):
     confidence: str = "medium"
     action_label: str
     evidence: List[str] = Field(default_factory=list)
+    evidence_event_ids: List[str] = Field(default_factory=list)
 
 
 class RuntimeSessionOptimizationRequest(BaseModel):
