@@ -290,12 +290,12 @@ p.lead {
   height: auto;
 }
 
-.workflow-needs-content h2 {
+.workflow-needs-section .workflow-needs-content h2 {
   max-width: 700px;
   margin: 1rem 0 2.25rem;
   color: #f8fafc;
-  font-size: clamp(3.75rem, 6.4vw, 5.8rem);
-  line-height: 0.98;
+  font-size: clamp(4.6rem, 7.2vw, 6.6rem);
+  line-height: 0.95;
   font-weight: 900;
   letter-spacing: 0;
 }
@@ -1074,7 +1074,7 @@ summary.faq-question:hover sl-icon {
     gap: 3.5rem;
   }
 
-  .workflow-needs-content h2 {
+  .workflow-needs-section .workflow-needs-content h2 {
     max-width: 760px;
   }
 
@@ -1132,9 +1132,9 @@ summary.faq-question:hover sl-icon {
     padding: 4.5rem 0;
   }
 
-  .workflow-needs-content h2 {
-    font-size: clamp(3.2rem, 12vw, 4.4rem);
-    line-height: 0.98;
+  .workflow-needs-section .workflow-needs-content h2 {
+    font-size: clamp(3.8rem, 13vw, 5rem);
+    line-height: 0.95;
     font-weight: 900;
   }
 
