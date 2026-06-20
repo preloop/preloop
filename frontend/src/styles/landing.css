@@ -362,6 +362,131 @@ p.lead {
   line-height: 1.65;
 }
 
+/* Meet Preloop Section */
+.meet-preloop-section {
+  position: relative;
+  padding: 7rem 0 6rem;
+  background: rgb(9, 13, 22);
+}
+
+.meet-preloop-section::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 1px;
+  height: 4.75rem;
+  background: linear-gradient(to bottom, rgba(56, 189, 248, 0.85), transparent);
+  transform: translateX(-50%);
+}
+
+.meet-preloop-connector {
+  position: absolute;
+  top: 3.75rem;
+  left: 50%;
+  z-index: 1;
+  transform: translate(-50%, -50%);
+}
+
+.meet-preloop-connector span {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border: 1px solid rgba(56, 189, 248, 0.42);
+  border-radius: 12px;
+  color: #67e8f9;
+  background: rgb(9, 13, 22);
+  box-shadow: 0 16px 36px rgba(8, 145, 178, 0.18);
+  transform: rotate(4deg);
+}
+
+.meet-preloop-connector sl-icon {
+  font-size: 1.35rem;
+}
+
+.meet-preloop-inner {
+  display: grid;
+  grid-template-columns: minmax(0, 0.82fr) minmax(0, 1.18fr);
+  gap: 5rem;
+  align-items: start;
+}
+
+.meet-preloop-kicker {
+  margin: 0 0 1.1rem;
+  color: #22d3ee;
+  font-size: 1.05rem;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.meet-preloop-kicker span {
+  color: rgba(203, 213, 225, 0.72);
+}
+
+.meet-preloop-intro h2 {
+  margin: 0 0 1.35rem;
+  color: #f8fafc;
+  font-size: clamp(3rem, 5vw, 4.8rem);
+  line-height: 1;
+  font-weight: 850;
+}
+
+.meet-preloop-intro p:not(.meet-preloop-kicker) {
+  max-width: 520px;
+  margin: 0 0 1.1rem;
+  color: rgba(203, 213, 225, 0.84);
+  font-size: 1.08rem;
+  line-height: 1.7;
+}
+
+.meet-preloop-capabilities {
+  padding-top: 0.35rem;
+}
+
+.capability-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1.7rem;
+  margin-top: 2rem;
+}
+
+.capability-item {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 1.1rem;
+  padding-bottom: 1.7rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+}
+
+.capability-item:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.capability-arrow {
+  color: #22d3ee;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 1.1rem;
+  font-weight: 800;
+  line-height: 1.4;
+}
+
+.capability-item h3 {
+  margin: 0 0 0.45rem;
+  color: #f8fafc;
+  font-size: 1.35rem;
+  line-height: 1.25;
+  font-weight: 800;
+}
+
+.capability-item p {
+  margin: 0;
+  color: rgba(203, 213, 225, 0.82);
+  font-size: 1rem;
+  line-height: 1.65;
+}
+
 /* Feature Section */
 .feature-section {
   position: relative;
@@ -1078,6 +1203,15 @@ summary.faq-question:hover sl-icon {
     max-width: 760px;
   }
 
+  .meet-preloop-inner {
+    grid-template-columns: 1fr;
+    gap: 3rem;
+  }
+
+  .meet-preloop-intro p:not(.meet-preloop-kicker) {
+    max-width: 720px;
+  }
+
   .tool-logos {
     gap: 3rem;
     row-gap: 2.5rem;
@@ -1146,6 +1280,27 @@ summary.faq-question:hover sl-icon {
   .workflow-need-icon {
     width: 42px;
     height: 42px;
+  }
+
+  .meet-preloop-section {
+    padding: 6rem 0 4.5rem;
+  }
+
+  .meet-preloop-section::before {
+    height: 4rem;
+  }
+
+  .meet-preloop-connector {
+    top: 3.25rem;
+  }
+
+  .meet-preloop-intro h2 {
+    font-size: clamp(2.6rem, 8vw, 3.5rem);
+  }
+
+  .capability-item {
+    grid-template-columns: 28px minmax(0, 1fr);
+    gap: 0.9rem;
   }
 
   .feature-grid {

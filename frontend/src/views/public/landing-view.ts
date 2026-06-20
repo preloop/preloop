@@ -926,6 +926,85 @@ export class LandingView extends LitElement {
           </div>
         </section>
 
+        <section class="meet-preloop-section main-section">
+          <div class="meet-preloop-connector" aria-hidden="true">
+            <span>
+              <sl-icon name="check2"></sl-icon>
+            </span>
+          </div>
+          <div class="section-container meet-preloop-inner">
+            <div class="meet-preloop-intro">
+              <p class="meet-preloop-kicker">
+                Good news. Preloop helps with all of that
+                <span>{and more.}</span>
+              </p>
+              <h2>Meet Preloop</h2>
+              <p>
+                Preloop is an open-source control plane that helps teams safely
+                use AI agents that take real actions.
+              </p>
+              <p>
+                It gives your team one place to control tool access, require
+                approvals, monitor agent activity, manage model spend, and keep
+                full audit trails.
+              </p>
+            </div>
+
+            <div class="meet-preloop-capabilities">
+              <div class="section-eyebrow">Preloop helps you with</div>
+              <div class="capability-list">
+                <article class="capability-item">
+                  <span class="capability-arrow">-&gt;</span>
+                  <div>
+                    <h3>AI Agent Control</h3>
+                    <p>
+                      Give your agents access to tools, code, and workflows
+                      without losing control. Preloop lets you define what
+                      agents can use, what should be blocked, and what needs
+                      approval before it happens.
+                    </p>
+                  </div>
+                </article>
+                <article class="capability-item">
+                  <span class="capability-arrow">-&gt;</span>
+                  <div>
+                    <h3>Human Approval Workflows</h3>
+                    <p>
+                      When an agent wants to take a risky action, Preloop
+                      pauses the action and asks the right person for approval.
+                      Your team can move fast while keeping humans in control
+                      of critical decisions.
+                    </p>
+                  </div>
+                </article>
+                <article class="capability-item">
+                  <span class="capability-arrow">-&gt;</span>
+                  <div>
+                    <h3>Runtime Visibility</h3>
+                    <p>
+                      See what your agents are doing in real time. Track tool
+                      calls, model requests, approvals, denied actions, and
+                      agent activity from one clear dashboard.
+                    </p>
+                  </div>
+                </article>
+                <article class="capability-item">
+                  <span class="capability-arrow">-&gt;</span>
+                  <div>
+                    <h3>Audit Trails &amp; Spend Control</h3>
+                    <p>
+                      Every important agent action is logged, so your team can
+                      understand what happened, who approved it, and how much it
+                      cost. This helps you control spend, reduce risk, and build
+                      trust in your AI workflows.
+                    </p>
+                  </div>
+                </article>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <section
           class="supported-agents-section"
           style="padding-top: 2rem; padding-bottom: 2rem;"
