@@ -430,7 +430,7 @@ p.lead {
   color: rgba(203, 213, 225, 0.72);
 }
 
-.meet-preloop-header h2 {
+.meet-preloop-intro h2 {
   margin: 0 0 1.35rem;
   color: #f8fafc;
   font-size: clamp(3.2rem, 5vw, 4.8rem);
@@ -1349,7 +1349,7 @@ summary.faq-question:hover sl-icon {
     top: 3.25rem;
   }
 
-  .meet-preloop-header h2 {
+  .meet-preloop-intro h2 {
     font-size: clamp(2.6rem, 8vw, 3.5rem);
   }
 

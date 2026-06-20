@@ -938,12 +938,12 @@ export class LandingView extends LitElement {
                 Good news. Preloop helps with all of that
                 <span>{and more.}</span>
               </p>
-              <h2>Meet Preloop</h2>
             </div>
 
             <div class="meet-preloop-inner">
               <div class="meet-preloop-copy">
                 <div class="meet-preloop-intro">
+                  <h2>Meet Preloop</h2>
                   <p>
                     Preloop is an open-source control plane that helps teams
                     safely use AI agents that take real actions.
