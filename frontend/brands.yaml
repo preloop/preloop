@@ -33,8 +33,8 @@ brands:
         extended_description: "Define policies for AI agents & tools. Allow, deny, or require approval for any action based on context. Full visibility and audit trail for every AI operation. Works with OpenClaw, Claude Code, Cursor, and any MCP-compatible agent."
         keywords: "Preloop, AI agent firewall, AI safety policies, AI agent permissions, MCP proxy, OpenClaw safety, Claude Code policies, AI agent audit trail, production safety for AI, MCP, Model Context Protocol"
       hero:
-        title: "The <span class=\"gradient-product\">Safety Layer</span> for AI Agents"
-        lead: "Control what AI agents can do, and what requires human approval."
+        title: "The Open Source <span class=\"gradient-product\">Control Center</span> for Secure AI Automation"
+        lead: "Preloop helps teams control tool access, require approvals, track spend, and keep audit trails before AI agents touch real systems."
         cta_primary: "Sign In"
         cta_primary_url: "/login"
         og_image: "/assets/mcp-firewall.svg"
