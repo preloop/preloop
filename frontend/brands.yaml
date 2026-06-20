@@ -35,8 +35,10 @@ brands:
       hero:
         title: "The Open Source <span class=\"gradient-product\">Control Center</span> for Secure AI Automation"
         lead: "Preloop helps teams control tool access, require approvals, track spend, and keep audit trails before AI agents touch real systems."
-        cta_primary: "Sign In"
-        cta_primary_url: "/login"
+        cta_primary: "Book a Demo"
+        cta_primary_url: "/request-demo"
+        install_command: "curl -fsSL https://preloop.ai/install/cli | sh"
+        install_caption: "Install the CLI on macOS or Linux. Discover, onboard, and govern your local AI agents in minutes."
         og_image: "/assets/mcp-firewall.svg"
 
       get_started:

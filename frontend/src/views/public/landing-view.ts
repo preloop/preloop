@@ -36,6 +36,7 @@ export class LandingView extends LitElement {
   @state() private _heroTitle = '';
   @state() private _heroLead = '';
   @state() private _ctaPrimary = '';
+  @state() private _ctaPrimaryUrl = '';
   @state() private _ctaSecondary = '';
   @state() private _ctaSecondaryUrl = '';
   @state() private _heroInstall = '';
@@ -313,6 +314,9 @@ export class LandingView extends LitElement {
     const ctaPrimary = children.find(
       (el) => el.getAttribute('slot') === 'cta-primary'
     ) as HTMLElement | undefined;
+    const ctaPrimaryUrl = children.find(
+      (el) => el.getAttribute('slot') === 'cta-primary-url'
+    ) as HTMLElement | undefined;
     const ctaSecondary = children.find(
       (el) => el.getAttribute('slot') === 'cta-secondary'
     ) as HTMLElement | undefined;
@@ -323,6 +327,7 @@ export class LandingView extends LitElement {
     if (heroTitle) this._heroTitle = heroTitle.innerHTML || '';
     if (heroLead) this._heroLead = heroLead.textContent || '';
     if (ctaPrimary) this._ctaPrimary = ctaPrimary.textContent || '';
+    if (ctaPrimaryUrl) this._ctaPrimaryUrl = ctaPrimaryUrl.textContent || '';
     if (ctaSecondary) this._ctaSecondary = ctaSecondary.textContent || '';
     if (ctaSecondaryUrl)
       this._ctaSecondaryUrl = ctaSecondaryUrl.textContent || '';
@@ -546,6 +551,7 @@ export class LandingView extends LitElement {
     this._heroTitle = hero.title || '';
     this._heroLead = hero.lead || '';
     this._ctaPrimary = hero.cta_primary || '';
+    this._ctaPrimaryUrl = hero.cta_primary_url || '';
     this._ctaSecondary = hero.cta_secondary || '';
     this._ctaSecondaryUrl = hero.cta_secondary_url || '';
     this._heroInstall = (hero.install_command || '').trim();
@@ -745,18 +751,24 @@ export class LandingView extends LitElement {
                 <sl-button
                   variant="primary"
                   size="large"
-                  @click=${this._handleSignup}
-                  >${this._ctaPrimary}</sl-button
-                >
-                <sl-button
-                  variant="text"
-                  size="large"
-                  href=${this._ctaSecondaryUrl}
-                  target=${this._ctaSecondaryUrl.startsWith('http')
+                  href=${this._ctaPrimaryUrl || undefined}
+                  target=${this._ctaPrimaryUrl.startsWith('http')
                     ? '_blank'
                     : '_self'}
-                  >${this._ctaSecondary}</sl-button
+                  @click=${this._ctaPrimaryUrl ? undefined : this._handleSignup}
+                  >${this._ctaPrimary}</sl-button
                 >
+                ${this._ctaSecondary
+                  ? html`<sl-button
+                      variant="text"
+                      size="large"
+                      href=${this._ctaSecondaryUrl}
+                      target=${this._ctaSecondaryUrl.startsWith('http')
+                        ? '_blank'
+                        : '_self'}
+                      >${this._ctaSecondary}</sl-button
+                    >`
+                  : ''}
               </div>
               ${this._heroInstall
                 ? html`
