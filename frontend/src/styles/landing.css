@@ -264,6 +264,23 @@ p.lead {
   background: rgb(9, 13, 22);
 }
 
+.workflow-needs-section::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -6rem;
+  width: 1px;
+  height: 12rem;
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    rgba(56, 189, 248, 0.55) 28%,
+    rgba(56, 189, 248, 0.85) 72%,
+    transparent
+  );
+  transform: translateX(-50%);
+}
+
 .workflow-needs-inner {
   display: grid;
   grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
@@ -365,7 +382,7 @@ p.lead {
 /* Meet Preloop Section */
 .meet-preloop-section {
   position: relative;
-  padding: 7rem 0 6rem;
+  padding: 8rem 0 6rem;
   background: rgb(9, 13, 22);
 }
 
@@ -375,14 +392,14 @@ p.lead {
   top: 0;
   left: 50%;
   width: 1px;
-  height: 4.75rem;
-  background: linear-gradient(to bottom, rgba(56, 189, 248, 0.85), transparent);
+  height: 7rem;
+  background: linear-gradient(to bottom, rgba(56, 189, 248, 0.9), transparent);
   transform: translateX(-50%);
 }
 
 .meet-preloop-connector {
   position: absolute;
-  top: 3.75rem;
+  top: 5.5rem;
   left: 50%;
   z-index: 1;
   transform: translate(-50%, -50%);
@@ -1338,15 +1355,15 @@ summary.faq-question:hover sl-icon {
   }
 
   .meet-preloop-section {
-    padding: 6rem 0 4.5rem;
+    padding: 7rem 0 4.5rem;
   }
 
   .meet-preloop-section::before {
-    height: 4rem;
+    height: 5.75rem;
   }
 
   .meet-preloop-connector {
-    top: 3.25rem;
+    top: 4.75rem;
   }
 
   .meet-preloop-intro h2 {
