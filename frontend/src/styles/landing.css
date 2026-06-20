@@ -291,12 +291,13 @@ p.lead {
 }
 
 .workflow-needs-content h2 {
-  max-width: 620px;
+  max-width: 700px;
   margin: 1rem 0 2.25rem;
   color: #f8fafc;
-  font-size: clamp(3.2rem, 5.8vw, 5.4rem);
-  line-height: 1.06;
-  font-weight: 800;
+  font-size: clamp(3.75rem, 6.4vw, 5.8rem);
+  line-height: 0.98;
+  font-weight: 900;
+  letter-spacing: 0;
 }
 
 .section-eyebrow {
