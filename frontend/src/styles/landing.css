@@ -294,9 +294,9 @@ p.lead {
   max-width: 620px;
   margin: 1rem 0 2.25rem;
   color: #f8fafc;
-  font-size: clamp(2.4rem, 4.5vw, 4.2rem);
+  font-size: clamp(3.2rem, 5.8vw, 5.4rem);
   line-height: 1.06;
-  font-weight: 700;
+  font-weight: 800;
 }
 
 .section-eyebrow {
@@ -306,8 +306,8 @@ p.lead {
   border-radius: 4px;
   color: #22d3ee;
   background: rgba(56, 189, 248, 0.08);
-  font-size: 0.78rem;
-  font-weight: 800;
+  font-size: 0.86rem;
+  font-weight: 900;
   letter-spacing: 0.24em;
   text-transform: uppercase;
 }
