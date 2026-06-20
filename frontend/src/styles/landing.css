@@ -306,8 +306,8 @@ p.lead {
   border-radius: 4px;
   color: #22d3ee;
   background: rgba(56, 189, 248, 0.08);
-  font-size: 0.86rem;
-  font-weight: 900;
+  font-size: 0.78rem;
+  font-weight: 800;
   letter-spacing: 0.24em;
   text-transform: uppercase;
 }
@@ -349,9 +349,9 @@ p.lead {
 .workflow-need-item h3 {
   margin: 0 0 0.55rem;
   color: #f8fafc;
-  font-size: 1.25rem;
+  font-size: 1.65rem;
   line-height: 1.25;
-  font-weight: 700;
+  font-weight: 800;
 }
 
 .workflow-need-item p {
