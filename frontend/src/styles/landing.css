@@ -294,7 +294,7 @@ p.lead {
   max-width: 760px;
   margin: 1rem 0 2.25rem;
   color: #f8fafc;
-  font-size: clamp(3rem, 4.4vw, 4.1rem);
+  font-size: clamp(2.45rem, 3.6vw, 3.45rem);
   line-height: 1.05;
   font-weight: 800;
   letter-spacing: 0;
@@ -1133,7 +1133,7 @@ summary.faq-question:hover sl-icon {
   }
 
   .workflow-needs-section .workflow-needs-content h2 {
-    font-size: clamp(2.65rem, 8vw, 3.35rem);
+    font-size: clamp(2.25rem, 6.8vw, 2.9rem);
     line-height: 1.05;
     font-weight: 800;
   }
