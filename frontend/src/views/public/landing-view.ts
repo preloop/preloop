@@ -852,23 +852,10 @@ export class LandingView extends LitElement {
           <div class="section-container workflow-needs-inner">
             <div class="workflow-needs-visual" aria-hidden="true">
               <div class="workflow-window">
-                <div class="workflow-window-bar">
-                  <span></span>
-                  <span></span>
-                  <span></span>
-                </div>
                 <img
                   src="/assets/screenshots/quickstart/dark/dashboard.png"
                   alt=""
                 />
-              </div>
-              <div class="workflow-stat-card workflow-stat-card--top">
-                <span>Approval required</span>
-                <strong>Risky command blocked</strong>
-              </div>
-              <div class="workflow-stat-card workflow-stat-card--bottom">
-                <span>Spend guardrail</span>
-                <strong>Usage tracked by agent</strong>
               </div>
             </div>
 
