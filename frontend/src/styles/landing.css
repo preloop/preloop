@@ -291,12 +291,12 @@ p.lead {
 }
 
 .workflow-needs-section .workflow-needs-content h2 {
-  max-width: 700px;
+  max-width: 640px;
   margin: 1rem 0 2.25rem;
   color: #f8fafc;
-  font-size: clamp(4.6rem, 7.2vw, 6.6rem);
-  line-height: 0.95;
-  font-weight: 900;
+  font-size: clamp(3.2rem, 5vw, 4.6rem);
+  line-height: 1.05;
+  font-weight: 800;
   letter-spacing: 0;
 }
 
@@ -1133,9 +1133,9 @@ summary.faq-question:hover sl-icon {
   }
 
   .workflow-needs-section .workflow-needs-content h2 {
-    font-size: clamp(3.8rem, 13vw, 5rem);
-    line-height: 0.95;
-    font-weight: 900;
+    font-size: clamp(2.8rem, 9vw, 3.8rem);
+    line-height: 1.05;
+    font-weight: 800;
   }
 
   .workflow-need-item {
