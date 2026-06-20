@@ -848,6 +848,97 @@ export class LandingView extends LitElement {
           </div>
         </section>
 
+        <section class="workflow-needs-section main-section">
+          <div class="section-container workflow-needs-inner">
+            <div class="workflow-needs-visual" aria-hidden="true">
+              <div class="workflow-window">
+                <div class="workflow-window-bar">
+                  <span></span>
+                  <span></span>
+                  <span></span>
+                </div>
+                <img
+                  src="/assets/screenshots/quickstart/dark/dashboard.png"
+                  alt=""
+                />
+              </div>
+              <div class="workflow-stat-card workflow-stat-card--top">
+                <span>Approval required</span>
+                <strong>Risky command blocked</strong>
+              </div>
+              <div class="workflow-stat-card workflow-stat-card--bottom">
+                <span>Spend guardrail</span>
+                <strong>Usage tracked by agent</strong>
+              </div>
+            </div>
+
+            <div class="workflow-needs-content">
+              <div class="section-eyebrow">Agent workflow needs</div>
+              <h2>What does your AI agent workflow need?</h2>
+              <div class="workflow-need-list">
+                <article class="workflow-need-item">
+                  <div class="workflow-need-icon">
+                    <sl-icon name="shield-check"></sl-icon>
+                  </div>
+                  <div>
+                    <h3>Agents you can trust with real actions</h3>
+                    <p>
+                      When AI agents can access tools, code, data, or
+                      production systems, every action carries risk. Without
+                      clear control, teams may hesitate to use agents fully
+                      because they do not know what the agent might do next.
+                    </p>
+                  </div>
+                </article>
+                <article class="workflow-need-item">
+                  <div class="workflow-need-icon">
+                    <sl-icon name="person-check"></sl-icon>
+                  </div>
+                  <div>
+                    <h3>Approval before risky actions</h3>
+                    <p>
+                      When an agent wants to delete data, run a command, send a
+                      message, or trigger a workflow, some actions should not
+                      happen automatically. Without approval rules, one wrong
+                      action can create security, operational, or financial
+                      damage.
+                    </p>
+                  </div>
+                </article>
+                <article class="workflow-need-item">
+                  <div class="workflow-need-icon">
+                    <sl-icon name="activity"></sl-icon>
+                  </div>
+                  <div>
+                    <h3>Full visibility into what agents are doing</h3>
+                    <p>
+                      When teams cannot see what their agents are doing, they
+                      lose control. Every tool call, model request, approval,
+                      and decision should be visible, so teams can understand
+                      what happened and respond with confidence.
+                    </p>
+                  </div>
+                </article>
+                <article class="workflow-need-item">
+                  <div class="workflow-need-icon">
+                    <sl-icon name="graph-up-arrow"></sl-icon>
+                  </div>
+                  <div>
+                    <h3>Spend and usage that stay under control</h3>
+                    <p>
+                      When AI agents start running across teams, model usage
+                      and token costs can grow quickly. Without budgets and
+                      attribution, it becomes hard to know which agent is
+                      spending, why it is spending, and whether the work is
+                      worth the cost.
+                    </p>
+                  </div>
+                </article>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <section
           class="supported-agents-section"
           style="padding-top: 2rem; padding-bottom: 2rem;"
