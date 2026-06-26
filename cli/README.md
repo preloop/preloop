@@ -125,6 +125,9 @@ preloop agents enroll openclaw --dry-run
 preloop agents enroll openclaw --yes   # Skip the confirmation prompt
 preloop agents enroll hermes          # Apply managed enrollment for Hermes
 preloop agents enroll hermes --dry-run
+preloop agents install-runtime hermes # Install Hermes locally, then onboard
+preloop agents install-runtime openclaw -y
+preloop agents install-runtime hermes --skip-install -y  # Onboard an existing install
 preloop agents status openclaw         # Show local/remote managed state
 preloop agents status hermes
 preloop agents validate openclaw       # Validate the managed config

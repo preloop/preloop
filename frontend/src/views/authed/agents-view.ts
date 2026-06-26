@@ -3221,20 +3221,27 @@ export class AgentsView extends LitElement {
         }}
         style="--width: 760px;"
       >
-        <preloop-deploy-wizard
-          .aiModels=${this.aiModels}
-          .computeFeatureEnabled=${this.computeFeatureEnabled}
-          .isEnterprise=${this.isEnterprise}
-          .isAdmin=${this.isAdmin}
-          @deploy-agent-success=${this.handleDeployAgentSuccess}
-          @deploy-wizard-done=${() => {
-            this.showOnboardingDialog = false;
-            void this.loadAgents();
-          }}
-          @deploy-cancel=${() => {
-            this.showOnboardingDialog = false;
-          }}
-        ></preloop-deploy-wizard>
+        ${this.showOnboardingDialog
+          ? html`
+              <preloop-deploy-wizard
+                initial-path="cli"
+                hide-back
+                hide-step-title
+                .aiModels=${this.aiModels}
+                .computeFeatureEnabled=${this.computeFeatureEnabled}
+                .isEnterprise=${this.isEnterprise}
+                .isAdmin=${this.isAdmin}
+                @deploy-agent-success=${this.handleDeployAgentSuccess}
+                @deploy-wizard-done=${() => {
+                  this.showOnboardingDialog = false;
+                  void this.loadAgents();
+                }}
+                @deploy-cancel=${() => {
+                  this.showOnboardingDialog = false;
+                }}
+              ></preloop-deploy-wizard>
+            `
+          : nothing}
       </sl-dialog>
     `;
   }

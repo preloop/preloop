@@ -258,6 +258,9 @@ export interface RuntimeSessionSummary {
   token_usage: GatewayTokenUsage;
   estimated_cost: number;
   last_request_at: string | null;
+  optimization_waste_score?: number | null;
+  optimization_potential_savings_tokens?: number | null;
+  optimization_potential_savings_usd?: number | null;
 }
 
 export interface AccountRuntimeSessionListResponse {
@@ -526,6 +529,11 @@ export interface RuntimeSessionInteractionSummary {
   estimated_summary_cost: number;
 }
 
+export interface RuntimeSessionOptimizationActionSpec {
+  type: 'scope_tools' | 'set_budget' | 'open_events' | string;
+  params: Record<string, unknown>;
+}
+
 export interface RuntimeSessionOptimizationSuggestion {
   id: string;
   title: string;
@@ -536,6 +544,27 @@ export interface RuntimeSessionOptimizationSuggestion {
   action_label: string;
   evidence: string[];
   evidence_event_ids?: string[];
+  action?: RuntimeSessionOptimizationActionSpec | null;
+}
+
+export interface SessionContextProfileSegment {
+  kind: string;
+  estimated_tokens: number;
+  share: number;
+  event_ids?: string[];
+  sample_excerpt?: string | null;
+}
+
+export interface SessionContextProfileData {
+  session_id: string;
+  analyzed_event_count: number;
+  total_prompt_tokens: number;
+  total_completion_tokens: number;
+  segments?: SessionContextProfileSegment[];
+  cache_profile?: Record<string, unknown> | null;
+  retry_profile?: Record<string, unknown> | null;
+  tool_bloat?: Record<string, unknown> | null;
+  tool_schema_overhead?: Record<string, unknown> | null;
 }
 
 export interface RuntimeSessionOptimizationResponse {
@@ -548,7 +577,30 @@ export interface RuntimeSessionOptimizationResponse {
   generated_at?: string | null;
   from_cache?: boolean;
   llm_skipped_reason?: string | null;
+  waste_score?: number | null;
+  potential_savings_tokens?: number;
+  potential_savings_usd?: number;
+  context_profile?: SessionContextProfileData | null;
   suggestions: RuntimeSessionOptimizationSuggestion[];
+}
+
+export interface RuntimeSessionOptimizationAppliedAction {
+  id: string;
+  runtime_session_id: string;
+  suggestion_id: string;
+  suggestion_title: string | null;
+  action_type: string;
+  params: Record<string, unknown>;
+  status: string;
+  applied_by: string | null;
+  applied_at: string;
+  result: Record<string, unknown>;
+  baseline?: Record<string, unknown> | null;
+  outcome?: Record<string, unknown> | null;
+}
+
+export interface RuntimeSessionOptimizationActionListResponse {
+  items: RuntimeSessionOptimizationAppliedAction[];
 }
 
 export interface AccountGatewayUsageSummaryResponse {

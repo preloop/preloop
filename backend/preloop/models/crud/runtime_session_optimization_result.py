@@ -45,6 +45,37 @@ class CRUDRuntimeSessionOptimizationResult(CRUDBase[RuntimeSessionOptimizationRe
             .first()
         )
 
+    def list_for_sessions(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        runtime_session_ids: list[Any],
+    ) -> list[RuntimeSessionOptimizationResult]:
+        """Return cached results for a set of sessions, newest-first.
+
+        Args:
+            db: Database session.
+            account_id: Owning account id.
+            runtime_session_ids: Runtime session ids to look up.
+
+        Returns:
+            Cached result rows for any of the given sessions, ordered with
+            the most recently updated first so callers can keep the latest
+            entry per session.
+        """
+        if not runtime_session_ids:
+            return []
+        return (
+            db.query(self.model)
+            .filter(
+                self.model.account_id == account_id,
+                self.model.runtime_session_id.in_(runtime_session_ids),
+            )
+            .order_by(self.model.updated_at.desc())
+            .all()
+        )
+
     def upsert(
         self,
         db: Session,

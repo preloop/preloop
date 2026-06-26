@@ -5,6 +5,8 @@ import { customElement, state, query } from 'lit/decorators.js';
 import landingStyles from '../../styles/landing.css?inline';
 import './../../components/news-capsule';
 import './../../components/ide-setup-tabs';
+import './../../components/onboarding-demo';
+import type { OnboardingDemoConfig } from '../../components/onboarding-demo';
 import { getIdeConfigs } from '../../utils/ide-configs';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/carousel/carousel.js';
@@ -36,8 +38,17 @@ export class LandingView extends LitElement {
   @state() private _heroTitle = '';
   @state() private _heroLead = '';
   @state() private _ctaPrimary = '';
+  @state() private _ctaPrimaryUrl = '';
   @state() private _ctaSecondary = '';
   @state() private _ctaSecondaryUrl = '';
+  @state() private _onboardingDemo: OnboardingDemoConfig | null = null;
+  @state() private _problem: {
+    eyebrow: string;
+    title: string;
+    image: string;
+    imageAlt: string;
+    items: Array<{ icon: string; title: string; text: string }>;
+  } | null = null;
   @state() private _heroInstall = '';
   @state() private _heroInstallCaption = '';
   @state() private _heroInstallCopied = false;

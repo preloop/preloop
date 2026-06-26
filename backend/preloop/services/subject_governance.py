@@ -63,11 +63,12 @@ def set_subject_governance(
 
 
 def sanitize_subject_governance_config(config: dict[str, Any]) -> dict[str, Any]:
-    sanitized = {
+    sanitized: dict[str, Any] = {
         "allowed_models": [],
         "model_budgets": {},
         "tool_rules": {},
         "tool_enabled_overrides": {},
+        "context_optimization": {},
     }
     allowed_models = config.get("allowed_models")
     if isinstance(allowed_models, list):
@@ -83,6 +84,9 @@ def sanitize_subject_governance_config(config: dict[str, Any]) -> dict[str, Any]
     tool_enabled_overrides = config.get("tool_enabled_overrides")
     if isinstance(tool_enabled_overrides, dict):
         sanitized["tool_enabled_overrides"] = deepcopy(tool_enabled_overrides)
+    context_optimization = config.get("context_optimization")
+    if isinstance(context_optimization, dict):
+        sanitized["context_optimization"] = deepcopy(context_optimization)
     return sanitized
 
 

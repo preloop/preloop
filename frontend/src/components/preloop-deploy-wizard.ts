@@ -1,9 +1,14 @@
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
+import '@shoelace-style/shoelace/dist/components/button/button.js';
+import '@shoelace-style/shoelace/dist/components/icon/icon.js';
+import '@shoelace-style/shoelace/dist/components/copy-button/copy-button.js';
 import { getAIModels, createFlow } from '../api';
 import type { AIModel } from '../types';
 import './preloop-flow-form';
 import './preloop-agent-deployer';
+
+type OnboardingPath = 'choose' | 'cli' | 'deploy';
 
 @customElement('preloop-deploy-wizard')
 export class PreloopDeployWizard extends LitElement {
@@ -55,30 +60,21 @@ export class PreloopDeployWizard extends LitElement {
       width: 100%;
     }
 
-    .wizard-option-card {
-      appearance: none;
+    .wizard-option-button {
+      display: block;
       width: 100%;
       height: 100%;
-      min-height: 132px;
-      border: 1px solid var(--sl-color-neutral-200);
-      border-radius: var(--sl-border-radius-large);
-      background: var(--sl-color-neutral-0);
-      box-shadow: var(--sl-shadow-small);
-      padding: var(--sl-spacing-large);
-      text-align: left;
-      cursor: pointer;
-      transition:
-        border-color 160ms ease,
-        box-shadow 160ms ease,
-        transform 160ms ease;
     }
 
-    .wizard-option-card:hover,
-    .wizard-option-card:focus-visible {
-      border-color: var(--sl-color-primary-300);
-      box-shadow: var(--sl-shadow-medium);
-      transform: translateY(-2px);
-      outline: none;
+    .wizard-option-button::part(base) {
+      width: 100%;
+      height: auto;
+      min-height: 132px;
+      padding: var(--sl-spacing-large);
+      justify-content: flex-start;
+      text-align: left;
+      align-items: center;
+      text-wrap: wrap;
     }
 
     .wizard-option-body {
@@ -199,8 +195,17 @@ export class PreloopDeployWizard extends LitElement {
   @property({ type: Boolean, attribute: 'hide-cancel' })
   hideCancel = false;
 
+  @property({ type: String, attribute: 'initial-path' })
+  initialPath: OnboardingPath = 'choose';
+
+  @property({ type: Boolean, attribute: 'hide-back' })
+  hideBack = false;
+
+  @property({ type: Boolean, attribute: 'hide-step-title' })
+  hideStepTitle = false;
+
   @state()
-  private onboardingPath: 'choose' | 'cli' | 'deploy' = 'choose';
+  private onboardingPath: OnboardingPath = 'choose';
 
   @state()
   private deploySubStep:
@@ -212,8 +217,22 @@ export class PreloopDeployWizard extends LitElement {
 
   async connectedCallback() {
     super.connectedCallback();
+    this.onboardingPath = this.initialPath;
+    if (this.initialPath === 'deploy') {
+      this.deploySubStep = 'type';
+    }
     if (this.aiModels.length === 0) {
       this.aiModels = await getAIModels().catch(() => []);
+    }
+  }
+
+  updated(changedProperties: Map<string, unknown>) {
+    super.updated(changedProperties);
+    if (changedProperties.has('initialPath')) {
+      this.onboardingPath = this.initialPath;
+      if (this.initialPath === 'deploy') {
+        this.deploySubStep = 'type';
+      }
     }
   }
 
@@ -256,12 +275,6 @@ export class PreloopDeployWizard extends LitElement {
     this.requestUpdate();
   }
 
-  private handleOptionKeydown(event: KeyboardEvent, action: () => void) {
-    if (event.key !== 'Enter' && event.key !== ' ') return;
-    event.preventDefault();
-    action();
-  }
-
   render() {
     return html`
       <div style="width: 100%;">
@@ -284,14 +297,10 @@ export class PreloopDeployWizard extends LitElement {
           </p>
         </div>
         <div class="wizard-card-grid">
-          <button
-            class="wizard-option-card"
+          <sl-button
+            class="wizard-option-button"
+            variant="default"
             @click=${() => (this.onboardingPath = 'cli')}
-            @keydown=${(event: KeyboardEvent) =>
-              this.handleOptionKeydown(
-                event,
-                () => (this.onboardingPath = 'cli')
-              )}
           >
             <div class="wizard-option-body">
               <span class="wizard-option-icon">
@@ -304,21 +313,16 @@ export class PreloopDeployWizard extends LitElement {
                 </span>
               </span>
             </div>
-          </button>
+          </sl-button>
 
-          <button
-            class="wizard-option-card"
+          <sl-button
+            class="wizard-option-button"
+            variant="default"
             @click=${() => {
               this.onboardingPath = 'deploy';
               this.deploySubStep = 'type';
               this.requestUpdate();
             }}
-            @keydown=${(event: KeyboardEvent) =>
-              this.handleOptionKeydown(event, () => {
-                this.onboardingPath = 'deploy';
-                this.deploySubStep = 'type';
-                this.requestUpdate();
-              })}
           >
             <div class="wizard-option-body">
               <span class="wizard-option-icon">
@@ -331,7 +335,7 @@ export class PreloopDeployWizard extends LitElement {
                 </span>
               </span>
             </div>
-          </button>
+          </sl-button>
         </div>
       </div>
     `;
@@ -349,17 +353,27 @@ export class PreloopDeployWizard extends LitElement {
 
     return html`
       <div class="wizard-shell">
-        <sl-button
-          class="wizard-back"
-          variant="text"
-          size="small"
-          @click=${this.handleBack}
-        >
-          <sl-icon name="arrow-left" slot="prefix"></sl-icon> Back
-        </sl-button>
+        ${this.hideBack
+          ? nothing
+          : html`
+              <sl-button
+                class="wizard-back"
+                variant="text"
+                size="small"
+                @click=${this.handleBack}
+              >
+                <sl-icon name="arrow-left" slot="prefix"></sl-icon> Back
+              </sl-button>
+            `}
 
         <div class="wizard-header">
-          <h3 class="wizard-title">Onboard Existing Agent via Preloop CLI</h3>
+          ${this.hideStepTitle
+            ? nothing
+            : html`
+                <h3 class="wizard-title">
+                  Onboard Existing Agent via Preloop CLI
+                </h3>
+              `}
           <p class="wizard-copy">
             Run these commands from the machine where your agents are installed.
           </p>
@@ -429,17 +443,13 @@ export class PreloopDeployWizard extends LitElement {
               </div>
 
               <div class="wizard-card-grid">
-                <button
-                  class="wizard-option-card"
+                <sl-button
+                  class="wizard-option-button"
+                  variant="default"
                   @click=${() => {
                     this.deploySubStep = 'agent-host';
                     this.requestUpdate();
                   }}
-                  @keydown=${(event: KeyboardEvent) =>
-                    this.handleOptionKeydown(event, () => {
-                      this.deploySubStep = 'agent-host';
-                      this.requestUpdate();
-                    })}
                 >
                   <div class="wizard-option-body">
                     <span class="wizard-option-icon">
@@ -455,19 +465,15 @@ export class PreloopDeployWizard extends LitElement {
                       </span>
                     </span>
                   </div>
-                </button>
+                </sl-button>
 
-                <button
-                  class="wizard-option-card"
+                <sl-button
+                  class="wizard-option-button"
+                  variant="default"
                   @click=${() => {
                     this.deploySubStep = 'flow-config';
                     this.requestUpdate();
                   }}
-                  @keydown=${(event: KeyboardEvent) =>
-                    this.handleOptionKeydown(event, () => {
-                      this.deploySubStep = 'flow-config';
-                      this.requestUpdate();
-                    })}
                 >
                   <div class="wizard-option-body">
                     <span class="wizard-option-icon">
@@ -483,7 +489,7 @@ export class PreloopDeployWizard extends LitElement {
                       </span>
                     </span>
                   </div>
-                </button>
+                </sl-button>
               </div>
             `
           : nothing}

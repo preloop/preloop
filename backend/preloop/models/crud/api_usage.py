@@ -869,6 +869,67 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             query = query.filter(ApiUsage.meta_data["purpose"].astext == purpose)
         return float(query.scalar() or 0.0)
 
+    def get_runtime_principal_gateway_averages(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        runtime_principal_id: str,
+        start: datetime,
+        end: Optional[datetime] = None,
+        exclude_runtime_session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Aggregate per-request gateway usage averages for one principal.
+
+        Used to capture a baseline before an optimization action is applied
+        and to measure the realized outcome afterwards.
+
+        Args:
+            db: Database session.
+            account_id: Owning account id.
+            runtime_principal_id: Runtime principal to aggregate for.
+            start: Inclusive window start.
+            end: Optional inclusive window end.
+            exclude_runtime_session_id: Optional session to exclude (e.g. the
+                session the action was applied from).
+
+        Returns:
+            Dict with ``requests``, ``avg_total_tokens_per_request``, and
+            ``avg_cost_per_request``; zeros when no requests matched.
+        """
+        query = db.query(
+            func.count(ApiUsage.id).label("requests"),
+            func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
+            func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label("total_cost"),
+        ).filter(
+            ApiUsage.action_type == "model_gateway",
+            ApiUsage.account_id == account_id,
+            ApiUsage.runtime_principal_id == runtime_principal_id,
+            ApiUsage.timestamp >= start,
+        )
+        if end is not None:
+            query = query.filter(ApiUsage.timestamp <= end)
+        if exclude_runtime_session_id:
+            query = query.filter(
+                or_(
+                    ApiUsage.runtime_session_id.is_(None),
+                    ApiUsage.runtime_session_id != exclude_runtime_session_id,
+                )
+            )
+        row = query.first()
+        requests = int(row.requests or 0) if row else 0
+        total_tokens = int(row.total_tokens or 0) if row else 0
+        total_cost = float(row.total_cost or 0.0) if row else 0.0
+        return {
+            "requests": requests,
+            "avg_total_tokens_per_request": (
+                round(total_tokens / requests, 2) if requests else 0.0
+            ),
+            "avg_cost_per_request": (
+                round(total_cost / requests, 6) if requests else 0.0
+            ),
+        }
+
     def get_dashboard_usage_stats(
         self, db: Session, *, account_id: str, since: datetime
     ) -> Dict[str, Any]:

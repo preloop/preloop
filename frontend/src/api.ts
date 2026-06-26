@@ -36,6 +36,9 @@ import type {
   RuntimeSessionSummaryInsight,
   RuntimeSessionInteractionSummary,
   RuntimeSessionOptimizationResponse,
+  RuntimeSessionOptimizationActionSpec,
+  RuntimeSessionOptimizationAppliedAction,
+  RuntimeSessionOptimizationActionListResponse,
   AccountGatewayUsageSummaryResponse,
   FlowGatewayUsageSummaryResponse,
   AIModelGatewayUsageSummaryResponse,
@@ -830,6 +833,52 @@ export async function optimizeRuntimeSession(
   );
   if (!response.ok) {
     throw new Error('Failed to optimize runtime session');
+  }
+  return response.json();
+}
+
+export async function applyRuntimeSessionOptimization(
+  runtimeSessionId: string,
+  payload: {
+    suggestionId: string;
+    suggestionTitle?: string | null;
+    action: RuntimeSessionOptimizationActionSpec;
+  }
+): Promise<RuntimeSessionOptimizationAppliedAction> {
+  const response = await fetchWithAuth(
+    `/api/v1/billing/cost/runtime-sessions/${runtimeSessionId}/optimizations/apply`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        suggestion_id: payload.suggestionId,
+        suggestion_title: payload.suggestionTitle || null,
+        action: payload.action,
+      }),
+    }
+  );
+  if (!response.ok) {
+    let detail = 'Failed to apply optimization action';
+    try {
+      const body = await response.json();
+      if (body && typeof body.detail === 'string') detail = body.detail;
+    } catch {
+      // Keep the generic message when the body is not JSON.
+    }
+    throw new Error(detail);
+  }
+  return response.json();
+}
+
+export async function listRuntimeSessionOptimizationActions(
+  runtimeSessionId: string
+): Promise<RuntimeSessionOptimizationActionListResponse> {
+  const response = await fetchWithAuth(
+    `/api/v1/billing/cost/runtime-sessions/${runtimeSessionId}/optimizations/actions`,
+    { method: 'GET' }
+  );
+  if (!response.ok) {
+    throw new Error('Failed to load applied optimization actions');
   }
   return response.json();
 }

@@ -13035,6 +13035,21 @@ components:
             format: date-time
           - type: 'null'
           title: Last Request At
+        optimization_waste_score:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Optimization Waste Score
+        optimization_potential_savings_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Optimization Potential Savings Tokens
+        optimization_potential_savings_usd:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Optimization Potential Savings Usd
       type: object
       required:
       - id

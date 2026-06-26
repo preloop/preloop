@@ -15,7 +15,7 @@ export type SessionObserverScope =
   | 'ai_model'
   | 'audit';
 
-export type SessionReplayMode = 'timeline' | 'chat' | 'debug';
+export type SessionReplayMode = 'timeline' | 'replay' | 'optimize';
 
 export interface ObservedSession {
   id: string;
@@ -39,6 +39,9 @@ export interface ObservedSession {
   latestModelAlias: string | null;
   latestProviderName: string | null;
   canLoadEvents: boolean;
+  optimizationWasteScore: number | null;
+  optimizationPotentialSavingsTokens: number | null;
+  optimizationPotentialSavingsUsd: number | null;
   raw: unknown;
 }
 
@@ -72,6 +75,10 @@ export interface SessionOptimizationSuggestion {
   actionLabel: string;
   evidence: string[];
   evidenceEventIds?: string[];
+  action?: {
+    type: string;
+    params: Record<string, unknown>;
+  } | null;
 }
 
 const EMPTY_TOKEN_USAGE: GatewayTokenUsage = {
@@ -188,6 +195,18 @@ export function normalizeObservedSession(
     latestModelAlias: model,
     latestProviderName: provider,
     canLoadEvents: Boolean(runtimeSessionId),
+    optimizationWasteScore:
+      typeof row.optimization_waste_score === 'number'
+        ? row.optimization_waste_score
+        : null,
+    optimizationPotentialSavingsTokens:
+      typeof row.optimization_potential_savings_tokens === 'number'
+        ? row.optimization_potential_savings_tokens
+        : null,
+    optimizationPotentialSavingsUsd:
+      typeof row.optimization_potential_savings_usd === 'number'
+        ? row.optimization_potential_savings_usd
+        : null,
     raw: session,
   };
 }

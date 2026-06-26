@@ -9,6 +9,7 @@ import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import {
+  applyRuntimeSessionOptimization,
   getAccountAgent,
   getAccountRuntimeSessionActivityTimeline,
   getAccountRuntimeSessionDetail,
@@ -18,6 +19,7 @@ import {
   getApiKeyGatewayUsageSummary,
   getRuntimeSessionGatewayEventDetail,
   getRuntimeSessionGatewayEvents,
+  listRuntimeSessionOptimizationActions,
   optimizeRuntimeSession,
   summarizeRuntimeSessionGatewayEvent,
   updateAccountRuntimeSession,
@@ -26,6 +28,7 @@ import type {
   AIModel,
   FlowGatewayEvent,
   RuntimeSessionInteractionSummary,
+  RuntimeSessionOptimizationAppliedAction,
   RuntimeSessionOptimizationResponse,
   RuntimeSessionActivityItem,
   RuntimeSessionSummary,
@@ -123,6 +126,15 @@ export class PreloopSessionObserver extends LitElement {
     string,
     RuntimeSessionOptimizationResponse
   > = {};
+
+  @state()
+  private loadedOptimizationActions: Record<
+    string,
+    RuntimeSessionOptimizationAppliedAction[]
+  > = {};
+
+  @state()
+  private applyingOptimizationSuggestionId: string | null = null;
 
   @state()
   private aiModels: AIModel[] = [];
@@ -665,7 +677,53 @@ export class PreloopSessionObserver extends LitElement {
       actionLabel: suggestion.action_label,
       evidence: suggestion.evidence,
       evidenceEventIds: suggestion.evidence_event_ids || [],
+      action: suggestion.action || null,
     }));
+  }
+
+  private async loadOptimizationActions(sessionId: string): Promise<void> {
+    try {
+      const response = await listRuntimeSessionOptimizationActions(sessionId);
+      this.loadedOptimizationActions = {
+        ...this.loadedOptimizationActions,
+        [sessionId]: response.items || [],
+      };
+    } catch (error) {
+      console.info('Unable to load applied optimization actions:', error);
+    }
+  }
+
+  private async applyOptimizationSuggestion(detail: {
+    suggestionId: string;
+    suggestionTitle?: string | null;
+    action: { type: string; params: Record<string, unknown> };
+  }): Promise<void> {
+    if (!this.activeSessionId || this.applyingOptimizationSuggestionId) return;
+    const sessionId = this.activeSessionId;
+    this.applyingOptimizationSuggestionId = detail.suggestionId;
+    try {
+      const applied = await applyRuntimeSessionOptimization(sessionId, {
+        suggestionId: detail.suggestionId,
+        suggestionTitle: detail.suggestionTitle,
+        action: detail.action,
+      });
+      this.loadedOptimizationActions = {
+        ...this.loadedOptimizationActions,
+        [sessionId]: [
+          applied,
+          ...(this.loadedOptimizationActions[sessionId] || []).filter(
+            (item) => item.id !== applied.id
+          ),
+        ],
+      };
+    } catch (error) {
+      this.error =
+        error instanceof Error
+          ? error.message
+          : 'Failed to apply optimization action';
+    } finally {
+      this.applyingOptimizationSuggestionId = null;
+    }
   }
 
   private async loadEventDetail(eventId: string): Promise<void> {
@@ -800,6 +858,36 @@ export class PreloopSessionObserver extends LitElement {
       : null;
   }
 
+  private get replayModeTabs(): Array<{
+    mode: SessionReplayMode;
+    label: string;
+    icon: string | null;
+  }> {
+    const tabs: Array<{
+      mode: SessionReplayMode;
+      label: string;
+      icon: string | null;
+    }> = [
+      { mode: 'timeline', label: 'Transcript', icon: 'list-ul' },
+      { mode: 'replay', label: 'Replay', icon: 'play-circle' },
+    ];
+    if (this.enabledFeatures.optimization) {
+      tabs.push({ mode: 'optimize', label: 'Optimize', icon: 'magic' });
+    }
+    return tabs;
+  }
+
+  private setReplayMode(mode: SessionReplayMode): void {
+    if (this.replayMode === mode) return;
+    this.replayMode = mode;
+    if (mode === 'replay' && this.activeSessionId) {
+      void this.loadReplayMetadata(this.activeSessionId);
+    }
+    if (mode === 'optimize' && this.activeSessionId) {
+      void this.loadOptimizationActions(this.activeSessionId);
+    }
+  }
+
   private renderToolbar() {
     const session = this.activeSession;
     return html`
@@ -838,33 +926,26 @@ export class PreloopSessionObserver extends LitElement {
           ${this.enabledFeatures.replayModes
             ? html`
                 <sl-button-group>
-                  ${(['timeline', 'chat', 'debug'] as SessionReplayMode[]).map(
-                    (mode) => html`
+                  ${this.replayModeTabs.map(
+                    (tab) => html`
                       <sl-button
                         size="small"
-                        variant=${this.replayMode === mode
+                        variant=${this.replayMode === tab.mode
                           ? 'primary'
                           : 'default'}
-                        @click=${() => (this.replayMode = mode)}
+                        @click=${() => this.setReplayMode(tab.mode)}
                       >
-                        ${mode}
+                        ${tab.icon
+                          ? html`<sl-icon
+                              slot="prefix"
+                              name=${tab.icon}
+                            ></sl-icon>`
+                          : nothing}
+                        ${tab.label}
                       </sl-button>
                     `
                   )}
                 </sl-button-group>
-              `
-            : nothing}
-          ${this.enabledFeatures.summaries
-            ? html`
-                <sl-button
-                  size="small"
-                  variant=${this.summarizeVisibleContent
-                    ? 'primary'
-                    : 'default'}
-                  @click=${this.toggleSummaries}
-                >
-                  ${this.summarizeVisibleContent ? 'Summaries on' : 'Summarize'}
-                </sl-button>
               `
             : nothing}
           <sl-button size="small" @click=${() => this.reloadActiveSession()}>
@@ -933,6 +1014,11 @@ export class PreloopSessionObserver extends LitElement {
             ? this.loadedOptimizations[this.activeSessionId] || null
             : null}
           .optimizationSuggestions=${this.getActiveOptimizationSuggestions()}
+          .optimizationAppliedActions=${this.activeSessionId
+            ? this.loadedOptimizationActions[this.activeSessionId] || []
+            : []}
+          .applyingOptimizationSuggestionId=${this
+            .applyingOptimizationSuggestionId}
           .loadingOptimization=${this.loadingOptimizationForSessionId ===
           this.activeSessionId}
           @session-event-detail-requested=${(event: CustomEvent) =>
@@ -947,16 +1033,23 @@ export class PreloopSessionObserver extends LitElement {
             this.activeSessionId
               ? this.loadReplayMetadata(this.activeSessionId)
               : undefined}
-          @session-optimization-requested=${(event: CustomEvent) =>
+          @session-optimization-requested=${(event: CustomEvent) => {
+            if (!this.activeSessionId) return;
+            this.loadSessionOptimization(this.activeSessionId, {
+              regenerate: Boolean(event.detail?.regenerate),
+              modelId: event.detail?.modelId || null,
+              eventIds: event.detail?.eventIds || [],
+              sourceKinds: event.detail?.sourceKinds || [],
+              fromIndex: event.detail?.fromIndex,
+              toIndex: event.detail?.toIndex,
+            });
+            this.loadOptimizationActions(this.activeSessionId);
+          }}
+          @session-optimization-apply=${(event: CustomEvent) =>
+            this.applyOptimizationSuggestion(event.detail)}
+          @session-optimization-actions-requested=${() =>
             this.activeSessionId
-              ? this.loadSessionOptimization(this.activeSessionId, {
-                  regenerate: Boolean(event.detail?.regenerate),
-                  modelId: event.detail?.modelId || null,
-                  eventIds: event.detail?.eventIds || [],
-                  sourceKinds: event.detail?.sourceKinds || [],
-                  fromIndex: event.detail?.fromIndex,
-                  toIndex: event.detail?.toIndex,
-                })
+              ? this.loadOptimizationActions(this.activeSessionId)
               : undefined}
         ></session-replay-panel>
       </div>

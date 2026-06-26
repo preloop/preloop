@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from preloop.config import settings
 from preloop.models.crud import (
+    crud_account,
     crud_ai_model,
     crud_api_usage,
     crud_managed_agent,
@@ -35,11 +36,18 @@ from preloop.services.account_realtime import (
     build_account_event,
     emit_account_event,
 )
+from preloop.services.context_optimization import (
+    ContextOptimizationStats,
+    optimize_messages,
+    resolve_context_optimization_settings,
+    strip_disabled_tools,
+)
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.model_gateway_budget import (
     BudgetCheckResult,
     ModelGatewayBudgetService,
 )
+from preloop.services.subject_governance import build_subject_context_from_api_key
 from preloop.services.model_gateway_events import ModelGatewayEventEmitter
 from preloop.services.model_gateway_errors import (
     GatewayProvider,
@@ -182,6 +190,7 @@ class OpenAIGatewayService:
         self.budget_enforcer = budget_enforcer
         self._resolved_runtime_session_id: Optional[str] = None
         self._resolved_runtime_session_attempted = False
+        self._last_context_optimization: Optional[ContextOptimizationStats] = None
 
     def _resolve_runtime_session(self) -> Optional[str]:
         if self._resolved_runtime_session_attempted:
@@ -2655,6 +2664,9 @@ class OpenAIGatewayService:
         stream: bool = False,
         provider: GatewayProvider,
     ):
+        messages, payload = self._optimize_request_context(
+            messages=messages, payload=payload
+        )
         kwargs = self._build_completion_kwargs(
             ai_model,
             messages=messages,
@@ -2667,6 +2679,64 @@ class OpenAIGatewayService:
             return self.upstream_backend.completion(**kwargs)
         except Exception as exc:
             raise self._normalize_upstream_error(provider, exc) from exc
+
+    def _optimize_request_context(
+        self,
+        *,
+        messages: List[Dict[str, Any]],
+        payload: Dict[str, Any],
+    ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        """Apply governance-driven context optimization before the upstream call.
+
+        Strips tools disabled via subject governance and runs the configured
+        deterministic transforms (dedupe, noise stripping, tool-result cap)
+        on tool messages. Measured savings are stashed for usage logging.
+
+        Args:
+            messages: Normalized chat messages for the upstream call.
+            payload: Original request payload (read for ``tools``).
+
+        Returns:
+            Tuple of (messages, payload), replaced with optimized copies only
+            when a transform changed something.
+        """
+        self._last_context_optimization = None
+        if not self.auth_context.api_key:
+            return messages, payload
+        try:
+            account = crud_account.get(self.db, id=self.auth_context.user.account_id)
+            if account is None:
+                return messages, payload
+            subject_context = build_subject_context_from_api_key(
+                self.auth_context.api_key
+            )
+            settings_resolved = resolve_context_optimization_settings(
+                account.meta_data or {}, subject_context=subject_context
+            )
+            optimized_messages, stats = optimize_messages(messages, settings_resolved)
+            raw_tools = payload.get("tools")
+            optimized_payload = payload
+            if isinstance(raw_tools, list) and raw_tools:
+                kept_tools, removed_names = strip_disabled_tools(
+                    raw_tools,
+                    meta_data=account.meta_data or {},
+                    subject_context=subject_context,
+                )
+                if removed_names:
+                    stats.stripped_tools = removed_names
+                    optimized_payload = {**payload, "tools": kept_tools}
+                    if not kept_tools:
+                        optimized_payload.pop("tools", None)
+                        optimized_payload.pop("tool_choice", None)
+            if stats.changed:
+                self._last_context_optimization = stats
+            return optimized_messages, optimized_payload
+        except Exception:
+            logger.warning(
+                "Context optimization pass failed; forwarding request unchanged",
+                exc_info=True,
+            )
+            return messages, payload
 
     def _normalize_responses_input(
         self, payload: Dict[str, Any]
@@ -3369,6 +3439,11 @@ class OpenAIGatewayService:
                 "gateway_attempt": gateway_attempt,
                 "is_retry": is_retry,
                 "retry_of_api_usage_id": retry_of_api_usage_id,
+                "context_optimization": (
+                    self._last_context_optimization.to_meta()
+                    if self._last_context_optimization
+                    else None
+                ),
                 "purpose": ((request_payload or {}).get("metadata") or {}).get(
                     "purpose"
                 ),

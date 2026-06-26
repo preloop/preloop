@@ -506,6 +506,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		return err
 	}
 	pluginInstallResult := installAgentControlRuntimePlugin(agent, output)
+	gatewayRestartResult := restartHermesGatewayAfterReconfig(agent, output)
 	if err := saveLocalEnrollmentState(backupState); err != nil {
 		return err
 	}
@@ -519,6 +520,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		baseURL,
 	)
 	validationResult = mergeStringMaps(validationResult, pluginInstallResult)
+	validationResult = mergeStringMaps(validationResult, gatewayRestartResult)
 	validationResult = mergeStringMaps(
 		validationResult,
 		defaultManagedLiveValidationResult(agent),

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -198,6 +198,9 @@ class RuntimeSessionSummary(BaseModel):
     token_usage: GatewayTokenUsage
     estimated_cost: float = 0.0
     last_request_at: Optional[datetime] = None
+    optimization_waste_score: Optional[int] = None
+    optimization_potential_savings_tokens: Optional[int] = None
+    optimization_potential_savings_usd: Optional[float] = None
 
 
 class AccountRuntimeSessionListResponse(BaseModel):
@@ -499,6 +502,18 @@ class RuntimeSessionInteractionSummary(BaseModel):
     estimated_summary_cost: float = 0.0
 
 
+class RuntimeSessionOptimizationActionSpec(BaseModel):
+    """Machine-applicable action attached to one optimization suggestion.
+
+    Supported types: ``scope_tools`` (disable unused tools via subject-scoped
+    governance), ``set_budget`` (create a scoped budget policy), and
+    ``open_events`` (client-side replay deep-link to evidence events).
+    """
+
+    type: str
+    params: Dict[str, Any] = Field(default_factory=dict)
+
+
 class RuntimeSessionOptimizationSuggestion(BaseModel):
     """One actionable optimization suggestion for a runtime session."""
 
@@ -511,6 +526,38 @@ class RuntimeSessionOptimizationSuggestion(BaseModel):
     action_label: str
     evidence: List[str] = Field(default_factory=list)
     evidence_event_ids: List[str] = Field(default_factory=list)
+    action: Optional[RuntimeSessionOptimizationActionSpec] = None
+
+
+class RuntimeSessionOptimizationApplyRequest(BaseModel):
+    """Request payload to apply one suggestion's action server-side."""
+
+    suggestion_id: str
+    suggestion_title: Optional[str] = None
+    action: RuntimeSessionOptimizationActionSpec
+
+
+class RuntimeSessionOptimizationAppliedAction(BaseModel):
+    """One applied optimization action, with measured outcome when available."""
+
+    id: str
+    runtime_session_id: str
+    suggestion_id: str
+    suggestion_title: Optional[str] = None
+    action_type: str
+    params: Dict[str, Any] = Field(default_factory=dict)
+    status: str = "applied"
+    applied_by: Optional[str] = None
+    applied_at: datetime
+    result: Dict[str, Any] = Field(default_factory=dict)
+    baseline: Optional[Dict[str, Any]] = None
+    outcome: Optional[Dict[str, Any]] = None
+
+
+class RuntimeSessionOptimizationActionListResponse(BaseModel):
+    """Applied optimization actions for one runtime session."""
+
+    items: List[RuntimeSessionOptimizationAppliedAction] = Field(default_factory=list)
 
 
 class RuntimeSessionOptimizationRequest(BaseModel):
@@ -536,6 +583,10 @@ class RuntimeSessionOptimizationResponse(BaseModel):
     generated_at: Optional[datetime] = None
     from_cache: bool = False
     llm_skipped_reason: Optional[str] = None
+    waste_score: Optional[int] = None
+    potential_savings_tokens: int = 0
+    potential_savings_usd: float = 0.0
+    context_profile: Optional[Dict[str, Any]] = None
     suggestions: List[RuntimeSessionOptimizationSuggestion] = Field(
         default_factory=list
     )

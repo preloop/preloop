@@ -153,6 +153,7 @@ export class ConsoleShell extends LitElement {
         display: grid;
         grid-template-rows: auto 1fr; /* Header row, Content row */
         overflow-y: hidden;
+        background-color: var(--sl-color-neutral-0);
       }
 
       .main-content {
@@ -225,24 +226,28 @@ export class ConsoleShell extends LitElement {
       .sidebar-link {
         display: block;
         color: inherit;
-      }
-
-      .sidebar-link sl-menu-item::part(base) {
+        text-decoration: none;
         border-radius: var(--sl-border-radius-medium);
       }
 
-      .sidebar-link.active sl-menu-item::part(base) {
-        background-color: var(--sl-color-primary-50);
-        color: var(--sl-color-primary-600);
-        font-weight: var(--sl-font-weight-semibold);
+      /* Style the anchor, not ::part — Shoelace shadow styles override ::part rules */
+      .sidebar-link.active {
+        background-color: var(--sl-color-neutral-200);
       }
 
-      .sidebar-link.active sl-menu-item::part(prefix) {
-        color: var(--sl-color-primary-600);
+      .sidebar-link.active .sidebar-label,
+      .sidebar-link.active sl-menu-item::part(label) {
+        font-weight: var(--sl-font-weight-bold);
+      }
+
+      sl-menu-item::part(base) {
+        padding: 0;
+        background-color: transparent;
+        border-radius: inherit;
       }
 
       sl-menu-item {
-        padding: 0.25em;
+        padding: 0.5em;
       }
 
       sl-details {
@@ -250,8 +255,7 @@ export class ConsoleShell extends LitElement {
       }
 
       sl-details.settings-section[open]::part(summary) {
-        color: var(--sl-color-primary-600);
-        font-weight: var(--sl-font-weight-semibold);
+        font-weight: var(--sl-font-weight-bold);
       }
     `,
   ];
@@ -310,6 +314,14 @@ export class ConsoleShell extends LitElement {
     this._currentPath = window.location.pathname;
   };
 
+  private _handleNavClick = (e: Event) => {
+    const anchor = e.currentTarget as HTMLAnchorElement;
+    if (anchor.href) {
+      this._currentPath = new URL(anchor.href).pathname;
+    }
+    this._closeSidebar();
+  };
+
   private _normalizePath(path: string): string {
     if (path.length > 1 && path.endsWith('/')) {
       return path.slice(0, -1);
@@ -341,7 +353,7 @@ export class ConsoleShell extends LitElement {
         href=${href}
         class="sidebar-link ${active ? 'active' : ''}"
         aria-current=${active ? 'page' : nothing}
-        @click=${this._closeSidebar}
+        @click=${this._handleNavClick}
       >
         ${content}
       </a>

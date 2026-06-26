@@ -24,6 +24,7 @@ from ..models import (
     ModelPriceOverride,
     RuntimeSession,
     RuntimeSessionActivity,
+    RuntimeSessionOptimizationAction,
     RuntimeSessionOptimizationResult,
 )
 from .account import CRUDAccount
@@ -95,6 +96,9 @@ from . import notification_preferences
 from .policy_snapshot import CRUDPolicySnapshot, crud_policy_snapshot
 from .runtime_session import CRUDRuntimeSession
 from .runtime_session_activity import CRUDRuntimeSessionActivity
+from .runtime_session_optimization_action import (
+    CRUDRuntimeSessionOptimizationAction,
+)
 from .runtime_session_optimization_result import (
     CRUDRuntimeSessionOptimizationResult,
 )
@@ -137,6 +141,9 @@ crud_managed_agent_enrollment = CRUDManagedAgentEnrollment(ManagedAgentEnrollmen
 crud_model_price_override = CRUDModelPriceOverride(ModelPriceOverride)
 crud_runtime_session = CRUDRuntimeSession(RuntimeSession)
 crud_runtime_session_activity = CRUDRuntimeSessionActivity(RuntimeSessionActivity)
+crud_runtime_session_optimization_action = CRUDRuntimeSessionOptimizationAction(
+    RuntimeSessionOptimizationAction
+)
 crud_runtime_session_optimization_result = CRUDRuntimeSessionOptimizationResult(
     RuntimeSessionOptimizationResult
 )
@@ -251,6 +258,7 @@ __all__ = [
     "crud_policy_snapshot",
     "crud_runtime_session",
     "crud_runtime_session_activity",
+    "crud_runtime_session_optimization_action",
     "crud_runtime_session_optimization_result",
     "CRUDBudgetPolicy",
     "CRUDBudgetSpendActivity",

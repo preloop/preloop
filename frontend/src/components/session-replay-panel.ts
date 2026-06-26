@@ -16,6 +16,7 @@ import type {
   FlowGatewayEvent,
   RuntimeSessionActivityItem,
   RuntimeSessionInteractionSummary,
+  RuntimeSessionOptimizationAppliedAction,
   RuntimeSessionOptimizationResponse,
 } from '../types';
 import type {
@@ -51,6 +52,23 @@ type ReplayEventMarker = {
 };
 
 type ReplayMarkerKind = 'user' | 'agent' | 'system' | 'developer' | 'tool';
+
+type TranscriptFilter = 'all' | 'model' | 'tools' | 'costly';
+
+type TranscriptRow =
+  | { kind: 'event'; timestamp: string | null; event: FlowGatewayEvent }
+  | {
+      kind: 'tool';
+      timestamp: string | null;
+      item: RuntimeSessionActivityItem;
+    };
+
+const TRANSCRIPT_FILTERS: Array<{ id: TranscriptFilter; label: string }> = [
+  { id: 'all', label: 'All' },
+  { id: 'model', label: 'Model calls' },
+  { id: 'tools', label: 'Tool calls' },
+  { id: 'costly', label: 'Costly first' },
+];
 
 const REPLAY_MARKER_LEGEND: Array<{ kind: ReplayMarkerKind; label: string }> = [
   { kind: 'user', label: 'User' },
@@ -128,6 +146,12 @@ export class SessionReplayPanel extends LitElement {
   @property({ type: Object })
   optimizationResult: RuntimeSessionOptimizationResponse | null = null;
 
+  @property({ type: Array })
+  optimizationAppliedActions: RuntimeSessionOptimizationAppliedAction[] = [];
+
+  @property({ type: String })
+  applyingOptimizationSuggestionId: string | null = null;
+
   @state()
   private visibleActivityCount = 20;
 
@@ -141,9 +165,6 @@ export class SessionReplayPanel extends LitElement {
   private replayActive = false;
 
   @state()
-  private replayDialogOpen = false;
-
-  @state()
   private replaySpeedMs = 1200;
 
   @state()
@@ -151,9 +172,6 @@ export class SessionReplayPanel extends LitElement {
 
   @state()
   private replayReversed = false;
-
-  @state()
-  private optimizeOpen = false;
 
   @state()
   private optimizeControlsOpen = false;
@@ -172,6 +190,9 @@ export class SessionReplayPanel extends LitElement {
 
   @state()
   private visibleReplayKinds = new Set<ReplayMarkerKind>(REPLAY_MARKER_KINDS);
+
+  @state()
+  private transcriptFilter: TranscriptFilter = 'all';
 
   private replayTimer: number | null = null;
   private summaryObserver: IntersectionObserver | null = null;
@@ -426,7 +447,6 @@ export class SessionReplayPanel extends LitElement {
     }
 
     .playback-bar {
-      align-items: center;
       display: grid;
       gap: var(--sl-spacing-x-small);
       grid-template-columns: auto auto auto minmax(260px, 1fr);
@@ -688,6 +708,47 @@ export class SessionReplayPanel extends LitElement {
       min-height: 76px;
     }
 
+    .transcript-filter-bar {
+      align-items: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--sl-spacing-x-small);
+      justify-content: space-between;
+    }
+
+    .tool-row {
+      align-items: center;
+      background: var(--sl-color-neutral-50);
+      border: 1px solid var(--sl-color-neutral-200);
+      border-left: 3px solid var(--sl-color-amber-400);
+      border-radius: var(--sl-border-radius-medium);
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--sl-spacing-x-small);
+      justify-content: space-between;
+      padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
+    }
+
+    .tool-row-main {
+      align-items: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--sl-spacing-x-small);
+      min-width: 0;
+    }
+
+    .tool-row-name {
+      font-weight: var(--sl-font-weight-semibold);
+      font-size: var(--sl-font-size-small);
+    }
+
+    .tool-row-chips {
+      align-items: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--sl-spacing-2x-small);
+    }
+
     .optimize-drawer {
       border: 1px solid var(--sl-color-neutral-200);
       border-radius: var(--sl-border-radius-medium);
@@ -862,15 +923,15 @@ export class SessionReplayPanel extends LitElement {
       changed.has('events') ||
       changed.has('hasMoreEvents') ||
       changed.has('loadingMoreEvents') ||
-      changed.has('replayDialogOpen')
+      changed.has('replayMode')
     ) {
       this.updateEventPageObserver();
     }
-    if (changed.has('replayIndex') || changed.has('replayDialogOpen')) {
+    if (changed.has('replayIndex') || changed.has('replayMode')) {
       this.scrollReplayToCurrentMessage();
     }
     if (
-      changed.has('replayDialogOpen') ||
+      changed.has('replayMode') ||
       changed.has('timelineEvents') ||
       changed.has('events') ||
       changed.has('eventDetails') ||
@@ -878,7 +939,10 @@ export class SessionReplayPanel extends LitElement {
     ) {
       this.updateReplayDetailObserver();
     }
-    if (changed.has('timelineEvents') && this.replayDialogOpen) {
+    if (changed.has('replayMode')) {
+      this.handleReplayModeChange();
+    }
+    if (changed.has('timelineEvents') && this.replayViewActive) {
       const messages = this.getVisibleReplayMessages();
       if (messages.length) {
         this.replayIndex = messages.length - 1;
@@ -1108,10 +1172,25 @@ export class SessionReplayPanel extends LitElement {
     });
   }
 
+  private get replayViewActive(): boolean {
+    return this.replayMode === 'replay';
+  }
+
+  private handleReplayModeChange(): void {
+    if (this.replayViewActive) {
+      this.initializeReplayView();
+      return;
+    }
+    this.pauseReplay();
+    if (this.replayMode === 'optimize' && this.optimizationEnabled) {
+      this.ensureOptimizationLoaded();
+    }
+  }
+
   private updateReplayDetailObserver(): void {
     this.replayDetailObserver?.disconnect();
     this.replayDetailObserver = null;
-    if (!this.replayDialogOpen) return;
+    if (!this.replayViewActive) return;
 
     this.replayDetailObserver = new IntersectionObserver(
       (entries) => {
@@ -1162,7 +1241,7 @@ export class SessionReplayPanel extends LitElement {
       this.events,
       Object.values(this.eventDetails)
     );
-    const eventMessages = replayEvents.flatMap((event) => {
+    const eventMessages = replayEvents.flatMap((event): ReplayMessage[] => {
       const previewMessages = getGatewayEventPreviewMessages(event);
       if (previewMessages.length) {
         return previewMessages.map((message, index) => ({
@@ -1190,17 +1269,19 @@ export class SessionReplayPanel extends LitElement {
         },
       ];
     });
-    const activityMessages = this.getAgentControlActivityMessages().map(
-      (message, index) => ({
+    const activityMessages: ReplayMessage[] =
+      this.getAgentControlActivityMessages().map((message, index) => ({
         ...message,
         key: `activity:replay:${index}`,
         event: null,
         eventMessageIndex: null,
         timestamp: message.timestamp || null,
         title: 'Developer message',
-      })
-    );
-    const messages = [...eventMessages, ...activityMessages].sort(
+      }));
+    const messages: ReplayMessage[] = [
+      ...eventMessages,
+      ...activityMessages,
+    ].sort(
       (left, right) =>
         new Date(left.timestamp || 0).getTime() -
         new Date(right.timestamp || 0).getTime()
@@ -1272,7 +1353,7 @@ export class SessionReplayPanel extends LitElement {
           }
         });
         markers.push({
-          id: item.id,
+          id: item.api_usage_id || `activity:${item.timestamp}:${item.title}`,
           index: nearestIndex,
           kind: 'tool',
           role: 'tool',
@@ -1318,7 +1399,6 @@ export class SessionReplayPanel extends LitElement {
     this.userScrollingReplay = false;
     this.resumeReplayAfterScroll = false;
     this.replayActive = true;
-    this.replayDialogOpen = true;
     this.replayIndex = Math.min(
       Math.max(this.replayIndex, 0),
       messages.length - 1
@@ -1353,19 +1433,13 @@ export class SessionReplayPanel extends LitElement {
     this.resumeReplayAfterScroll = false;
   }
 
-  private openReplayDialog(): void {
+  private initializeReplayView(): void {
     this.requestReplayMetadata();
     const messages = this.getVisibleReplayMessages();
-    this.replayDialogOpen = true;
     this.replayIndex = this.getInitialReplayIndex(messages);
     this.optimizeFromIndex = 0;
     this.optimizeToIndex = Math.max(messages.length - 1, 0);
     this.requestReplayCurrentEventDetail(messages[this.replayIndex]);
-  }
-
-  private closeReplayDialog(): void {
-    this.pauseReplay();
-    this.replayDialogOpen = false;
   }
 
   private stepReplay(delta: number): void {
@@ -1511,10 +1585,8 @@ export class SessionReplayPanel extends LitElement {
     `;
   }
 
-  private toggleOptimizeOpen(): void {
-    const nextOpen = !this.optimizeOpen;
-    this.optimizeOpen = nextOpen;
-    if (nextOpen && !this.optimizationSuggestions?.length) {
+  private ensureOptimizationLoaded(): void {
+    if (!this.optimizationSuggestions?.length && !this.loadingOptimization) {
       this.requestOptimization(false);
     }
   }
@@ -1667,7 +1739,7 @@ export class SessionReplayPanel extends LitElement {
   }
 
   private scrollReplayToCurrentMessage(): void {
-    if (!this.replayDialogOpen) return;
+    if (!this.replayViewActive) return;
     if (this.userScrollingReplay) return;
     if (this.suppressNextReplayAutoScroll) {
       this.suppressNextReplayAutoScroll = false;
@@ -1692,7 +1764,7 @@ export class SessionReplayPanel extends LitElement {
   }
 
   private syncReplayTimeFromScroll(): void {
-    if (!this.replayDialogOpen || this.autoScrollingReplay) return;
+    if (!this.replayViewActive || this.autoScrollingReplay) return;
     this.userScrollingReplay = true;
     if (this.replayActive) {
       this.resumeReplayAfterScroll = true;
@@ -2146,13 +2218,14 @@ export class SessionReplayPanel extends LitElement {
   ) {
     const role = message.role || message.source || 'message';
     const character = this.getCharacterLabel(role);
+    const messageEvent = message.event;
     const isLazyMetadata =
       message.source === 'metadata' &&
-      message.event &&
-      !this.eventDetails[message.event.id] &&
-      !getGatewayEventPreviewMessages(message.event).length;
-    if (isLazyMetadata) {
-      const eventId = message.event.id;
+      messageEvent !== null &&
+      !this.eventDetails[messageEvent.id] &&
+      !getGatewayEventPreviewMessages(messageEvent).length;
+    if (isLazyMetadata && messageEvent) {
+      const eventId = messageEvent.id;
       return html`
         <div
           class="replay-message ${index <= this.replayIndex
@@ -2305,24 +2378,6 @@ export class SessionReplayPanel extends LitElement {
                   : nothing}
               </div>
             `}
-      </div>
-    `;
-  }
-
-  private renderChat() {
-    const messages = [
-      ...this.events.flatMap(getGatewayEventPreviewMessages),
-      ...this.getAgentControlActivityMessages(),
-    ];
-    if (!messages.length) {
-      return html`<div class="empty">No conversation preview captured.</div>`;
-    }
-    return html`
-      <div class="message-list">
-        ${messages.map((message, index) =>
-          this.renderMessage(message, 'chat', `chat:${index}`)
-        )}
-        ${this.renderEventPageSentinel()}
       </div>
     `;
   }
@@ -2588,9 +2643,11 @@ export class SessionReplayPanel extends LitElement {
     `;
   }
 
-  private renderOptimizationDrawer() {
-    if (!this.optimizeOpen || !this.optimizationEnabled || !this.session) {
-      return nothing;
+  private renderOptimizeView() {
+    if (!this.optimizationEnabled || !this.session) {
+      return html`<div class="empty">
+        Optimization is not enabled for this view.
+      </div>`;
     }
     const messages = this.getReplayMessages();
     const lastIndex = Math.max(messages.length - 1, 0);
@@ -2750,6 +2807,9 @@ export class SessionReplayPanel extends LitElement {
                 .events=${scopedEvents.length ? scopedEvents : this.events}
                 .activity=${this.activity}
                 .suggestions=${this.optimizationSuggestions}
+                .optimization=${this.optimizationResult}
+                .appliedActions=${this.optimizationAppliedActions}
+                .applyingSuggestionId=${this.applyingOptimizationSuggestionId}
                 @session-optimization-selected=${(event: CustomEvent) => {
                   this.handleOptimizationSelected(event.detail.suggestion);
                 }}
@@ -2760,48 +2820,23 @@ export class SessionReplayPanel extends LitElement {
     `;
   }
 
-  private renderReplayDialog() {
-    if (!this.replayDialogOpen) return nothing;
+  private renderReplayView() {
+    const messages = this.getVisibleReplayMessages();
+    if (!messages.length) {
+      return html`<div class="empty">
+        No replayable messages captured for this session.
+      </div>`;
+    }
     return html`
-      <sl-dialog
-        class="replay-dialog"
-        label="Replay session"
-        ?open=${this.replayDialogOpen}
-        @sl-hide=${() => this.closeReplayDialog()}
-      >
-        <div class="replay-dialog-body">
-          <div class="replay-dialog-header">
-            <div class="replay-title-row">
-              <div class="replay-title">
-                ${this.session
-                  ? `Replay ${this.session.title}`
-                  : 'Replay session'}
-              </div>
-              <div class="replay-dialog-actions">
-                ${this.optimizationEnabled
-                  ? html`
-                      <sl-button
-                        size="small"
-                        variant=${this.optimizeOpen ? 'primary' : 'default'}
-                        @click=${() => this.toggleOptimizeOpen()}
-                      >
-                        <sl-icon slot="prefix" name="magic"></sl-icon>
-                        Optimize
-                      </sl-button>
-                    `
-                  : nothing}
-              </div>
-            </div>
-            ${this.renderOptimizationDrawer()} ${this.renderReplayControls()}
-          </div>
-          <div
-            class="replay-scrollport"
-            @scroll=${() => this.syncReplayTimeFromScroll()}
-          >
-            <div class="replay-transcript">${this.renderReplaySession()}</div>
-          </div>
+      <div class="replay-dialog-body replay-view">
+        <div class="replay-dialog-header">${this.renderReplayControls()}</div>
+        <div
+          class="replay-scrollport"
+          @scroll=${() => this.syncReplayTimeFromScroll()}
+        >
+          <div class="replay-transcript">${this.renderReplaySession()}</div>
         </div>
-      </sl-dialog>
+      </div>
     `;
   }
 
@@ -2928,27 +2963,130 @@ export class SessionReplayPanel extends LitElement {
     `;
   }
 
-  private renderDebug() {
-    return html`
-      <div class="panel">
-        ${this.events.map(
-          (event) =>
-            html`<preloop-gateway-event
-              .event=${this.eventDetails[event.id] || event}
-            ></preloop-gateway-event>`
-        )}
-        ${this.renderEventPageSentinel()}
-      </div>
-    `;
-  }
-
   private getSupportingActivity(): RuntimeSessionActivityItem[] {
     if (!this.events.length) return this.activity;
     return this.activity.filter((item) => {
       if (item.activity_type === 'model_interaction') return false;
       if (item.activity_type === 'model_gateway_call') return false;
+      if (this.isToolCallActivity(item)) return false;
       return true;
     });
+  }
+
+  private isToolCallActivity(item: RuntimeSessionActivityItem): boolean {
+    return item.activity_type === 'tool_call' || Boolean(item.tool_name);
+  }
+
+  private getToolCallActivity(): RuntimeSessionActivityItem[] {
+    return this.activity.filter((item) => this.isToolCallActivity(item));
+  }
+
+  private getTranscriptRowCost(row: TranscriptRow): number {
+    if (row.kind === 'event') {
+      return Number(row.event.payload?.estimated_cost || 0);
+    }
+    return Number(row.item.estimated_cost || 0);
+  }
+
+  private getTranscriptRows(): TranscriptRow[] {
+    const eventRows: TranscriptRow[] = this.events.map((event) => ({
+      kind: 'event',
+      timestamp: event.timestamp,
+      event,
+    }));
+    const toolRows: TranscriptRow[] = this.getToolCallActivity().map(
+      (item) => ({
+        kind: 'tool',
+        timestamp: item.timestamp || null,
+        item,
+      })
+    );
+    let rows: TranscriptRow[];
+    switch (this.transcriptFilter) {
+      case 'model':
+        rows = eventRows;
+        break;
+      case 'tools':
+        rows = toolRows;
+        break;
+      case 'costly':
+        rows = [...eventRows, ...toolRows].filter(
+          (row) => this.getTranscriptRowCost(row) > 0
+        );
+        return rows.sort(
+          (left, right) =>
+            this.getTranscriptRowCost(right) - this.getTranscriptRowCost(left)
+        );
+      default:
+        rows = [...eventRows, ...toolRows];
+    }
+    return rows.sort(
+      (left, right) =>
+        new Date(left.timestamp || 0).getTime() -
+        new Date(right.timestamp || 0).getTime()
+    );
+  }
+
+  private renderTranscriptFilterBar(rowCount: number) {
+    return html`
+      <div class="transcript-filter-bar">
+        <sl-button-group>
+          ${TRANSCRIPT_FILTERS.map(
+            (filter) => html`
+              <sl-button
+                size="small"
+                variant=${this.transcriptFilter === filter.id
+                  ? 'primary'
+                  : 'default'}
+                @click=${() => (this.transcriptFilter = filter.id)}
+              >
+                ${filter.label}
+              </sl-button>
+            `
+          )}
+        </sl-button-group>
+        <span class="event-meta">
+          ${formatNumber(rowCount)} row${rowCount === 1 ? '' : 's'}
+        </span>
+      </div>
+    `;
+  }
+
+  private renderToolCallRow(item: RuntimeSessionActivityItem) {
+    const failed = String(item.status || '')
+      .toLowerCase()
+      .includes('fail');
+    return html`
+      <div class="tool-row">
+        <div class="tool-row-main">
+          <sl-icon name="wrench-adjustable"></sl-icon>
+          <span class="tool-row-name">
+            ${item.tool_name || item.title || 'Tool call'}
+          </span>
+          ${item.server_name
+            ? html`<span class="event-meta">${item.server_name}</span>`
+            : nothing}
+          <span class="event-meta">${this.formatTime(item.timestamp)}</span>
+        </div>
+        <div class="tool-row-chips">
+          ${item.total_tokens
+            ? html`<span class="metric-pill">
+                ${formatNumber(item.total_tokens)} tok
+              </span>`
+            : nothing}
+          ${item.estimated_cost
+            ? html`<span class="metric-pill">
+                ${formatCost(item.estimated_cost)}
+              </span>`
+            : nothing}
+          ${item.status
+            ? html`<sl-badge variant=${failed ? 'danger' : 'neutral'} pill>
+                ${item.status}
+              </sl-badge>`
+            : nothing}
+        </div>
+      </div>
+    `;
   }
 
   private renderActivityItems() {
@@ -3027,29 +3165,24 @@ export class SessionReplayPanel extends LitElement {
       </div>`;
     }
 
-    if (this.replayMode === 'chat') return this.renderChat();
-    if (this.replayMode === 'debug') return this.renderDebug();
+    if (this.replayMode === 'replay') return this.renderReplayView();
+    if (this.replayMode === 'optimize') return this.renderOptimizeView();
 
+    const rows = this.getTranscriptRows();
     return html`
       <div class="panel">
-        <div class="replay-controls">
-          <div class="event-meta">
-            Replay this session as a timed chat transcript.
-          </div>
-          <sl-button
-            size="small"
-            variant="primary"
-            ?disabled=${this.getVisibleReplayMessages().length === 0}
-            @click=${() => this.openReplayDialog()}
-          >
-            Open replay
-          </sl-button>
-        </div>
-        ${this.renderReplayDialog()} ${this.renderActivityItems()}
+        ${this.renderTranscriptFilterBar(rows.length)}
+        ${this.renderActivityItems()}
         ${repeat(
-          this.events,
-          (event) => event.id,
-          (event) => this.renderProgressiveEvent(event)
+          rows,
+          (row) =>
+            row.kind === 'event'
+              ? row.event.id
+              : `tool:${row.item.api_usage_id || row.item.timestamp}:${row.item.title}`,
+          (row) =>
+            row.kind === 'event'
+              ? this.renderProgressiveEvent(row.event)
+              : this.renderToolCallRow(row.item)
         )}
         ${this.renderEventPageSentinel()}
       </div>

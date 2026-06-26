@@ -115,6 +115,34 @@ export interface PricingConfig {
   faqs?: PricingFAQ[];
 }
 
+export interface OnboardingDemoLine {
+  text: string;
+  cls?: 'ok' | 'done' | 'muted';
+}
+
+export interface OnboardingDemoConfig {
+  enabled?: boolean;
+  command: string;
+  image: string;
+  image_alt?: string;
+  caption?: string;
+  lines: OnboardingDemoLine[];
+}
+
+export interface ProblemItem {
+  icon: string;
+  title: string;
+  text: string;
+}
+
+export interface ProblemSection {
+  eyebrow?: string;
+  title: string;
+  image?: string;
+  image_alt?: string;
+  items: ProblemItem[];
+}
+
 export interface BrandLanding {
   meta: BrandMeta;
   features_layout: 'carousel' | 'grid';
@@ -123,6 +151,8 @@ export interface BrandLanding {
   faqs: BrandFAQ[];
   get_started: BrandGetStarted;
   pricing?: PricingConfig;
+  onboarding_demo?: OnboardingDemoConfig;
+  problem?: ProblemSection;
 }
 
 /**

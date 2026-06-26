@@ -3440,7 +3440,7 @@ export class DashboardView extends AuthedElement {
       return html`
         <div
           class="extra-wide"
-          style="margin-top: var(--sl-spacing-large); display: flex; justify-content: center; align-items: center; min-height: 80vh;"
+          style="margin-top: var(--sl-spacing-large); display: flex; justify-content: center; min-height: 80vh;"
         >
           ${this.renderWelcomeCard()}
         </div>

@@ -11,6 +11,7 @@ from uuid import UUID
 
 from fastapi import HTTPException
 import litellm
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from preloop.models.models.ai_model import AIModel
@@ -20,6 +21,7 @@ from preloop.models.crud import (
     crud_gateway_usage_search_document,
     crud_runtime_session,
     crud_runtime_session_activity,
+    crud_runtime_session_optimization_result,
 )
 from preloop.models.models.account import Account
 from preloop.schemas.gateway_usage import (
@@ -82,6 +84,8 @@ class RuntimeSessionExplorerService:
             limit=limit,
             offset=offset,
         )
+        items = [self._summary_row_to_schema(item) for item in results["items"]]
+        self._attach_optimization_badges(account=account, items=items)
         return AccountRuntimeSessionListResponse(
             period_start=start_date,
             period_end=end_date,
@@ -91,8 +95,54 @@ class RuntimeSessionExplorerService:
             total=results["total"],
             limit=limit,
             offset=offset,
-            items=[self._summary_row_to_schema(item) for item in results["items"]],
+            items=items,
         )
+
+    def _attach_optimization_badges(
+        self, *, account: Account, items: list[RuntimeSessionSummary]
+    ) -> None:
+        """Attach cached waste-score badges to session summaries in place.
+
+        Reads previously generated optimization results (no model calls) so
+        the list view can cheaply surface which sessions are worth
+        optimizing.
+
+        Args:
+            account: Owning account.
+            items: Session summaries for the current page.
+        """
+        if not items:
+            return
+        try:
+            cached_rows = crud_runtime_session_optimization_result.list_for_sessions(
+                self.db,
+                account_id=account.id,
+                runtime_session_ids=[item.id for item in items],
+            )
+        except SQLAlchemyError:
+            logger.debug(
+                "Optimization badge lookup failed; returning plain list",
+                exc_info=True,
+            )
+            return
+        latest_by_session: dict[str, dict] = {}
+        for row in cached_rows:
+            session_id = str(row.runtime_session_id)
+            if session_id not in latest_by_session and isinstance(row.response, dict):
+                latest_by_session[session_id] = row.response
+        for item in items:
+            response = latest_by_session.get(item.id)
+            if not response:
+                continue
+            waste_score = response.get("waste_score")
+            if isinstance(waste_score, (int, float)):
+                item.optimization_waste_score = int(waste_score)
+            savings_tokens = response.get("potential_savings_tokens")
+            if isinstance(savings_tokens, (int, float)):
+                item.optimization_potential_savings_tokens = int(savings_tokens)
+            savings_usd = response.get("potential_savings_usd")
+            if isinstance(savings_usd, (int, float)):
+                item.optimization_potential_savings_usd = float(savings_usd)
 
     def get_account_session_detail(
         self,

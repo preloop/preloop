@@ -1,9 +1,12 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -721,4 +724,64 @@ func extractHermesCredentialPoolAuthBlob(
 		return encoded
 	}
 	return nil
+}
+
+// restartHermesGatewayAfterReconfig reloads the Hermes messaging gateway so MCP
+// server changes written during onboarding take effect before config validation
+// and live checks run.
+func restartHermesGatewayAfterReconfig(agent AgentConfig, writer io.Writer) map[string]interface{} {
+	result := map[string]interface{}{}
+	if !isHermesAgent(agent) {
+		return result
+	}
+
+	hermesPath, err := resolveRuntimeExecutable("hermes")
+	if err != nil {
+		result["gateway_restart_status"] = "skipped"
+		result["gateway_restart_skip_reason"] = "hermes_not_found"
+		result["gateway_restarted"] = false
+		if writer != nil {
+			fmt.Fprintf(
+				writer,
+				"  Warning: Hermes gateway was not restarted because %q was not found on %s. "+
+					"Run `hermes gateway restart` manually after onboarding so MCP tools reload.\n",
+				"hermes",
+				runtimeExecutableSearchDescription("hermes"),
+			) //nolint:errcheck
+		}
+		return result
+	}
+
+	if writer != nil {
+		fmt.Fprintln(writer, "  Restarting Hermes gateway to load updated MCP configuration...") //nolint:errcheck
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, hermesPath, "gateway", "restart").CombinedOutput()
+	result["gateway_restart_status"] = "restarted"
+	result["gateway_restarted"] = true
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		result["gateway_restart_status"] = "failed"
+		result["gateway_restart_error"] = message
+		result["gateway_restarted"] = false
+		if writer != nil {
+			fmt.Fprintf(
+				writer,
+				"  Warning: Hermes gateway restart failed: %s. "+
+					"Run `hermes gateway restart` manually so MCP tools reload.\n",
+				message,
+			) //nolint:errcheck
+		}
+		return result
+	}
+
+	if writer != nil {
+		fmt.Fprintln(writer, "  Hermes gateway restarted.") //nolint:errcheck
+	}
+	return result
 }
