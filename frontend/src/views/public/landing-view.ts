@@ -1027,6 +1027,80 @@ export class LandingView extends LitElement {
           </div>
         </section>
 
+        <section class="control-steps-section main-section">
+          <div class="section-container">
+            <div class="control-steps-header">
+              <div class="section-eyebrow">Three step setup</div>
+              <h2>Bring your AI agents under control in three steps</h2>
+              <p>
+                Preloop gives your team a simple way to connect existing
+                agents, set control rules, and monitor every important action
+                from one place.
+              </p>
+            </div>
+
+            <div class="control-steps-grid">
+              <article class="control-step-card">
+                <div class="control-step-meta">
+                  <span>Step 1</span>
+                  <sl-icon name="plug"></sl-icon>
+                </div>
+                <h3>Connect your agents</h3>
+                <p>
+                  Use the Preloop CLI to discover and onboard your existing AI
+                  agents without rebuilding your workflow or changing your agent
+                  code.
+                </p>
+              </article>
+
+              <article class="control-step-card">
+                <div class="control-step-meta">
+                  <span>Step 2</span>
+                  <sl-icon name="sliders"></sl-icon>
+                </div>
+                <h3>Set rules and approvals</h3>
+                <p>
+                  Choose what agents can access, what should be blocked, and
+                  which actions need human approval before they continue.
+                </p>
+              </article>
+
+              <article class="control-step-card">
+                <div class="control-step-meta">
+                  <span>Step 3</span>
+                  <sl-icon name="clipboard-data"></sl-icon>
+                </div>
+                <h3>Monitor actions and audit trails</h3>
+                <p>
+                  Track tool calls, model usage, approvals, denied actions,
+                  spend, and audit history from one control center.
+                </p>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section class="final-cta main-section special-cta">
+          <div class="section-container">
+            <div class="final-cta-copy">
+              <div class="section-eyebrow">Ready for control?</div>
+              <h2>
+                Ready to control your AI agents before they touch real systems?
+              </h2>
+              <p>
+                Start by connecting your existing agents, setting simple
+                approval rules, and seeing what your agents are doing from one
+                place.
+              </p>
+            </div>
+            <div class="hero-buttons">
+              <sl-button variant="primary" size="large" href="/request-demo"
+                >Book a Demo</sl-button
+              >
+            </div>
+          </div>
+        </section>
+
         <section
           class="supported-agents-section"
           style="padding-top: 2rem; padding-bottom: 2rem;"
@@ -1509,26 +1583,6 @@ export class LandingView extends LitElement {
                         </details>
                       `
                     )}
-                  </div>
-                </div>
-              </section>
-            `
-          : ''}
-        ${this._faqs.length > 0 || this._featureSlides.length > 0
-          ? html`
-              <section class="final-cta main-section special-cta">
-                <div class="section-container">
-                  <h2>Move fast. Stay safe.</h2>
-                  <div class="hero-buttons">
-                    <sl-button
-                      variant="primary"
-                      size="large"
-                      @click=${this._handleSignup}
-                      >Get Started for Free</sl-button
-                    >
-                    <sl-button variant="text" size="large" href="/request-demo"
-                      >Request a Demo</sl-button
-                    >
                   </div>
                 </div>
               </section>

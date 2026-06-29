@@ -549,6 +549,125 @@ p.lead {
   transform: rotate(-3deg);
 }
 
+/* Control Steps Section */
+.control-steps-section {
+  position: relative;
+  overflow: hidden;
+  padding: 6.5rem 0;
+  background: rgb(13, 18, 29);
+}
+
+.control-steps-section .control-steps-header {
+  max-width: 980px;
+  margin: 0 auto 3.5rem;
+  text-align: center;
+}
+
+.control-steps-section .control-steps-header h2 {
+  max-width: 960px;
+  margin: 1rem auto 1.25rem;
+  padding-bottom: 0;
+  color: #f8fafc;
+  font-size: clamp(2.7rem, 4.6vw, 4.2rem);
+  line-height: 1.03;
+  font-weight: 850;
+  text-align: center;
+}
+
+.control-steps-section .control-steps-header h2::after {
+  display: none;
+}
+
+.control-steps-section .control-steps-header p {
+  max-width: 720px;
+  margin: 0 auto;
+  color: rgba(203, 213, 225, 0.84);
+  font-size: 1.12rem;
+  line-height: 1.75;
+  text-align: center;
+}
+
+.control-steps-grid {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.2rem;
+}
+
+.control-steps-grid::before {
+  content: '';
+  position: absolute;
+  top: 2.1rem;
+  left: 16.5%;
+  right: 16.5%;
+  height: 1px;
+  background: linear-gradient(
+    to right,
+    transparent,
+    rgba(56, 189, 248, 0.44),
+    rgba(148, 163, 184, 0.34),
+    transparent
+  );
+}
+
+.control-step-card {
+  position: relative;
+  z-index: 1;
+  min-height: 275px;
+  padding: 1.35rem;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.72);
+  box-shadow: 0 24px 56px rgba(0, 0, 0, 0.24);
+}
+
+.control-step-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 2.4rem;
+}
+
+.control-step-meta span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.15rem;
+  padding: 0 0.75rem;
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  border-radius: 4px;
+  color: #67e8f9;
+  background: rgb(13, 18, 29);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.control-step-meta sl-icon {
+  display: grid;
+  place-items: center;
+  width: 2.15rem;
+  height: 2.15rem;
+  color: #bae6fd;
+  font-size: 1.1rem;
+}
+
+.control-step-card h3 {
+  margin: 0 0 0.8rem;
+  color: #f8fafc;
+  font-size: 1.45rem;
+  line-height: 1.25;
+  font-weight: 800;
+}
+
+.control-step-card p {
+  margin: 0;
+  color: rgba(203, 213, 225, 0.82);
+  font-size: 1rem;
+  line-height: 1.68;
+}
+
 /* Feature Section */
 .feature-section {
   position: relative;
@@ -1233,23 +1352,50 @@ summary.faq-question:hover sl-icon {
 }
 
 /* Final CTA Section */
+.final-cta {
+  padding: 7rem 0;
+  background: linear-gradient(180deg, rgb(13, 18, 29) 0%, rgb(9, 13, 22) 100%);
+}
+
 .final-cta .section-container {
   display: flex;
-  justify-content: space-between;
+  flex-direction: column;
   align-items: center;
+  justify-content: center;
+  gap: 2rem;
+  text-align: center;
+}
+
+.final-cta-copy {
+  max-width: 900px;
+  margin: 0 auto;
 }
 
 .final-cta h2 {
-  text-align: left;
+  max-width: 860px;
+  margin: 1rem auto 1.15rem;
   padding-bottom: 0;
+  color: #f8fafc;
+  font-size: clamp(2.7rem, 4.6vw, 4.4rem);
+  line-height: 1.03;
+  font-weight: 850;
+  text-align: center;
 }
 
 .final-cta h2::after {
   display: none;
 }
 
+.final-cta p {
+  max-width: 720px;
+  margin: 0 auto;
+  color: rgba(203, 213, 225, 0.84);
+  font-size: 1.12rem;
+  line-height: 1.75;
+}
+
 .final-cta .hero-buttons {
-  justify-content: flex-end;
+  justify-content: center;
 }
 
 
@@ -1282,6 +1428,24 @@ summary.faq-question:hover sl-icon {
     min-height: 400px;
     max-width: 680px;
     width: 100%;
+  }
+
+  .control-steps-grid {
+    grid-template-columns: 1fr;
+    max-width: 680px;
+    margin: 0 auto;
+  }
+
+  .control-steps-grid::before {
+    display: none;
+  }
+
+  .control-step-card {
+    min-height: auto;
+  }
+
+  .control-step-meta {
+    margin-bottom: 1.5rem;
   }
 
   .tool-logos {
@@ -1386,6 +1550,26 @@ summary.faq-question:hover sl-icon {
 
   .meet-visual-card--front {
     inset: 0 2.5rem 0 0;
+  }
+
+  .control-steps-section {
+    padding: 4.75rem 0;
+  }
+
+  .control-steps-header {
+    margin-bottom: 2.35rem;
+  }
+
+  .control-steps-header h2 {
+    font-size: clamp(2.3rem, 8vw, 3.35rem);
+  }
+
+  .control-steps-header p {
+    font-size: 1rem;
+  }
+
+  .control-step-card {
+    padding: 1.15rem;
   }
 
   .feature-grid {

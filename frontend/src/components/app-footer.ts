@@ -45,15 +45,33 @@ export class AppFooter extends LitElement {
       }
 
       .footer-main {
-        display: flex;
-        justify-content: space-between;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
         align-items: flex-start;
-        flex-wrap: wrap;
-        gap: 24px;
+        gap: 48px;
+      }
+
+      .footer-brand {
+        max-width: 460px;
+      }
+
+      .footer-brand-header {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        margin-bottom: 16px;
+      }
+
+      .footer-description {
+        margin: 0;
+        color: rgba(203, 213, 225, 0.84);
+        font-size: 0.95rem;
+        line-height: 1.65;
       }
 
       .footer-nav {
         text-align: right;
+        min-width: 150px;
       }
 
       .footer-nav ul {
@@ -79,7 +97,7 @@ export class AppFooter extends LitElement {
       }
 
       .divider {
-        margin: 30px 0;
+        margin: 34px 0;
         border-top: 1px solid rgba(255, 255, 255, 0.1);
       }
 
@@ -109,8 +127,24 @@ export class AppFooter extends LitElement {
       }
 
       @media (max-width: 768px) {
+        .footer-main {
+          grid-template-columns: 1fr;
+          gap: 32px;
+        }
+
+        .footer-brand-header {
+          margin-bottom: 14px;
+        }
+
         .footer-nav {
-          margin-left: auto;
+          text-align: left;
+          margin-left: 0;
+        }
+
+        .footer-bottom {
+          align-items: flex-start;
+          flex-direction: column;
+          gap: 18px;
         }
       }
     `,
@@ -135,8 +169,14 @@ export class AppFooter extends LitElement {
       <div class="footer-container">
         <div class="divider"></div>
         <div class="footer-main">
-          <div>
-            <logo-component override-theme="dark"></logo-component>
+          <div class="footer-brand">
+            <div class="footer-brand-header">
+              <logo-component override-theme="dark"></logo-component>
+            </div>
+            <p class="footer-description">
+              Preloop helps teams control tool access, require approvals, track
+              spend, and keep audit trails before AI agents touch real systems.
+            </p>
             ${hasCompanyInfo
               ? html`
                   <p style="margin-top: 1rem;">
