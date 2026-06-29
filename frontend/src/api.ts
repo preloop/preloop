@@ -535,6 +535,82 @@ export async function deleteModelPriceOverride(id: string): Promise<void> {
   }
 }
 
+/**
+ * A single evidence-grounded "tool cost flag": Preloop's finding that an
+ * agent's tool definition is wasting money. Surfaced by the Phase B detection
+ * engine. The `tool_source` ("payload" | "mcp") is a HEURISTIC label and is
+ * NOT authoritative. `disable_eligible` is false when the tool name is too
+ * ambiguous for safe one-click disable (deferred phase).
+ */
+export interface ToolCostFlag {
+  id: string;
+  tool_name: string;
+  tool_source: string; // heuristic label: "payload" | "mcp" (not authoritative)
+  flag_kind: string;
+  evidence: { claim?: string; [key: string]: unknown };
+  estimated_weekly_cost: number;
+  status: 'open' | 'dismissed' | 'snoozed';
+  disable_eligible: boolean;
+  window_start: string;
+  window_end: string;
+}
+
+/**
+ * Fetch open tool cost flags. The backend response shape is being finalized in
+ * parallel, so accept EITHER a bare array OR an object envelope `{ flags: [...] }`
+ * and normalize to an array. Dismissed flags are excluded by the default GET.
+ */
+export async function getToolCostFlags(): Promise<ToolCostFlag[]> {
+  const response = await fetchWithAuth('/api/v1/billing/cost/tool-flags');
+  if (!response.ok) {
+    throw new Error('Failed to fetch tool cost flags');
+  }
+  const data = await response.json();
+  // Defensive: check for `.flags` envelope first, then fall back to a bare array.
+  if (data && Array.isArray(data.flags)) {
+    return data.flags as ToolCostFlag[];
+  }
+  return Array.isArray(data) ? (data as ToolCostFlag[]) : [];
+}
+
+/** Dismiss a single tool cost flag. */
+export async function dismissToolCostFlag(id: string): Promise<void> {
+  const response = await fetchWithAuth(
+    `/api/v1/billing/cost/tool-flags/${id}/dismiss`,
+    {
+      method: 'POST',
+    }
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to dismiss tool cost flag')
+    );
+  }
+}
+
+/**
+ * Optionally re-run tool cost flag detection. Returns the refreshed flags,
+ * normalized the same way as {@link getToolCostFlags}. The endpoint is
+ * optional; callers should degrade gracefully if it 404s.
+ */
+export async function refreshToolCostFlags(): Promise<ToolCostFlag[]> {
+  const response = await fetchWithAuth(
+    '/api/v1/billing/cost/tool-flags/refresh',
+    {
+      method: 'POST',
+    }
+  );
+  if (!response.ok) {
+    throw new Error('Failed to refresh tool cost flags');
+  }
+  const data = await response.json();
+  if (data && Array.isArray(data.flags)) {
+    return data.flags as ToolCostFlag[];
+  }
+  return Array.isArray(data) ? (data as ToolCostFlag[]) : [];
+}
+
 export async function getDashboardTelemetry(): Promise<DashboardTelemetryResponse> {
   const response = await fetchWithAuth('/api/v1/account/telemetry/dashboard');
   if (!response.ok) {
@@ -632,6 +708,79 @@ export async function removeAccountAgent(
   });
   if (!response.ok) {
     throw new Error('Failed to remove managed agent');
+  }
+  return response.json();
+}
+
+export interface CreateManagedAgentRequest {
+  display_name: string;
+  description?: string;
+}
+
+/**
+ * Register a custom agent that the CLI cannot auto-discover (e.g. a hosted
+ * LangGraph or custom SDK agent). Returns the managed agent summary.
+ * POST /api/v1/agents
+ */
+export async function createManagedAgent(
+  payload: CreateManagedAgentRequest
+): Promise<ManagedAgentSummary> {
+  const response = await fetchWithAuth('/api/v1/agents', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to register custom agent')
+    );
+  }
+  return response.json();
+}
+
+export interface ManagedAgentCredentialCreateRequest {
+  name: string;
+  description?: string;
+  scopes?: string[];
+  expires_in_days?: number;
+}
+
+export interface ManagedAgentCredentialCreateResult {
+  // The credential summary metadata (durable record).
+  credential: {
+    id: string;
+    name: string;
+    scopes: string[];
+    key_prefix?: string | null;
+    [key: string]: unknown;
+  };
+  // The presented token. Shown ONCE and cannot be recovered afterwards.
+  token: string;
+}
+
+/**
+ * Mint a durable gateway credential for a managed agent. The returned token is
+ * presented a single time and cannot be retrieved again.
+ * POST /api/v1/agents/{agentId}/credentials
+ */
+export async function createManagedAgentCredential(
+  agentId: string,
+  payload: ManagedAgentCredentialCreateRequest
+): Promise<ManagedAgentCredentialCreateResult> {
+  const response = await fetchWithAuth(
+    `/api/v1/agents/${agentId}/credentials`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to mint agent credential')
+    );
   }
   return response.json();
 }

@@ -3,12 +3,26 @@ import { customElement, property, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/copy-button/copy-button.js';
-import { getAIModels, createFlow } from '../api';
+import '@shoelace-style/shoelace/dist/components/input/input.js';
+import '@shoelace-style/shoelace/dist/components/textarea/textarea.js';
+import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
+import '@shoelace-style/shoelace/dist/components/alert/alert.js';
+import {
+  getAIModels,
+  createFlow,
+  createManagedAgent,
+  createManagedAgentCredential,
+} from '../api';
 import type { AIModel } from '../types';
 import './preloop-flow-form';
 import './preloop-agent-deployer';
 
-type OnboardingPath = 'choose' | 'cli' | 'deploy';
+type OnboardingPath = 'choose' | 'cli' | 'deploy' | 'custom';
+
+// Per-run session header the gateway maps a LangGraph thread_id onto. This MUST
+// match the header name the gateway implementation reads. If the gateway team
+// changes it, update this constant (and the snippet rendered below).
+const PRELOOP_SESSION_HEADER = 'X-Preloop-Session-Id';
 
 @customElement('preloop-deploy-wizard')
 export class PreloopDeployWizard extends LitElement {
@@ -171,6 +185,22 @@ export class PreloopDeployWizard extends LitElement {
       margin-left: calc(-1 * var(--sl-spacing-small));
     }
 
+    .custom-form {
+      display: flex;
+      flex-direction: column;
+      gap: var(--sl-spacing-medium);
+    }
+
+    .custom-error {
+      width: 100%;
+    }
+
+    .command-snippet {
+      margin: 0;
+      white-space: pre;
+      line-height: 1.5;
+    }
+
     @media (max-width: 640px) {
       .wizard-option-body,
       .command-row {
@@ -215,11 +245,39 @@ export class PreloopDeployWizard extends LitElement {
     | 'fresh-vm-premium'
     | 'flow-config' = 'type';
 
+  // Custom-agent onboarding substeps:
+  //  - 'name'   : collect display_name (+ optional description)
+  //  - 'result' : show the minted credential token + copy-paste snippet ONCE
+  @state()
+  private customSubStep: 'name' | 'result' = 'name';
+
+  @state()
+  private customDisplayName = '';
+
+  @state()
+  private customDescription = '';
+
+  @state()
+  private customBusy = false;
+
+  @state()
+  private customError = '';
+
+  // Populated after a successful register + mint. The token is shown ONCE.
+  @state()
+  private customAgentId: string | null = null;
+
+  @state()
+  private customCredentialToken: string | null = null;
+
   async connectedCallback() {
     super.connectedCallback();
     this.onboardingPath = this.initialPath;
     if (this.initialPath === 'deploy') {
       this.deploySubStep = 'type';
+    }
+    if (this.initialPath === 'custom') {
+      this.resetCustomState();
     }
     if (this.aiModels.length === 0) {
       this.aiModels = await getAIModels().catch(() => []);
@@ -232,6 +290,9 @@ export class PreloopDeployWizard extends LitElement {
       this.onboardingPath = this.initialPath;
       if (this.initialPath === 'deploy') {
         this.deploySubStep = 'type';
+      }
+      if (this.initialPath === 'custom') {
+        this.resetCustomState();
       }
     }
   }
@@ -271,8 +332,118 @@ export class PreloopDeployWizard extends LitElement {
       } else if (this.deploySubStep === 'flow-config') {
         this.deploySubStep = 'type';
       }
+    } else if (this.onboardingPath === 'custom') {
+      if (this.customSubStep === 'name') {
+        // First substep -> back to the choose screen.
+        this.onboardingPath = 'choose';
+      } else if (this.customSubStep === 'result') {
+        // Show-once guard: the credential token cannot be recovered. Confirm
+        // before leaving the result screen.
+        const confirmed = window.confirm(
+          'The agent credential token is shown only once and cannot be ' +
+            'recovered. Have you copied it somewhere safe? Leaving this screen ' +
+            'will discard the token.'
+        );
+        if (!confirmed) {
+          return;
+        }
+        // Discard the token from memory and return to the name form.
+        this.customCredentialToken = null;
+        this.customAgentId = null;
+        this.customSubStep = 'name';
+      }
     }
     this.requestUpdate();
+  }
+
+  private resetCustomState() {
+    this.customSubStep = 'name';
+    this.customDisplayName = '';
+    this.customDescription = '';
+    this.customBusy = false;
+    this.customError = '';
+    this.customAgentId = null;
+    this.customCredentialToken = null;
+  }
+
+  private async handleCustomRegister() {
+    const displayName = this.customDisplayName.trim();
+    if (!displayName) {
+      this.customError = 'Agent name is required.';
+      return;
+    }
+    this.customBusy = true;
+    this.customError = '';
+    try {
+      const description = this.customDescription.trim();
+      // 1. Register the agent: POST /api/v1/agents
+      const agent = await createManagedAgent({
+        display_name: displayName,
+        ...(description ? { description } : {}),
+      });
+      this.customAgentId = agent.id;
+
+      // 2. Mint a gateway credential: POST /api/v1/agents/{id}/credentials
+      // Scopes must be in RUNTIME_SESSION_ALLOWED_SCOPES (api/auth/router.py);
+      // mcp:read/mcp:write authorize gateway model traffic. gateway:invoke is
+      // rejected at mint time (HTTP 400).
+      const result = await createManagedAgentCredential(agent.id, {
+        name: `${displayName} gateway credential`,
+        scopes: ['mcp:read', 'mcp:write'],
+      });
+      this.customCredentialToken = result.token;
+
+      // 3. Show the result screen (token presented ONCE).
+      this.customSubStep = 'result';
+      this.dispatchEvent(
+        new CustomEvent('deploy-custom-agent-success', {
+          bubbles: true,
+          composed: true,
+          detail: { agent },
+        })
+      );
+    } catch (error: any) {
+      this.customError =
+        error?.message || 'Failed to connect custom agent. Please try again.';
+    } finally {
+      this.customBusy = false;
+    }
+  }
+
+  private buildGatewayBaseUrl(): string {
+    // Mirror the installCommand hostname-switch pattern. On the hosted product
+    // the gateway lives on the same origin; for self-hosted/dev we derive it
+    // from window.location.origin. The OpenAI-compatible gateway is mounted at
+    // /openai/v1 (SDKs append /chat/completions).
+    return window.location.hostname === 'preloop.ai'
+      ? 'https://preloop.ai/openai/v1'
+      : `${window.location.origin}/openai/v1`;
+  }
+
+  private buildCustomSnippet(baseUrl: string, token: string): string {
+    return `from langgraph.prebuilt import create_react_agent
+from langchain_openai import ChatOpenAI
+
+# Route all model traffic through Preloop's OpenAI-compatible gateway.
+llm = ChatOpenAI(
+    base_url="${baseUrl}",
+    api_key="${token}",  # Preloop gateway credential (shown once)
+    model="gpt-4o",
+)
+
+agent = create_react_agent(llm, tools=[])
+
+# Pass a per-run session id so Preloop groups this run's traffic. The
+# LangGraph thread_id maps to the ${PRELOOP_SESSION_HEADER} header. This
+# header name MUST match the Preloop gateway implementation.
+thread_id = "run-12345"
+agent.invoke(
+    {"messages": [{"role": "user", "content": "Hello"}]},
+    config={
+        "configurable": {"thread_id": thread_id},
+        "metadata": {"headers": {"${PRELOOP_SESSION_HEADER}": thread_id}},
+    },
+)`;
   }
 
   render() {
@@ -282,7 +453,9 @@ export class PreloopDeployWizard extends LitElement {
           ? this.renderChoosePathState()
           : this.onboardingPath === 'cli'
             ? this.renderCliPathState()
-            : this.renderDeployPathState()}
+            : this.onboardingPath === 'custom'
+              ? this.renderCustomPathState()
+              : this.renderDeployPathState()}
       </div>
     `;
   }
@@ -332,6 +505,29 @@ export class PreloopDeployWizard extends LitElement {
                 <span class="wizard-option-title">Deploy New Agents</span>
                 <span class="wizard-option-description">
                   Spin up new persistent agents or flows
+                </span>
+              </span>
+            </div>
+          </sl-button>
+
+          <sl-button
+            class="wizard-option-button"
+            variant="default"
+            @click=${() => {
+              this.resetCustomState();
+              this.onboardingPath = 'custom';
+              this.requestUpdate();
+            }}
+          >
+            <div class="wizard-option-body">
+              <span class="wizard-option-icon">
+                <sl-icon name="plug"></sl-icon>
+              </span>
+              <span class="wizard-option-copy">
+                <span class="wizard-option-title">Connect a custom agent</span>
+                <span class="wizard-option-description">
+                  Onboard an existing agent (LangGraph, custom SDK) the CLI
+                  can't discover
                 </span>
               </span>
             </div>
@@ -404,6 +600,154 @@ export class PreloopDeployWizard extends LitElement {
             </div>
           </div>
         </div>
+      </div>
+    `;
+  }
+
+  private renderCustomPathState() {
+    return html`
+      <div class="wizard-shell">
+        ${this.hideBack
+          ? nothing
+          : html`
+              <sl-button
+                class="wizard-back"
+                variant="text"
+                size="small"
+                @click=${this.handleBack}
+              >
+                <sl-icon name="arrow-left" slot="prefix"></sl-icon> Back
+              </sl-button>
+            `}
+        ${this.customSubStep === 'name'
+          ? this.renderCustomNameState()
+          : this.renderCustomResultState()}
+      </div>
+    `;
+  }
+
+  private renderCustomNameState() {
+    return html`
+      <div class="wizard-header">
+        ${this.hideStepTitle
+          ? nothing
+          : html`<h3 class="wizard-title">Connect a custom agent</h3>`}
+        <p class="wizard-copy">
+          Register an existing agent (LangGraph, custom SDK) the CLI can't
+          discover. We'll mint a gateway credential so it can route model
+          traffic through Preloop.
+        </p>
+      </div>
+
+      <div class="wizard-panel custom-form">
+        ${this.customError
+          ? html`
+              <sl-alert variant="danger" open class="custom-error">
+                <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+                ${this.customError}
+              </sl-alert>
+            `
+          : nothing}
+
+        <sl-input
+          label="Agent name"
+          name="display_name"
+          placeholder="e.g. Support triage agent"
+          required
+          ?disabled=${this.customBusy}
+          .value=${this.customDisplayName}
+          @sl-input=${(e: Event) => {
+            this.customDisplayName = (e.target as HTMLInputElement).value;
+          }}
+        ></sl-input>
+
+        <sl-textarea
+          label="Description (optional)"
+          name="description"
+          placeholder="What does this agent do?"
+          rows="2"
+          ?disabled=${this.customBusy}
+          .value=${this.customDescription}
+          @sl-input=${(e: Event) => {
+            this.customDescription = (e.target as HTMLTextAreaElement).value;
+          }}
+        ></sl-textarea>
+
+        <sl-button
+          variant="primary"
+          ?loading=${this.customBusy}
+          ?disabled=${this.customBusy || !this.customDisplayName.trim()}
+          @click=${this.handleCustomRegister}
+        >
+          Register agent &amp; mint credential
+        </sl-button>
+      </div>
+    `;
+  }
+
+  private renderCustomResultState() {
+    const baseUrl = this.buildGatewayBaseUrl();
+    const token = this.customCredentialToken || '';
+    const snippet = this.buildCustomSnippet(baseUrl, token);
+
+    return html`
+      <div class="wizard-header">
+        ${this.hideStepTitle
+          ? nothing
+          : html`<h3 class="wizard-title">Your agent is connected</h3>`}
+        <p class="wizard-copy">
+          Point your agent at the Preloop gateway using the base URL and
+          credential below, then route model traffic through it.
+        </p>
+      </div>
+
+      <div class="wizard-panel command-steps">
+        <sl-alert variant="warning" open>
+          <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+          This credential token is shown only once and cannot be recovered. Copy
+          it now and store it securely.
+        </sl-alert>
+
+        <div class="command-step">
+          <div class="command-label">Gateway base URL (OpenAI-compatible)</div>
+          <div class="command-row">
+            <code class="command-code">${baseUrl}</code>
+            <sl-copy-button .value=${baseUrl}></sl-copy-button>
+          </div>
+        </div>
+
+        <div class="command-step">
+          <div class="command-label">Gateway credential (api_key)</div>
+          <div class="command-row">
+            <code class="command-code">${token}</code>
+            <sl-copy-button .value=${token}></sl-copy-button>
+          </div>
+        </div>
+
+        <div class="command-step">
+          <div class="command-label">
+            Example: LangGraph + OpenAI SDK with a per-run session id
+          </div>
+          <div class="command-row">
+            <pre class="command-code command-snippet">${snippet}</pre>
+            <sl-copy-button .value=${snippet}></sl-copy-button>
+          </div>
+        </div>
+
+        <sl-button
+          variant="primary"
+          @click=${() => {
+            this.customCredentialToken = null;
+            this.dispatchEvent(
+              new CustomEvent('deploy-wizard-done', {
+                bubbles: true,
+                composed: true,
+              })
+            );
+          }}
+        >
+          Done
+        </sl-button>
       </div>
     `;
   }

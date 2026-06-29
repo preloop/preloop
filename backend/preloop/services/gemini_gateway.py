@@ -16,8 +16,13 @@ from preloop.services.openai_gateway import OpenAIGatewayService
 class GeminiGatewayService(OpenAIGatewayService):
     """Translate Gemini REST requests onto the shared gateway backend."""
 
-    def __init__(self, db: Session, auth_context: ModelGatewayAuthContext) -> None:
-        super().__init__(db, auth_context)
+    def __init__(
+        self,
+        db: Session,
+        auth_context: ModelGatewayAuthContext,
+        client_session_id: Optional[str] = None,
+    ) -> None:
+        super().__init__(db, auth_context, client_session_id=client_session_id)
 
     def list_models(self) -> Dict[str, Any]:
         """List Gemini-compatible model descriptors."""

@@ -5,8 +5,6 @@ import { customElement, state, query } from 'lit/decorators.js';
 import landingStyles from '../../styles/landing.css?inline';
 import './../../components/news-capsule';
 import './../../components/ide-setup-tabs';
-import './../../components/onboarding-demo';
-import type { OnboardingDemoConfig } from '../../components/onboarding-demo';
 import { getIdeConfigs } from '../../utils/ide-configs';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/carousel/carousel.js';
@@ -41,17 +39,12 @@ export class LandingView extends LitElement {
   @state() private _ctaPrimaryUrl = '';
   @state() private _ctaSecondary = '';
   @state() private _ctaSecondaryUrl = '';
-  @state() private _onboardingDemo: OnboardingDemoConfig | null = null;
-  @state() private _problem: {
-    eyebrow: string;
-    title: string;
-    image: string;
-    imageAlt: string;
-    items: Array<{ icon: string; title: string; text: string }>;
-  } | null = null;
   @state() private _heroInstall = '';
   @state() private _heroInstallCaption = '';
   @state() private _heroInstallCopied = false;
+  @state() private _heroTrustTags: string[] = [];
+  @state() private _heroImage = '';
+  @state() private _heroImageAlt = '';
   @state() private _getStartedTitle = '';
   @state() private _getStartedLinkText = '';
   @state() private _getStartedLinkUrl = '';
@@ -324,6 +317,9 @@ export class LandingView extends LitElement {
     const ctaPrimary = children.find(
       (el) => el.getAttribute('slot') === 'cta-primary'
     ) as HTMLElement | undefined;
+    const ctaPrimaryUrl = children.find(
+      (el) => el.getAttribute('slot') === 'cta-primary-url'
+    ) as HTMLElement | undefined;
     const ctaSecondary = children.find(
       (el) => el.getAttribute('slot') === 'cta-secondary'
     ) as HTMLElement | undefined;
@@ -334,6 +330,8 @@ export class LandingView extends LitElement {
     if (heroTitle) this._heroTitle = heroTitle.innerHTML || '';
     if (heroLead) this._heroLead = heroLead.textContent || '';
     if (ctaPrimary) this._ctaPrimary = ctaPrimary.textContent || '';
+    if (ctaPrimaryUrl)
+      this._ctaPrimaryUrl = (ctaPrimaryUrl.textContent || '').trim();
     if (ctaSecondary) this._ctaSecondary = ctaSecondary.textContent || '';
     if (ctaSecondaryUrl)
       this._ctaSecondaryUrl = ctaSecondaryUrl.textContent || '';
@@ -348,6 +346,24 @@ export class LandingView extends LitElement {
     ) as HTMLElement | undefined;
     if (ctaInstallCaption)
       this._heroInstallCaption = (ctaInstallCaption.textContent || '').trim();
+
+    const ctaInstallTags = children.find(
+      (el) => el.getAttribute('slot') === 'cta-install-tags'
+    ) as HTMLElement | undefined;
+    if (ctaInstallTags) {
+      this._heroTrustTags = (ctaInstallTags.textContent || '')
+        .split('|')
+        .map((t) => t.trim())
+        .filter(Boolean);
+    }
+
+    const heroImage = children.find(
+      (el) => el.getAttribute('slot') === 'hero-image'
+    ) as HTMLElement | undefined;
+    if (heroImage) {
+      this._heroImage = heroImage.getAttribute('data-src') || '';
+      this._heroImageAlt = heroImage.getAttribute('data-alt') || '';
+    }
 
     // Read extended description from light DOM slot
     const extendedDescription = children.find(
@@ -557,10 +573,16 @@ export class LandingView extends LitElement {
     this._heroTitle = hero.title || '';
     this._heroLead = hero.lead || '';
     this._ctaPrimary = hero.cta_primary || '';
+    this._ctaPrimaryUrl = (hero.cta_primary_url || '').trim();
     this._ctaSecondary = hero.cta_secondary || '';
     this._ctaSecondaryUrl = hero.cta_secondary_url || '';
     this._heroInstall = (hero.install_command || '').trim();
     this._heroInstallCaption = (hero.install_caption || '').trim();
+    this._heroTrustTags = Array.isArray(hero.trust_tags)
+      ? hero.trust_tags.filter(Boolean)
+      : [];
+    this._heroImage = hero.image || '';
+    this._heroImageAlt = hero.image_alt || '';
     this._extendedDescription = content.extended_description || '';
     this._featuresLayout = content.features_layout || 'grid';
 
@@ -727,7 +749,11 @@ export class LandingView extends LitElement {
       <main>
         <section class="hero main-section">
           <!-- <news-capsule></news-capsule> -->
-          <div class="section-container hero-inner">
+          <div
+            class="section-container hero-inner ${this._heroImage
+              ? 'has-visual'
+              : ''}"
+          >
             <div class="hero-content">
               ${this._productHunt?.enabled
                 ? html`
@@ -752,23 +778,37 @@ export class LandingView extends LitElement {
               <h1 class="fw-bold">${unsafeHTML(this._heroTitle)}</h1>
               <p class="lead">${this._heroLead}</p>
 
-              <div class="hero-buttons">
-                <sl-button
-                  variant="primary"
-                  size="large"
-                  @click=${this._handleSignup}
-                  >${this._ctaPrimary}</sl-button
-                >
-                <sl-button
-                  variant="text"
-                  size="large"
-                  href=${this._ctaSecondaryUrl}
-                  target=${this._ctaSecondaryUrl.startsWith('http')
-                    ? '_blank'
-                    : '_self'}
-                  >${this._ctaSecondary}</sl-button
-                >
-              </div>
+              ${!this._heroInstall
+                ? html`<div class="hero-buttons">
+                    ${this._ctaPrimaryUrl
+                      ? html`<sl-button
+                          variant="primary"
+                          size="large"
+                          href=${this._ctaPrimaryUrl}
+                          target=${this._ctaPrimaryUrl.startsWith('http')
+                            ? '_blank'
+                            : '_self'}
+                          >${this._ctaPrimary}</sl-button
+                        >`
+                      : html`<sl-button
+                          variant="primary"
+                          size="large"
+                          @click=${this._handleSignup}
+                          >${this._ctaPrimary}</sl-button
+                        >`}
+                    ${this._ctaSecondary
+                      ? html`<sl-button
+                          variant="text"
+                          size="large"
+                          href=${this._ctaSecondaryUrl}
+                          target=${this._ctaSecondaryUrl.startsWith('http')
+                            ? '_blank'
+                            : '_self'}
+                          >${this._ctaSecondary}</sl-button
+                        >`
+                      : ''}
+                  </div>`
+                : ''}
               ${this._heroInstall
                 ? html`
                     <div
@@ -776,13 +816,7 @@ export class LandingView extends LitElement {
                       role="group"
                       aria-label="Install the Preloop CLI"
                     >
-                      <div class="hero-install-or" aria-hidden="true">
-                        <span class="hero-install-or-line"></span>
-                        <span class="hero-install-or-text"
-                          >or install the CLI</span
-                        >
-                        <span class="hero-install-or-line"></span>
-                      </div>
+                      <span class="hero-install-label">Install the CLI</span>
                       <div class="hero-install-row">
                         <span class="hero-install-prompt" aria-hidden="true"
                           >$</span
@@ -841,9 +875,37 @@ export class LandingView extends LitElement {
                           </p>`
                         : ''}
                     </div>
+                    ${this._ctaSecondary
+                      ? html`<div class="hero-secondary-cta">
+                          <span class="hero-secondary-text"
+                            >Want a guided tour first?</span
+                          >
+                          <sl-button
+                            variant="text"
+                            size="large"
+                            href=${this._ctaSecondaryUrl}
+                            target=${this._ctaSecondaryUrl.startsWith('http')
+                              ? '_blank'
+                              : '_self'}
+                            >${this._ctaSecondary}</sl-button
+                          >
+                        </div>`
+                      : ''}
                   `
                 : ''}
+              ${this._heroTrustTags.length
+                ? html`<ul class="hero-trust-tags">
+                    ${this._heroTrustTags.map(
+                      (tag) => html`<li class="hero-trust-tag">${tag}</li>`
+                    )}
+                  </ul>`
+                : ''}
             </div>
+            ${this._heroImage
+              ? html`<div class="hero-visual" aria-hidden="true">
+                  <img src=${this._heroImage} alt=${this._heroImageAlt} />
+                </div>`
+              : ''}
           </div>
         </section>
 

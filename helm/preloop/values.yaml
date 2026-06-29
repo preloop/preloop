@@ -115,6 +115,24 @@ monitor:
       cpu: "500m"
       memory: "512Mi"
 
+# In-cluster API/database health monitor (replaces external GlitchTip DB checks)
+healthMonitor:
+  enabled: true
+  image: curlimages/curl:8.5.0
+  pullPolicy: IfNotPresent
+  # Defaults to the internal API service health endpoint with DB check
+  url: ""
+  intervalSeconds: 60
+  timeoutSeconds: 10
+  failuresBeforeAlert: 3
+  resources:
+    requests:
+      cpu: "10m"
+      memory: "16Mi"
+    limits:
+      cpu: "50m"
+      memory: "64Mi"
+
 # Gateway resources
 gateway:
   resources:

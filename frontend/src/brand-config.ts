@@ -48,6 +48,11 @@ export interface BrandHero {
   install_command?: string;
   // Optional caption shown under the install command box.
   install_caption?: string;
+  // Optional short credibility tags shown under the hero CTAs.
+  trust_tags?: string[];
+  // Optional static product shot filling the right half of the hero.
+  image?: string;
+  image_alt?: string;
 }
 
 export interface BrandFeature {
@@ -115,34 +120,6 @@ export interface PricingConfig {
   faqs?: PricingFAQ[];
 }
 
-export interface OnboardingDemoLine {
-  text: string;
-  cls?: 'ok' | 'done' | 'muted';
-}
-
-export interface OnboardingDemoConfig {
-  enabled?: boolean;
-  command: string;
-  image: string;
-  image_alt?: string;
-  caption?: string;
-  lines: OnboardingDemoLine[];
-}
-
-export interface ProblemItem {
-  icon: string;
-  title: string;
-  text: string;
-}
-
-export interface ProblemSection {
-  eyebrow?: string;
-  title: string;
-  image?: string;
-  image_alt?: string;
-  items: ProblemItem[];
-}
-
 export interface BrandLanding {
   meta: BrandMeta;
   features_layout: 'carousel' | 'grid';
@@ -151,8 +128,6 @@ export interface BrandLanding {
   faqs: BrandFAQ[];
   get_started: BrandGetStarted;
   pricing?: PricingConfig;
-  onboarding_demo?: OnboardingDemoConfig;
-  problem?: ProblemSection;
 }
 
 /**

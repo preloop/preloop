@@ -44,6 +44,7 @@ from preloop.schemas.gateway_usage import (
     ManagedAgentModelBindingSummary,
     ManagedAgentModelBindingSyncRequest,
     ManagedAgentEnrollmentValidateRequest,
+    ManagedAgentRegisterRequest,
     ManagedAgentServerActivitySummary,
     ManagedAgentSummary,
     ManagedAgentToolActivitySummary,
@@ -66,6 +67,9 @@ from preloop.services.account_realtime import (
     ACCOUNT_TOPIC_RUNTIME_SESSIONS,
     build_account_event,
     emit_account_event,
+)
+from preloop.services.account_governance_cache import (
+    invalidate_account_governance_cache,
 )
 from preloop.services.model_gateway_usage import ModelGatewayUsageService
 from preloop.services.runtime_session_explorer import RuntimeSessionExplorerService
@@ -1180,6 +1184,7 @@ async def update_account_managed_agent_governance(
     db.add(account)
     db.commit()
     db.refresh(account)
+    invalidate_account_governance_cache(str(account.id))
     return SubjectGovernanceResponse(
         subject_type=SUBJECT_TYPE_MANAGED_AGENTS,
         subject_id=agent_id,
@@ -1191,6 +1196,73 @@ async def update_account_managed_agent_governance(
             )
         ),
     )
+
+
+@router.post(
+    "/agents",
+    response_model=ManagedAgentSummary,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_account_managed_agent(
+    payload: ManagedAgentRegisterRequest,
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> ManagedAgentSummary:
+    """Register a custom managed agent the discovery CLI cannot find.
+
+    Creates a durable ManagedAgent row under the reserved ``custom`` source
+    type with a generated ``session_source_id`` and ``lifecycle_state`` of
+    ``active`` so the operator can immediately mint a gateway credential for it
+    via ``POST /agents/{agent_id}/credentials``.
+
+    Duplicate ``display_name`` values are allowed within an account: each custom
+    agent is keyed by a unique generated ``session_source_id``, so two agents
+    sharing a display name remain distinct registry entries. Operators may
+    legitimately run several copies of the same agent, so we do not reject this.
+
+    Args:
+        payload: Display name and optional description for the new agent.
+        account: Resolved account for the authenticated user.
+        current_user: Authenticated active user performing the registration.
+        db: Database session.
+
+    Returns:
+        The managed-agent summary for the newly registered agent.
+    """
+    agent = crud_managed_agent.create_custom_agent(
+        db,
+        account_id=account.id,
+        display_name=payload.display_name,
+        description=payload.description,
+        commit=True,
+    )
+    summary = crud_managed_agent.get_summary_for_account(
+        db, account_id=str(account.id), agent_id=str(agent.id)
+    )
+    if summary is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to load registered managed agent",
+        )
+    summary = _enrich_managed_agent_summary(
+        db, account_id=str(account.id), summary=summary
+    )
+    emit_account_event(
+        build_account_event(
+            account_id=str(account.id),
+            topic=ACCOUNT_TOPIC_AUDIT,
+            event_type="audit_event",
+            payload={
+                "action": "managed_agent_registered",
+                "agent_id": str(agent.id),
+                "display_name": agent.display_name,
+                "session_source_type": agent.session_source_type,
+                "registered_by_user_id": str(current_user.id),
+            },
+        )
+    )
+    return ManagedAgentSummary(**summary)
 
 
 @router.get(

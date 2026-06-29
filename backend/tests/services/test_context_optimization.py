@@ -4,10 +4,14 @@ from preloop.services.context_optimization import (
     CONTEXT_OPTIMIZATION_KEY,
     MIN_TOOL_RESULT_CAP,
     ContextOptimizationSettings,
+    estimate_tokens,
     optimize_messages,
     resolve_context_optimization_settings,
+    sanitize_tool_choice,
     strip_disabled_tools,
     strip_noise_text,
+    subject_governance_affects_gateway_context,
+    tool_choice_named_tool,
 )
 from preloop.services.subject_governance import (
     SUBJECT_TYPE_API_KEYS,
@@ -216,3 +220,207 @@ class TestResolveSettings:
             meta, subject_context={"managed_agent_id": "agent-1", "api_key_id": None}
         )
         assert settings.max_tool_result_chars == MIN_TOOL_RESULT_CAP
+
+
+class TestEstimateTokens:
+    def test_empty_text_is_zero(self) -> None:
+        assert estimate_tokens("") == 0
+
+    def test_four_chars_is_one_token(self) -> None:
+        assert estimate_tokens("abcd") == 1
+
+    def test_floors_to_at_least_one_for_short_text(self) -> None:
+        # 1-3 chars are non-empty but floor-divide to 0; max(1, ...) applies.
+        assert estimate_tokens("a") == 1
+        assert estimate_tokens("abc") == 1
+
+    def test_long_text_is_chars_over_four(self) -> None:
+        text = "x" * 4000
+        assert estimate_tokens(text) == len(text) // 4 == 1000
+
+
+class TestToolChoiceNamedTool:
+    """Unit tests for ``tool_choice_named_tool`` across provider shapes."""
+
+    def test_string_choices_name_no_tool(self) -> None:
+        for value in ("auto", "none", "required", "any"):
+            assert tool_choice_named_tool(value) is None
+
+    def test_openai_function_shape(self) -> None:
+        choice = {"type": "function", "function": {"name": "search"}}
+        assert tool_choice_named_tool(choice) == "search"
+
+    def test_anthropic_tool_shape(self) -> None:
+        choice = {"type": "tool", "name": "search"}
+        assert tool_choice_named_tool(choice) == "search"
+
+    def test_malformed_object_names_no_tool(self) -> None:
+        assert tool_choice_named_tool({"type": "function"}) is None
+        assert tool_choice_named_tool({"type": "tool"}) is None
+        assert tool_choice_named_tool({}) is None
+        assert tool_choice_named_tool(None) is None
+
+
+class TestSanitizeToolChoice:
+    """Unit tests for ``sanitize_tool_choice`` during partial tool strips."""
+
+    def test_no_removed_tools_is_noop(self) -> None:
+        choice = {"type": "function", "function": {"name": "search"}}
+        result, changed = sanitize_tool_choice(choice, removed_tool_names=set())
+        assert result is choice
+        assert changed is False
+
+    def test_string_choices_pass_through(self) -> None:
+        for value in ("auto", "none", "required", "any"):
+            result, changed = sanitize_tool_choice(value, removed_tool_names={"search"})
+            assert result == value
+            assert changed is False
+
+    def test_kept_tool_passes_through_openai(self) -> None:
+        choice = {"type": "function", "function": {"name": "kept"}}
+        result, changed = sanitize_tool_choice(choice, removed_tool_names={"stripped"})
+        assert result is choice
+        assert changed is False
+
+    def test_kept_tool_passes_through_anthropic(self) -> None:
+        choice = {"type": "tool", "name": "kept"}
+        result, changed = sanitize_tool_choice(choice, removed_tool_names={"stripped"})
+        assert result is choice
+        assert changed is False
+
+    def test_stripped_tool_falls_back_to_auto_openai(self) -> None:
+        choice = {"type": "function", "function": {"name": "stripped"}}
+        result, changed = sanitize_tool_choice(choice, removed_tool_names={"stripped"})
+        assert result == "auto"
+        assert changed is True
+
+    def test_stripped_tool_falls_back_to_auto_anthropic(self) -> None:
+        choice = {"type": "tool", "name": "stripped"}
+        result, changed = sanitize_tool_choice(choice, removed_tool_names={"stripped"})
+        assert result == "auto"
+        assert changed is True
+
+
+class TestSubjectGovernanceAffectsGatewayContext:
+    def test_empty_store_does_not_affect(self) -> None:
+        subject_context = {"api_key_id": "key-1", "managed_agent_id": None}
+        assert (
+            subject_governance_affects_gateway_context(
+                {},
+                subject_context=subject_context,
+                has_tools=True,
+            )
+            is False
+        )
+
+    def test_allowed_models_only_does_not_affect(self) -> None:
+        meta = set_subject_governance(
+            {},
+            subject_type=SUBJECT_TYPE_API_KEYS,
+            subject_id="key-1",
+            config={"allowed_models": ["gpt-4"]},
+        )
+        subject_context = {"api_key_id": "key-1", "managed_agent_id": None}
+        assert (
+            subject_governance_affects_gateway_context(
+                meta,
+                subject_context=subject_context,
+                has_tools=True,
+            )
+            is False
+        )
+
+    def test_tool_override_affects_when_tools_present(self) -> None:
+        meta = set_subject_governance(
+            {},
+            subject_type=SUBJECT_TYPE_API_KEYS,
+            subject_id="key-1",
+            config={"tool_enabled_overrides": {"search": False}},
+        )
+        subject_context = {"api_key_id": "key-1", "managed_agent_id": None}
+        assert (
+            subject_governance_affects_gateway_context(
+                meta,
+                subject_context=subject_context,
+                has_tools=True,
+            )
+            is True
+        )
+        assert (
+            subject_governance_affects_gateway_context(
+                meta,
+                subject_context=subject_context,
+                has_tools=False,
+            )
+            is False
+        )
+
+    def test_context_optimization_settings_affect(self) -> None:
+        meta = set_subject_governance(
+            {},
+            subject_type=SUBJECT_TYPE_MANAGED_AGENTS,
+            subject_id="agent-1",
+            config={
+                CONTEXT_OPTIMIZATION_KEY: {"dedupe_tool_results": True},
+            },
+        )
+        subject_context = {
+            "api_key_id": "key-1",
+            "managed_agent_id": "agent-1",
+        }
+        assert (
+            subject_governance_affects_gateway_context(
+                meta,
+                subject_context=subject_context,
+                has_tools=False,
+            )
+            is True
+        )
+
+
+class TestAccountGovernanceCache:
+    def test_empty_store_is_cached_negative(self, db_session, test_user) -> None:
+        from unittest.mock import patch
+
+        from preloop.models.crud import crud_account
+        from preloop.services.account_governance_cache import (
+            clear_account_governance_cache,
+            get_cached_account_meta_data,
+        )
+
+        clear_account_governance_cache()
+        account_id = str(test_user.account_id)
+        with patch.object(crud_account, "get", wraps=crud_account.get) as get_mock:
+            assert get_cached_account_meta_data(db_session, account_id) is None
+            assert get_cached_account_meta_data(db_session, account_id) is None
+            assert get_mock.call_count == 1
+
+    def test_invalidation_forces_refresh(self, db_session, test_user) -> None:
+        from unittest.mock import patch
+
+        from preloop.models.crud import crud_account
+        from preloop.services.account_governance_cache import (
+            clear_account_governance_cache,
+            get_cached_account_meta_data,
+            invalidate_account_governance_cache,
+        )
+
+        clear_account_governance_cache()
+        account_id = str(test_user.account_id)
+        account = crud_account.get(db_session, id=test_user.account_id)
+        account.meta_data = set_subject_governance(
+            account.meta_data or {},
+            subject_type=SUBJECT_TYPE_API_KEYS,
+            subject_id="key-cache",
+            config={CONTEXT_OPTIMIZATION_KEY: {"strip_noise": True}},
+        )
+        db_session.add(account)
+        db_session.commit()
+
+        with patch.object(crud_account, "get", wraps=crud_account.get) as get_mock:
+            assert get_cached_account_meta_data(db_session, account_id) is not None
+            assert get_cached_account_meta_data(db_session, account_id) is not None
+            assert get_mock.call_count == 1
+            invalidate_account_governance_cache(account_id)
+            assert get_cached_account_meta_data(db_session, account_id) is not None
+            assert get_mock.call_count == 2

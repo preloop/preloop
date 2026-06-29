@@ -103,6 +103,7 @@ from .runtime_session_optimization_result import (
     CRUDRuntimeSessionOptimizationResult,
 )
 from .secret_reference import CRUDSecretReference, crud_secret_reference
+from .tool_cost_flag import CRUDToolCostFlag, crud_tool_cost_flag
 from .budget import (
     CRUDBudgetPolicy,
     CRUDBudgetSpendActivity,
@@ -264,4 +265,6 @@ __all__ = [
     "CRUDBudgetSpendActivity",
     "crud_budget_policy",
     "crud_budget_spend",
+    "CRUDToolCostFlag",
+    "crud_tool_cost_flag",
 ]

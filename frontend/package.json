@@ -27,6 +27,8 @@
     "test:visual": "playwright test tests/visual/",
     "test:visual:update": "playwright test tests/visual/ --update-snapshots",
     "test:visual:ui": "playwright test tests/visual/ --ui",
+    "test:e2e:ci": "playwright test --project=e2e-ci",
+    "test:e2e:staging": "PRELOOP_E2E_TARGET=staging playwright test --project=e2e-staging",
     "format": "prettier --write \"src/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\"",
     "prepare": "husky",

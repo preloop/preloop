@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
 import time
 from contextlib import contextmanager
@@ -21,7 +22,6 @@ from sqlalchemy.orm import Session
 
 from preloop.config import settings
 from preloop.models.crud import (
-    crud_account,
     crud_ai_model,
     crud_api_usage,
     crud_managed_agent,
@@ -36,11 +36,16 @@ from preloop.services.account_realtime import (
     build_account_event,
     emit_account_event,
 )
+from preloop.services.account_governance_cache import get_cached_account_meta_data
 from preloop.services.context_optimization import (
     ContextOptimizationStats,
+    estimate_tokens,
     optimize_messages,
     resolve_context_optimization_settings,
+    sanitize_tool_choice,
     strip_disabled_tools,
+    subject_governance_affects_gateway_context,
+    tool_definition_name,
 )
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.model_gateway_budget import (
@@ -174,6 +179,35 @@ def get_model_gateway_backend(
     )
 
 
+# Per-run session id (X-Preloop-Session-Id) validation. The header maps to a
+# LangGraph ``thread_id`` / wizard-emitted run id. We accept a conservative,
+# URL/identifier-safe charset and cap the length; anything else is ignored so a
+# malformed header never errors and simply falls back to source keying.
+_CLIENT_SESSION_ID_MAX_LEN = 200
+_CLIENT_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_.:\-]+$")
+
+
+def _normalize_client_session_id(raw: Optional[str]) -> Optional[str]:
+    """Validate and normalize the client-supplied per-run session id.
+
+    Args:
+        raw: Raw ``X-Preloop-Session-Id`` header value (may be ``None``).
+
+    Returns:
+        The trimmed id when it is non-empty, within the length cap, and uses
+        only the safe charset; otherwise ``None`` (caller falls back to the
+        existing source-keyed behavior).
+    """
+    if not isinstance(raw, str):
+        return None
+    candidate = raw.strip()
+    if not candidate or len(candidate) > _CLIENT_SESSION_ID_MAX_LEN:
+        return None
+    if not _CLIENT_SESSION_ID_RE.match(candidate):
+        return None
+    return candidate
+
+
 class OpenAIGatewayService:
     """Service for Preloop's OpenAI-compatible gateway."""
 
@@ -183,14 +217,19 @@ class OpenAIGatewayService:
         auth_context: ModelGatewayAuthContext,
         upstream_backend: Optional[ModelGatewayBackend] = None,
         budget_enforcer: Optional[Any] = None,
+        client_session_id: Optional[str] = None,
     ) -> None:
         self.db = db
         self.auth_context = auth_context
         self.upstream_backend = upstream_backend or get_model_gateway_backend()
         self.budget_enforcer = budget_enforcer
+        # Per-run session id supplied by the client (X-Preloop-Session-Id).
+        # Validated/normalized once; invalid values fall back to source keying.
+        self._client_session_id = _normalize_client_session_id(client_session_id)
         self._resolved_runtime_session_id: Optional[str] = None
         self._resolved_runtime_session_attempted = False
         self._last_context_optimization: Optional[ContextOptimizationStats] = None
+        self._last_tools_meta: Optional[List[Dict[str, Any]]] = None
 
     def _resolve_runtime_session(self) -> Optional[str]:
         if self._resolved_runtime_session_attempted:
@@ -209,6 +248,13 @@ class OpenAIGatewayService:
         if not runtime_session_id and runtime_principal:
             session_source_type = runtime_principal.get("type")
             session_source_id = runtime_principal.get("id")
+            # A static custom-agent credential reuses one source id for every
+            # request, collapsing per-run ROI into one eternal session. When the
+            # client supplies a per-run id via X-Preloop-Session-Id, fold it into
+            # the source id so each distinct run gets its own session row. Absent
+            # or malformed headers leave the source id untouched (no regression).
+            if session_source_type and session_source_id and self._client_session_id:
+                session_source_id = f"{session_source_id}:{self._client_session_id}"
             if session_source_type and session_source_id:
                 try:
                     from datetime import datetime, timezone
@@ -390,6 +436,9 @@ class OpenAIGatewayService:
                 endpoint_kind="chat_completions",
             )
             if self._is_openai_codex_model(model):
+                # Codex bypasses _call_litellm, so capture tools_meta here too
+                # (T11 finding). Codex tools are not governance-stripped.
+                self._capture_tools_meta(payload.get("tools"))
                 raw_codex_response = self._create_openai_codex_response(
                     model,
                     self._build_openai_codex_payload_from_chat_completion(
@@ -510,6 +559,8 @@ class OpenAIGatewayService:
                 endpoint_kind="responses",
             )
             if self._is_openai_codex_model(model):
+                # Codex bypasses _call_litellm (T11 finding); attribute here.
+                self._capture_tools_meta(payload.get("tools"))
                 response_dict = self._create_openai_codex_response(model, payload)
             else:
                 response = self._call_litellm(
@@ -1040,6 +1091,8 @@ class OpenAIGatewayService:
                 endpoint_kind="chat_completions_stream",
             )
             if self._is_openai_codex_model(model):
+                # Codex bypasses _call_litellm (T11 finding); attribute here.
+                self._capture_tools_meta(payload.get("tools"))
                 return self._stream_openai_codex_chat_completion(
                     ai_model=model,
                     payload=payload,
@@ -1239,6 +1292,8 @@ class OpenAIGatewayService:
                 endpoint_kind="responses_stream",
             )
             if self._is_openai_codex_model(model):
+                # Codex bypasses _call_litellm (T11 finding); attribute here.
+                self._capture_tools_meta(payload.get("tools"))
                 return self._stream_openai_codex_response(
                     ai_model=model,
                     payload=payload,
@@ -2655,6 +2710,27 @@ class OpenAIGatewayService:
 
         return kwargs
 
+    # ------------------------------------------------------------------
+    # T11 entry-path audit (gateway choke points)
+    #
+    # Every gateway entry path resolves the runtime session (T2) and logs
+    # usage via ``_record_gateway_request`` -> ``_resolve_runtime_session``,
+    # so T2 per-run sessions cover ALL paths uniformly. Verified paths:
+    #   - OpenAI chat/completions      (create_chat_completion / stream_*)
+    #   - OpenAI responses             (create_response / stream_response)
+    #   - Anthropic messages + stream  (create_message / stream_message,
+    #     served by this same OpenAIGatewayService)
+    #   - Gemini generateContent + stream (GeminiGatewayService delegates to
+    #     super().create_response / super().stream_response)
+    #
+    # Tool attribution (T1) is captured in ``_capture_tools_meta``. Most paths
+    # reach it via ``_call_litellm``. EXCEPTION: the OpenAI-Codex provider
+    # (provider_name == "openai-codex") bypasses ``_call_litellm`` and calls
+    # ``_create_openai_codex_response`` / ``_stream_openai_codex_*`` directly.
+    # Those four codex branches now call ``_capture_tools_meta`` themselves so
+    # attribution is not lost. Codex requests are not governance-stripped, so
+    # every codex tool reports ``stripped=False`` (correct).
+    # ------------------------------------------------------------------
     def _call_litellm(
         self,
         ai_model: AIModel,
@@ -2664,9 +2740,18 @@ class OpenAIGatewayService:
         stream: bool = False,
         provider: GatewayProvider,
     ):
+        # Capture the ORIGINAL tools before optimization strips any of them so
+        # per-tool attribution covers the request as the client sent it.
+        original_tools = payload.get("tools")
         messages, payload = self._optimize_request_context(
             messages=messages, payload=payload
         )
+        # Per locked decision D14: compute tools_meta in its own guarded block
+        # at the single choke point, outside _optimize_request_context's broad
+        # fail-open, and independent of whether an api_key is present (OAuth
+        # MCP-token traffic must still get attribution). Failures fail-open but
+        # are logged so attribution holes stay visible.
+        self._capture_tools_meta(original_tools)
         kwargs = self._build_completion_kwargs(
             ai_model,
             messages=messages,
@@ -2679,6 +2764,56 @@ class OpenAIGatewayService:
             return self.upstream_backend.completion(**kwargs)
         except Exception as exc:
             raise self._normalize_upstream_error(provider, exc) from exc
+
+    def _capture_tools_meta(self, original_tools: Any) -> None:
+        """Stash per-tool cost attribution for the usage row.
+
+        Builds ``self._last_tools_meta``: one entry per tool in the original
+        (pre-strip) request, recording the tool name, a token estimate of its
+        serialized schema, whether governance stripped it, and a heuristic
+        ``source`` label. Read into ``meta_data["tools_meta"]`` at log time.
+
+        Args:
+            original_tools: The request ``tools`` value before optimization.
+        """
+        self._last_tools_meta = None
+        if not isinstance(original_tools, list) or not original_tools:
+            return
+        try:
+            stripped_names: set[str] = set()
+            if self._last_context_optimization is not None:
+                stripped_names = set(self._last_context_optimization.stripped_tools)
+            tools_meta: List[Dict[str, Any]] = []
+            for definition in original_tools:
+                name = tool_definition_name(definition)
+                if not name:
+                    # Malformed tool (no resolvable name): skip it but keep
+                    # going so the rest of the request is still attributed.
+                    continue
+                try:
+                    schema_json = json.dumps(definition, default=str, sort_keys=True)
+                except (TypeError, ValueError):
+                    schema_json = ""
+                tools_meta.append(
+                    {
+                        "name": name,
+                        # Heuristic: the request payload carries only tool
+                        # names/schemas, never MCP server identity, so we cannot
+                        # reliably distinguish mcp-served from inline tools here.
+                        # Default to "payload"; true mcp/payload classification
+                        # requires the MCP-serving-layer join (deferred).
+                        "source": "payload",
+                        "schema_tokens_estimate": estimate_tokens(schema_json),
+                        "stripped": name in stripped_names,
+                    }
+                )
+            self._last_tools_meta = tools_meta or None
+        except Exception:
+            self._last_tools_meta = None
+            logger.warning(
+                "Failed to compute tools_meta attribution; forwarding without it",
+                exc_info=True,
+            )
 
     def _optimize_request_context(
         self,
@@ -2704,22 +2839,31 @@ class OpenAIGatewayService:
         if not self.auth_context.api_key:
             return messages, payload
         try:
-            account = crud_account.get(self.db, id=self.auth_context.user.account_id)
-            if account is None:
+            meta_data = get_cached_account_meta_data(
+                self.db, str(self.auth_context.user.account_id)
+            )
+            if meta_data is None:
                 return messages, payload
             subject_context = build_subject_context_from_api_key(
                 self.auth_context.api_key
             )
+            raw_tools = payload.get("tools")
+            has_tools = isinstance(raw_tools, list) and bool(raw_tools)
+            if not subject_governance_affects_gateway_context(
+                meta_data,
+                subject_context=subject_context,
+                has_tools=has_tools,
+            ):
+                return messages, payload
             settings_resolved = resolve_context_optimization_settings(
-                account.meta_data or {}, subject_context=subject_context
+                meta_data, subject_context=subject_context
             )
             optimized_messages, stats = optimize_messages(messages, settings_resolved)
-            raw_tools = payload.get("tools")
             optimized_payload = payload
-            if isinstance(raw_tools, list) and raw_tools:
+            if has_tools:
                 kept_tools, removed_names = strip_disabled_tools(
                     raw_tools,
-                    meta_data=account.meta_data or {},
+                    meta_data=meta_data,
                     subject_context=subject_context,
                 )
                 if removed_names:
@@ -2728,6 +2872,16 @@ class OpenAIGatewayService:
                     if not kept_tools:
                         optimized_payload.pop("tools", None)
                         optimized_payload.pop("tool_choice", None)
+                    elif "tool_choice" in optimized_payload:
+                        # Partial strip: if tool_choice names a removed tool it
+                        # would dangle and the upstream rejects the request with
+                        # HTTP 400. Fall back to "auto" in that case only.
+                        sanitized_choice, choice_changed = sanitize_tool_choice(
+                            optimized_payload["tool_choice"],
+                            removed_tool_names=set(removed_names),
+                        )
+                        if choice_changed:
+                            optimized_payload["tool_choice"] = sanitized_choice
             if stats.changed:
                 self._last_context_optimization = stats
             return optimized_messages, optimized_payload
@@ -3444,6 +3598,7 @@ class OpenAIGatewayService:
                     if self._last_context_optimization
                     else None
                 ),
+                "tools_meta": self._last_tools_meta,
                 "purpose": ((request_payload or {}).get("metadata") or {}).get(
                     "purpose"
                 ),

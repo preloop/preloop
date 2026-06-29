@@ -1,10 +1,8 @@
 """Session management for unified WebSocket connections."""
 
-import asyncio
 import logging
 import uuid
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
@@ -12,12 +10,9 @@ from fastapi import WebSocket
 from sqlalchemy.orm import Session
 
 from preloop.models.models import User, Event
-from preloop.models.db.session import get_db_session
+from preloop.services.db_executor import run_db_async
 
 logger = logging.getLogger(__name__)
-
-# Thread pool for DB operations to avoid blocking the event loop
-_db_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="session_db_")
 
 
 @dataclass
@@ -33,17 +28,29 @@ class WebSocketSession:
     websocket: WebSocket
     user_id: Optional[uuid.UUID]
     account_id: Optional[uuid.UUID]
+    username: Optional[str]
     fingerprint: Optional[str]
     ip_address: str
     user_agent: str
     connected_at: datetime
     last_activity: datetime
-    metadata: dict
+    metadata: dict = field(default_factory=dict)
 
     @property
     def is_authenticated(self) -> bool:
         """Check if this is an authenticated session."""
         return self.user_id is not None
+
+    @property
+    def display_name(self) -> str:
+        """Human-readable identity for logs without ORM lazy loads."""
+        if self.username:
+            return self.username
+        if self.user_id:
+            return str(self.user_id)
+        if self.fingerprint:
+            return f"anonymous {self.fingerprint[:8]}"
+        return "anonymous"
 
 
 class SessionManager:
@@ -68,21 +75,8 @@ class SessionManager:
         fingerprint: Optional[str],
         ip_address: str,
         user_agent: str,
-        db: Session,
     ) -> WebSocketSession:
-        """Create a new WebSocket session.
-
-        Args:
-            websocket: The WebSocket connection
-            user: The authenticated user (if any)
-            fingerprint: Browser fingerprint for anonymous users
-            ip_address: Client IP address
-            user_agent: Browser user agent string
-            db: Database session
-
-        Returns:
-            WebSocketSession object
-        """
+        """Create a new WebSocket session."""
         session_id = str(uuid.uuid4())
         connection_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
@@ -93,6 +87,7 @@ class SessionManager:
             websocket=websocket,
             user_id=user.id if user else None,
             account_id=user.account_id if user else None,
+            username=user.username if user else None,
             fingerprint=fingerprint,
             ip_address=ip_address,
             user_agent=user_agent,
@@ -104,7 +99,6 @@ class SessionManager:
         self.sessions[session_id] = session
         self.connection_to_session[connection_id] = session_id
 
-        # Persist session_start event to database (in thread pool to avoid blocking)
         activity = Event(
             session_id=uuid.UUID(session_id),
             user_id=session.user_id,
@@ -120,47 +114,31 @@ class SessionManager:
             },
         )
 
-        def _persist_event():
-            # Create a new session for thread-safety (SQLAlchemy sessions are not thread-safe)
-            thread_db = next(get_db_session())
-            try:
-                thread_db.add(activity)
-                thread_db.commit()
-            finally:
-                thread_db.close()
+        def _persist_event(db: Session) -> None:
+            db.add(activity)
+            db.commit()
 
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(_db_executor, _persist_event)
+        await run_db_async(_persist_event)
 
         logger.info(
-            f"Created session {session_id} for "
-            f"{'user ' + str(session.user_id) if session.user_id else 'anonymous ' + (fingerprint[:8] if fingerprint else 'unknown')}"
-            f" from {ip_address}"
+            f"Created session {session_id} for {session.display_name} from {ip_address}"
         )
 
         return session
 
-    async def end_session(self, session_id: str, db: Session) -> None:
-        """End a WebSocket session.
-
-        Args:
-            session_id: The session ID to end
-            db: Database session
-        """
+    async def end_session(self, session_id: str) -> None:
+        """End a WebSocket session."""
         session = self.sessions.pop(session_id, None)
         if not session:
             logger.warning(f"Attempted to end non-existent session {session_id}")
             return
 
-        # Remove connection mapping
         if session.connection_id in self.connection_to_session:
             del self.connection_to_session[session.connection_id]
 
-        # Calculate session duration
         now = datetime.now(timezone.utc)
         duration_seconds = (now - session.connected_at).total_seconds()
 
-        # Persist session_end event to database (in thread pool to avoid blocking)
         activity = Event(
             session_id=uuid.UUID(session_id),
             user_id=session.user_id,
@@ -175,95 +153,48 @@ class SessionManager:
             },
         )
 
-        def _persist_event():
-            # Create a new session for thread-safety (SQLAlchemy sessions are not thread-safe)
-            thread_db = next(get_db_session())
-            try:
-                thread_db.add(activity)
-                thread_db.commit()
-            finally:
-                thread_db.close()
+        def _persist_event(db: Session) -> None:
+            db.add(activity)
+            db.commit()
 
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(_db_executor, _persist_event)
+        await run_db_async(_persist_event)
 
         logger.info(
             f"Ended session {session_id} after {duration_seconds:.1f}s "
-            f"for {'user ' + str(session.user_id) if session.user_id else 'anonymous ' + (session.fingerprint[:8] if session.fingerprint else 'unknown')}"
+            f"for {session.display_name}"
         )
 
     def get_session(self, session_id: str) -> Optional[WebSocketSession]:
-        """Get session by ID.
-
-        Args:
-            session_id: The session ID to retrieve
-
-        Returns:
-            WebSocketSession object or None if not found
-        """
+        """Get session by ID."""
         return self.sessions.get(session_id)
 
     def get_session_by_connection(
         self, connection_id: str
     ) -> Optional[WebSocketSession]:
-        """Get session by connection ID.
-
-        Args:
-            connection_id: The connection ID to look up
-
-        Returns:
-            WebSocketSession object or None if not found
-        """
+        """Get session by connection ID."""
         session_id = self.connection_to_session.get(connection_id)
         if session_id:
             return self.sessions.get(session_id)
         return None
 
     def update_activity(self, session_id: str) -> None:
-        """Update last activity timestamp for a session.
-
-        Args:
-            session_id: The session ID to update
-        """
+        """Update last activity timestamp for a session."""
         session = self.sessions.get(session_id)
         if session:
             session.last_activity = datetime.now(timezone.utc)
 
     def get_active_sessions_count(self) -> int:
-        """Get count of active sessions.
-
-        Returns:
-            Number of active sessions
-        """
+        """Get count of active sessions."""
         return len(self.sessions)
 
     def get_sessions_for_account(self, account_id: uuid.UUID) -> list[WebSocketSession]:
-        """Get all active sessions for an account.
-
-        Args:
-            account_id: The account ID to filter by
-
-        Returns:
-            List of WebSocketSession objects
-        """
+        """Get all active sessions for an account."""
         return [s for s in self.sessions.values() if s.account_id == account_id]
 
-    def upgrade_session(
-        self, session_id: str, user: "User", db: Session
+    async def upgrade_session(
+        self, session_id: str, user: User
     ) -> Optional[WebSocketSession]:
-        """Upgrade an anonymous session to authenticated.
-
-        This is used for message-based authentication where the client
-        connects anonymously and then sends an authenticate message.
-
-        Args:
-            session_id: The session ID to upgrade
-            user: The authenticated user
-            db: Database session
-
-        Returns:
-            Updated WebSocketSession or None if session not found
-        """
+        """Upgrade an anonymous session to authenticated."""
         session = self.sessions.get(session_id)
         if not session:
             logger.warning(f"Cannot upgrade non-existent session {session_id}")
@@ -273,11 +204,10 @@ class SessionManager:
             logger.warning(f"Session {session_id} is already authenticated")
             return session
 
-        # Update session with user info
         session.user_id = user.id
         session.account_id = user.account_id
+        session.username = user.username
 
-        # Log the upgrade event
         now = datetime.now(timezone.utc)
         activity = Event(
             session_id=uuid.UUID(session_id),
@@ -294,8 +224,11 @@ class SessionManager:
             },
         )
 
-        db.add(activity)
-        db.commit()
+        def _persist_event(db: Session) -> None:
+            db.add(activity)
+            db.commit()
+
+        await run_db_async(_persist_event)
 
         logger.info(
             f"Upgraded session {session_id} to authenticated user {user.username}"

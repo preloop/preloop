@@ -43,6 +43,20 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*(\x07|\x1b\\)")
 _CHARS_PER_TOKEN = 4
 
 
+def estimate_tokens(text: str) -> int:
+    """Estimate token count for a text fragment.
+
+    Args:
+        text: Arbitrary message or schema content.
+
+    Returns:
+        Estimated token count (~4 characters per token); ``0`` for empty text.
+    """
+    if not text:
+        return 0
+    return max(1, len(text) // _CHARS_PER_TOKEN)
+
+
 @dataclass
 class ContextOptimizationSettings:
     """Resolved per-subject context optimization settings."""
@@ -146,6 +160,52 @@ def resolve_context_optimization_settings(
     return settings
 
 
+def subject_governance_affects_gateway_context(
+    meta_data: Optional[dict[str, Any]],
+    *,
+    subject_context: dict[str, Optional[str]],
+    has_tools: bool,
+) -> bool:
+    """Return True when governance may change the outgoing gateway request.
+
+    Used to skip the optimization pass when the scoped subjects have no
+    context-optimization settings or tool visibility overrides.
+
+    Args:
+        meta_data: Account meta_data holding the governance store.
+        subject_context: Subject context built from the request api key.
+        has_tools: Whether the request payload includes tool definitions.
+
+    Returns:
+        ``True`` when transforms or tool stripping may apply.
+    """
+    for subject_type, subject_id in subject_scope_chain(subject_context):
+        config = get_subject_governance(
+            meta_data, subject_type=subject_type, subject_id=subject_id
+        )
+        if not config:
+            continue
+        if has_tools:
+            overrides = config.get("tool_enabled_overrides")
+            if isinstance(overrides, dict) and any(
+                isinstance(enabled, bool) for enabled in overrides.values()
+            ):
+                return True
+        raw = config.get(CONTEXT_OPTIMIZATION_KEY)
+        if not isinstance(raw, dict):
+            continue
+        if raw.get("dedupe_tool_results") is True or raw.get("strip_noise") is True:
+            return True
+        cap = raw.get("max_tool_result_chars")
+        if cap is not None:
+            try:
+                if int(cap) > 0:
+                    return True
+            except (TypeError, ValueError):
+                continue
+    return False
+
+
 def strip_disabled_tools(
     tools: List[Any],
     *,
@@ -173,6 +233,77 @@ def strip_disabled_tools(
             continue
         kept.append(definition)
     return kept, removed
+
+
+def tool_definition_name(definition: Any) -> str:
+    """Extract the tool name from an OpenAI or Anthropic tool definition.
+
+    Public wrapper over the internal extractor so other gateway modules can
+    reuse the same name resolution.
+
+    Args:
+        definition: A single tool definition (OpenAI or Anthropic shaped).
+
+    Returns:
+        The resolved tool name, or an empty string when none can be found.
+    """
+    return _tool_definition_name(definition)
+
+
+def tool_choice_named_tool(tool_choice: Any) -> Optional[str]:
+    """Extract the tool name a ``tool_choice`` forces, if any.
+
+    Handles both provider shapes:
+
+    - OpenAI: ``{"type": "function", "function": {"name": ...}}``
+    - Anthropic: ``{"type": "tool", "name": ...}``
+
+    String forms (``"auto"``/``"none"``/``"required"``/``"any"``) name no
+    specific tool and yield ``None``.
+
+    Args:
+        tool_choice: The request ``tool_choice`` value (any shape).
+
+    Returns:
+        The forced tool name, or ``None`` when the choice names no tool.
+    """
+    if not isinstance(tool_choice, dict):
+        return None
+    choice_type = tool_choice.get("type")
+    if choice_type == "function":
+        function = tool_choice.get("function")
+        if isinstance(function, dict) and function.get("name"):
+            return str(function["name"])
+        return None
+    if choice_type == "tool" and tool_choice.get("name"):
+        return str(tool_choice["name"])
+    return None
+
+
+def sanitize_tool_choice(
+    tool_choice: Any, *, removed_tool_names: set[str]
+) -> Tuple[Any, bool]:
+    """Drop a ``tool_choice`` that forces a tool removed by governance.
+
+    When tools are partially stripped, a ``tool_choice`` naming one of the
+    removed tools would be forwarded with a dangling reference and rejected
+    upstream with HTTP 400. This rewrites such a choice to ``"auto"`` so the
+    request stays valid; all other choices (string forms, or object forms
+    naming a kept tool) pass through unchanged.
+
+    Args:
+        tool_choice: The request ``tool_choice`` value (any shape).
+        removed_tool_names: Names of tools removed by ``strip_disabled_tools``.
+
+    Returns:
+        Tuple of (possibly rewritten tool_choice, whether it was rewritten).
+    """
+    if not removed_tool_names:
+        return tool_choice, False
+    named_tool = tool_choice_named_tool(tool_choice)
+    if named_tool is not None and named_tool in removed_tool_names:
+        return "auto", True
+    return tool_choice, False
 
 
 def optimize_messages(

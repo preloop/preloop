@@ -21,6 +21,7 @@ import consoleStyles from '../../styles/console-styles.css?inline';
 import '../../components/view-header.ts';
 import '../../components/budget-policy-editor.ts';
 import '../../components/budget-health-card.ts';
+import '../../components/tool-cost-flags-panel.ts';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -763,6 +764,7 @@ export class CostView extends AuthedElement {
     return html`
       <div class="actions-stack">
         ${this.billingEnabled ? this.renderBudgets() : null}
+        <tool-cost-flags-panel></tool-cost-flags-panel>
         ${this.modelPriceOverridesEnabled ? this.renderPricing() : null}
       </div>
     `;

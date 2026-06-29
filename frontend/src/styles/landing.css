@@ -45,11 +45,13 @@ p.lead {
 .hero {
   position: relative;
   overflow: hidden;
-  background: linear-gradient(135deg,
-      hsl(25, 70%, 28%) 0%,
-      hsl(280, 50%, 25%) 33%,
-      hsl(200, 55%, 28%) 66%,
-      hsl(260, 60%, 30%) 100%);
+  background: linear-gradient(
+    135deg,
+    hsl(25, 70%, 28%) 0%,
+    hsl(280, 50%, 25%) 33%,
+    hsl(200, 55%, 28%) 66%,
+    hsl(260, 60%, 30%) 100%
+  );
   background-size: 400% 400%;
   animation: moveGradient 30s ease infinite;
   padding: 8rem 0;
@@ -99,6 +101,66 @@ p.lead {
   margin: 0 0 2rem 0;
 }
 
+/* Two-column hero: copy on the left, static product shot on the right. */
+.hero-inner.has-visual {
+  align-items: center;
+  gap: 4rem;
+}
+
+.hero-inner.has-visual .hero-content {
+  flex: 1 1 0;
+  max-width: 620px;
+}
+
+/* Narrower copy column needs a smaller headline so it doesn't wrap to 4 lines. */
+.hero-inner.has-visual .hero-content h1 {
+  font-size: 3.4rem;
+}
+
+.hero-visual {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.hero-visual img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 30px 70px rgba(0, 0, 0, 0.45);
+}
+
+/* Credibility tags under the hero CTAs (Apache-2.0 · Self-hostable · ...). */
+.hero-trust-tags {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1.2rem;
+  margin: 1.6rem 0 0;
+  padding: 0;
+}
+
+.hero-trust-tag {
+  position: relative;
+  color: rgba(230, 237, 243, 0.82);
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.hero-trust-tag:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  right: -0.65rem;
+  top: 50%;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: rgba(230, 237, 243, 0.4);
+  transform: translateY(-50%);
+}
+
 .hero-buttons {
   display: flex;
   gap: 1rem;
@@ -116,25 +178,12 @@ p.lead {
   gap: 0.5rem;
 }
 
-.hero-install-or {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  color: rgba(161, 161, 170, 0.85);
-  font-size: 0.8rem;
-  font-weight: 500;
+.hero-install-label {
+  font-size: 0.75rem;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-.hero-install-or-line {
-  flex: 1;
-  height: 1px;
-  background: rgba(161, 161, 170, 0.25);
-}
-
-.hero-install-or-text {
-  white-space: nowrap;
+  letter-spacing: 0.14em;
+  color: rgba(161, 161, 170, 0.95);
 }
 
 .hero-install-row {
@@ -186,7 +235,10 @@ p.lead {
   font: inherit;
   font-size: 0.8rem;
   cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
 }
 
 .hero-install-copy:hover {
@@ -204,6 +256,24 @@ p.lead {
   font-size: 0.85rem;
   color: rgba(161, 161, 170, 0.9);
   line-height: 1.4;
+}
+
+/* Secondary CTA ("Book a Demo") rendered under the install command. */
+.hero-secondary-cta {
+  margin-top: 1.1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.hero-secondary-text {
+  color: rgba(161, 161, 170, 0.85);
+  font-size: 0.95rem;
+}
+
+.hero-secondary-cta sl-button::part(base) {
+  font-size: 0.95rem;
 }
 
 .hero-image {
@@ -229,27 +299,35 @@ p.lead {
 }
 
 .gradient-faster {
-  background-image: linear-gradient(45deg,
-      hsl(211, 100%, 50%),
-      hsl(195, 100%, 50%));
+  background-image: linear-gradient(
+    45deg,
+    hsl(211, 100%, 50%),
+    hsl(195, 100%, 50%)
+  );
 }
 
 .gradient-safer {
-  background-image: linear-gradient(45deg,
-      hsl(220, 80%, 60%),
-      hsl(260, 80%, 70%));
+  background-image: linear-gradient(
+    45deg,
+    hsl(220, 80%, 60%),
+    hsl(260, 80%, 70%)
+  );
 }
 
 .gradient-product {
-  background-image: linear-gradient(45deg,
-      hsl(190, 80%, 55%),
-      hsl(140, 70%, 50%));
+  background-image: linear-gradient(
+    45deg,
+    hsl(190, 80%, 55%),
+    hsl(140, 70%, 50%)
+  );
 }
 
 .gradient-ai {
-  background-image: linear-gradient(45deg,
-      hsl(260, 90%, 70%),
-      hsl(320, 85%, 65%));
+  background-image: linear-gradient(
+    45deg,
+    hsl(260, 90%, 70%),
+    hsl(320, 85%, 65%)
+  );
 }
 
 /* Feature Section */
@@ -262,7 +340,6 @@ p.lead {
 .feature-section .section-container {
   text-align: left;
 }
-
 
 .carousel-navigation {
   margin-top: auto;
@@ -596,7 +673,6 @@ sl-carousel-item {
   border-radius: 2px;
 }
 
-
 .text-section h1 {
   font-size: 2.4rem;
   font-weight: 300;
@@ -850,7 +926,9 @@ summary.faq-question sl-icon {
   flex: 0 0 auto;
   font-size: 1.25rem;
   color: rgba(230, 237, 243, 0.6);
-  transition: transform 0.3s ease, color 0.2s ease;
+  transition:
+    transform 0.3s ease,
+    color 0.2s ease;
 }
 
 summary.faq-question:hover sl-icon {
@@ -900,8 +978,8 @@ summary.faq-question:hover sl-icon {
 }
 
 .faq-answer-content code {
-  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas,
-    monospace;
+  font-family:
+    'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.9em;
   background: rgba(110, 118, 129, 0.18);
   padding: 0.15em 0.35em;
@@ -955,8 +1033,6 @@ summary.faq-question:hover sl-icon {
   justify-content: flex-end;
 }
 
-
-
 /* Responsive Styles */
 @media (max-width: 1024px) {
   .tool-logos {
@@ -979,8 +1055,17 @@ summary.faq-question:hover sl-icon {
     text-align: center;
   }
 
-  .hero-content {
+  .hero-content,
+  .hero-inner.has-visual .hero-content {
     max-width: 100%;
+  }
+
+  .hero-visual {
+    display: none;
+  }
+
+  .hero-trust-tags {
+    justify-content: center;
   }
 
   .hero-content h1 {

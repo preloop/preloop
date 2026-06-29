@@ -578,18 +578,23 @@ async def get_user_from_token_if_valid(token: str, db_session: Any) -> Optional[
     Returns None if the token is invalid, expired, or the user doesn't exist.
     This function does not raise HTTPException.
     """
+    return get_user_from_token_if_valid_sync(token, db_session)
+
+
+def get_user_from_token_if_valid_sync(token: str, db_session: Any) -> Optional[User]:
+    """Sync variant for short-lived sessions in WebSocket handlers."""
     if not token:
         return None
 
     try:
-        # Check API key first if it doesn't look like a JWT
         if "." not in token:
             api_key = crud_api_key.get_by_key(db_session, key=token)
             if api_key:
                 user = _authenticate_with_api_key(db_session, api_key)
+                if user is not None:
+                    db_session.expunge(user)
                 return user
 
-        # Fallback to JWT
         token_data = decode_token(token)
         if isinstance(token_data, dict) and token_data.get("refresh", False):
             return None
@@ -607,6 +612,7 @@ async def get_user_from_token_if_valid(token: str, db_session: Any) -> Optional[
 
         user = crud_user.get(db_session, id=user_id)
         if user and user.is_active:
+            db_session.expunge(user)
             return user
 
     except JWTError as e:

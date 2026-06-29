@@ -696,10 +696,13 @@ async function generateSlottedContentForRoute(
     <h1 slot="hero-title">${hero.title || ''}</h1>
     <p slot="hero-lead">${hero.lead || ''}</p>
     <span slot="cta-primary">${hero.cta_primary || ''}</span>
+    ${hero.cta_primary_url ? `<span slot="cta-primary-url">${hero.cta_primary_url}</span>` : ''}
     <span slot="cta-secondary">${hero.cta_secondary || ''}</span>
     <span slot="cta-secondary-url">${hero.cta_secondary_url || ''}</span>
     ${(hero as any).install_command ? `<code slot="cta-install">${(hero as any).install_command}</code>` : ''}
     ${(hero as any).install_caption ? `<span slot="cta-install-caption">${(hero as any).install_caption}</span>` : ''}
+    ${(hero.trust_tags || []).length ? `<span slot="cta-install-tags">${escapeHtml((hero.trust_tags || []).join('|'))}</span>` : ''}
+    ${hero.image ? `<div slot="hero-image" data-src="${escapeAttr(hero.image)}" data-alt="${escapeAttr(hero.image_alt || '')}"></div>` : ''}
 
     <!-- Extended description slot (only if exists) -->
     ${meta.extended_description ? `<p slot="extended-description">${meta.extended_description}</p>` : ''}
@@ -993,6 +996,24 @@ function generateRobotsTxt(config: BrandConfig): string {
   return `User-agent: *\nAllow: /\n\nSitemap: https://${config.domain}/sitemap.xml\n`;
 }
 
+/**
+ * Resolve a hero CTA URL for plain-text output (llms.txt). Absolute URLs pass
+ * through; relative paths and anchors are prefixed with the brand domain; an
+ * empty value falls back to the supplied default path.
+ */
+function resolveCtaUrl(
+  ctaUrl: string | undefined,
+  domain: string,
+  fallbackPath: string
+): string {
+  if (!ctaUrl) return `https://${domain}${fallbackPath}`;
+  if (ctaUrl.startsWith('http')) return ctaUrl;
+  // Anchors and bare paths are rooted at the domain (e.g. "#get-started" ->
+  // "https://domain/#get-started").
+  const path = ctaUrl.startsWith('/') ? ctaUrl : `/${ctaUrl}`;
+  return `https://${domain}${path}`;
+}
+
 function generateLlmsTxt(
   config: BrandConfig,
   includeAiActReadiness: boolean,
@@ -1015,7 +1036,11 @@ function generateLlmsTxt(
     ...routes.map((route) => `- https://${config.domain}${route}`),
     '',
     'Primary calls to action:',
-    `- ${hero.cta_primary || 'Sign up'} -> https://${config.domain}/register`,
+    `- ${hero.cta_primary || 'Sign up'} -> ${resolveCtaUrl(
+      (hero as any).cta_primary_url,
+      config.domain,
+      '/register'
+    )}`,
     `- ${hero.cta_secondary || 'Request demo'} -> ${(hero as any).cta_secondary_url || `https://${config.domain}/request-demo`}`,
     '',
   ].join('\n');

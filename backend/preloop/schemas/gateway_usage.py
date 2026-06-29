@@ -328,6 +328,18 @@ class ManagedAgentCredentialSummary(BaseModel):
     revoked_reason: Optional[str] = None
 
 
+class ManagedAgentRegisterRequest(BaseModel):
+    """Request to register a custom managed agent the CLI cannot discover.
+
+    Used when an operator wants to onboard an agent (for example a customer's
+    LangGraph agent) that has never connected through a runtime session, so a
+    gateway credential can subsequently be minted for it.
+    """
+
+    display_name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+
+
 class ManagedAgentCredentialCreateRequest(BaseModel):
     """Request to create a durable credential for one managed agent."""
 

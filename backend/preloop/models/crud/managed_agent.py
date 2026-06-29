@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any, Optional
 
@@ -355,6 +356,64 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         db_obj.managed_mcp_servers = normalized_servers
         db.add(db_obj)
         db.flush()
+        return db_obj
+
+    def create_custom_agent(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        display_name: str,
+        description: Optional[str] = None,
+        commit: bool = True,
+    ) -> ManagedAgent:
+        """Register a custom managed agent the discovery CLI cannot find.
+
+        Custom agents never connect through a runtime session, so they are
+        given a generated ``session_source_id`` (``custom_<token>``) under the
+        reserved ``custom`` source type. Because the id is random it can never
+        collide with the real local-config source ids that ``preloop agents
+        discover`` keys off, so a later discovery run will not be deduped
+        against this row.
+
+        Args:
+            db: Active database session.
+            account_id: Owning account identifier.
+            display_name: Operator-facing name for the agent.
+            description: Optional free-form description; stored under ``tags``.
+            commit: Whether to commit the transaction.
+
+        Returns:
+            The newly created ManagedAgent row.
+        """
+        now = _utc_now()
+        normalized_name = display_name.strip()
+        session_source_id = f"custom_{secrets.token_urlsafe(16)}"
+        tags: dict[str, str] = {}
+        if description and description.strip():
+            tags["description"] = description.strip()
+        db_obj = ManagedAgent(
+            account_id=account_id,
+            runtime_session_id=None,
+            agent_kind=normalize_managed_agent_kind("custom"),
+            session_source_type="custom",
+            session_source_id=session_source_id,
+            session_reference=None,
+            display_name=normalized_name,
+            enrolled_via="operator_registration",
+            managed_mcp_servers=[],
+            tags=tags,
+            lifecycle_state="active",
+            lifecycle_reason=None,
+            lifecycle_updated_at=now,
+            last_seen_at=now,
+        )
+        db.add(db_obj)
+        if commit:
+            db.commit()
+            db.refresh(db_obj)
+        else:
+            db.flush()
         return db_obj
 
     def list_for_account(

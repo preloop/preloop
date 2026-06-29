@@ -227,8 +227,8 @@ describe('PreloopSessionObserver', () => {
     expect(text).to.include('Claude Workspace');
     expect(text).to.include('Supporting activity (1)');
     expect(text).to.not.include('Duplicate model summary');
-    expect(text).to.include('Open replay');
-    expect(text).to.include('Summarize');
+    expect(text).to.include('Transcript');
+    expect(text).to.include('Replay');
     expect(
       fetchStub.calledWithMatch(
         '/api/v1/runtime-sessions/runtime-session-1/optimizations'
@@ -250,11 +250,11 @@ describe('PreloopSessionObserver', () => {
         timeout: 3000,
       }
     );
-    const chatButton = Array.from(
+    const replayButton = Array.from(
       el.shadowRoot?.querySelectorAll('sl-button') || []
-    ).find((button) => button.textContent?.trim() === 'chat');
-    expect(chatButton).to.exist;
-    chatButton!.click();
+    ).find((button) => button.textContent?.trim() === 'Replay');
+    expect(replayButton).to.exist;
+    replayButton!.click();
     await el.updateComplete;
 
     expect(deepText(el.shadowRoot)).to.include(
@@ -262,7 +262,7 @@ describe('PreloopSessionObserver', () => {
     );
   });
 
-  it('opens replay in a dialog with time controls', async () => {
+  it('shows replay view with time controls when replay mode is selected', async () => {
     const el = (await fixture(
       html`<preloop-session-observer
         .sessions=${[session]}
@@ -270,26 +270,26 @@ describe('PreloopSessionObserver', () => {
       ></preloop-session-observer>`
     )) as PreloopSessionObserver;
 
-    await waitUntil(() => deepText(el.shadowRoot).includes('Open replay'), '', {
+    await waitUntil(() => deepText(el.shadowRoot).includes('Replay'), '', {
       timeout: 3000,
     });
-    const replayPanel = el.shadowRoot?.querySelector('session-replay-panel');
-    const openButton = Array.from(
-      replayPanel?.shadowRoot?.querySelectorAll('sl-button') || []
-    ).find((button) => button.textContent?.trim() === 'Open replay');
-    expect(openButton).to.exist;
-    openButton!.dispatchEvent(
-      new MouseEvent('click', { bubbles: true, composed: true })
-    );
+    const replayButton = Array.from(
+      el.shadowRoot?.querySelectorAll('sl-button') || []
+    ).find((button) => button.textContent?.trim() === 'Replay');
+    expect(replayButton).to.exist;
+    replayButton!.click();
     await el.updateComplete;
+
+    const replayPanel = el.shadowRoot?.querySelector('session-replay-panel');
     await replayPanel?.updateComplete;
 
-    const dialog = replayPanel?.shadowRoot?.querySelector('sl-dialog') as
-      | HTMLElement
-      | undefined;
-    expect((dialog as any)?.open).to.equal(true);
+    await waitUntil(
+      () => deepText(replayPanel?.shadowRoot).includes('Start'),
+      'Replay view did not load controls',
+      { timeout: 3000 }
+    );
+
     const replayText = deepText(replayPanel?.shadowRoot);
-    expect(replayText).to.include('Start');
     expect(
       replayPanel?.shadowRoot?.querySelector('sl-button[title="Jump to start"]')
     ).to.exist;
@@ -306,7 +306,6 @@ describe('PreloopSessionObserver', () => {
     ).to.exist;
     expect(replayPanel?.shadowRoot?.querySelector('select.speed-select-native'))
       .to.exist;
-    expect(replayText).to.include('Optimize');
     expect(replayText).to.include('Tool call');
     expect(replayText).to.not.include('Loaded');
     expect(replayText).to.not.include('Comic');
@@ -331,12 +330,8 @@ describe('PreloopSessionObserver', () => {
         timeout: 3000,
       }
     );
-    const summarizeButton = Array.from(
-      el.shadowRoot?.querySelectorAll('sl-button') || []
-    ).find((button) => button.textContent?.trim() === 'Summarize');
-    summarizeButton!.dispatchEvent(
-      new MouseEvent('click', { bubbles: true, composed: true })
-    );
+    // Programmatically enable summarizeVisibleContent as the toolbar button is removed
+    (el as any).summarizeVisibleContent = true;
     await el.updateComplete;
 
     await waitUntil(

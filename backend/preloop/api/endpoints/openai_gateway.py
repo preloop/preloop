@@ -58,9 +58,15 @@ def create_chat_completion(
     db: Session = Depends(get_db_session),
     auth_context: ModelGatewayAuthContext = Depends(get_model_gateway_auth_context),
     budget_enforcer: Any = Depends(get_budget_enforcer),
+    x_preloop_session_id: Optional[str] = Header(None, alias="X-Preloop-Session-Id"),
 ) -> Any:
     """Create an OpenAI-compatible chat completion."""
-    service = OpenAIGatewayService(db, auth_context, budget_enforcer=budget_enforcer)
+    service = OpenAIGatewayService(
+        db,
+        auth_context,
+        budget_enforcer=budget_enforcer,
+        client_session_id=x_preloop_session_id,
+    )
     if payload.get("stream"):
         return StreamingResponse(
             service.stream_chat_completion(payload),
@@ -75,9 +81,15 @@ def create_response(
     db: Session = Depends(get_db_session),
     auth_context: ModelGatewayAuthContext = Depends(get_model_gateway_auth_context),
     budget_enforcer: Any = Depends(get_budget_enforcer),
+    x_preloop_session_id: Optional[str] = Header(None, alias="X-Preloop-Session-Id"),
 ) -> Any:
     """Create an OpenAI-compatible response."""
-    service = OpenAIGatewayService(db, auth_context, budget_enforcer=budget_enforcer)
+    service = OpenAIGatewayService(
+        db,
+        auth_context,
+        budget_enforcer=budget_enforcer,
+        client_session_id=x_preloop_session_id,
+    )
     if payload.get("stream"):
         return StreamingResponse(
             service.stream_response(payload),

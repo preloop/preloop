@@ -997,6 +997,45 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+    post:
+      tags:
+      - Account
+      summary: Create Account Managed Agent
+      description: "Register a custom managed agent the discovery CLI cannot find.\n\
+        \nCreates a durable ManagedAgent row under the reserved ``custom`` source\n\
+        type with a generated ``session_source_id`` and ``lifecycle_state`` of\n``active``\
+        \ so the operator can immediately mint a gateway credential for it\nvia ``POST\
+        \ /agents/{agent_id}/credentials``.\n\nDuplicate ``display_name`` values are\
+        \ allowed within an account: each custom\nagent is keyed by a unique generated\
+        \ ``session_source_id``, so two agents\nsharing a display name remain distinct\
+        \ registry entries. Operators may\nlegitimately run several copies of the\
+        \ same agent, so we do not reject this.\n\nArgs:\n    payload: Display name\
+        \ and optional description for the new agent.\n    account: Resolved account\
+        \ for the authenticated user.\n    current_user: Authenticated active user\
+        \ performing the registration.\n    db: Database session.\n\nReturns:\n  \
+        \  The managed-agent summary for the newly registered agent."
+      operationId: create_account_managed_agent_api_v1_agents_post
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ManagedAgentRegisterRequest'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagedAgentSummary'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/agents/control:
     get:
       tags:
@@ -11549,6 +11588,30 @@ components:
       type: object
       title: ManagedAgentModelBindingSyncRequest
       description: Replace request for one managed agent's configured model bindings.
+    ManagedAgentRegisterRequest:
+      properties:
+        display_name:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Display Name
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+      type: object
+      required:
+      - display_name
+      title: ManagedAgentRegisterRequest
+      description: 'Request to register a custom managed agent the CLI cannot discover.
+
+
+        Used when an operator wants to onboard an agent (for example a customer''s
+
+        LangGraph agent) that has never connected through a runtime session, so a
+
+        gateway credential can subsequently be minted for it.'
     ManagedAgentServerActivitySummary:
       properties:
         server_name:

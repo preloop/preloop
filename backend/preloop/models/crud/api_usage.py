@@ -869,6 +869,45 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             query = query.filter(ApiUsage.meta_data["purpose"].astext == purpose)
         return float(query.scalar() or 0.0)
 
+    def list_gateway_rows_in_window(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        start: datetime,
+        end: datetime,
+        limit: int = 5000,
+    ) -> List[ApiUsage]:
+        """List model-gateway usage rows for an account within a time window.
+
+        Returns the full ``ApiUsage`` rows (not aggregates) so deterministic
+        analyzers can inspect per-row ``meta_data`` (e.g. ``tools_meta``),
+        ``prompt_tokens``, ``estimated_cost`` and ``ai_model_id``. The window
+        is half-open: ``start <= timestamp < end``.
+
+        Args:
+            db: Database session.
+            account_id: Owning account id.
+            start: Inclusive window start.
+            end: Exclusive window end.
+            limit: Maximum number of rows to return (newest first).
+
+        Returns:
+            Matching gateway usage rows ordered newest-first.
+        """
+        return (
+            db.query(ApiUsage)
+            .filter(
+                ApiUsage.action_type == "model_gateway",
+                ApiUsage.account_id == account_id,
+                ApiUsage.timestamp >= start,
+                ApiUsage.timestamp < end,
+            )
+            .order_by(ApiUsage.timestamp.desc())
+            .limit(limit)
+            .all()
+        )
+
     def get_runtime_principal_gateway_averages(
         self,
         db: Session,
