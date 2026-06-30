@@ -24,6 +24,7 @@ import type {
   AgentControlVoiceTranscriptRequest,
   ManagedAgentDetailResponse,
   ManagedAgentSummary,
+  ManagedAgentModelBindingSummary,
   ManagedAgentUpdateRequest,
   SubjectGovernanceConfig,
   SubjectGovernanceResponse,
@@ -33,6 +34,7 @@ import type {
   RuntimeSessionSummary,
   RuntimeSessionUpdateRequest,
   RuntimeSessionActivityListResponse,
+  RuntimeSessionRequestListResponse,
   RuntimeSessionSummaryInsight,
   RuntimeSessionInteractionSummary,
   RuntimeSessionOptimizationResponse,
@@ -739,6 +741,38 @@ export async function createManagedAgent(
   return response.json();
 }
 
+export interface UpdateManagedAgentRequest {
+  display_name?: string;
+  tags?: Record<string, string>;
+}
+
+/**
+ * Update a managed agent's display name and/or tags after registration.
+ * PATCH /api/v1/agents/{agentId}
+ *
+ * The registration endpoint (POST /api/v1/agents) accepts only
+ * {display_name, description}; tags are set here in a follow-up PATCH. Tags are
+ * a flat string->string map (e.g. {env: "prod", db: "true"}). Returns the
+ * updated managed agent summary.
+ */
+export async function updateManagedAgent(
+  agentId: string,
+  payload: UpdateManagedAgentRequest
+): Promise<ManagedAgentSummary> {
+  const response = await fetchWithAuth(`/api/v1/agents/${agentId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to update managed agent')
+    );
+  }
+  return response.json();
+}
+
 export interface ManagedAgentCredentialCreateRequest {
   name: string;
   description?: string;
@@ -780,6 +814,46 @@ export async function createManagedAgentCredential(
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
       extractErrorMessage(errorData, 'Failed to mint agent credential')
+    );
+  }
+  return response.json();
+}
+
+export interface ManagedAgentModelBindingSyncItem {
+  ai_model_id: string;
+  binding_type?: string;
+  config_key: string;
+  gateway_alias: string;
+  is_primary?: boolean;
+  status?: string;
+}
+
+export interface ManagedAgentModelBindingSyncRequest {
+  bindings: ManagedAgentModelBindingSyncItem[];
+}
+
+/**
+ * Replace the explicit AI model bindings for a managed agent. This is the set
+ * of gateway-enabled models the agent is allowed to route through Preloop.
+ * PUT /api/v1/agents/{agentId}/model-bindings
+ * Returns the persisted binding summaries.
+ */
+export async function replaceManagedAgentModelBindings(
+  agentId: string,
+  payload: ManagedAgentModelBindingSyncRequest
+): Promise<ManagedAgentModelBindingSummary[]> {
+  const response = await fetchWithAuth(
+    `/api/v1/agents/${agentId}/model-bindings`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to set agent model bindings')
     );
   }
   return response.json();
@@ -1079,6 +1153,34 @@ export async function getRuntimeSessionGatewayEvents(
   );
   if (!response.ok) {
     throw new Error('Failed to fetch runtime session gateway events');
+  }
+  return response.json();
+}
+
+export async function getRuntimeSessionRequests(
+  sessionId: string,
+  options: {
+    limit?: number;
+    offset?: number;
+    failedOnly?: boolean;
+    eventIds?: string[];
+  } = {}
+): Promise<RuntimeSessionRequestListResponse> {
+  const searchParams = new URLSearchParams();
+  if (options.limit !== undefined)
+    searchParams.set('limit', String(options.limit));
+  if (options.offset !== undefined)
+    searchParams.set('offset', String(options.offset));
+  if (options.failedOnly) searchParams.set('failed_only', 'true');
+  if (options.eventIds) {
+    for (const id of options.eventIds) searchParams.append('event_ids', id);
+  }
+  const params = searchParams.toString() ? `?${searchParams.toString()}` : '';
+  const response = await fetchWithAuth(
+    `/api/v1/runtime-sessions/${sessionId}/requests${params}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch runtime session requests');
   }
   return response.json();
 }

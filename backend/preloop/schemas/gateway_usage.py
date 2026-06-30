@@ -180,6 +180,7 @@ class RuntimeSessionSummary(BaseModel):
     runtime_principal_type: Optional[str] = None
     runtime_principal_id: Optional[str] = None
     runtime_principal_name: Optional[str] = None
+    title: Optional[str] = None
     summary: Optional[str] = None
     summary_updated_at: Optional[datetime] = None
     started_at: datetime
@@ -485,6 +486,47 @@ class RuntimeSessionActivityListResponse(BaseModel):
     """List of activity items for a runtime session."""
 
     items: List[RuntimeSessionActivityItem] = Field(default_factory=list)
+
+
+class RuntimeSessionRequestTool(BaseModel):
+    """One tool carried by a single gateway request."""
+
+    name: Optional[str] = None
+    source: Optional[str] = None
+    schema_tokens_estimate: int = 0
+    stripped: bool = False
+
+
+class RuntimeSessionRequestItem(BaseModel):
+    """One per-request gateway usage row for the unified session timeline."""
+
+    id: str
+    timestamp: Optional[datetime] = None
+    model_alias: Optional[str] = None
+    provider_name: Optional[str] = None
+    status_code: int = 0
+    is_error: bool = False
+    finish_reason: Optional[str] = None
+    is_retry: bool = False
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    estimated_cost: float = 0.0
+    endpoint: Optional[str] = None
+    tools: List[RuntimeSessionRequestTool] = Field(default_factory=list)
+    tools_total_schema_tokens: int = 0
+
+
+class RuntimeSessionRequestListResponse(BaseModel):
+    """Paginated per-request rows for one runtime session."""
+
+    items: List[RuntimeSessionRequestItem] = Field(default_factory=list)
+    total: int = 0
+    failed_count: int = 0
+    limit: int = 100
+    offset: int = 0
+    next_offset: Optional[int] = None
+    has_more: bool = False
 
 
 class RuntimeSessionSummaryInsight(BaseModel):

@@ -7,7 +7,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
 from preloop.api.auth.jwt import get_user_from_token_if_valid_sync
-from preloop.api.endpoints.websocket_db import run_db_async
+from preloop.api.endpoints.websocket_db import detach_user, run_db_async
 from preloop.models.crud import crud_flow, crud_flow_execution
 from preloop.models.models import User
 from preloop.services.activity_tracker import handle_activity
@@ -24,7 +24,8 @@ async def _resolve_token_user(token: str) -> Optional[User]:
     """Validate a token using a short-lived database session."""
 
     def _lookup(db: Session) -> Optional[User]:
-        return get_user_from_token_if_valid_sync(token, db)
+        user = get_user_from_token_if_valid_sync(token, db)
+        return detach_user(db, user)
 
     return await run_db_async(_lookup)
 

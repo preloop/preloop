@@ -357,8 +357,23 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 .having(func.count(ApiUsage.id) >= min_requests)
                 .subquery()
             )
+            # Keep historical empty "shell" sessions hidden, but a freshly
+            # created session (e.g. a Hermes "/new") has zero requests for the
+            # first few seconds before its first gateway call lands. Surface it
+            # immediately when it is recent and still open, so a new session is
+            # visible the moment it is created instead of only after its request
+            # count catches up.
+            recent_cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(
+                minutes=15
+            )
             session_query = session_query.filter(
-                self.model.id.in_(usage_count_subq.select())
+                or_(
+                    self.model.id.in_(usage_count_subq.select()),
+                    and_(
+                        self.model.started_at >= recent_cutoff,
+                        self.model.ended_at.is_(None),
+                    ),
+                )
             )
         if session_source_type:
             session_query = session_query.filter(
@@ -440,6 +455,16 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             if summary_columns_available
             else literal(None)
         )
+        title_column = (
+            literal_column("runtime_session.title")
+            if summary_columns_available
+            else literal(None)
+        )
+        title_request_count_column = (
+            literal_column("runtime_session.title_request_count")
+            if summary_columns_available
+            else literal(None)
+        )
         return (
             session_query.outerjoin(ApiUsage, usage_join)
             .outerjoin(Flow, ApiUsage.flow_id == Flow.id)
@@ -454,6 +479,8 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.runtime_principal_name,
                 summary_column.label("summary"),
                 summary_updated_at_column.label("summary_updated_at"),
+                title_column.label("title"),
+                title_request_count_column.label("title_request_count"),
                 self.model.started_at,
                 self.model.last_activity_at,
                 self.model.ended_at,
@@ -494,11 +521,60 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.runtime_principal_name,
                 summary_column,
                 summary_updated_at_column,
+                title_column,
+                title_request_count_column,
                 self.model.started_at,
                 self.model.last_activity_at,
                 self.model.ended_at,
             )
         )
+
+    def update_session_title(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        runtime_session_id: str,
+        title: Optional[str],
+        summary: Optional[str] = None,
+        title_request_count: Optional[int] = None,
+        commit: bool = True,
+    ) -> Optional[RuntimeSession]:
+        """Persist a generated title (and optional summary) for one session.
+
+        Args:
+            db: Database session.
+            account_id: Owning account id.
+            runtime_session_id: Runtime session to update.
+            title: Short human-readable title, or ``None`` to leave unchanged.
+            summary: Optional longer summary; updates ``summary_updated_at``
+                when provided.
+            title_request_count: Session request count captured when the title
+                was generated, used to drive the periodic refresh watermark.
+            commit: Whether to commit the change.
+
+        Returns:
+            The updated runtime session, or ``None`` when it was not found.
+        """
+        db_obj = self.get_account_session(
+            db, account_id=account_id, runtime_session_id=runtime_session_id
+        )
+        if db_obj is None:
+            return None
+        if title is not None:
+            db_obj.title = title
+        if summary is not None:
+            db_obj.summary = summary
+            db_obj.summary_updated_at = datetime.now(UTC)
+        if title_request_count is not None:
+            db_obj.title_request_count = title_request_count
+        db.add(db_obj)
+        if commit:
+            db.commit()
+            db.refresh(db_obj)
+        else:
+            db.flush()
+        return db_obj
 
     def get_account_session(
         self, db: Session, *, account_id: str, runtime_session_id: str
@@ -569,6 +645,16 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             if summary_columns_available
             else literal(None)
         )
+        title_column = (
+            literal_column("runtime_session.title")
+            if summary_columns_available
+            else literal(None)
+        )
+        title_request_count_column = (
+            literal_column("runtime_session.title_request_count")
+            if summary_columns_available
+            else literal(None)
+        )
         row = (
             db.query(
                 self.model.account_id,
@@ -581,6 +667,8 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.runtime_principal_name,
                 summary_column.label("summary"),
                 summary_updated_at_column.label("summary_updated_at"),
+                title_column.label("title"),
+                title_request_count_column.label("title_request_count"),
                 self.model.started_at,
                 self.model.last_activity_at,
                 self.model.ended_at,
@@ -626,6 +714,8 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.runtime_principal_name,
                 summary_column,
                 summary_updated_at_column,
+                title_column,
+                title_request_count_column,
                 self.model.started_at,
                 self.model.last_activity_at,
                 self.model.ended_at,
@@ -663,7 +753,12 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 column["name"]
                 for column in inspect(bind).get_columns("runtime_session")
             }
-            available = {"summary", "summary_updated_at"}.issubset(columns)
+            available = {
+                "summary",
+                "summary_updated_at",
+                "title",
+                "title_request_count",
+            }.issubset(columns)
         except Exception:
             available = False
         _summary_columns_cache[cache_key] = available
@@ -730,6 +825,12 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             "runtime_principal_name": row.runtime_principal_name,
             "summary": row.summary,
             "summary_updated_at": row.summary_updated_at,
+            "title": row.title,
+            "title_request_count": (
+                int(row.title_request_count)
+                if row.title_request_count is not None
+                else None
+            ),
             "started_at": row.started_at,
             "last_activity_at": row.last_activity_at,
             "ended_at": row.ended_at,

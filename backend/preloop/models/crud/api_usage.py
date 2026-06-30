@@ -908,6 +908,84 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             .all()
         )
 
+    def list_session_request_rows(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        runtime_session_id: Any,
+        limit: int = 100,
+        offset: int = 0,
+        failed_only: bool = False,
+        event_ids: Optional[List[str]] = None,
+    ) -> List[ApiUsage]:
+        """List per-request gateway usage rows for one runtime session.
+
+        Returns full ``ApiUsage`` rows (one per gateway request) so the
+        front-end timeline can be built from real per-request data instead of
+        the sparse captured gateway events. Rows are ordered oldest-first so
+        callers can present a stable chronological stream.
+
+        Args:
+            db: Database session.
+            account_id: Owning account id.
+            runtime_session_id: Runtime session whose requests to list.
+            limit: Maximum number of rows to return.
+            offset: Number of rows to skip (pagination).
+            failed_only: When True, restrict to rows with ``status_code >= 400``.
+            event_ids: Optional explicit ``ApiUsage`` ids to restrict to.
+
+        Returns:
+            Matching gateway usage rows ordered oldest-first.
+        """
+        query = db.query(ApiUsage).filter(
+            ApiUsage.action_type == "model_gateway",
+            ApiUsage.account_id == account_id,
+            ApiUsage.runtime_session_id == runtime_session_id,
+        )
+        if failed_only:
+            query = query.filter(ApiUsage.status_code >= 400)
+        if event_ids:
+            query = query.filter(ApiUsage.id.in_(event_ids))
+        return (
+            query.order_by(ApiUsage.timestamp.asc(), ApiUsage.id.asc())
+            .limit(limit)
+            .offset(offset)
+            .all()
+        )
+
+    def count_session_request_rows(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        runtime_session_id: Any,
+        failed_only: bool = False,
+        event_ids: Optional[List[str]] = None,
+    ) -> int:
+        """Count per-request gateway usage rows for one runtime session.
+
+        Args:
+            db: Database session.
+            account_id: Owning account id.
+            runtime_session_id: Runtime session whose requests to count.
+            failed_only: When True, count only rows with ``status_code >= 400``.
+            event_ids: Optional explicit ``ApiUsage`` ids to restrict to.
+
+        Returns:
+            Number of matching gateway usage rows.
+        """
+        query = db.query(func.count(ApiUsage.id)).filter(
+            ApiUsage.action_type == "model_gateway",
+            ApiUsage.account_id == account_id,
+            ApiUsage.runtime_session_id == runtime_session_id,
+        )
+        if failed_only:
+            query = query.filter(ApiUsage.status_code >= 400)
+        if event_ids:
+            query = query.filter(ApiUsage.id.in_(event_ids))
+        return int(query.scalar() or 0)
+
     def get_runtime_principal_gateway_averages(
         self,
         db: Session,

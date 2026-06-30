@@ -75,6 +75,30 @@ export const VS_PAGE_META: Record<string, VsPageMeta> = {
     keywords:
       'LiteLLM alternative, LLM gateway with policies, open-source LLM proxy with approvals, AI model gateway open source, AI agent control plane, MCP firewall, AI agent governance, Claude Code governance, Codex CLI governance, Cursor agent security, AI agent audit trail',
   },
+  runlayer: {
+    competitor: 'Runlayer',
+    title: 'Preloop vs Runlayer — Open-Source MCP Security & Approvals',
+    description:
+      'Open-source Runlayer alternative: self-hostable MCP firewall with per-call human approvals in the free core, AI model gateway, runtime observability, and a tamper-evident audit trail. Apache 2.0, no vendor lock-in.',
+    keywords:
+      'open-source Runlayer alternative, self-hosted MCP security, MCP firewall with human approvals, per-call agent approvals, AI agent control plane, MCP gateway open source, AI agent governance, AI agent audit trail, Claude Code governance, Codex CLI governance, Cursor agent security',
+  },
+  lunar: {
+    competitor: 'Lunar.dev MCPX',
+    title: 'Preloop vs Lunar.dev MCPX — Approvals in the Free Core',
+    description:
+      'Open-source Lunar.dev MCPX alternative: MCP firewall with human-in-the-loop approvals in the free core, AI model gateway, runtime observability, and audit. Self-hostable Apache 2.0 control plane.',
+    keywords:
+      'Lunar.dev MCPX alternative, open-source MCP gateway, MCP firewall with approvals, human in the loop agent approvals, self-hosted MCP gateway, AI agent control plane, AI model gateway, AI agent governance, Claude Code governance, Codex CLI governance, Cursor agent security',
+  },
+  helicone: {
+    competitor: 'Helicone',
+    title: 'Preloop vs Helicone — Migrate to an Active Control Plane',
+    description:
+      'Migrating from Helicone? Preloop is an actively developed, Apache 2.0 AI agent control plane: an AI model gateway plus an MCP firewall, human approvals, runtime observability, and audit that Helicone does not have.',
+    keywords:
+      'Helicone alternative, Helicone migration, open-source LLM gateway, AI model gateway with approvals, MCP firewall, AI agent control plane, LLM observability alternative, AI agent governance, Claude Code governance, Codex CLI governance, Cursor agent security',
+  },
 };
 
 export function get_vs_slug_from_route(route: string): string | null {

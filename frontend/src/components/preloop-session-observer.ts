@@ -5,11 +5,13 @@ import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/button-group/button-group.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
+import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import {
   applyRuntimeSessionOptimization,
+  createBudgetPolicy,
   getAccountAgent,
   getAccountRuntimeSessionActivityTimeline,
   getAccountRuntimeSessionDetail,
@@ -19,6 +21,7 @@ import {
   getApiKeyGatewayUsageSummary,
   getRuntimeSessionGatewayEventDetail,
   getRuntimeSessionGatewayEvents,
+  getRuntimeSessionRequests,
   listRuntimeSessionOptimizationActions,
   optimizeRuntimeSession,
   summarizeRuntimeSessionGatewayEvent,
@@ -31,6 +34,7 @@ import type {
   RuntimeSessionOptimizationAppliedAction,
   RuntimeSessionOptimizationResponse,
   RuntimeSessionActivityItem,
+  RuntimeSessionRequestItem,
   RuntimeSessionSummary,
 } from '../types';
 import { unifiedWebSocketManager } from '../services/unified-websocket-manager';
@@ -47,6 +51,7 @@ import {
 } from '../utils/session-observer';
 import './session-list-panel';
 import './session-replay-panel';
+import './session-request-timeline';
 
 type SessionInput = RuntimeSessionSummary | Record<string, unknown>;
 type EventPageState = {
@@ -111,6 +116,39 @@ export class PreloopSessionObserver extends LitElement {
 
   @state()
   private loadedActivity: Record<string, RuntimeSessionActivityItem[]> = {};
+
+  @state()
+  private loadedRequests: Record<string, RuntimeSessionRequestItem[]> = {};
+
+  @state()
+  private loadedRequestPages: Record<string, EventPageState> = {};
+
+  @state()
+  private requestsFailedOnly = false;
+
+  @state()
+  private requestsView = false;
+
+  @state()
+  private loadingRequestsForSessionId: string | null = null;
+
+  @state()
+  private requestFailedCount: Record<string, number> = {};
+
+  @state()
+  private budgetDialogSession: ObservedSession | null = null;
+
+  @state()
+  private budgetDialogLimit = '50';
+
+  @state()
+  private budgetDialogPeriod = 'daily';
+
+  @state()
+  private budgetDialogBusy = false;
+
+  @state()
+  private budgetDialogResult: string | null = null;
 
   @state()
   private loadedEventDetails: Record<string, FlowGatewayEvent> = {};
@@ -271,10 +309,30 @@ export class PreloopSessionObserver extends LitElement {
     }
   `;
 
+  private readonly handleInspectRequests = (event: Event): void => {
+    const detail = (event as CustomEvent).detail || {};
+    void this.openRequestsView({
+      failedOnly: Boolean(detail.failedOnly),
+      eventIds: detail.eventIds || [],
+    });
+  };
+
+  private readonly handleCreateBudget = (): void => {
+    this.budgetDialogResult = null;
+    this.budgetDialogSession = this.activeSession;
+  };
+
   connectedCallback(): void {
     super.connectedCallback();
     this.replayMode = this.defaultReplayMode;
     this.connectRealtime();
+    // These typed optimization actions bubble up from the replay panel (and its
+    // dialogs). Listen on the host so the buttons actually do something.
+    this.addEventListener(
+      'session-inspect-requests',
+      this.handleInspectRequests
+    );
+    this.addEventListener('session-create-budget', this.handleCreateBudget);
     void this.loadAIModels();
     void this.loadSessions();
   }
@@ -282,6 +340,11 @@ export class PreloopSessionObserver extends LitElement {
   disconnectedCallback(): void {
     super.disconnectedCallback();
     this.unsubscribeRealtime?.();
+    this.removeEventListener(
+      'session-inspect-requests',
+      this.handleInspectRequests
+    );
+    this.removeEventListener('session-create-budget', this.handleCreateBudget);
     if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
     if (this.livePulseTimer !== null) window.clearTimeout(this.livePulseTimer);
   }
@@ -592,6 +655,103 @@ export class PreloopSessionObserver extends LitElement {
         error instanceof Error ? error.message : 'Failed to load more events';
     } finally {
       this.loadingMoreEventsForSessionId = null;
+    }
+  }
+
+  private async loadSessionRequests(
+    sessionId: string,
+    options: { reset?: boolean; failedOnly?: boolean; eventIds?: string[] } = {}
+  ): Promise<void> {
+    if (this.loadingRequestsForSessionId === sessionId && !options.reset)
+      return;
+    const failedOnly = options.failedOnly ?? this.requestsFailedOnly;
+    const existing = options.reset ? [] : this.loadedRequests[sessionId] || [];
+    const offset = options.reset ? 0 : existing.length;
+    this.loadingRequestsForSessionId = sessionId;
+    try {
+      const response = await getRuntimeSessionRequests(sessionId, {
+        limit: EVENT_PAGE_SIZE,
+        offset,
+        failedOnly,
+        eventIds: options.eventIds,
+      });
+      this.loadedRequests = {
+        ...this.loadedRequests,
+        [sessionId]: [...existing, ...(response.items || [])],
+      };
+      this.loadedRequestPages = {
+        ...this.loadedRequestPages,
+        [sessionId]: {
+          nextOffset: response.next_offset,
+          total: response.total,
+          hasMore: response.has_more,
+        },
+      };
+      this.requestFailedCount = {
+        ...this.requestFailedCount,
+        [sessionId]: response.failed_count,
+      };
+    } catch (error) {
+      console.error('Failed to load session requests:', error);
+      this.error =
+        error instanceof Error ? error.message : 'Failed to load requests';
+    } finally {
+      this.loadingRequestsForSessionId = null;
+    }
+  }
+
+  private async openRequestsView(options: {
+    failedOnly?: boolean;
+    eventIds?: string[];
+  }): Promise<void> {
+    if (!this.activeSessionId) return;
+    this.requestsFailedOnly = Boolean(options.failedOnly);
+    this.requestsView = true;
+    await this.loadSessionRequests(this.activeSessionId, {
+      reset: true,
+      failedOnly: options.failedOnly,
+      eventIds: options.eventIds,
+    });
+  }
+
+  private async setRequestsFailedOnly(failedOnly: boolean): Promise<void> {
+    if (!this.activeSessionId) return;
+    this.requestsFailedOnly = failedOnly;
+    await this.loadSessionRequests(this.activeSessionId, {
+      reset: true,
+      failedOnly,
+    });
+  }
+
+  private async submitBudgetForActiveSession(): Promise<void> {
+    const session = this.budgetDialogSession;
+    if (!session || this.budgetDialogBusy) return;
+    const raw = (session.raw || {}) as Record<string, unknown>;
+    const subjectType =
+      (raw.runtime_principal_type as string) === 'managed_agents'
+        ? 'managed_agents'
+        : (raw.runtime_principal_type as string) || 'account';
+    const subjectId = (raw.runtime_principal_id as string) || null;
+    this.budgetDialogBusy = true;
+    this.budgetDialogResult = null;
+    try {
+      await createBudgetPolicy({
+        subject_type: subjectId ? subjectType : 'account',
+        subject_id: subjectId,
+        model_alias: null,
+        period: this.budgetDialogPeriod,
+        hard_limit_usd: Number(this.budgetDialogLimit) || 0,
+        soft_limit_usd: null,
+        notify_on_soft: false,
+        notify_on_hard: true,
+        notification_emails: null,
+      });
+      this.budgetDialogResult = 'Budget created for this agent.';
+    } catch (error) {
+      this.budgetDialogResult =
+        error instanceof Error ? error.message : 'Failed to create budget';
+    } finally {
+      this.budgetDialogBusy = false;
     }
   }
 
@@ -948,6 +1108,22 @@ export class PreloopSessionObserver extends LitElement {
                 </sl-button-group>
               `
             : nothing}
+          <sl-button
+            size="small"
+            variant=${this.requestsView ? 'primary' : 'default'}
+            @click=${() => {
+              if (this.requestsView) {
+                this.requestsView = false;
+              } else {
+                void this.openRequestsView({
+                  failedOnly: this.requestsFailedOnly,
+                });
+              }
+            }}
+          >
+            <sl-icon slot="prefix" name="list-columns-reverse"></sl-icon>
+            Requests
+          </sl-button>
           <sl-button size="small" @click=${() => this.reloadActiveSession()}>
             Refresh
           </sl-button>
@@ -987,6 +1163,83 @@ export class PreloopSessionObserver extends LitElement {
                 <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
                 ${this.error}
               </sl-alert>
+            `
+          : nothing}
+        ${this.requestsView
+          ? html`
+              <session-request-timeline
+                .requests=${this.activeSessionId
+                  ? this.loadedRequests[this.activeSessionId] || []
+                  : []}
+                .total=${this.activeSessionId
+                  ? (this.loadedRequestPages[this.activeSessionId]?.total ?? 0)
+                  : 0}
+                .failedCount=${this.activeSessionId
+                  ? (this.requestFailedCount[this.activeSessionId] ?? 0)
+                  : 0}
+                .failedOnly=${this.requestsFailedOnly}
+                .loading=${this.loadingRequestsForSessionId ===
+                this.activeSessionId}
+                .hasMore=${this.activeSessionId
+                  ? (this.loadedRequestPages[this.activeSessionId]?.hasMore ??
+                    false)
+                  : false}
+                @request-timeline-failed-only=${(event: CustomEvent) =>
+                  this.setRequestsFailedOnly(Boolean(event.detail?.failedOnly))}
+                @request-timeline-load-more=${() =>
+                  this.activeSessionId
+                    ? this.loadSessionRequests(this.activeSessionId)
+                    : undefined}
+              ></session-request-timeline>
+            `
+          : nothing}
+        ${this.budgetDialogSession
+          ? html`
+              <sl-dialog
+                label="Create budget for this agent"
+                open
+                @sl-after-hide=${() => {
+                  this.budgetDialogSession = null;
+                }}
+              >
+                <div>
+                  Create a hard spend budget for
+                  <strong>${this.budgetDialogSession.title}</strong>.
+                </div>
+                <div style="display:flex;gap:8px;margin-top:12px;">
+                  <sl-input
+                    type="number"
+                    label="Hard limit (USD)"
+                    .value=${this.budgetDialogLimit}
+                    @sl-input=${(event: Event) => {
+                      this.budgetDialogLimit = (
+                        event.target as HTMLInputElement
+                      ).value;
+                    }}
+                  ></sl-input>
+                </div>
+                ${this.budgetDialogResult
+                  ? html`<div style="margin-top:8px;">
+                      ${this.budgetDialogResult}
+                    </div>`
+                  : nothing}
+                <sl-button
+                  slot="footer"
+                  @click=${() => {
+                    this.budgetDialogSession = null;
+                  }}
+                >
+                  Close
+                </sl-button>
+                <sl-button
+                  slot="footer"
+                  variant="primary"
+                  ?loading=${this.budgetDialogBusy}
+                  @click=${() => this.submitBudgetForActiveSession()}
+                >
+                  Create budget
+                </sl-button>
+              </sl-dialog>
             `
           : nothing}
         <session-replay-panel

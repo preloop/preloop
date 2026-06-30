@@ -14,6 +14,7 @@ import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import '../../components/governance-rule-set-editor.ts';
 import '../../components/budget-policy-editor.ts';
 import '../../components/tools-editor-component.ts';
+import '../../components/tool-cost-flags-panel.ts';
 import '../../components/preloop-session-observer.ts';
 import '../../components/view-header.ts';
 import '../../components/resource-actions.ts';
@@ -2680,6 +2681,15 @@ export class AgentDetailView extends LitElement {
                       </div>
                     </div>
                   </sl-card>
+                  <div style="margin-top: var(--sl-spacing-large);">
+                    <div
+                      class="hero-title"
+                      style="margin-bottom: var(--sl-spacing-small);"
+                    >
+                      Expensive tool definitions
+                    </div>
+                    <tool-cost-flags-panel></tool-cost-flags-panel>
+                  </div>
                 `
               : nothing}
             ${this.activeTab === 'vnc' ? this.renderVNCTab() : nothing}

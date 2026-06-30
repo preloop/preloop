@@ -9,6 +9,7 @@ import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
+import '@shoelace-style/shoelace/dist/components/range/range.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import type {
   AIModel,
@@ -68,6 +69,65 @@ const TRANSCRIPT_FILTERS: Array<{ id: TranscriptFilter; label: string }> = [
   { id: 'model', label: 'Model calls' },
   { id: 'tools', label: 'Tool calls' },
   { id: 'costly', label: 'Costly first' },
+];
+
+// --- Unified sortable chat (turn/delta model) ---------------------------------
+//
+// Each gateway request is rendered as one "turn". Consecutive agentic requests
+// re-send a growing message list, so for each turn we render only the messages
+// it ADDED relative to the previous request (the delta) plus that request's
+// assistant response. This deduplicates the conversation and makes each turn a
+// self-contained, sortable unit.
+
+type ChatSort = 'oldest' | 'newest' | 'costliest' | 'cheapest' | 'type';
+
+type ChatTypeFilter = 'all' | 'messages' | 'tools';
+
+type ChatThresholdMode = 'tokens' | 'cost';
+
+// A single delta message belonging to a turn.
+type ChatTurnMessage = FlowGatewayConversationPreviewMessage & {
+  key: string;
+  signature: string;
+  isToolRelated: boolean;
+};
+
+// One turn = one gateway request (with only its delta messages) OR a standalone
+// supporting-activity message (e.g. an operator/agent-control message) shown
+// inline in the chat flow.
+type ChatTurn = {
+  id: string;
+  index: number;
+  event: FlowGatewayEvent | null;
+  timestamp: string | null;
+  title: string;
+  deltaMessages: ChatTurnMessage[];
+  totalTokens: number;
+  promptTokens: number;
+  completionTokens: number;
+  // Prompt-cache hits read off the usage details (OpenAI cached_tokens /
+  // Anthropic cache_read_input_tokens). null when the payload doesn't carry it.
+  cachedTokens: number | null;
+  estimatedCost: number;
+  toolCallCount: number;
+  failed: boolean;
+  // Activity (operator/talk) turns are NOT gateway requests: they carry no real
+  // token/cost/tool stats, so the header suppresses those meaningless zeros.
+  isActivity: boolean;
+};
+
+const CHAT_SORTS: Array<{ id: ChatSort; label: string }> = [
+  { id: 'oldest', label: 'Oldest first' },
+  { id: 'newest', label: 'Newest first' },
+  { id: 'costliest', label: 'Costliest first' },
+  { id: 'cheapest', label: 'Cheapest first' },
+  { id: 'type', label: 'By event type' },
+];
+
+const CHAT_TYPE_FILTERS: Array<{ id: ChatTypeFilter; label: string }> = [
+  { id: 'all', label: 'All' },
+  { id: 'messages', label: 'Messages only' },
+  { id: 'tools', label: 'Tool calls only' },
 ];
 
 const REPLAY_MARKER_LEGEND: Array<{ kind: ReplayMarkerKind; label: string }> = [
@@ -193,6 +253,23 @@ export class SessionReplayPanel extends LitElement {
 
   @state()
   private transcriptFilter: TranscriptFilter = 'all';
+
+  // Unified sortable chat controls.
+  @state()
+  private chatSort: ChatSort = 'oldest';
+
+  @state()
+  private chatTypeFilter: ChatTypeFilter = 'all';
+
+  @state()
+  private chatThreshold = 0;
+
+  @state()
+  private chatThresholdMode: ChatThresholdMode = 'tokens';
+
+  // Turns expanded into their full request context (lazy-loaded on expand).
+  @state()
+  private expandedTurnEventIds = new Set<string>();
 
   private replayTimer: number | null = null;
   private summaryObserver: IntersectionObserver | null = null;
@@ -716,6 +793,219 @@ export class SessionReplayPanel extends LitElement {
       justify-content: space-between;
     }
 
+    .chat-control-bar {
+      align-items: center;
+      background: var(--sl-color-neutral-50);
+      border: 1px solid var(--sl-color-neutral-200);
+      border-radius: var(--sl-border-radius-medium);
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--sl-spacing-small);
+      justify-content: space-between;
+      padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
+    }
+
+    .chat-control-cluster {
+      align-items: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--sl-spacing-x-small);
+    }
+
+    .chat-control-label {
+      color: var(--sl-color-neutral-600);
+      font-size: var(--sl-font-size-x-small);
+      font-weight: var(--sl-font-weight-semibold);
+    }
+
+    .chat-threshold-input {
+      background: var(--sl-color-neutral-0);
+      border: 1px solid var(--sl-color-neutral-300);
+      border-radius: var(--sl-border-radius-small);
+      color: var(--sl-color-neutral-800);
+      font: inherit;
+      height: 30px;
+      padding: 0 6px;
+      width: 96px;
+    }
+
+    .chat-threshold-slider {
+      --track-color-active: var(--sl-color-primary-500);
+      min-width: 120px;
+      width: clamp(120px, 18vw, 200px);
+    }
+
+    .chat-threshold-slider::part(form-control-label) {
+      color: var(--sl-color-neutral-500);
+      font-size: var(--sl-font-size-x-small);
+    }
+
+    .chat-select {
+      background: var(--sl-color-neutral-0);
+      border: 1px solid var(--sl-color-neutral-300);
+      border-radius: var(--sl-border-radius-small);
+      color: var(--sl-color-neutral-800);
+      font: inherit;
+      height: 30px;
+      padding: 0 4px;
+    }
+
+    /* Whole-session cost picture: a quiet dashboard strip, not a banner. Muted
+       secondary metadata in neutral tokens, consistent with the chat styling. */
+    .chat-summary-bar {
+      align-items: center;
+      background: var(--sl-color-neutral-50);
+      border: 1px solid var(--sl-color-neutral-200);
+      border-radius: var(--sl-border-radius-medium);
+      color: var(--sl-color-neutral-600);
+      display: flex;
+      flex-wrap: wrap;
+      font-size: var(--sl-font-size-x-small);
+      gap: var(--sl-spacing-x-small) var(--sl-spacing-medium);
+      padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
+    }
+
+    .chat-summary-item {
+      align-items: baseline;
+      display: inline-flex;
+      gap: var(--sl-spacing-2x-small);
+      white-space: nowrap;
+    }
+
+    .chat-summary-label {
+      color: var(--sl-color-neutral-500);
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+
+    .chat-summary-value {
+      color: var(--sl-color-neutral-800);
+      font-weight: var(--sl-font-weight-semibold);
+    }
+
+    .chat-summary-value.has-tools {
+      color: var(--sl-color-warning-700);
+    }
+
+    .chat-summary-value.has-failures {
+      color: var(--sl-color-danger-700);
+    }
+
+    .chat-summary-sub {
+      color: var(--sl-color-neutral-500);
+    }
+
+    .chat-thread {
+      display: flex;
+      flex-direction: column;
+      gap: var(--sl-spacing-medium);
+    }
+
+    .chat-turn {
+      border: 1px solid var(--sl-color-neutral-200);
+      border-radius: var(--sl-border-radius-medium);
+      display: flex;
+      flex-direction: column;
+      gap: var(--sl-spacing-x-small);
+      padding: var(--sl-spacing-small);
+    }
+
+    .chat-turn.failed {
+      border-color: var(--sl-color-danger-300);
+      box-shadow: inset 3px 0 0 var(--sl-color-danger-500);
+    }
+
+    /* Most-expensive request turn: a subtle warning-toned left accent so the
+       cost story is visible without sorting. Failed turns keep their danger
+       accent (the .failed rule wins by source order if both apply). */
+    .chat-turn.most-expensive {
+      border-color: var(--sl-color-warning-300);
+      box-shadow: inset 3px 0 0 var(--sl-color-warning-500);
+    }
+
+    .chat-turn-cost-chip {
+      align-items: center;
+      background: var(--sl-color-warning-50);
+      border: 1px solid var(--sl-color-warning-200);
+      border-radius: 999px;
+      color: var(--sl-color-warning-700);
+      display: inline-flex;
+      font-size: var(--sl-font-size-x-small);
+      font-weight: var(--sl-font-weight-semibold);
+      gap: var(--sl-spacing-2x-small);
+      padding: 1px 8px;
+      white-space: nowrap;
+    }
+
+    .chat-turn-header {
+      align-items: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--sl-spacing-x-small);
+      justify-content: space-between;
+    }
+
+    .chat-turn-header-main {
+      align-items: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--sl-spacing-x-small);
+      min-width: 0;
+    }
+
+    .chat-turn-title {
+      color: var(--sl-color-neutral-900);
+      font-size: var(--sl-font-size-small);
+      font-weight: var(--sl-font-weight-semibold);
+    }
+
+    .chat-turn-time {
+      color: var(--sl-color-neutral-500);
+      font-size: var(--sl-font-size-x-small);
+      font-weight: var(--sl-font-weight-normal);
+    }
+
+    .chat-turn-badges {
+      align-items: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--sl-spacing-small);
+    }
+
+    /* Per-turn token/cost/tool counts are secondary metadata: quiet, muted,
+       lighter weight and a touch smaller than the conversation text. */
+    .chat-turn-stat {
+      color: var(--sl-color-neutral-500);
+      font-size: var(--sl-font-size-x-small);
+      font-weight: var(--sl-font-weight-normal);
+      letter-spacing: 0.01em;
+      white-space: nowrap;
+    }
+
+    .chat-turn-stat.has-tools {
+      color: var(--sl-color-warning-700);
+    }
+
+    .chat-turn-bubbles {
+      display: flex;
+      flex-direction: column;
+      gap: var(--sl-spacing-x-small);
+    }
+
+    .chat-turn-empty {
+      color: var(--sl-color-neutral-500);
+      font-size: var(--sl-font-size-x-small);
+      font-style: italic;
+    }
+
+    .chat-turn-detail {
+      border-top: 1px dashed var(--sl-color-neutral-200);
+      display: grid;
+      gap: var(--sl-spacing-small);
+      margin-top: var(--sl-spacing-x-small);
+      padding-top: var(--sl-spacing-small);
+    }
+
     .tool-row {
       align-items: center;
       background: var(--sl-color-neutral-50);
@@ -782,6 +1072,11 @@ export class SessionReplayPanel extends LitElement {
     .optimize-range {
       display: grid;
       gap: var(--sl-spacing-2x-small);
+    }
+
+    .optimize-range-dual {
+      display: grid;
+      gap: 2px;
     }
 
     .optimize-range-markers {
@@ -1182,9 +1477,10 @@ export class SessionReplayPanel extends LitElement {
       return;
     }
     this.pauseReplay();
-    if (this.replayMode === 'optimize' && this.optimizationEnabled) {
-      this.ensureOptimizationLoaded();
-    }
+    // Do NOT auto-generate optimization suggestions on entering the optimize
+    // view. We only render previously cached results here; (re)generation
+    // happens exclusively when the user clicks the explicit Generate /
+    // Regenerate button.
   }
 
   private updateReplayDetailObserver(): void {
@@ -1510,10 +1806,29 @@ export class SessionReplayPanel extends LitElement {
     this.requestReplayCurrentEventDetail(messages[this.replayIndex]);
   }
 
+  // The effective optimization scope. optimizeToIndex defaults to 0 (unset);
+  // treat that as "the whole session" to match the end slider, which displays
+  // `optimizeToIndex || lastIndex`. Without this the slider looks full but the
+  // scope is just event 0, so Generate analyzes a single event and returns
+  // nothing — the reason the optimize view appeared to do nothing by default.
+  private getEffectiveOptimizeBounds(messages = this.getReplayMessages()): {
+    fromIndex: number;
+    toIndex: number;
+  } {
+    const lastIndex = Math.max(messages.length - 1, 0);
+    const effectiveTo =
+      this.optimizeToIndex > 0 ? this.optimizeToIndex : lastIndex;
+    const lo = Math.min(this.optimizeFromIndex, effectiveTo);
+    const hi = Math.max(this.optimizeFromIndex, effectiveTo);
+    return {
+      fromIndex: Math.min(Math.max(lo, 0), lastIndex),
+      toIndex: Math.min(Math.max(hi, 0), lastIndex),
+    };
+  }
+
   private requestOptimization(regenerate = false): void {
     const messages = this.getReplayMessages();
-    const fromIndex = Math.min(this.optimizeFromIndex, this.optimizeToIndex);
-    const toIndex = Math.max(this.optimizeFromIndex, this.optimizeToIndex);
+    const { fromIndex, toIndex } = this.getEffectiveOptimizeBounds(messages);
     const sourceKinds = Array.from(this.optimizeSources);
     this.dispatchEvent(
       new CustomEvent('session-optimization-requested', {
@@ -1585,17 +1900,10 @@ export class SessionReplayPanel extends LitElement {
     `;
   }
 
-  private ensureOptimizationLoaded(): void {
-    if (!this.optimizationSuggestions?.length && !this.loadingOptimization) {
-      this.requestOptimization(false);
-    }
-  }
-
   private getOptimizationEvents(
     messages = this.getReplayMessages()
   ): FlowGatewayEvent[] {
-    const fromIndex = Math.min(this.optimizeFromIndex, this.optimizeToIndex);
-    const toIndex = Math.max(this.optimizeFromIndex, this.optimizeToIndex);
+    const { fromIndex, toIndex } = this.getEffectiveOptimizeBounds(messages);
     const byId = new Map<string, FlowGatewayEvent>();
     messages.slice(fromIndex, toIndex + 1).forEach((message) => {
       if (!message.event) return;
@@ -1644,6 +1952,35 @@ export class SessionReplayPanel extends LitElement {
   private handleOptimizationSelected(
     suggestion: SessionOptimizationSuggestion
   ): void {
+    // Wire the typed action buttons that the optimization panel emits. These
+    // previously fell through to local replay tricks and did nothing useful.
+    const action = suggestion.action;
+    if (action?.type === 'open_events') {
+      const params = action.params || {};
+      const eventIds = Array.isArray(params.event_ids)
+        ? (params.event_ids as string[])
+        : suggestion.evidenceEventIds || [];
+      const failedOnly = Boolean(params.failed_only ?? !eventIds.length);
+      this.dispatchEvent(
+        new CustomEvent('session-inspect-requests', {
+          detail: { eventIds, failedOnly, suggestion },
+          bubbles: true,
+          composed: true,
+        })
+      );
+      return;
+    }
+    if (action?.type === 'set_budget') {
+      this.dispatchEvent(
+        new CustomEvent('session-create-budget', {
+          detail: { action, suggestion, session: this.session },
+          bubbles: true,
+          composed: true,
+        })
+      );
+      return;
+    }
+
     this.optimizeControlsOpen = true;
     const messages = this.getVisibleReplayMessages();
     if (!messages.length) return;
@@ -2134,6 +2471,33 @@ export class SessionReplayPanel extends LitElement {
     return Number(event.payload?.estimated_cost || 0);
   }
 
+  // Read prompt-cache hits robustly across providers. Checks, in order:
+  // OpenAI usage_details.prompt_tokens_details.cached_tokens, the same nested
+  // under the payload root, then Anthropic cache_read_input_tokens (nested then
+  // root). Returns null when no cache field is present (older captures) so the
+  // header can omit the annotation gracefully.
+  private getEventCachedTokens(event: FlowGatewayEvent | null): number | null {
+    if (!event) return null;
+    const payload = (event.payload || {}) as Record<string, unknown>;
+    const usageDetails = (payload.usage_details ?? null) as Record<
+      string,
+      unknown
+    > | null;
+    const candidates: Array<unknown> = [
+      (usageDetails?.prompt_tokens_details as Record<string, unknown>)
+        ?.cached_tokens,
+      (payload.prompt_tokens_details as Record<string, unknown>)?.cached_tokens,
+      usageDetails?.cache_read_input_tokens,
+      payload.cache_read_input_tokens,
+    ];
+    for (const candidate of candidates) {
+      if (candidate === null || candidate === undefined) continue;
+      const value = Number(candidate);
+      if (Number.isFinite(value) && value > 0) return value;
+    }
+    return null;
+  }
+
   private getEventOutcome(event: FlowGatewayEvent | null): string {
     if (!event) return 'unknown';
     return String(event.payload?.outcome || event.payload?.status || 'unknown');
@@ -2408,6 +2772,21 @@ export class SessionReplayPanel extends LitElement {
           timestamp: item.timestamp,
         };
       });
+  }
+
+  // Label an agent-control activity turn from its role/source so an operator
+  // (talk) message is never shown as a "Developer message" gateway request.
+  private getActivityTurnLabel(
+    message: FlowGatewayConversationPreviewMessage
+  ): string {
+    const role = (message.role || '').toLowerCase();
+    if (role.includes('assistant') || role.includes('agent')) {
+      return 'Agent message';
+    }
+    if (role.includes('system')) return 'System message';
+    if (role.includes('developer')) return 'Developer message';
+    // agent_control messages default to operator/talk input.
+    return 'Operator message';
   }
 
   private renderTimelineLegend() {
@@ -2727,36 +3106,49 @@ export class SessionReplayPanel extends LitElement {
                   </label>
                 </div>
                 <div class="optimize-control-row">
-                  <label class="optimize-range">
-                    <div class="event-meta">From event</div>
-                    <input
-                      class="timeline-range"
-                      type="range"
-                      min="0"
-                      max=${String(lastIndex)}
-                      .value=${String(this.optimizeFromIndex)}
-                      @input=${(event: Event) => {
-                        this.optimizeFromIndex = Number(
-                          (event.target as HTMLInputElement).value
-                        );
-                      }}
-                    />
-                    ${this.renderOptimizationRangeMarkers(messages)}
-                  </label>
-                  <label class="optimize-range">
-                    <div class="event-meta">To event</div>
-                    <input
-                      class="timeline-range"
-                      type="range"
-                      min="0"
-                      max=${String(lastIndex)}
-                      .value=${String(this.optimizeToIndex || lastIndex)}
-                      @input=${(event: Event) => {
-                        this.optimizeToIndex = Number(
-                          (event.target as HTMLInputElement).value
-                        );
-                      }}
-                    />
+                  <label class="optimize-range" style="flex: 1 1 100%;">
+                    <div class="event-meta">
+                      Optimization scope (events
+                      ${this.getEffectiveOptimizeBounds(messages).fromIndex} –
+                      ${this.getEffectiveOptimizeBounds(messages).toIndex} of
+                      ${formatNumber(Math.max(messages.length, 1))})
+                    </div>
+                    <div class="optimize-range-dual">
+                      <input
+                        class="timeline-range"
+                        type="range"
+                        aria-label="Range start"
+                        min="0"
+                        max=${String(lastIndex)}
+                        .value=${String(this.optimizeFromIndex)}
+                        @input=${(event: Event) => {
+                          const value = Number(
+                            (event.target as HTMLInputElement).value
+                          );
+                          this.optimizeFromIndex = Math.min(
+                            value,
+                            this.optimizeToIndex || lastIndex
+                          );
+                        }}
+                      />
+                      <input
+                        class="timeline-range"
+                        type="range"
+                        aria-label="Range end"
+                        min="0"
+                        max=${String(lastIndex)}
+                        .value=${String(this.optimizeToIndex || lastIndex)}
+                        @input=${(event: Event) => {
+                          const value = Number(
+                            (event.target as HTMLInputElement).value
+                          );
+                          this.optimizeToIndex = Math.max(
+                            value,
+                            this.optimizeFromIndex
+                          );
+                        }}
+                      />
+                    </div>
                     ${this.renderOptimizationRangeMarkers(messages)}
                   </label>
                 </div>
@@ -2815,7 +3207,14 @@ export class SessionReplayPanel extends LitElement {
                 }}
               ></session-optimization-panel>
             `
-          : nothing}
+          : this.optimizationResult && !this.loadingOptimization
+            ? html`
+                <div class="empty">
+                  No optimization opportunities found for the selected scope.
+                  Widen the range, or run a longer / more tool-heavy session.
+                </div>
+              `
+            : nothing}
       </div>
     `;
   }
@@ -3027,6 +3426,792 @@ export class SessionReplayPanel extends LitElement {
     );
   }
 
+  // --- Unified sortable chat (turn/delta model) -----------------------------
+
+  // The chat-eligible gateway events, merged across sources and de-duplicated by
+  // id, sorted oldest-first. This is the natural request order used as the basis
+  // for delta computation; sorting for display happens afterwards.
+  private getChatEvents(): FlowGatewayEvent[] {
+    const merged = this.mergeReplayEvents(
+      this.timelineEvents.length ? this.timelineEvents : this.events,
+      this.events,
+      Object.values(this.eventDetails)
+    );
+    return merged.filter((event) => {
+      // Keep model gateway requests; drop pure non-request markers that carry no
+      // conversation. Tool-only events still flow through as tool turns.
+      if (event.type.includes('model_gateway')) return true;
+      if (event.payload?.tool_name) return true;
+      if (getGatewayEventPreviewMessages(event).length) return true;
+      return false;
+    });
+  }
+
+  // A stable signature for a preview message so the same message re-sent across
+  // requests collapses to a single delta entry.
+  private getMessageSignature(
+    message: FlowGatewayConversationPreviewMessage
+  ): string {
+    const role = (message.role || message.source || 'message').toLowerCase();
+    const text = (message.text || '').trim();
+    return `${role}::${text}`;
+  }
+
+  private messageIsToolRelated(
+    message: FlowGatewayConversationPreviewMessage
+  ): boolean {
+    const role = (message.role || message.source || '').toLowerCase();
+    return role.includes('tool') || role.includes('function');
+  }
+
+  // Build turns: one per request, each holding only the messages it added
+  // relative to the previous request (the growing-prefix delta) plus this
+  // request's assistant response.
+  private getChatTurns(): ChatTurn[] {
+    const events = this.getChatEvents();
+    const seenSignatures = new Set<string>();
+    const eventTurns: ChatTurn[] = [];
+
+    events.forEach((event) => {
+      const previewMessages = getGatewayEventPreviewMessages(event);
+      const deltaMessages: ChatTurnMessage[] = [];
+      let toolCallCount = 0;
+
+      previewMessages.forEach((message, messageIndex) => {
+        const text = (message.text || '').trim();
+        // Skip empty/metadata noise so turns stay readable.
+        if (!text && !message.redacted) return;
+        const signature = this.getMessageSignature(message);
+        // Delta: only render a message the first time we encounter it across
+        // the growing message lists.
+        if (text && seenSignatures.has(signature)) return;
+        if (text) seenSignatures.add(signature);
+        const isToolRelated = this.messageIsToolRelated(message);
+        if (isToolRelated) toolCallCount += 1;
+        deltaMessages.push({
+          ...message,
+          key: `${event.id}:turn:${messageIndex}`,
+          signature,
+          isToolRelated,
+        });
+      });
+
+      eventTurns.push({
+        id: event.id,
+        index: 0,
+        event,
+        timestamp: event.timestamp,
+        title: this.getEventTitle(event),
+        deltaMessages,
+        totalTokens: this.getEventTotalTokens(event),
+        promptTokens: Number(event.payload?.prompt_tokens || 0),
+        completionTokens: Number(event.payload?.completion_tokens || 0),
+        cachedTokens: this.getEventCachedTokens(event),
+        estimatedCost: this.getEventEstimatedCost(event),
+        toolCallCount,
+        failed: this.eventIsFailure(event),
+        isActivity: false,
+      });
+    });
+
+    // Fold supporting agent-control messages (operator messages, etc.) inline so
+    // the talk dialog's live chat keeps showing them in the flow.
+    const activityTurns: ChatTurn[] =
+      this.getAgentControlActivityMessages().map((message, index) => ({
+        id: `activity:${message.timestamp || ''}:${index}`,
+        index: 0,
+        event: null,
+        timestamp: message.timestamp || null,
+        // An agent-control activity is an operator/talk message, NOT a gateway
+        // request, so it must not be mislabeled "Developer message".
+        title: this.getActivityTurnLabel(message),
+        deltaMessages: [
+          {
+            ...message,
+            key: `activity:turn:${index}`,
+            signature: this.getMessageSignature(message),
+            isToolRelated: this.messageIsToolRelated(message),
+          },
+        ],
+        totalTokens: 0,
+        promptTokens: 0,
+        completionTokens: 0,
+        cachedTokens: null,
+        estimatedCost: 0,
+        toolCallCount: 0,
+        failed: false,
+        // Suppress the meaningless 0 tok / $0 / 0 tools stats for activity turns.
+        isActivity: true,
+      }));
+
+    const turns = [...eventTurns, ...activityTurns].sort(
+      (left, right) =>
+        new Date(left.timestamp || 0).getTime() -
+        new Date(right.timestamp || 0).getTime()
+    );
+    // Re-index in natural chat order so sort/filter can reorder in place while
+    // preserving a stable oldest-first ordering reference.
+    turns.forEach((turn, index) => {
+      turn.index = index;
+    });
+    return turns;
+  }
+
+  private turnPassesTypeFilter(turn: ChatTurn): boolean {
+    if (this.chatTypeFilter === 'all') return true;
+    if (this.chatTypeFilter === 'tools') return turn.toolCallCount > 0;
+    // messages only: non-tool delta messages present.
+    return turn.deltaMessages.some((message) => !message.isToolRelated);
+  }
+
+  // Sensible slider ceiling: the costliest/largest turn currently in the
+  // thread (in the active unit), with a small floor so the slider is always
+  // usable even when every turn is tiny.
+  private getChatThresholdMax(turns = this.getChatTurns()): number {
+    const requestTurns = turns.filter((turn) => !turn.isActivity);
+    if (!requestTurns.length) {
+      return this.chatThresholdMode === 'tokens' ? 1000 : 1;
+    }
+    if (this.chatThresholdMode === 'tokens') {
+      const max = Math.max(...requestTurns.map((turn) => turn.totalTokens));
+      return Math.max(Math.ceil(max), 100);
+    }
+    const max = Math.max(...requestTurns.map((turn) => turn.estimatedCost));
+    return Math.max(Number(max.toFixed(4)), 0.01);
+  }
+
+  private turnPassesThreshold(turn: ChatTurn): boolean {
+    if (!this.chatThreshold) return true;
+    const value =
+      this.chatThresholdMode === 'tokens'
+        ? turn.totalTokens
+        : turn.estimatedCost;
+    return value >= this.chatThreshold;
+  }
+
+  // Apply filters then sort in place. Oldest-first is natural chat order.
+  private getVisibleChatTurns(): ChatTurn[] {
+    const turns = this.getChatTurns().filter(
+      (turn) =>
+        this.turnPassesTypeFilter(turn) && this.turnPassesThreshold(turn)
+    );
+    const sorted = [...turns];
+    switch (this.chatSort) {
+      case 'newest':
+        sorted.sort((left, right) => right.index - left.index);
+        break;
+      case 'costliest':
+        sorted.sort((left, right) => right.estimatedCost - left.estimatedCost);
+        break;
+      case 'cheapest':
+        sorted.sort((left, right) => left.estimatedCost - right.estimatedCost);
+        break;
+      case 'type':
+        sorted.sort((left, right) => {
+          const leftType = left.toolCallCount > 0 ? 1 : 0;
+          const rightType = right.toolCallCount > 0 ? 1 : 0;
+          if (leftType !== rightType) return leftType - rightType;
+          return left.index - right.index;
+        });
+        break;
+      case 'oldest':
+      default:
+        sorted.sort((left, right) => left.index - right.index);
+        break;
+    }
+    return sorted;
+  }
+
+  // Whole-session cost picture, aggregated from the same per-turn data the chat
+  // already computes. Only request turns (gateway calls) carry real
+  // tokens/cost/tools; activity turns are excluded from the numeric totals but
+  // do not affect the request/outcome counts either.
+  private getChatSummary(): {
+    totalCost: number;
+    totalTokens: number;
+    promptTokens: number;
+    cachedTokens: number;
+    cachedPct: number | null;
+    toolCallCount: number;
+    requestCount: number;
+    okCount: number;
+    failedCount: number;
+  } {
+    const requestTurns = this.getChatTurns().filter((turn) => !turn.isActivity);
+    let totalCost = 0;
+    let totalTokens = 0;
+    let promptTokens = 0;
+    let cachedTokens = 0;
+    let toolCallCount = 0;
+    let okCount = 0;
+    let failedCount = 0;
+    for (const turn of requestTurns) {
+      totalCost += turn.estimatedCost;
+      totalTokens += turn.totalTokens;
+      promptTokens += turn.promptTokens;
+      cachedTokens += turn.cachedTokens ?? 0;
+      toolCallCount += turn.toolCallCount;
+      if (turn.failed) failedCount += 1;
+      else okCount += 1;
+    }
+    const cachedPct =
+      promptTokens > 0 ? Math.round((cachedTokens / promptTokens) * 100) : null;
+    return {
+      totalCost,
+      totalTokens,
+      promptTokens,
+      cachedTokens,
+      cachedPct,
+      toolCallCount,
+      requestCount: requestTurns.length,
+      okCount,
+      failedCount,
+    };
+  }
+
+  // The single highest-cost request turn, used to mark the cost story without
+  // forcing the user to sort. Only meaningful when there is real spend (>$0) and
+  // more than one request turn to compare.
+  private getMostExpensiveTurnId(): string | null {
+    const requestTurns = this.getChatTurns().filter((turn) => !turn.isActivity);
+    if (requestTurns.length < 2) return null;
+    let topTurn: ChatTurn | null = null;
+    for (const turn of requestTurns) {
+      if (!topTurn || turn.estimatedCost > topTurn.estimatedCost) {
+        topTurn = turn;
+      }
+    }
+    if (!topTurn || topTurn.estimatedCost <= 0) return null;
+    return topTurn.id;
+  }
+
+  private toggleTurnExpanded(eventId: string): void {
+    const next = new Set(this.expandedTurnEventIds);
+    if (next.has(eventId)) {
+      next.delete(eventId);
+    } else {
+      next.add(eventId);
+      // Lazy-load the full payload only when expanded.
+      const event = this.getReplayEventById(eventId);
+      if (event && !this.eventDetails[eventId]) {
+        this.requestEventDetail(event);
+      }
+    }
+    this.expandedTurnEventIds = next;
+  }
+
+  private getChatRoleKind(
+    message: FlowGatewayConversationPreviewMessage
+  ): ReplayMarkerKind {
+    const role = (message.role || message.source || 'message').toLowerCase();
+    if (role.includes('tool') || role.includes('function')) return 'tool';
+    if (role.includes('system')) return 'system';
+    if (role.includes('developer')) return 'developer';
+    if (role.includes('assistant') || role.includes('agent')) return 'agent';
+    return 'user';
+  }
+
+  private renderChatBubble(message: ChatTurnMessage) {
+    const kind = this.getChatRoleKind(message);
+    const role = message.role || message.source || 'message';
+    const bubbleRole =
+      kind === 'agent'
+        ? 'assistant'
+        : kind === 'tool'
+          ? 'tool'
+          : kind === 'user'
+            ? 'user'
+            : kind;
+    const fullText = this.normalizeMessageText(message);
+    const displayText = fullText
+      ? fullText
+      : message.redacted
+        ? 'Content redacted by capture policy.'
+        : 'No text content captured.';
+    const isLong = displayText.length > 1800;
+    // Per-message expand state, keyed by this bubble's stable unique key. Each
+    // message toggles independently — read and write the SAME key so the right
+    // bubble (and only it) expands/collapses.
+    const isExpanded = this.expandedMessageKeys.has(message.key);
+    const text =
+      isLong && !isExpanded ? `${displayText.slice(0, 1800)}...` : displayText;
+    return html`
+      <div class="chat-message ${bubbleRole}">
+        <div class="message-role">
+          ${role}
+          ${message.truncated
+            ? html`<sl-badge variant="warning" pill>Truncated</sl-badge>`
+            : nothing}
+          ${message.redacted
+            ? html`<sl-badge variant="warning" pill>Redacted</sl-badge>`
+            : nothing}
+        </div>
+        <div class="message-text">${text}</div>
+        ${isLong
+          ? html`
+              <div class="detail-actions">
+                <sl-button
+                  size="small"
+                  @click=${() => this.toggleMessage(message.key)}
+                >
+                  ${isExpanded ? 'Collapse message' : 'Show full message'}
+                </sl-button>
+              </div>
+            `
+          : nothing}
+      </div>
+    `;
+  }
+
+  // Compact, secondary-weight cached-tokens annotation (e.g. "14.2k cached")
+  // so prompt-cache savings are visible without dominating the header.
+  private formatCachedTokens(cached: number): string {
+    if (cached >= 1000) {
+      return `${(cached / 1000).toFixed(1).replace(/\.0$/, '')}k cached`;
+    }
+    return `${formatNumber(cached)} cached`;
+  }
+
+  private renderChatTurnHeader(turn: ChatTurn, isMostExpensive = false) {
+    return html`
+      <div class="chat-turn-header">
+        <div class="chat-turn-header-main">
+          <span class="chat-turn-title">${turn.title}</span>
+          ${isMostExpensive
+            ? html`<span
+                class="chat-turn-cost-chip"
+                title="Highest-cost request in this session"
+              >
+                <sl-icon name="exclamation-triangle"></sl-icon>
+                Most expensive
+              </span>`
+            : nothing}
+          <span class="chat-turn-time">${this.formatTime(turn.timestamp)}</span>
+        </div>
+        <div class="chat-turn-badges">
+          ${turn.isActivity
+            ? nothing
+            : html`
+                <span class="chat-turn-stat">
+                  ${formatNumber(turn.totalTokens)}
+                  tok${turn.cachedTokens
+                    ? html` (${this.formatCachedTokens(turn.cachedTokens)})`
+                    : nothing}
+                </span>
+                <span class="chat-turn-stat"
+                  >${formatCost(turn.estimatedCost)}</span
+                >
+                <span
+                  class="chat-turn-stat ${turn.toolCallCount
+                    ? 'has-tools'
+                    : ''}"
+                >
+                  ${formatNumber(turn.toolCallCount)}
+                  tool${turn.toolCallCount === 1 ? '' : 's'}
+                </span>
+              `}
+          ${turn.failed
+            ? html`<sl-badge variant="danger" pill>failed</sl-badge>`
+            : nothing}
+        </div>
+      </div>
+    `;
+  }
+
+  // Drill-down: full request context for an expanded turn. Uses the lazy
+  // eventDetails fetch — the complete message list, model, tokens, finish
+  // reason, retries, and tools with per-tool schema cost.
+  // TODO: deeper nested-tree drill-down (per-message / per-tool sub-trees).
+  private renderChatTurnDetail(turn: ChatTurn) {
+    if (!turn.event) return nothing;
+    const detail = this.eventDetails[turn.event.id];
+    if (!detail) {
+      const eventId = turn.event.id;
+      return html`
+        <div class="chat-turn-detail">
+          <div class="replay-detail-placeholder" data-event-id=${eventId}>
+            <sl-spinner></sl-spinner>
+            <span class="event-meta">Loading full request context…</span>
+          </div>
+        </div>
+      `;
+    }
+    const fullMessages = this.getRequestMessages(detail);
+    const payload = detail.payload || {};
+    const cachedTokens = this.getEventCachedTokens(detail);
+    const tools = Array.isArray(
+      (payload.request as Record<string, unknown>)?.tools
+    )
+      ? ((payload.request as Record<string, unknown>).tools as unknown[])
+      : [];
+    return html`
+      <div class="chat-turn-detail">
+        <div class="event-meta">
+          Model: ${payload.model_alias || payload.requested_model || 'n/a'} ·
+          Prompt ${formatNumber(Number(payload.prompt_tokens || 0))} ·
+          Completion ${formatNumber(Number(payload.completion_tokens || 0))}
+          ${cachedTokens
+            ? html`· Cached ${formatNumber(cachedTokens)}`
+            : nothing}
+          · Finish: ${payload.finish_reason || 'n/a'}
+          ${payload.is_retry || Number(payload.gateway_attempt || 1) > 1
+            ? html`· retry #${Number(payload.gateway_attempt || 1)}`
+            : nothing}
+        </div>
+        <sl-details>
+          <div slot="summary" class="segment-title">
+            Full request context (${fullMessages.length}
+            message${fullMessages.length === 1 ? '' : 's'})
+          </div>
+          <div class="message-list">
+            ${fullMessages.length
+              ? fullMessages.map((message) =>
+                  this.renderMessage(message, 'chat', message.key)
+                )
+              : html`<div class="event-meta">
+                  No request messages captured for this event.
+                </div>`}
+          </div>
+        </sl-details>
+        ${tools.length
+          ? html`
+              <sl-details>
+                <div slot="summary" class="segment-title">
+                  Tools carried (${tools.length})
+                </div>
+                <div class="message-list">
+                  ${tools.map((tool) => {
+                    const record = (tool || {}) as Record<string, unknown>;
+                    const fn = (record.function || record) as Record<
+                      string,
+                      unknown
+                    >;
+                    const name = String(fn.name || record.name || 'tool');
+                    const schemaTokens = Math.ceil(
+                      JSON.stringify(tool).length / 4
+                    );
+                    return html`
+                      <div class="tool-row">
+                        <div class="tool-row-main">
+                          <sl-icon name="wrench-adjustable"></sl-icon>
+                          <span class="tool-row-name">${name}</span>
+                        </div>
+                        <div class="tool-row-chips">
+                          <span class="metric-pill"
+                            >~${formatNumber(schemaTokens)} schema tok</span
+                          >
+                        </div>
+                      </div>
+                    `;
+                  })}
+                </div>
+              </sl-details>
+            `
+          : nothing}
+        ${this.rawPayloads
+          ? html`
+              <div class="raw-event-container">
+                <preloop-gateway-event
+                  .event=${detail}
+                  expanded
+                ></preloop-gateway-event>
+              </div>
+            `
+          : nothing}
+      </div>
+    `;
+  }
+
+  private renderChatTurn(
+    turn: ChatTurn,
+    mostExpensiveTurnId: string | null = null
+  ) {
+    const event = turn.event;
+    const isMostExpensive = Boolean(
+      mostExpensiveTurnId && turn.id === mostExpensiveTurnId
+    );
+    const expanded = event ? this.expandedTurnEventIds.has(event.id) : false;
+    // Lazy AI-summary support: mark turns whose events warrant a summary so the
+    // summary IntersectionObserver can request one, and swap bubbles for the
+    // summary when one is available and summarisation is enabled.
+    const needsSummary = Boolean(event && this.eventNeedsSummary(event));
+    const summary =
+      event && needsSummary ? this.interactionSummaries[event.id] : null;
+    const showSummary =
+      this.summarizeVisibleContent &&
+      summary &&
+      Boolean(event) &&
+      !this.fullTextEventIds.has(event?.id || '');
+    return html`
+      <div
+        class="chat-turn ${turn.failed ? 'failed' : ''} ${isMostExpensive
+          ? 'most-expensive'
+          : ''} ${needsSummary ? 'summary-candidate' : ''}"
+        data-event-id=${event ? event.id : nothing}
+      >
+        ${this.renderChatTurnHeader(turn, isMostExpensive)}
+        ${showSummary && summary
+          ? html`
+              <div class="summary-card">
+                <div class="summary-text">${summary.summary}</div>
+                ${summary.key_points.length
+                  ? html`
+                      <ul class="summary-points">
+                        ${summary.key_points.map(
+                          (point) => html`<li>${point}</li>`
+                        )}
+                      </ul>
+                    `
+                  : nothing}
+                <div class="detail-actions">
+                  <sl-button
+                    size="small"
+                    @click=${() => event && this.toggleEventFullText(event.id)}
+                  >
+                    Show full text
+                  </sl-button>
+                </div>
+              </div>
+            `
+          : html`
+              <div class="chat-turn-bubbles">
+                ${turn.deltaMessages.length
+                  ? repeat(
+                      turn.deltaMessages,
+                      (message) => message.key,
+                      (message) => this.renderChatBubble(message)
+                    )
+                  : html`<div class="chat-turn-empty">
+                      No new messages in this turn (resent context only).
+                    </div>`}
+              </div>
+            `}
+        ${event
+          ? html`
+              <div class="detail-actions">
+                <sl-button
+                  size="small"
+                  ?loading=${this.loadingEventDetails.has(event.id)}
+                  @click=${() => this.toggleTurnExpanded(event.id)}
+                >
+                  ${expanded ? 'Hide full context' : 'Expand full context'}
+                </sl-button>
+              </div>
+              ${expanded ? this.renderChatTurnDetail(turn) : nothing}
+            `
+          : nothing}
+      </div>
+    `;
+  }
+
+  // Clamp + store the "hide below" threshold. Shared by the number input and
+  // the slider so the two stay in sync (and never exceed the slider ceiling).
+  private setChatThreshold(value: number): void {
+    if (!Number.isFinite(value) || value <= 0) {
+      this.chatThreshold = 0;
+      return;
+    }
+    this.chatThreshold = Math.min(value, this.getChatThresholdMax());
+  }
+
+  // Whole-session cost picture at a glance: a quiet dashboard line at the top of
+  // the chat. Renders in both the talk dialog and the observer (shared
+  // component). Suppressed when there are no request turns to summarise.
+  private renderChatSummaryBar() {
+    const summary = this.getChatSummary();
+    if (!summary.requestCount) return nothing;
+    return html`
+      <div
+        class="chat-summary-bar"
+        role="group"
+        aria-label="Session cost summary"
+      >
+        <span class="chat-summary-item">
+          <span class="chat-summary-label">Cost</span>
+          <span class="chat-summary-value"
+            >${formatCost(summary.totalCost)}</span
+          >
+        </span>
+        <span class="chat-summary-item">
+          <span class="chat-summary-label">Tokens</span>
+          <span class="chat-summary-value"
+            >${formatNumber(summary.totalTokens)}</span
+          >
+          ${summary.cachedTokens > 0
+            ? html`<span class="chat-summary-sub"
+                >(${formatNumber(summary.cachedTokens)}
+                cached${summary.cachedPct !== null
+                  ? html` · ${summary.cachedPct}%`
+                  : nothing})</span
+              >`
+            : nothing}
+        </span>
+        <span class="chat-summary-item">
+          <span class="chat-summary-label">Tools</span>
+          <span
+            class="chat-summary-value ${summary.toolCallCount
+              ? 'has-tools'
+              : ''}"
+            >${formatNumber(summary.toolCallCount)}</span
+          >
+        </span>
+        <span class="chat-summary-item">
+          <span class="chat-summary-label">Requests</span>
+          <span class="chat-summary-value"
+            >${formatNumber(summary.requestCount)}</span
+          >
+        </span>
+        <span class="chat-summary-item">
+          <span class="chat-summary-label">Outcome</span>
+          <span
+            class="chat-summary-value ${summary.failedCount
+              ? 'has-failures'
+              : ''}"
+            >${formatNumber(summary.okCount)} ok /
+            ${formatNumber(summary.failedCount)} failed</span
+          >
+        </span>
+      </div>
+    `;
+  }
+
+  private renderChatControlBar(turnCount: number) {
+    const thresholdMax = this.getChatThresholdMax();
+    const isTokens = this.chatThresholdMode === 'tokens';
+    // Token thresholds are integers (step 1 keeps slider + number input exactly
+    // in sync); cost steps finely so cents are reachable on the slider.
+    const thresholdStep = isTokens ? 1 : 0.01;
+    const thresholdMaxLabel = isTokens
+      ? `${formatNumber(thresholdMax)} tok`
+      : formatCost(thresholdMax);
+    return html`
+      <div class="chat-control-bar">
+        <div class="chat-control-cluster">
+          <span class="chat-control-label">Sort</span>
+          <select
+            class="chat-select"
+            aria-label="Sort turns"
+            .value=${this.chatSort}
+            @change=${(event: Event) => {
+              this.chatSort = (event.target as HTMLSelectElement)
+                .value as ChatSort;
+            }}
+          >
+            ${CHAT_SORTS.map(
+              (option) => html`
+                <option
+                  value=${option.id}
+                  ?selected=${this.chatSort === option.id}
+                >
+                  ${option.label}
+                </option>
+              `
+            )}
+          </select>
+          <span class="chat-control-label">Show</span>
+          <select
+            class="chat-select"
+            aria-label="Filter by type"
+            .value=${this.chatTypeFilter}
+            @change=${(event: Event) => {
+              this.chatTypeFilter = (event.target as HTMLSelectElement)
+                .value as ChatTypeFilter;
+            }}
+          >
+            ${CHAT_TYPE_FILTERS.map(
+              (option) => html`
+                <option
+                  value=${option.id}
+                  ?selected=${this.chatTypeFilter === option.id}
+                >
+                  ${option.label}
+                </option>
+              `
+            )}
+          </select>
+        </div>
+        <div class="chat-control-cluster">
+          <span class="chat-control-label">Hide below</span>
+          <input
+            class="chat-threshold-input"
+            type="number"
+            min="0"
+            step=${thresholdStep}
+            aria-label="Threshold"
+            .value=${String(this.chatThreshold || '')}
+            @input=${(event: Event) => {
+              const value = Number((event.target as HTMLInputElement).value);
+              this.setChatThreshold(value);
+            }}
+          />
+          <sl-range
+            class="chat-threshold-slider"
+            aria-label="Threshold slider"
+            label=${`up to ${thresholdMaxLabel}`}
+            min="0"
+            max=${thresholdMax}
+            step=${thresholdStep}
+            .value=${Math.min(this.chatThreshold, thresholdMax)}
+            .tooltip=${'none'}
+            @sl-input=${(event: Event) => {
+              const value = Number(
+                (event.target as HTMLInputElement & { value: number }).value
+              );
+              this.setChatThreshold(value);
+            }}
+          ></sl-range>
+          <select
+            class="chat-select"
+            aria-label="Threshold unit"
+            .value=${this.chatThresholdMode}
+            @change=${(event: Event) => {
+              this.chatThresholdMode = (event.target as HTMLSelectElement)
+                .value as ChatThresholdMode;
+              // Re-clamp the threshold to the new unit's slider ceiling.
+              this.setChatThreshold(this.chatThreshold);
+            }}
+          >
+            <option
+              value="tokens"
+              ?selected=${this.chatThresholdMode === 'tokens'}
+            >
+              tokens
+            </option>
+            <option value="cost" ?selected=${this.chatThresholdMode === 'cost'}>
+              $
+            </option>
+          </select>
+          <span class="event-meta">
+            ${formatNumber(turnCount)} turn${turnCount === 1 ? '' : 's'}
+          </span>
+        </div>
+      </div>
+    `;
+  }
+
+  private renderChatView() {
+    const turns = this.getVisibleChatTurns();
+    const mostExpensiveTurnId = this.getMostExpensiveTurnId();
+    return html`
+      <div class="panel">
+        ${this.renderChatSummaryBar()}
+        ${this.renderChatControlBar(turns.length)}
+        ${turns.length
+          ? html`
+              <div class="chat-thread">
+                ${repeat(
+                  turns,
+                  (turn) => turn.id,
+                  (turn) => this.renderChatTurn(turn, mostExpensiveTurnId)
+                )}
+              </div>
+            `
+          : html`<div class="empty">No turns match the current filters.</div>`}
+        ${this.renderEventPageSentinel()}
+      </div>
+    `;
+  }
+
   private renderTranscriptFilterBar(rowCount: number) {
     return html`
       <div class="transcript-filter-bar">
@@ -3168,24 +4353,8 @@ export class SessionReplayPanel extends LitElement {
     if (this.replayMode === 'replay') return this.renderReplayView();
     if (this.replayMode === 'optimize') return this.renderOptimizeView();
 
-    const rows = this.getTranscriptRows();
-    return html`
-      <div class="panel">
-        ${this.renderTranscriptFilterBar(rows.length)}
-        ${this.renderActivityItems()}
-        ${repeat(
-          rows,
-          (row) =>
-            row.kind === 'event'
-              ? row.event.id
-              : `tool:${row.item.api_usage_id || row.item.timestamp}:${row.item.title}`,
-          (row) =>
-            row.kind === 'event'
-              ? this.renderProgressiveEvent(row.event)
-              : this.renderToolCallRow(row.item)
-        )}
-        ${this.renderEventPageSentinel()}
-      </div>
-    `;
+    // Unified sortable chat: the 'timeline'/transcript render (observer) and the
+    // talk dialog's 'chat' mode both resolve here so both callers get the chat.
+    return this.renderChatView();
   }
 }

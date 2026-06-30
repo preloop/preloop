@@ -83,6 +83,21 @@ def _build_activity_event(data: dict, session: WebSocketSession) -> Event:
     return activity
 
 
+def _activity_broadcast_payload(activity: Event) -> dict[str, object]:
+    """Capture activity fields while the SQLAlchemy session is still open."""
+    return {
+        "id": str(activity.id),
+        "session_id": str(activity.session_id) if activity.session_id else None,
+        "user_id": str(activity.user_id) if activity.user_id else None,
+        "account_id": str(activity.account_id) if activity.account_id else None,
+        "event_type": activity.event_type,
+        "timestamp": activity.timestamp.isoformat(),
+        "path": activity.path,
+        "action": activity.action,
+        "event_data": activity.event_data,
+    }
+
+
 async def handle_activity(data: dict, session: WebSocketSession) -> None:
     """Handle activity tracking messages from client."""
     event_type = data.get("event")
@@ -99,7 +114,9 @@ async def handle_activity(data: dict, session: WebSocketSession) -> None:
         return
 
     try:
-        activity = await run_db_async(lambda db: _persist_activity_event(db, activity))
+        activity_payload = await run_db_async(
+            lambda db: _persist_activity_event(db, activity)
+        )
     except Exception as e:
         logger.error(f"Failed to persist activity: {e}", exc_info=True)
         return
@@ -114,18 +131,8 @@ async def handle_activity(data: dict, session: WebSocketSession) -> None:
 
     activity_message = {
         "type": "activity_update",
-        "account_id": str(activity.account_id) if activity.account_id else None,
-        "activity": {
-            "id": str(activity.id),
-            "session_id": str(activity.session_id) if activity.session_id else None,
-            "user_id": str(activity.user_id) if activity.user_id else None,
-            "account_id": str(activity.account_id) if activity.account_id else None,
-            "event_type": activity.event_type,
-            "timestamp": activity.timestamp.isoformat(),
-            "path": activity.path,
-            "action": activity.action,
-            "event_data": activity.event_data,
-        },
+        "account_id": activity_payload["account_id"],
+        "activity": activity_payload,
     }
 
     if event_bus_service.nc and event_bus_service.nc.is_connected:
@@ -138,12 +145,12 @@ async def handle_activity(data: dict, session: WebSocketSession) -> None:
             logger.error(f"Failed to publish to NATS: {nats_error}")
 
 
-def _persist_activity_event(db: Session, activity: Event) -> Event:
-    """Persist an activity event within the provided session."""
+def _persist_activity_event(db: Session, activity: Event) -> dict[str, object]:
+    """Persist an activity event and return a detached broadcast payload."""
     db.add(activity)
     db.commit()
     db.refresh(activity)
-    return activity
+    return _activity_broadcast_payload(activity)
 
 
 async def track_system_event(

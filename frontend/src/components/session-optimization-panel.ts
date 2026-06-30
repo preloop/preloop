@@ -103,6 +103,36 @@ export class SessionOptimizationPanel extends LitElement {
       font-weight: 600;
     }
 
+    .savings-summary {
+      border: 1px solid var(--sl-color-success-200);
+      background: var(--sl-color-success-50);
+      border-radius: var(--sl-border-radius-medium);
+      padding: var(--sl-spacing-small) var(--sl-spacing-medium);
+      margin-bottom: var(--sl-spacing-small);
+    }
+
+    .savings-summary-headline {
+      color: var(--sl-color-success-700);
+      font-size: var(--sl-font-size-medium);
+      font-weight: var(--sl-font-weight-semibold);
+    }
+
+    .savings-summary-headline strong {
+      font-size: var(--sl-font-size-large);
+    }
+
+    .savings-pct {
+      color: var(--sl-color-success-600);
+      font-weight: var(--sl-font-weight-normal);
+    }
+
+    .savings-summary-detail {
+      color: var(--sl-color-neutral-600);
+      font-size: var(--sl-font-size-small);
+      margin-top: var(--sl-spacing-2x-small);
+      line-height: 1.45;
+    }
+
     .actions {
       align-items: center;
       display: flex;
@@ -562,6 +592,46 @@ export class SessionOptimizationPanel extends LitElement {
     return html`<div class="transparency">${parts.join(' · ')}</div>`;
   }
 
+  // Aggregate before/after savings across all suggestions — the demo's
+  // "hard number": what the session cost vs. what it could cost if every
+  // suggestion is applied. Savings are clamped to the session's own
+  // cost/tokens (you can't save more than you spent).
+  private renderSavingsSummary(suggestions: SessionOptimizationSuggestion[]) {
+    if (!this.session || !suggestions.length) return '';
+    const before = Number(this.session.estimated_cost || 0);
+    const beforeTokens = Number(this.session.token_usage?.total_tokens || 0);
+    const rawUsd = suggestions.reduce(
+      (sum, s) => sum + Number(s.expectedSavingsUsd || 0),
+      0
+    );
+    const rawTokens = suggestions.reduce(
+      (sum, s) => sum + Number(s.expectedSavingsTokens || 0),
+      0
+    );
+    const savingsUsd = before > 0 ? Math.min(rawUsd, before) : rawUsd;
+    const savingsTokens =
+      beforeTokens > 0 ? Math.min(rawTokens, beforeTokens) : rawTokens;
+    if (savingsUsd <= 0 && savingsTokens <= 0) return '';
+    const after = Math.max(before - savingsUsd, 0);
+    const pct = before > 0 ? Math.round((savingsUsd / before) * 100) : 0;
+    return html`
+      <div class="savings-summary">
+        <div class="savings-summary-headline">
+          Potential savings: <strong>${formatCost(savingsUsd)}</strong>
+          ${pct > 0 ? html`<span class="savings-pct">(${pct}%)</span>` : ''}
+        </div>
+        <div class="savings-summary-detail">
+          This session cost ${formatCost(before)} ·
+          ${formatNumber(beforeTokens)} tokens → ~${formatCost(after)} after
+          applying all ${suggestions.length}
+          suggestion${suggestions.length === 1 ? '' : 's'}
+          (${formatNumber(savingsTokens)} tokens). Estimated from the analyzed
+          scope.
+        </div>
+      </div>
+    `;
+  }
+
   render() {
     if (!this.session) return '';
     const suggestions =
@@ -582,6 +652,7 @@ export class SessionOptimizationPanel extends LitElement {
           </sl-tab>
           <sl-tab-panel name="suggestions">
             <div class="panel">
+              ${this.renderSavingsSummary(suggestions)}
               ${suggestions.map((suggestion) =>
                 this.renderSuggestion(suggestion)
               )}

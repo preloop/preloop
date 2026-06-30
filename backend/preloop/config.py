@@ -234,8 +234,16 @@ class Settings(BaseSettings):
         ),
     )
     model_gateway_max_preview_chars: int = Field(
-        4096,
-        description="Maximum number of characters to retain in model gateway content previews",
+        32768,
+        description=(
+            "Maximum characters retained per message in model gateway content "
+            "previews (the transcript/chat reads these). 4096 truncated large "
+            "tool results (e.g. retrieved-context blobs) so the session log "
+            "showed cut-off content; 32768 captures full content for typical "
+            "messages. Tune via MODEL_GATEWAY_MAX_PREVIEW_CHARS; the tradeoff is "
+            "stored-preview size. (Full request payloads are stored separately "
+            "and untruncated; a cleaner follow-up is to read those directly.)"
+        ),
     )
     flow_execution_max_wait_seconds: int = Field(
         3600,
@@ -271,6 +279,10 @@ class Settings(BaseSettings):
     billing_session_optimization_daily_cap_usd: float = Field(
         0.5,
         description="Maximum daily per-account spend on session optimization model calls",
+    )
+    billing_session_title_daily_cap_usd: float = Field(
+        0.25,
+        description="Maximum daily per-account spend on session title generation model calls",
     )
     billing_default_extra_credit_price_per_usd: float = Field(
         1.0,
@@ -435,6 +447,9 @@ class Settings(BaseSettings):
             ),
             billing_session_optimization_daily_cap_usd=float(
                 os.getenv("BILLING_SESSION_OPTIMIZATION_DAILY_CAP_USD", "0.5")
+            ),
+            billing_session_title_daily_cap_usd=float(
+                os.getenv("BILLING_SESSION_TITLE_DAILY_CAP_USD", "0.25")
             ),
             billing_default_extra_credit_price_per_usd=float(
                 os.getenv("BILLING_DEFAULT_EXTRA_CREDIT_PRICE_PER_USD", "1.0")

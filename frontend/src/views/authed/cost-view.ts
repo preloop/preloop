@@ -171,6 +171,12 @@ export class CostView extends AuthedElement {
         color: var(--sl-color-neutral-900);
       }
 
+      .tool-cost-flags-section {
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+      }
+
       .form-grid {
         display: grid;
         grid-template-columns: 1fr;
@@ -764,8 +770,24 @@ export class CostView extends AuthedElement {
     return html`
       <div class="actions-stack">
         ${this.billingEnabled ? this.renderBudgets() : null}
-        <tool-cost-flags-panel></tool-cost-flags-panel>
         ${this.modelPriceOverridesEnabled ? this.renderPricing() : null}
+      </div>
+    `;
+  }
+
+  // Surface expensive tool definitions as a primary, full-width insight rather
+  // than a buried sidebar widget. Reuses the shared <tool-cost-flags-panel>.
+  private renderToolCostFlagsSection() {
+    return html`
+      <div class="tool-cost-flags-section">
+        <div
+          class="section-title"
+          style="margin-bottom: var(--sl-spacing-small);"
+        >
+          <sl-icon name="exclamation-triangle"></sl-icon>
+          <span>Expensive tool definitions</span>
+        </div>
+        <tool-cost-flags-panel></tool-cost-flags-panel>
       </div>
     `;
   }
@@ -1041,7 +1063,7 @@ export class CostView extends AuthedElement {
               </div>
             </sl-card>`
           : html`
-              ${this.renderMetrics()}
+              ${this.renderMetrics()} ${this.renderToolCostFlagsSection()}
               <div class="column-layout dashboard extra-wide">
                 <div class="main-column">${this.renderBreakdown()}</div>
                 <div class="side-column">${this.renderControls()}</div>

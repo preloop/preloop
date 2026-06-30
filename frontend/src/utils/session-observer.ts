@@ -15,7 +15,7 @@ export type SessionObserverScope =
   | 'ai_model'
   | 'audit';
 
-export type SessionReplayMode = 'timeline' | 'replay' | 'optimize';
+export type SessionReplayMode = 'timeline' | 'chat' | 'replay' | 'optimize';
 
 export interface ObservedSession {
   id: string;
@@ -134,6 +134,8 @@ function getStatus(row: Record<string, unknown>): string {
 
 function buildTitle(row: Record<string, unknown>): string {
   return (
+    asString(row.title) ||
+    asString(row.summary) ||
     asString(row.session_alias) ||
     asString(row.runtime_session_name) ||
     asString(row.runtime_principal_name) ||

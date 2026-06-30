@@ -298,6 +298,62 @@ func TestSelectHighestClaudeModelAlias(t *testing.T) {
 	}
 }
 
+// TestClaudeSelectionFallbackModelAlias verifies the built-in last-resort
+// mapping for Claude Code's opaque family selectors. The load-bearing
+// invariant is that every fallback id is itself a CONCRETE model id (not a
+// bare selector), so it can never be re-skipped by the selector guards in
+// the resolution path and can never leak back as a junk "anthropic/haiku"
+// AIModel identifier.
+func TestClaudeSelectionFallbackModelAlias(t *testing.T) {
+	for _, selection := range []string{"haiku", "sonnet", "opus"} {
+		alias := claudeSelectionFallbackModelAlias(selection)
+		if alias == "" {
+			t.Fatalf("expected a fallback alias for %q, got empty", selection)
+		}
+		if !strings.HasPrefix(alias, "anthropic/") {
+			t.Fatalf("expected anthropic/<id> alias for %q, got %q", selection, alias)
+		}
+		id := strings.TrimPrefix(alias, "anthropic/")
+		if claudeSelectionFromModelRef(id) != "" {
+			t.Fatalf("fallback id %q for %q is still a bare selector; it would re-leak", id, selection)
+		}
+		if !claudeModelMatchesSelection(selection, id) {
+			t.Fatalf("fallback id %q does not belong to the %q family", id, selection)
+		}
+	}
+	if got := claudeSelectionFallbackModelAlias("gpt-4"); got != "" {
+		t.Fatalf("expected empty fallback for a non-family selector, got %q", got)
+	}
+}
+
+// TestResolveClaudeSelectionGatewayModelAlias_FallbackAndPreference pins two
+// behaviours of the onboarding model resolver:
+//  1. when the account already has a concrete Anthropic model in the family,
+//     it is preferred (no junk, no fallback);
+//  2. when no account model/binding matches AND the live Anthropic models
+//     API is unreachable, it returns the built-in fallback rather than an
+//     empty string — which is what previously let the bare selector "haiku"
+//     get persisted as an AIModel identifier.
+func TestResolveClaudeSelectionGatewayModelAlias_FallbackAndPreference(t *testing.T) {
+	// (1) Account model present → preferred over the fallback.
+	models := []aiModelResponse{
+		{ProviderName: "anthropic", ModelIdentifier: "claude-haiku-4-5", Name: "Haiku"},
+	}
+	if got := resolveClaudeSelectionGatewayModelAlias("haiku", models, nil); got != "anthropic/claude-haiku-4-5" {
+		t.Fatalf("expected account haiku model to be preferred, got %q", got)
+	}
+
+	// (2) No account model and (in this hermetic env) no resolvable
+	// Anthropic token → built-in fallback, never empty, never a selector.
+	got := resolveClaudeSelectionGatewayModelAlias("opus", nil, nil)
+	if got == "" {
+		t.Fatal("expected built-in fallback for opus when no account model is available, got empty")
+	}
+	if claudeSelectionFromModelRef(strings.TrimPrefix(got, "anthropic/")) != "" {
+		t.Fatalf("resolver returned a bare selector alias %q", got)
+	}
+}
+
 // TestBuildClaudeCodeLiveValidationSpec_SetsAnthropicVersionHeader pins
 // down the regression that broke Claude Code live validation in the
 // initial multi-agent rollout: the Preloop Anthropic gateway endpoint

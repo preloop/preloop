@@ -2544,6 +2544,67 @@ func TestApplyCodexManagedGatewayConfiguresCustomProvider(t *testing.T) {
 	}
 }
 
+// TestManagedServerSchemaAntigravity asserts the Antigravity MCP entry uses
+// the `serverUrl` key (not `url`) with a literal bearer header, and that a
+// freshly built entry round-trips through ValidateManagedConfig.
+func TestManagedServerSchemaAntigravity(t *testing.T) {
+	name := antigravityAgentName
+	adapter := managedMCPAdapterForAgent(AgentConfig{Name: name})
+	entry := adapter.BuildManagedServer("https://preloop.example", "durable-token")
+	if entry["serverUrl"] != "https://preloop.example/mcp/v1" {
+		t.Fatalf("%s: expected serverUrl key, got %#v", name, entry)
+	}
+	if _, hasURL := entry["url"]; hasURL {
+		t.Fatalf("%s: Antigravity must not use the `url` key, got %#v", name, entry)
+	}
+	headers, _ := entry["headers"].(map[string]interface{})
+	if headers["Authorization"] != "Bearer durable-token" {
+		t.Fatalf("%s: expected literal bearer header, got %#v", name, headers)
+	}
+	result := adapter.ValidateManagedConfig(map[string]interface{}{
+		"mcpServers": map[string]interface{}{"preloop": entry},
+	}, "https://preloop.example")
+	if result["validation_passed"] != true {
+		t.Fatalf("%s: expected antigravity validation to pass, got %+v", name, result)
+	}
+}
+
+// TestManagedServerSchemaDevin asserts the Devin MCP entry uses `url` +
+// headers with no transport field, and round-trips through validation.
+func TestManagedServerSchemaDevin(t *testing.T) {
+	adapter := managedMCPAdapterForAgent(AgentConfig{Name: devinAgentName})
+	entry := adapter.BuildManagedServer("https://preloop.example", "durable-token")
+	if entry["url"] != "https://preloop.example/mcp/v1" {
+		t.Fatalf("expected url key for Devin, got %#v", entry)
+	}
+	if _, hasTransport := entry["transport"]; hasTransport {
+		t.Fatalf("Devin entry must not carry a transport field, got %#v", entry)
+	}
+	headers, _ := entry["headers"].(map[string]interface{})
+	if headers["Authorization"] != "Bearer durable-token" {
+		t.Fatalf("expected literal bearer header, got %#v", headers)
+	}
+	result := adapter.ValidateManagedConfig(map[string]interface{}{
+		"mcpServers": map[string]interface{}{"preloop": entry},
+	}, "https://preloop.example")
+	if result["validation_passed"] != true {
+		t.Fatalf("expected devin validation to pass, got %+v", result)
+	}
+}
+
+// TestMCPOnlyAgentModelNote verifies each model-incapable agent surfaces a
+// clear, distinct explanation and that gateway-capable agents get none.
+func TestMCPOnlyAgentModelNote(t *testing.T) {
+	for _, name := range []string{"Cursor", antigravityAgentName, devinAgentName} {
+		if note := mcpOnlyAgentModelNote(AgentConfig{Name: name}); note == "" {
+			t.Fatalf("expected an MCP-only model note for %s", name)
+		}
+	}
+	if note := mcpOnlyAgentModelNote(AgentConfig{Name: "Claude Code"}); note != "" {
+		t.Fatalf("expected no MCP-only note for a gateway-capable agent, got %q", note)
+	}
+}
+
 func TestGenericAdapterValidateManagedConfigSupportsCodexGateway(t *testing.T) {
 	adapter := managedMCPAdapterForAgent(AgentConfig{Name: "Codex CLI"})
 	result := adapter.ValidateManagedConfig(map[string]interface{}{

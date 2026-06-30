@@ -12,17 +12,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Agent Control backend**: WebSocket control channel, operator command endpoint, runtime adapter scaffolding, audio transcription endpoint, and mobile/web Talk UI foundations for audited operator messages to managed agents.
 - **Cost analytics (OSS)**: Dedicated Console Cost view with spend overview, grouped usage drill-downs, and budget-health alerts backed by `/api/v1/cost/*` endpoints. Enterprise billing plugin owns budget policy CRUD and enforcement.
 - **Runtime session observer**: Shared session replay, timeline/chat views, gateway event inspection, and opt-in session summaries in the Console.
+- **Runtime session request timeline**: `GET /account/runtime-sessions/{id}/requests` reads per-request `ApiUsage` rows (tokens, cost, status, tool schema attribution) to power a unified replay with turn/delta deduplication, sortable chat, cache-token visibility, and inline operator activity turns.
+- **Runtime session titles**: Session list scheduling for background LLM-generated titles via the plugin service registry, with Enterprise billing providing the generator and a configurable daily spend cap (`billing_session_title_daily_cap_usd`).
+- **Session optimization actions**: Core schemas, CRUD, and gateway averages for applied optimization actions; Enterprise billing exposes apply/list endpoints for scope_tools, set_budget, enable_compression, and cap_tool_results with measured outcomes.
+- **Gateway context optimization**: Subject-scoped dedupe, noise stripping, and tool-result caps on the gateway hot path before upstream dispatch.
+- **CLI agent adapters**: Antigravity (Google Gemini MCP tree) and Devin (Cognition) MCP-only onboarding adapters alongside existing managed runtimes.
+- **Deploy wizard**: Expanded console deploy wizard for guided agent onboarding.
 - **OSS hosted trial path**: Added a self-contained Railway trial deployment map for Preloop OSS, including private API/gateway, worker/scheduler, Postgres/pgvector, and NATS services, generated Railway variable guidance, README onboarding, and teardown documentation.
+- **Test coverage expansion**: Substantial backend endpoint, service, integration (gateway e2e), and frontend component test suites across the OSS core and Enterprise plugins.
 
 ### Changed
 
 - **Enterprise cost features**: Moved model price override CRUD and runtime-session optimization recommendations into the billing plugin (`/api/v1/billing/cost/*`) with `model_price_overrides` and `session_optimization` feature flags gating the shared frontend.
 - **Service role deployment modes**: API startup and route registration now respect `PRELOOP_SERVICE_ROLE` so API-only, gateway-only, and combined trial deployments can run the right surface area.
 - **Release changelog generation**: AI-authored changelog drafting is now opt-in via `--generate-changelog-ai`, keeping deterministic release prep from depending on a local AI CLI.
+- **README**: Restructured hero, quick-start, and capability messaging for the control-plane positioning.
+- **Gateway runtime attribution**: Plugin-agent gateway traffic now attributes to the principal's latest open per-run session when available, improving per-run ROI for Hermes, OpenClaw, and similar runtimes without changing custom-agent `X-Preloop-Session-Id` behavior.
+- **Gateway usage accounting**: Preserves prompt-cache token breakdown (`cached_tokens`, `cache_read_input_tokens`) for cache-aware cost estimates and session replay UI.
 
 ### Fixed
 
 - **OSS install failure reporting**: The OSS installer now exits non-zero when `docker compose up` fails and prints the log-inspection command instead of reporting success.
+- **Gateway governance lookup performance**: Short-lived negative cache skips per-request account DB fetches when subject governance is unconfigured.
 
 ## [0.9.3] - 2026-05-19
 

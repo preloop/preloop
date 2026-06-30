@@ -6,7 +6,7 @@ import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
@@ -52,6 +52,9 @@ from preloop.schemas.gateway_usage import (
     ManagedAgentUsageAggregate,
     RuntimeSessionActivityListResponse,
     RuntimeSessionInteractionSummary,
+    RuntimeSessionRequestItem,
+    RuntimeSessionRequestListResponse,
+    RuntimeSessionRequestTool,
     RuntimeSessionSummaryInsight,
     RuntimeSessionSummary,
     RuntimeSessionUpdateRequest,
@@ -651,6 +654,7 @@ def _build_managed_agent_detail_response(
     agent_id: str,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
+    background_tasks: Optional[BackgroundTasks] = None,
 ) -> Optional[ManagedAgentDetailResponse]:
     if start_date and start_date.tzinfo:
         start_date = start_date.astimezone(UTC).replace(tzinfo=None)
@@ -697,6 +701,11 @@ def _build_managed_agent_detail_response(
         status="all",
         limit=20,
         offset=0,
+    )
+    RuntimeSessionExplorerService(db).schedule_missing_session_titles(
+        account_id=account_id,
+        rows=sessions["items"],
+        background_tasks=background_tasks,
     )
     return ManagedAgentDetailResponse(
         agent=ManagedAgentSummary(**summary),
@@ -1048,6 +1057,7 @@ async def extract_agent_name(
 def get_account_managed_agent(
     agent_id: str,
     account: Annotated[Account, Depends(get_account_for_user)],
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db_session),
     start_date: Optional[datetime] = Query(None),
     end_date: Optional[datetime] = Query(None),
@@ -1059,6 +1069,7 @@ def get_account_managed_agent(
         agent_id=agent_id,
         start_date=start_date,
         end_date=end_date,
+        background_tasks=background_tasks,
     )
     if response is None:
         raise HTTPException(
@@ -1779,6 +1790,7 @@ async def delete_account_managed_agent(
 @router.get("/runtime-sessions", response_model=AccountRuntimeSessionListResponse)
 async def list_account_runtime_sessions(
     account: Annotated[Account, Depends(get_account_for_user)],
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db_session),
     query: Optional[str] = Query(None, min_length=1),
     session_source_type: Optional[str] = Query(None),
@@ -1798,6 +1810,7 @@ async def list_account_runtime_sessions(
         end_date=end_date,
         limit=limit,
         offset=offset,
+        background_tasks=background_tasks,
     )
 
 
@@ -1860,6 +1873,119 @@ async def get_account_session_activity_timeline(
     return RuntimeSessionExplorerService(db).get_account_session_activity_timeline(
         account=account,
         runtime_session_id=runtime_session_id,
+    )
+
+
+def _request_row_to_item(row: Any) -> RuntimeSessionRequestItem:
+    """Convert an ApiUsage row into a unified-timeline request item.
+
+    Args:
+        row: One ``ApiUsage`` ORM row for a gateway request.
+
+    Returns:
+        The serialized per-request timeline item, including its tools (from
+        ``meta_data.tools_meta``) and their per-tool schema token estimates.
+    """
+    meta = row.meta_data or {}
+    tools_meta = meta.get("tools_meta") if isinstance(meta, dict) else None
+    tools: list[RuntimeSessionRequestTool] = []
+    tools_total = 0
+    if isinstance(tools_meta, list):
+        for entry in tools_meta:
+            if not isinstance(entry, dict):
+                continue
+            schema_tokens = int(entry.get("schema_tokens_estimate") or 0)
+            tools_total += schema_tokens
+            tools.append(
+                RuntimeSessionRequestTool(
+                    name=entry.get("name"),
+                    source=entry.get("source"),
+                    schema_tokens_estimate=schema_tokens,
+                    stripped=bool(entry.get("stripped", False)),
+                )
+            )
+    status_code = int(row.status_code or 0)
+    return RuntimeSessionRequestItem(
+        id=str(row.id),
+        timestamp=row.timestamp,
+        model_alias=row.model_alias,
+        provider_name=row.provider_name,
+        status_code=status_code,
+        is_error=status_code >= 400,
+        finish_reason=(meta.get("finish_reason") if isinstance(meta, dict) else None),
+        is_retry=bool(meta.get("is_retry", False)) if isinstance(meta, dict) else False,
+        prompt_tokens=int(row.prompt_tokens or 0),
+        completion_tokens=int(row.completion_tokens or 0),
+        total_tokens=int(row.total_tokens or 0),
+        estimated_cost=float(row.estimated_cost or 0.0),
+        endpoint=row.endpoint,
+        tools=tools,
+        tools_total_schema_tokens=tools_total,
+    )
+
+
+@router.get(
+    "/runtime-sessions/{runtime_session_id}/requests",
+    response_model=RuntimeSessionRequestListResponse,
+)
+async def list_account_runtime_session_requests(
+    runtime_session_id: str,
+    account: Annotated[Account, Depends(get_account_for_user)],
+    db: Session = Depends(get_db_session),
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    failed_only: bool = Query(False),
+    event_ids: Optional[list[str]] = Query(None),
+) -> RuntimeSessionRequestListResponse:
+    """Return per-request gateway rows for one runtime session.
+
+    This powers the unified session timeline by reading the real per-request
+    ``ApiUsage`` rows (one per gateway request) rather than the sparse captured
+    gateway events. Each item carries its tokens, estimated spend, status, and
+    the tools it included with their per-tool schema token cost.
+    """
+    from preloop.models.crud.api_usage import crud_api_usage
+
+    session = crud_runtime_session.get_account_session(
+        db, account_id=str(account.id), runtime_session_id=runtime_session_id
+    )
+    if session is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Runtime session not found"
+        )
+
+    rows = crud_api_usage.list_session_request_rows(
+        db,
+        account_id=account.id,
+        runtime_session_id=runtime_session_id,
+        limit=limit,
+        offset=offset,
+        failed_only=failed_only,
+        event_ids=event_ids,
+    )
+    total = crud_api_usage.count_session_request_rows(
+        db,
+        account_id=account.id,
+        runtime_session_id=runtime_session_id,
+        failed_only=failed_only,
+        event_ids=event_ids,
+    )
+    failed_count = crud_api_usage.count_session_request_rows(
+        db,
+        account_id=account.id,
+        runtime_session_id=runtime_session_id,
+        failed_only=True,
+    )
+    items = [_request_row_to_item(row) for row in rows]
+    next_offset = offset + len(items)
+    return RuntimeSessionRequestListResponse(
+        items=items,
+        total=total,
+        failed_count=failed_count,
+        limit=limit,
+        offset=offset,
+        next_offset=next_offset if next_offset < total else None,
+        has_more=next_offset < total,
     )
 
 

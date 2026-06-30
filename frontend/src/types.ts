@@ -236,6 +236,8 @@ export interface AccountGatewayUsageSearchResponse {
 
 export interface RuntimeSessionSummary {
   id: string;
+  title?: string | null;
+  summary?: string | null;
   session_source_type: string;
   session_source_id: string;
   session_reference: string | null;
@@ -504,6 +506,41 @@ export interface RuntimeSessionActivityItem {
 
 export interface RuntimeSessionActivityListResponse {
   items: RuntimeSessionActivityItem[];
+}
+
+export interface RuntimeSessionRequestTool {
+  name: string | null;
+  source: string | null;
+  schema_tokens_estimate: number;
+  stripped: boolean;
+}
+
+export interface RuntimeSessionRequestItem {
+  id: string;
+  timestamp: string | null;
+  model_alias: string | null;
+  provider_name: string | null;
+  status_code: number;
+  is_error: boolean;
+  finish_reason: string | null;
+  is_retry: boolean;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  estimated_cost: number;
+  endpoint: string | null;
+  tools: RuntimeSessionRequestTool[];
+  tools_total_schema_tokens: number;
+}
+
+export interface RuntimeSessionRequestListResponse {
+  items: RuntimeSessionRequestItem[];
+  total: number;
+  failed_count: number;
+  limit: number;
+  offset: number;
+  next_offset: number | null;
+  has_more: boolean;
 }
 
 export interface RuntimeSessionSummaryInsight {

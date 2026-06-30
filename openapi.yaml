@@ -1874,6 +1874,78 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/runtime-sessions/{runtime_session_id}/requests:
+    get:
+      tags:
+      - Account
+      summary: List Account Runtime Session Requests
+      description: 'Return per-request gateway rows for one runtime session.
+
+
+        This powers the unified session timeline by reading the real per-request
+
+        ``ApiUsage`` rows (one per gateway request) rather than the sparse captured
+
+        gateway events. Each item carries its tokens, estimated spend, status, and
+
+        the tools it included with their per-tool schema token cost.'
+      operationId: list_account_runtime_session_requests_api_v1_runtime_sessions__runtime_session_id__requests_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: runtime_session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Runtime Session Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 100
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      - name: failed_only
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Failed Only
+      - name: event_ids
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: array
+            items:
+              type: string
+          - type: 'null'
+          title: Event Ids
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeSessionRequestListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/runtime-sessions/{runtime_session_id}/summaries:
     post:
       tags:
@@ -12983,6 +13055,137 @@ components:
       - summary
       title: RuntimeSessionInteractionSummary
       description: Generated or locally derived summary for one gateway interaction.
+    RuntimeSessionRequestItem:
+      properties:
+        id:
+          type: string
+          title: Id
+        timestamp:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Timestamp
+        model_alias:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Alias
+        provider_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Name
+        status_code:
+          type: integer
+          title: Status Code
+          default: 0
+        is_error:
+          type: boolean
+          title: Is Error
+          default: false
+        finish_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Finish Reason
+        is_retry:
+          type: boolean
+          title: Is Retry
+          default: false
+        prompt_tokens:
+          type: integer
+          title: Prompt Tokens
+          default: 0
+        completion_tokens:
+          type: integer
+          title: Completion Tokens
+          default: 0
+        total_tokens:
+          type: integer
+          title: Total Tokens
+          default: 0
+        estimated_cost:
+          type: number
+          title: Estimated Cost
+          default: 0.0
+        endpoint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Endpoint
+        tools:
+          items:
+            $ref: '#/components/schemas/RuntimeSessionRequestTool'
+          type: array
+          title: Tools
+        tools_total_schema_tokens:
+          type: integer
+          title: Tools Total Schema Tokens
+          default: 0
+      type: object
+      required:
+      - id
+      title: RuntimeSessionRequestItem
+      description: One per-request gateway usage row for the unified session timeline.
+    RuntimeSessionRequestListResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/RuntimeSessionRequestItem'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+          default: 0
+        failed_count:
+          type: integer
+          title: Failed Count
+          default: 0
+        limit:
+          type: integer
+          title: Limit
+          default: 100
+        offset:
+          type: integer
+          title: Offset
+          default: 0
+        next_offset:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Next Offset
+        has_more:
+          type: boolean
+          title: Has More
+          default: false
+      type: object
+      title: RuntimeSessionRequestListResponse
+      description: Paginated per-request rows for one runtime session.
+    RuntimeSessionRequestTool:
+      properties:
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source
+        schema_tokens_estimate:
+          type: integer
+          title: Schema Tokens Estimate
+          default: 0
+        stripped:
+          type: boolean
+          title: Stripped
+          default: false
+      type: object
+      title: RuntimeSessionRequestTool
+      description: One tool carried by a single gateway request.
     RuntimeSessionSummary:
       properties:
         id:
@@ -13014,6 +13217,11 @@ components:
           - type: string
           - type: 'null'
           title: Runtime Principal Name
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Title
         summary:
           anyOf:
           - type: string

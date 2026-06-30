@@ -255,7 +255,37 @@ class OpenAIGatewayService:
             # or malformed headers leave the source id untouched (no regression).
             if session_source_type and session_source_id and self._client_session_id:
                 session_source_id = f"{session_source_id}:{self._client_session_id}"
-            if session_source_type and session_source_id:
+            elif session_source_type and session_source_id:
+                # Plugin agents (Hermes, OpenClaw, Claude Code, ...) send gateway
+                # traffic on a durable credential that carries no per-run id, so
+                # plain source keying piles every run onto one base session and
+                # the per-run sessions the runtime lifecycle creates (session
+                # token mint) stay empty. Attribute usage to the principal's
+                # current run session instead, so per-run ROI is real. We only
+                # adopt a *suffixed* (per-run) session, never the base row, and
+                # only while it is open; otherwise we fall through to source
+                # keying below (unchanged behavior, e.g. custom agents that have
+                # not minted a per-run session). Custom agents that pass
+                # X-Preloop-Session-Id took the branch above and skip this.
+                try:
+                    latest_run = crud_runtime_session.get_latest_by_principal(
+                        self.db,
+                        account_id=str(self.auth_context.user.account_id),
+                        principal_type=session_source_type,
+                        principal_id=session_source_id,
+                    )
+                    if (
+                        latest_run is not None
+                        and latest_run.ended_at is None
+                        and latest_run.session_source_id != session_source_id
+                    ):
+                        runtime_session_id = str(latest_run.id)
+                except Exception:
+                    logger.debug(
+                        "Failed to resolve latest run session for principal",
+                        exc_info=True,
+                    )
+            if not runtime_session_id and session_source_type and session_source_id:
                 try:
                     from datetime import datetime, timezone
 
@@ -3428,7 +3458,7 @@ class OpenAIGatewayService:
         prompt_key: str,
         completion_key: str,
         output_names: tuple[str, ...] = ("completion_tokens",),
-    ) -> Dict[str, int]:
+    ) -> Dict[str, Any]:
         usage = usage or {}
         prompt_tokens = int(usage.get(prompt_key, usage.get("input_tokens", 0)) or 0)
         completion_tokens = 0
@@ -3439,11 +3469,26 @@ class OpenAIGatewayService:
         total_tokens = int(
             usage.get("total_tokens", prompt_tokens + completion_tokens) or 0
         )
-        return {
+        normalized: Dict[str, Any] = {
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": total_tokens,
         }
+        # Preserve the provider cache-token breakdown so cost stays cache-aware
+        # when recomputed from stored usage and so the cached split can be shown
+        # in the UI. OpenAI nests cached input under
+        # ``prompt_tokens_details.cached_tokens``; Anthropic reports
+        # ``cache_read_input_tokens`` / ``cache_creation_input_tokens`` at the
+        # top level. ``estimate_ai_model_usage_cost`` already reads these.
+        details = usage.get("prompt_tokens_details")
+        if isinstance(details, dict):
+            kept = {k: v for k, v in details.items() if v is not None}
+            if kept:
+                normalized["prompt_tokens_details"] = kept
+        for cache_key in ("cache_read_input_tokens", "cache_creation_input_tokens"):
+            if usage.get(cache_key) is not None:
+                normalized[cache_key] = int(usage.get(cache_key) or 0)
+        return normalized
 
     def _pricing_override_for_request(
         self, *, ai_model: AIModel, model_alias: Optional[str]

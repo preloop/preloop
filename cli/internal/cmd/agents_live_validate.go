@@ -596,7 +596,16 @@ func resolveClaudeSelectionGatewayModelAlias(
 		})
 	}
 	if len(candidates) == 0 {
-		return resolveClaudeSelectionFromAnthropicModels(selection)
+		if alias := resolveClaudeSelectionFromAnthropicModels(selection); alias != "" {
+			return alias
+		}
+		// Last resort: a built-in, currently-GA model id for the family.
+		// This is what prevents the bare selector ("haiku") from leaking
+		// into a persisted AIModel identifier when the live Anthropic
+		// models API cannot be reached at onboard time (locked keychain,
+		// offline, or a transient failure). The live query above stays
+		// authoritative so logged-in users always get the true latest.
+		return claudeSelectionFallbackModelAlias(selection)
 	}
 	best := candidates[0]
 	for _, candidate := range candidates[1:] {
@@ -605,6 +614,41 @@ func resolveClaudeSelectionGatewayModelAlias(
 		}
 	}
 	return strings.TrimPrefix(best.alias, "preloop/")
+}
+
+// claudeSelectionFallbackModelIDs maps Claude Code's opaque family
+// selectors (the literal "haiku"/"sonnet"/"opus" the agent stores in its
+// config when the user never pinned a concrete model — typical of
+// subscription/OAuth billing) to a known-good, currently-GA Anthropic
+// model id.
+//
+// These are a LAST-RESORT default, used only when the live Anthropic
+// models API cannot be reached during onboarding. Their exact version is
+// not critical: when the user is actually logged in, the live query in
+// resolveClaudeSelectionFromAnthropicModels resolves the true latest model
+// and these are never consulted. Their sole job is to guarantee a real
+// model id so the bare selector never gets persisted as an AIModel
+// identifier (which the gateway would reject with HTTP 404).
+var claudeSelectionFallbackModelIDs = map[string]string{
+	"haiku":  "claude-haiku-4-5",
+	"sonnet": "claude-sonnet-4-5",
+	"opus":   "claude-opus-4-6",
+}
+
+// claudeSelectionFallbackModelID returns the built-in default model id for
+// a haiku/sonnet/opus selector, or "" if the input is not a known family
+// selector.
+func claudeSelectionFallbackModelID(selection string) string {
+	return claudeSelectionFallbackModelIDs[strings.ToLower(strings.TrimSpace(selection))]
+}
+
+// claudeSelectionFallbackModelAlias returns the gateway alias form
+// (anthropic/<id>) of the built-in default for a family selector, or "".
+func claudeSelectionFallbackModelAlias(selection string) string {
+	if id := claudeSelectionFallbackModelID(selection); id != "" {
+		return "anthropic/" + id
+	}
+	return ""
 }
 
 func resolveClaudeSelectionFromAnthropicModels(selection string) string {

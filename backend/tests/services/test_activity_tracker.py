@@ -47,7 +47,24 @@ def mock_run_db(mock_db_session):
     """Patch run_db_async to execute against a mock session."""
 
     async def _run_db_async(operation):
-        return operation(mock_db_session)
+        result = operation(mock_db_session)
+        if isinstance(result, dict):
+            return result
+        added = mock_db_session.add.call_args
+        if added:
+            event = added[0][0]
+            return {
+                "id": str(getattr(event, "id", uuid.uuid4())),
+                "session_id": str(event.session_id) if event.session_id else None,
+                "user_id": str(event.user_id) if event.user_id else None,
+                "account_id": str(event.account_id) if event.account_id else None,
+                "event_type": event.event_type,
+                "timestamp": event.timestamp.isoformat(),
+                "path": event.path,
+                "action": event.action,
+                "event_data": event.event_data,
+            }
+        return result
 
     with patch(
         "preloop.services.activity_tracker.run_db_async",

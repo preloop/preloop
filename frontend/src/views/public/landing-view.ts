@@ -1400,7 +1400,7 @@ export class LandingView extends LitElement {
           ? html`
               <section class="final-cta main-section special-cta">
                 <div class="section-container">
-                  <h2>Move fast. Stay safe.</h2>
+                  <h2>Move fast. Stay safe. Stay on budget.</h2>
                   <div class="hero-buttons">
                     <sl-button
                       variant="primary"

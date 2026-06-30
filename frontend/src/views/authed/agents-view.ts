@@ -3224,8 +3224,7 @@ export class AgentsView extends LitElement {
         ${this.showOnboardingDialog
           ? html`
               <preloop-deploy-wizard
-                initial-path="cli"
-                hide-back
+                initial-path="govern"
                 hide-step-title
                 .aiModels=${this.aiModels}
                 .computeFeatureEnabled=${this.computeFeatureEnabled}
