@@ -227,15 +227,17 @@ export class OAuthConsentView extends LitElement {
           account.
         </p>
 
-        ${this.error
-          ? html`<div class="error-box">
-              <sl-icon
-                name="exclamation-triangle"
-                style="margin-right: 0.5rem;"
-              ></sl-icon>
-              ${this.error}
-            </div>`
-          : nothing}
+        ${
+          this.error
+            ? html`<div class="error-box">
+                <sl-icon
+                  name="exclamation-triangle"
+                  style="margin-right: 0.5rem;"
+                ></sl-icon>
+                ${this.error}
+              </div>`
+            : nothing
+        }
 
         <sl-divider></sl-divider>
         <p

@@ -23,6 +23,14 @@ class CRUDBudgetPolicy(CRUDBase[BudgetPolicy]):
         subject_id: Optional[uuid.UUID] = None,
     ) -> Sequence[BudgetPolicy]:
         """Get all budget policies configured for a specific subject."""
+        if subject_type in ACCOUNT_LEVEL_SUBJECT_TYPES and subject_id is None:
+            query = select(self.model).where(
+                self.model.account_id == account_id,
+                self.model.subject_type.in_(tuple(ACCOUNT_LEVEL_SUBJECT_TYPES)),
+                self.model.subject_id.is_(None),
+            )
+            return db.execute(query).scalars().all()
+
         query = select(self.model).where(
             self.model.account_id == account_id,
             self.model.subject_type == subject_type,
@@ -62,12 +70,13 @@ class CRUDBudgetSpendActivity(CRUDBase[BudgetSpendActivity]):
         """Atomically upsert the spend activity logic using ON CONFLICT DO UPDATE.
         Returns the updated record.
         """
+        effective_model_alias = model_alias if model_alias is not None else ""
         stmt = insert(BudgetSpendActivity).values(
             id=uuid.uuid4(),
             account_id=account_id,
             subject_type=subject_type,
             subject_id=subject_id,
-            model_alias=model_alias,
+            model_alias=effective_model_alias,
             period=period,
             period_start=period_start,
             spend_usd=spend_increment_usd,
@@ -102,16 +111,36 @@ class CRUDBudgetSpendActivity(CRUDBase[BudgetSpendActivity]):
         period_start: Optional[datetime],
     ) -> float:
         """Get the current spend for a specific bucket. Returns 0.0 if no spend recorded yet."""
-        query = select(self.model.spend_usd).where(
+        from sqlalchemy import func, or_
+
+        conditions = [
             self.model.account_id == account_id,
             self.model.subject_type == subject_type,
-            self.model.subject_id == subject_id,
-            self.model.model_alias == model_alias,
             self.model.period == period,
-            self.model.period_start == period_start,
-        )
-        result = db.execute(query).scalar_one_or_none()
-        return result if result is not None else 0.0
+        ]
+        if subject_id is not None:
+            conditions.append(self.model.subject_id == subject_id)
+        else:
+            conditions.append(self.model.subject_id.is_(None))
+
+        if model_alias is not None:
+            conditions.append(self.model.model_alias == model_alias)
+        else:
+            conditions.append(
+                or_(self.model.model_alias.is_(None), self.model.model_alias == "")
+            )
+
+        if period_start is not None:
+            conditions.append(self.model.period_start == period_start)
+        else:
+            conditions.append(self.model.period_start.is_(None))
+
+        result = db.execute(
+            select(func.coalesce(func.sum(self.model.spend_usd), 0.0)).where(
+                *conditions
+            )
+        ).scalar_one()
+        return float(result or 0.0)
 
     def get_spend_multi(
         self,
@@ -132,13 +161,14 @@ class CRUDBudgetSpendActivity(CRUDBase[BudgetSpendActivity]):
         ],
         float,
     ]:
-        """Fetch multiple spend buckets at once."""
-        from sqlalchemy import or_, and_
+        """Fetch multiple spend buckets at once, summing duplicate rollup rows."""
+        from sqlalchemy import func, or_, and_
 
         if not buckets:
             return {}
 
         conditions = []
+        normalized_model_alias = func.coalesce(self.model.model_alias, "")
         for s_type, s_id, m_alias, period, p_start in buckets:
             conds = [
                 self.model.subject_type == s_type,
@@ -152,7 +182,9 @@ class CRUDBudgetSpendActivity(CRUDBase[BudgetSpendActivity]):
             if m_alias is not None:
                 conds.append(self.model.model_alias == m_alias)
             else:
-                conds.append(self.model.model_alias.is_(None))
+                conds.append(
+                    or_(self.model.model_alias.is_(None), self.model.model_alias == "")
+                )
 
             if p_start is not None:
                 conds.append(self.model.period_start == p_start)
@@ -161,27 +193,80 @@ class CRUDBudgetSpendActivity(CRUDBase[BudgetSpendActivity]):
 
             conditions.append(and_(*conds))
 
-        query = select(
-            self.model.subject_type,
-            self.model.subject_id,
-            self.model.model_alias,
-            self.model.period,
-            self.model.period_start,
-            self.model.spend_usd,
-        ).where(self.model.account_id == account_id, or_(*conditions))
+        query = (
+            select(
+                self.model.subject_type,
+                self.model.subject_id,
+                normalized_model_alias.label("model_alias_key"),
+                self.model.period,
+                self.model.period_start,
+                func.coalesce(func.sum(self.model.spend_usd), 0.0),
+            )
+            .where(self.model.account_id == account_id, or_(*conditions))
+            .group_by(
+                self.model.subject_type,
+                self.model.subject_id,
+                normalized_model_alias,
+                self.model.period,
+                self.model.period_start,
+            )
+        )
 
         rows = db.execute(query).all()
-        result = {}
-        for r in rows:
+        result: dict[
+            tuple[
+                str,
+                Optional[uuid.UUID],
+                Optional[str],
+                BudgetPeriod,
+                Optional[datetime],
+            ],
+            float,
+        ] = {}
+        for row in rows:
+            model_alias = row.model_alias_key or None
             result[
-                (r.subject_type, r.subject_id, r.model_alias, r.period, r.period_start)
-            ] = float(r.spend_usd or 0.0)
+                (
+                    row.subject_type,
+                    row.subject_id,
+                    model_alias,
+                    row.period,
+                    row.period_start,
+                )
+            ] = float(row[5] or 0.0)
 
         return result
 
 
 crud_budget_policy = CRUDBudgetPolicy(BudgetPolicy)
 crud_budget_spend = CRUDBudgetSpendActivity(BudgetSpendActivity)
+
+ACCOUNT_LEVEL_SUBJECT_TYPES = frozenset({"account", "global"})
+
+
+def normalize_budget_subject_type(subject_type: str) -> str:
+    """Map UI/API aliases to the subject types used for spend buckets."""
+    if subject_type == "global":
+        return "account"
+    if subject_type == "api_keys":
+        return "api_key"
+    if subject_type == "managed_agents":
+        return "managed_agent"
+    if subject_type == "flows":
+        return "flow"
+    return subject_type
+
+
+def spend_bucket_for_policy(
+    policy: BudgetPolicy,
+) -> tuple[str, Optional[uuid.UUID], Optional[str]]:
+    """Return the spend bucket coordinates for a configured policy."""
+    if policy.subject_type in ACCOUNT_LEVEL_SUBJECT_TYPES:
+        return ("account", None, policy.model_alias)
+    if policy.subject_type == "ai_model":
+        # Model-scoped policies aggregate spend via the model_alias bucket.
+        return ("account", None, policy.model_alias)
+    return (policy.subject_type, policy.subject_id, policy.model_alias)
 
 
 def get_period_start(ts: datetime, period: BudgetPeriod) -> Optional[datetime]:
@@ -230,6 +315,8 @@ def record_spend_for_request(
     model_alias: Optional[str],
     estimated_cost: float,
     timestamp: datetime,
+    *,
+    subject_scopes: Optional[Sequence[tuple[str, Optional[str]]]] = None,
 ) -> None:
     """Record spend for a gateway request across all configured granularities."""
     if estimated_cost <= 0:
@@ -237,14 +324,27 @@ def record_spend_for_request(
 
     periods = list(BudgetPeriod)
 
-    # We always record at account level
-    subjects = [("account", None)]
+    # Always record at account level.
+    subjects: list[tuple[str, Optional[uuid.UUID]]] = [("account", None)]
+
+    scope_candidates: list[tuple[str, Optional[str]]] = list(subject_scopes or [])
     if subject_type and subject_id:
-        try:
-            parsed_id = uuid.UUID(str(subject_id))
-            subjects.append((subject_type, parsed_id))
-        except ValueError:
-            pass  # if subject_id is not a valid UUID, just don't record subject-specific spend
+        scope_candidates.append((subject_type, subject_id))
+
+    seen_scopes: set[tuple[str, Optional[uuid.UUID]]] = set()
+    for raw_subject_type, raw_subject_id in scope_candidates:
+        normalized_type = normalize_budget_subject_type(raw_subject_type)
+        parsed_id: Optional[uuid.UUID] = None
+        if raw_subject_id:
+            try:
+                parsed_id = uuid.UUID(str(raw_subject_id))
+            except ValueError:
+                continue
+        scope = (normalized_type, parsed_id)
+        if scope in seen_scopes or normalized_type == "account":
+            continue
+        seen_scopes.add(scope)
+        subjects.append(scope)
 
     models = [None]  # All models
     if model_alias:

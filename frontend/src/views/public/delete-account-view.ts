@@ -201,13 +201,15 @@ export class DeleteAccountView extends LitElement {
               @sl-input=${(e: any) => (this._username = e.target.value)}
             ></sl-input>
 
-            ${this._orgName
-              ? html`<sl-input
-                  label="Organization"
-                  readonly
-                  .value=${this._orgName}
-                ></sl-input>`
-              : ''}
+            ${
+              this._orgName
+                ? html`<sl-input
+                    label="Organization"
+                    readonly
+                    .value=${this._orgName}
+                  ></sl-input>`
+                : ''
+            }
 
             <sl-textarea
               label="Reason for leaving (optional)"
@@ -217,9 +219,13 @@ export class DeleteAccountView extends LitElement {
               @sl-input=${(e: any) => (this._reason = e.target.value)}
             ></sl-textarea>
 
-            ${this._error
-              ? html`<sl-alert variant="danger" open>${this._error}</sl-alert>`
-              : ''}
+            ${
+              this._error
+                ? html`<sl-alert variant="danger" open
+                    >${this._error}</sl-alert
+                  >`
+                : ''
+            }
 
             <sl-button
               type="submit"

@@ -159,35 +159,41 @@ export class TrackersView extends LitElement {
       </view-header>
       <div class="column-layout narrow">
         <div class="main-column">
-          ${this.githubError
-            ? html`
-                <sl-alert
-                  variant="danger"
-                  open
-                  closable
-                  @sl-after-hide=${this._dismissGitHubError}
-                >
-                  <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
-                  <strong>GitHub Connection Failed</strong><br />
-                  ${this.githubError}
-                </sl-alert>
-              `
-            : ''}
-          ${this.isAddingTracker
-            ? html`<add-tracker-modal
-                .githubInstallationId=${this.githubInstallationId}
-                .githubTargetLogin=${this.githubTargetLogin}
-                @tracker-added=${this._handleTrackerAdded}
-                @close-modal=${this._closeAddTrackerForm}
-              ></add-tracker-modal>`
-            : ''}
-          ${this.editingTracker
-            ? html`<add-tracker-modal
-                .tracker=${this.editingTracker}
-                @tracker-updated=${this._handleTrackerUpdated}
-                @close-modal=${this._closeAddTrackerForm}
-              ></add-tracker-modal>`
-            : ''}
+          ${
+            this.githubError
+              ? html`
+                  <sl-alert
+                    variant="danger"
+                    open
+                    closable
+                    @sl-after-hide=${this._dismissGitHubError}
+                  >
+                    <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+                    <strong>GitHub Connection Failed</strong><br />
+                    ${this.githubError}
+                  </sl-alert>
+                `
+              : ''
+          }
+          ${
+            this.isAddingTracker
+              ? html`<add-tracker-modal
+                  .githubInstallationId=${this.githubInstallationId}
+                  .githubTargetLogin=${this.githubTargetLogin}
+                  @tracker-added=${this._handleTrackerAdded}
+                  @close-modal=${this._closeAddTrackerForm}
+                ></add-tracker-modal>`
+              : ''
+          }
+          ${
+            this.editingTracker
+              ? html`<add-tracker-modal
+                  .tracker=${this.editingTracker}
+                  @tracker-updated=${this._handleTrackerUpdated}
+                  @close-modal=${this._closeAddTrackerForm}
+                ></add-tracker-modal>`
+              : ''
+          }
           <tracker-list @tracker-edit=${this._handleTrackerEdit}></tracker-list>
         </div>
       </div>

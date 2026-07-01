@@ -137,52 +137,64 @@ export class AppFooter extends LitElement {
         <div class="footer-main">
           <div>
             <logo-component override-theme="dark"></logo-component>
-            ${hasCompanyInfo
-              ? html`
-                  <p style="margin-top: 1rem;">
-                    ${company.legal_name
-                      ? html`${company.legal_name}<br />`
-                      : ''}
-                    ${company.address ? html`${company.address}<br />` : ''}
-                    ${company.city ? html`${company.city}` : ''}
-                  </p>
-                `
-              : ''}
+            ${
+              hasCompanyInfo
+                ? html`
+                    <p style="margin-top: 1rem;">
+                      ${
+                        company.legal_name
+                          ? html`${company.legal_name}<br />`
+                          : ''
+                      }
+                      ${company.address ? html`${company.address}<br />` : ''}
+                      ${company.city ? html`${company.city}` : ''}
+                    </p>
+                  `
+                : ''
+            }
           </div>
           <nav class="footer-nav">
             <ul>
-              ${this._registrationEnabled
-                ? html`<li><a href="/register">Register</a></li>`
-                : ''}
+              ${
+                this._registrationEnabled
+                  ? html`<li><a href="/register">Register</a></li>`
+                  : ''
+              }
               <li><a href="/login">Sign in</a></li>
               <li><a href="/privacy">Privacy Policy</a></li>
               <li><a href="/terms">Terms of Service</a></li>
               <li><a href="/whatis-mcp">What is MCP?</a></li>
               <li><a href="https://docs.preloop.ai">Docs</a></li>
-              ${isSaaS()
-                ? html` <li><a href="/pricing">Pricing</a></li>
-                    <li><a href="/about">About</a></li>`
-                : ''}
+              ${
+                isSaaS()
+                  ? html` <li><a href="/pricing">Pricing</a></li>
+                      <li><a href="/about">About</a></li>`
+                  : ''
+              }
             </ul>
           </nav>
         </div>
         <div class="divider"></div>
         <div class="footer-bottom">
-          ${hasCompanyInfo
-            ? html`
-                <span class="copyright-text">
-                  &copy; ${new Date().getFullYear()}
-                  ${company.legal_name
-                    ? html`<a href="/">${company.legal_name}</a>`
-                    : config.name}.
-                  All rights reserved.
-                </span>
-              `
-            : html`
-                <span class="copyright-text">
-                  &copy; ${new Date().getFullYear()} ${config.name}
-                </span>
-              `}
+          ${
+            hasCompanyInfo
+              ? html`
+                  <span class="copyright-text">
+                    &copy; ${new Date().getFullYear()}
+                    ${
+                      company.legal_name
+                        ? html`<a href="/">${company.legal_name}</a>`
+                        : config.name
+                    }.
+                    All rights reserved.
+                  </span>
+                `
+              : html`
+                  <span class="copyright-text">
+                    &copy; ${new Date().getFullYear()} ${config.name}
+                  </span>
+                `
+          }
           <div class="social-links">
             <sl-icon-button
               name="github"
@@ -190,39 +202,45 @@ export class AppFooter extends LitElement {
               href="https://github.com/preloop/preloop"
               target="_blank"
             ></sl-icon-button>
-            ${social?.linkedin
-              ? html`
-                  <sl-icon-button
-                    name="linkedin"
-                    label="LinkedIn"
-                    href="${social.linkedin}"
-                    target="_blank"
-                  ></sl-icon-button>
-                `
-              : ''}
-            ${social?.instagram
-              ? html`
-                  <sl-icon-button
-                    name="instagram"
-                    label="Instagram"
-                    href="${social.instagram}"
-                    target="_blank"
-                  ></sl-icon-button>
-                `
-              : ''}
-            ${social?.twitter
-              ? html`
-                  <sl-icon-button
-                    name="twitter-x"
-                    label="Twitter/X"
-                    href="https://twitter.com/${social.twitter.replace(
-                      '@',
-                      ''
-                    )}"
-                    target="_blank"
-                  ></sl-icon-button>
-                `
-              : ''}
+            ${
+              social?.linkedin
+                ? html`
+                    <sl-icon-button
+                      name="linkedin"
+                      label="LinkedIn"
+                      href="${social.linkedin}"
+                      target="_blank"
+                    ></sl-icon-button>
+                  `
+                : ''
+            }
+            ${
+              social?.instagram
+                ? html`
+                    <sl-icon-button
+                      name="instagram"
+                      label="Instagram"
+                      href="${social.instagram}"
+                      target="_blank"
+                    ></sl-icon-button>
+                  `
+                : ''
+            }
+            ${
+              social?.twitter
+                ? html`
+                    <sl-icon-button
+                      name="twitter-x"
+                      label="Twitter/X"
+                      href="https://twitter.com/${social.twitter.replace(
+                        '@',
+                        ''
+                      )}"
+                      target="_blank"
+                    ></sl-icon-button>
+                  `
+                : ''
+            }
           </div>
         </div>
       </div>

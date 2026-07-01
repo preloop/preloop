@@ -218,25 +218,27 @@ export class AppHeader extends LitElement {
       <header>
         <div class="header-container">
           <div class="flex items-center">
-            ${this.showDrawerToggle
-              ? html`<sl-icon-button
-                  name="menu"
-                  @click=${() =>
-                    this.dispatchEvent(
-                      new CustomEvent('toggle-drawer', {
-                        bubbles: true,
-                        composed: true,
-                      })
-                    )}
-                ></sl-icon-button>`
-              : html`<div class="logo">
-                  <a href="/">
-                    <logo-component
-                      alt="${getBrandConfig().name} Logo"
-                      override-theme="dark"
-                    ></logo-component>
-                  </a>
-                </div>`}
+            ${
+              this.showDrawerToggle
+                ? html`<sl-icon-button
+                    name="menu"
+                    @click=${() =>
+                      this.dispatchEvent(
+                        new CustomEvent('toggle-drawer', {
+                          bubbles: true,
+                          composed: true,
+                        })
+                      )}
+                  ></sl-icon-button>`
+                : html`<div class="logo">
+                    <a href="/">
+                      <logo-component
+                        alt="${getBrandConfig().name} Logo"
+                        override-theme="dark"
+                      ></logo-component>
+                    </a>
+                  </div>`
+            }
           </div>
           <nav class="${this.isMenuOpen ? 'mobile-menu-open' : ''}">
             <sl-icon-button
@@ -252,30 +254,44 @@ export class AppHeader extends LitElement {
               variant="text"
               >Docs</sl-button
             >
-            ${isSaaS()
-              ? html`
-                  <sl-button href="/about" variant="text">About</sl-button>
-                  <sl-button href="/pricing" variant="text">Pricing</sl-button>
-                `
-              : ''}
-            ${this.isAuthenticated && this.user
-              ? html`
-                  ${window.location.pathname.startsWith('/console')
-                    ? html`<sl-button @click=${this.logout}>Logout</sl-button>`
-                    : html`<sl-button variant="primary" href="/console"
-                        >Console</sl-button
-                      >`}
-                `
-              : html`
-                  <sl-button href="/login" variant="text">Sign in</sl-button>
-                  ${this.registrationEnabled
-                    ? html`
-                        <sl-button variant="primary" @click=${this.handleSignup}
-                          >Sign Up</sl-button
-                        >
-                      `
-                    : ''}
-                `}
+            ${
+              isSaaS()
+                ? html`
+                    <sl-button href="/about" variant="text">About</sl-button>
+                    <sl-button href="/pricing" variant="text"
+                      >Pricing</sl-button
+                    >
+                  `
+                : ''
+            }
+            ${
+              this.isAuthenticated && this.user
+                ? html`
+                    ${
+                      window.location.pathname.startsWith('/console')
+                        ? html`<sl-button @click=${this.logout}
+                            >Logout</sl-button
+                          >`
+                        : html`<sl-button variant="primary" href="/console"
+                            >Console</sl-button
+                          >`
+                    }
+                  `
+                : html`
+                    <sl-button href="/login" variant="text">Sign in</sl-button>
+                    ${
+                      this.registrationEnabled
+                        ? html`
+                            <sl-button
+                              variant="primary"
+                              @click=${this.handleSignup}
+                              >Sign Up</sl-button
+                            >
+                          `
+                        : ''
+                    }
+                  `
+            }
           </nav>
           <div class="mobile-menu-button">
             <sl-icon-button

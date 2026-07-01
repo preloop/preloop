@@ -359,9 +359,9 @@ export class GovernanceRuleSetEditor extends LitElement {
 
     return html`
       <div
-        class="rule-item ${!rule.is_enabled ? 'disabled-rule' : ''} ${isDragging
-          ? 'dragging'
-          : ''} ${dragPosition}"
+        class="rule-item ${!rule.is_enabled ? 'disabled-rule' : ''} ${
+          isDragging ? 'dragging' : ''
+        } ${dragPosition}"
         draggable="true"
         @dragstart=${(e: DragEvent) => this._handleDragStart(index, e)}
         @dragover=${(e: DragEvent) => this._handleDragOver(index, e)}
@@ -377,24 +377,29 @@ export class GovernanceRuleSetEditor extends LitElement {
         ></sl-icon>
         <div class="rule-details">
           <span class="rule-action-label ${colorClass}">
-            ${this._getActionLabel(rule.action)}${rule.action ===
-              'require_approval' && workflow
-              ? html` <span
-                  style="font-weight: normal; font-size: var(--sl-font-size-x-small);"
-                  >(${workflow.name})</span
-                >`
-              : ''}
+            ${this._getActionLabel(rule.action)}${
+              rule.action === 'require_approval' && workflow
+                ? html` <span
+                    style="font-weight: normal; font-size: var(--sl-font-size-x-small);"
+                    >(${workflow.name})</span
+                  >`
+                : ''
+            }
           </span>
-          ${rule.condition_expression
-            ? html`<div class="rule-condition">
-                when ${rule.condition_expression}
-              </div>`
-            : html`<div class="rule-condition">(always)</div>`}
-          ${rule.description
-            ? html`<div class="rule-description">
-                ${rule.action === 'deny' ? '\u2192 ' : ''}${rule.description}
-              </div>`
-            : ''}
+          ${
+            rule.condition_expression
+              ? html`<div class="rule-condition">
+                  when ${rule.condition_expression}
+                </div>`
+              : html`<div class="rule-condition">(always)</div>`
+          }
+          ${
+            rule.description
+              ? html`<div class="rule-description">
+                  ${rule.action === 'deny' ? '\u2192 ' : ''}${rule.description}
+                </div>`
+              : ''
+          }
         </div>
         <div class="rule-actions">
           <sl-tooltip content="Edit rule">
@@ -419,9 +424,13 @@ export class GovernanceRuleSetEditor extends LitElement {
 
     return html`
       <div class="rules-list">
-        ${sortedRules.length === 0
-          ? html`<div class="empty-rules">${this.emptyMessage}</div>`
-          : sortedRules.map((rule, index) => this._renderRuleItem(rule, index))}
+        ${
+          sortedRules.length === 0
+            ? html`<div class="empty-rules">${this.emptyMessage}</div>`
+            : sortedRules.map((rule, index) =>
+                this._renderRuleItem(rule, index)
+              )
+        }
       </div>
 
       <div class="rules-footer">

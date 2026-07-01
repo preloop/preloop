@@ -497,17 +497,19 @@ export class ConsoleShell extends LitElement {
                   </sl-menu-item>
                 `
               )}
-              ${this._featuresLoaded && this.features['audit_logs']
-                ? this._renderNavLink(
-                    '/console/audit',
-                    html`
-                      <sl-menu-item>
-                        <sl-icon name="journal-text" slot="prefix"></sl-icon>
-                        <span class="sidebar-label">Audit</span>
-                      </sl-menu-item>
-                    `
-                  )
-                : ''}
+              ${
+                this._featuresLoaded && this.features['audit_logs']
+                  ? this._renderNavLink(
+                      '/console/audit',
+                      html`
+                        <sl-menu-item>
+                          <sl-icon name="journal-text" slot="prefix"></sl-icon>
+                          <span class="sidebar-label">Audit</span>
+                        </sl-menu-item>
+                      `
+                    )
+                  : ''
+              }
               <sl-details
                 class="settings-section"
                 ?open=${this._isSettingsActive()}
@@ -517,29 +519,35 @@ export class ConsoleShell extends LitElement {
                   <span class="sidebar-label">Settings</span>
                 </span>
                 <sl-menu>
-                  ${this.features.user_management
-                    ? html`${this._renderNavLink(
-                        '/console/settings/account',
-                        html`<sl-menu-item>Account</sl-menu-item>`
-                      )}
-                      ${this._renderNavLink(
-                        '/console/settings/users',
-                        html`<sl-menu-item>Users</sl-menu-item>`
-                      )}`
-                    : ''}
-                  ${this.features.team_management
-                    ? this._renderNavLink(
-                        '/console/settings/teams',
-                        html`<sl-menu-item>Teams</sl-menu-item>`
-                      )
-                    : ''}
-                  ${this.features.user_management ||
-                  this.features.team_management
-                    ? this._renderNavLink(
-                        '/console/settings/invitations',
-                        html`<sl-menu-item>Invitations</sl-menu-item>`
-                      )
-                    : ''}
+                  ${
+                    this.features.user_management
+                      ? html`${this._renderNavLink(
+                          '/console/settings/account',
+                          html`<sl-menu-item>Account</sl-menu-item>`
+                        )}
+                        ${this._renderNavLink(
+                          '/console/settings/users',
+                          html`<sl-menu-item>Users</sl-menu-item>`
+                        )}`
+                      : ''
+                  }
+                  ${
+                    this.features.team_management
+                      ? this._renderNavLink(
+                          '/console/settings/teams',
+                          html`<sl-menu-item>Teams</sl-menu-item>`
+                        )
+                      : ''
+                  }
+                  ${
+                    this.features.user_management ||
+                    this.features.team_management
+                      ? this._renderNavLink(
+                          '/console/settings/invitations',
+                          html`<sl-menu-item>Invitations</sl-menu-item>`
+                        )
+                      : ''
+                  }
                   ${this._renderNavLink(
                     '/console/settings/api-keys',
                     html`<sl-menu-item>API Keys</sl-menu-item>`

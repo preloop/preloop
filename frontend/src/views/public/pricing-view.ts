@@ -112,8 +112,7 @@ export class PublicPricingView extends LitElement {
     const faqs: PricingFaq[] = [];
     for (let i = 0; i < 30; i++) {
       const el = children.find((c) => c.getAttribute('slot') === `faq-${i}`) as
-        | HTMLElement
-        | undefined;
+        HTMLElement | undefined;
       if (!el) break;
       const q = el.getAttribute('data-q') || '';
       const a = el.getAttribute('data-a') || '';
@@ -436,9 +435,11 @@ export class PublicPricingView extends LitElement {
               (plan) =>
                 html`<th class="${plan.id === 'teams' ? 'popular' : ''}">
                   <div class="plan-name">${plan.name}</div>
-                  ${plan.badge
-                    ? html`<div class="badge">${plan.badge}</div>`
-                    : ''}
+                  ${
+                    plan.badge
+                      ? html`<div class="badge">${plan.badge}</div>`
+                      : ''
+                  }
                 </th>`
             )}
           </tr>
@@ -486,12 +487,14 @@ export class PublicPricingView extends LitElement {
                     class="${plan.id === 'teams' ? 'popular' : ''}"
                     style="text-align: left; padding-left: 2rem;"
                   >
-                    ${feature
-                      ? html`<span class="check-mark"
-                            ><sl-icon name="check-lg"></sl-icon
-                          ></span>
-                          ${feature}`
-                      : ''}
+                    ${
+                      feature
+                        ? html`<span class="check-mark"
+                              ><sl-icon name="check-lg"></sl-icon
+                            ></span>
+                            ${feature}`
+                        : ''
+                    }
                   </td>`;
                 })}
               </tr>
@@ -510,13 +513,15 @@ export class PublicPricingView extends LitElement {
                     size="large"
                     @click=${() => this._handleSignUp(plan.id)}
                   >
-                    ${plan.cta_text
-                      ? plan.cta_text
-                      : plan.id === 'enterprise'
-                        ? 'Contact Sales'
-                        : plan.id === 'opensource'
-                          ? 'View on GitHub'
-                          : 'Start Free Trial'}
+                    ${
+                      plan.cta_text
+                        ? plan.cta_text
+                        : plan.id === 'enterprise'
+                          ? 'Contact Sales'
+                          : plan.id === 'opensource'
+                            ? 'View on GitHub'
+                            : 'Start Free Trial'
+                    }
                   </sl-button>
                 </td>
               `
@@ -602,17 +607,21 @@ export class PublicPricingView extends LitElement {
           </div>
 
           <div class="section-container">
-            ${this._billingToggle
-              ? html`<billing-toggle
-                  .dark=${true}
-                  .interval=${this._interval}
-                  @interval-change=${(e: CustomEvent) =>
-                    (this._interval = e.detail.value)}
-                ></billing-toggle>`
-              : ''}
-            ${this._plans.length
-              ? html`${this._renderCards()} ${this._renderTable()}`
-              : ''}
+            ${
+              this._billingToggle
+                ? html`<billing-toggle
+                    .dark=${true}
+                    .interval=${this._interval}
+                    @interval-change=${(e: CustomEvent) =>
+                      (this._interval = e.detail.value)}
+                  ></billing-toggle>`
+                : ''
+            }
+            ${
+              this._plans.length
+                ? html`${this._renderCards()} ${this._renderTable()}`
+                : ''
+            }
           </div>
         </section>
         ${this._renderFaqs()}

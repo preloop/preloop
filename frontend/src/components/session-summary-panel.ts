@@ -113,14 +113,17 @@ export class SessionSummaryPanel extends LitElement {
             (highlight) => html`<span class="highlight">${highlight}</span>`
           )}
         </div>
-        ${summary.next_action || local.nextAction
-          ? html`
-              <div class="hint">
-                <strong>Next:</strong> ${summary.next_action ||
-                local.nextAction}
-              </div>
-            `
-          : ''}
+        ${
+          summary.next_action || local.nextAction
+            ? html`
+                <div class="hint">
+                  <strong>Next:</strong> ${
+                    summary.next_action || local.nextAction
+                  }
+                </div>
+              `
+            : ''
+        }
         <div class="hint">
           Summary inspection cost:
           ${estimatedCost > 0 ? `$${estimatedCost.toFixed(4)}` : '$0.00'}

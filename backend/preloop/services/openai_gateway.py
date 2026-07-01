@@ -435,7 +435,7 @@ class OpenAIGatewayService:
                 message="messages must be a non-empty list",
             )
         started_at = time.perf_counter()
-        budget_result = self._check_budget(model, payload)
+        budget_result = self._check_budget(model, payload, gateway_provider="openai")
         if budget_result and budget_result.hard_limit_exceeded:
             detail = self._budget_denial_detail(budget_result)
             self._record_gateway_request(
@@ -559,7 +559,7 @@ class OpenAIGatewayService:
         model = self._resolve_requested_model(payload.get("model"), provider="openai")
         messages = self._normalize_responses_input(payload)
         started_at = time.perf_counter()
-        budget_result = self._check_budget(model, payload)
+        budget_result = self._check_budget(model, payload, gateway_provider="openai")
         if budget_result and budget_result.hard_limit_exceeded:
             detail = self._budget_denial_detail(budget_result)
             self._record_gateway_request(
@@ -653,7 +653,9 @@ class OpenAIGatewayService:
         )
         messages = self._normalize_anthropic_messages_input(payload)
         started_at = time.perf_counter()
-        budget_result = self._check_budget(model, {**payload, "messages": messages})
+        budget_result = self._check_budget(
+            model, {**payload, "messages": messages}, gateway_provider="anthropic"
+        )
         if budget_result and budget_result.hard_limit_exceeded:
             detail = self._budget_denial_detail(budget_result)
             self._record_gateway_request(
@@ -746,7 +748,9 @@ class OpenAIGatewayService:
         messages = self._normalize_anthropic_messages_input(payload)
         budget_payload = {**payload, "messages": messages}
         started_at = time.perf_counter()
-        budget_result = self._check_budget(model, budget_payload)
+        budget_result = self._check_budget(
+            model, budget_payload, gateway_provider="anthropic"
+        )
         if budget_result and budget_result.hard_limit_exceeded:
             detail = self._budget_denial_detail(budget_result)
             self._record_gateway_request(
@@ -1090,7 +1094,7 @@ class OpenAIGatewayService:
             )
 
         started_at = time.perf_counter()
-        budget_result = self._check_budget(model, payload)
+        budget_result = self._check_budget(model, payload, gateway_provider="openai")
         if budget_result and budget_result.hard_limit_exceeded:
             detail = self._budget_denial_detail(budget_result)
             self._record_gateway_request(
@@ -1291,7 +1295,7 @@ class OpenAIGatewayService:
         model = self._resolve_requested_model(payload.get("model"), provider="openai")
         messages = self._normalize_responses_input(payload)
         started_at = time.perf_counter()
-        budget_result = self._check_budget(model, payload)
+        budget_result = self._check_budget(model, payload, gateway_provider="openai")
         if budget_result and budget_result.hard_limit_exceeded:
             detail = self._budget_denial_detail(budget_result)
             self._record_gateway_request(
@@ -3602,6 +3606,7 @@ class OpenAIGatewayService:
             flow_id=runtime_context.get("flow_id"),
             flow_execution_id=runtime_context.get("flow_execution_id"),
             runtime_session_id=runtime_session_id,
+            managed_agent_id=self._resolve_managed_agent_id(),
             model_alias=model_alias,
             provider_name=ai_model.provider_name,
             upstream_request_id=(
@@ -3701,6 +3706,10 @@ class OpenAIGatewayService:
                 else None
             ),
             budget=self._budget_meta_data(budget_result),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            estimated_cost=float(usage_row.estimated_cost or 0.0),
         )
         ModelGatewayEventEmitter(self.db).emit_for_usage(
             usage=usage_row,
@@ -4046,17 +4055,48 @@ class OpenAIGatewayService:
         return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
     def _check_budget(
-        self, ai_model: AIModel, payload: Dict[str, Any]
+        self,
+        ai_model: AIModel,
+        payload: Dict[str, Any],
+        *,
+        gateway_provider: GatewayProvider = "openai",
     ) -> Optional[BudgetCheckResult]:
         """Check configured gateway budgets before the upstream call."""
         # Execute plugin budget enforcement (HTTP 403 on limit exceeded)
         if hasattr(self.budget_enforcer, "enforce_or_raise"):
-            self.budget_enforcer.enforce_or_raise(
-                self.db, self.auth_context, ai_model, payload
-            )
+            try:
+                self.budget_enforcer.enforce_or_raise(
+                    self.db, self.auth_context, ai_model, payload
+                )
+            except ModelGatewayAPIError as exc:
+                raise self._normalize_budget_gateway_error(
+                    exc, gateway_provider=gateway_provider
+                ) from exc
 
         return ModelGatewayBudgetService(self.db, self.auth_context).preflight_check(
             ai_model, payload
+        )
+
+    @staticmethod
+    def _normalize_budget_gateway_error(
+        exc: ModelGatewayAPIError,
+        *,
+        gateway_provider: GatewayProvider,
+    ) -> ModelGatewayAPIError:
+        """Render budget denials in the client format for the active gateway."""
+        message = exc.message
+        is_budget_denial = (
+            exc.code == "budget_limit_exceeded"
+            or "model gateway budget exceeded" in message.lower()
+            or "budget hard limit exceeded" in message.lower()
+        )
+        if not is_budget_denial:
+            return exc
+        return ModelGatewayAPIError(
+            provider=gateway_provider,
+            status_code=exc.status_code,
+            message=message,
+            code="budget_limit_exceeded" if gateway_provider == "openai" else exc.code,
         )
 
     @staticmethod

@@ -34,7 +34,7 @@ Preloop is a single open-source platform that covers the five jobs teams otherwi
 | **MCP Firewall** | Govern every tool call an agent makes. Allow, deny, require approval, require justification. YAML + CEL policies. | MintMCP, Lunar.dev MCPX, TrueFoundry MCP Gateway |
 | **AI Model Gateway** | OpenAI- and Anthropic-compatible gateway with per-account/flow budgets, allowed-model lists, token accounting, and runtime attribution. | Portkey, Helicone, LiteLLM, Kong AI |
 | **Cost Analytics & Budgets** | Explain model spend by model, agent, session, API key, flow, and user; enforce budgets and inspect optimization opportunities. | FinOps dashboards, vendor billing exports |
-| **Human Approvals** | Mobile, watch, Slack, Mattermost, email, or webhook notifications with one-tap decisions and full context. Async-safe. | Custom Slack bots, Peta Desk |
+| **Human Approvals** | Mobile, watch, Slack, Mattermost, email, or webhook notifications with one-tap decisions and full context. Approve any onboarded agent's tool calls — including native `Bash`/`Edit` — not just MCP tools. Async-safe. | Custom Slack bots, Peta Desk |
 | **Runtime Observability** | Session-level timeline of tool calls, model calls, policy decisions, approvals, spend, and outcomes across agents. | AgentOps, Langfuse, LangSmith |
 | **Audit & AI Act Evidence** | Durable logs with matched policy, approver, inputs, timestamps, and outcome. Ready for security review and EU AI Act work. | Credo AI, IBM watsonx.governance |
 
@@ -99,7 +99,7 @@ runtime, and let the plugin connect.
 ### Access Policies & Approval Workflows
 Define fine-grained access controls for any AI tool or operation. Tools support multiple ordered access rules that evaluate in priority order. When an AI attempts a protected operation, Preloop pauses and notifies you:
 - **Instant notifications** via mobile app, email, Slack, Mattermost, or custom webhook.
-- **One-tap approvals** from your phone, watch, or desktop.
+- **One-tap approvals** from your phone, watch, or desktop — for any onboarded agent's tool calls, including native `Bash`/`Edit` actions, not just MCP tools.
 - **Async approval mode** lets the agent poll for status instead of blocking network hooks.
 - **Per-tool justification** — require (or optionally request) the agent to explain *why* a tool is being called.
 - **Full Audit Trail** — every action is logged with full context: what was attempted, the matched policy, execution duration, and who approved it.

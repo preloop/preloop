@@ -295,6 +295,9 @@ class ApprovalService:
         agent_reasoning: Optional[str] = None,
         execution_id: Optional[str] = None,
         timeout_seconds: Optional[int] = None,
+        managed_agent_id: Optional[uuid.UUID] = None,
+        runtime_session_id: Optional[uuid.UUID] = None,
+        managed_agent_name: Optional[str] = None,
     ) -> ApprovalRequest:
         """Create a new approval request.
 
@@ -325,6 +328,9 @@ class ApprovalService:
             tool_name=tool_name,
             tool_args=tool_args,
             agent_reasoning=agent_reasoning,
+            managed_agent_id=managed_agent_id,
+            runtime_session_id=runtime_session_id,
+            managed_agent_name=managed_agent_name,
             status="pending",
             requested_at=datetime.utcnow(),
             expires_at=expires_at,
@@ -1166,6 +1172,9 @@ class ApprovalService:
         agent_reasoning: Optional[str] = None,
         execution_id: Optional[str] = None,
         user_id: Optional[uuid.UUID] = None,
+        managed_agent_id: Optional[uuid.UUID] = None,
+        runtime_session_id: Optional[uuid.UUID] = None,
+        managed_agent_name: Optional[str] = None,
     ) -> ApprovalRequest:
         """Create approval request and send notifications through configured channels.
 
@@ -1197,6 +1206,9 @@ class ApprovalService:
             agent_reasoning=agent_reasoning,
             execution_id=execution_id,
             timeout_seconds=approval_workflow.timeout_seconds,
+            managed_agent_id=managed_agent_id,
+            runtime_session_id=runtime_session_id,
+            managed_agent_name=managed_agent_name,
         )
 
         # Check if this is an AI-driven approval workflow

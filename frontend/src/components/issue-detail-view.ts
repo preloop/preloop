@@ -170,8 +170,9 @@ export class IssueDetailView extends LitElement {
                 <div>
                   <b class="compliance-title">Reason</b>
                   <div class="issue-description">
-                    ${this.aiVerdict?.reason?.trim() ||
-                    'No reasoning provided.'}
+                    ${
+                      this.aiVerdict?.reason?.trim() || 'No reasoning provided.'
+                    }
                   </div>
                 </div>
 

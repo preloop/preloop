@@ -12,6 +12,19 @@ from ..models.user import User
 from .base import CRUDBase
 
 
+def _audit_event_estimated_cost(details: Optional[Dict[str, Any]]) -> float:
+    """Return the estimated spend stored on one audit event, if any."""
+    if not details:
+        return 0.0
+    value = details.get("estimated_cost")
+    if value is None:
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 class CRUDAuditLog(CRUDBase[AuditLog]):
     """CRUD operations for audit logging."""
 
@@ -290,6 +303,8 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
         tool_name_filter: Optional[str] = None,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
+        min_cost: Optional[float] = None,
+        max_cost: Optional[float] = None,
     ) -> Tuple[List[Dict[str, Any]], int]:
         """Get audit logs grouped by correlation_id for the unified timeline.
 
@@ -384,6 +399,11 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
                 primary_query.order_by(AuditLog.timestamp.desc()).limit(5000).all()
             )
             total = 0  # Will be recalculated after filtering
+        elif min_cost is not None or max_cost is not None:
+            primary_events = (
+                primary_query.order_by(AuditLog.timestamp.desc()).limit(5000).all()
+            )
+            total = 0
         else:
             # Count total before pagination
             total = primary_query.count()
@@ -520,6 +540,12 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
             if outcome_filter and not set(outcome_filter).issubset(all_outcomes):
                 continue
 
+            event_cost = _audit_event_estimated_cost(event.details)
+            if min_cost is not None and event_cost < min_cost:
+                continue
+            if max_cost is not None and event_cost > max_cost:
+                continue
+
             groups.append(
                 {
                     "correlation_id": cid,
@@ -529,7 +555,7 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
                 }
             )
 
-        if outcome_filter:
+        if outcome_filter or min_cost is not None or max_cost is not None:
             total = len(groups)
             groups = groups[skip : skip + limit]
 

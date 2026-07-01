@@ -1233,40 +1233,42 @@ export class ToolCard extends LitElement {
         </sl-select>
       </div>
 
-      ${this.conditionField
-        ? html`
-            <div class="form-field">
-              <label class="form-label">Operator</label>
-              <sl-select
-                value=${this.conditionOperator}
-                @sl-change=${(e: any) => {
-                  this.conditionOperator = e.target.value;
-                }}
-              >
-                ${this.getOperatorsForType(
-                  this.getToolArguments().find(
-                    (a) => a.name === this.conditionField
-                  )?.type || 'string'
-                ).map(
-                  (op) => html`
-                    <sl-option value=${op.value}>${op.label}</sl-option>
-                  `
-                )}
-              </sl-select>
-            </div>
+      ${
+        this.conditionField
+          ? html`
+              <div class="form-field">
+                <label class="form-label">Operator</label>
+                <sl-select
+                  value=${this.conditionOperator}
+                  @sl-change=${(e: any) => {
+                    this.conditionOperator = e.target.value;
+                  }}
+                >
+                  ${this.getOperatorsForType(
+                    this.getToolArguments().find(
+                      (a) => a.name === this.conditionField
+                    )?.type || 'string'
+                  ).map(
+                    (op) => html`
+                      <sl-option value=${op.value}>${op.label}</sl-option>
+                    `
+                  )}
+                </sl-select>
+              </div>
 
-            <div class="form-field">
-              <label class="form-label">Value</label>
-              <sl-input
-                placeholder="Enter value..."
-                value=${this.conditionValue}
-                @sl-input=${(e: any) => {
-                  this.conditionValue = e.target.value;
-                }}
-              ></sl-input>
-            </div>
-          `
-        : ''}
+              <div class="form-field">
+                <label class="form-label">Value</label>
+                <sl-input
+                  placeholder="Enter value..."
+                  value=${this.conditionValue}
+                  @sl-input=${(e: any) => {
+                    this.conditionValue = e.target.value;
+                  }}
+                ></sl-input>
+              </div>
+            `
+          : ''
+      }
     `;
   }
 
@@ -1313,9 +1315,11 @@ export class ToolCard extends LitElement {
         </sl-switch>
       </div>
 
-      ${this.rawCelMode
-        ? this.renderRawCelUI()
-        : this.renderConditionBuilderUI()}
+      ${
+        this.rawCelMode
+          ? this.renderRawCelUI()
+          : this.renderConditionBuilderUI()
+      }
 
       <!-- CEL Expression Preview -->
       <div
@@ -1345,29 +1349,36 @@ export class ToolCard extends LitElement {
       </div>
 
       <!-- Validation Result -->
-      ${this.celTestResult
-        ? html`
-            <div
-              style="margin-top: var(--sl-spacing-small); padding: var(--sl-spacing-small); border-radius: var(--sl-border-radius-medium); ${this
-                .celTestResult.error
-                ? 'background: var(--sl-color-danger-50); border: 1px solid var(--sl-color-danger-200); color: var(--sl-color-danger-700);'
-                : 'background: var(--sl-color-success-50); border: 1px solid var(--sl-color-success-200); color: var(--sl-color-success-700);'}"
-            >
+      ${
+        this.celTestResult
+          ? html`
               <div
-                style="display: flex; align-items: center; gap: var(--sl-spacing-small);"
+                style="margin-top: var(--sl-spacing-small); padding: var(--sl-spacing-small); border-radius: var(--sl-border-radius-medium); ${
+                  this.celTestResult.error
+                    ? 'background: var(--sl-color-danger-50); border: 1px solid var(--sl-color-danger-200); color: var(--sl-color-danger-700);'
+                    : 'background: var(--sl-color-success-50); border: 1px solid var(--sl-color-success-200); color: var(--sl-color-success-700);'
+                }"
               >
-                <sl-icon
-                  name=${this.celTestResult.error
-                    ? 'x-circle-fill'
-                    : 'check-circle-fill'}
-                ></sl-icon>
-                ${this.celTestResult.error
-                  ? html`<span>Invalid: ${this.celTestResult.error}</span>`
-                  : html`<span>Valid CEL expression</span>`}
+                <div
+                  style="display: flex; align-items: center; gap: var(--sl-spacing-small);"
+                >
+                  <sl-icon
+                    name=${
+                      this.celTestResult.error
+                        ? 'x-circle-fill'
+                        : 'check-circle-fill'
+                    }
+                  ></sl-icon>
+                  ${
+                    this.celTestResult.error
+                      ? html`<span>Invalid: ${this.celTestResult.error}</span>`
+                      : html`<span>Valid CEL expression</span>`
+                  }
+                </div>
               </div>
-            </div>
-          `
-        : ''}
+            `
+          : ''
+      }
     `;
   }
 
@@ -1424,31 +1435,33 @@ export class ToolCard extends LitElement {
 
     return html`
       <!-- Combiner selection (only show if multiple conditions) -->
-      ${this.conditions.length > 1
-        ? html`
-            <div
-              style="display: flex; align-items: center; gap: var(--sl-spacing-medium); margin-bottom: var(--sl-spacing-medium);"
-            >
-              <span
-                style="font-size: var(--sl-font-size-small); font-weight: 500;"
-                >Combine conditions with:</span
+      ${
+        this.conditions.length > 1
+          ? html`
+              <div
+                style="display: flex; align-items: center; gap: var(--sl-spacing-medium); margin-bottom: var(--sl-spacing-medium);"
               >
-              <sl-radio-group
-                value=${this.conditionCombiner}
-                @sl-change=${(e: any) => {
-                  this.conditionCombiner = e.target.value;
-                }}
-              >
-                <sl-radio-button value="AND"
-                  >AND (all must match)</sl-radio-button
+                <span
+                  style="font-size: var(--sl-font-size-small); font-weight: 500;"
+                  >Combine conditions with:</span
                 >
-                <sl-radio-button value="OR"
-                  >OR (any must match)</sl-radio-button
+                <sl-radio-group
+                  value=${this.conditionCombiner}
+                  @sl-change=${(e: any) => {
+                    this.conditionCombiner = e.target.value;
+                  }}
                 >
-              </sl-radio-group>
-            </div>
-          `
-        : ''}
+                  <sl-radio-button value="AND"
+                    >AND (all must match)</sl-radio-button
+                  >
+                  <sl-radio-button value="OR"
+                    >OR (any must match)</sl-radio-button
+                  >
+                </sl-radio-group>
+              </div>
+            `
+          : ''
+      }
 
       <!-- Condition rows -->
       <div
@@ -1460,15 +1473,17 @@ export class ToolCard extends LitElement {
               style="display: flex; gap: var(--sl-spacing-small); align-items: flex-end; padding: var(--sl-spacing-medium); background: var(--sl-color-neutral-50); border-radius: var(--sl-border-radius-medium); border: 1px solid var(--sl-color-neutral-200);"
             >
               <!-- Show combiner label between conditions -->
-              ${index > 0
-                ? html`
-                    <div
-                      style="position: absolute; margin-top: calc(-1 * var(--sl-spacing-medium) - 12px); background: var(--sl-color-neutral-0); padding: 0 var(--sl-spacing-small); font-size: var(--sl-font-size-x-small); color: var(--sl-color-neutral-600); font-weight: 500;"
-                    >
-                      ${this.conditionCombiner}
-                    </div>
-                  `
-                : ''}
+              ${
+                index > 0
+                  ? html`
+                      <div
+                        style="position: absolute; margin-top: calc(-1 * var(--sl-spacing-medium) - 12px); background: var(--sl-color-neutral-0); padding: 0 var(--sl-spacing-small); font-size: var(--sl-font-size-x-small); color: var(--sl-color-neutral-600); font-weight: 500;"
+                      >
+                        ${this.conditionCombiner}
+                      </div>
+                    `
+                  : ''
+              }
 
               <div class="form-field" style="flex: 1;">
                 <label class="form-label">Argument</label>
@@ -1539,16 +1554,18 @@ export class ToolCard extends LitElement {
                 ></sl-input>
               </div>
 
-              ${this.conditions.length > 1
-                ? html`
-                    <sl-icon-button
-                      name="trash"
-                      label="Remove condition"
-                      @click=${() => this.removeCondition(index)}
-                      style="margin-bottom: 4px;"
-                    ></sl-icon-button>
-                  `
-                : ''}
+              ${
+                this.conditions.length > 1
+                  ? html`
+                      <sl-icon-button
+                        name="trash"
+                        label="Remove condition"
+                        @click=${() => this.removeCondition(index)}
+                        style="margin-bottom: 4px;"
+                      ></sl-icon-button>
+                    `
+                  : ''
+              }
             </div>
           `
         )}
@@ -1651,106 +1668,121 @@ export class ToolCard extends LitElement {
                           </span>
                         </span>
                         <sl-switch
-                          ?checked=${this.tool.approval_workflow_id ||
-                          this.pendingApproval}
+                          ?checked=${
+                            this.tool.approval_workflow_id ||
+                            this.pendingApproval
+                          }
                           ?disabled=${!this.tool.is_enabled}
                           @sl-change=${this.handleApprovalToggle}
                         ></sl-switch>
                       </div>
-                      ${this.hasAdvancedApprovals()
-                        ? html`
-                            ${this.tool.approval_workflow_id &&
-                            this.tool.is_enabled
-                              ? html`
-                                  <div class="policy-selector">
-                                    <sl-select
-                                      size="small"
-                                      placeholder="Select a policy..."
-                                      value=${this.tool.approval_workflow_id ||
-                                      ''}
-                                      @sl-change=${this.handlePolicySelect}
-                                    >
-                                      ${this.policies.map(
-                                        (policy) => html`
-                                          <sl-option value=${policy.id}
-                                            >${policy.name}</sl-option
-                                          >
-                                        `
-                                      )}
-                                    </sl-select>
-                                    <sl-icon-button
-                                      name="gear"
-                                      label="Manage policies"
-                                      @click=${this.handleManagePolicies}
-                                    ></sl-icon-button>
-                                  </div>
-                                  <div class="policy-selector">
-                                    <sl-button
-                                      size="small"
-                                      @click=${this.handleConfigureCondition}
-                                      style="width: 100%;"
-                                    >
-                                      <sl-icon
-                                        slot="prefix"
-                                        name="code-square"
-                                      ></sl-icon>
-                                      ${this.tool.has_approval_condition
-                                        ? 'Edit Condition'
-                                        : 'Add Condition'}
-                                    </sl-button>
-                                  </div>
-                                `
-                              : ''}
-                            ${this.pendingApproval && this.tool.is_enabled
-                              ? html`
-                                  <div class="policy-selector">
-                                    <sl-select
-                                      size="small"
-                                      placeholder="Select a policy..."
-                                      value=""
-                                      @sl-change=${this.handlePolicySelect}
-                                    >
-                                      ${this.policies.map(
-                                        (policy) => html`
-                                          <sl-option value=${policy.id}
-                                            >${policy.name}</sl-option
-                                          >
-                                        `
-                                      )}
-                                    </sl-select>
-                                    <sl-icon-button
-                                      name="gear"
-                                      label="Manage policies"
-                                      @click=${this.handleManagePolicies}
-                                    ></sl-icon-button>
-                                  </div>
-                                `
-                              : ''}
-                          `
-                        : html`
-                            <!-- Open Source: Simple approval with default policy -->
-                            ${(this.tool.approval_workflow_id ||
-                              this.pendingApproval) &&
-                            this.tool.is_enabled
-                              ? html`
-                                  <div class="policy-selector">
-                                    <sl-button
-                                      size="small"
-                                      @click=${this.handleConfigureCondition}
-                                      style="width: 100%;"
-                                    >
-                                      <sl-icon
-                                        slot="prefix"
-                                        name="funnel"
-                                      ></sl-icon>
-                                      ${this.tool.has_approval_condition
-                                        ? 'Edit Condition'
-                                        : 'Add Condition'}
-                                    </sl-button>
-                                  </div>
-                                `
-                              : ''}
-                          `}
+                      ${
+                        this.hasAdvancedApprovals()
+                          ? html`
+                              ${
+                                this.tool.approval_workflow_id &&
+                                this.tool.is_enabled
+                                  ? html`
+                                      <div class="policy-selector">
+                                        <sl-select
+                                          size="small"
+                                          placeholder="Select a policy..."
+                                          value=${
+                                            this.tool.approval_workflow_id || ''
+                                          }
+                                          @sl-change=${this.handlePolicySelect}
+                                        >
+                                          ${this.policies.map(
+                                            (policy) => html`
+                                              <sl-option value=${policy.id}
+                                                >${policy.name}</sl-option
+                                              >
+                                            `
+                                          )}
+                                        </sl-select>
+                                        <sl-icon-button
+                                          name="gear"
+                                          label="Manage policies"
+                                          @click=${this.handleManagePolicies}
+                                        ></sl-icon-button>
+                                      </div>
+                                      <div class="policy-selector">
+                                        <sl-button
+                                          size="small"
+                                          @click=${this.handleConfigureCondition}
+                                          style="width: 100%;"
+                                        >
+                                          <sl-icon
+                                            slot="prefix"
+                                            name="code-square"
+                                          ></sl-icon>
+                                          ${
+                                            this.tool.has_approval_condition
+                                              ? 'Edit Condition'
+                                              : 'Add Condition'
+                                          }
+                                        </sl-button>
+                                      </div>
+                                    `
+                                  : ''
+                              }
+                              ${
+                                this.pendingApproval && this.tool.is_enabled
+                                  ? html`
+                                      <div class="policy-selector">
+                                        <sl-select
+                                          size="small"
+                                          placeholder="Select a policy..."
+                                          value=""
+                                          @sl-change=${this.handlePolicySelect}
+                                        >
+                                          ${this.policies.map(
+                                            (policy) => html`
+                                              <sl-option value=${policy.id}
+                                                >${policy.name}</sl-option
+                                              >
+                                            `
+                                          )}
+                                        </sl-select>
+                                        <sl-icon-button
+                                          name="gear"
+                                          label="Manage policies"
+                                          @click=${this.handleManagePolicies}
+                                        ></sl-icon-button>
+                                      </div>
+                                    `
+                                  : ''
+                              }
+                            `
+                          : html`
+                              <!-- Open Source: Simple approval with default policy -->
+                              ${
+                                (this.tool.approval_workflow_id ||
+                                  this.pendingApproval) &&
+                                this.tool.is_enabled
+                                  ? html`
+                                      <div class="policy-selector">
+                                        <sl-button
+                                          size="small"
+                                          @click=${this.handleConfigureCondition}
+                                          style="width: 100%;"
+                                        >
+                                          <sl-icon
+                                            slot="prefix"
+                                            name="funnel"
+                                          ></sl-icon>
+                                          ${
+                                            this.tool.has_approval_condition
+                                              ? 'Edit Condition'
+                                              : 'Add Condition'
+                                          }
+                                        </sl-button>
+                                      </div>
+                                    `
+                                  : ''
+                              }
+                            `
+                      }
                     </div>
                   `
             }
@@ -1802,77 +1834,92 @@ export class ToolCard extends LitElement {
                         Manage in Governance
                       </sl-button>
                     </div>
-                    ${this.policies.length > 0
-                      ? html`
-                          <div class="policy-list">
-                            ${this.policies.map(
-                              (policy) => html`
-                                <div
-                                  class="policy-item ${this.selectedPolicyId ===
-                                  policy.id
-                                    ? 'selected'
-                                    : ''}"
-                                  @click=${() =>
-                                    this.handlePolicyItemClick(policy.id)}
-                                >
-                                  <div class="policy-info">
-                                    <h5 class="policy-name">
-                                      ${policy.name}
-                                      ${policy.is_default
-                                        ? html`<span class="default-badge">
-                                            <sl-icon name="star-fill"></sl-icon>
-                                            Default
-                                          </span>`
-                                        : ''}
-                                    </h5>
-                                    <div class="policy-meta">
-                                      ${policy.description || 'No description'}
-                                      <br />
-                                      Type: ${policy.approval_type}
-                                      ${policy.approval_config?.webhook_url
-                                        ? ` • Webhook configured`
-                                        : ' • No webhook'}
-                                      ${policy.channel
-                                        ? ` • Channel: ${policy.channel}`
-                                        : ''}
-                                      ${policy.user
-                                        ? ` • User: ${policy.user}`
-                                        : ''}
+                    ${
+                      this.policies.length > 0
+                        ? html`
+                            <div class="policy-list">
+                              ${this.policies.map(
+                                (policy) => html`
+                                  <div
+                                    class="policy-item ${
+                                      this.selectedPolicyId === policy.id
+                                        ? 'selected'
+                                        : ''
+                                    }"
+                                    @click=${() =>
+                                      this.handlePolicyItemClick(policy.id)}
+                                  >
+                                    <div class="policy-info">
+                                      <h5 class="policy-name">
+                                        ${policy.name}
+                                        ${
+                                          policy.is_default
+                                            ? html`<span class="default-badge">
+                                                <sl-icon
+                                                  name="star-fill"
+                                                ></sl-icon>
+                                                Default
+                                              </span>`
+                                            : ''
+                                        }
+                                      </h5>
+                                      <div class="policy-meta">
+                                        ${policy.description || 'No description'}
+                                        <br />
+                                        Type: ${policy.approval_type}
+                                        ${
+                                          policy.approval_config?.webhook_url
+                                            ? ` • Webhook configured`
+                                            : ' • No webhook'
+                                        }
+                                        ${
+                                          policy.channel
+                                            ? ` • Channel: ${policy.channel}`
+                                            : ''
+                                        }
+                                        ${
+                                          policy.user
+                                            ? ` • User: ${policy.user}`
+                                            : ''
+                                        }
+                                      </div>
+                                    </div>
+                                    <div class="policy-actions">
+                                      <sl-icon-button
+                                        name="pencil"
+                                        label="Edit policy"
+                                        @click=${(e: Event) => {
+                                          e.stopPropagation();
+                                          this.handleEditPolicy(policy);
+                                        }}
+                                      ></sl-icon-button>
+                                      ${
+                                        this.selectedPolicyId === policy.id
+                                          ? html`<sl-icon
+                                              name="check-circle-fill"
+                                              style="color: var(--sl-color-primary-600);"
+                                            ></sl-icon>`
+                                          : ''
+                                      }
                                     </div>
                                   </div>
-                                  <div class="policy-actions">
-                                    <sl-icon-button
-                                      name="pencil"
-                                      label="Edit policy"
-                                      @click=${(e: Event) => {
-                                        e.stopPropagation();
-                                        this.handleEditPolicy(policy);
-                                      }}
-                                    ></sl-icon-button>
-                                    ${this.selectedPolicyId === policy.id
-                                      ? html`<sl-icon
-                                          name="check-circle-fill"
-                                          style="color: var(--sl-color-primary-600);"
-                                        ></sl-icon>`
-                                      : ''}
-                                  </div>
-                                </div>
-                              `
-                            )}
-                          </div>
-                        `
-                      : html`
-                          <div class="empty-state">
-                            <sl-icon
-                              name="inbox"
-                              style="font-size: 2rem; margin-bottom: var(--sl-spacing-small);"
-                            ></sl-icon>
-                            <p>
-                              No policies found. Create your first policy to get
-                              started.
-                            </p>
-                          </div>
-                        `}
+                                `
+                              )}
+                            </div>
+                          `
+                        : html`
+                            <div class="empty-state">
+                              <sl-icon
+                                name="inbox"
+                                style="font-size: 2rem; margin-bottom: var(--sl-spacing-small);"
+                              ></sl-icon>
+                              <p>
+                                No policies found. Create your first policy to
+                                get started.
+                              </p>
+                            </div>
+                          `
+                    }
                   </div>
                 `
               : html`
@@ -1884,9 +1931,11 @@ export class ToolCard extends LitElement {
                       <h4
                         style="margin: 0; font-size: var(--sl-font-size-medium);"
                       >
-                        ${this.editingPolicyId
-                          ? 'Edit Policy'
-                          : 'Create New Policy'}
+                        ${
+                          this.editingPolicyId
+                            ? 'Edit Policy'
+                            : 'Create New Policy'
+                        }
                       </h4>
                       <sl-button
                         size="small"
@@ -1946,394 +1995,434 @@ export class ToolCard extends LitElement {
                         <sl-radio value="webhook">
                           Webhook - Send approval requests to a webhook
                         </sl-radio>
-                        ${this.hasAdvancedApprovals()
-                          ? html`
-                              <sl-radio value="ai_driven">
-                                AI-Driven - AI model automatically evaluates
-                                requests
-                              </sl-radio>
-                            `
-                          : ''}
+                        ${
+                          this.hasAdvancedApprovals()
+                            ? html`
+                                <sl-radio value="ai_driven">
+                                  AI-Driven - AI model automatically evaluates
+                                  requests
+                                </sl-radio>
+                              `
+                            : ''
+                        }
                       </sl-radio-group>
                     </div>
-                    ${this.hasAdvancedApprovals() &&
-                    this.newPolicyType === 'ai_driven'
-                      ? html`
-                          <div
-                            class="ai-config-section"
-                            style="display: flex; flex-direction: column; gap: var(--sl-spacing-medium); padding: var(--sl-spacing-medium); background: var(--sl-color-primary-50); border: 1px solid var(--sl-color-primary-200); border-radius: var(--sl-border-radius-medium); margin-top: var(--sl-spacing-small);"
-                          >
+                    ${
+                      this.hasAdvancedApprovals() &&
+                      this.newPolicyType === 'ai_driven'
+                        ? html`
                             <div
-                              style="display: flex; align-items: center; gap: var(--sl-spacing-small); color: var(--sl-color-primary-700); font-weight: 500;"
+                              class="ai-config-section"
+                              style="display: flex; flex-direction: column; gap: var(--sl-spacing-medium); padding: var(--sl-spacing-medium); background: var(--sl-color-primary-50); border: 1px solid var(--sl-color-primary-200); border-radius: var(--sl-border-radius-medium); margin-top: var(--sl-spacing-small);"
                             >
-                              <sl-icon name="robot"></sl-icon>
-                              AI Configuration
-                            </div>
-
-                            <div class="form-field">
-                              <label class="form-label">AI Model *</label>
-                              <sl-select
-                                value=${this.newPolicyAiModel}
-                                @sl-change=${(e: any) => {
-                                  e.stopPropagation();
-                                  this.newPolicyAiModel = e.target.value;
-                                }}
-                                placeholder="Select an AI model..."
+                              <div
+                                style="display: flex; align-items: center; gap: var(--sl-spacing-small); color: var(--sl-color-primary-700); font-weight: 500;"
                               >
-                                <sl-option value="claude-sonnet-4-20250514"
-                                  >Claude Sonnet 4</sl-option
-                                >
-                                <sl-option value="gpt-5.4">GPT-5.4</sl-option>
-                                <sl-option value="gpt-5.4-mini"
-                                  >GPT-5.4 Mini</sl-option
-                                >
-                                <sl-option value="gemini-3.5-pro"
-                                  >Gemini 3.5 Pro</sl-option
-                                >
-                              </sl-select>
-                            </div>
+                                <sl-icon name="robot"></sl-icon>
+                                AI Configuration
+                              </div>
 
-                            <div class="form-field">
-                              <label class="form-label">Guidelines</label>
-                              <sl-textarea
-                                value=${this.newPolicyAiGuidelines}
-                                @sl-input=${(e: any) => {
-                                  e.stopPropagation();
-                                  this.newPolicyAiGuidelines = e.target.value;
-                                }}
-                                placeholder="APPROVE if:
+                              <div class="form-field">
+                                <label class="form-label">AI Model *</label>
+                                <sl-select
+                                  value=${this.newPolicyAiModel}
+                                  @sl-change=${(e: any) => {
+                                    e.stopPropagation();
+                                    this.newPolicyAiModel = e.target.value;
+                                  }}
+                                  placeholder="Select an AI model..."
+                                >
+                                  <sl-option value="claude-sonnet-4-20250514"
+                                    >Claude Sonnet 4</sl-option
+                                  >
+                                  <sl-option value="gpt-5.4">GPT-5.4</sl-option>
+                                  <sl-option value="gpt-5.4-mini"
+                                    >GPT-5.4 Mini</sl-option
+                                  >
+                                  <sl-option value="gemini-3.5-pro"
+                                    >Gemini 3.5 Pro</sl-option
+                                  >
+                                </sl-select>
+                              </div>
+
+                              <div class="form-field">
+                                <label class="form-label">Guidelines</label>
+                                <sl-textarea
+                                  value=${this.newPolicyAiGuidelines}
+                                  @sl-input=${(e: any) => {
+                                    e.stopPropagation();
+                                    this.newPolicyAiGuidelines = e.target.value;
+                                  }}
+                                  placeholder="APPROVE if:
 - Read-only operations
 - Non-production environments
 
 DENY if:
 - Production data modifications
 - Credential access"
-                                rows="8"
-                                help-text="Instructions for the AI to determine when to approve or deny requests"
-                              ></sl-textarea>
+                                  rows="8"
+                                  help-text="Instructions for the AI to determine when to approve or deny requests"
+                                ></sl-textarea>
+                              </div>
+
+                              <div class="form-field">
+                                <label class="form-label"
+                                  >Confidence Threshold:
+                                  ${Math.round(
+                                    this.newPolicyAiConfidenceThreshold * 100
+                                  )}%</label
+                                >
+                                <sl-range
+                                  value=${
+                                    this.newPolicyAiConfidenceThreshold * 100
+                                  }
+                                  @sl-input=${(e: any) => {
+                                    e.stopPropagation();
+                                    this.newPolicyAiConfidenceThreshold =
+                                      (parseFloat(e.target.value) || 80) / 100;
+                                  }}
+                                  min="0"
+                                  max="100"
+                                  step="5"
+                                  style="--thumb-size: 18px;"
+                                ></sl-range>
+                                <div
+                                  style="display: flex; justify-content: space-between; font-size: var(--sl-font-size-x-small); color: var(--sl-color-neutral-500); margin-top: var(--sl-spacing-2x-small);"
+                                >
+                                  <span>0% (always escalate)</span>
+                                  <span>100% (very confident)</span>
+                                </div>
+                              </div>
+
+                              <div class="form-field">
+                                <label class="form-label">When Uncertain</label>
+                                <sl-radio-group
+                                  value=${this.newPolicyAiFallbackBehavior}
+                                  @sl-change=${(e: any) => {
+                                    e.stopPropagation();
+                                    this.newPolicyAiFallbackBehavior =
+                                      e.target.value;
+                                    this.requestUpdate();
+                                  }}
+                                >
+                                  <sl-radio value="escalate"
+                                    >Escalate to human approvers</sl-radio
+                                  >
+                                  <sl-radio value="approve"
+                                    >Approve automatically</sl-radio
+                                  >
+                                  <sl-radio value="deny"
+                                    >Deny automatically</sl-radio
+                                  >
+                                </sl-radio-group>
+                              </div>
+
+                              ${
+                                this.newPolicyAiFallbackBehavior === 'escalate'
+                                  ? html`
+                                      <div class="form-field">
+                                        <label class="form-label"
+                                          >Escalation Workflow</label
+                                        >
+                                        <sl-select
+                                          value=${
+                                            this.newPolicyEscalationWorkflowId
+                                          }
+                                          @sl-change=${(e: any) => {
+                                            e.stopPropagation();
+                                            this.newPolicyEscalationWorkflowId =
+                                              e.target.value;
+                                          }}
+                                          placeholder="Select a workflow for escalation..."
+                                          help-text="The approval workflow to use when AI confidence is below threshold"
+                                        >
+                                          ${this.policies
+                                            .filter(
+                                              (p) =>
+                                                p.approval_type === 'standard'
+                                            )
+                                            .map(
+                                              (p) => html`
+                                                <sl-option value=${p.id}
+                                                  >${p.name}</sl-option
+                                                >
+                                              `
+                                            )}
+                                        </sl-select>
+                                        ${
+                                          !this.newPolicyEscalationWorkflowId &&
+                                          this.policies.filter(
+                                            (p) =>
+                                              p.approval_type === 'standard'
+                                          ).length > 0
+                                            ? html`
+                                                <div
+                                                  style="display: flex; align-items: center; gap: var(--sl-spacing-x-small); margin-top: var(--sl-spacing-x-small); color: var(--sl-color-warning-700); font-size: var(--sl-font-size-small);"
+                                                >
+                                                  <sl-icon
+                                                    name="exclamation-triangle"
+                                                  ></sl-icon>
+                                                  <span
+                                                    >No escalation workflow
+                                                    selected. AI decisions below
+                                                    threshold will have no
+                                                    fallback.</span
+                                                  >
+                                                </div>
+                                              `
+                                            : ''
+                                        }
+                                        ${
+                                          this.policies.filter(
+                                            (p) =>
+                                              p.approval_type === 'standard'
+                                          ).length === 0
+                                            ? html`
+                                                <div
+                                                  style="display: flex; align-items: center; gap: var(--sl-spacing-x-small); margin-top: var(--sl-spacing-x-small); color: var(--sl-color-warning-700); font-size: var(--sl-font-size-small);"
+                                                >
+                                                  <sl-icon
+                                                    name="exclamation-triangle"
+                                                  ></sl-icon>
+                                                  <span
+                                                    >No standard policies
+                                                    available for escalation.
+                                                    Create one first.</span
+                                                  >
+                                                </div>
+                                              `
+                                            : ''
+                                        }
+                                      </div>
+                                    `
+                                  : ''
+                              }
+                            </div>
+                          `
+                        : ''
+                    }
+                    ${
+                      this.hasAdvancedApprovals() &&
+                      this.newPolicyType !== 'standard' &&
+                      this.newPolicyType !== 'ai_driven'
+                        ? html`
+                            <div class="form-field">
+                              <label class="form-label">Webhook URL *</label>
+                              <sl-input
+                                type="url"
+                                placeholder="${
+                                  this.newPolicyType === 'slack'
+                                    ? 'https://hooks.slack.com/services/...'
+                                    : this.newPolicyType === 'mattermost'
+                                      ? 'https://your-mattermost.com/hooks/...'
+                                      : 'https://your-webhook-endpoint.com/approval-request'
+                                }"
+                                value=${this.newPolicyWebhookUrl}
+                                @sl-input=${(e: any) => {
+                                  e.stopPropagation();
+                                  this.newPolicyWebhookUrl = e.target.value;
+                                }}
+                                help-text="The webhook URL where approval requests will be sent"
+                              ></sl-input>
+                            </div>
+                          `
+                        : ''
+                    }
+
+                    <!-- Enterprise Features: Advanced Approval Configuration -->
+                    ${
+                      this.hasAdvancedApprovals() &&
+                      (this.availableUsers.length > 0 ||
+                        this.availableTeams.length > 0)
+                        ? html`
+                            <div class="form-field">
+                              <label class="form-label">
+                                Approvers (Optional)
+                              </label>
+                              <sl-select
+                                multiple
+                                clearable
+                                placeholder="Select users and teams who can approve..."
+                                .value=${[
+                                  ...this.newPolicyApproverUserIds.map(
+                                    (id) => `user:${id}`
+                                  ),
+                                  ...this.newPolicyApproverTeamIds.map(
+                                    (id) => `team:${id}`
+                                  ),
+                                ]}
+                                @sl-change=${(e: any) => {
+                                  e.stopPropagation();
+                                  const selected = e.target.value || [];
+                                  this.newPolicyApproverUserIds = selected
+                                    .filter((v: string) =>
+                                      v.startsWith('user:')
+                                    )
+                                    .map((v: string) => v.substring(5));
+                                  this.newPolicyApproverTeamIds = selected
+                                    .filter((v: string) =>
+                                      v.startsWith('team:')
+                                    )
+                                    .map((v: string) => v.substring(5));
+                                }}
+                                help-text="Select users and teams who can provide approval"
+                              >
+                                ${
+                                  this.availableUsers.length > 0
+                                    ? html`
+                                        <sl-option-group label="Users">
+                                          ${this.availableUsers.map(
+                                            (user) => html`
+                                              <sl-option
+                                                value=${'user:' + user.id}
+                                                >${user.username}
+                                                (${user.email})</sl-option
+                                              >
+                                            `
+                                          )}
+                                        </sl-option-group>
+                                      `
+                                    : ''
+                                }
+                                ${
+                                  this.availableTeams.length > 0
+                                    ? html`
+                                        <sl-option-group label="Teams">
+                                          ${this.availableTeams.map(
+                                            (team) => html`
+                                              <sl-option
+                                                value=${'team:' + team.id}
+                                                >${team.name}</sl-option
+                                              >
+                                            `
+                                          )}
+                                        </sl-option-group>
+                                      `
+                                    : ''
+                                }
+                              </sl-select>
                             </div>
 
                             <div class="form-field">
                               <label class="form-label"
-                                >Confidence Threshold:
-                                ${Math.round(
-                                  this.newPolicyAiConfidenceThreshold * 100
-                                )}%</label
+                                >Number of Approvals Required</label
                               >
-                              <sl-range
-                                value=${this.newPolicyAiConfidenceThreshold *
-                                100}
+                              <sl-input
+                                type="number"
+                                min="1"
+                                value=${this.newPolicyApprovalsRequired}
                                 @sl-input=${(e: any) => {
                                   e.stopPropagation();
-                                  this.newPolicyAiConfidenceThreshold =
-                                    (parseFloat(e.target.value) || 80) / 100;
+                                  this.newPolicyApprovalsRequired =
+                                    parseInt(e.target.value) || 1;
                                 }}
-                                min="0"
-                                max="100"
-                                step="5"
-                                style="--thumb-size: 18px;"
-                              ></sl-range>
-                              <div
-                                style="display: flex; justify-content: space-between; font-size: var(--sl-font-size-x-small); color: var(--sl-color-neutral-500); margin-top: var(--sl-spacing-2x-small);"
-                              >
-                                <span>0% (always escalate)</span>
-                                <span>100% (very confident)</span>
-                              </div>
+                                help-text="How many approvals are needed before execution (quorum)"
+                              ></sl-input>
                             </div>
 
                             <div class="form-field">
-                              <label class="form-label">When Uncertain</label>
-                              <sl-radio-group
-                                value=${this.newPolicyAiFallbackBehavior}
-                                @sl-change=${(e: any) => {
-                                  e.stopPropagation();
-                                  this.newPolicyAiFallbackBehavior =
-                                    e.target.value;
-                                  this.requestUpdate();
-                                }}
+                              <label class="form-label"
+                                >Approval Timeout (seconds)</label
                               >
-                                <sl-radio value="escalate"
-                                  >Escalate to human approvers</sl-radio
-                                >
-                                <sl-radio value="approve"
-                                  >Approve automatically</sl-radio
-                                >
-                                <sl-radio value="deny"
-                                  >Deny automatically</sl-radio
-                                >
-                              </sl-radio-group>
+                              <sl-input
+                                type="number"
+                                min="30"
+                                value=${this.newPolicyTimeoutSeconds}
+                                @sl-input=${(e: any) => {
+                                  e.stopPropagation();
+                                  this.newPolicyTimeoutSeconds =
+                                    parseInt(e.target.value) || 300;
+                                }}
+                                help-text="Time to wait for approvals before timing out"
+                              ></sl-input>
                             </div>
 
-                            ${this.newPolicyAiFallbackBehavior === 'escalate'
-                              ? html`
-                                  <div class="form-field">
-                                    <label class="form-label"
-                                      >Escalation Workflow</label
-                                    >
-                                    <sl-select
-                                      value=${this
-                                        .newPolicyEscalationWorkflowId}
-                                      @sl-change=${(e: any) => {
-                                        e.stopPropagation();
-                                        this.newPolicyEscalationWorkflowId =
-                                          e.target.value;
-                                      }}
-                                      placeholder="Select a workflow for escalation..."
-                                      help-text="The approval workflow to use when AI confidence is below threshold"
-                                    >
-                                      ${this.policies
-                                        .filter(
-                                          (p) => p.approval_type === 'standard'
-                                        )
-                                        .map(
-                                          (p) => html`
-                                            <sl-option value=${p.id}
-                                              >${p.name}</sl-option
-                                            >
-                                          `
-                                        )}
-                                    </sl-select>
-                                    ${!this.newPolicyEscalationWorkflowId &&
-                                    this.policies.filter(
-                                      (p) => p.approval_type === 'standard'
-                                    ).length > 0
-                                      ? html`
-                                          <div
-                                            style="display: flex; align-items: center; gap: var(--sl-spacing-x-small); margin-top: var(--sl-spacing-x-small); color: var(--sl-color-warning-700); font-size: var(--sl-font-size-small);"
-                                          >
-                                            <sl-icon
-                                              name="exclamation-triangle"
-                                            ></sl-icon>
-                                            <span
-                                              >No escalation workflow selected.
-                                              AI decisions below threshold will
-                                              have no fallback.</span
-                                            >
-                                          </div>
-                                        `
-                                      : ''}
-                                    ${this.policies.filter(
-                                      (p) => p.approval_type === 'standard'
-                                    ).length === 0
-                                      ? html`
-                                          <div
-                                            style="display: flex; align-items: center; gap: var(--sl-spacing-x-small); margin-top: var(--sl-spacing-x-small); color: var(--sl-color-warning-700); font-size: var(--sl-font-size-small);"
-                                          >
-                                            <sl-icon
-                                              name="exclamation-triangle"
-                                            ></sl-icon>
-                                            <span
-                                              >No standard policies available
-                                              for escalation. Create one
-                                              first.</span
-                                            >
-                                          </div>
-                                        `
-                                      : ''}
-                                  </div>
-                                `
-                              : ''}
-                          </div>
-                        `
-                      : ''}
-                    ${this.hasAdvancedApprovals() &&
-                    this.newPolicyType !== 'standard' &&
-                    this.newPolicyType !== 'ai_driven'
-                      ? html`
-                          <div class="form-field">
-                            <label class="form-label">Webhook URL *</label>
-                            <sl-input
-                              type="url"
-                              placeholder="${this.newPolicyType === 'slack'
-                                ? 'https://hooks.slack.com/services/...'
-                                : this.newPolicyType === 'mattermost'
-                                  ? 'https://your-mattermost.com/hooks/...'
-                                  : 'https://your-webhook-endpoint.com/approval-request'}"
-                              value=${this.newPolicyWebhookUrl}
-                              @sl-input=${(e: any) => {
-                                e.stopPropagation();
-                                this.newPolicyWebhookUrl = e.target.value;
-                              }}
-                              help-text="The webhook URL where approval requests will be sent"
-                            ></sl-input>
-                          </div>
-                        `
-                      : ''}
-
-                    <!-- Enterprise Features: Advanced Approval Configuration -->
-                    ${this.hasAdvancedApprovals() &&
-                    (this.availableUsers.length > 0 ||
-                      this.availableTeams.length > 0)
-                      ? html`
-                          <div class="form-field">
-                            <label class="form-label">
-                              Approvers (Optional)
-                            </label>
-                            <sl-select
-                              multiple
-                              clearable
-                              placeholder="Select users and teams who can approve..."
-                              .value=${[
-                                ...this.newPolicyApproverUserIds.map(
-                                  (id) => `user:${id}`
-                                ),
-                                ...this.newPolicyApproverTeamIds.map(
-                                  (id) => `team:${id}`
-                                ),
-                              ]}
-                              @sl-change=${(e: any) => {
-                                e.stopPropagation();
-                                const selected = e.target.value || [];
-                                this.newPolicyApproverUserIds = selected
-                                  .filter((v: string) => v.startsWith('user:'))
-                                  .map((v: string) => v.substring(5));
-                                this.newPolicyApproverTeamIds = selected
-                                  .filter((v: string) => v.startsWith('team:'))
-                                  .map((v: string) => v.substring(5));
-                              }}
-                              help-text="Select users and teams who can provide approval"
-                            >
-                              ${this.availableUsers.length > 0
+                            ${
+                              // Only show escalation if there are additional users/teams not selected as approvers
+                              this.availableUsers.length +
+                                this.availableTeams.length >
+                              this.newPolicyApproverUserIds.length +
+                                this.newPolicyApproverTeamIds.length
                                 ? html`
-                                    <sl-option-group label="Users">
-                                      ${this.availableUsers.map(
-                                        (user) => html`
-                                          <sl-option value=${'user:' + user.id}
-                                            >${user.username}
-                                            (${user.email})</sl-option
-                                          >
-                                        `
-                                      )}
-                                    </sl-option-group>
+                                    <div class="form-field">
+                                      <label class="form-label"
+                                        >Escalation (Optional)</label
+                                      >
+                                      <sl-select
+                                        multiple
+                                        clearable
+                                        placeholder="Select users and teams for escalation..."
+                                        .value=${[
+                                          ...this.newPolicyEscalationUserIds.map(
+                                            (id) => `user:${id}`
+                                          ),
+                                          ...this.newPolicyEscalationTeamIds.map(
+                                            (id) => `team:${id}`
+                                          ),
+                                        ]}
+                                        @sl-change=${(e: any) => {
+                                          e.stopPropagation();
+                                          const selected = e.target.value || [];
+                                          this.newPolicyEscalationUserIds =
+                                            selected
+                                              .filter((v: string) =>
+                                                v.startsWith('user:')
+                                              )
+                                              .map((v: string) =>
+                                                v.substring(5)
+                                              );
+                                          this.newPolicyEscalationTeamIds =
+                                            selected
+                                              .filter((v: string) =>
+                                                v.startsWith('team:')
+                                              )
+                                              .map((v: string) =>
+                                                v.substring(5)
+                                              );
+                                        }}
+                                        help-text="Contact these users/teams if timeout is exceeded without required approvals"
+                                      >
+                                        ${
+                                          this.availableUsers.length > 0
+                                            ? html`
+                                                <sl-option-group label="Users">
+                                                  ${this.availableUsers.map(
+                                                    (user) => html`
+                                                      <sl-option
+                                                        value=${'user:' + user.id}
+                                                        >${user.username}
+                                                        (${user.email})</sl-option
+                                                      >
+                                                    `
+                                                  )}
+                                                </sl-option-group>
+                                              `
+                                            : ''
+                                        }
+                                        ${
+                                          this.availableTeams.length > 0
+                                            ? html`
+                                                <sl-option-group label="Teams">
+                                                  ${this.availableTeams.map(
+                                                    (team) => html`
+                                                      <sl-option
+                                                        value=${'team:' + team.id}
+                                                        >${team.name}</sl-option
+                                                      >
+                                                    `
+                                                  )}
+                                                </sl-option-group>
+                                              `
+                                            : ''
+                                        }
+                                      </sl-select>
+                                    </div>
                                   `
-                                : ''}
-                              ${this.availableTeams.length > 0
-                                ? html`
-                                    <sl-option-group label="Teams">
-                                      ${this.availableTeams.map(
-                                        (team) => html`
-                                          <sl-option value=${'team:' + team.id}
-                                            >${team.name}</sl-option
-                                          >
-                                        `
-                                      )}
-                                    </sl-option-group>
-                                  `
-                                : ''}
-                            </sl-select>
-                          </div>
-
-                          <div class="form-field">
-                            <label class="form-label"
-                              >Number of Approvals Required</label
-                            >
-                            <sl-input
-                              type="number"
-                              min="1"
-                              value=${this.newPolicyApprovalsRequired}
-                              @sl-input=${(e: any) => {
-                                e.stopPropagation();
-                                this.newPolicyApprovalsRequired =
-                                  parseInt(e.target.value) || 1;
-                              }}
-                              help-text="How many approvals are needed before execution (quorum)"
-                            ></sl-input>
-                          </div>
-
-                          <div class="form-field">
-                            <label class="form-label"
-                              >Approval Timeout (seconds)</label
-                            >
-                            <sl-input
-                              type="number"
-                              min="30"
-                              value=${this.newPolicyTimeoutSeconds}
-                              @sl-input=${(e: any) => {
-                                e.stopPropagation();
-                                this.newPolicyTimeoutSeconds =
-                                  parseInt(e.target.value) || 300;
-                              }}
-                              help-text="Time to wait for approvals before timing out"
-                            ></sl-input>
-                          </div>
-
-                          ${
-                            // Only show escalation if there are additional users/teams not selected as approvers
-                            this.availableUsers.length +
-                              this.availableTeams.length >
-                            this.newPolicyApproverUserIds.length +
-                              this.newPolicyApproverTeamIds.length
-                              ? html`
-                                  <div class="form-field">
-                                    <label class="form-label"
-                                      >Escalation (Optional)</label
-                                    >
-                                    <sl-select
-                                      multiple
-                                      clearable
-                                      placeholder="Select users and teams for escalation..."
-                                      .value=${[
-                                        ...this.newPolicyEscalationUserIds.map(
-                                          (id) => `user:${id}`
-                                        ),
-                                        ...this.newPolicyEscalationTeamIds.map(
-                                          (id) => `team:${id}`
-                                        ),
-                                      ]}
-                                      @sl-change=${(e: any) => {
-                                        e.stopPropagation();
-                                        const selected = e.target.value || [];
-                                        this.newPolicyEscalationUserIds =
-                                          selected
-                                            .filter((v: string) =>
-                                              v.startsWith('user:')
-                                            )
-                                            .map((v: string) => v.substring(5));
-                                        this.newPolicyEscalationTeamIds =
-                                          selected
-                                            .filter((v: string) =>
-                                              v.startsWith('team:')
-                                            )
-                                            .map((v: string) => v.substring(5));
-                                      }}
-                                      help-text="Contact these users/teams if timeout is exceeded without required approvals"
-                                    >
-                                      ${this.availableUsers.length > 0
-                                        ? html`
-                                            <sl-option-group label="Users">
-                                              ${this.availableUsers.map(
-                                                (user) => html`
-                                                  <sl-option
-                                                    value=${'user:' + user.id}
-                                                    >${user.username}
-                                                    (${user.email})</sl-option
-                                                  >
-                                                `
-                                              )}
-                                            </sl-option-group>
-                                          `
-                                        : ''}
-                                      ${this.availableTeams.length > 0
-                                        ? html`
-                                            <sl-option-group label="Teams">
-                                              ${this.availableTeams.map(
-                                                (team) => html`
-                                                  <sl-option
-                                                    value=${'team:' + team.id}
-                                                    >${team.name}</sl-option
-                                                  >
-                                                `
-                                              )}
-                                            </sl-option-group>
-                                          `
-                                        : ''}
-                                    </sl-select>
-                                  </div>
-                                `
-                              : ''
-                          }
-                        `
-                      : ''}
+                                : ''
+                            }
+                          `
+                        : ''
+                    }
 
                     <div class="form-field">
                       <div class="control-row">
@@ -2358,36 +2447,40 @@ DENY if:
                       </div>
                     </div>
 
-                    ${this.newPolicyType === 'slack' ||
-                    this.newPolicyType === 'mattermost'
-                      ? html`
-                          <div class="form-field">
-                            <label class="form-label">Channel (Optional)</label>
-                            <sl-input
-                              placeholder="#approvals"
-                              value=${this.newPolicyChannel}
-                              @sl-input=${(e: any) => {
-                                e.stopPropagation();
-                                this.newPolicyChannel = e.target.value;
-                              }}
-                              help-text="Default channel for approval notifications"
-                            ></sl-input>
-                          </div>
+                    ${
+                      this.newPolicyType === 'slack' ||
+                      this.newPolicyType === 'mattermost'
+                        ? html`
+                            <div class="form-field">
+                              <label class="form-label"
+                                >Channel (Optional)</label
+                              >
+                              <sl-input
+                                placeholder="#approvals"
+                                value=${this.newPolicyChannel}
+                                @sl-input=${(e: any) => {
+                                  e.stopPropagation();
+                                  this.newPolicyChannel = e.target.value;
+                                }}
+                                help-text="Default channel for approval notifications"
+                              ></sl-input>
+                            </div>
 
-                          <div class="form-field">
-                            <label class="form-label">User (Optional)</label>
-                            <sl-input
-                              placeholder="@username"
-                              value=${this.newPolicyUser}
-                              @sl-input=${(e: any) => {
-                                e.stopPropagation();
-                                this.newPolicyUser = e.target.value;
-                              }}
-                              help-text="Specific user to notify for approvals"
-                            ></sl-input>
-                          </div>
-                        `
-                      : ''}
+                            <div class="form-field">
+                              <label class="form-label">User (Optional)</label>
+                              <sl-input
+                                placeholder="@username"
+                                value=${this.newPolicyUser}
+                                @sl-input=${(e: any) => {
+                                  e.stopPropagation();
+                                  this.newPolicyUser = e.target.value;
+                                }}
+                                help-text="Specific user to notify for approvals"
+                              ></sl-input>
+                            </div>
+                          `
+                        : ''
+                    }
                   </div>
                 `
           }

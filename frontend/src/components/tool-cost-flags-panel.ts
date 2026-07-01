@@ -261,11 +261,13 @@ export class ToolCostFlagsPanel extends AuthedElement {
         </div>
         <div class="flag-claim">${this.flagClaim(flag)}</div>
         <div class="flag-footer">
-          ${flag.disable_eligible
-            ? nothing
-            : html`<span class="muted-note">
-                One-click disable unavailable for this tool (ambiguous name).
-              </span>`}
+          ${
+            flag.disable_eligible
+              ? nothing
+              : html`<span class="muted-note">
+                  One-click disable unavailable for this tool (ambiguous name).
+                </span>`
+          }
           <sl-button
             size="small"
             variant="default"
@@ -287,42 +289,48 @@ export class ToolCostFlagsPanel extends AuthedElement {
           <div class="title" id="tool-cost-flags-title">
             <sl-icon name="exclamation-triangle" aria-hidden="true"></sl-icon>
             Tool cost flags
-            ${this.loading || this.refreshing
-              ? html`<sl-spinner style="font-size: 1rem;"></sl-spinner>`
-              : nothing}
+            ${
+              this.loading || this.refreshing
+                ? html`<sl-spinner style="font-size: 1rem;"></sl-spinner>`
+                : nothing
+            }
           </div>
-          ${this.refreshAvailable
-            ? html`<sl-button
-                size="small"
-                variant="default"
-                ?loading=${this.refreshing}
-                @click=${this.handleRefresh}
-              >
-                <sl-icon
-                  slot="prefix"
-                  name="arrow-clockwise"
-                  aria-hidden="true"
-                ></sl-icon>
-                Refresh
-              </sl-button>`
-            : nothing}
+          ${
+            this.refreshAvailable
+              ? html`<sl-button
+                  size="small"
+                  variant="default"
+                  ?loading=${this.refreshing}
+                  @click=${this.handleRefresh}
+                >
+                  <sl-icon
+                    slot="prefix"
+                    name="arrow-clockwise"
+                    aria-hidden="true"
+                  ></sl-icon>
+                  Refresh
+                </sl-button>`
+              : nothing
+          }
         </div>
         <div
           class="content"
           role="region"
           aria-labelledby="tool-cost-flags-title"
         >
-          ${this.actionError
-            ? html`<sl-alert
-                variant="danger"
-                open
-                closable
-                role="alert"
-                aria-live="assertive"
-                @sl-after-hide=${() => (this.actionError = null)}
-                >${this.actionError}</sl-alert
-              >`
-            : nothing}
+          ${
+            this.actionError
+              ? html`<sl-alert
+                  variant="danger"
+                  open
+                  closable
+                  role="alert"
+                  aria-live="assertive"
+                  @sl-after-hide=${() => (this.actionError = null)}
+                  >${this.actionError}</sl-alert
+                >`
+              : nothing
+          }
           ${this.renderBody()}
         </div>
       </sl-card>

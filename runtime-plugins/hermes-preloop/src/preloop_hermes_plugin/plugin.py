@@ -5,11 +5,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
+import os
 from pathlib import Path
 from typing import Any
 from urllib import parse, request
 from uuid import uuid4
 
+import aiohttp
 import yaml
 
 from preloop.integrations.agent_control import (
@@ -22,6 +25,30 @@ from preloop.integrations.agent_control import (
     load_hermes_control_config,
 )
 
+logger = logging.getLogger(__name__)
+
+# Hermes fires this lifecycle hook after the model selects a tool but before the
+# tool runs. Returning a block envelope vetoes the call.
+#
+# Pinned against the documented Hermes hook API (no local runtime install on
+# this machine to introspect):
+#   - Event payload (shell-hook form): {"hook_event_name": "pre_tool_call",
+#     "tool_name": ..., "tool_input": {...}, "session_id": ..., "cwd": ...,
+#     "extra": {...}} -- https://hermes-agent.nousresearch.com/docs/user-guide/features/hooks
+#   - Python plugin form registers via ctx.register_hook("pre_tool_call", cb)
+#     with callback (tool_name, args, task_id, **kwargs)
+#     -- https://hermes-agent.nousresearch.com/docs/guides/build-a-hermes-plugin
+#   - Canonical BLOCK return: {"decision": "block", "reason": ...}
+#     (Claude-Code form {"action": "block", "message": ...} is also accepted by
+#     Hermes); any other / empty return allows the call.
+# The handler below accepts both calling conventions defensively. TODO: confirm
+# the exact registration entry point (`register` vs `setup`) and whether Hermes
+# awaits the callback against a pinned hermes_cli build.
+HOOK_EVENT_PRE_TOOL_CALL = "pre_tool_call"
+PERMISSION_CHECK_PATH = "/api/v1/agents/permission-check"
+# Backend blocks up to ~300s waiting for a mobile/watch decision; give it slack.
+PERMISSION_CHECK_TIMEOUT_SECONDS = 310.0
+
 
 class HermesPreloopPlugin:
     """Hermes plugin wrapper around Preloop's Agent Control client."""
@@ -31,6 +58,7 @@ class HermesPreloopPlugin:
     def __init__(self, config_path: Path | None = None) -> None:
         self.config_path = config_path
         self.client: AgentControlClient | None = None
+        self._control_settings: tuple[AgentControlConfig, dict[str, Any]] | None = None
 
     def load_config(self) -> AgentControlConfig:
         """Load the `preloop.control` block from Hermes configuration."""
@@ -78,6 +106,11 @@ class HermesPreloopPlugin:
                 return
             raise RuntimeError("Hermes runtime interrupt hook is not available")
 
+        # Gate Hermes's native tool calls through Preloop approval when the
+        # runtime exposes the plugin hook registry.
+        if hermes_runtime is not None and hasattr(hermes_runtime, "register_hook"):
+            self.register(hermes_runtime)
+
         caps = self.capabilities()
         self.client = create_hermes_agent_control_client(
             config_path,
@@ -88,6 +121,150 @@ class HermesPreloopPlugin:
         )
         await self.client.run_forever()
         return self.client
+
+    def register(self, ctx: Any) -> None:
+        """Register Hermes lifecycle hooks (the native tool-approval gate).
+
+        Hermes calls this with its plugin context at load time. ``ctx`` is
+        expected to expose ``register_hook(event_name, callback)``.
+
+        Args:
+            ctx: The Hermes plugin context / runtime hook registry.
+
+        Raises:
+            RuntimeError: If the context cannot register hooks.
+        """
+        register_hook = getattr(ctx, "register_hook", None)
+        if not callable(register_hook):
+            raise RuntimeError("Hermes plugin context does not expose register_hook")
+        register_hook(HOOK_EVENT_PRE_TOOL_CALL, self.pre_tool_call)
+
+    async def pre_tool_call(
+        self, payload: Any = None, /, **kwargs: Any
+    ) -> dict[str, Any] | None:
+        """Gate one native Hermes tool call through Preloop approval.
+
+        Accepts both Hermes calling conventions: a single event payload dict
+        (shell-hook form) and/or keyword arguments (Python plugin form).
+
+        Args:
+            payload: Event payload mapping, when Hermes passes one positionally.
+            **kwargs: Event fields when Hermes passes them as keywords.
+
+        Returns:
+            ``{"decision": "block", "reason": ...}`` to veto the tool call, or
+            ``None`` to allow it.
+        """
+        event: dict[str, Any] = {}
+        if isinstance(payload, dict):
+            event.update(payload)
+        if kwargs:
+            event.update(kwargs)
+
+        tool_name = _coerce_optional_str(event.get("tool_name"))
+        if not tool_name:
+            # Non-tool lifecycle events carry no tool to gate.
+            return None
+
+        tool_input = event.get("tool_input")
+        if not isinstance(tool_input, dict):
+            args = event.get("args")
+            tool_input = args if isinstance(args, dict) else {}
+
+        extra = event.get("extra") if isinstance(event.get("extra"), dict) else {}
+        session_id = _coerce_optional_str(
+            event.get("session_id") or event.get("task_id") or extra.get("task_id")
+        )
+        cwd = _coerce_optional_str(event.get("cwd"))
+        agent_reasoning = _coerce_optional_str(
+            event.get("agent_reasoning")
+            or extra.get("agent_reasoning")
+            or extra.get("reasoning")
+        )
+        return await self._check_permission(
+            tool_name=tool_name,
+            tool_input=tool_input,
+            session_id=session_id,
+            cwd=cwd,
+            agent_reasoning=agent_reasoning,
+        )
+
+    async def _check_permission(
+        self,
+        *,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        session_id: str | None,
+        cwd: str | None,
+        agent_reasoning: str | None,
+    ) -> dict[str, Any] | None:
+        """Call the Preloop permission-check endpoint and map the decision."""
+        config, approval = self._load_control_settings()
+        if not approval.get("enabled", True):
+            return None
+        fail_open = _resolve_fail_open(approval)
+        url = _permission_check_url(config.control_ws_url)
+        body = {
+            "source": "hermes",
+            "tool_name": tool_name,
+            "tool_input": tool_input,
+            "session_id": session_id,
+            "cwd": cwd,
+            "agent_reasoning": agent_reasoning,
+        }
+        headers = {
+            "Authorization": f"Bearer {config.bearer_token}",
+            "Content-Type": "application/json",
+        }
+        try:
+            data = await self._request_decision(url, body, headers)
+        except Exception as exc:  # network/timeout/HTTP error
+            logger.warning(
+                "Preloop permission check failed for tool %s: %s", tool_name, exc
+            )
+            if fail_open:
+                return None
+            return _block(f"Preloop approval unavailable: {exc}")
+
+        decision = str(data.get("decision") or "").strip().lower()
+        if decision == "deny":
+            reason = str(data.get("reason") or "Denied by Preloop approval")
+            return _block(reason)
+        return None
+
+    async def _request_decision(
+        self, url: str, body: dict[str, Any], headers: dict[str, str]
+    ) -> dict[str, Any]:
+        """POST the permission-check request and return the decoded response."""
+        timeout = aiohttp.ClientTimeout(total=PERMISSION_CHECK_TIMEOUT_SECONDS)
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url, json=body, headers=headers, timeout=timeout
+            ) as response:
+                response.raise_for_status()
+                return await response.json()
+
+    def _load_control_settings(self) -> tuple[AgentControlConfig, dict[str, Any]]:
+        """Resolve the control config plus the optional ``tool_approval`` block."""
+        if self._control_settings is None:
+            block = self._read_control_block()
+            config = AgentControlConfig.from_control_block(block)
+            raw_approval = block.get("tool_approval")
+            approval = raw_approval if isinstance(raw_approval, dict) else {}
+            self._control_settings = (config, approval)
+        return self._control_settings
+
+    def _read_control_block(self) -> dict[str, Any]:
+        """Read the raw ``preloop.control`` mapping from Hermes config."""
+        path = self.config_path or Path.home() / ".hermes" / "config.yaml"
+        document = yaml.safe_load(path.read_text())
+        if not isinstance(document, dict):
+            raise ValueError("Hermes config root must be an object")
+        preloop = document.get("preloop")
+        control = preloop.get("control") if isinstance(preloop, dict) else None
+        if not isinstance(control, dict):
+            raise ValueError("missing preloop.control config block")
+        return control
 
     def verify(self) -> None:
         """Validate local plugin load and config shape."""
@@ -172,6 +349,11 @@ class HermesPreloopPlugin:
 plugin = HermesPreloopPlugin()
 
 
+def register(ctx: Any) -> None:
+    """Module-level entry point Hermes can call to wire plugin hooks."""
+    plugin.register(ctx)
+
+
 def main() -> None:
     """CLI helper used by marketplace verification commands."""
     parser = argparse.ArgumentParser()
@@ -207,6 +389,33 @@ def _websocket_url(base_url: str) -> str:
     parsed = parse.urlparse(base_url.rstrip() + "/api/v1/agents/control/ws")
     scheme = "ws" if parsed.scheme == "http" else "wss"
     return parse.urlunparse(parsed._replace(scheme=scheme))
+
+
+def _permission_check_url(control_ws_url: str) -> str:
+    """Derive the permission-check HTTP URL from the control WebSocket URL."""
+    parsed = parse.urlparse(control_ws_url)
+    scheme = "https" if parsed.scheme in {"wss", "https"} else "http"
+    return f"{scheme}://{parsed.netloc}{PERMISSION_CHECK_PATH}"
+
+
+def _block(reason: str) -> dict[str, Any]:
+    """Build the Hermes-canonical block envelope vetoing a tool call."""
+    return {"decision": "block", "reason": reason}
+
+
+def _resolve_fail_open(approval: dict[str, Any]) -> bool:
+    """Decide fail-open behavior from env override or the config flag."""
+    env = os.getenv("PRELOOP_TOOL_APPROVAL_FAIL_OPEN")
+    if env is not None:
+        return env.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(approval.get("fail_open", False))
+
+
+def _coerce_optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    resolved = str(value).strip()
+    return resolved or None
 
 
 def _post_form(url: str, fields: dict[str, str]) -> dict[str, Any]:

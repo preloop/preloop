@@ -47,6 +47,33 @@ class GatewayUsageByModel(BaseModel):
     last_request_at: Optional[datetime] = None
 
 
+class GatewayToolUsageByAgent(BaseModel):
+    """Tool activity attributed to one runtime principal (managed agent)."""
+
+    runtime_principal_type: Optional[str] = None
+    runtime_principal_id: Optional[str] = None
+    runtime_principal_name: Optional[str] = None
+    agent_id: Optional[str] = None
+    invocation_count: int = 0
+    estimated_schema_cost: float = 0.0
+
+
+class GatewayUsageByTool(BaseModel):
+    """Tool usage aggregate combining invocation counts and schema-injection cost."""
+
+    tool_name: str
+    server_name: Optional[str] = None
+    invocation_count: int = 0
+    successful_invocations: int = 0
+    failed_invocations: int = 0
+    schema_injections: int = 0
+    schema_tokens_total: int = 0
+    estimated_schema_cost: float = 0.0
+    avg_cost_per_invocation: float = 0.0
+    last_activity_at: Optional[datetime] = None
+    usage_by_agent: List["GatewayToolUsageByAgent"] = Field(default_factory=list)
+
+
 class ManagedAgentModelBindingSummary(BaseModel):
     """One configured AI model binding for a managed agent."""
 
@@ -108,6 +135,7 @@ class GatewayUsageBySession(BaseModel):
     runtime_session_id: Optional[str] = None
     session_source_type: Optional[str] = None
     session_source_id: Optional[str] = None
+    title: Optional[str] = None
     session_summary: Optional[str] = None
     session_summary_updated_at: Optional[datetime] = None
     runtime_principal_type: Optional[str] = None
@@ -560,7 +588,11 @@ class RuntimeSessionOptimizationActionSpec(BaseModel):
     """Machine-applicable action attached to one optimization suggestion.
 
     Supported types: ``scope_tools`` (disable unused tools via subject-scoped
-    governance), ``set_budget`` (create a scoped budget policy), and
+    governance), ``set_budget`` (create a scoped budget policy),
+    ``enable_compression`` / ``cap_tool_results`` (subject-scoped context
+    optimization transforms), ``manage_output_filter`` (open the output-filter
+    UI to drop unused bulky tool-result fields; ``params``: ``server_name``,
+    ``tool_name``, ``suggested_fields``, ``managed_agent_id``), and
     ``open_events`` (client-side replay deep-link to evidence events).
     """
 
@@ -623,12 +655,19 @@ class RuntimeSessionOptimizationRequest(BaseModel):
     from_index: Optional[int] = None
     to_index: Optional[int] = None
     regenerate: bool = False
+    # When true, return the latest cached result for the session without
+    # generating anything (used to surface previously generated suggestions on
+    # panel open). A miss returns ``cache_miss=True`` instead of generating.
+    cache_only: bool = False
 
 
 class RuntimeSessionOptimizationResponse(BaseModel):
     """Optimization suggestions for a runtime session."""
 
     generated_by: str = "local"
+    # True only for a cache_only request that found no cached result; signals the
+    # UI to show the "generate" prompt rather than an empty-suggestions state.
+    cache_miss: bool = False
     fast_model_name: Optional[str] = None
     model_id: Optional[str] = None
     model_name: Optional[str] = None
@@ -640,6 +679,11 @@ class RuntimeSessionOptimizationResponse(BaseModel):
     waste_score: Optional[int] = None
     potential_savings_tokens: int = 0
     potential_savings_usd: float = 0.0
+    # Totals for the analyzed scope (the events actually fed to the optimizer),
+    # so the UI can show savings against a coherent baseline instead of the
+    # whole-session summary, which may be unloaded or wider than the scope.
+    analyzed_scope_total_tokens: int = 0
+    analyzed_scope_estimated_cost: float = 0.0
     context_profile: Optional[Dict[str, Any]] = None
     suggestions: List[RuntimeSessionOptimizationSuggestion] = Field(
         default_factory=list
@@ -670,6 +714,7 @@ class AccountGatewayUsageSummaryResponse(BaseModel):
     usage_by_model: List[GatewayUsageByModel] = Field(default_factory=list)
     usage_by_flow: List[GatewayUsageByFlow] = Field(default_factory=list)
     usage_by_session: List[GatewayUsageBySession] = Field(default_factory=list)
+    usage_by_tool: List[GatewayUsageByTool] = Field(default_factory=list)
 
 
 class ApiKeyGatewayUsageSummaryResponse(BaseModel):

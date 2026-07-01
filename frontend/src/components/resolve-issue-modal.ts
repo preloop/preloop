@@ -321,25 +321,27 @@ export class ResolveIssueModal extends LitElement {
         </div>
 
         <h2 class="issue-comparison-header">Proposed Issue</h2>
-        ${this._isLoadingSuggestion
-          ? html`<div class="loading-suggestion">
-              <sl-spinner></sl-spinner>
-              <div>Generating suggestion...</div>
-            </div>`
-          : html`
-              <div class="form-group">
-                <sl-input
-                  .value=${this._mergedTitle}
-                  @sl-input=${(e: any) => (this._mergedTitle = e.target.value)}
-                ></sl-input>
-                <sl-textarea
-                  .value=${this._mergedDescription}
-                  @sl-input=${(e: any) =>
-                    (this._mergedDescription = e.target.value)}
-                  rows="8"
-                ></sl-textarea>
-              </div>
-            `}
+        ${
+          this._isLoadingSuggestion
+            ? html`<div class="loading-suggestion">
+                <sl-spinner></sl-spinner>
+                <div>Generating suggestion...</div>
+              </div>`
+            : html`
+                <div class="form-group">
+                  <sl-input
+                    .value=${this._mergedTitle}
+                    @sl-input=${(e: any) => (this._mergedTitle = e.target.value)}
+                  ></sl-input>
+                  <sl-textarea
+                    .value=${this._mergedDescription}
+                    @sl-input=${(e: any) =>
+                      (this._mergedDescription = e.target.value)}
+                    rows="8"
+                  ></sl-textarea>
+                </div>
+              `
+        }
 
         <div class="footer-buttons">
           <sl-button @click="${this.goBack}">Back</sl-button>
@@ -394,43 +396,45 @@ export class ResolveIssueModal extends LitElement {
         </div>
 
         <h2 class="issue-comparison-header">Proposed Changes</h2>
-        ${this._isLoadingSuggestion
-          ? html`<div class="loading-suggestion">
-              <sl-spinner></sl-spinner>
-              <div>Generating suggestion...</div>
-            </div>`
-          : html`
-              <div class="comparison-container">
-                <div class="issue-panel form-group">
-                  <div class="issue-header">${issueA?.key}</div>
-                  <sl-input
-                    .value=${this._deconflictedTitle1}
-                    @sl-input=${(e: any) =>
-                      (this._deconflictedTitle1 = e.target.value)}
-                  ></sl-input>
-                  <sl-textarea
-                    .value=${this._deconflictedDescription1}
-                    @sl-input=${(e: any) =>
-                      (this._deconflictedDescription1 = e.target.value)}
-                    rows="8"
-                  ></sl-textarea>
+        ${
+          this._isLoadingSuggestion
+            ? html`<div class="loading-suggestion">
+                <sl-spinner></sl-spinner>
+                <div>Generating suggestion...</div>
+              </div>`
+            : html`
+                <div class="comparison-container">
+                  <div class="issue-panel form-group">
+                    <div class="issue-header">${issueA?.key}</div>
+                    <sl-input
+                      .value=${this._deconflictedTitle1}
+                      @sl-input=${(e: any) =>
+                        (this._deconflictedTitle1 = e.target.value)}
+                    ></sl-input>
+                    <sl-textarea
+                      .value=${this._deconflictedDescription1}
+                      @sl-input=${(e: any) =>
+                        (this._deconflictedDescription1 = e.target.value)}
+                      rows="8"
+                    ></sl-textarea>
+                  </div>
+                  <div class="issue-panel form-group">
+                    <div class="issue-header">${issueB?.key}</div>
+                    <sl-input
+                      .value=${this._deconflictedTitle2}
+                      @sl-input=${(e: any) =>
+                        (this._deconflictedTitle2 = e.target.value)}
+                    ></sl-input>
+                    <sl-textarea
+                      .value=${this._deconflictedDescription2}
+                      @sl-input=${(e: any) =>
+                        (this._deconflictedDescription2 = e.target.value)}
+                      rows="8"
+                    ></sl-textarea>
+                  </div>
                 </div>
-                <div class="issue-panel form-group">
-                  <div class="issue-header">${issueB?.key}</div>
-                  <sl-input
-                    .value=${this._deconflictedTitle2}
-                    @sl-input=${(e: any) =>
-                      (this._deconflictedTitle2 = e.target.value)}
-                  ></sl-input>
-                  <sl-textarea
-                    .value=${this._deconflictedDescription2}
-                    @sl-input=${(e: any) =>
-                      (this._deconflictedDescription2 = e.target.value)}
-                    rows="8"
-                  ></sl-textarea>
-                </div>
-              </div>
-            `}
+              `
+        }
 
         <div class="footer-buttons">
           <sl-button @click="${this.goBack}">Back</sl-button>
@@ -474,27 +478,33 @@ export class ResolveIssueModal extends LitElement {
         @sl-initial-focus=${(e: Event) => e.preventDefault()}
         class="resolve-issue-dialog large"
       >
-        ${this._resolutionStep !== 'merge' &&
-        this._resolutionStep !== 'deconflict'
-          ? html`
-              <div class="comparison-container">
-                <div class="issue-panel">
-                  <div class="issue-header">
-                    <a href="${issue1?.url}" target="_blank">${issue1?.key}</a>
+        ${
+          this._resolutionStep !== 'merge' &&
+          this._resolutionStep !== 'deconflict'
+            ? html`
+                <div class="comparison-container">
+                  <div class="issue-panel">
+                    <div class="issue-header">
+                      <a href="${issue1?.url}" target="_blank"
+                        >${issue1?.key}</a
+                      >
+                    </div>
+                    <h3 class="issue-title">${issue1?.title}</h3>
+                    <div class="issue-description">${issue1?.description}</div>
                   </div>
-                  <h3 class="issue-title">${issue1?.title}</h3>
-                  <div class="issue-description">${issue1?.description}</div>
-                </div>
-                <div class="issue-panel">
-                  <div class="issue-header">
-                    <a href="${issue2?.url}" target="_blank">${issue2?.key}</a>
+                  <div class="issue-panel">
+                    <div class="issue-header">
+                      <a href="${issue2?.url}" target="_blank"
+                        >${issue2?.key}</a
+                      >
+                    </div>
+                    <h3 class="issue-title">${issue2?.title}</h3>
+                    <div class="issue-description">${issue2?.description}</div>
                   </div>
-                  <h3 class="issue-title">${issue2?.title}</h3>
-                  <div class="issue-description">${issue2?.description}</div>
                 </div>
-              </div>
-            `
-          : ''}
+              `
+            : ''
+        }
         ${content}
       </sl-dialog>
     `;

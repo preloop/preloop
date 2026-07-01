@@ -104,6 +104,7 @@ from .runtime_session_optimization_result import (
 )
 from .secret_reference import CRUDSecretReference, crud_secret_reference
 from .tool_cost_flag import CRUDToolCostFlag, crud_tool_cost_flag
+from .tool_output_filter import CRUDToolOutputFilter, crud_tool_output_filter
 from .budget import (
     CRUDBudgetPolicy,
     CRUDBudgetSpendActivity,
@@ -267,4 +268,6 @@ __all__ = [
     "crud_budget_spend",
     "CRUDToolCostFlag",
     "crud_tool_cost_flag",
+    "CRUDToolOutputFilter",
+    "crud_tool_output_filter",
 ]

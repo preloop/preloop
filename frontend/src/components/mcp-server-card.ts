@@ -205,9 +205,11 @@ export class MCPServerCard extends LitElement {
           </div>
           <p class="server-url" title=${this.server.url}>${this.server.url}</p>
           <div class="server-meta">
-            ${this.server.tool_count !== undefined
-              ? `${this.server.tool_count} tool${this.server.tool_count !== 1 ? 's' : ''}`
-              : 'No tools discovered'}
+            ${
+              this.server.tool_count !== undefined
+                ? `${this.server.tool_count} tool${this.server.tool_count !== 1 ? 's' : ''}`
+                : 'No tools discovered'
+            }
           </div>
         </div>
         <div slot="footer">

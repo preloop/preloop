@@ -132,28 +132,70 @@ function getStatus(row: Record<string, unknown>): string {
   return 'idle';
 }
 
+export function looksLikeFilePath(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (trimmed.startsWith('/') || trimmed.startsWith('~')) {
+    return true;
+  }
+  if (/^[A-Za-z]:[\\/]/.test(trimmed)) {
+    return true;
+  }
+  return (
+    (trimmed.includes('/') || trimmed.includes('\\')) &&
+    /\.(json|ya?ml|toml|config|ini|env)$/i.test(trimmed)
+  );
+}
+
+export function formatSessionIdLabel(id: string | null | undefined): string {
+  if (!id) {
+    return 'Session';
+  }
+  return id.length > 8 ? id.substring(0, 8) : id;
+}
+
+function getMeaningfulSessionReference(value: unknown): string | null {
+  const reference = asString(value);
+  if (!reference || looksLikeFilePath(reference)) {
+    return null;
+  }
+  return reference;
+}
+
+function buildSessionTitleFallback(row: Record<string, unknown>): string {
+  const sourceType = asString(row.session_source_type);
+  const sourceLabel = formatSessionSourceLabel(sourceType);
+  const sessionId = asString(row.id) || asString(row.runtime_session_id);
+  const sourceId = asString(row.session_source_id);
+  if (sessionId) {
+    return `${sourceLabel} ${formatSessionIdLabel(sessionId)}`.trim();
+  }
+  if (sourceId) {
+    return `${sourceLabel} ${sourceId}`.trim();
+  }
+  return 'Standalone API calls';
+}
+
 function buildTitle(row: Record<string, unknown>): string {
   return (
     asString(row.title) ||
     asString(row.summary) ||
+    asString(row.session_summary) ||
     asString(row.session_alias) ||
     asString(row.runtime_session_name) ||
     asString(row.runtime_principal_name) ||
     asString(row.flow_name) ||
-    asString(row.session_reference) ||
+    getMeaningfulSessionReference(row.session_reference) ||
     asString(row.model_alias) ||
-    `${formatSessionSourceLabel(asString(row.session_source_type))} ${
-      asString(row.session_source_id) || asString(row.runtime_session_id) || ''
-    }`.trim() ||
-    'Standalone API calls'
+    buildSessionTitleFallback(row)
   );
 }
 
 export function normalizeObservedSession(
   session:
-    | RuntimeSessionSummary
-    | GatewayUsageBySession
-    | Record<string, unknown>
+    RuntimeSessionSummary | GatewayUsageBySession | Record<string, unknown>
 ): ObservedSession {
   const row = asRecord(session);
   const runtimeSessionId =

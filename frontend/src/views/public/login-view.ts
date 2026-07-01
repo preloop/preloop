@@ -178,12 +178,16 @@ export class LoginView extends LitElement {
         </div>
         <div class="form-container">
           <h2>Sign in to ${getBrandConfig().name}</h2>
-          ${this.successMessage
-            ? html`<div class="success-message">${this.successMessage}</div>`
-            : ''}
-          ${this.error
-            ? html`<div class="error-message">${this.error}</div>`
-            : ''}
+          ${
+            this.successMessage
+              ? html`<div class="success-message">${this.successMessage}</div>`
+              : ''
+          }
+          ${
+            this.error
+              ? html`<div class="error-message">${this.error}</div>`
+              : ''
+          }
           ${this._renderOAuthButtons()}
           <form @submit=${this.handleLogin}>
             <div class="form-group">

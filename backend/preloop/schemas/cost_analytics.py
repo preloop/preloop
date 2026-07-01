@@ -16,6 +16,7 @@ from preloop.schemas.gateway_usage import (
     GatewayUsageByFlow,
     GatewayUsageByModel,
     GatewayUsageBySession,
+    GatewayUsageByTool,
 )
 
 
@@ -30,6 +31,8 @@ class BudgetPolicyBase(BaseModel):
     soft_limit_usd: Optional[float] = Field(default=None, ge=0)
     notify_on_soft: bool = False
     notify_on_hard: bool = False
+    notification_user_ids: Optional[List[UUID]] = None
+    notification_team_ids: Optional[List[UUID]] = None
     notification_emails: Optional[List[str]] = None
 
 
@@ -57,6 +60,8 @@ class BudgetPolicyUpdate(BaseModel):
     soft_limit_usd: Optional[float] = Field(default=None, ge=0)
     notify_on_soft: Optional[bool] = None
     notify_on_hard: Optional[bool] = None
+    notification_user_ids: Optional[List[UUID]] = None
+    notification_team_ids: Optional[List[UUID]] = None
     notification_emails: Optional[List[str]] = None
 
     @model_validator(mode="after")
@@ -208,3 +213,4 @@ class CostAnalyticsSummaryResponse(BaseModel):
     usage_by_model: List[GatewayUsageByModel] = Field(default_factory=list)
     usage_by_flow: List[GatewayUsageByFlow] = Field(default_factory=list)
     usage_by_session: List[GatewayUsageBySession] = Field(default_factory=list)
+    usage_by_tool: List[GatewayUsageByTool] = Field(default_factory=list)

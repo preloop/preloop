@@ -540,6 +540,107 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             for row in rows
         ]
 
+    def get_tool_summary_for_account(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Aggregate tool-call activity by server/tool for one account."""
+        query = db.query(
+            self.model.server_name,
+            self.model.tool_name,
+            func.count(self.model.id).label("call_count"),
+            func.coalesce(
+                func.sum(case((self.model.status == "success", 1), else_=0)), 0
+            ).label("success_count"),
+            func.coalesce(
+                func.sum(case((self.model.status != "success", 1), else_=0)), 0
+            ).label("failure_count"),
+            func.max(self.model.timestamp).label("last_activity_at"),
+        ).filter(
+            self.model.account_id == account_id,
+            self.model.activity_type == "tool_call",
+            self.model.tool_name.isnot(None),
+        )
+        if start_date is not None:
+            query = query.filter(self.model.timestamp >= start_date)
+        if end_date is not None:
+            query = query.filter(self.model.timestamp < end_date)
+        rows = (
+            query.group_by(self.model.server_name, self.model.tool_name)
+            .order_by(
+                func.count(self.model.id).desc(), func.max(self.model.timestamp).desc()
+            )
+            .limit(limit)
+            .all()
+        )
+        return [
+            {
+                "server_name": row.server_name,
+                "tool_name": row.tool_name,
+                "call_count": int(row.call_count or 0),
+                "successful_calls": int(row.success_count or 0),
+                "failed_calls": int(row.failure_count or 0),
+                "last_activity_at": row.last_activity_at,
+            }
+            for row in rows
+        ]
+
+    def get_tool_invocations_by_agent_for_account(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        """Aggregate tool-call counts by tool and runtime principal for one account."""
+        query = (
+            db.query(
+                self.model.tool_name,
+                RuntimeSession.runtime_principal_type,
+                RuntimeSession.runtime_principal_id,
+                RuntimeSession.runtime_principal_name,
+                func.count(self.model.id).label("call_count"),
+            )
+            .join(RuntimeSession, self.model.runtime_session_id == RuntimeSession.id)
+            .filter(
+                self.model.account_id == account_id,
+                self.model.activity_type == "tool_call",
+                self.model.tool_name.isnot(None),
+            )
+        )
+        if start_date is not None:
+            query = query.filter(self.model.timestamp >= start_date)
+        if end_date is not None:
+            query = query.filter(self.model.timestamp < end_date)
+        rows = (
+            query.group_by(
+                self.model.tool_name,
+                RuntimeSession.runtime_principal_type,
+                RuntimeSession.runtime_principal_id,
+                RuntimeSession.runtime_principal_name,
+            )
+            .order_by(func.count(self.model.id).desc())
+            .limit(limit)
+            .all()
+        )
+        return [
+            {
+                "tool_name": row.tool_name,
+                "runtime_principal_type": row.runtime_principal_type,
+                "runtime_principal_id": row.runtime_principal_id,
+                "runtime_principal_name": row.runtime_principal_name,
+                "call_count": int(row.call_count or 0),
+            }
+            for row in rows
+        ]
+
     def list_tool_calls_for_flow_execution(
         self,
         db: Session,

@@ -196,98 +196,108 @@ export class WelcomeView extends LitElement {
         <div class="form-container">
           <h2>Welcome to ${getBrandConfig().name}!</h2>
           <p style="text-align: center; margin-bottom: 1.5rem;">
-            ${this._needsPassword
-              ? 'Your account has been created. Please set your password to continue.'
-              : 'Your account is ready! Review your organization name and optionally connect GitHub to enable PR reviews and automation.'}
+            ${
+              this._needsPassword
+                ? 'Your account has been created. Please set your password to continue.'
+                : 'Your account is ready! Review your organization name and optionally connect GitHub to enable PR reviews and automation.'
+            }
           </p>
-          ${this._error
-            ? html`<div class="error-message">${this._error}</div>`
-            : ''}
+          ${
+            this._error
+              ? html`<div class="error-message">${this._error}</div>`
+              : ''
+          }
           <form @submit=${this._handleOnboardingSubmit}>
-            ${this._needsPassword
-              ? html`
-                  <div class="form-group">
-                    <sl-input
-                      label="Email"
-                      value=${this._email}
-                      readonly
-                      disabled
-                    ></sl-input>
-                  </div>
-                  <div class="form-group">
-                    <sl-input
-                      label="Organization"
-                      value=${this._orgName}
-                      @sl-change=${(e: any) => (this._orgName = e.target.value)}
-                      required
-                    ></sl-input>
-                  </div>
-                  <div class="form-group">
-                    <sl-input
-                      label="Username"
-                      value=${this._username}
-                      @sl-change=${(e: any) =>
-                        (this._username = e.target.value)}
-                    ></sl-input>
-                  </div>
-                  <div class="form-group">
-                    <sl-input
-                      id="password"
-                      type="password"
-                      label="Password"
-                      required
-                      password-toggle
-                    ></sl-input>
-                  </div>
-                `
-              : html`
-                  <div class="form-group">
-                    <sl-input
-                      label="Organization Name"
-                      value=${this._orgName}
-                      @sl-change=${(e: any) => (this._orgName = e.target.value)}
-                      required
-                      help-text="Set up your workspace name"
-                    ></sl-input>
-                  </div>
-                `}
+            ${
+              this._needsPassword
+                ? html`
+                    <div class="form-group">
+                      <sl-input
+                        label="Email"
+                        value=${this._email}
+                        readonly
+                        disabled
+                      ></sl-input>
+                    </div>
+                    <div class="form-group">
+                      <sl-input
+                        label="Organization"
+                        value=${this._orgName}
+                        @sl-change=${(e: any) => (this._orgName = e.target.value)}
+                        required
+                      ></sl-input>
+                    </div>
+                    <div class="form-group">
+                      <sl-input
+                        label="Username"
+                        value=${this._username}
+                        @sl-change=${(e: any) =>
+                          (this._username = e.target.value)}
+                      ></sl-input>
+                    </div>
+                    <div class="form-group">
+                      <sl-input
+                        id="password"
+                        type="password"
+                        label="Password"
+                        required
+                        password-toggle
+                      ></sl-input>
+                    </div>
+                  `
+                : html`
+                    <div class="form-group">
+                      <sl-input
+                        label="Organization Name"
+                        value=${this._orgName}
+                        @sl-change=${(e: any) => (this._orgName = e.target.value)}
+                        required
+                        help-text="Set up your workspace name"
+                      ></sl-input>
+                    </div>
+                  `
+            }
 
             <div
               class="form-actions"
-              style=${this._needsPassword
-                ? ''
-                : 'display: flex; gap: 1rem; flex-direction: column;'}
+              style=${
+                this._needsPassword
+                  ? ''
+                  : 'display: flex; gap: 1rem; flex-direction: column;'
+              }
             >
-              ${this._needsPassword
-                ? html`
-                    <sl-button
-                      type="submit"
-                      variant="primary"
-                      ?loading=${this._loading}
-                      style="width: 100%;"
-                    >
-                      Complete Registration
-                    </sl-button>
-                  `
-                : html`
-                    <sl-button
-                      variant="primary"
-                      @click=${() => this._saveAccountDetailsAndProceed(true)}
-                      ?loading=${this._loading}
-                      style="width: 100%;"
-                    >
-                      <sl-icon slot="prefix" name="github"></sl-icon>
-                      Connect with GitHub
-                    </sl-button>
-                    <sl-button
-                      variant="default"
-                      @click=${() => this._saveAccountDetailsAndProceed(false)}
-                      ?disabled=${this._loading}
-                      style="width: 100%;"
-                    >
-                      Next
-                    </sl-button>
-                  `}
+              ${
+                this._needsPassword
+                  ? html`
+                      <sl-button
+                        type="submit"
+                        variant="primary"
+                        ?loading=${this._loading}
+                        style="width: 100%;"
+                      >
+                        Complete Registration
+                      </sl-button>
+                    `
+                  : html`
+                      <sl-button
+                        variant="primary"
+                        @click=${() => this._saveAccountDetailsAndProceed(true)}
+                        ?loading=${this._loading}
+                        style="width: 100%;"
+                      >
+                        <sl-icon slot="prefix" name="github"></sl-icon>
+                        Connect with GitHub
+                      </sl-button>
+                      <sl-button
+                        variant="default"
+                        @click=${() => this._saveAccountDetailsAndProceed(false)}
+                        ?disabled=${this._loading}
+                        style="width: 100%;"
+                      >
+                        Next
+                      </sl-button>
+                    `
+              }
             </div>
           </form>
         </div>

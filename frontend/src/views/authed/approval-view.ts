@@ -451,26 +451,30 @@ export class ApprovalView extends AuthedElement {
         <p>Review and approve or decline this tool execution request</p>
       </div>
 
-      ${this.actionResult
-        ? html`
-            <sl-alert
-              variant=${this.actionResult.type === 'success'
-                ? 'success'
-                : 'danger'}
-              open
-              closable
-              @sl-hide=${() => (this.actionResult = null)}
-            >
-              <sl-icon
-                slot="icon"
-                name=${this.actionResult.type === 'success'
-                  ? 'check-circle'
-                  : 'exclamation-octagon'}
-              ></sl-icon>
-              ${this.actionResult.message}
-            </sl-alert>
-          `
-        : ''}
+      ${
+        this.actionResult
+          ? html`
+              <sl-alert
+                variant=${
+                  this.actionResult.type === 'success' ? 'success' : 'danger'
+                }
+                open
+                closable
+                @sl-hide=${() => (this.actionResult = null)}
+              >
+                <sl-icon
+                  slot="icon"
+                  name=${
+                    this.actionResult.type === 'success'
+                      ? 'check-circle'
+                      : 'exclamation-octagon'
+                  }
+                ></sl-icon>
+                ${this.actionResult.message}
+              </sl-alert>
+            `
+          : ''
+      }
 
       <sl-card>
         <div class="content-section">
@@ -493,112 +497,128 @@ export class ApprovalView extends AuthedElement {
               ${this.formatDate(this.approvalRequest.requested_at)}
             </div>
 
-            ${this.approvalRequest.expires_at
-              ? html`
-                  <div class="info-label">Expires:</div>
-                  <div class="info-value">
-                    ${this.formatDate(this.approvalRequest.expires_at)}
-                  </div>
-                `
-              : ''}
-            ${this.approvalRequest.execution_id
-              ? html`
-                  <div class="info-label">Execution ID:</div>
-                  <div class="info-value">
-                    <code style="font-size: 0.75rem;"
-                      >${this.approvalRequest.execution_id}</code
-                    >
-                  </div>
-                `
-              : ''}
+            ${
+              this.approvalRequest.expires_at
+                ? html`
+                    <div class="info-label">Expires:</div>
+                    <div class="info-value">
+                      ${this.formatDate(this.approvalRequest.expires_at)}
+                    </div>
+                  `
+                : ''
+            }
+            ${
+              this.approvalRequest.execution_id
+                ? html`
+                    <div class="info-label">Execution ID:</div>
+                    <div class="info-value">
+                      <code style="font-size: 0.75rem;"
+                        >${this.approvalRequest.execution_id}</code
+                      >
+                    </div>
+                  `
+                : ''
+            }
           </div>
         </div>
 
-        ${this.approvalRequest.agent_reasoning
-          ? html`
-              <div class="content-section">
-                <h2>Agent Reasoning</h2>
-                <div class="reasoning-text">
-                  ${this.approvalRequest.agent_reasoning}
+        ${
+          this.approvalRequest.agent_reasoning
+            ? html`
+                <div class="content-section">
+                  <h2>Agent Reasoning</h2>
+                  <div class="reasoning-text">
+                    ${this.approvalRequest.agent_reasoning}
+                  </div>
                 </div>
-              </div>
-            `
-          : ''}
+              `
+            : ''
+        }
 
         <div class="content-section">
           <h2>Tool Arguments</h2>
           <div class="code-block">${toolArgs}</div>
         </div>
 
-        ${isResolved
-          ? html`
-              <div class="resolved-info">
-                <h3>
-                  ${this.approvalRequest.status === 'approved'
-                    ? '✅ Approved'
-                    : this.approvalRequest.status === 'expired'
-                      ? '⏱️ Timed Out'
-                      : this.approvalRequest.status === 'cancelled'
-                        ? '🚫 Cancelled'
-                        : '❌ Declined'}
-                </h3>
-                ${this.approvalRequest.resolved_at
-                  ? html`<p>
-                      Resolved at:
-                      ${this.formatDate(this.approvalRequest.resolved_at)}
-                    </p>`
-                  : ''}
-                ${this.approvalRequest.approver_comment
-                  ? html`
-                      <p><strong>Comment:</strong></p>
-                      <div class="code-block">
-                        ${this.approvalRequest.approver_comment}
-                      </div>
-                    `
-                  : ''}
-              </div>
-            `
-          : ''}
-        ${isPending
-          ? html`
-              <sl-divider></sl-divider>
+        ${
+          isResolved
+            ? html`
+                <div class="resolved-info">
+                  <h3>
+                    ${
+                      this.approvalRequest.status === 'approved'
+                        ? '✅ Approved'
+                        : this.approvalRequest.status === 'expired'
+                          ? '⏱️ Timed Out'
+                          : this.approvalRequest.status === 'cancelled'
+                            ? '🚫 Cancelled'
+                            : '❌ Declined'
+                    }
+                  </h3>
+                  ${
+                    this.approvalRequest.resolved_at
+                      ? html`<p>
+                          Resolved at:
+                          ${this.formatDate(this.approvalRequest.resolved_at)}
+                        </p>`
+                      : ''
+                  }
+                  ${
+                    this.approvalRequest.approver_comment
+                      ? html`
+                          <p><strong>Comment:</strong></p>
+                          <div class="code-block">
+                            ${this.approvalRequest.approver_comment}
+                          </div>
+                        `
+                      : ''
+                  }
+                </div>
+              `
+            : ''
+        }
+        ${
+          isPending
+            ? html`
+                <sl-divider></sl-divider>
 
-              <div class="comment-section">
-                <h2>Your Decision</h2>
-                <sl-textarea
-                  label="Comment (optional)"
-                  placeholder="Add a comment explaining your decision..."
-                  rows="4"
-                  .value=${this.comment}
-                  @sl-input=${(e: any) => (this.comment = e.target.value)}
-                  ?disabled=${this.submitting}
-                ></sl-textarea>
-              </div>
+                <div class="comment-section">
+                  <h2>Your Decision</h2>
+                  <sl-textarea
+                    label="Comment (optional)"
+                    placeholder="Add a comment explaining your decision..."
+                    rows="4"
+                    .value=${this.comment}
+                    @sl-input=${(e: any) => (this.comment = e.target.value)}
+                    ?disabled=${this.submitting}
+                  ></sl-textarea>
+                </div>
 
-              <div class="actions">
-                <sl-button
-                  variant="success"
-                  size="large"
-                  @click=${this.handleApprove}
-                  ?loading=${this.submitting}
-                  ?disabled=${this.submitting}
-                >
-                  <sl-icon slot="prefix" name="check-circle"></sl-icon>
-                  Approve
-                </sl-button>
-                <sl-button
-                  variant="danger"
-                  size="large"
-                  @click=${this.handleDecline}
-                  ?loading=${this.submitting}
-                  ?disabled=${this.submitting}
-                >
-                  <sl-icon slot="prefix" name="x-circle"></sl-icon>
-                  Decline
-                </sl-button>
-              </div>
-            `
-          : ''}
+                <div class="actions">
+                  <sl-button
+                    variant="success"
+                    size="large"
+                    @click=${this.handleApprove}
+                    ?loading=${this.submitting}
+                    ?disabled=${this.submitting}
+                  >
+                    <sl-icon slot="prefix" name="check-circle"></sl-icon>
+                    Approve
+                  </sl-button>
+                  <sl-button
+                    variant="danger"
+                    size="large"
+                    @click=${this.handleDecline}
+                    ?loading=${this.submitting}
+                    ?disabled=${this.submitting}
+                  >
+                    <sl-icon slot="prefix" name="x-circle"></sl-icon>
+                    Decline
+                  </sl-button>
+                </div>
+              `
+            : ''
+        }
 
         <div class="metadata">
           <sl-icon name="info-circle"></sl-icon>

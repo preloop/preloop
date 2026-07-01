@@ -9,11 +9,7 @@ import type { RuntimeSessionRequestItem } from '../types';
 import { formatCost, formatNumber } from '../utils/session-observer';
 
 export type RequestTimelineSort =
-  | 'recent'
-  | 'oldest'
-  | 'costliest'
-  | 'cheapest'
-  | 'type';
+  'recent' | 'oldest' | 'costliest' | 'cheapest' | 'type';
 
 type ThresholdMode = 'tokens' | 'usd';
 
@@ -219,33 +215,37 @@ export class SessionRequestTimeline extends LitElement {
         <div class="request-main">
           <div class="request-title">
             ${model}
-            ${row.is_retry
-              ? html`<sl-badge variant="warning" pill>retry</sl-badge>`
-              : nothing}
+            ${
+              row.is_retry
+                ? html`<sl-badge variant="warning" pill>retry</sl-badge>`
+                : nothing
+            }
           </div>
           <div class="request-meta">
             ${ts ? ts.toLocaleString() : 'no timestamp'} ·
             ${formatNumber(row.total_tokens)} tokens
             ${row.finish_reason ? html` · ${row.finish_reason}` : nothing}
           </div>
-          ${row.tools.length
-            ? html`
-                <div class="tools">
-                  Tools (${formatNumber(row.tools_total_schema_tokens)} schema
-                  tokens):
-                  ${row.tools.map(
-                    (tool) => html`
-                      <span
-                        class="tool-chip ${tool.stripped ? 'stripped' : ''}"
-                      >
-                        ${tool.name || 'tool'} ·
-                        ${formatNumber(tool.schema_tokens_estimate)}t
-                      </span>
-                    `
-                  )}
-                </div>
-              `
-            : nothing}
+          ${
+            row.tools.length
+              ? html`
+                  <div class="tools">
+                    Tools (${formatNumber(row.tools_total_schema_tokens)} schema
+                    tokens):
+                    ${row.tools.map(
+                      (tool) => html`
+                        <span
+                          class="tool-chip ${tool.stripped ? 'stripped' : ''}"
+                        >
+                          ${tool.name || 'tool'} ·
+                          ${formatNumber(tool.schema_tokens_estimate)}t
+                        </span>
+                      `
+                    )}
+                  </div>
+                `
+              : nothing
+          }
         </div>
         <div class="request-cost">
           <div class="cost-value">${formatCost(row.estimated_cost)}</div>
@@ -312,34 +312,40 @@ export class SessionRequestTimeline extends LitElement {
           requests
         </span>
       </div>
-      ${this.loading && !rows.length
-        ? html`<div class="empty"><sl-spinner></sl-spinner></div>`
-        : rows.length
-          ? html`<div class="stream">
-              ${rows.map((row) => this.renderRequest(row))}
-            </div>`
-          : html`<div class="empty">
-              No requests match the current filter.
-            </div>`}
-      ${this.hasMore
-        ? html`
-            <div style="text-align:center;margin-top:var(--sl-spacing-small);">
-              <sl-button
-                size="small"
-                ?loading=${this.loading}
-                @click=${() =>
-                  this.dispatchEvent(
-                    new CustomEvent('request-timeline-load-more', {
-                      bubbles: true,
-                      composed: true,
-                    })
-                  )}
+      ${
+        this.loading && !rows.length
+          ? html`<div class="empty"><sl-spinner></sl-spinner></div>`
+          : rows.length
+            ? html`<div class="stream">
+                ${rows.map((row) => this.renderRequest(row))}
+              </div>`
+            : html`<div class="empty">
+                No requests match the current filter.
+              </div>`
+      }
+      ${
+        this.hasMore
+          ? html`
+              <div
+                style="text-align:center;margin-top:var(--sl-spacing-small);"
               >
-                Load more requests
-              </sl-button>
-            </div>
-          `
-        : nothing}
+                <sl-button
+                  size="small"
+                  ?loading=${this.loading}
+                  @click=${() =>
+                    this.dispatchEvent(
+                      new CustomEvent('request-timeline-load-more', {
+                        bubbles: true,
+                        composed: true,
+                      })
+                    )}
+                >
+                  Load more requests
+                </sl-button>
+              </div>
+            `
+          : nothing
+      }
     `;
   }
 }

@@ -87,6 +87,62 @@ def test_account_gateway_usage_summary_endpoint(client, db_session, test_user):
     assert body["usage_by_session"][0]["session_reference"] == "session-123"
 
 
+def test_gateway_usage_by_session_includes_managed_agent_identity(
+    client, db_session, test_user
+):
+    """Usage-by-session rows should expose managed agent identity and titles."""
+    from preloop.models.crud import crud_managed_agent
+
+    runtime_session = crud_runtime_session.upsert_by_source(
+        db_session,
+        account_id=test_user.account_id,
+        session_source_type="claude_code",
+        session_source_id="researcher-principal",
+        session_reference="claude-session-researcher",
+        runtime_principal_type="claude_code",
+        runtime_principal_id="researcher-principal",
+        runtime_principal_name="Researcher Principal",
+        started_at=datetime.now(UTC),
+        last_activity_at=datetime.now(UTC),
+    )
+    runtime_session.title = "Satya Nadella Investment Data Verification"
+    agent = crud_managed_agent.upsert_from_runtime_session(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=runtime_session.id,
+        session_source_type="claude_code",
+        session_source_id="researcher-principal",
+        display_name="Researcher",
+        session_reference="claude-session-researcher",
+    )
+    db_session.commit()
+    crud_api_usage.log_gateway_request(
+        db_session,
+        endpoint="/openai/v1/responses",
+        method="POST",
+        status_code=200,
+        duration=0.1,
+        user_id=str(test_user.id),
+        account_id=str(test_user.account_id),
+        runtime_session_id=str(runtime_session.id),
+        model_alias="openai/gpt-5",
+        provider_name="openai",
+        prompt_tokens=12,
+        completion_tokens=8,
+        total_tokens=20,
+        estimated_cost=0.05,
+    )
+
+    response = client.get("/api/v1/account/gateway-usage/summary")
+
+    assert response.status_code == 200
+    row = response.json()["usage_by_session"][0]
+    assert row["runtime_session_id"] == str(runtime_session.id)
+    assert row["agent_id"] == str(agent.id)
+    assert row["agent_name"] == "Researcher"
+    assert row["title"] == "Satya Nadella Investment Data Verification"
+
+
 def test_runtime_session_summary_and_optimization_endpoints(
     client, db_session, test_user
 ):

@@ -163,6 +163,8 @@ def test_summary_columns_available_caches_per_bind(db_session) -> None:
     inspector.get_columns.return_value = [
         {"name": "summary"},
         {"name": "summary_updated_at"},
+        {"name": "title"},
+        {"name": "title_request_count"},
         {"name": "id"},
     ]
 

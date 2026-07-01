@@ -522,9 +522,11 @@ export class ApprovalsView extends AuthedElement {
             <div class="stat-card">
               <div class="stat-value warning">${this.stats.pending}</div>
               <div class="stat-label">Pending</div>
-              ${this.stats.pending > 0
-                ? html`<div class="stat-subtext">Awaiting review</div>`
-                : ''}
+              ${
+                this.stats.pending > 0
+                  ? html`<div class="stat-subtext">Awaiting review</div>`
+                  : ''
+              }
             </div>
             <div class="stat-card">
               <div class="stat-value success">${this.stats.approved}</div>
@@ -537,47 +539,53 @@ export class ApprovalsView extends AuthedElement {
             <div class="stat-card">
               <div class="stat-value neutral">${this.stats.expired}</div>
               <div class="stat-label">Timed Out</div>
-              ${this.stats.expired > 0
-                ? html`<div class="stat-subtext">No response in time</div>`
-                : ''}
+              ${
+                this.stats.expired > 0
+                  ? html`<div class="stat-subtext">No response in time</div>`
+                  : ''
+              }
             </div>
             <div class="stat-card">
               <div class="stat-value primary">
-                ${this.stats.avgResponseTimeMinutes > 0
-                  ? this.stats.avgResponseTimeMinutes < 60
-                    ? `${this.stats.avgResponseTimeMinutes}m`
-                    : `${Math.round(this.stats.avgResponseTimeMinutes / 60)}h`
-                  : '-'}
+                ${
+                  this.stats.avgResponseTimeMinutes > 0
+                    ? this.stats.avgResponseTimeMinutes < 60
+                      ? `${this.stats.avgResponseTimeMinutes}m`
+                      : `${Math.round(this.stats.avgResponseTimeMinutes / 60)}h`
+                    : '-'
+                }
               </div>
               <div class="stat-label">Avg Response</div>
             </div>
           </div>
 
           <!-- Approval Rate -->
-          ${this.stats.approved + this.stats.declined > 0
-            ? html`
-                <sl-card style="margin-bottom: var(--sl-spacing-large);">
-                  <div slot="header" class="chart-header">
-                    <sl-icon name="pie-chart"></sl-icon>
-                    Approval Rate
-                  </div>
-                  <div class="rate-labels">
-                    <span
-                      >Approved: ${this.stats.approved}
-                      (${Math.round(this.stats.approvalRate)}%)</span
-                    >
-                    <span
-                      >Declined: ${this.stats.declined}
-                      (${Math.round(100 - this.stats.approvalRate)}%)</span
-                    >
-                  </div>
-                  <sl-progress-bar
-                    value="${this.stats.approvalRate}"
-                    style="--indicator-color: var(--sl-color-success-600); --track-color: var(--sl-color-danger-200);"
-                  ></sl-progress-bar>
-                </sl-card>
-              `
-            : ''}
+          ${
+            this.stats.approved + this.stats.declined > 0
+              ? html`
+                  <sl-card style="margin-bottom: var(--sl-spacing-large);">
+                    <div slot="header" class="chart-header">
+                      <sl-icon name="pie-chart"></sl-icon>
+                      Approval Rate
+                    </div>
+                    <div class="rate-labels">
+                      <span
+                        >Approved: ${this.stats.approved}
+                        (${Math.round(this.stats.approvalRate)}%)</span
+                      >
+                      <span
+                        >Declined: ${this.stats.declined}
+                        (${Math.round(100 - this.stats.approvalRate)}%)</span
+                      >
+                    </div>
+                    <sl-progress-bar
+                      value="${this.stats.approvalRate}"
+                      style="--indicator-color: var(--sl-color-success-600); --track-color: var(--sl-color-danger-200);"
+                    ></sl-progress-bar>
+                  </sl-card>
+                `
+              : ''
+          }
 
           <!-- Filters -->
           <div class="filters-row">
@@ -624,132 +632,155 @@ export class ApprovalsView extends AuthedElement {
           </div>
 
           <!-- Approval Requests List -->
-          ${this.filteredRequests.length === 0
-            ? html`
-                <div class="empty-state">
-                  <sl-icon name="inbox"></sl-icon>
-                  <p>
-                    ${this.approvalRequests.length === 0
-                      ? 'No approval requests yet. Configure tools to require approval in the Tools section.'
-                      : 'No requests match your filters.'}
-                  </p>
-                  ${this.approvalRequests.length === 0
-                    ? html`<sl-button href="/console/tools">
-                        <sl-icon slot="prefix" name="gear"></sl-icon>
-                        Configure Tools
-                      </sl-button>`
-                    : ''}
-                </div>
-              `
-            : html`
-                <div class="approval-list">
-                  ${this.filteredRequests.map(
-                    (request) => html`
-                      <div class="approval-item ${request.status}">
-                        <div class="approval-info">
-                          <div class="approval-tool">
-                            <sl-icon name="tools"></sl-icon>
-                            <code>${request.tool_name}</code>
-                            <sl-tag
+          ${
+            this.filteredRequests.length === 0
+              ? html`
+                  <div class="empty-state">
+                    <sl-icon name="inbox"></sl-icon>
+                    <p>
+                      ${
+                        this.approvalRequests.length === 0
+                          ? 'No approval requests yet. Configure tools to require approval in the Tools section.'
+                          : 'No requests match your filters.'
+                      }
+                    </p>
+                    ${
+                      this.approvalRequests.length === 0
+                        ? html`<sl-button href="/console/tools">
+                            <sl-icon slot="prefix" name="gear"></sl-icon>
+                            Configure Tools
+                          </sl-button>`
+                        : ''
+                    }
+                  </div>
+                `
+              : html`
+                  <div class="approval-list">
+                    ${this.filteredRequests.map(
+                      (request) => html`
+                        <div class="approval-item ${request.status}">
+                          <div class="approval-info">
+                            <div class="approval-tool">
+                              <sl-icon name="tools"></sl-icon>
+                              <code>${request.tool_name}</code>
+                              <sl-tag
+                                size="small"
+                                variant=${this.getStatusVariant(request.status)}
+                              >
+                                <sl-icon
+                                  name=${this.getStatusIcon(request.status)}
+                                  style="margin-right: 4px;"
+                                ></sl-icon>
+                                ${
+                                  request.status === 'expired'
+                                    ? 'timed out'
+                                    : request.status
+                                }
+                              </sl-tag>
+                            </div>
+                            <div class="approval-meta">
+                              <sl-tooltip
+                                content=${this.formatFullDate(
+                                  request.requested_at
+                                )}
+                              >
+                                <span class="approval-meta-item">
+                                  <sl-icon name="clock"></sl-icon>
+                                  ${this.formatDate(request.requested_at)}
+                                </span>
+                              </sl-tooltip>
+                              ${
+                                request.execution_id
+                                  ? html`
+                                      <span class="approval-meta-item">
+                                        <sl-icon name="diagram-3"></sl-icon>
+                                        <a
+                                          href="/console/flows/executions/${request.execution_id}"
+                                          >Flow Execution</a
+                                        >
+                                      </span>
+                                    `
+                                  : ''
+                              }
+                              ${
+                                request.resolved_at
+                                  ? html`
+                                      <sl-tooltip
+                                        content="Resolved: ${this.formatFullDate(
+                                          request.resolved_at
+                                        )}"
+                                      >
+                                        <span class="approval-meta-item">
+                                          <sl-icon
+                                            name="check2-square"
+                                          ></sl-icon>
+                                          Resolved
+                                          ${this.formatDate(request.resolved_at)}
+                                        </span>
+                                      </sl-tooltip>
+                                    `
+                                  : ''
+                              }
+                              ${
+                                request.expires_at &&
+                                request.status === 'pending'
+                                  ? html`
+                                      <sl-tooltip
+                                        content="Expires: ${this.formatFullDate(
+                                          request.expires_at
+                                        )}"
+                                      >
+                                        <span
+                                          class="approval-meta-item"
+                                          style="color: var(--sl-color-warning-600);"
+                                        >
+                                          <sl-icon name="hourglass"></sl-icon>
+                                          Expires
+                                          ${this.formatDate(request.expires_at)}
+                                        </span>
+                                      </sl-tooltip>
+                                    `
+                                  : ''
+                              }
+                            </div>
+                            ${
+                              request.agent_reasoning
+                                ? html`
+                                    <div
+                                      style="font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-700); margin-top: var(--sl-spacing-2x-small); font-style: italic; max-width: 600px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                                    >
+                                      "${request.agent_reasoning.substring(
+                                        0,
+                                        100
+                                      )}${
+                                        request.agent_reasoning.length > 100
+                                          ? '...'
+                                          : ''
+                                      }"
+                                    </div>
+                                  `
+                                : ''
+                            }
+                          </div>
+                          <div class="approval-actions">
+                            <sl-button
                               size="small"
-                              variant=${this.getStatusVariant(request.status)}
+                              variant=${
+                                request.status === 'pending'
+                                  ? 'primary'
+                                  : 'default'
+                              }
+                              href="/console/approval/${request.id}"
                             >
-                              <sl-icon
-                                name=${this.getStatusIcon(request.status)}
-                                style="margin-right: 4px;"
-                              ></sl-icon>
-                              ${request.status === 'expired'
-                                ? 'timed out'
-                                : request.status}
-                            </sl-tag>
+                              ${request.status === 'pending' ? 'Review' : 'View'}
+                            </sl-button>
                           </div>
-                          <div class="approval-meta">
-                            <sl-tooltip
-                              content=${this.formatFullDate(
-                                request.requested_at
-                              )}
-                            >
-                              <span class="approval-meta-item">
-                                <sl-icon name="clock"></sl-icon>
-                                ${this.formatDate(request.requested_at)}
-                              </span>
-                            </sl-tooltip>
-                            ${request.execution_id
-                              ? html`
-                                  <span class="approval-meta-item">
-                                    <sl-icon name="diagram-3"></sl-icon>
-                                    <a
-                                      href="/console/flows/executions/${request.execution_id}"
-                                      >Flow Execution</a
-                                    >
-                                  </span>
-                                `
-                              : ''}
-                            ${request.resolved_at
-                              ? html`
-                                  <sl-tooltip
-                                    content="Resolved: ${this.formatFullDate(
-                                      request.resolved_at
-                                    )}"
-                                  >
-                                    <span class="approval-meta-item">
-                                      <sl-icon name="check2-square"></sl-icon>
-                                      Resolved
-                                      ${this.formatDate(request.resolved_at)}
-                                    </span>
-                                  </sl-tooltip>
-                                `
-                              : ''}
-                            ${request.expires_at && request.status === 'pending'
-                              ? html`
-                                  <sl-tooltip
-                                    content="Expires: ${this.formatFullDate(
-                                      request.expires_at
-                                    )}"
-                                  >
-                                    <span
-                                      class="approval-meta-item"
-                                      style="color: var(--sl-color-warning-600);"
-                                    >
-                                      <sl-icon name="hourglass"></sl-icon>
-                                      Expires
-                                      ${this.formatDate(request.expires_at)}
-                                    </span>
-                                  </sl-tooltip>
-                                `
-                              : ''}
-                          </div>
-                          ${request.agent_reasoning
-                            ? html`
-                                <div
-                                  style="font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-700); margin-top: var(--sl-spacing-2x-small); font-style: italic; max-width: 600px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-                                >
-                                  "${request.agent_reasoning.substring(
-                                    0,
-                                    100
-                                  )}${request.agent_reasoning.length > 100
-                                    ? '...'
-                                    : ''}"
-                                </div>
-                              `
-                            : ''}
                         </div>
-                        <div class="approval-actions">
-                          <sl-button
-                            size="small"
-                            variant=${request.status === 'pending'
-                              ? 'primary'
-                              : 'default'}
-                            href="/console/approval/${request.id}"
-                          >
-                            ${request.status === 'pending' ? 'Review' : 'View'}
-                          </sl-button>
-                        </div>
-                      </div>
-                    `
-                  )}
-                </div>
-              `}
+                      `
+                    )}
+                  </div>
+                `
+          }
         </div>
       </div>
     `;

@@ -69,9 +69,11 @@ export class ProfileView extends LitElement {
                 <sl-button variant="primary" type="submit"
                   >Update Profile</sl-button
                 >
-                ${this.updateProfileMessage
-                  ? html`<p>${this.updateProfileMessage}</p>`
-                  : ''}
+                ${
+                  this.updateProfileMessage
+                    ? html`<p>${this.updateProfileMessage}</p>`
+                    : ''
+                }
               </form>
             </div>
           </div>

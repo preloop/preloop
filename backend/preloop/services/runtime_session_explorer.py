@@ -691,7 +691,10 @@ class RuntimeSessionExplorerService:
                 },
             ],
             "temperature": 0.1,
-            "max_tokens": 500,
+            # Budget for a reasoning model's hidden reasoning pass plus the JSON
+            # summary; a tight cap is fully consumed by reasoning and returns
+            # empty content (no summary) on reasoning-model defaults.
+            "max_tokens": 2048,
         }
         if model.api_key:
             kwargs["api_key"] = model.api_key

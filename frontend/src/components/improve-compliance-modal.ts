@@ -167,61 +167,65 @@ export class ImproveComplianceModal extends LitElement {
         .open=${this.open}
         @sl-hide=${this.handleClose}
       >
-        ${this.issue
-          ? html`
-              <div class="comparison-container">
-                <div class="comparison-panel">
-                  <h3>Original Issue</h3>
-                  <single-issue-detail-view
-                    .issue=${this.issue}
-                  ></single-issue-detail-view>
+        ${
+          this.issue
+            ? html`
+                <div class="comparison-container">
+                  <div class="comparison-panel">
+                    <h3>Original Issue</h3>
+                    <single-issue-detail-view
+                      .issue=${this.issue}
+                    ></single-issue-detail-view>
+                  </div>
+                  <div class="comparison-panel">
+                    <h3>Suggested Improvement</h3>
+                    ${
+                      this._isLoadingSuggestion
+                        ? html`<div class="loading-suggestion">
+                            <sl-spinner></sl-spinner>
+                            <span>Generating suggestion...</span>
+                          </div>`
+                        : this._suggestionError
+                          ? html`<sl-alert variant="danger" open
+                              ><sl-icon
+                                slot="icon"
+                                name="exclamation-octagon"
+                              ></sl-icon
+                              >${this._suggestionError}</sl-alert
+                            >`
+                          : html`
+                              <sl-input
+                                label="Title"
+                                .value=${this._suggestedTitle}
+                                @sl-input=${(e: Event) =>
+                                  (this._suggestedTitle = (
+                                    e.target as HTMLInputElement
+                                  ).value)}
+                              ></sl-input>
+                              <br />
+                              <sl-textarea
+                                label="Description"
+                                .value=${this._suggestedDescription}
+                                @sl-input=${(e: Event) =>
+                                  (this._suggestedDescription = (
+                                    e.target as HTMLInputElement
+                                  ).value)}
+                                rows="10"
+                              ></sl-textarea>
+                              <br />
+                              <div>
+                                <b class="compliance-title">Changes</b>
+                                <div class="issue-description">
+                                  ${this._suggestedChanges}
+                                </div>
+                              </div>
+                            `
+                    }
+                  </div>
                 </div>
-                <div class="comparison-panel">
-                  <h3>Suggested Improvement</h3>
-                  ${this._isLoadingSuggestion
-                    ? html`<div class="loading-suggestion">
-                        <sl-spinner></sl-spinner>
-                        <span>Generating suggestion...</span>
-                      </div>`
-                    : this._suggestionError
-                      ? html`<sl-alert variant="danger" open
-                          ><sl-icon
-                            slot="icon"
-                            name="exclamation-octagon"
-                          ></sl-icon
-                          >${this._suggestionError}</sl-alert
-                        >`
-                      : html`
-                          <sl-input
-                            label="Title"
-                            .value=${this._suggestedTitle}
-                            @sl-input=${(e: Event) =>
-                              (this._suggestedTitle = (
-                                e.target as HTMLInputElement
-                              ).value)}
-                          ></sl-input>
-                          <br />
-                          <sl-textarea
-                            label="Description"
-                            .value=${this._suggestedDescription}
-                            @sl-input=${(e: Event) =>
-                              (this._suggestedDescription = (
-                                e.target as HTMLInputElement
-                              ).value)}
-                            rows="10"
-                          ></sl-textarea>
-                          <br />
-                          <div>
-                            <b class="compliance-title">Changes</b>
-                            <div class="issue-description">
-                              ${this._suggestedChanges}
-                            </div>
-                          </div>
-                        `}
-                </div>
-              </div>
-            `
-          : ''}
+              `
+            : ''
+        }
         <sl-button slot="footer" @click=${this.handleClose}>Cancel</sl-button>
         <sl-button
           slot="footer"

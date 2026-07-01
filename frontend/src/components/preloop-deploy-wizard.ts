@@ -272,11 +272,8 @@ export class PreloopDeployWizard extends LitElement {
 
   @state()
   private deploySubStep:
-    | 'type'
-    | 'agent-host'
-    | 'ssh-config'
-    | 'fresh-vm-premium'
-    | 'flow-config' = 'type';
+    'type' | 'agent-host' | 'ssh-config' | 'fresh-vm-premium' | 'flow-config' =
+    'type';
 
   // Custom-agent onboarding substeps:
   //  - 'name'   : collect display_name (+ optional description and tags)
@@ -772,15 +769,17 @@ agent.invoke(
   render() {
     return html`
       <div style="width: 100%;">
-        ${this.onboardingPath === 'choose'
-          ? this.renderChoosePathState()
-          : this.onboardingPath === 'govern'
-            ? this.renderGovernPathState()
-            : this.onboardingPath === 'cli'
-              ? this.renderCliPathState()
-              : this.onboardingPath === 'custom'
-                ? this.renderCustomPathState()
-                : this.renderDeployPathState()}
+        ${
+          this.onboardingPath === 'choose'
+            ? this.renderChoosePathState()
+            : this.onboardingPath === 'govern'
+              ? this.renderGovernPathState()
+              : this.onboardingPath === 'cli'
+                ? this.renderCliPathState()
+                : this.onboardingPath === 'custom'
+                  ? this.renderCustomPathState()
+                  : this.renderDeployPathState()
+        }
       </div>
     `;
   }
@@ -853,23 +852,27 @@ agent.invoke(
     const hideGovernBack = this.hideBack || this.initialPath === 'govern';
     return html`
       <div class="wizard-shell">
-        ${hideGovernBack
-          ? nothing
-          : html`
-              <sl-button
-                class="wizard-back"
-                variant="text"
-                size="small"
-                @click=${this.handleBack}
-              >
-                <sl-icon name="arrow-left" slot="prefix"></sl-icon> Back
-              </sl-button>
-            `}
+        ${
+          hideGovernBack
+            ? nothing
+            : html`
+                <sl-button
+                  class="wizard-back"
+                  variant="text"
+                  size="small"
+                  @click=${this.handleBack}
+                >
+                  <sl-icon name="arrow-left" slot="prefix"></sl-icon> Back
+                </sl-button>
+              `
+        }
 
         <div class="wizard-header">
-          ${this.hideStepTitle
-            ? nothing
-            : html`<h3 class="wizard-title">Govern Existing Agents</h3>`}
+          ${
+            this.hideStepTitle
+              ? nothing
+              : html`<h3 class="wizard-title">Govern Existing Agents</h3>`
+          }
           <p class="wizard-copy">
             Bring agents you already run under Preloop's control plane. Let the
             CLI autodiscover local agents, or onboard a custom agent the CLI
@@ -939,27 +942,31 @@ agent.invoke(
 
     return html`
       <div class="wizard-shell">
-        ${this.hideBack
-          ? nothing
-          : html`
-              <sl-button
-                class="wizard-back"
-                variant="text"
-                size="small"
-                @click=${this.handleBack}
-              >
-                <sl-icon name="arrow-left" slot="prefix"></sl-icon> Back
-              </sl-button>
-            `}
-
-        <div class="wizard-header">
-          ${this.hideStepTitle
+        ${
+          this.hideBack
             ? nothing
             : html`
-                <h3 class="wizard-title">
-                  Onboard Existing Agent via Preloop CLI
-                </h3>
-              `}
+                <sl-button
+                  class="wizard-back"
+                  variant="text"
+                  size="small"
+                  @click=${this.handleBack}
+                >
+                  <sl-icon name="arrow-left" slot="prefix"></sl-icon> Back
+                </sl-button>
+              `
+        }
+
+        <div class="wizard-header">
+          ${
+            this.hideStepTitle
+              ? nothing
+              : html`
+                  <h3 class="wizard-title">
+                    Onboard Existing Agent via Preloop CLI
+                  </h3>
+                `
+          }
           <p class="wizard-copy">
             Run these commands from the machine where your agents are installed.
           </p>
@@ -997,23 +1004,27 @@ agent.invoke(
   private renderCustomPathState() {
     return html`
       <div class="wizard-shell">
-        ${this.hideBack
-          ? nothing
-          : html`
-              <sl-button
-                class="wizard-back"
-                variant="text"
-                size="small"
-                @click=${this.handleBack}
-              >
-                <sl-icon name="arrow-left" slot="prefix"></sl-icon> Back
-              </sl-button>
-            `}
-        ${this.customSubStep === 'name'
-          ? this.renderCustomNameState()
-          : this.customSubStep === 'models'
-            ? this.renderCustomModelState()
-            : this.renderCustomResultState()}
+        ${
+          this.hideBack
+            ? nothing
+            : html`
+                <sl-button
+                  class="wizard-back"
+                  variant="text"
+                  size="small"
+                  @click=${this.handleBack}
+                >
+                  <sl-icon name="arrow-left" slot="prefix"></sl-icon> Back
+                </sl-button>
+              `
+        }
+        ${
+          this.customSubStep === 'name'
+            ? this.renderCustomNameState()
+            : this.customSubStep === 'models'
+              ? this.renderCustomModelState()
+              : this.renderCustomResultState()
+        }
       </div>
     `;
   }
@@ -1021,9 +1032,11 @@ agent.invoke(
   private renderCustomNameState() {
     return html`
       <div class="wizard-header">
-        ${this.hideStepTitle
-          ? nothing
-          : html`<h3 class="wizard-title">Connect a custom agent</h3>`}
+        ${
+          this.hideStepTitle
+            ? nothing
+            : html`<h3 class="wizard-title">Connect a custom agent</h3>`
+        }
         <p class="wizard-copy">
           Register an existing agent (LangGraph, custom SDK) the CLI can't
           discover. We'll mint a gateway credential so it can route model
@@ -1032,14 +1045,16 @@ agent.invoke(
       </div>
 
       <div class="wizard-panel custom-form">
-        ${this.customError
-          ? html`
-              <sl-alert variant="danger" open class="custom-error">
-                <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
-                ${this.customError}
-              </sl-alert>
-            `
-          : nothing}
+        ${
+          this.customError
+            ? html`
+                <sl-alert variant="danger" open class="custom-error">
+                  <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+                  ${this.customError}
+                </sl-alert>
+              `
+            : nothing
+        }
 
         <sl-input
           label="Agent name"
@@ -1105,9 +1120,11 @@ agent.invoke(
 
     return html`
       <div class="wizard-header">
-        ${this.hideStepTitle
-          ? nothing
-          : html`<h3 class="wizard-title">Choose allowed models</h3>`}
+        ${
+          this.hideStepTitle
+            ? nothing
+            : html`<h3 class="wizard-title">Choose allowed models</h3>`
+        }
         <p class="wizard-copy">
           Pick which models this agent may use through the Preloop gateway. The
           first model becomes the default the example snippet routes to.
@@ -1115,52 +1132,56 @@ agent.invoke(
       </div>
 
       <div class="wizard-panel custom-form">
-        ${this.customError
-          ? html`
-              <sl-alert variant="danger" open class="custom-error">
-                <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
-                ${this.customError}
-              </sl-alert>
-            `
-          : nothing}
-        ${hasModels
-          ? html`
-              <sl-select
-                label="Allowed models"
-                name="allowed_models"
-                multiple
-                clearable
-                placeholder="Select one or more models"
-                ?disabled=${this.customBusy}
-                .value=${this.customSelectedModelIds}
-                @sl-change=${(e: Event) => {
-                  const value = (
-                    e.target as HTMLSelectElement & {
-                      value: string[] | string;
-                    }
-                  ).value;
-                  this.customSelectedModelIds = Array.isArray(value)
-                    ? value
-                    : [value].filter(Boolean);
-                  this.customError = '';
-                }}
-              >
-                ${enabledModels.map(
-                  (model) => html`
-                    <sl-option value=${model.id}>
-                      ${model.name} (${this.gatewayAliasForModel(model)})
-                    </sl-option>
-                  `
-                )}
-              </sl-select>
-            `
-          : html`
-              <sl-alert variant="primary" open class="custom-error">
-                <sl-icon slot="icon" name="info-circle"></sl-icon>
-                No gateway-enabled models are configured for this account. You
-                can register the agent now and set its allowed model later.
-              </sl-alert>
-            `}
+        ${
+          this.customError
+            ? html`
+                <sl-alert variant="danger" open class="custom-error">
+                  <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+                  ${this.customError}
+                </sl-alert>
+              `
+            : nothing
+        }
+        ${
+          hasModels
+            ? html`
+                <sl-select
+                  label="Allowed models"
+                  name="allowed_models"
+                  multiple
+                  clearable
+                  placeholder="Select one or more models"
+                  ?disabled=${this.customBusy}
+                  .value=${this.customSelectedModelIds}
+                  @sl-change=${(e: Event) => {
+                    const value = (
+                      e.target as HTMLSelectElement & {
+                        value: string[] | string;
+                      }
+                    ).value;
+                    this.customSelectedModelIds = Array.isArray(value)
+                      ? value
+                      : [value].filter(Boolean);
+                    this.customError = '';
+                  }}
+                >
+                  ${enabledModels.map(
+                    (model) => html`
+                      <sl-option value=${model.id}>
+                        ${model.name} (${this.gatewayAliasForModel(model)})
+                      </sl-option>
+                    `
+                  )}
+                </sl-select>
+              `
+            : html`
+                <sl-alert variant="primary" open class="custom-error">
+                  <sl-icon slot="icon" name="info-circle"></sl-icon>
+                  No gateway-enabled models are configured for this account. You
+                  can register the agent now and set its allowed model later.
+                </sl-alert>
+              `
+        }
 
         <sl-button
           variant="primary"
@@ -1181,9 +1202,11 @@ agent.invoke(
 
     return html`
       <div class="wizard-header">
-        ${this.hideStepTitle
-          ? nothing
-          : html`<h3 class="wizard-title">Your agent is connected</h3>`}
+        ${
+          this.hideStepTitle
+            ? nothing
+            : html`<h3 class="wizard-title">Your agent is connected</h3>`
+        }
         <p class="wizard-copy">
           Point your agent at the Preloop gateway using the base URL and
           credential below, then route model traffic through it.
@@ -1226,9 +1249,9 @@ agent.invoke(
         ${this.renderCustomConnStatus()}
 
         <sl-button
-          variant=${this.customConnState === 'connected'
-            ? 'success'
-            : 'primary'}
+          variant=${
+            this.customConnState === 'connected' ? 'success' : 'primary'
+          }
           @click=${() => {
             this.cancelFirstDataPolling();
             this.customCredentialToken = null;
@@ -1293,101 +1316,107 @@ agent.invoke(
           <sl-icon name="arrow-left" slot="prefix"></sl-icon> Back
         </sl-button>
 
-        ${this.deploySubStep === 'type'
-          ? html`
-              <div class="wizard-header">
-                <h3 class="wizard-title">Deploy New Agent or Flow</h3>
-                <p class="wizard-copy">
-                  Select which type of deployment fits your automation scenario.
-                </p>
-              </div>
+        ${
+          this.deploySubStep === 'type'
+            ? html`
+                <div class="wizard-header">
+                  <h3 class="wizard-title">Deploy New Agent or Flow</h3>
+                  <p class="wizard-copy">
+                    Select which type of deployment fits your automation
+                    scenario.
+                  </p>
+                </div>
 
-              <div class="wizard-card-grid">
-                <sl-button
-                  class="wizard-option-button"
-                  variant="default"
-                  @click=${() => {
-                    this.deploySubStep = 'agent-host';
-                    this.requestUpdate();
-                  }}
-                >
-                  <div class="wizard-option-body">
-                    <span class="wizard-option-icon">
-                      <sl-icon name="server"></sl-icon>
-                    </span>
-                    <span class="wizard-option-copy">
-                      <span class="wizard-option-title">
-                        Deploy Persistent Agent
+                <div class="wizard-card-grid">
+                  <sl-button
+                    class="wizard-option-button"
+                    variant="default"
+                    @click=${() => {
+                      this.deploySubStep = 'agent-host';
+                      this.requestUpdate();
+                    }}
+                  >
+                    <div class="wizard-option-body">
+                      <span class="wizard-option-icon">
+                        <sl-icon name="server"></sl-icon>
                       </span>
-                      <span class="wizard-option-description">
-                        Deploy a dedicated, persistent long-running agent node
-                        that stays active and ready to perform autonomous tasks.
+                      <span class="wizard-option-copy">
+                        <span class="wizard-option-title">
+                          Deploy Persistent Agent
+                        </span>
+                        <span class="wizard-option-description">
+                          Deploy a dedicated, persistent long-running agent node
+                          that stays active and ready to perform autonomous
+                          tasks.
+                        </span>
                       </span>
-                    </span>
-                  </div>
-                </sl-button>
+                    </div>
+                  </sl-button>
 
-                <sl-button
-                  class="wizard-option-button"
-                  variant="default"
-                  @click=${() => {
-                    this.deploySubStep = 'flow-config';
-                    this.requestUpdate();
-                  }}
-                >
-                  <div class="wizard-option-body">
-                    <span class="wizard-option-icon">
-                      <sl-icon name="diagram-3"></sl-icon>
-                    </span>
-                    <span class="wizard-option-copy">
-                      <span class="wizard-option-title">
-                        Configure Event-Driven Flow
+                  <sl-button
+                    class="wizard-option-button"
+                    variant="default"
+                    @click=${() => {
+                      this.deploySubStep = 'flow-config';
+                      this.requestUpdate();
+                    }}
+                  >
+                    <div class="wizard-option-body">
+                      <span class="wizard-option-icon">
+                        <sl-icon name="diagram-3"></sl-icon>
                       </span>
-                      <span class="wizard-option-description">
-                        Configure a short-lived agent that is provisioned on
-                        demand and decommissioned when execution completes.
+                      <span class="wizard-option-copy">
+                        <span class="wizard-option-title">
+                          Configure Event-Driven Flow
+                        </span>
+                        <span class="wizard-option-description">
+                          Configure a short-lived agent that is provisioned on
+                          demand and decommissioned when execution completes.
+                        </span>
                       </span>
-                    </span>
-                  </div>
-                </sl-button>
-              </div>
-            `
-          : nothing}
-        ${this.deploySubStep === 'flow-config'
-          ? html`
-              <div class="wizard-header">
-                <h3 class="wizard-title">
-                  Configure Event-Driven Agentic Flow
-                </h3>
-              </div>
-              <div class="wizard-panel">
-                <preloop-flow-form
-                  @flow-submit=${async (e: CustomEvent) => {
-                    const payload = e.detail.flow;
-                    try {
-                      const newFlow = await createFlow(payload);
-                      this.dispatchEvent(
-                        new CustomEvent('deploy-flow-success', {
-                          bubbles: true,
-                          composed: true,
-                          detail: { flow: newFlow },
-                        })
-                      );
-                    } catch (error: any) {
-                      const form = e.target as HTMLElement & {
-                        formError?: string;
-                      };
-                      form.formError =
-                        error?.message || 'Failed to create flow.';
-                    }
-                  }}
-                  @flow-cancel=${() => {
-                    this.deploySubStep = 'type';
-                  }}
-                ></preloop-flow-form>
-              </div>
-            `
-          : nothing}
+                    </div>
+                  </sl-button>
+                </div>
+              `
+            : nothing
+        }
+        ${
+          this.deploySubStep === 'flow-config'
+            ? html`
+                <div class="wizard-header">
+                  <h3 class="wizard-title">
+                    Configure Event-Driven Agentic Flow
+                  </h3>
+                </div>
+                <div class="wizard-panel">
+                  <preloop-flow-form
+                    @flow-submit=${async (e: CustomEvent) => {
+                      const payload = e.detail.flow;
+                      try {
+                        const newFlow = await createFlow(payload);
+                        this.dispatchEvent(
+                          new CustomEvent('deploy-flow-success', {
+                            bubbles: true,
+                            composed: true,
+                            detail: { flow: newFlow },
+                          })
+                        );
+                      } catch (error: any) {
+                        const form = e.target as HTMLElement & {
+                          formError?: string;
+                        };
+                        form.formError =
+                          error?.message || 'Failed to create flow.';
+                      }
+                    }}
+                    @flow-cancel=${() => {
+                      this.deploySubStep = 'type';
+                    }}
+                  ></preloop-flow-form>
+                </div>
+              `
+            : nothing
+        }
       </div>
     `;
   }

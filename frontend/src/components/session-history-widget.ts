@@ -318,9 +318,11 @@ export class SessionHistoryWidget extends LitElement {
     return html`
       <preloop-gateway-event
         .event=${event}
-        .expanded=${this.activeSessionId === sessionId &&
-        (this.loadedEventDetails[event.id] !== undefined ||
-          this.loadingEventDetails.has(String(event.id)))}
+        .expanded=${
+          this.activeSessionId === sessionId &&
+          (this.loadedEventDetails[event.id] !== undefined ||
+            this.loadingEventDetails.has(String(event.id)))
+        }
         @gateway-event-expand=${(e: CustomEvent) => {
           if (e.detail.expanded) {
             this._handleEventShow(sessionId, String(event.id));
@@ -355,9 +357,9 @@ export class SessionHistoryWidget extends LitElement {
             (s) => s.id,
             (session) => html`
               <div
-                class="session-card ${this.activeSessionId === session.id
-                  ? 'active'
-                  : ''}"
+                class="session-card ${
+                  this.activeSessionId === session.id ? 'active' : ''
+                }"
                 @click=${() => this._selectSession(session.id)}
               >
                 <div class="session-title">
@@ -380,62 +382,72 @@ export class SessionHistoryWidget extends LitElement {
 
         <!-- Events Right Pane -->
         <div class="events-col">
-          ${!this.activeSessionId
-            ? html`
-                <div class="empty-state">
-                  Select a session to view its interactions
-                </div>
-              `
-            : this.loadingSessions.has(this.activeSessionId)
+          ${
+            !this.activeSessionId
               ? html`
-                  <div class="loading-state">
-                    <sl-spinner></sl-spinner> Loading interaction timeline...
+                  <div class="empty-state">
+                    Select a session to view its interactions
                   </div>
                 `
-              : this.errorSessions[this.activeSessionId]
+              : this.loadingSessions.has(this.activeSessionId)
                 ? html`
-                    <div
-                      class="empty-state"
-                      style="color: var(--sl-color-danger-600)"
-                    >
-                      <sl-icon
-                        name="exclamation-triangle"
-                        style="font-size: 2rem;"
-                      ></sl-icon>
-                      ${this.errorSessions[this.activeSessionId]}
+                    <div class="loading-state">
+                      <sl-spinner></sl-spinner> Loading interaction timeline...
                     </div>
                   `
-                : this.loadedEvents[this.activeSessionId]
+                : this.errorSessions[this.activeSessionId]
                   ? html`
                       <div
-                        style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--sl-spacing-medium);"
+                        class="empty-state"
+                        style="color: var(--sl-color-danger-600)"
                       >
-                        <div style="font-weight: 600;">
-                          Interactions Timeline
-                          (${this.loadedEvents[this.activeSessionId].length})
-                        </div>
-                        <sl-button
-                          size="small"
-                          variant="default"
-                          href="/console/runtime-sessions?sessionId=${encodeURIComponent(
-                            this.activeSessionId
-                          )}"
-                        >
-                          View full session
-                        </sl-button>
-                      </div>
-                      <div class="event-list">
-                        ${this.loadedEvents[this.activeSessionId].length > 0
-                          ? this.loadedEvents[this.activeSessionId].map(
-                              (event) =>
-                                this._renderEvent(this.activeSessionId!, event)
-                            )
-                          : html`<div class="empty-state" style="height: auto;">
-                              No interactions captured.
-                            </div>`}
+                        <sl-icon
+                          name="exclamation-triangle"
+                          style="font-size: 2rem;"
+                        ></sl-icon>
+                        ${this.errorSessions[this.activeSessionId]}
                       </div>
                     `
-                  : null}
+                  : this.loadedEvents[this.activeSessionId]
+                    ? html`
+                        <div
+                          style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--sl-spacing-medium);"
+                        >
+                          <div style="font-weight: 600;">
+                            Interactions Timeline
+                            (${this.loadedEvents[this.activeSessionId].length})
+                          </div>
+                          <sl-button
+                            size="small"
+                            variant="default"
+                            href="/console/runtime-sessions?sessionId=${encodeURIComponent(
+                              this.activeSessionId
+                            )}"
+                          >
+                            View full session
+                          </sl-button>
+                        </div>
+                        <div class="event-list">
+                          ${
+                            this.loadedEvents[this.activeSessionId].length > 0
+                              ? this.loadedEvents[this.activeSessionId].map(
+                                  (event) =>
+                                    this._renderEvent(
+                                      this.activeSessionId!,
+                                      event
+                                    )
+                                )
+                              : html`<div
+                                  class="empty-state"
+                                  style="height: auto;"
+                                >
+                                  No interactions captured.
+                                </div>`
+                          }
+                        </div>
+                      `
+                    : null
+          }
         </div>
       </div>
     `;

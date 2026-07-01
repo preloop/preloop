@@ -2,11 +2,13 @@ import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
+import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/tab/tab.js';
 import '@shoelace-style/shoelace/dist/components/tab-group/tab-group.js';
 import '@shoelace-style/shoelace/dist/components/tab-panel/tab-panel.js';
+import './tool-output-filter-dialog';
 import type {
   FlowGatewayEvent,
   RuntimeSessionActivityItem,
@@ -58,6 +60,16 @@ export class SessionOptimizationPanel extends LitElement {
 
   @state()
   private pendingApply: SessionOptimizationSuggestion | null = null;
+
+  // Per-tool keep/drop selection for the rich scope_tools dialog. Keyed by
+  // tool name; ``true`` means the tool is checked (will be disabled). Seeded
+  // all-checked when the dialog opens.
+  @state()
+  private scopeToolSelection: Record<string, boolean> = {};
+
+  // The active manage_output_filter suggestion whose dialog is open, or null.
+  @state()
+  private outputFilterSuggestion: SessionOptimizationSuggestion | null = null;
 
   static styles = css`
     :host {
@@ -238,6 +250,29 @@ export class SessionOptimizationPanel extends LitElement {
       margin-top: var(--sl-spacing-small);
       padding: var(--sl-spacing-small);
     }
+
+    .tool-checklist {
+      display: flex;
+      flex-direction: column;
+      gap: var(--sl-spacing-x-small);
+      margin-top: var(--sl-spacing-small);
+      max-height: 320px;
+      overflow-y: auto;
+    }
+
+    .governance-link {
+      font-size: var(--sl-font-size-small);
+      margin-top: var(--sl-spacing-medium);
+    }
+
+    .governance-link a {
+      color: var(--sl-color-primary-700);
+      text-decoration: none;
+    }
+
+    .governance-link a:hover {
+      text-decoration: underline;
+    }
   `;
 
   private getConfidenceVariant(confidence: string) {
@@ -271,21 +306,109 @@ export class SessionOptimizationPanel extends LitElement {
     return type === 'scope_tools' || type === 'set_budget';
   }
 
+  private getScopeToolNames(
+    suggestion: SessionOptimizationSuggestion
+  ): string[] {
+    const params = suggestion.action?.params || {};
+    return Array.isArray(params.tool_names)
+      ? (params.tool_names as unknown[]).filter(
+          (name): name is string => typeof name === 'string'
+        )
+      : [];
+  }
+
+  private getCheckedScopeTools(
+    suggestion: SessionOptimizationSuggestion
+  ): string[] {
+    return this.getScopeToolNames(suggestion).filter(
+      (name) => this.scopeToolSelection[name]
+    );
+  }
+
+  // Open the rich scope_tools dialog, seeding every advertised tool as checked
+  // (the default is to disable all unused tools).
+  private openScopeToolsDialog(
+    suggestion: SessionOptimizationSuggestion
+  ): void {
+    const selection: Record<string, boolean> = {};
+    for (const name of this.getScopeToolNames(suggestion)) {
+      selection[name] = true;
+    }
+    this.scopeToolSelection = selection;
+    this.pendingApply = suggestion;
+  }
+
+  private toggleScopeTool(name: string, checked: boolean): void {
+    this.scopeToolSelection = { ...this.scopeToolSelection, [name]: checked };
+  }
+
   private confirmApply(): void {
     const suggestion = this.pendingApply;
     if (!suggestion?.action) return;
+    // For scope_tools, narrow the action's tool_names to the user's checked
+    // subset so only the tools they kept selected get disabled. Other actions
+    // (set_budget) are applied verbatim.
+    let action = suggestion.action;
+    if (action.type === 'scope_tools') {
+      const checked = this.getCheckedScopeTools(suggestion);
+      action = {
+        ...action,
+        params: { ...action.params, tool_names: checked },
+      };
+    }
     this.dispatchEvent(
       new CustomEvent('session-optimization-apply', {
         detail: {
           suggestionId: suggestion.id,
           suggestionTitle: suggestion.title,
-          action: suggestion.action,
+          action,
         },
         bubbles: true,
         composed: true,
       })
     );
     this.pendingApply = null;
+  }
+
+  // Dispatch an inspect-events request the parent (session-replay-panel) listens
+  // for to jump the transcript to the relevant requests.
+  private emitInspectEvents(suggestion: SessionOptimizationSuggestion): void {
+    const params = suggestion.action?.params || {};
+    const fromParams = Array.isArray(params.event_ids)
+      ? (params.event_ids as unknown[]).filter(
+          (id): id is string => typeof id === 'string'
+        )
+      : null;
+    const eventIds = fromParams ?? suggestion.evidenceEventIds ?? [];
+    let mode = 'evidence';
+    if (suggestion.id === 'stabilize-prefix') {
+      mode = 'cache-breaking';
+    } else if (
+      suggestion.id.includes('failed') ||
+      suggestion.id.includes('error')
+    ) {
+      mode = 'failed';
+    }
+    this.dispatchEvent(
+      new CustomEvent('optimization-inspect-events', {
+        detail: { eventIds, mode },
+        bubbles: true,
+        composed: true,
+      })
+    );
+  }
+
+  private getAgentDetailHref(
+    suggestion: SessionOptimizationSuggestion
+  ): string | null {
+    const params = suggestion.action?.params || {};
+    const subjectType =
+      typeof params.subject_type === 'string' ? params.subject_type : null;
+    const subjectId =
+      typeof params.subject_id === 'string' ? params.subject_id : null;
+    // Only managed agents have a Tools & Governance view we can deep-link to.
+    if (subjectType !== 'managed_agent' || !subjectId) return null;
+    return `/console/agents/${encodeURIComponent(subjectId)}?tab=tools`;
   }
 
   private describeAction(
@@ -318,9 +441,84 @@ export class SessionOptimizationPanel extends LitElement {
     return '';
   }
 
+  private renderScopeToolsDialog(suggestion: SessionOptimizationSuggestion) {
+    const params = suggestion.action?.params || {};
+    const subjectName =
+      typeof params.subject_name === 'string' ? params.subject_name : 'agent';
+    const toolNames = this.getScopeToolNames(suggestion);
+    const checkedCount = this.getCheckedScopeTools(suggestion).length;
+    const governanceHref = this.getAgentDetailHref(suggestion);
+    return html`
+      <sl-dialog
+        label="Scope down advertised tools"
+        open
+        @sl-after-hide=${() => {
+          this.pendingApply = null;
+        }}
+      >
+        <div class="title">${suggestion.title}</div>
+        <div class="description">
+          Uncheck any tool you want to keep advertised to ${subjectName}. The
+          rest are disabled for this agent and stop costing schema tokens on
+          every request.
+        </div>
+        <div class="tool-checklist">
+          ${toolNames.map(
+            (name) => html`
+              <sl-checkbox
+                ?checked=${Boolean(this.scopeToolSelection[name])}
+                @sl-change=${(e: Event) =>
+                  this.toggleScopeTool(
+                    name,
+                    (e.target as HTMLInputElement).checked
+                  )}
+              >
+                ${name}
+              </sl-checkbox>
+            `
+          )}
+        </div>
+        ${
+          governanceHref
+            ? html`
+                <div class="governance-link">
+                  <a href=${governanceHref}>
+                    Open ${subjectName}'s Tools &amp; Governance view
+                  </a>
+                </div>
+              `
+            : nothing
+        }
+        <sl-button
+          slot="footer"
+          size="small"
+          @click=${() => {
+            this.pendingApply = null;
+          }}
+        >
+          Cancel
+        </sl-button>
+        <sl-button
+          slot="footer"
+          size="small"
+          variant="primary"
+          ?disabled=${checkedCount === 0}
+          @click=${this.confirmApply}
+        >
+          <sl-icon slot="prefix" name="lightning-charge"></sl-icon>
+          Disable ${checkedCount} unused tool${checkedCount === 1 ? '' : 's'}
+          for this agent
+        </sl-button>
+      </sl-dialog>
+    `;
+  }
+
   private renderApplyDialog() {
     const suggestion = this.pendingApply;
     if (!suggestion?.action) return nothing;
+    if (suggestion.action.type === 'scope_tools') {
+      return this.renderScopeToolsDialog(suggestion);
+    }
     return html`
       <sl-dialog
         label="Apply optimization"
@@ -358,10 +556,44 @@ export class SessionOptimizationPanel extends LitElement {
     `;
   }
 
+  private renderOutputFilterDialog() {
+    const suggestion = this.outputFilterSuggestion;
+    if (!suggestion?.action) return nothing;
+    const params = suggestion.action.params || {};
+    const serverName =
+      typeof params.server_name === 'string' ? params.server_name : null;
+    const toolName =
+      typeof params.tool_name === 'string' ? params.tool_name : '';
+    const suggestedFields = Array.isArray(params.suggested_fields)
+      ? (params.suggested_fields as unknown[]).filter(
+          (field): field is string => typeof field === 'string'
+        )
+      : [];
+    const managedAgentId =
+      typeof params.managed_agent_id === 'string'
+        ? params.managed_agent_id
+        : null;
+    return html`
+      <tool-output-filter-dialog
+        open
+        .serverName=${serverName}
+        .toolName=${toolName}
+        .suggestedFields=${suggestedFields}
+        .managedAgentId=${managedAgentId}
+        @dialog-closed=${() => {
+          this.outputFilterSuggestion = null;
+        }}
+      ></tool-output-filter-dialog>
+    `;
+  }
+
   private renderSuggestion(suggestion: SessionOptimizationSuggestion) {
     const applied = this.isApplied(suggestion);
     const applying = this.applyingSuggestionId === suggestion.id;
     const serverApplyable = this.isServerApplyable(suggestion);
+    const actionType = suggestion.action?.type;
+    const isOutputFilter = actionType === 'manage_output_filter';
+    const isInspect = actionType === 'open_events';
     return html`
       <div class="suggestion">
         <div class="suggestion-header">
@@ -380,44 +612,84 @@ export class SessionOptimizationPanel extends LitElement {
           Expected savings: ${formatNumber(suggestion.expectedSavingsTokens)}
           tokens · ${formatCost(suggestion.expectedSavingsUsd)}
         </div>
-        ${suggestion.evidence.length
-          ? html`
-              <div class="evidence">
-                Evidence: ${suggestion.evidence.join(' · ')}
-              </div>
-            `
-          : ''}
+        ${
+          suggestion.evidence.length
+            ? html`
+                <div class="evidence">
+                  Evidence: ${suggestion.evidence.join(' · ')}
+                </div>
+              `
+            : ''
+        }
         <div class="actions">
-          ${serverApplyable
-            ? applied
+          ${
+            serverApplyable
+              ? applied
+                ? html`
+                    <sl-badge variant="success" pill>
+                      <sl-icon name="check-circle"></sl-icon>
+                      Applied
+                    </sl-badge>
+                  `
+                : html`
+                    <sl-button
+                      size="small"
+                      variant="primary"
+                      ?loading=${applying}
+                      ?disabled=${Boolean(this.applyingSuggestionId)}
+                      @click=${() => {
+                        if (actionType === 'scope_tools') {
+                          this.openScopeToolsDialog(suggestion);
+                        } else {
+                          this.pendingApply = suggestion;
+                        }
+                      }}
+                    >
+                      <sl-icon slot="prefix" name="lightning-charge"></sl-icon>
+                      Apply
+                    </sl-button>
+                  `
+              : nothing
+          }
+          ${
+            isOutputFilter
               ? html`
-                  <sl-badge variant="success" pill>
-                    <sl-icon name="check-circle"></sl-icon>
-                    Applied
-                  </sl-badge>
-                `
-              : html`
                   <sl-button
                     size="small"
                     variant="primary"
-                    ?loading=${applying}
-                    ?disabled=${Boolean(this.applyingSuggestionId)}
                     @click=${() => {
-                      this.pendingApply = suggestion;
+                      this.outputFilterSuggestion = suggestion;
                     }}
                   >
-                    <sl-icon slot="prefix" name="lightning-charge"></sl-icon>
-                    Apply
+                    <sl-icon slot="prefix" name="funnel"></sl-icon>
+                    Filter tool output
                   </sl-button>
                 `
-            : nothing}
-          <sl-button
-            size="small"
-            @click=${() => this.emitSuggestion(suggestion)}
-          >
-            <sl-icon slot="prefix" name="magic"></sl-icon>
-            ${suggestion.actionLabel}
-          </sl-button>
+              : nothing
+          }
+          ${
+            isInspect
+              ? html`
+                  <sl-button
+                    size="small"
+                    @click=${() => this.emitInspectEvents(suggestion)}
+                  >
+                    <sl-icon slot="prefix" name="search"></sl-icon>
+                    ${suggestion.actionLabel}
+                  </sl-button>
+                `
+              : isOutputFilter
+                ? nothing
+                : html`
+                    <sl-button
+                      size="small"
+                      @click=${() => this.emitSuggestion(suggestion)}
+                    >
+                      <sl-icon slot="prefix" name="magic"></sl-icon>
+                      ${suggestion.actionLabel}
+                    </sl-button>
+                  `
+          }
         </div>
       </div>
     `;
@@ -441,50 +713,56 @@ export class SessionOptimizationPanel extends LitElement {
     const wasteScore = this.optimization?.waste_score;
     return html`
       <div class="waste-banner">
-        ${wasteScore !== null && wasteScore !== undefined
-          ? html`
-              <sl-badge
-                variant=${wasteScore >= 40
-                  ? 'danger'
-                  : wasteScore >= 15
-                    ? 'warning'
-                    : 'success'}
-                pill
-              >
-                Waste score ${wasteScore}%
-              </sl-badge>
-            `
-          : nothing}
+        ${
+          wasteScore !== null && wasteScore !== undefined
+            ? html`
+                <sl-badge
+                  variant=${
+                    wasteScore >= 40
+                      ? 'danger'
+                      : wasteScore >= 15
+                        ? 'warning'
+                        : 'success'
+                  }
+                  pill
+                >
+                  Waste score ${wasteScore}%
+                </sl-badge>
+              `
+            : nothing
+        }
         <span class="evidence">
           ${formatNumber(profile.analyzed_event_count)} analyzed requests ·
           ${formatNumber(profile.total_prompt_tokens)} prompt tokens ·
           ${formatNumber(profile.total_completion_tokens)} completion tokens
         </span>
       </div>
-      ${segments.length
-        ? segments.map((segment: SessionContextProfileSegment) => {
-            const label = SEGMENT_LABELS[segment.kind] || segment.kind;
-            const width = Math.max(
-              (segment.estimated_tokens / maxTokens) * 100,
-              2
-            );
-            return html`
-              <div class="segment-row">
-                <div class="segment-label">${label}</div>
-                <div class="segment-bar">
-                  <div
-                    class="segment-bar-fill ${segment.kind}"
-                    style="width: ${width}%"
-                  ></div>
+      ${
+        segments.length
+          ? segments.map((segment: SessionContextProfileSegment) => {
+              const label = SEGMENT_LABELS[segment.kind] || segment.kind;
+              const width = Math.max(
+                (segment.estimated_tokens / maxTokens) * 100,
+                2
+              );
+              return html`
+                <div class="segment-row">
+                  <div class="segment-label">${label}</div>
+                  <div class="segment-bar">
+                    <div
+                      class="segment-bar-fill ${segment.kind}"
+                      style="width: ${width}%"
+                    ></div>
+                  </div>
+                  <div class="segment-value">
+                    ${formatNumber(segment.estimated_tokens)} ·
+                    ${Math.round(segment.share * 100)}%
+                  </div>
                 </div>
-                <div class="segment-value">
-                  ${formatNumber(segment.estimated_tokens)} ·
-                  ${Math.round(segment.share * 100)}%
-                </div>
-              </div>
-            `;
-          })
-        : html`<div class="empty">No context segments measured.</div>`}
+              `;
+            })
+          : html`<div class="empty">No context segments measured.</div>`
+      }
     `;
   }
 
@@ -527,41 +805,46 @@ export class SessionOptimizationPanel extends LitElement {
             </div>
             <div class="evidence">
               Applied
-              ${Number.isNaN(appliedAt.getTime())
-                ? item.applied_at
-                : appliedAt.toLocaleString()}
+              ${
+                Number.isNaN(appliedAt.getTime())
+                  ? item.applied_at
+                  : appliedAt.toLocaleString()
+              }
               ${item.applied_by ? html`by ${item.applied_by}` : nothing}
             </div>
-            ${outcome
-              ? html`
-                  <div class="outcome">
-                    <div class="evidence">
-                      Measured since apply:
-                      ${formatNumber(Number(outcome.requests || 0))} requests ·
-                      ${formatNumber(
-                        Number(outcome.avg_total_tokens_per_request || 0)
-                      )}
-                      tokens/request ·
-                      ${formatCost(Number(outcome.avg_cost_per_request || 0))}
-                      /request
+            ${
+              outcome
+                ? html`
+                    <div class="outcome">
+                      <div class="evidence">
+                        Measured since apply:
+                        ${formatNumber(Number(outcome.requests || 0))} requests
+                        ·
+                        ${formatNumber(
+                          Number(outcome.avg_total_tokens_per_request || 0)
+                        )}
+                        tokens/request ·
+                        ${formatCost(Number(outcome.avg_cost_per_request || 0))}
+                        /request
+                      </div>
+                      <div>
+                        ${this.formatOutcomeDelta(
+                          outcome.tokens_per_request_change_pct,
+                          'tokens/request'
+                        )}
+                        ${this.formatOutcomeDelta(
+                          outcome.cost_per_request_change_pct,
+                          'cost/request'
+                        )}
+                      </div>
                     </div>
-                    <div>
-                      ${this.formatOutcomeDelta(
-                        outcome.tokens_per_request_change_pct,
-                        'tokens/request'
-                      )}
-                      ${this.formatOutcomeDelta(
-                        outcome.cost_per_request_change_pct,
-                        'cost/request'
-                      )}
+                  `
+                : html`
+                    <div class="outcome evidence">
+                      No follow-up traffic measured yet for this agent.
                     </div>
-                  </div>
-                `
-              : html`
-                  <div class="outcome evidence">
-                    No follow-up traffic measured yet for this agent.
-                  </div>
-                `}
+                  `
+            }
           </div>
         `;
       })}
@@ -577,6 +860,22 @@ export class SessionOptimizationPanel extends LitElement {
         ? `Generated by ${optimization.model_name || 'model'}`
         : 'Generated locally from measured session data'
     );
+    if (
+      optimization.generated_by !== 'model' &&
+      optimization.llm_skipped_reason
+    ) {
+      const reasons: Record<string, string> = {
+        daily_cap_reached: 'daily model budget reached',
+        model_error: 'configured model could not run',
+        model_empty_response: 'model returned no usable output',
+      };
+      parts.push(
+        `model skipped (${
+          reasons[optimization.llm_skipped_reason] ||
+          optimization.llm_skipped_reason
+        })`
+      );
+    }
     if (optimization.estimated_optimization_cost) {
       parts.push(
         `generation cost ${formatCost(optimization.estimated_optimization_cost)}`
@@ -598,8 +897,16 @@ export class SessionOptimizationPanel extends LitElement {
   // cost/tokens (you can't save more than you spent).
   private renderSavingsSummary(suggestions: SessionOptimizationSuggestion[]) {
     if (!this.session || !suggestions.length) return '';
-    const before = Number(this.session.estimated_cost || 0);
-    const beforeTokens = Number(this.session.token_usage?.total_tokens || 0);
+    // Anchor "before" to the analyzed scope when available — that's the
+    // baseline the suggestions' savings are measured against. Fall back to the
+    // whole-session totals for older cached responses / local-only suggestions.
+    const opt = this.optimization;
+    const scopeCost = opt?.analyzed_scope_estimated_cost;
+    const scopeTokens = opt?.analyzed_scope_total_tokens;
+    const before = Number((scopeCost ?? this.session.estimated_cost ?? 0) || 0);
+    const beforeTokens = Number(
+      (scopeTokens ?? this.session.token_usage?.total_tokens ?? 0) || 0
+    );
     const rawUsd = suggestions.reduce(
       (sum, s) => sum + Number(s.expectedSavingsUsd || 0),
       0
@@ -613,7 +920,14 @@ export class SessionOptimizationPanel extends LitElement {
       beforeTokens > 0 ? Math.min(rawTokens, beforeTokens) : rawTokens;
     if (savingsUsd <= 0 && savingsTokens <= 0) return '';
     const after = Math.max(before - savingsUsd, 0);
-    const pct = before > 0 ? Math.round((savingsUsd / before) * 100) : 0;
+    // Prefer a cost-based percentage; fall back to a token-based one when the
+    // scope cost is unknown (0) so the headline still conveys the magnitude.
+    const pct =
+      before > 0
+        ? Math.round((savingsUsd / before) * 100)
+        : beforeTokens > 0
+          ? Math.round((savingsTokens / beforeTokens) * 100)
+          : 0;
     return html`
       <div class="savings-summary">
         <div class="savings-summary-headline">
@@ -621,12 +935,10 @@ export class SessionOptimizationPanel extends LitElement {
           ${pct > 0 ? html`<span class="savings-pct">(${pct}%)</span>` : ''}
         </div>
         <div class="savings-summary-detail">
-          This session cost ${formatCost(before)} ·
-          ${formatNumber(beforeTokens)} tokens → ~${formatCost(after)} after
-          applying all ${suggestions.length}
-          suggestion${suggestions.length === 1 ? '' : 's'}
-          (${formatNumber(savingsTokens)} tokens). Estimated from the analyzed
-          scope.
+          Analyzed scope: ${formatCost(before)} · ${formatNumber(beforeTokens)}
+          tokens → ~${formatCost(after)} after applying all
+          ${suggestions.length} suggestion${suggestions.length === 1 ? '' : 's'}
+          (${formatNumber(savingsTokens)} tokens saved).
         </div>
       </div>
     `;
@@ -662,6 +974,7 @@ export class SessionOptimizationPanel extends LitElement {
           <sl-tab-panel name="history">${this.renderHistoryTab()}</sl-tab-panel>
         </sl-tab-group>
         ${this.renderTransparency()} ${this.renderApplyDialog()}
+        ${this.renderOutputFilterDialog()}
       </div>
     `;
   }

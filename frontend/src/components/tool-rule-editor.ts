@@ -727,14 +727,16 @@ export class ToolRuleEditor extends LitElement {
               ></sl-input>
             </div>
           </div>
-          ${this._simpleField && this._simpleValue
-            ? html`<div
-                class="cel-help"
-                style="margin-top: var(--sl-spacing-small);"
-              >
-                Expression: <code>${this._buildSimpleExpression()}</code>
-              </div>`
-            : ''}
+          ${
+            this._simpleField && this._simpleValue
+              ? html`<div
+                  class="cel-help"
+                  style="margin-top: var(--sl-spacing-small);"
+                >
+                  Expression: <code>${this._buildSimpleExpression()}</code>
+                </div>`
+              : ''
+          }
         </div>
       `;
     }
@@ -785,28 +787,32 @@ export class ToolRuleEditor extends LitElement {
                   ></sl-input>
                 </div>
               </div>
-              ${this._conditions.length > 1
-                ? html`<sl-icon-button
-                    name="x-lg"
-                    label="Remove condition"
-                    style="font-size: 0.75rem;"
-                    @click=${() => this._removeCondition(i)}
-                  ></sl-icon-button>`
-                : ''}
+              ${
+                this._conditions.length > 1
+                  ? html`<sl-icon-button
+                      name="x-lg"
+                      label="Remove condition"
+                      style="font-size: 0.75rem;"
+                      @click=${() => this._removeCondition(i)}
+                    ></sl-icon-button>`
+                  : ''
+              }
             </div>
-            ${!isLast
-              ? html`
-                  <div class="condition-join">
-                    <span class="join-line"></span>
-                    <span
-                      class="join-toggle"
-                      @click=${() => this._toggleJoinOperator()}
-                      >${this._conditionOperator}</span
-                    >
-                    <span class="join-line"></span>
-                  </div>
-                `
-              : ''}
+            ${
+              !isLast
+                ? html`
+                    <div class="condition-join">
+                      <span class="join-line"></span>
+                      <span
+                        class="join-toggle"
+                        @click=${() => this._toggleJoinOperator()}
+                        >${this._conditionOperator}</span
+                      >
+                      <span class="join-line"></span>
+                    </div>
+                  `
+                : ''
+            }
           `;
         })}
 
@@ -837,14 +843,16 @@ export class ToolRuleEditor extends LitElement {
           </span>
         </div>
 
-        ${builtExpr
-          ? html`<div
-              class="cel-help"
-              style="margin-top: var(--sl-spacing-small);"
-            >
-              Expression: <code>${builtExpr}</code>
-            </div>`
-          : ''}
+        ${
+          builtExpr
+            ? html`<div
+                class="cel-help"
+                style="margin-top: var(--sl-spacing-small);"
+              >
+                Expression: <code>${builtExpr}</code>
+              </div>`
+            : ''
+        }
       </div>
     `;
   }
@@ -872,20 +880,22 @@ export class ToolRuleEditor extends LitElement {
           <code>args.amount > 100</code>,
           <code>args.env == "production"</code>
         </div>
-        ${args.length > 0
-          ? html`
-              <div class="args-list">
-                <strong
-                  style="font-size: var(--sl-font-size-x-small); color: var(--sl-color-neutral-600);"
-                  >Tool parameters:</strong
-                >
-                ${args.map(
-                  (arg) =>
-                    html`<sl-badge variant="neutral" pill>${arg}</sl-badge>`
-                )}
-              </div>
-            `
-          : ''}
+        ${
+          args.length > 0
+            ? html`
+                <div class="args-list">
+                  <strong
+                    style="font-size: var(--sl-font-size-x-small); color: var(--sl-color-neutral-600);"
+                    >Tool parameters:</strong
+                  >
+                  ${args.map(
+                    (arg) =>
+                      html`<sl-badge variant="neutral" pill>${arg}</sl-badge>`
+                  )}
+                </div>
+              `
+            : ''
+        }
 
         <div class="condition-actions">
           <span class="cel-toggle">
@@ -915,40 +925,42 @@ export class ToolRuleEditor extends LitElement {
       <div class="form-group">
         <label>Approval Configuration</label>
         <div class="approval-section">
-          ${hasAdvanced
-            ? html`
-                <div class="approval-mode-cards">
-                  <div
-                    class="approval-mode-card ${this._approvalMode === 'human'
-                      ? 'selected'
-                      : ''}"
-                    @click=${() => {
-                      this._approvalMode = 'human';
-                      this._approvalWorkflowId = null;
-                    }}
-                  >
-                    <div class="mode-icon">
-                      <sl-icon name="person-check"></sl-icon>
+          ${
+            hasAdvanced
+              ? html`
+                  <div class="approval-mode-cards">
+                    <div
+                      class="approval-mode-card ${
+                        this._approvalMode === 'human' ? 'selected' : ''
+                      }"
+                      @click=${() => {
+                        this._approvalMode = 'human';
+                        this._approvalWorkflowId = null;
+                      }}
+                    >
+                      <div class="mode-icon">
+                        <sl-icon name="person-check"></sl-icon>
+                      </div>
+                      <div class="mode-label">Human Approval</div>
                     </div>
-                    <div class="mode-label">Human Approval</div>
-                  </div>
-                  <div
-                    class="approval-mode-card ${this._approvalMode === 'ai'
-                      ? 'selected'
-                      : ''}"
-                    @click=${() => {
-                      this._approvalMode = 'ai';
-                      this._approvalWorkflowId = null;
-                    }}
-                  >
-                    <div class="mode-icon">
-                      <sl-icon name="robot"></sl-icon>
+                    <div
+                      class="approval-mode-card ${
+                        this._approvalMode === 'ai' ? 'selected' : ''
+                      }"
+                      @click=${() => {
+                        this._approvalMode = 'ai';
+                        this._approvalWorkflowId = null;
+                      }}
+                    >
+                      <div class="mode-icon">
+                        <sl-icon name="robot"></sl-icon>
+                      </div>
+                      <div class="mode-label">AI Approval</div>
                     </div>
-                    <div class="mode-label">AI Approval</div>
                   </div>
-                </div>
-              `
-            : ''}
+                `
+              : ''
+          }
 
           <div class="workflow-select-row">
             <sl-select
@@ -966,27 +978,37 @@ export class ToolRuleEditor extends LitElement {
                 this._approvalWorkflowId = null;
               }}
             >
-              ${this._approvalMode === 'ai'
-                ? html`
-                    ${aiWorkflows.length === 0
-                      ? html`<sl-option disabled value=""
-                          >No AI workflows — create one below</sl-option
-                        >`
-                      : aiWorkflows.map(
-                          (p) =>
-                            html`<sl-option value=${p.id}>${p.name}</sl-option>`
-                        )}
-                  `
-                : html`
-                    ${humanWorkflows.length === 0
-                      ? html`<sl-option disabled value=""
-                          >No workflows — create one below</sl-option
-                        >`
-                      : humanWorkflows.map(
-                          (p) =>
-                            html`<sl-option value=${p.id}>${p.name}</sl-option>`
-                        )}
-                  `}
+              ${
+                this._approvalMode === 'ai'
+                  ? html`
+                      ${
+                        aiWorkflows.length === 0
+                          ? html`<sl-option disabled value=""
+                              >No AI workflows — create one below</sl-option
+                            >`
+                          : aiWorkflows.map(
+                              (p) =>
+                                html`<sl-option value=${p.id}
+                                  >${p.name}</sl-option
+                                >`
+                            )
+                      }
+                    `
+                  : html`
+                      ${
+                        humanWorkflows.length === 0
+                          ? html`<sl-option disabled value=""
+                              >No workflows — create one below</sl-option
+                            >`
+                          : humanWorkflows.map(
+                              (p) =>
+                                html`<sl-option value=${p.id}
+                                  >${p.name}</sl-option
+                                >`
+                            )
+                      }
+                    `
+              }
             </sl-select>
             <sl-button
               size="small"
@@ -1000,17 +1022,20 @@ export class ToolRuleEditor extends LitElement {
             </sl-button>
           </div>
 
-          ${this._approvalMode === 'ai' &&
-          hasAdvanced &&
-          !this._approvalWorkflowId
-            ? html`<div
-                class="hint"
-                style="margin-top: var(--sl-spacing-small);"
-              >
-                Select an existing AI workflow or create a new one to configure
-                model, prompt, confidence threshold, and fallback behavior.
-              </div>`
-            : ''}
+          ${
+            this._approvalMode === 'ai' &&
+            hasAdvanced &&
+            !this._approvalWorkflowId
+              ? html`<div
+                  class="hint"
+                  style="margin-top: var(--sl-spacing-small);"
+                >
+                  Select an existing AI workflow or create a new one to
+                  configure model, prompt, confidence threshold, and fallback
+                  behavior.
+                </div>`
+              : ''
+          }
         </div>
       </div>
     `;
@@ -1051,32 +1076,34 @@ export class ToolRuleEditor extends LitElement {
   render() {
     return html`
       <sl-dialog
-        label="${this._isEditing ? 'Edit' : 'Add'} Access Rule${this.toolName
-          ? ` — ${this.toolName}`
-          : ''}"
+        label="${this._isEditing ? 'Edit' : 'Add'} Access Rule${
+          this.toolName ? ` — ${this.toolName}` : ''
+        }"
         ?open=${this.open}
         @sl-request-close=${this._handleClose}
         style="--width: 560px; --sl-panel-background-color: var(--sl-color-neutral-0);"
       >
-        ${this._error
-          ? html`<sl-alert
-              variant="danger"
-              open
-              closable
-              @sl-after-hide=${() => (this._error = null)}
-            >
-              <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
-              ${this._error}
-            </sl-alert>`
-          : ''}
+        ${
+          this._error
+            ? html`<sl-alert
+                variant="danger"
+                open
+                closable
+                @sl-after-hide=${() => (this._error = null)}
+              >
+                <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+                ${this._error}
+              </sl-alert>`
+            : ''
+        }
 
         <div class="form-group">
           <label>Action</label>
           <div class="action-cards">
             <div
-              class="action-card deny ${this._action === 'deny'
-                ? 'selected'
-                : ''}"
+              class="action-card deny ${
+                this._action === 'deny' ? 'selected' : ''
+              }"
               @click=${() => (this._action = 'deny')}
             >
               <div class="action-icon">
@@ -1089,9 +1116,9 @@ export class ToolRuleEditor extends LitElement {
               <div class="action-desc">Block execution</div>
             </div>
             <div
-              class="action-card approval ${this._action === 'require_approval'
-                ? 'selected'
-                : ''}"
+              class="action-card approval ${
+                this._action === 'require_approval' ? 'selected' : ''
+              }"
               @click=${() => (this._action = 'require_approval')}
             >
               <div class="action-icon">
@@ -1119,9 +1146,11 @@ export class ToolRuleEditor extends LitElement {
           </div>
         </div>
 
-        ${this._action === 'require_approval'
-          ? this._renderApprovalSection()
-          : ''}
+        ${
+          this._action === 'require_approval'
+            ? this._renderApprovalSection()
+            : ''
+        }
 
         <sl-divider></sl-divider>
 
@@ -1133,51 +1162,57 @@ export class ToolRuleEditor extends LitElement {
           ${this._renderConditionEditor()}
         </div>
 
-        ${this._action === 'deny'
-          ? html`
-              <div class="form-group">
-                <sl-textarea
-                  label="Denial Message"
-                  size="small"
-                  rows="2"
-                  value=${this._description}
-                  @sl-input=${(e: Event) =>
-                    (this._description = (e.target as any).value)}
-                  placeholder="This operation is not allowed because..."
-                  help-text="This message is returned to the AI agent when the call is denied."
-                ></sl-textarea>
-              </div>
-            `
-          : ''}
-        ${this._action === 'require_approval'
-          ? html`
-              <div class="form-group">
-                <sl-input
-                  label="Description"
-                  size="small"
-                  value=${this._description}
-                  @sl-input=${(e: Event) =>
-                    (this._description = (e.target as any).value)}
-                  placeholder="e.g., High-value transaction review"
-                  help-text="Helps approvers understand why this rule exists."
-                ></sl-input>
-              </div>
-            `
-          : ''}
-        ${this._action === 'allow'
-          ? html`
-              <div class="form-group">
-                <sl-input
-                  label="Description (optional)"
-                  size="small"
-                  value=${this._description}
-                  @sl-input=${(e: Event) =>
-                    (this._description = (e.target as any).value)}
-                  placeholder="e.g., Low-risk read-only operations"
-                ></sl-input>
-              </div>
-            `
-          : ''}
+        ${
+          this._action === 'deny'
+            ? html`
+                <div class="form-group">
+                  <sl-textarea
+                    label="Denial Message"
+                    size="small"
+                    rows="2"
+                    value=${this._description}
+                    @sl-input=${(e: Event) =>
+                      (this._description = (e.target as any).value)}
+                    placeholder="This operation is not allowed because..."
+                    help-text="This message is returned to the AI agent when the call is denied."
+                  ></sl-textarea>
+                </div>
+              `
+            : ''
+        }
+        ${
+          this._action === 'require_approval'
+            ? html`
+                <div class="form-group">
+                  <sl-input
+                    label="Description"
+                    size="small"
+                    value=${this._description}
+                    @sl-input=${(e: Event) =>
+                      (this._description = (e.target as any).value)}
+                    placeholder="e.g., High-value transaction review"
+                    help-text="Helps approvers understand why this rule exists."
+                  ></sl-input>
+                </div>
+              `
+            : ''
+        }
+        ${
+          this._action === 'allow'
+            ? html`
+                <div class="form-group">
+                  <sl-input
+                    label="Description (optional)"
+                    size="small"
+                    value=${this._description}
+                    @sl-input=${(e: Event) =>
+                      (this._description = (e.target as any).value)}
+                    placeholder="e.g., Low-risk read-only operations"
+                  ></sl-input>
+                </div>
+              `
+            : ''
+        }
 
         <div class="dialog-footer">
           <sl-button variant="default" @click=${this._handleClose}>

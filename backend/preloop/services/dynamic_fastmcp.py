@@ -66,6 +66,141 @@ _is_proxy_translation_var: ContextVar[bool] = ContextVar(
 )
 
 
+def _strip_fields_from_json_text(text: str, dropped_fields: set[str]) -> Optional[str]:
+    """Strip top-level fields from a JSON object or list-of-objects string.
+
+    Args:
+        text: Raw text that may contain a JSON document.
+        dropped_fields: Top-level keys to remove from each result object.
+
+    Returns:
+        The re-serialized JSON with the requested keys removed, or ``None`` if
+        the text is not JSON, is not a dict/list-of-dicts, or nothing changed.
+    """
+    import json
+
+    try:
+        parsed = json.loads(text)
+    except (ValueError, TypeError):
+        return None
+
+    changed = False
+
+    def _strip_obj(obj: object) -> object:
+        nonlocal changed
+        if isinstance(obj, dict):
+            for field in dropped_fields:
+                if field in obj:
+                    del obj[field]
+                    changed = True
+        return obj
+
+    if isinstance(parsed, dict):
+        _strip_obj(parsed)
+    elif isinstance(parsed, list):
+        for item in parsed:
+            _strip_obj(item)
+    else:
+        # Scalars / strings: nothing to strip.
+        return None
+
+    if not changed:
+        return None
+    return json.dumps(parsed)
+
+
+def apply_output_filters(
+    result_items: list,
+    *,
+    account_id: str,
+    tool_name: str,
+    server_name: Optional[str] = None,
+    managed_agent_id: Optional[str] = None,
+) -> list:
+    """Strip operator-configured fields from a tool result before the agent sees it.
+
+    Looks up enabled :class:`ToolOutputFilter` rows that match the current
+    call and removes the union of their ``dropped_fields`` from every
+    JSON-parseable result content block (a dict, or a list of dicts). This
+    trims wasted context tokens without changing the upstream tool.
+
+    The function is fully defensive: if no filters match, content is not JSON,
+    parsing fails, or anything raises, the original ``result_items`` is
+    returned unchanged. It never raises into the proxy path.
+
+    Args:
+        result_items: The MCP content blocks returned by the upstream tool.
+            Each item is expected to expose a ``.text`` attribute holding the
+            block's text (e.g. ``TextContent``); other items pass through.
+        account_id: Owning account id for the current call.
+        tool_name: Name of the tool that produced the result.
+        server_name: MCP server name for the current call, if known.
+        managed_agent_id: Managed agent id for the current call, if known.
+
+    Returns:
+        The (possibly trimmed) list of content blocks.
+    """
+    try:
+        if not result_items:
+            return result_items
+
+        from preloop.models.crud import crud_tool_output_filter
+        from preloop.models.db.session import get_db_session as _get_db
+
+        db = next(_get_db())
+        try:
+            filters = crud_tool_output_filter.list_active_for_tool(
+                db,
+                account_id=account_id,
+                tool_name=tool_name,
+                server_name=server_name,
+                managed_agent_id=managed_agent_id,
+            )
+        finally:
+            db.close()
+
+        if not filters:
+            return result_items
+
+        dropped_fields: set[str] = set()
+        for flt in filters:
+            for field in flt.dropped_fields or []:
+                if isinstance(field, str):
+                    dropped_fields.add(field)
+
+        if not dropped_fields:
+            return result_items
+
+        applied = False
+        for item in result_items:
+            text = getattr(item, "text", None)
+            if not isinstance(text, str):
+                continue
+            stripped = _strip_fields_from_json_text(text, dropped_fields)
+            if stripped is not None:
+                item.text = stripped
+                applied = True
+
+        if applied:
+            logger.info(
+                "Applied output filter(s) to tool '%s' (server=%s, account=%s): "
+                "stripped fields %s",
+                tool_name,
+                server_name,
+                account_id,
+                sorted(dropped_fields),
+            )
+
+        return result_items
+    except Exception as exc:  # noqa: BLE001 - never break the proxy path
+        logger.debug(
+            "apply_output_filters skipped for tool '%s' due to error: %s",
+            tool_name,
+            exc,
+        )
+        return result_items
+
+
 class DynamicFastMCP(FastMCP):
     """FastMCP extension with per-user dynamic tool filtering.
 
@@ -574,6 +709,19 @@ async def {internal_name}({params_str}) -> str:
                 f"Tool {{tool_name}} executed successfully on external server"
             )
 
+            # Apply operator-configured output filters BEFORE the result
+            # reaches the agent, stripping unused fields to save context tokens.
+            if isinstance(result, list):
+                result = apply_output_filters(
+                    result,
+                    account_id=account_id,
+                    tool_name=tool_name,
+                    server_name=getattr(mcp_server, "name", None),
+                    managed_agent_id=getattr(
+                        user_context, "managed_agent_id", None
+                    ),
+                )
+
             # Convert result to string
             if isinstance(result, list):
                 return "\\n".join(
@@ -603,6 +751,7 @@ async def {internal_name}({params_str}) -> str:
             "get_db": get_db,
             "crud_mcp_server": crud_mcp_server,
             "get_mcp_client_pool": get_mcp_client_pool,
+            "apply_output_filters": apply_output_filters,
             "Optional": Optional,
             "Context": Context,
             "_rule_workflow_id_var": _rule_workflow_id_var,

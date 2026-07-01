@@ -65,28 +65,32 @@ export class ResetPasswordView extends LitElement {
         </div>
         <div class="form-container">
           <h2>Reset Password</h2>
-          ${this.message
-            ? html`<sl-alert
-                variant="success"
-                open
-                closable
-                @sl-after-hide=${() => (this.message = '')}
-              >
-                <sl-icon slot="icon" name="check-circle"></sl-icon>
-                ${this.message}
-              </sl-alert>`
-            : ''}
-          ${this.error
-            ? html`<sl-alert
-                variant="danger"
-                open
-                closable
-                @sl-after-hide=${() => (this.error = '')}
-              >
-                <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
-                ${this.error}
-              </sl-alert>`
-            : ''}
+          ${
+            this.message
+              ? html`<sl-alert
+                  variant="success"
+                  open
+                  closable
+                  @sl-after-hide=${() => (this.message = '')}
+                >
+                  <sl-icon slot="icon" name="check-circle"></sl-icon>
+                  ${this.message}
+                </sl-alert>`
+              : ''
+          }
+          ${
+            this.error
+              ? html`<sl-alert
+                  variant="danger"
+                  open
+                  closable
+                  @sl-after-hide=${() => (this.error = '')}
+                >
+                  <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+                  ${this.error}
+                </sl-alert>`
+              : ''
+          }
           <form @submit=${this.handleResetPassword}>
             <sl-input
               type="password"

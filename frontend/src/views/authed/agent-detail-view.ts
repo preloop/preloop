@@ -441,6 +441,22 @@ export class AgentDetailView extends LitElement {
     const changed = this.agentId !== nextAgentId;
     this.agentId = nextAgentId;
 
+    // Honor a ?tab= deep-link (e.g. optimization "Scope tools" links here with
+    // ?tab=tools to land directly on the Tools & Governance tab).
+    const requestedTab = new URLSearchParams(window.location.search).get('tab');
+    const validTabs = [
+      'sessions',
+      'tools',
+      'models',
+      'vnc',
+      'ssh',
+      'dashboard',
+      'associated-flows',
+    ];
+    if (requestedTab && validTabs.includes(requestedTab)) {
+      this.activeTab = requestedTab as typeof this.activeTab;
+    }
+
     if (this.initialized && changed) {
       void this.loadData();
     }
@@ -1315,11 +1331,13 @@ export class AgentDetailView extends LitElement {
       <div class="timeline-item">
         <div class="timeline-title">${item.title}</div>
         <div class="timeline-meta">
-          ${this.formatDateTime(item.timestamp)}${item.status
-            ? html` · ${item.status}`
-            : null}${item.is_retry || (item.gateway_attempt || 1) > 1
-            ? html` · retry #${item.gateway_attempt || 2}`
-            : null}${item.summary ? html` · ${item.summary}` : null}
+          ${this.formatDateTime(item.timestamp)}${
+            item.status ? html` · ${item.status}` : null
+          }${
+            item.is_retry || (item.gateway_attempt || 1) > 1
+              ? html` · retry #${item.gateway_attempt || 2}`
+              : null
+          }${item.summary ? html` · ${item.summary}` : null}
         </div>
       </div>
     `;
@@ -1483,8 +1501,9 @@ export class AgentDetailView extends LitElement {
     return html`
       <div
         class="${this.isFullscreen ? 'fullscreen-mode' : ''}"
-        style="${this.isFullscreen
-          ? `
+        style="${
+          this.isFullscreen
+            ? `
           position: fixed;
           top: 0;
           left: 0;
@@ -1500,13 +1519,13 @@ export class AgentDetailView extends LitElement {
           gap: var(--sl-spacing-large);
           overflow: auto;
         `
-          : ''}"
+            : ''
+        }"
       >
         <sl-card
-          style="border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large); background: ${this
-            .isFullscreen
-            ? '#1e293b'
-            : '#ffffff'}; width: 100%;"
+          style="border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large); background: ${
+            this.isFullscreen ? '#1e293b' : '#ffffff'
+          }; width: 100%;"
         >
           <div style="padding: var(--sl-spacing-large);">
             <div
@@ -1514,18 +1533,20 @@ export class AgentDetailView extends LitElement {
             >
               <div>
                 <div
-                  style="font-weight: 700; font-size: 1.25rem; color: ${this
-                    .isFullscreen
-                    ? '#ffffff'
-                    : 'var(--sl-color-neutral-800)'};"
+                  style="font-weight: 700; font-size: 1.25rem; color: ${
+                    this.isFullscreen
+                      ? '#ffffff'
+                      : 'var(--sl-color-neutral-800)'
+                  };"
                 >
                   Graphical UI Access (Secure VNC Desktop)
                 </div>
                 <div
-                  style="font-size: var(--sl-font-size-small); color: ${this
-                    .isFullscreen
-                    ? '#cbd5e1'
-                    : 'var(--sl-color-neutral-600)'}; margin-top: 4px;"
+                  style="font-size: var(--sl-font-size-small); color: ${
+                    this.isFullscreen
+                      ? '#cbd5e1'
+                      : 'var(--sl-color-neutral-600)'
+                  }; margin-top: 4px;"
                 >
                   Securely tunnel and view the graphical operational desktop
                   environment of this agent VM.
@@ -1544,9 +1565,11 @@ export class AgentDetailView extends LitElement {
                 >
                   <sl-icon
                     slot="prefix"
-                    name=${this.isFullscreen
-                      ? 'fullscreen-exit'
-                      : 'arrows-angle-expand'}
+                    name=${
+                      this.isFullscreen
+                        ? 'fullscreen-exit'
+                        : 'arrows-angle-expand'
+                    }
                   ></sl-icon>
                   ${this.isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
                 </sl-button>
@@ -1557,44 +1580,48 @@ export class AgentDetailView extends LitElement {
               style="display: flex; flex-direction: column; gap: var(--sl-spacing-large);"
             >
               <div
-                style="background: ${this.isFullscreen
-                  ? '#0f172a'
-                  : 'var(--sl-color-neutral-50)'}; padding: var(--sl-spacing-large); border-radius: var(--sl-border-radius-medium); border: 1px solid ${this
-                  .isFullscreen
-                  ? '#334155'
-                  : 'var(--sl-color-neutral-200)'};"
+                style="background: ${
+                  this.isFullscreen ? '#0f172a' : 'var(--sl-color-neutral-50)'
+                }; padding: var(--sl-spacing-large); border-radius: var(--sl-border-radius-medium); border: 1px solid ${
+                  this.isFullscreen ? '#334155' : 'var(--sl-color-neutral-200)'
+                };"
               >
                 <div
-                  style="font-weight: 600; font-size: var(--sl-font-size-small); color: ${this
-                    .isFullscreen
-                    ? '#38bdf8'
-                    : 'var(--sl-color-primary-700)'}; margin-bottom: var(--sl-spacing-medium); text-transform: uppercase;"
+                  style="font-weight: 600; font-size: var(--sl-font-size-small); color: ${
+                    this.isFullscreen
+                      ? '#38bdf8'
+                      : 'var(--sl-color-primary-700)'
+                  }; margin-bottom: var(--sl-spacing-medium); text-transform: uppercase;"
                 >
                   Step 1: Securely Tunnel VNC Port (5901)
                 </div>
                 <p
-                  style="font-size: var(--sl-font-size-small); line-height: 1.5; color: ${this
-                    .isFullscreen
-                    ? '#cbd5e1'
-                    : 'var(--sl-color-neutral-600)'};"
+                  style="font-size: var(--sl-font-size-small); line-height: 1.5; color: ${
+                    this.isFullscreen
+                      ? '#cbd5e1'
+                      : 'var(--sl-color-neutral-600)'
+                  };"
                 >
                   Establish an SSH tunnel to forward traffic on the target
                   server port 5901 to your local workstation's port 5901:
                 </p>
                 <div
-                  style="display: flex; align-items: center; gap: var(--sl-spacing-small); background: ${this
-                    .isFullscreen
-                    ? '#1e293b'
-                    : 'var(--sl-color-neutral-100)'}; padding: var(--sl-spacing-small) var(--sl-spacing-medium); border-radius: var(--sl-border-radius-medium); border: 1px solid ${this
-                    .isFullscreen
-                    ? '#475569'
-                    : 'var(--sl-color-neutral-300)'}; margin-top: var(--sl-spacing-small);"
+                  style="display: flex; align-items: center; gap: var(--sl-spacing-small); background: ${
+                    this.isFullscreen
+                      ? '#1e293b'
+                      : 'var(--sl-color-neutral-100)'
+                  }; padding: var(--sl-spacing-small) var(--sl-spacing-medium); border-radius: var(--sl-border-radius-medium); border: 1px solid ${
+                    this.isFullscreen
+                      ? '#475569'
+                      : 'var(--sl-color-neutral-300)'
+                  }; margin-top: var(--sl-spacing-small);"
                 >
                   <code
-                    style="font-family: var(--sl-font-mono); font-size: 0.85rem; color: ${this
-                      .isFullscreen
-                      ? '#38bdf8'
-                      : 'var(--sl-color-neutral-800)'}; flex: 1; overflow-x: auto; white-space: nowrap;"
+                    style="font-family: var(--sl-font-mono); font-size: 0.85rem; color: ${
+                      this.isFullscreen
+                        ? '#38bdf8'
+                        : 'var(--sl-color-neutral-800)'
+                    }; flex: 1; overflow-x: auto; white-space: nowrap;"
                   >
                     ssh -L 5901:127.0.0.1:5901 ${username}@${host} -p ${port} -N
                   </code>
@@ -1605,45 +1632,49 @@ export class AgentDetailView extends LitElement {
               </div>
 
               <div
-                style="background: ${this.isFullscreen
-                  ? '#0f172a'
-                  : 'var(--sl-color-neutral-50)'}; padding: var(--sl-spacing-large); border-radius: var(--sl-border-radius-medium); border: 1px solid ${this
-                  .isFullscreen
-                  ? '#334155'
-                  : 'var(--sl-color-neutral-200)'};"
+                style="background: ${
+                  this.isFullscreen ? '#0f172a' : 'var(--sl-color-neutral-50)'
+                }; padding: var(--sl-spacing-large); border-radius: var(--sl-border-radius-medium); border: 1px solid ${
+                  this.isFullscreen ? '#334155' : 'var(--sl-color-neutral-200)'
+                };"
               >
                 <div
-                  style="font-weight: 600; font-size: var(--sl-font-size-small); color: ${this
-                    .isFullscreen
-                    ? '#38bdf8'
-                    : 'var(--sl-color-primary-700)'}; margin-bottom: var(--sl-spacing-medium); text-transform: uppercase;"
+                  style="font-weight: 600; font-size: var(--sl-font-size-small); color: ${
+                    this.isFullscreen
+                      ? '#38bdf8'
+                      : 'var(--sl-color-primary-700)'
+                  }; margin-bottom: var(--sl-spacing-medium); text-transform: uppercase;"
                 >
                   Step 2: Connect Local VNC Client
                 </div>
                 <p
-                  style="font-size: var(--sl-font-size-small); line-height: 1.5; color: ${this
-                    .isFullscreen
-                    ? '#cbd5e1'
-                    : 'var(--sl-color-neutral-600)'}; margin: 0;"
+                  style="font-size: var(--sl-font-size-small); line-height: 1.5; color: ${
+                    this.isFullscreen
+                      ? '#cbd5e1'
+                      : 'var(--sl-color-neutral-600)'
+                  }; margin: 0;"
                 >
                   Once the port forwarding tunnel is running, open any standard
                   VNC viewer client (e.g. RealVNC, TigerVNC, or built-in macOS
                   Screen Sharing) and connect to:
                 </p>
                 <div
-                  style="display: flex; align-items: center; gap: var(--sl-spacing-small); background: ${this
-                    .isFullscreen
-                    ? '#1e293b'
-                    : 'var(--sl-color-neutral-100)'}; padding: var(--sl-spacing-small) var(--sl-spacing-medium); border-radius: var(--sl-border-radius-medium); border: 1px solid ${this
-                    .isFullscreen
-                    ? '#475569'
-                    : 'var(--sl-color-neutral-300)'}; margin-top: var(--sl-spacing-small);"
+                  style="display: flex; align-items: center; gap: var(--sl-spacing-small); background: ${
+                    this.isFullscreen
+                      ? '#1e293b'
+                      : 'var(--sl-color-neutral-100)'
+                  }; padding: var(--sl-spacing-small) var(--sl-spacing-medium); border-radius: var(--sl-border-radius-medium); border: 1px solid ${
+                    this.isFullscreen
+                      ? '#475569'
+                      : 'var(--sl-color-neutral-300)'
+                  }; margin-top: var(--sl-spacing-small);"
                 >
                   <code
-                    style="font-family: var(--sl-font-mono); font-size: 0.85rem; color: ${this
-                      .isFullscreen
-                      ? '#38bdf8'
-                      : 'var(--sl-color-neutral-800)'}; flex: 1; overflow-x: auto; white-space: nowrap;"
+                    style="font-family: var(--sl-font-mono); font-size: 0.85rem; color: ${
+                      this.isFullscreen
+                        ? '#38bdf8'
+                        : 'var(--sl-color-neutral-800)'
+                    }; flex: 1; overflow-x: auto; white-space: nowrap;"
                   >
                     vnc://localhost:5901
                   </code>
@@ -1666,8 +1697,9 @@ export class AgentDetailView extends LitElement {
     return html`
       <div
         class="${this.isFullscreen ? 'fullscreen-mode' : ''}"
-        style="${this.isFullscreen
-          ? `
+        style="${
+          this.isFullscreen
+            ? `
           position: fixed;
           top: 0;
           left: 0;
@@ -1683,13 +1715,13 @@ export class AgentDetailView extends LitElement {
           gap: var(--sl-spacing-large);
           overflow: auto;
         `
-          : ''}"
+            : ''
+        }"
       >
         <sl-card
-          style="border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large); background: ${this
-            .isFullscreen
-            ? '#1e293b'
-            : '#ffffff'}; width: 100%;"
+          style="border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large); background: ${
+            this.isFullscreen ? '#1e293b' : '#ffffff'
+          }; width: 100%;"
         >
           <div style="padding: var(--sl-spacing-large);">
             <div
@@ -1697,18 +1729,20 @@ export class AgentDetailView extends LitElement {
             >
               <div>
                 <div
-                  style="font-weight: 700; font-size: 1.25rem; color: ${this
-                    .isFullscreen
-                    ? '#ffffff'
-                    : 'var(--sl-color-neutral-800)'};"
+                  style="font-weight: 700; font-size: 1.25rem; color: ${
+                    this.isFullscreen
+                      ? '#ffffff'
+                      : 'var(--sl-color-neutral-800)'
+                  };"
                 >
                   Command Terminal (SSH Access)
                 </div>
                 <div
-                  style="font-size: var(--sl-font-size-small); color: ${this
-                    .isFullscreen
-                    ? '#cbd5e1'
-                    : 'var(--sl-color-neutral-600)'}; margin-top: 4px;"
+                  style="font-size: var(--sl-font-size-small); color: ${
+                    this.isFullscreen
+                      ? '#cbd5e1'
+                      : 'var(--sl-color-neutral-600)'
+                  }; margin-top: 4px;"
                 >
                   Connect directly to the governed agent VM node.
                 </div>
@@ -1726,9 +1760,11 @@ export class AgentDetailView extends LitElement {
                 >
                   <sl-icon
                     slot="prefix"
-                    name=${this.isFullscreen
-                      ? 'fullscreen-exit'
-                      : 'arrows-angle-expand'}
+                    name=${
+                      this.isFullscreen
+                        ? 'fullscreen-exit'
+                        : 'arrows-angle-expand'
+                    }
                   ></sl-icon>
                   ${this.isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
                 </sl-button>
@@ -1739,18 +1775,18 @@ export class AgentDetailView extends LitElement {
               style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--sl-spacing-large); margin-bottom: var(--sl-spacing-large);"
             >
               <div
-                style="background: ${this.isFullscreen
-                  ? '#0f172a'
-                  : 'var(--sl-color-neutral-50)'}; padding: var(--sl-spacing-large); border-radius: var(--sl-border-radius-medium); border: 1px solid ${this
-                  .isFullscreen
-                  ? '#334155'
-                  : 'var(--sl-color-neutral-200)'};"
+                style="background: ${
+                  this.isFullscreen ? '#0f172a' : 'var(--sl-color-neutral-50)'
+                }; padding: var(--sl-spacing-large); border-radius: var(--sl-border-radius-medium); border: 1px solid ${
+                  this.isFullscreen ? '#334155' : 'var(--sl-color-neutral-200)'
+                };"
               >
                 <div
-                  style="font-weight: 600; font-size: var(--sl-font-size-small); color: ${this
-                    .isFullscreen
-                    ? '#38bdf8'
-                    : 'var(--sl-color-primary-700)'}; margin-bottom: var(--sl-spacing-medium); text-transform: uppercase;"
+                  style="font-weight: 600; font-size: var(--sl-font-size-small); color: ${
+                    this.isFullscreen
+                      ? '#38bdf8'
+                      : 'var(--sl-color-primary-700)'
+                  }; margin-bottom: var(--sl-spacing-medium); text-transform: uppercase;"
                 >
                   Connection Details
                 </div>
@@ -1785,46 +1821,50 @@ export class AgentDetailView extends LitElement {
               </div>
 
               <div
-                style="background: ${this.isFullscreen
-                  ? '#0f172a'
-                  : 'var(--sl-color-neutral-50)'}; padding: var(--sl-spacing-large); border-radius: var(--sl-border-radius-medium); border: 1px solid ${this
-                  .isFullscreen
-                  ? '#334155'
-                  : 'var(--sl-color-neutral-200)'}; display: flex; flex-direction: column; justify-content: space-between;"
+                style="background: ${
+                  this.isFullscreen ? '#0f172a' : 'var(--sl-color-neutral-50)'
+                }; padding: var(--sl-spacing-large); border-radius: var(--sl-border-radius-medium); border: 1px solid ${
+                  this.isFullscreen ? '#334155' : 'var(--sl-color-neutral-200)'
+                }; display: flex; flex-direction: column; justify-content: space-between;"
               >
                 <div>
                   <div
-                    style="font-weight: 600; font-size: var(--sl-font-size-small); color: ${this
-                      .isFullscreen
-                      ? '#38bdf8'
-                      : 'var(--sl-color-primary-700)'}; margin-bottom: var(--sl-spacing-small); text-transform: uppercase;"
+                    style="font-weight: 600; font-size: var(--sl-font-size-small); color: ${
+                      this.isFullscreen
+                        ? '#38bdf8'
+                        : 'var(--sl-color-primary-700)'
+                    }; margin-bottom: var(--sl-spacing-small); text-transform: uppercase;"
                   >
                     Quick Connect Command
                   </div>
                   <p
-                    style="font-size: var(--sl-font-size-small); margin: 0 0 var(--sl-spacing-medium) 0; color: ${this
-                      .isFullscreen
-                      ? '#cbd5e1'
-                      : 'var(--sl-color-neutral-600)'};"
+                    style="font-size: var(--sl-font-size-small); margin: 0 0 var(--sl-spacing-medium) 0; color: ${
+                      this.isFullscreen
+                        ? '#cbd5e1'
+                        : 'var(--sl-color-neutral-600)'
+                    };"
                   >
                     Run this command in your local terminal to establish an
                     interactive SSH session.
                   </p>
                 </div>
                 <div
-                  style="display: flex; align-items: center; gap: var(--sl-spacing-small); background: ${this
-                    .isFullscreen
-                    ? '#1e293b'
-                    : 'var(--sl-color-neutral-100)'}; padding: var(--sl-spacing-small) var(--sl-spacing-medium); border-radius: var(--sl-border-radius-medium); border: 1px solid ${this
-                    .isFullscreen
-                    ? '#475569'
-                    : 'var(--sl-color-neutral-300)'};"
+                  style="display: flex; align-items: center; gap: var(--sl-spacing-small); background: ${
+                    this.isFullscreen
+                      ? '#1e293b'
+                      : 'var(--sl-color-neutral-100)'
+                  }; padding: var(--sl-spacing-small) var(--sl-spacing-medium); border-radius: var(--sl-border-radius-medium); border: 1px solid ${
+                    this.isFullscreen
+                      ? '#475569'
+                      : 'var(--sl-color-neutral-300)'
+                  };"
                 >
                   <code
-                    style="font-family: var(--sl-font-mono); font-size: 0.85rem; color: ${this
-                      .isFullscreen
-                      ? '#38bdf8'
-                      : 'var(--sl-color-neutral-800)'}; flex: 1; overflow-x: auto; white-space: nowrap;"
+                    style="font-family: var(--sl-font-mono); font-size: 0.85rem; color: ${
+                      this.isFullscreen
+                        ? '#38bdf8'
+                        : 'var(--sl-color-neutral-800)'
+                    }; flex: 1; overflow-x: auto; white-space: nowrap;"
                   >
                     ssh ${username}@${host} -p ${port}
                   </code>
@@ -1836,39 +1876,38 @@ export class AgentDetailView extends LitElement {
             </div>
 
             <div
-              style="background: ${this.isFullscreen
-                ? '#1e293b'
-                : 'var(--sl-color-neutral-50)'}; padding: var(--sl-spacing-large); border-radius: var(--sl-border-radius-medium); border: 1px solid ${this
-                .isFullscreen
-                ? '#334155'
-                : 'var(--sl-color-neutral-200)'};"
+              style="background: ${
+                this.isFullscreen ? '#1e293b' : 'var(--sl-color-neutral-50)'
+              }; padding: var(--sl-spacing-large); border-radius: var(--sl-border-radius-medium); border: 1px solid ${
+                this.isFullscreen ? '#334155' : 'var(--sl-color-neutral-200)'
+              };"
             >
               <h4
-                style="margin: 0 0 var(--sl-spacing-small) 0; font-weight: 600; color: ${this
-                  .isFullscreen
-                  ? '#ffffff'
-                  : 'var(--sl-color-neutral-800)'};"
+                style="margin: 0 0 var(--sl-spacing-small) 0; font-weight: 600; color: ${
+                  this.isFullscreen ? '#ffffff' : 'var(--sl-color-neutral-800)'
+                };"
               >
                 How to access pre-exposed VNC / Web services
               </h4>
               <p
-                style="margin: 0; font-size: var(--sl-font-size-small); line-height: 1.5; color: ${this
-                  .isFullscreen
-                  ? '#cbd5e1'
-                  : 'var(--sl-color-neutral-600)'};"
+                style="margin: 0; font-size: var(--sl-font-size-small); line-height: 1.5; color: ${
+                  this.isFullscreen ? '#cbd5e1' : 'var(--sl-color-neutral-600)'
+                };"
               >
                 Since VNC and Agent Web UIs are typically hosted internally
                 within the isolated VM node sandbox for security, you should
                 tunnel the ports securely using local port forwarding. E.g., to
                 access a web dashboard on port 8000, run:
                 <code
-                  style="display: block; margin: var(--sl-spacing-small) 0; padding: var(--sl-spacing-small); background: ${this
-                    .isFullscreen
-                    ? '#0f172a'
-                    : 'var(--sl-color-neutral-100)'}; border-radius: 4px; font-family: var(--sl-font-mono); font-size: 0.85rem; color: ${this
-                    .isFullscreen
-                    ? '#38bdf8'
-                    : 'var(--sl-color-neutral-800)'};"
+                  style="display: block; margin: var(--sl-spacing-small) 0; padding: var(--sl-spacing-small); background: ${
+                    this.isFullscreen
+                      ? '#0f172a'
+                      : 'var(--sl-color-neutral-100)'
+                  }; border-radius: 4px; font-family: var(--sl-font-mono); font-size: 0.85rem; color: ${
+                    this.isFullscreen
+                      ? '#38bdf8'
+                      : 'var(--sl-color-neutral-800)'
+                  };"
                 >
                   ssh -L 8000:localhost:8000 ${username}@${host} -p ${port} -N
                 </code>
@@ -1897,8 +1936,9 @@ export class AgentDetailView extends LitElement {
     return html`
       <div
         class="${this.isFullscreen ? 'fullscreen-mode' : ''}"
-        style="${this.isFullscreen
-          ? `
+        style="${
+          this.isFullscreen
+            ? `
           position: fixed;
           top: 0;
           left: 0;
@@ -1914,13 +1954,13 @@ export class AgentDetailView extends LitElement {
           gap: var(--sl-spacing-large);
           overflow: auto;
         `
-          : ''}"
+            : ''
+        }"
       >
         <sl-card
-          style="border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large); background: ${this
-            .isFullscreen
-            ? '#1e293b'
-            : '#ffffff'}; width: 100%;"
+          style="border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large); background: ${
+            this.isFullscreen ? '#1e293b' : '#ffffff'
+          }; width: 100%;"
         >
           <div style="padding: var(--sl-spacing-large);">
             <div
@@ -1928,18 +1968,20 @@ export class AgentDetailView extends LitElement {
             >
               <div>
                 <div
-                  style="font-weight: 700; font-size: 1.25rem; color: ${this
-                    .isFullscreen
-                    ? '#ffffff'
-                    : 'var(--sl-color-neutral-800)'};"
+                  style="font-weight: 700; font-size: 1.25rem; color: ${
+                    this.isFullscreen
+                      ? '#ffffff'
+                      : 'var(--sl-color-neutral-800)'
+                  };"
                 >
                   Agent Web UI Portal Access
                 </div>
                 <div
-                  style="font-size: var(--sl-font-size-small); color: ${this
-                    .isFullscreen
-                    ? '#cbd5e1'
-                    : 'var(--sl-color-neutral-600)'}; margin-top: 4px;"
+                  style="font-size: var(--sl-font-size-small); color: ${
+                    this.isFullscreen
+                      ? '#cbd5e1'
+                      : 'var(--sl-color-neutral-600)'
+                  }; margin-top: 4px;"
                 >
                   Access the web-based operational dashboards served directly
                   from the agent runtime.
@@ -1958,9 +2000,11 @@ export class AgentDetailView extends LitElement {
                 >
                   <sl-icon
                     slot="prefix"
-                    name=${this.isFullscreen
-                      ? 'fullscreen-exit'
-                      : 'arrows-angle-expand'}
+                    name=${
+                      this.isFullscreen
+                        ? 'fullscreen-exit'
+                        : 'arrows-angle-expand'
+                    }
                   ></sl-icon>
                   ${this.isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
                 </sl-button>
@@ -1971,45 +2015,49 @@ export class AgentDetailView extends LitElement {
               style="display: flex; flex-direction: column; gap: var(--sl-spacing-large);"
             >
               <div
-                style="background: ${this.isFullscreen
-                  ? '#0f172a'
-                  : 'var(--sl-color-neutral-50)'}; padding: var(--sl-spacing-large); border-radius: var(--sl-border-radius-medium); border: 1px solid ${this
-                  .isFullscreen
-                  ? '#334155'
-                  : 'var(--sl-color-neutral-200)'};"
+                style="background: ${
+                  this.isFullscreen ? '#0f172a' : 'var(--sl-color-neutral-50)'
+                }; padding: var(--sl-spacing-large); border-radius: var(--sl-border-radius-medium); border: 1px solid ${
+                  this.isFullscreen ? '#334155' : 'var(--sl-color-neutral-200)'
+                };"
               >
                 <div
-                  style="font-weight: 600; font-size: var(--sl-font-size-small); color: ${this
-                    .isFullscreen
-                    ? '#38bdf8'
-                    : 'var(--sl-color-primary-700)'}; margin-bottom: var(--sl-spacing-medium); text-transform: uppercase;"
+                  style="font-weight: 600; font-size: var(--sl-font-size-small); color: ${
+                    this.isFullscreen
+                      ? '#38bdf8'
+                      : 'var(--sl-color-primary-700)'
+                  }; margin-bottom: var(--sl-spacing-medium); text-transform: uppercase;"
                 >
                   Port Forwarding Instructions
                 </div>
                 <p
-                  style="font-size: var(--sl-font-size-small); line-height: 1.5; color: ${this
-                    .isFullscreen
-                    ? '#cbd5e1'
-                    : 'var(--sl-color-neutral-600)'};"
+                  style="font-size: var(--sl-font-size-small); line-height: 1.5; color: ${
+                    this.isFullscreen
+                      ? '#cbd5e1'
+                      : 'var(--sl-color-neutral-600)'
+                  };"
                 >
                   The agent serves its Web UI inside the isolated VM node
                   sandbox (typically on port 8080/8000). Establish an SSH tunnel
                   to access it securely from your local browser:
                 </p>
                 <div
-                  style="display: flex; align-items: center; gap: var(--sl-spacing-small); background: ${this
-                    .isFullscreen
-                    ? '#1e293b'
-                    : 'var(--sl-color-neutral-100)'}; padding: var(--sl-spacing-small) var(--sl-spacing-medium); border-radius: var(--sl-border-radius-medium); border: 1px solid ${this
-                    .isFullscreen
-                    ? '#475569'
-                    : 'var(--sl-color-neutral-300)'}; margin-top: var(--sl-spacing-small);"
+                  style="display: flex; align-items: center; gap: var(--sl-spacing-small); background: ${
+                    this.isFullscreen
+                      ? '#1e293b'
+                      : 'var(--sl-color-neutral-100)'
+                  }; padding: var(--sl-spacing-small) var(--sl-spacing-medium); border-radius: var(--sl-border-radius-medium); border: 1px solid ${
+                    this.isFullscreen
+                      ? '#475569'
+                      : 'var(--sl-color-neutral-300)'
+                  }; margin-top: var(--sl-spacing-small);"
                 >
                   <code
-                    style="font-family: var(--sl-font-mono); font-size: 0.85rem; color: ${this
-                      .isFullscreen
-                      ? '#38bdf8'
-                      : 'var(--sl-color-neutral-800)'}; flex: 1; overflow-x: auto; white-space: nowrap;"
+                    style="font-family: var(--sl-font-mono); font-size: 0.85rem; color: ${
+                      this.isFullscreen
+                        ? '#38bdf8'
+                        : 'var(--sl-color-neutral-800)'
+                    }; flex: 1; overflow-x: auto; white-space: nowrap;"
                   >
                     ssh -L 8080:127.0.0.1:8080 ${username}@${host} -p ${port} -N
                   </code>
@@ -2020,26 +2068,27 @@ export class AgentDetailView extends LitElement {
               </div>
 
               <div
-                style="background: ${this.isFullscreen
-                  ? '#0f172a'
-                  : 'var(--sl-color-neutral-50)'}; padding: var(--sl-spacing-large); border-radius: var(--sl-border-radius-medium); border: 1px solid ${this
-                  .isFullscreen
-                  ? '#334155'
-                  : 'var(--sl-color-neutral-200)'};"
+                style="background: ${
+                  this.isFullscreen ? '#0f172a' : 'var(--sl-color-neutral-50)'
+                }; padding: var(--sl-spacing-large); border-radius: var(--sl-border-radius-medium); border: 1px solid ${
+                  this.isFullscreen ? '#334155' : 'var(--sl-color-neutral-200)'
+                };"
               >
                 <div
-                  style="font-weight: 600; font-size: var(--sl-font-size-small); color: ${this
-                    .isFullscreen
-                    ? '#38bdf8'
-                    : 'var(--sl-color-primary-700)'}; margin-bottom: var(--sl-spacing-medium); text-transform: uppercase;"
+                  style="font-weight: 600; font-size: var(--sl-font-size-small); color: ${
+                    this.isFullscreen
+                      ? '#38bdf8'
+                      : 'var(--sl-color-primary-700)'
+                  }; margin-bottom: var(--sl-spacing-medium); text-transform: uppercase;"
                 >
                   Access Dashboard
                 </div>
                 <p
-                  style="font-size: var(--sl-font-size-small); line-height: 1.5; color: ${this
-                    .isFullscreen
-                    ? '#cbd5e1'
-                    : 'var(--sl-color-neutral-600)'}; margin-bottom: var(--sl-spacing-medium);"
+                  style="font-size: var(--sl-font-size-small); line-height: 1.5; color: ${
+                    this.isFullscreen
+                      ? '#cbd5e1'
+                      : 'var(--sl-color-neutral-600)'
+                  }; margin-bottom: var(--sl-spacing-medium);"
                 >
                   Once the tunnel is connected, access the web control panel of
                   the agent at:
@@ -2079,64 +2128,69 @@ export class AgentDetailView extends LitElement {
             >
               Flows Using This Agent Node
             </div>
-            ${this.associatedFlows.length > 0
-              ? html`
-                  <a
-                    href="/console/flows/new?agent_id=${this.agentId}"
-                    style="text-decoration: none;"
-                  >
-                    <sl-button variant="primary" size="small">
-                      <sl-icon name="plus-lg" slot="prefix"></sl-icon>
-                      Create New Flow
-                    </sl-button>
-                  </a>
-                `
-              : nothing}
+            ${
+              this.associatedFlows.length > 0
+                ? html`
+                    <a
+                      href="/console/flows/new?agent_id=${this.agentId}"
+                      style="text-decoration: none;"
+                    >
+                      <sl-button variant="primary" size="small">
+                        <sl-icon name="plus-lg" slot="prefix"></sl-icon>
+                        Create New Flow
+                      </sl-button>
+                    </a>
+                  `
+                : nothing
+            }
           </div>
 
-          ${this.associatedFlows.length === 0
-            ? html`
-                <div
-                  style="
+          ${
+            this.associatedFlows.length === 0
+              ? html`
+                  <div
+                    style="
                     text-align: center;
                     padding: var(--sl-spacing-3x-large);
                     background: var(--sl-color-neutral-50);
                     border-radius: var(--sl-border-radius-medium);
                     color: var(--sl-color-neutral-500);
                   "
-                >
-                  <sl-icon
-                    name="diagram-3"
-                    style="font-size: 2.5rem; margin-bottom: var(--sl-spacing-medium); opacity: 0.6;"
-                  ></sl-icon>
-                  <p style="margin: 0; font-size: var(--sl-font-size-medium);">
-                    This agent is not currently bound to any event-driven or
-                    automated flows.
-                  </p>
-                  <p
-                    style="margin: 4px 0 0 0; font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-400);"
                   >
-                    Go to the Flows panel to bind this persistent node to an
-                    automation task.
-                  </p>
-                  <a
-                    href="/console/flows/new?agent_id=${this.agentId}"
-                    style="text-decoration: none; display: inline-block; margin-top: var(--sl-spacing-large);"
-                  >
-                    <sl-button variant="primary" size="small"
-                      >Create New Flow</sl-button
+                    <sl-icon
+                      name="diagram-3"
+                      style="font-size: 2.5rem; margin-bottom: var(--sl-spacing-medium); opacity: 0.6;"
+                    ></sl-icon>
+                    <p
+                      style="margin: 0; font-size: var(--sl-font-size-medium);"
                     >
-                  </a>
-                </div>
-              `
-            : html`
-                <div
-                  style="display: flex; flex-direction: column; gap: var(--sl-spacing-medium);"
-                >
-                  ${this.associatedFlows.map(
-                    (flow) => html`
-                      <div
-                        style="
+                      This agent is not currently bound to any event-driven or
+                      automated flows.
+                    </p>
+                    <p
+                      style="margin: 4px 0 0 0; font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-400);"
+                    >
+                      Go to the Flows panel to bind this persistent node to an
+                      automation task.
+                    </p>
+                    <a
+                      href="/console/flows/new?agent_id=${this.agentId}"
+                      style="text-decoration: none; display: inline-block; margin-top: var(--sl-spacing-large);"
+                    >
+                      <sl-button variant="primary" size="small"
+                        >Create New Flow</sl-button
+                      >
+                    </a>
+                  </div>
+                `
+              : html`
+                  <div
+                    style="display: flex; flex-direction: column; gap: var(--sl-spacing-medium);"
+                  >
+                    ${this.associatedFlows.map(
+                      (flow) => html`
+                        <div
+                          style="
                         background: #ffffff;
                         border: 1px solid var(--sl-color-neutral-200);
                         border-radius: var(--sl-border-radius-medium);
@@ -2146,54 +2200,57 @@ export class AgentDetailView extends LitElement {
                         align-items: center;
                         box-shadow: 0 2px 4px rgba(19,27,46,0.01);
                       "
-                      >
-                        <div>
-                          <div
-                            style="font-weight: 600; font-size: var(--sl-font-size-medium); color: var(--sl-color-neutral-800); display: flex; align-items: center; gap: 8px;"
-                          >
-                            <sl-icon
-                              name=${flow.icon || 'diagram-3'}
-                              style="color: var(--sl-color-primary-500);"
-                            ></sl-icon>
-                            ${flow.name}
-                          </div>
-                          <div
-                            style="font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-500); margin-top: 4px;"
-                          >
-                            ${flow.description || 'No description provided.'}
-                          </div>
-                          <div
-                            style="font-size: var(--sl-font-size-x-small); color: var(--sl-color-neutral-400); margin-top: 6px; display: flex; gap: 12px;"
-                          >
-                            <span
-                              >Trigger:
-                              <strong
-                                >${flow.trigger_event_source === 'webhook'
-                                  ? 'Webhook'
-                                  : 'Tracker'}</strong
-                              ></span
-                            >
-                            <span
-                              >Status:
-                              <strong
-                                >${flow.is_enabled
-                                  ? 'Enabled'
-                                  : 'Disabled'}</strong
-                              ></span
-                            >
-                          </div>
-                        </div>
-                        <a
-                          href="/console/flows/${flow.id}"
-                          style="text-decoration: none;"
                         >
-                          <sl-button size="small">Configure Flow</sl-button>
-                        </a>
-                      </div>
-                    `
-                  )}
-                </div>
-              `}
+                          <div>
+                            <div
+                              style="font-weight: 600; font-size: var(--sl-font-size-medium); color: var(--sl-color-neutral-800); display: flex; align-items: center; gap: 8px;"
+                            >
+                              <sl-icon
+                                name=${flow.icon || 'diagram-3'}
+                                style="color: var(--sl-color-primary-500);"
+                              ></sl-icon>
+                              ${flow.name}
+                            </div>
+                            <div
+                              style="font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-500); margin-top: 4px;"
+                            >
+                              ${flow.description || 'No description provided.'}
+                            </div>
+                            <div
+                              style="font-size: var(--sl-font-size-x-small); color: var(--sl-color-neutral-400); margin-top: 6px; display: flex; gap: 12px;"
+                            >
+                              <span
+                                >Trigger:
+                                <strong
+                                  >${
+                                    flow.trigger_event_source === 'webhook'
+                                      ? 'Webhook'
+                                      : 'Tracker'
+                                  }</strong
+                                ></span
+                              >
+                              <span
+                                >Status:
+                                <strong
+                                  >${
+                                    flow.is_enabled ? 'Enabled' : 'Disabled'
+                                  }</strong
+                                ></span
+                              >
+                            </div>
+                          </div>
+                          <a
+                            href="/console/flows/${flow.id}"
+                            style="text-decoration: none;"
+                          >
+                            <sl-button size="small">Configure Flow</sl-button>
+                          </a>
+                        </div>
+                      `
+                    )}
+                  </div>
+                `
+          }
         </div>
       </sl-card>
     `;
@@ -2260,9 +2317,11 @@ export class AgentDetailView extends LitElement {
                 this.agent.agent_kind || this.agent.session_source_type
               )}
               · ${this.agent.session_source_id}
-              ${this.agent.session_reference
-                ? ` · ${this.agent.session_reference}`
-                : ''}
+              ${
+                this.agent.session_reference
+                  ? ` · ${this.agent.session_reference}`
+                  : ''
+              }
             </div>
 
             <div
@@ -2284,67 +2343,77 @@ export class AgentDetailView extends LitElement {
                 <sl-badge variant=${this.getLiveValidationVariant()}>
                   ${this.getLiveValidationLabel()}
                 </sl-badge>
-                ${getAgentControlState(this.agent).visible
-                  ? html`
-                      <sl-tooltip
-                        content=${getAgentControlState(this.agent).detail}
-                      >
-                        <sl-badge
-                          variant=${getAgentControlState(this.agent)
-                            .badgeVariant}
+                ${
+                  getAgentControlState(this.agent).visible
+                    ? html`
+                        <sl-tooltip
+                          content=${getAgentControlState(this.agent).detail}
                         >
-                          ${getAgentControlState(this.agent).label}
-                        </sl-badge>
-                      </sl-tooltip>
-                    `
-                  : html`<sl-badge variant="neutral"
-                      >No Agent Control</sl-badge
-                    >`}
+                          <sl-badge
+                            variant=${
+                              getAgentControlState(this.agent).badgeVariant
+                            }
+                          >
+                            ${getAgentControlState(this.agent).label}
+                          </sl-badge>
+                        </sl-tooltip>
+                      `
+                    : html`<sl-badge variant="neutral"
+                        >No Agent Control</sl-badge
+                      >`
+                }
                 <sl-badge variant="primary"
                   >${this.agent.enrolled_via}</sl-badge
                 >
-                ${this.liveActivity.modelCalls || this.liveActivity.toolCalls
-                  ? html`
-                      <sl-badge variant="primary">
-                        Live
-                        ${this.liveActivity.modelCalls +
-                        this.liveActivity.toolCalls}
-                      </sl-badge>
-                    `
-                  : null}
+                ${
+                  this.liveActivity.modelCalls || this.liveActivity.toolCalls
+                    ? html`
+                        <sl-badge variant="primary">
+                          Live
+                          ${
+                            this.liveActivity.modelCalls +
+                            this.liveActivity.toolCalls
+                          }
+                        </sl-badge>
+                      `
+                    : null
+                }
               </div>
 
-              ${this.agent.tags && Object.keys(this.agent.tags).length > 0
-                ? html`
-                    <div
-                      style="display: flex; gap: var(--sl-spacing-small); align-items: center; margin-top: var(--sl-spacing-x-small);"
-                    >
+              ${
+                this.agent.tags && Object.keys(this.agent.tags).length > 0
+                  ? html`
                       <div
-                        style="font-size: var(--sl-font-size-small); font-weight: 500; color: var(--sl-color-neutral-700);"
+                        style="display: flex; gap: var(--sl-spacing-small); align-items: center; margin-top: var(--sl-spacing-x-small);"
                       >
-                        Tags:
+                        <div
+                          style="font-size: var(--sl-font-size-small); font-weight: 500; color: var(--sl-color-neutral-700);"
+                        >
+                          Tags:
+                        </div>
+                        <div style="display: flex; flex-wrap: wrap; gap: 4px;">
+                          ${Object.entries(this.agent.tags).map(
+                            ([k, v]) => html`
+                              <sl-badge
+                                variant="neutral"
+                                style="text-transform: none;"
+                              >
+                                <span style="opacity: 0.7">${k}</span>${
+                                  v && v !== 'true'
+                                    ? html`<span
+                                          style="opacity: 0.4; margin: 0 4px;"
+                                          >=</span
+                                        >${v}`
+                                    : ''
+                                }
+                              </sl-badge>
+                            `
+                          )}
+                        </div>
                       </div>
-                      <div style="display: flex; flex-wrap: wrap; gap: 4px;">
-                        ${Object.entries(this.agent.tags).map(
-                          ([k, v]) => html`
-                            <sl-badge
-                              variant="neutral"
-                              style="text-transform: none;"
-                            >
-                              <span style="opacity: 0.7">${k}</span>${v &&
-                              v !== 'true'
-                                ? html`<span
-                                      style="opacity: 0.4; margin: 0 4px;"
-                                      >=</span
-                                    >${v}`
-                                : ''}
-                            </sl-badge>
-                          `
-                        )}
-                      </div>
-                    </div>
-                  `
-                : nothing}
+                    `
+                  : nothing
+              }
             </div>
           </div>
 
@@ -2424,282 +2493,313 @@ export class AgentDetailView extends LitElement {
                   >Models & Spend</sl-tab
                 >
 
-                ${supportsSSH
-                  ? html`
-                      <sl-tab
-                        slot="nav"
-                        panel="ssh"
-                        ?active=${this.activeTab === 'ssh'}
-                        >Command Terminal (SSH)</sl-tab
-                      >
-                      ${isVncEnabled
-                        ? html`
-                            <sl-tab
-                              slot="nav"
-                              panel="vnc"
-                              ?active=${this.activeTab === 'vnc'}
-                              >Graphical UI (VNC)</sl-tab
-                            >
-                          `
-                        : nothing}
-                      <sl-tab
-                        slot="nav"
-                        panel="dashboard"
-                        ?active=${this.activeTab === 'dashboard'}
-                        >Agent Web UI</sl-tab
-                      >
-                    `
-                  : nothing}
-                ${controlEnabled
-                  ? html`
-                      <sl-tab
-                        slot="nav"
-                        panel="associated-flows"
-                        ?active=${this.activeTab === 'associated-flows'}
-                        >Associated Flows
-                        (${this.associatedFlows.length})</sl-tab
-                      >
-                    `
-                  : nothing}
+                ${
+                  supportsSSH
+                    ? html`
+                        <sl-tab
+                          slot="nav"
+                          panel="ssh"
+                          ?active=${this.activeTab === 'ssh'}
+                          >Command Terminal (SSH)</sl-tab
+                        >
+                        ${
+                          isVncEnabled
+                            ? html`
+                                <sl-tab
+                                  slot="nav"
+                                  panel="vnc"
+                                  ?active=${this.activeTab === 'vnc'}
+                                  >Graphical UI (VNC)</sl-tab
+                                >
+                              `
+                            : nothing
+                        }
+                        <sl-tab
+                          slot="nav"
+                          panel="dashboard"
+                          ?active=${this.activeTab === 'dashboard'}
+                          >Agent Web UI</sl-tab
+                        >
+                      `
+                    : nothing
+                }
+                ${
+                  controlEnabled
+                    ? html`
+                        <sl-tab
+                          slot="nav"
+                          panel="associated-flows"
+                          ?active=${this.activeTab === 'associated-flows'}
+                          >Associated Flows
+                          (${this.associatedFlows.length})</sl-tab
+                        >
+                      `
+                    : nothing
+                }
               </sl-tab-group>
             </div>
 
-            ${this.activeTab === 'sessions'
-              ? html`
-                  <sl-card
-                    style="border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large); width: 100%;"
-                  >
-                    <div
-                      class="stack"
-                      style="padding: var(--sl-spacing-large);"
+            ${
+              this.activeTab === 'sessions'
+                ? html`
+                    <sl-card
+                      style="border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large); width: 100%;"
                     >
                       <div
-                        class="hero"
-                        style="margin-bottom: var(--sl-spacing-large);"
+                        class="stack"
+                        style="padding: var(--sl-spacing-large);"
                       >
                         <div
-                          style="display: flex; justify-content: space-between; align-items: center; width: 100%;"
+                          class="hero"
+                          style="margin-bottom: var(--sl-spacing-large);"
                         >
-                          <div>
-                            <div
-                              class="hero-title"
-                              style="display: flex; align-items: center; gap: 8px;"
-                            >
-                              Sessions History
-                              <sl-icon-button
-                                name="arrow-clockwise"
-                                style="font-size: 1.1rem; color: var(--sl-color-neutral-500);"
-                                @click=${() => this.loadData(true)}
-                              ></sl-icon-button>
-                            </div>
-                            <div class="meta-line">
-                              Expand a session to view its captured
-                              interactions.
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                      <preloop-session-observer
-                        scope="managed_agent"
-                        .scopeId=${this.agentId}
-                        .sessions=${this.sessions}
-                        layout="embedded"
-                        defaultReplayMode="timeline"
-                        .features=${{
-                          summaries: true,
-                          optimization:
-                            this.featureFlags.session_optimization === true,
-                          auditLinks: true,
-                          liveFollow: true,
-                        }}
-                      ></preloop-session-observer>
-                    </div>
-                  </sl-card>
-                `
-              : nothing}
-            ${this.activeTab === 'tools'
-              ? html`
-                  <sl-card
-                    class="tools-card"
-                    style="width: 100%; overflow: auto; max-height: 800px; display: flex; flex-direction: column; border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large);"
-                  >
-                    <div
-                      class="stack"
-                      style="overflow-y: auto; overflow-x: hidden; height: 100%; padding: var(--sl-spacing-large);"
-                    >
-                      <div
-                        class="hero"
-                        style="flex-shrink: 0; margin-bottom: var(--sl-spacing-medium);"
-                      >
-                        <div
-                          style="display: flex; justify-content: space-between; align-items: center; width: 100%;"
-                        >
-                          <div>
-                            <div class="hero-title">Tools & Governance</div>
-                            <div class="meta-line">
-                              Agent-specific configurations overrides applying
-                              only to this agent.
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      <tools-editor-component
-                        mode="scoped"
-                        ?collapseByDefault=${true}
-                        .tools=${this.toolCatalog}
-                        .mcpServers=${this.mcpServers}
-                        .scopedToolRules=${this.scopedToolRules}
-                        .toolEnabledOverrides=${this.toolEnabledOverrides}
-                        .approvalPolicies=${this.approvalWorkflows}
-                        .features=${this.featureFlags}
-                        @save-rule=${(e: CustomEvent) =>
-                          this.saveScopedToolRule(
-                            e.detail.tool.name,
-                            e.detail.existingRule || e.detail.rule,
-                            e.detail.formData
-                          )}
-                        @delete-rule=${(e: CustomEvent) =>
-                          this.deleteScopedToolRule(
-                            e.detail.tool.name,
-                            e.detail.rule.id
-                          )}
-                        @reorder-rules=${(e: CustomEvent) =>
-                          this.reorderScopedToolRules(
-                            e.detail.tool.name,
-                            e.detail.reorderedRules
-                          )}
-                        @toggle-enabled=${this.toggleToolEnabledOverride}
-                        @revert-tool=${this.revertScopedTool}
-                        @policy-created=${() => this.loadData()}
-                      ></tools-editor-component>
-                    </div>
-                  </sl-card>
-                `
-              : nothing}
-            ${this.activeTab === 'models'
-              ? html`
-                  <sl-card
-                    style="border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large); width: 100%;"
-                  >
-                    <div
-                      class="stack"
-                      style="padding: var(--sl-spacing-large);"
-                    >
-                      <div
-                        class="hero"
-                        style="margin-bottom: var(--sl-spacing-large);"
-                      >
-                        <div
-                          style="display: flex; justify-content: space-between; align-items: center; width: 100%;"
-                        >
-                          <div>
-                            <div class="hero-title">Models & Spend</div>
-                            <div class="meta-line">
-                              Assign budget limits restricting maximum spend per
-                              month. If a model does not have a budget, it will
-                              be prohibited.
-                            </div>
-                          </div>
-                          <sl-button
-                            size="small"
-                            @click=${() => {
-                              this.budgetsDialogJson = this.modelBudgetsText;
-                              this.updateBudgetsDialogOpen = true;
-                            }}
+                          <div
+                            style="display: flex; justify-content: space-between; align-items: center; width: 100%;"
                           >
-                            <sl-icon slot="prefix" name="pencil"></sl-icon>
-                            Edit Budgets
-                          </sl-button>
+                            <div>
+                              <div
+                                class="hero-title"
+                                style="display: flex; align-items: center; gap: 8px;"
+                              >
+                                Sessions History
+                                <sl-icon-button
+                                  name="arrow-clockwise"
+                                  style="font-size: 1.1rem; color: var(--sl-color-neutral-500);"
+                                  @click=${() => this.loadData(true)}
+                                ></sl-icon-button>
+                              </div>
+                              <div class="meta-line">
+                                Expand a session to view its captured
+                                interactions.
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                        <preloop-session-observer
+                          scope="managed_agent"
+                          .scopeId=${this.agentId}
+                          .sessions=${this.sessions}
+                          layout="embedded"
+                          defaultReplayMode="timeline"
+                          .features=${{
+                            summaries: true,
+                            optimization:
+                              this.featureFlags.session_optimization === true,
+                            auditLinks: true,
+                            liveFollow: true,
+                          }}
+                        ></preloop-session-observer>
+                      </div>
+                    </sl-card>
+                  `
+                : nothing
+            }
+            ${
+              this.activeTab === 'tools'
+                ? html`
+                    <sl-card
+                      class="tools-card"
+                      style="width: 100%; overflow: auto; max-height: 800px; display: flex; flex-direction: column; border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large);"
+                    >
+                      <div
+                        class="stack"
+                        style="overflow-y: auto; overflow-x: hidden; height: 100%; padding: var(--sl-spacing-large);"
+                      >
+                        <div
+                          class="hero"
+                          style="flex-shrink: 0; margin-bottom: var(--sl-spacing-medium);"
+                        >
+                          <div
+                            style="display: flex; justify-content: space-between; align-items: center; width: 100%;"
+                          >
+                            <div>
+                              <div class="hero-title">Tools & Governance</div>
+                              <div class="meta-line">
+                                Agent-specific configurations overrides applying
+                                only to this agent.
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        <tools-editor-component
+                          mode="scoped"
+                          ?collapseByDefault=${true}
+                          .tools=${this.toolCatalog}
+                          .mcpServers=${this.mcpServers}
+                          .scopedToolRules=${this.scopedToolRules}
+                          .toolEnabledOverrides=${this.toolEnabledOverrides}
+                          .approvalPolicies=${this.approvalWorkflows}
+                          .features=${this.featureFlags}
+                          @save-rule=${(e: CustomEvent) =>
+                            this.saveScopedToolRule(
+                              e.detail.tool.name,
+                              e.detail.existingRule || e.detail.rule,
+                              e.detail.formData
+                            )}
+                          @delete-rule=${(e: CustomEvent) =>
+                            this.deleteScopedToolRule(
+                              e.detail.tool.name,
+                              e.detail.rule.id
+                            )}
+                          @reorder-rules=${(e: CustomEvent) =>
+                            this.reorderScopedToolRules(
+                              e.detail.tool.name,
+                              e.detail.reorderedRules
+                            )}
+                          @toggle-enabled=${this.toggleToolEnabledOverride}
+                          @revert-tool=${this.revertScopedTool}
+                          @policy-created=${() => this.loadData()}
+                        ></tools-editor-component>
+                      </div>
+                    </sl-card>
+                  `
+                : nothing
+            }
+            ${
+              this.activeTab === 'models'
+                ? html`
+                    <sl-card
+                      style="border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large); width: 100%;"
+                    >
+                      <div
+                        class="stack"
+                        style="padding: var(--sl-spacing-large);"
+                      >
+                        <div
+                          class="hero"
+                          style="margin-bottom: var(--sl-spacing-large);"
+                        >
+                          <div
+                            style="display: flex; justify-content: space-between; align-items: center; width: 100%;"
+                          >
+                            <div>
+                              <div class="hero-title">Models & Spend</div>
+                              <div class="meta-line">
+                                Assign budget limits restricting maximum spend
+                                per month. If a model does not have a budget, it
+                                will be prohibited.
+                              </div>
+                            </div>
+                            <sl-button
+                              size="small"
+                              @click=${() => {
+                                this.budgetsDialogJson = this.modelBudgetsText;
+                                this.updateBudgetsDialogOpen = true;
+                              }}
+                            >
+                              <sl-icon slot="prefix" name="pencil"></sl-icon>
+                              Edit Budgets
+                            </sl-button>
+                          </div>
+                        </div>
+                        <div
+                          class="stack"
+                          style="gap: var(--sl-spacing-medium);"
+                        >
+                          ${this.getDisplayedAgentModels().map(
+                            (model: string) => {
+                              const currentBudgets =
+                                this.getParsedModelBudgets();
+                              const budget = currentBudgets[model] || {};
+                              const isConfiguredModel =
+                                model === this.agent?.configured_model_alias;
+                              const usage =
+                                this.getUsageForDisplayedModel(model);
+                              const modelId = this.getDisplayedModelId(model);
+                              const showZeroSpend = isConfiguredModel && !usage;
+                              return html`
+                                <div
+                                  class="stat-card"
+                                  style="display: flex; gap: var(--sl-spacing-medium); align-items: center; justify-content: space-between;"
+                                >
+                                  <div class="stat-label">
+                                    <sl-icon
+                                      name="robot"
+                                      style="margin-right: 4px;"
+                                    ></sl-icon>
+                                    ${
+                                      modelId
+                                        ? html`<a
+                                            href="/console/ai-models/${encodeURIComponent(
+                                              modelId
+                                            )}"
+                                            class="session-link"
+                                            style="font-weight: 500;"
+                                            >${model}</a
+                                          >`
+                                        : html`<span style="font-weight: 500;"
+                                            >${model}</span
+                                          >`
+                                    }
+                                  </div>
+                                  ${
+                                    usage ||
+                                    budget.monthly_usd_limit ||
+                                    showZeroSpend
+                                      ? html`<div style="font-size: 0.9em;">
+                                          ${
+                                            usage || showZeroSpend
+                                              ? html`<span
+                                                  style="color: var(--sl-color-primary-600); font-weight: 600;"
+                                                  >${this.formatMoney(
+                                                    usage?.estimated_cost ?? 0
+                                                  )}
+                                                  spent</span
+                                                >`
+                                              : ''
+                                          }
+                                          ${
+                                            (usage || showZeroSpend) &&
+                                            budget.monthly_usd_limit
+                                              ? ' / '
+                                              : ''
+                                          }
+                                          ${
+                                            budget.monthly_usd_limit
+                                              ? html`<span
+                                                  style="color: var(--sl-color-neutral-600);"
+                                                  >${this.formatMoney(
+                                                    budget.monthly_usd_limit
+                                                  )}
+                                                  budget</span
+                                                >`
+                                              : ''
+                                          }
+                                        </div>`
+                                      : ''
+                                  }
+                                </div>
+                              `;
+                            }
+                          )}
                         </div>
                       </div>
-                      <div class="stack" style="gap: var(--sl-spacing-medium);">
-                        ${this.getDisplayedAgentModels().map(
-                          (model: string) => {
-                            const currentBudgets = this.getParsedModelBudgets();
-                            const budget = currentBudgets[model] || {};
-                            const isConfiguredModel =
-                              model === this.agent?.configured_model_alias;
-                            const usage = this.getUsageForDisplayedModel(model);
-                            const modelId = this.getDisplayedModelId(model);
-                            const showZeroSpend = isConfiguredModel && !usage;
-                            return html`
-                              <div
-                                class="stat-card"
-                                style="display: flex; gap: var(--sl-spacing-medium); align-items: center; justify-content: space-between;"
-                              >
-                                <div class="stat-label">
-                                  <sl-icon
-                                    name="robot"
-                                    style="margin-right: 4px;"
-                                  ></sl-icon>
-                                  ${modelId
-                                    ? html`<a
-                                        href="/console/ai-models/${encodeURIComponent(
-                                          modelId
-                                        )}"
-                                        class="session-link"
-                                        style="font-weight: 500;"
-                                        >${model}</a
-                                      >`
-                                    : html`<span style="font-weight: 500;"
-                                        >${model}</span
-                                      >`}
-                                </div>
-                                ${usage ||
-                                budget.monthly_usd_limit ||
-                                showZeroSpend
-                                  ? html`<div style="font-size: 0.9em;">
-                                      ${usage || showZeroSpend
-                                        ? html`<span
-                                            style="color: var(--sl-color-primary-600); font-weight: 600;"
-                                            >${this.formatMoney(
-                                              usage?.estimated_cost ?? 0
-                                            )}
-                                            spent</span
-                                          >`
-                                        : ''}
-                                      ${(usage || showZeroSpend) &&
-                                      budget.monthly_usd_limit
-                                        ? ' / '
-                                        : ''}
-                                      ${budget.monthly_usd_limit
-                                        ? html`<span
-                                            style="color: var(--sl-color-neutral-600);"
-                                            >${this.formatMoney(
-                                              budget.monthly_usd_limit
-                                            )}
-                                            budget</span
-                                          >`
-                                        : ''}
-                                    </div>`
-                                  : ''}
-                              </div>
-                            `;
-                          }
-                        )}
+                    </sl-card>
+                    <div style="margin-top: var(--sl-spacing-large);">
+                      <div
+                        class="hero-title"
+                        style="margin-bottom: var(--sl-spacing-small);"
+                      >
+                        Expensive tool definitions
                       </div>
+                      <tool-cost-flags-panel></tool-cost-flags-panel>
                     </div>
-                  </sl-card>
-                  <div style="margin-top: var(--sl-spacing-large);">
-                    <div
-                      class="hero-title"
-                      style="margin-bottom: var(--sl-spacing-small);"
-                    >
-                      Expensive tool definitions
-                    </div>
-                    <tool-cost-flags-panel></tool-cost-flags-panel>
-                  </div>
-                `
-              : nothing}
+                  `
+                : nothing
+            }
             ${this.activeTab === 'vnc' ? this.renderVNCTab() : nothing}
             ${this.activeTab === 'ssh' ? this.renderSSHTab() : nothing}
-            ${this.activeTab === 'dashboard'
-              ? this.renderDashboardTab()
-              : nothing}
-            ${this.activeTab === 'associated-flows'
-              ? this.renderFlowsTab()
-              : nothing}
+            ${
+              this.activeTab === 'dashboard'
+                ? this.renderDashboardTab()
+                : nothing
+            }
+            ${
+              this.activeTab === 'associated-flows'
+                ? this.renderFlowsTab()
+                : nothing
+            }
           `;
         })()}
       </div>

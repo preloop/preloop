@@ -365,9 +365,9 @@ export class IssuesDependenciesView extends LitElement {
               <li>
                 <div class="dependency-info">
                   <strong
-                    >${type === 'blocks'
-                      ? d.dependency_key
-                      : d.issue_key}</strong
+                    >${
+                      type === 'blocks' ? d.dependency_key : d.issue_key
+                    }</strong
                   >: ${issue?.title || 'Unknown Issue'}
                   <div class="dependency-reason">
                     ${d.reason} &bull; Confidence:
@@ -402,8 +402,10 @@ export class IssuesDependenciesView extends LitElement {
             size="small"
             variant="primary"
             outline
-            ?disabled=${uncommittedDependencies.length === 0 ||
-            this._committingAllForIssue === issueId}
+            ?disabled=${
+              uncommittedDependencies.length === 0 ||
+              this._committingAllForIssue === issueId
+            }
             .loading=${this._committingAllForIssue === issueId}
             @click="${() =>
               this._handleCommitAllDependencies(
@@ -495,11 +497,11 @@ export class IssuesDependenciesView extends LitElement {
                             () => html`
                               <sl-badge
                                 pill
-                                class="blocks-badge ${deps.blocks.some(
-                                  (d) => d.comes_from_tracker
-                                )
-                                  ? 'from-tracker'
-                                  : ''}"
+                                class="blocks-badge ${
+                                  deps.blocks.some((d) => d.comes_from_tracker)
+                                    ? 'from-tracker'
+                                    : ''
+                                }"
                               >
                                 <div class="dependency-badge-content">
                                   <sl-tooltip content="Blocks">
@@ -515,18 +517,22 @@ export class IssuesDependenciesView extends LitElement {
                                           ).toFixed(0)}%"
                                         >
                                           <span
-                                            class="${d.is_committed
-                                              ? 'is-committed'
-                                              : d.comes_from_tracker
-                                                ? 'from-tracker'
-                                                : ''}"
-                                            >#${d.dependency_key.match(
-                                              /\d+$/
-                                            )?.[0]}</span
+                                            class="${
+                                              d.is_committed
+                                                ? 'is-committed'
+                                                : d.comes_from_tracker
+                                                  ? 'from-tracker'
+                                                  : ''
+                                            }"
+                                            >#${
+                                              d.dependency_key.match(
+                                                /\d+$/
+                                              )?.[0]
+                                            }</span
                                           > </sl-tooltip
-                                        >${i < deps.blocks.length - 1
-                                          ? ', '
-                                          : ''}
+                                        >${
+                                          i < deps.blocks.length - 1 ? ', ' : ''
+                                        }
                                       `
                                     )}</span
                                   >
@@ -552,18 +558,22 @@ export class IssuesDependenciesView extends LitElement {
                                           ).toFixed(0)}%"
                                         >
                                           <span
-                                            class="${d.is_committed
-                                              ? 'is-committed'
-                                              : d.comes_from_tracker
-                                                ? 'from-tracker'
-                                                : ''}"
-                                            >#${d.issue_key.match(
-                                              /\d+$/
-                                            )?.[0]}</span
+                                            class="${
+                                              d.is_committed
+                                                ? 'is-committed'
+                                                : d.comes_from_tracker
+                                                  ? 'from-tracker'
+                                                  : ''
+                                            }"
+                                            >#${
+                                              d.issue_key.match(/\d+$/)?.[0]
+                                            }</span
                                           > </sl-tooltip
-                                        >${i < deps.blockedBy.length - 1
-                                          ? ', '
-                                          : ''}
+                                        >${
+                                          i < deps.blockedBy.length - 1
+                                            ? ', '
+                                            : ''
+                                        }
                                       `
                                     )}</span
                                   >
@@ -587,31 +597,37 @@ export class IssuesDependenciesView extends LitElement {
                         e.stopPropagation();
                         this._expandScanForRow(issue.id);
                       }}
-                      ?disabled=${this._loadingDependencies &&
-                      this._expandingIssueId !== issue.id}
+                      ?disabled=${
+                        this._loadingDependencies &&
+                        this._expandingIssueId !== issue.id
+                      }
                       .loading=${this._expandingIssueId === issue.id}
-                      variant=${this._expandingIssueId === issue.id
-                        ? 'primary'
-                        : 'default'}
+                      variant=${
+                        this._expandingIssueId === issue.id
+                          ? 'primary'
+                          : 'default'
+                      }
                       >Expand Scan</sl-button
                     >
                   </td>
                 </tr>
-                ${isExpanded
-                  ? html`
-                      <tr class="inline-detail-row">
-                        <td colspan="4">
-                          <div class="detail-view-card">
-                            <single-issue-detail-view .issue=${issue}>
-                              <div slot="additional-info">
-                                ${this._renderDependencyDetails(deps, issue.id)}
-                              </div>
-                            </single-issue-detail-view>
-                          </div>
-                        </td>
-                      </tr>
-                    `
-                  : ''}
+                ${
+                  isExpanded
+                    ? html`
+                        <tr class="inline-detail-row">
+                          <td colspan="4">
+                            <div class="detail-view-card">
+                              <single-issue-detail-view .issue=${issue}>
+                                <div slot="additional-info">
+                                  ${this._renderDependencyDetails(deps, issue.id)}
+                                </div>
+                              </single-issue-detail-view>
+                            </div>
+                          </td>
+                        </tr>
+                      `
+                    : ''
+                }
               `;
             })}
           </tbody>

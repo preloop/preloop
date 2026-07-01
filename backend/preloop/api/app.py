@@ -29,6 +29,7 @@ from preloop.api.auth import auth_router, get_current_active_user
 from preloop.api.endpoints import (
     account,
     agent_control,
+    agent_permission,
     anthropic_gateway,
     audio,
     approval_requests,
@@ -942,6 +943,11 @@ def create_app() -> FastAPI:
             agent_control.router,
             prefix="/api/v1",
             tags=["Agent Control"],
+        )
+        app.include_router(
+            agent_permission.router,
+            prefix="/api/v1",
+            tags=["Agent Permissions"],
         )
 
         # Impersonation router - Enterprise feature (loaded via admin plugin)

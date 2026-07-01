@@ -470,22 +470,28 @@ export class TeamManagementView extends LitElement {
                 </div>
                 <div class="team-details">
                   <h3 class="team-name">${team.name}</h3>
-                  ${team.description
-                    ? html`<p class="team-description">${team.description}</p>`
-                    : ''}
-                  ${(team as any).roles && (team as any).roles.length > 0
-                    ? html`
-                        <div class="team-roles">
-                          <strong>Roles:</strong>
-                          ${(team as any).roles.map(
-                            (role: any) =>
-                              html`<sl-badge variant="primary"
-                                >${role.name}</sl-badge
-                              >`
-                          )}
-                        </div>
-                      `
-                    : ''}
+                  ${
+                    team.description
+                      ? html`<p class="team-description">
+                          ${team.description}
+                        </p>`
+                      : ''
+                  }
+                  ${
+                    (team as any).roles && (team as any).roles.length > 0
+                      ? html`
+                          <div class="team-roles">
+                            <strong>Roles:</strong>
+                            ${(team as any).roles.map(
+                              (role: any) =>
+                                html`<sl-badge variant="primary"
+                                  >${role.name}</sl-badge
+                                >`
+                            )}
+                          </div>
+                        `
+                      : ''
+                  }
                 </div>
                 <div class="team-actions">
                   <sl-button
@@ -598,28 +604,30 @@ export class TeamManagementView extends LitElement {
         @sl-request-close=${() => (this.isMembersModalOpen = false)}
       >
         <div class="members-list">
-          ${this.teamMembers.length === 0
-            ? html`<p>No members in this team yet.</p>`
-            : this.teamMembers.map((member) => {
-                const user = this.users.find((u) => u.id === member.user_id);
-                return html`
-                  <div class="member-item">
-                    <div class="member-info">
-                      <span class="member-name">
-                        ${user?.full_name || user?.username || 'Unknown User'}
-                      </span>
-                      <span class="member-email">${user?.email || ''}</span>
+          ${
+            this.teamMembers.length === 0
+              ? html`<p>No members in this team yet.</p>`
+              : this.teamMembers.map((member) => {
+                  const user = this.users.find((u) => u.id === member.user_id);
+                  return html`
+                    <div class="member-item">
+                      <div class="member-info">
+                        <span class="member-name">
+                          ${user?.full_name || user?.username || 'Unknown User'}
+                        </span>
+                        <span class="member-email">${user?.email || ''}</span>
+                      </div>
+                      <sl-button
+                        size="small"
+                        variant="danger"
+                        @click=${() => this.handleRemoveMember(member.user_id)}
+                      >
+                        <sl-icon name="x-lg"></sl-icon>
+                      </sl-button>
                     </div>
-                    <sl-button
-                      size="small"
-                      variant="danger"
-                      @click=${() => this.handleRemoveMember(member.user_id)}
-                    >
-                      <sl-icon name="x-lg"></sl-icon>
-                    </sl-button>
-                  </div>
-                `;
-              })}
+                  `;
+                })
+          }
         </div>
 
         <div class="add-member-section">
@@ -674,13 +682,15 @@ export class TeamManagementView extends LitElement {
                 >
                   ${role.name}
                 </sl-checkbox>
-                ${role.description
-                  ? html`<span
-                      style="font-size: 0.875rem; color: var(--sl-color-neutral-600);"
-                    >
-                      ${role.description}
-                    </span>`
-                  : ''}
+                ${
+                  role.description
+                    ? html`<span
+                        style="font-size: 0.875rem; color: var(--sl-color-neutral-600);"
+                      >
+                        ${role.description}
+                      </span>`
+                    : ''
+                }
               </div>
             `;
           })}

@@ -217,86 +217,97 @@ export class PolicyGenerateDialog extends LitElement {
           </sl-tab-panel>
         </sl-tab-group>
 
-        ${this._loading
-          ? html`
-              <div class="loading-container">
-                <sl-spinner></sl-spinner>
-                <span>Generating policy…</span>
-              </div>
-            `
-          : ''}
-        ${this._error
-          ? html`
-              <sl-alert variant="danger" open>
-                <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
-                ${this._error}
-              </sl-alert>
-            `
-          : ''}
-        ${this._warnings.length > 0
-          ? html`
-              <div class="warning-list">
-                ${this._warnings.map(
-                  (w) => html`
-                    <sl-alert variant="warning" open>
-                      <sl-icon
-                        slot="icon"
-                        name="exclamation-triangle"
-                      ></sl-icon>
-                      ${w}
-                    </sl-alert>
-                  `
-                )}
-              </div>
-            `
-          : ''}
-        ${this._generatedYaml
-          ? html`
-              <div class="yaml-header">
-                <h4>Generated Policy</h4>
-                <div class="yaml-actions">
-                  <sl-copy-button
-                    .value=${this._generatedYaml}
-                  ></sl-copy-button>
-                  <sl-button size="small" @click=${this._downloadYaml}>
-                    <sl-icon slot="prefix" name="download"></sl-icon>
-                    Download
-                  </sl-button>
+        ${
+          this._loading
+            ? html`
+                <div class="loading-container">
+                  <sl-spinner></sl-spinner>
+                  <span>Generating policy…</span>
                 </div>
-              </div>
-              <div class="yaml-preview">
-                <pre>${this._generatedYaml}</pre>
-              </div>
-            `
-          : ''}
+              `
+            : ''
+        }
+        ${
+          this._error
+            ? html`
+                <sl-alert variant="danger" open>
+                  <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+                  ${this._error}
+                </sl-alert>
+              `
+            : ''
+        }
+        ${
+          this._warnings.length > 0
+            ? html`
+                <div class="warning-list">
+                  ${this._warnings.map(
+                    (w) => html`
+                      <sl-alert variant="warning" open>
+                        <sl-icon
+                          slot="icon"
+                          name="exclamation-triangle"
+                        ></sl-icon>
+                        ${w}
+                      </sl-alert>
+                    `
+                  )}
+                </div>
+              `
+            : ''
+        }
+        ${
+          this._generatedYaml
+            ? html`
+                <div class="yaml-header">
+                  <h4>Generated Policy</h4>
+                  <div class="yaml-actions">
+                    <sl-copy-button
+                      .value=${this._generatedYaml}
+                    ></sl-copy-button>
+                    <sl-button size="small" @click=${this._downloadYaml}>
+                      <sl-icon slot="prefix" name="download"></sl-icon>
+                      Download
+                    </sl-button>
+                  </div>
+                </div>
+                <div class="yaml-preview">
+                  <pre>${this._generatedYaml}</pre>
+                </div>
+              `
+            : ''
+        }
 
         <div slot="footer" class="footer-actions">
           <sl-button variant="default" @click=${this._handleClose}
             >Cancel</sl-button
           >
-          ${this._generatedYaml
-            ? html`
-                <sl-button
-                  variant="primary"
-                  @click=${this._applyPolicy}
-                  ?loading=${this._loading}
-                >
-                  <sl-icon slot="prefix" name="check-lg"></sl-icon>
-                  Apply Policy
-                </sl-button>
-              `
-            : html`
-                <sl-button
-                  variant="primary"
-                  @click=${this._generate}
-                  ?loading=${this._loading}
-                  ?disabled=${this._activeTab === 'prompt' &&
-                  !this._prompt.trim()}
-                >
-                  <sl-icon slot="prefix" name="magic"></sl-icon>
-                  Generate
-                </sl-button>
-              `}
+          ${
+            this._generatedYaml
+              ? html`
+                  <sl-button
+                    variant="primary"
+                    @click=${this._applyPolicy}
+                    ?loading=${this._loading}
+                  >
+                    <sl-icon slot="prefix" name="check-lg"></sl-icon>
+                    Apply Policy
+                  </sl-button>
+                `
+              : html`
+                  <sl-button
+                    variant="primary"
+                    @click=${this._generate}
+                    ?loading=${this._loading}
+                    ?disabled=${
+                      this._activeTab === 'prompt' && !this._prompt.trim()
+                    }
+                  >
+                    <sl-icon slot="prefix" name="magic"></sl-icon>
+                    Generate
+                  </sl-button>
+                `
+          }
         </div>
       </sl-dialog>
     `;

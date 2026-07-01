@@ -526,6 +526,7 @@ func init() {
 	agentsEnrollCmd.Flags().Bool("live-validate", true, "after onboarding, run a supported live validation prompt through the agent (default: true; pass --skip-live-validate or --live-validate=false to opt out)")
 	agentsEnrollCmd.Flags().Bool("skip-live-validate", false, "do not run a live validation prompt after onboarding (overrides --live-validate)")
 	agentsEnrollCmd.Flags().StringSlice("tags", []string{}, "add key-value tags to the enrolled agent (e.g., --tags ext=true,env=prod)")
+	agentsEnrollCmd.Flags().Bool("approvals", false, "install a native tool-permission hook that routes would-prompt tool calls to Preloop mobile/watch approvals (Claude Code, Codex CLI, Cursor)")
 	agentsListCmd.Flags().Bool("json", false, "output managed agents as JSON")
 	agentsStatusCmd.Flags().Bool("json", false, "output managed status as JSON")
 	agentsValidateCmd.Flags().Bool("live", false, "run a supported live validation prompt in addition to config validation")
@@ -889,6 +890,7 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 	skipLiveValidate, _ := cmd.Flags().GetBool("skip-live-validate")
 	tagsInput, _ := cmd.Flags().GetStringSlice("tags")
 	runAll, _ := cmd.Flags().GetBool("all")
+	approvals, _ := cmd.Flags().GetBool("approvals")
 
 	tags := make(map[string]string)
 	for _, kv := range tagsInput {
@@ -910,6 +912,7 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 		AutoApprove:      autoApprove,
 		LiveValidate:     liveValidate,
 		SkipLiveValidate: skipLiveValidate,
+		Approvals:        approvals,
 		Tags:             tags,
 		SkipConfirmation: false,
 		Input:            os.Stdin,
@@ -1745,6 +1748,9 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 		if err := removeClaudeCodeManagedMCPServer(agent); err != nil {
 			return err
 		}
+		if err := removeApprovalHooks(agent, nil); err != nil {
+			return err
+		}
 	}
 
 	if detail != nil {
@@ -1802,6 +1808,9 @@ func restoreAgentFromBackup(agent AgentConfig, state *localEnrollmentState) (tim
 		return time.Time{}, err
 	}
 	if err := removeClaudeCodeManagedMCPServer(agent); err != nil {
+		return time.Time{}, err
+	}
+	if err := removeApprovalHooks(agent, nil); err != nil {
 		return time.Time{}, err
 	}
 	now := time.Now().UTC()

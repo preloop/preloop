@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from ..models.api_usage import ApiUsage
 from ..models.flow import Flow
 from ..models.flow_execution import FlowExecution
+from ..models.managed_agent import ManagedAgent
 from ..models.runtime_session import RuntimeSession
 from ..models.user import User
 from .base import CRUDBase
@@ -103,6 +104,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         runtime_principal_type: Optional[str] = None,
         runtime_principal_id: Optional[str] = None,
         runtime_principal_name: Optional[str] = None,
+        managed_agent_id: Optional[str] = None,
         meta_data: Optional[Dict[str, Any]] = None,
     ) -> ApiUsage:
         """Log a model gateway request with usage and attribution fields."""
@@ -150,24 +152,25 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                     else uuid.UUID(str(account_id))
                 )
 
-                # Derive subject ID based on the auth_subject_type
-                subject_id = None
-                if auth_subject_type == "api_keys" and api_key_id:
-                    subject_id = api_key_id
+                subject_scopes: list[tuple[str, Optional[str]]] = []
+                if api_key_id:
+                    subject_scopes.append(("api_key", str(api_key_id)))
+                if managed_agent_id:
+                    subject_scopes.append(("managed_agent", str(managed_agent_id)))
                 elif auth_subject_type == "managed_agents" and runtime_principal_id:
-                    # Often the principal acts as the agent's ID in this context
-                    subject_id = runtime_principal_id
+                    subject_scopes.append(("managed_agents", str(runtime_principal_id)))
                 elif auth_subject_type == "flows" and flow_id:
-                    subject_id = flow_id
+                    subject_scopes.append(("flows", str(flow_id)))
 
                 record_spend_for_request(
                     db=db,
                     account_id=parsed_account_id,
                     subject_type=auth_subject_type,
-                    subject_id=subject_id,
+                    subject_id=None,
                     model_alias=model_alias,
                     estimated_cost=estimated_cost,
                     timestamp=db_obj.timestamp,
+                    subject_scopes=subject_scopes,
                 )
             except ValueError:
                 pass  # account_id is not a valid UUID, so skip budget recording
@@ -607,12 +610,28 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         session_reference = func.coalesce(
             RuntimeSession.session_reference, FlowExecution.agent_session_reference
         )
+        resolved_runtime_principal_type = func.coalesce(
+            RuntimeSession.runtime_principal_type, ApiUsage.runtime_principal_type
+        )
+        resolved_runtime_principal_id = func.coalesce(
+            RuntimeSession.runtime_principal_id, ApiUsage.runtime_principal_id
+        )
+        resolved_runtime_principal_name = func.coalesce(
+            RuntimeSession.runtime_principal_name, ApiUsage.runtime_principal_name
+        )
         rows = (
             db.query(
                 ApiUsage.ai_model_id,
                 RuntimeSession.id.label("runtime_session_id"),
                 session_source_type.label("session_source_type"),
                 session_source_id.label("session_source_id"),
+                RuntimeSession.title.label("session_title"),
+                RuntimeSession.summary.label("session_summary"),
+                resolved_runtime_principal_type.label("runtime_principal_type"),
+                resolved_runtime_principal_id.label("runtime_principal_id"),
+                resolved_runtime_principal_name.label("runtime_principal_name"),
+                ManagedAgent.id.label("agent_id"),
+                ManagedAgent.display_name.label("agent_name"),
                 ApiUsage.flow_execution_id,
                 ApiUsage.flow_id,
                 Flow.name.label("flow_name"),
@@ -635,6 +654,9 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             .outerjoin(Flow, ApiUsage.flow_id == Flow.id)
             .outerjoin(FlowExecution, ApiUsage.flow_execution_id == FlowExecution.id)
             .outerjoin(RuntimeSession, ApiUsage.runtime_session_id == RuntimeSession.id)
+            .outerjoin(
+                ManagedAgent, ManagedAgent.runtime_session_id == RuntimeSession.id
+            )
             .filter(
                 ApiUsage.action_type == "model_gateway",
                 ApiUsage.account_id == account_id,
@@ -658,6 +680,13 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 RuntimeSession.id,
                 session_source_type,
                 session_source_id,
+                RuntimeSession.title,
+                RuntimeSession.summary,
+                resolved_runtime_principal_type,
+                resolved_runtime_principal_id,
+                resolved_runtime_principal_name,
+                ManagedAgent.id,
+                ManagedAgent.display_name,
                 ApiUsage.flow_execution_id,
                 ApiUsage.flow_id,
                 Flow.name,
@@ -679,6 +708,13 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 ),
                 "session_source_type": row.session_source_type,
                 "session_source_id": row.session_source_id,
+                "title": row.session_title,
+                "session_summary": row.session_summary,
+                "runtime_principal_type": row.runtime_principal_type,
+                "runtime_principal_id": row.runtime_principal_id,
+                "runtime_principal_name": row.runtime_principal_name,
+                "agent_id": str(row.agent_id) if row.agent_id else None,
+                "agent_name": row.agent_name,
                 "flow_execution_id": (
                     str(row.flow_execution_id) if row.flow_execution_id else None
                 ),

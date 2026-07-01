@@ -139,6 +139,11 @@ const REPLAY_MARKER_LEGEND: Array<{ kind: ReplayMarkerKind; label: string }> = [
 ];
 const REPLAY_MARKER_KINDS = REPLAY_MARKER_LEGEND.map((item) => item.kind);
 
+// Progressive full-message reveal (#8): show this much initially, then reveal
+// another chunk per "Show more" click until the full body is shown.
+const MESSAGE_PREVIEW_CHARS = 900;
+const MESSAGE_REVEAL_CHUNK_CHARS = 20000;
+
 const REPLAY_MESSAGE_WINDOW_BEFORE = 18;
 const REPLAY_MESSAGE_WINDOW_AFTER = 24;
 const ESTIMATED_REPLAY_MESSAGE_HEIGHT = 180;
@@ -220,6 +225,19 @@ export class SessionReplayPanel extends LitElement {
 
   @state()
   private fullTextEventIds = new Set<string>();
+
+  // Progressive reveal length (in characters) for very large message bodies,
+  // keyed by the message's stable `key`. Absent = use the default preview.
+  @state()
+  private revealedMessageChars = new Map<string, number>();
+
+  // Active transcript filter. 'all' shows everything, 'failed' shows only
+  // failed gateway requests (#7), and the object form pins the transcript to a
+  // specific set of gateway event ids (#5 inspect contract). A single state
+  // drives all three so the filtering mechanism is shared.
+  @state()
+  private transcriptInspectFilter:
+    'all' | 'failed' | { eventIds: Set<string> } = 'all';
 
   @state()
   private replayActive = false;
@@ -524,10 +542,16 @@ export class SessionReplayPanel extends LitElement {
     }
 
     .playback-bar {
+      align-items: center;
       display: grid;
       gap: var(--sl-spacing-x-small);
-      grid-template-columns: auto auto auto minmax(260px, 1fr);
+      /* transport group | speed select | reverse | full-width scrubber */
+      grid-template-columns: auto auto auto 1fr;
       width: 100%;
+    }
+
+    .playback-bar .timeline-wrap {
+      grid-column: 4;
     }
 
     .playback-bar sl-button-group,
@@ -1074,9 +1098,74 @@ export class SessionReplayPanel extends LitElement {
       gap: var(--sl-spacing-2x-small);
     }
 
+    /* Two range inputs overlaid on one shared track so the scope reads as a
+       single bar with two thumbs instead of two stacked sliders. */
     .optimize-range-dual {
-      display: grid;
-      gap: 2px;
+      position: relative;
+      height: 24px;
+    }
+
+    .optimize-range-dual::before {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 0;
+      right: 0;
+      height: 4px;
+      transform: translateY(-50%);
+      background: var(--sl-color-neutral-200);
+      border-radius: 999px;
+    }
+
+    .optimize-range-fill {
+      position: absolute;
+      top: 50%;
+      height: 4px;
+      transform: translateY(-50%);
+      background: var(--sl-color-primary-500);
+      border-radius: 999px;
+      pointer-events: none;
+    }
+
+    .optimize-range-dual input[type='range'] {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 24px;
+      margin: 0;
+      -webkit-appearance: none;
+      appearance: none;
+      background: transparent;
+      pointer-events: none;
+    }
+
+    .optimize-range-dual input[type='range']::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      pointer-events: auto;
+      height: 16px;
+      width: 16px;
+      border-radius: 50%;
+      background: var(--sl-color-primary-600);
+      border: 2px solid var(--sl-color-neutral-0);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+      cursor: pointer;
+    }
+
+    .optimize-range-dual input[type='range']::-moz-range-thumb {
+      pointer-events: auto;
+      height: 16px;
+      width: 16px;
+      border-radius: 50%;
+      background: var(--sl-color-primary-600);
+      border: 2px solid var(--sl-color-neutral-0);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+      cursor: pointer;
+    }
+
+    .optimize-range-dual input[type='range']::-moz-range-track {
+      background: transparent;
     }
 
     .optimize-range-markers {
@@ -1142,6 +1231,17 @@ export class SessionReplayPanel extends LitElement {
       max-width: 920px;
     }
 
+    .transcript-header {
+      align-items: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--sl-spacing-x-small);
+    }
+
+    .transcript-header .clear-filter-button::part(base) {
+      padding-inline: var(--sl-spacing-x-small);
+    }
+
     .replay-message {
       opacity: 0.62;
       scroll-margin: var(--sl-spacing-2x-large);
@@ -1194,8 +1294,49 @@ export class SessionReplayPanel extends LitElement {
     }
   `;
 
+  // #5 inspect contract: the child optimization panel dispatches
+  // 'optimization-inspect-events' (bubbles + composed). Pin the transcript to
+  // the referenced gateway events (or the failed-only filter when
+  // mode === 'failed'), switch to the replay view, and scroll to the match.
+  private readonly handleOptimizationInspectEvents = (event: Event): void => {
+    const detail = (event as CustomEvent).detail || {};
+    const mode = typeof detail.mode === 'string' ? detail.mode : '';
+    const eventIds: string[] = Array.isArray(detail.eventIds)
+      ? detail.eventIds.filter((id: unknown): id is string => Boolean(id))
+      : [];
+
+    // Make the transcript visible. replayMode is a property the parent owns,
+    // but it is reactive: assigning it here switches this component's view
+    // immediately so the inspect target is shown without a round-trip.
+    if (this.replayMode !== 'replay') {
+      this.replayMode = 'replay';
+      this.requestReplayMetadata();
+    }
+    // Inspecting must not be hidden by the per-kind source toggles.
+    this.visibleReplayKinds = new Set(REPLAY_MARKER_KINDS);
+
+    if (mode === 'failed' || !eventIds.length) {
+      this.transcriptInspectFilter = 'failed';
+    } else {
+      this.transcriptInspectFilter = { eventIds: new Set(eventIds) };
+    }
+    this.onTranscriptFilterChanged();
+  };
+
+  connectedCallback(): void {
+    super.connectedCallback();
+    this.addEventListener(
+      'optimization-inspect-events',
+      this.handleOptimizationInspectEvents
+    );
+  }
+
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    this.removeEventListener(
+      'optimization-inspect-events',
+      this.handleOptimizationInspectEvents
+    );
     this.stopReplay();
     this.summaryObserver?.disconnect();
     this.eventPageObserver?.disconnect();
@@ -1206,6 +1347,14 @@ export class SessionReplayPanel extends LitElement {
   }
 
   updated(changed: Map<string | number | symbol, unknown>): void {
+    if (changed.has('availableModels') && !this.optimizeModelId) {
+      // Preselect the account default so the optimization model dropdown shows
+      // a concrete selection instead of an empty/first-option state.
+      const defaultModel = this.getDefaultOptimizationModel();
+      if (defaultModel) {
+        this.optimizeModelId = defaultModel.id;
+      }
+    }
     if (
       changed.has('summarizeVisibleContent') ||
       changed.has('events') ||
@@ -1394,8 +1543,38 @@ export class SessionReplayPanel extends LitElement {
     const next = new Set(this.fullTextEventIds);
     next.add(message.key);
     this.fullTextEventIds = next;
+    // Seed the progressive reveal at the first chunk so very large bodies are
+    // read incrementally rather than dumped all at once (#8).
+    const reveals = new Map(this.revealedMessageChars);
+    reveals.set(message.key, MESSAGE_REVEAL_CHUNK_CHARS);
+    this.revealedMessageChars = reveals;
     if (message.event && !this.eventDetails[message.event.id]) {
       this.requestEventDetail(message.event);
+    }
+  }
+
+  // Reveal the next chunk of a large message, clamped to its full length (#8).
+  private revealMoreMessage(message: ReplayMessage, fullLength: number): void {
+    const current =
+      this.revealedMessageChars.get(message.key) ?? MESSAGE_REVEAL_CHUNK_CHARS;
+    const reveals = new Map(this.revealedMessageChars);
+    reveals.set(
+      message.key,
+      Math.min(current + MESSAGE_REVEAL_CHUNK_CHARS, fullLength)
+    );
+    this.revealedMessageChars = reveals;
+  }
+
+  // Collapse a fully/partially revealed message back to the preview and reset
+  // its reveal progress so re-expanding starts from the first chunk.
+  private collapseFullReplayMessage(message: ReplayMessage): void {
+    const next = new Set(this.fullTextEventIds);
+    next.delete(message.key);
+    this.fullTextEventIds = next;
+    if (this.revealedMessageChars.has(message.key)) {
+      const reveals = new Map(this.revealedMessageChars);
+      reveals.delete(message.key);
+      this.revealedMessageChars = reveals;
     }
   }
 
@@ -1587,6 +1766,7 @@ export class SessionReplayPanel extends LitElement {
 
   private getVisibleReplayMessages(): ReplayMessage[] {
     return this.getReplayMessages().filter((message) => {
+      if (!this.messageMatchesTranscriptFilter(message)) return false;
       if (!message.event) return this.visibleReplayKinds.has('developer');
       const kind = this.getReplayMarkerKind(
         message.event,
@@ -1594,6 +1774,64 @@ export class SessionReplayPanel extends LitElement {
       );
       return this.visibleReplayKinds.has(kind);
     });
+  }
+
+  // The underlying gateway event id a replay message belongs to (null for
+  // standalone activity/developer messages that aren't gateway requests).
+  private getMessageEventId(message: ReplayMessage): string | null {
+    return message.event?.id ?? null;
+  }
+
+  // #5/#7 transcript filter predicate. Shared by the failed-only toggle and the
+  // inspect-by-event-ids contract so a single @state drives both.
+  private messageMatchesTranscriptFilter(message: ReplayMessage): boolean {
+    const filter = this.transcriptInspectFilter;
+    if (filter === 'all') return true;
+    if (filter === 'failed') return this.eventIsFailure(message.event);
+    const eventId = this.getMessageEventId(message);
+    return eventId !== null && filter.eventIds.has(eventId);
+  }
+
+  private get transcriptFilterActive(): boolean {
+    return this.transcriptInspectFilter !== 'all';
+  }
+
+  private describeTranscriptFilter(): string {
+    const filter = this.transcriptInspectFilter;
+    if (filter === 'failed') return 'Failed requests only';
+    if (filter !== 'all') {
+      const count = filter.eventIds.size;
+      return `Inspecting ${count} request${count === 1 ? '' : 's'}`;
+    }
+    return '';
+  }
+
+  // Toggle the #7 "Failed only" filter. Clears any inspect-by-id pin.
+  private toggleFailedOnlyFilter(): void {
+    this.transcriptInspectFilter =
+      this.transcriptInspectFilter === 'failed' ? 'all' : 'failed';
+    this.onTranscriptFilterChanged();
+  }
+
+  private clearTranscriptFilter(): void {
+    if (this.transcriptInspectFilter === 'all') return;
+    this.transcriptInspectFilter = 'all';
+    this.onTranscriptFilterChanged();
+  }
+
+  // Keep the replay cursor valid after the visible set changes, then snap the
+  // view to the first matching message.
+  private onTranscriptFilterChanged(): void {
+    const messages = this.getVisibleReplayMessages();
+    this.replayIndex = Math.min(
+      this.replayIndex,
+      Math.max(messages.length - 1, 0)
+    );
+    if (messages.length) {
+      this.replayIndex = 0;
+      this.requestReplayCurrentEventDetail(messages[0]);
+    }
+    this.scrollReplayToCurrentMessage();
   }
 
   private mergeReplayEvents(
@@ -1877,23 +2115,25 @@ export class SessionReplayPanel extends LitElement {
           );
           return html`
             <span
-              class="optimize-range-marker ${marker.kind} ${marker.failed
-                ? 'failed'
-                : ''}"
+              class="optimize-range-marker ${marker.kind} ${
+                marker.failed ? 'failed' : ''
+              }"
               style=${`left: ${markerPercent}%;`}
               title=${`${this.formatDateTime(marker.timestamp)} - ${marker.title}`}
             ></span>
-            ${this.shouldShowTimelineLabel(markerIndex, eventMarkers.length)
-              ? html`
-                  <span
-                    class="optimize-range-label"
-                    style=${`left: ${markerPercent}%;`}
-                    title=${this.formatDateTime(marker.timestamp)}
-                  >
-                    ${this.formatTimelineLabel(marker.timestamp)}
-                  </span>
-                `
-              : nothing}
+            ${
+              this.shouldShowTimelineLabel(markerIndex, eventMarkers.length)
+                ? html`
+                    <span
+                      class="optimize-range-label"
+                      style=${`left: ${markerPercent}%;`}
+                      title=${this.formatDateTime(marker.timestamp)}
+                    >
+                      ${this.formatTimelineLabel(marker.timestamp)}
+                    </span>
+                  `
+                : nothing
+            }
           `;
         })}
       </div>
@@ -2177,9 +2417,9 @@ export class SessionReplayPanel extends LitElement {
 
     return html`
       <div
-        class="timeline-event ${this.eventNeedsSummary(event)
-          ? 'summary-candidate'
-          : ''}"
+        class="timeline-event ${
+          this.eventNeedsSummary(event) ? 'summary-candidate' : ''
+        }"
         data-event-id=${event.id}
       >
         <div class="event-header">
@@ -2195,81 +2435,94 @@ export class SessionReplayPanel extends LitElement {
             ${event.payload?.outcome || 'event'}
           </sl-badge>
         </div>
-        ${showSummary
-          ? html`
-              <div class="summary-replacement">
-                <div class="event-title">${summary.title}</div>
-                <div class="summary-text">${summary.summary}</div>
-                ${summary.key_points.length
-                  ? html`
-                      <ul class="summary-points">
-                        ${summary.key_points.map(
-                          (point) => html`<li>${point}</li>`
-                        )}
-                      </ul>
-                    `
-                  : nothing}
-                <div class="detail-actions">
-                  <sl-button
-                    size="small"
-                    @click=${() => this.toggleEventFullText(event.id)}
-                  >
-                    Show full text
-                  </sl-button>
+        ${
+          showSummary
+            ? html`
+                <div class="summary-replacement">
+                  <div class="event-title">${summary.title}</div>
+                  <div class="summary-text">${summary.summary}</div>
+                  ${
+                    summary.key_points.length
+                      ? html`
+                          <ul class="summary-points">
+                            ${summary.key_points.map(
+                              (point) => html`<li>${point}</li>`
+                            )}
+                          </ul>
+                        `
+                      : nothing
+                  }
+                  <div class="detail-actions">
+                    <sl-button
+                      size="small"
+                      @click=${() => this.toggleEventFullText(event.id)}
+                    >
+                      Show full text
+                    </sl-button>
+                  </div>
                 </div>
-              </div>
-            `
-          : html`
-              ${userRequest
-                ? html`<div class="preview">${userRequest}</div>`
-                : canLoadMore
-                  ? html`
-                      <div class="preview">
-                        Message preview is available on demand. Load details to
-                        inspect the captured request without flooding the
-                        timeline.
-                      </div>
-                    `
-                  : html`<div class="preview">
-                      No user-request preview captured.
-                    </div>`}
-              ${summary && this.fullTextEventIds.has(event.id)
-                ? html`
-                    <div class="detail-actions">
-                      <sl-button
-                        size="small"
-                        @click=${() => this.toggleEventFullText(event.id)}
-                      >
-                        Show summary
-                      </sl-button>
-                    </div>
-                  `
-                : nothing}
-            `}
+              `
+            : html`
+                ${
+                  userRequest
+                    ? html`<div class="preview">${userRequest}</div>`
+                    : canLoadMore
+                      ? html`
+                          <div class="preview">
+                            Message preview is available on demand. Load details
+                            to inspect the captured request without flooding the
+                            timeline.
+                          </div>
+                        `
+                      : html`<div class="preview">
+                          No user-request preview captured.
+                        </div>`
+                }
+                ${
+                  summary && this.fullTextEventIds.has(event.id)
+                    ? html`
+                        <div class="detail-actions">
+                          <sl-button
+                            size="small"
+                            @click=${() => this.toggleEventFullText(event.id)}
+                          >
+                            Show summary
+                          </sl-button>
+                        </div>
+                      `
+                    : nothing
+                }
+              `
+        }
         <div class="segment-grid">
           <sl-details>
             <div slot="summary" class="segment-title">
-              ${expandedMessages.length
-                ? `Request messages (${expandedMessages.length})`
-                : 'Request messages available after loading details'}
+              ${
+                expandedMessages.length
+                  ? `Request messages (${expandedMessages.length})`
+                  : 'Request messages available after loading details'
+              }
             </div>
-            ${expandedMessages.length
-              ? html`
-                  <div class="message-list">
-                    ${expandedMessages.map((message) =>
-                      this.renderMessage(message, 'chat', message.key)
-                    )}
-                  </div>
-                `
-              : html`
-                  <div class="segment">
-                    <div class="event-meta">
-                      The compact event list keeps large request/response
-                      payloads out of the initial render. Use the details button
-                      below when you need the full captured conversation.
+            ${
+              expandedMessages.length
+                ? html`
+                    <div class="message-list">
+                      ${expandedMessages.map((message) =>
+                        this.renderMessage(message, 'chat', message.key)
+                      )}
                     </div>
-                  </div>
-                `}
+                  `
+                : html`
+                    <div class="segment">
+                      <div class="event-meta">
+                        The compact event list keeps large request/response
+                        payloads out of the initial render. Use the details
+                        button below when you need the full captured
+                        conversation.
+                      </div>
+                    </div>
+                  `
+            }
           </sl-details>
           <sl-details>
             <div slot="summary" class="segment-title">
@@ -2278,9 +2531,11 @@ export class SessionReplayPanel extends LitElement {
             <div class="segment">
               <div class="event-meta">
                 Endpoint:
-                ${event.payload?.endpoint_kind ||
-                event.payload?.endpoint ||
-                'n/a'}
+                ${
+                  event.payload?.endpoint_kind ||
+                  event.payload?.endpoint ||
+                  'n/a'
+                }
               </div>
               <div class="event-meta">
                 HTTP: ${event.payload?.method || 'POST'}
@@ -2294,29 +2549,33 @@ export class SessionReplayPanel extends LitElement {
             </div>
           </sl-details>
         </div>
-        ${this.rawPayloads
-          ? html`
-              <div class="detail-actions">
-                <sl-button
-                  size="small"
-                  ?loading=${this.loadingEventDetails.has(event.id)}
-                  @click=${() => this.requestEventDetail(event)}
-                >
-                  Load raw event
-                </sl-button>
-              </div>
-              ${detail
-                ? html`
-                    <div class="raw-event-container">
-                      <preloop-gateway-event
-                        .event=${detail}
-                        expanded
-                      ></preloop-gateway-event>
-                    </div>
-                  `
-                : nothing}
-            `
-          : nothing}
+        ${
+          this.rawPayloads
+            ? html`
+                <div class="detail-actions">
+                  <sl-button
+                    size="small"
+                    ?loading=${this.loadingEventDetails.has(event.id)}
+                    @click=${() => this.requestEventDetail(event)}
+                  >
+                    Load raw event
+                  </sl-button>
+                </div>
+                ${
+                  detail
+                    ? html`
+                        <div class="raw-event-container">
+                          <preloop-gateway-event
+                            .event=${detail}
+                            expanded
+                          ></preloop-gateway-event>
+                        </div>
+                      `
+                    : nothing
+                }
+              `
+            : nothing
+        }
       </div>
     `;
   }
@@ -2343,26 +2602,37 @@ export class SessionReplayPanel extends LitElement {
       <div class=${className}>
         <div class="message-role">
           ${role}
-          ${message.truncated
-            ? html`<sl-badge variant="warning" pill>Truncated</sl-badge>`
-            : nothing}
-          ${message.redacted
-            ? html`<sl-badge variant="warning" pill>Redacted</sl-badge>`
-            : nothing}
+          ${
+            message.truncated
+              ? html`<sl-badge variant="warning" pill>Truncated</sl-badge>`
+              : nothing
+          }
+          ${
+            message.redacted
+              ? html`<sl-badge variant="warning" pill>Redacted</sl-badge>`
+              : nothing
+          }
         </div>
         <div class="message-text">${text}</div>
-        ${channelLabel
-          ? html`<div class="message-footer">${channelLabel}</div>`
-          : nothing}
-        ${isLong
-          ? html`
-              <div class="detail-actions">
-                <sl-button size="small" @click=${() => this.toggleMessage(key)}>
-                  ${isExpanded ? 'Collapse message' : 'Show full message'}
-                </sl-button>
-              </div>
-            `
-          : nothing}
+        ${
+          channelLabel
+            ? html`<div class="message-footer">${channelLabel}</div>`
+            : nothing
+        }
+        ${
+          isLong
+            ? html`
+                <div class="detail-actions">
+                  <sl-button
+                    size="small"
+                    @click=${() => this.toggleMessage(key)}
+                  >
+                    ${isExpanded ? 'Collapse message' : 'Show full message'}
+                  </sl-button>
+                </div>
+              `
+            : nothing
+        }
       </div>
     `;
   }
@@ -2552,25 +2822,33 @@ export class SessionReplayPanel extends LitElement {
         </span>
         <span class="metric-pill">${formatNumber(totalTokens)} tokens</span>
         <span class="metric-pill">${formatCost(estimatedCost)}</span>
-        ${isRetry || gatewayAttempt > 1
-          ? html`<span
-              class="metric-pill warning"
-              title=${retryOfApiUsageId
-                ? `Retry of usage ${retryOfApiUsageId}`
-                : 'Gateway retry attempt'}
-              >retry #${gatewayAttempt}</span
-            >`
-          : nothing}
-        ${apiUsageId
-          ? html`<span class="metric-pill" title=${apiUsageId}
-              >usage ${apiUsageId.slice(0, 8)}</span
-            >`
-          : nothing}
-        ${upstreamRequestId
-          ? html`<span class="metric-pill" title=${upstreamRequestId}
-              >upstream ${upstreamRequestId.slice(0, 8)}</span
-            >`
-          : nothing}
+        ${
+          isRetry || gatewayAttempt > 1
+            ? html`<span
+                class="metric-pill warning"
+                title=${
+                  retryOfApiUsageId
+                    ? `Retry of usage ${retryOfApiUsageId}`
+                    : 'Gateway retry attempt'
+                }
+                >retry #${gatewayAttempt}</span
+              >`
+            : nothing
+        }
+        ${
+          apiUsageId
+            ? html`<span class="metric-pill" title=${apiUsageId}
+                >usage ${apiUsageId.slice(0, 8)}</span
+              >`
+            : nothing
+        }
+        ${
+          upstreamRequestId
+            ? html`<span class="metric-pill" title=${upstreamRequestId}
+                >upstream ${upstreamRequestId.slice(0, 8)}</span
+              >`
+            : nothing
+        }
       </div>
     `;
   }
@@ -2592,9 +2870,9 @@ export class SessionReplayPanel extends LitElement {
       const eventId = messageEvent.id;
       return html`
         <div
-          class="replay-message ${index <= this.replayIndex
-            ? 'played'
-            : ''} ${isCurrent ? 'current' : ''}"
+          class="replay-message ${
+            index <= this.replayIndex ? 'played' : ''
+          } ${isCurrent ? 'current' : ''}"
           data-replay-index=${String(index)}
         >
           <div
@@ -2632,116 +2910,176 @@ export class SessionReplayPanel extends LitElement {
       this.summarizeVisibleContent &&
       !showFull &&
       this.messageShouldUseEventSummary(message);
-    const isLong = fullText.length > 900;
+    const isLong = fullText.length > MESSAGE_PREVIEW_CHARS;
     const shouldTruncate = isLong && !showSummary && !showFull;
-    const visibleText = shouldTruncate
-      ? `${fullText.slice(0, 900)}...`
-      : fullText;
+    // #8 progressive reveal: once "Show full message" is clicked, reveal the
+    // body in chunks instead of dumping everything at once. The revealed length
+    // is tracked per-message in revealedMessageChars; absent => first chunk.
+    const revealLength = showFull
+      ? Math.min(
+          this.revealedMessageChars.get(message.key) ??
+            MESSAGE_REVEAL_CHUNK_CHARS,
+          fullText.length
+        )
+      : 0;
+    const hasMoreToReveal = showFull && revealLength < fullText.length;
+    const remainingChars = fullText.length - revealLength;
+    const nextRevealChars = Math.min(
+      MESSAGE_REVEAL_CHUNK_CHARS,
+      remainingChars
+    );
+    let visibleText = fullText;
+    if (shouldTruncate) {
+      visibleText = `${fullText.slice(0, MESSAGE_PREVIEW_CHARS)}...`;
+    } else if (showFull && hasMoreToReveal) {
+      visibleText = `${fullText.slice(0, revealLength)}...`;
+    }
     const className = `chat-message ${role} ${this.eventIsFailure(message.event) ? 'failed' : ''}`;
 
     return html`
       <div
-        class="replay-message ${index <= this.replayIndex
-          ? 'played'
-          : ''} ${isCurrent ? 'current' : ''}"
+        class="replay-message ${
+          index <= this.replayIndex ? 'played' : ''
+        } ${isCurrent ? 'current' : ''}"
         data-replay-index=${String(index)}
       >
-        ${showSummary
-          ? html`
-              <div class="summary-card">
-                <div class="character-row">
-                  <span class="character-avatar">${character.slice(0, 1)}</span>
-                  <div>
-                    <div class="event-title">${character}</div>
-                    <div class="event-meta">
-                      <span title=${this.formatDateTime(message.timestamp)}>
-                        ${this.formatTime(message.timestamp)}
-                      </span>
-                      · ${message.title}
-                    </div>
-                    ${this.renderMessageMetrics(message)}
-                  </div>
-                </div>
-                <div class="summary-text">${summary.summary}</div>
-                <div class="detail-actions">
-                  <sl-button
-                    size="small"
-                    @click=${() => this.showFullReplayMessage(message)}
-                  >
-                    Show full message
-                  </sl-button>
-                </div>
-              </div>
-            `
-          : html`
-              <div class=${className}>
-                <div class="character-row">
-                  <span class="character-avatar">${character.slice(0, 1)}</span>
-                  <div>
-                    <div class="message-role">
-                      ${character}
-                      ${shouldTruncate
-                        ? html`<sl-badge variant="warning" pill
-                            >Truncated</sl-badge
-                          >`
-                        : nothing}
-                      ${summary && showFull
-                        ? html`<sl-badge variant="primary" pill
-                            >Full message</sl-badge
-                          >`
-                        : nothing}
-                    </div>
-                    <div class="event-meta">
-                      <span title=${this.formatDateTime(message.timestamp)}>
-                        ${this.formatTime(message.timestamp)}
-                      </span>
-                      · ${message.title}
-                    </div>
-                    ${this.renderMessageMetrics(message)}
-                  </div>
-                </div>
-                <div class="message-text">${visibleText}</div>
-                ${summary || shouldTruncate || showFull
-                  ? html`
-                      <div class="detail-actions">
-                        ${summary && showFull
-                          ? html`
-                              <sl-button
-                                size="small"
-                                @click=${() =>
-                                  this.toggleEventFullText(message.key)}
-                              >
-                                Show summary
-                              </sl-button>
-                            `
-                          : nothing}
-                        ${shouldTruncate
-                          ? html`
-                              <sl-button
-                                size="small"
-                                @click=${() =>
-                                  this.showFullReplayMessage(message)}
-                              >
-                                Show full message
-                              </sl-button>
-                            `
-                          : nothing}
-                        ${showFull && !summary
-                          ? html`
-                              <sl-button
-                                size="small"
-                                @click=${() =>
-                                  this.toggleEventFullText(message.key)}
-                              >
-                                Collapse message
-                              </sl-button>
-                            `
-                          : nothing}
+        ${
+          showSummary
+            ? html`
+                <div class="summary-card">
+                  <div class="character-row">
+                    <span class="character-avatar"
+                      >${character.slice(0, 1)}</span
+                    >
+                    <div>
+                      <div class="event-title">${character}</div>
+                      <div class="event-meta">
+                        <span title=${this.formatDateTime(message.timestamp)}>
+                          ${this.formatTime(message.timestamp)}
+                        </span>
+                        · ${message.title}
                       </div>
-                    `
-                  : nothing}
-              </div>
-            `}
+                      ${this.renderMessageMetrics(message)}
+                    </div>
+                  </div>
+                  <div class="summary-text">${summary.summary}</div>
+                  <div class="detail-actions">
+                    <sl-button
+                      size="small"
+                      @click=${() => this.showFullReplayMessage(message)}
+                    >
+                      Show full message
+                    </sl-button>
+                  </div>
+                </div>
+              `
+            : html`
+                <div class=${className}>
+                  <div class="character-row">
+                    <span class="character-avatar"
+                      >${character.slice(0, 1)}</span
+                    >
+                    <div>
+                      <div class="message-role">
+                        ${character}
+                        ${
+                          shouldTruncate
+                            ? html`<sl-badge variant="warning" pill
+                                >Truncated</sl-badge
+                              >`
+                            : nothing
+                        }
+                        ${
+                          summary && showFull
+                            ? html`<sl-badge variant="primary" pill
+                                >Full message</sl-badge
+                              >`
+                            : nothing
+                        }
+                      </div>
+                      <div class="event-meta">
+                        <span title=${this.formatDateTime(message.timestamp)}>
+                          ${this.formatTime(message.timestamp)}
+                        </span>
+                        · ${message.title}
+                      </div>
+                      ${this.renderMessageMetrics(message)}
+                    </div>
+                  </div>
+                  <div class="message-text">${visibleText}</div>
+                  ${
+                    summary || shouldTruncate || showFull
+                      ? html`
+                          <div class="detail-actions">
+                            ${
+                              summary && showFull
+                                ? html`
+                                    <sl-button
+                                      size="small"
+                                      @click=${() =>
+                                        this.toggleEventFullText(message.key)}
+                                    >
+                                      Show summary
+                                    </sl-button>
+                                  `
+                                : nothing
+                            }
+                            ${
+                              shouldTruncate
+                                ? html`
+                                    <sl-button
+                                      size="small"
+                                      @click=${() =>
+                                        this.showFullReplayMessage(message)}
+                                    >
+                                      Show full message
+                                    </sl-button>
+                                  `
+                                : nothing
+                            }
+                            ${
+                              hasMoreToReveal
+                                ? html`
+                                    <sl-button
+                                      size="small"
+                                      variant="primary"
+                                      @click=${() =>
+                                        this.revealMoreMessage(
+                                          message,
+                                          fullText.length
+                                        )}
+                                    >
+                                      Show more
+                                      (+${formatNumber(nextRevealChars)} chars)
+                                    </sl-button>
+                                    <span class="event-meta reveal-progress">
+                                      ${formatNumber(revealLength)} /
+                                      ${formatNumber(fullText.length)} chars ·
+                                      ${formatNumber(remainingChars)} remaining
+                                    </span>
+                                  `
+                                : nothing
+                            }
+                            ${
+                              showFull && !summary
+                                ? html`
+                                    <sl-button
+                                      size="small"
+                                      @click=${() =>
+                                        this.collapseFullReplayMessage(message)}
+                                    >
+                                      Show less
+                                    </sl-button>
+                                  `
+                                : nothing
+                            }
+                          </div>
+                        `
+                      : nothing
+                  }
+                </div>
+              `
+        }
       </div>
     `;
   }
@@ -2795,9 +3133,9 @@ export class SessionReplayPanel extends LitElement {
         ${REPLAY_MARKER_LEGEND.map(
           (item) => html`
             <button
-              class="legend-item toggle ${this.visibleReplayKinds.has(item.kind)
-                ? ''
-                : 'off'}"
+              class="legend-item toggle ${
+                this.visibleReplayKinds.has(item.kind) ? '' : 'off'
+              }"
               type="button"
               aria-pressed=${this.visibleReplayKinds.has(item.kind)}
               @click=${() => this.toggleReplaySource(item.kind)}
@@ -2842,8 +3180,10 @@ export class SessionReplayPanel extends LitElement {
               class="transport-button"
               size="medium"
               title="Previous event"
-              ?disabled=${!messages.length ||
-              (this.replayIndex <= 0 && !this.hasMoreEvents)}
+              ?disabled=${
+                !messages.length ||
+                (this.replayIndex <= 0 && !this.hasMoreEvents)
+              }
               @click=${() => this.stepReplay(-1)}
             >
               <sl-icon name="chevron-left" label="Previous event"></sl-icon>
@@ -2866,8 +3206,9 @@ export class SessionReplayPanel extends LitElement {
               class="transport-button"
               size="medium"
               title="Next event"
-              ?disabled=${!messages.length ||
-              this.replayIndex >= messages.length - 1}
+              ?disabled=${
+                !messages.length || this.replayIndex >= messages.length - 1
+              }
               @click=${() => this.stepReplay(1)}
             >
               <sl-icon name="chevron-right" label="Next event"></sl-icon>
@@ -2876,8 +3217,9 @@ export class SessionReplayPanel extends LitElement {
               class="transport-button"
               size="medium"
               title="Jump to end"
-              ?disabled=${!messages.length ||
-              this.replayIndex >= messages.length - 1}
+              ?disabled=${
+                !messages.length || this.replayIndex >= messages.length - 1
+              }
               @click=${() => this.jumpReplayToBoundary('end')}
             >
               <sl-icon name="skip-forward-fill" label="Jump to end"></sl-icon>
@@ -2936,10 +3278,9 @@ export class SessionReplayPanel extends LitElement {
                 );
                 return html`
                   <button
-                    class="timeline-marker ${marker.kind} ${marker.id ===
-                    currentMarkerId
-                      ? 'current'
-                      : ''} ${marker.failed ? 'failed' : ''}"
+                    class="timeline-marker ${marker.kind} ${
+                      marker.id === currentMarkerId ? 'current' : ''
+                    } ${marker.failed ? 'failed' : ''}"
                     style=${`left: ${markerPercent}%;`}
                     title=${`${this.formatDateTime(marker.timestamp)} - ${this.getCharacterLabel(marker.role)} - ${marker.title}`}
                     aria-label=${`Seek to ${this.formatDateTime(marker.timestamp)} ${marker.title}`}
@@ -2948,30 +3289,34 @@ export class SessionReplayPanel extends LitElement {
                       this.jumpReplayTo(marker.index);
                     }}
                   ></button>
-                  ${this.shouldShowTimelineLabel(
-                    markerIndex,
-                    eventMarkers.length
-                  )
-                    ? html`
-                        <span
-                          class="timeline-datetime-label"
-                          style=${`left: ${markerPercent}%;`}
-                          title=${this.formatDateTime(marker.timestamp)}
-                        >
-                          ${this.formatTimelineLabel(marker.timestamp)}
-                        </span>
-                      `
-                    : nothing}
+                  ${
+                    this.shouldShowTimelineLabel(
+                      markerIndex,
+                      eventMarkers.length
+                    )
+                      ? html`
+                          <span
+                            class="timeline-datetime-label"
+                            style=${`left: ${markerPercent}%;`}
+                            title=${this.formatDateTime(marker.timestamp)}
+                          >
+                            ${this.formatTimelineLabel(marker.timestamp)}
+                          </span>
+                        `
+                      : nothing
+                  }
                 `;
               })}
             </div>
             <div class="timeline-label-row">
               <span class="event-meta">Start</span>
               <span class="event-meta">
-                ${currentMessage
-                  ? html`${this.formatTime(currentMessage.timestamp)} ·
-                    ${this.replayIndex + 1} / ${messages.length}`
-                  : 'No replay messages'}
+                ${
+                  currentMessage
+                    ? html`${this.formatTime(currentMessage.timestamp)} ·
+                      ${this.replayIndex + 1} / ${messages.length}`
+                    : 'No replay messages'
+                }
               </span>
               <span class="event-meta">End</span>
             </div>
@@ -2999,12 +3344,14 @@ export class SessionReplayPanel extends LitElement {
     return html`
       <div class="replay-stage">
         ${this.renderEventPageSentinel()}
-        ${topSpacerHeight > 0
-          ? html`<div
-              class="replay-spacer"
-              style=${`height: ${topSpacerHeight}px;`}
-            ></div>`
-          : nothing}
+        ${
+          topSpacerHeight > 0
+            ? html`<div
+                class="replay-spacer"
+                style=${`height: ${topSpacerHeight}px;`}
+              ></div>`
+            : nothing
+        }
         ${visibleMessages.map((message, offset) =>
           this.renderReplayMessage(
             message,
@@ -3012,12 +3359,14 @@ export class SessionReplayPanel extends LitElement {
             startIndex + offset
           )
         )}
-        ${bottomSpacerHeight > 0
-          ? html`<div
-              class="replay-spacer"
-              style=${`height: ${bottomSpacerHeight}px;`}
-            ></div>`
-          : nothing}
+        ${
+          bottomSpacerHeight > 0
+            ? html`<div
+                class="replay-spacer"
+                style=${`height: ${bottomSpacerHeight}px;`}
+              ></div>`
+            : nothing
+        }
       </div>
     `;
   }
@@ -3043,178 +3392,213 @@ export class SessionReplayPanel extends LitElement {
           <div>
             <div class="event-title">Optimization Suggestions</div>
             <div class="event-meta">
-              ${hasSuggestions
-                ? html`
-                    ${this.optimizationResult?.generated_by === 'model'
-                      ? `Generated by ${this.optimizationResult.model_name || selectedModel?.name || 'selected model'}`
-                      : 'Showing local suggestions for this session.'}
-                    ${optimizationTokenUsage?.total_tokens
-                      ? html`
-                          · ${formatNumber(optimizationTokenUsage.total_tokens)}
-                          generation tokens · ${formatCost(optimizationCost)}
-                        `
-                      : nothing}
-                  `
-                : html`
-                    Generate suggestions with
-                    ${selectedModel?.name || 'the account default model'}.
-                  `}
+              ${
+                hasSuggestions
+                  ? html`
+                      ${
+                        this.optimizationResult?.generated_by === 'model'
+                          ? `Generated by ${this.optimizationResult.model_name || selectedModel?.name || 'selected model'}`
+                          : 'Showing local suggestions for this session.'
+                      }
+                      ${
+                        optimizationTokenUsage?.total_tokens
+                          ? html`
+                              ·
+                              ${formatNumber(optimizationTokenUsage.total_tokens)}
+                              generation tokens ·
+                              ${formatCost(optimizationCost)}
+                            `
+                          : nothing
+                      }
+                    `
+                  : html`
+                      Generate suggestions with
+                      ${selectedModel?.name || 'the account default model'}.
+                    `
+              }
             </div>
           </div>
-          ${hasSuggestions
-            ? html`
-                <div class="replay-dialog-actions">
-                  <sl-button
-                    size="small"
-                    @click=${() =>
-                      (this.optimizeControlsOpen = !this.optimizeControlsOpen)}
-                  >
-                    Regenerate
-                  </sl-button>
-                </div>
-              `
-            : nothing}
-        </div>
-        ${showControls
-          ? html`
-              <div class="optimize-controls">
-                <div class="optimize-control-row">
-                  <label>
-                    <div class="event-meta">Suggestion model</div>
-                    <select
-                      class="speed-select-native optimization-model-select"
-                      .value=${selectedModel?.id || ''}
-                      ?disabled=${!this.availableModels.length ||
-                      this.loadingOptimization}
-                      @change=${(event: Event) => {
-                        this.optimizeModelId =
-                          (event.target as HTMLSelectElement).value || null;
-                      }}
+          ${
+            hasSuggestions
+              ? html`
+                  <div class="replay-dialog-actions">
+                    <sl-button
+                      size="small"
+                      @click=${() =>
+                        (this.optimizeControlsOpen =
+                          !this.optimizeControlsOpen)}
                     >
-                      ${this.availableModels.length
-                        ? this.availableModels.map(
-                            (model) => html`
-                              <option value=${model.id}>
-                                ${model.name}${model.is_default
-                                  ? ' (default)'
-                                  : ''}
-                              </option>
-                            `
-                          )
-                        : html`<option value="">Local fallback</option>`}
-                    </select>
-                  </label>
-                </div>
-                <div class="optimize-control-row">
-                  <label class="optimize-range" style="flex: 1 1 100%;">
-                    <div class="event-meta">
-                      Optimization scope (events
-                      ${this.getEffectiveOptimizeBounds(messages).fromIndex} –
-                      ${this.getEffectiveOptimizeBounds(messages).toIndex} of
-                      ${formatNumber(Math.max(messages.length, 1))})
-                    </div>
-                    <div class="optimize-range-dual">
-                      <input
-                        class="timeline-range"
-                        type="range"
-                        aria-label="Range start"
-                        min="0"
-                        max=${String(lastIndex)}
-                        .value=${String(this.optimizeFromIndex)}
-                        @input=${(event: Event) => {
-                          const value = Number(
-                            (event.target as HTMLInputElement).value
-                          );
-                          this.optimizeFromIndex = Math.min(
-                            value,
-                            this.optimizeToIndex || lastIndex
-                          );
-                        }}
-                      />
-                      <input
-                        class="timeline-range"
-                        type="range"
-                        aria-label="Range end"
-                        min="0"
-                        max=${String(lastIndex)}
-                        .value=${String(this.optimizeToIndex || lastIndex)}
-                        @input=${(event: Event) => {
-                          const value = Number(
-                            (event.target as HTMLInputElement).value
-                          );
-                          this.optimizeToIndex = Math.max(
-                            value,
-                            this.optimizeFromIndex
-                          );
-                        }}
-                      />
-                    </div>
-                    ${this.renderOptimizationRangeMarkers(messages)}
-                  </label>
-                </div>
-                <div class="source-toggle-row">
-                  ${REPLAY_MARKER_LEGEND.map(
-                    (item) => html`
-                      <button
-                        class="legend-item toggle ${this.optimizeSources.has(
-                          item.kind
-                        )
-                          ? ''
-                          : 'off'}"
-                        type="button"
-                        aria-pressed=${this.optimizeSources.has(item.kind)}
-                        @click=${() => this.toggleOptimizationSource(item.kind)}
-                      >
-                        <span class="legend-swatch ${item.kind}"></span>
-                        ${item.label}
-                      </button>
-                    `
-                  )}
-                </div>
-                <div class="event-meta">
-                  Scope includes ${formatNumber(scopedEvents.length)}
-                  event${scopedEvents.length === 1 ? '' : 's'}.
-                </div>
-                <div class="detail-actions">
-                  <sl-button
-                    size="small"
-                    variant="primary"
-                    ?loading=${this.loadingOptimization}
-                    ?disabled=${this.loadingOptimization ||
-                    scopedEvents.length === 0}
-                    @click=${() => this.requestOptimization(hasSuggestions)}
-                  >
-                    ${hasSuggestions
-                      ? 'Regenerate suggestions'
-                      : 'Generate suggestions'}
-                  </sl-button>
-                </div>
-              </div>
-            `
-          : nothing}
-        ${hasSuggestions
-          ? html`
-              <session-optimization-panel
-                .session=${this.session}
-                .events=${scopedEvents.length ? scopedEvents : this.events}
-                .activity=${this.activity}
-                .suggestions=${this.optimizationSuggestions}
-                .optimization=${this.optimizationResult}
-                .appliedActions=${this.optimizationAppliedActions}
-                .applyingSuggestionId=${this.applyingOptimizationSuggestionId}
-                @session-optimization-selected=${(event: CustomEvent) => {
-                  this.handleOptimizationSelected(event.detail.suggestion);
-                }}
-              ></session-optimization-panel>
-            `
-          : this.optimizationResult && !this.loadingOptimization
+                      Regenerate
+                    </sl-button>
+                  </div>
+                `
+              : nothing
+          }
+        </div>
+        ${
+          showControls
             ? html`
-                <div class="empty">
-                  No optimization opportunities found for the selected scope.
-                  Widen the range, or run a longer / more tool-heavy session.
+                <div class="optimize-controls">
+                  <div class="optimize-control-row">
+                    <label>
+                      <div class="event-meta">Suggestion model</div>
+                      <select
+                        class="speed-select-native optimization-model-select"
+                        .value=${selectedModel?.id || ''}
+                        ?disabled=${
+                          !this.availableModels.length ||
+                          this.loadingOptimization
+                        }
+                        @change=${(event: Event) => {
+                          this.optimizeModelId =
+                            (event.target as HTMLSelectElement).value || null;
+                        }}
+                      >
+                        ${
+                          this.availableModels.length
+                            ? this.availableModels.map(
+                                (model) => html`
+                                  <option value=${model.id}>
+                                    ${model.name}${
+                                      model.is_default ? ' (default)' : ''
+                                    }
+                                  </option>
+                                `
+                              )
+                            : html`<option value="">Local fallback</option>`
+                        }
+                      </select>
+                    </label>
+                  </div>
+                  <div class="optimize-control-row">
+                    <label class="optimize-range" style="flex: 1 1 100%;">
+                      <div class="event-meta">
+                        Optimization scope (events
+                        ${this.getEffectiveOptimizeBounds(messages).fromIndex} –
+                        ${this.getEffectiveOptimizeBounds(messages).toIndex} of
+                        ${formatNumber(Math.max(messages.length, 1))})
+                      </div>
+                      <div class="optimize-range-dual">
+                        <div
+                          class="optimize-range-fill"
+                          style=${`left: ${
+                            lastIndex > 0
+                              ? (this.optimizeFromIndex / lastIndex) * 100
+                              : 0
+                          }%; right: ${
+                            lastIndex > 0
+                              ? 100 -
+                                ((this.optimizeToIndex || lastIndex) /
+                                  lastIndex) *
+                                  100
+                              : 0
+                          }%;`}
+                        ></div>
+                        <input
+                          class="timeline-range"
+                          type="range"
+                          aria-label="Range start"
+                          min="0"
+                          max=${String(lastIndex)}
+                          .value=${String(this.optimizeFromIndex)}
+                          @input=${(event: Event) => {
+                            const value = Number(
+                              (event.target as HTMLInputElement).value
+                            );
+                            this.optimizeFromIndex = Math.min(
+                              value,
+                              this.optimizeToIndex || lastIndex
+                            );
+                          }}
+                        />
+                        <input
+                          class="timeline-range"
+                          type="range"
+                          aria-label="Range end"
+                          min="0"
+                          max=${String(lastIndex)}
+                          .value=${String(this.optimizeToIndex || lastIndex)}
+                          @input=${(event: Event) => {
+                            const value = Number(
+                              (event.target as HTMLInputElement).value
+                            );
+                            this.optimizeToIndex = Math.max(
+                              value,
+                              this.optimizeFromIndex
+                            );
+                          }}
+                        />
+                      </div>
+                      ${this.renderOptimizationRangeMarkers(messages)}
+                    </label>
+                  </div>
+                  <div class="source-toggle-row">
+                    ${REPLAY_MARKER_LEGEND.map(
+                      (item) => html`
+                        <button
+                          class="legend-item toggle ${
+                            this.optimizeSources.has(item.kind) ? '' : 'off'
+                          }"
+                          type="button"
+                          aria-pressed=${this.optimizeSources.has(item.kind)}
+                          @click=${() => this.toggleOptimizationSource(item.kind)}
+                        >
+                          <span class="legend-swatch ${item.kind}"></span>
+                          ${item.label}
+                        </button>
+                      `
+                    )}
+                  </div>
+                  <div class="event-meta">
+                    Scope includes ${formatNumber(scopedEvents.length)}
+                    event${scopedEvents.length === 1 ? '' : 's'}.
+                  </div>
+                  <div class="detail-actions">
+                    <sl-button
+                      size="small"
+                      variant="primary"
+                      ?loading=${this.loadingOptimization}
+                      ?disabled=${
+                        this.loadingOptimization || scopedEvents.length === 0
+                      }
+                      @click=${() => this.requestOptimization(hasSuggestions)}
+                    >
+                      ${
+                        hasSuggestions
+                          ? 'Regenerate suggestions'
+                          : 'Generate suggestions'
+                      }
+                    </sl-button>
+                  </div>
                 </div>
               `
-            : nothing}
+            : nothing
+        }
+        ${
+          hasSuggestions
+            ? html`
+                <session-optimization-panel
+                  .session=${this.session}
+                  .events=${scopedEvents.length ? scopedEvents : this.events}
+                  .activity=${this.activity}
+                  .suggestions=${this.optimizationSuggestions}
+                  .optimization=${this.optimizationResult}
+                  .appliedActions=${this.optimizationAppliedActions}
+                  .applyingSuggestionId=${this.applyingOptimizationSuggestionId}
+                  @session-optimization-selected=${(event: CustomEvent) => {
+                    this.handleOptimizationSelected(event.detail.suggestion);
+                  }}
+                ></session-optimization-panel>
+              `
+            : this.optimizationResult && !this.loadingOptimization
+              ? html`
+                  <div class="empty">
+                    No optimization opportunities found for the selected scope.
+                    Widen the range, or run a longer / more tool-heavy session.
+                  </div>
+                `
+              : nothing
+        }
       </div>
     `;
   }
@@ -3222,6 +3606,20 @@ export class SessionReplayPanel extends LitElement {
   private renderReplayView() {
     const messages = this.getVisibleReplayMessages();
     if (!messages.length) {
+      // A filter can legitimately match nothing; keep a way out instead of a
+      // dead-end empty state.
+      if (this.transcriptFilterActive) {
+        return html`<div class="empty">
+          <div>
+            No messages match the current filter
+            (${this.describeTranscriptFilter()}).
+          </div>
+          <sl-button size="small" @click=${() => this.clearTranscriptFilter()}>
+            <sl-icon name="x-circle" label="Clear filter"></sl-icon>
+            Clear filter
+          </sl-button>
+        </div>`;
+      }
       return html`<div class="empty">
         No replayable messages captured for this session.
       </div>`;
@@ -3233,8 +3631,47 @@ export class SessionReplayPanel extends LitElement {
           class="replay-scrollport"
           @scroll=${() => this.syncReplayTimeFromScroll()}
         >
-          <div class="replay-transcript">${this.renderReplaySession()}</div>
+          <div class="replay-transcript">
+            ${this.renderTranscriptHeader()}${this.renderReplaySession()}
+          </div>
         </div>
+      </div>
+    `;
+  }
+
+  // Small transcript toolbar rendered above the message list. Hosts the
+  // "Failed only" filter toggle (moved out of the playback controls) plus its
+  // companion "Clear" affordance. Filtering logic/state is unchanged.
+  private renderTranscriptHeader() {
+    return html`
+      <div class="transcript-header">
+        <sl-button
+          class="failed-filter-button"
+          size="small"
+          variant=${
+            this.transcriptInspectFilter === 'failed' ? 'danger' : 'default'
+          }
+          title="Show only failed requests"
+          aria-pressed=${this.transcriptInspectFilter === 'failed'}
+          @click=${() => this.toggleFailedOnlyFilter()}
+        >
+          <sl-icon name="exclamation-octagon" label="Failed only"></sl-icon>
+          Failed only
+        </sl-button>
+        ${
+          this.transcriptFilterActive
+            ? html`<sl-button
+                class="clear-filter-button"
+                size="small"
+                variant="text"
+                title=${this.describeTranscriptFilter()}
+                @click=${() => this.clearTranscriptFilter()}
+              >
+                <sl-icon name="x-circle" label="Clear filter"></sl-icon>
+                ${this.describeTranscriptFilter()} · Clear
+              </sl-button>`
+            : nothing
+        }
       </div>
     `;
   }
@@ -3295,33 +3732,41 @@ export class SessionReplayPanel extends LitElement {
                     ${this.formatTime(event.timestamp)} ·
                     ${formatNumber(event.payload?.total_tokens as number)}
                     tokens
-                    ${generated && summary.model_name
-                      ? html`· summarized by ${summary.model_name}`
-                      : ''}
+                    ${
+                      generated && summary.model_name
+                        ? html`· summarized by ${summary.model_name}`
+                        : ''
+                    }
                   </div>
                 </div>
                 <sl-badge
-                  variant=${summary.risk_level === 'high'
-                    ? 'danger'
-                    : 'neutral'}
+                  variant=${
+                    summary.risk_level === 'high' ? 'danger' : 'neutral'
+                  }
                   pill
                 >
                   ${generated ? 'AI summary' : 'preview'}
                 </sl-badge>
               </div>
               <div class="summary-text">${summary.summary}</div>
-              ${summary.key_points.length
-                ? html`
-                    <ul class="summary-points">
-                      ${summary.key_points.map(
-                        (point) => html`<li>${point}</li>`
-                      )}
-                    </ul>
-                  `
-                : nothing}
-              ${summary.next_action
-                ? html`<div class="preview">Next: ${summary.next_action}</div>`
-                : nothing}
+              ${
+                summary.key_points.length
+                  ? html`
+                      <ul class="summary-points">
+                        ${summary.key_points.map(
+                          (point) => html`<li>${point}</li>`
+                        )}
+                      </ul>
+                    `
+                  : nothing
+              }
+              ${
+                summary.next_action
+                  ? html`<div class="preview">
+                      Next: ${summary.next_action}
+                    </div>`
+                  : nothing
+              }
               <div class="detail-actions">
                 <sl-button
                   size="small"
@@ -3338,22 +3783,24 @@ export class SessionReplayPanel extends LitElement {
                   Load full content
                 </sl-button>
               </div>
-              ${this.eventDetails[event.id]
-                ? html`
-                    <sl-details>
-                      <div slot="summary" class="segment-title">
-                        Full captured request messages
-                      </div>
-                      <div class="message-list">
-                        ${this.getRequestMessages(
-                          this.eventDetails[event.id]
-                        ).map((message) =>
-                          this.renderMessage(message, 'chat', message.key)
-                        )}
-                      </div>
-                    </sl-details>
-                  `
-                : nothing}
+              ${
+                this.eventDetails[event.id]
+                  ? html`
+                      <sl-details>
+                        <div slot="summary" class="segment-title">
+                          Full captured request messages
+                        </div>
+                        <div class="message-list">
+                          ${this.getRequestMessages(
+                            this.eventDetails[event.id]
+                          ).map((message) =>
+                            this.renderMessage(message, 'chat', message.key)
+                          )}
+                        </div>
+                      </sl-details>
+                    `
+                  : nothing
+              }
             </div>
           `;
         })}
@@ -3739,26 +4186,32 @@ export class SessionReplayPanel extends LitElement {
       <div class="chat-message ${bubbleRole}">
         <div class="message-role">
           ${role}
-          ${message.truncated
-            ? html`<sl-badge variant="warning" pill>Truncated</sl-badge>`
-            : nothing}
-          ${message.redacted
-            ? html`<sl-badge variant="warning" pill>Redacted</sl-badge>`
-            : nothing}
+          ${
+            message.truncated
+              ? html`<sl-badge variant="warning" pill>Truncated</sl-badge>`
+              : nothing
+          }
+          ${
+            message.redacted
+              ? html`<sl-badge variant="warning" pill>Redacted</sl-badge>`
+              : nothing
+          }
         </div>
         <div class="message-text">${text}</div>
-        ${isLong
-          ? html`
-              <div class="detail-actions">
-                <sl-button
-                  size="small"
-                  @click=${() => this.toggleMessage(message.key)}
-                >
-                  ${isExpanded ? 'Collapse message' : 'Show full message'}
-                </sl-button>
-              </div>
-            `
-          : nothing}
+        ${
+          isLong
+            ? html`
+                <div class="detail-actions">
+                  <sl-button
+                    size="small"
+                    @click=${() => this.toggleMessage(message.key)}
+                  >
+                    ${isExpanded ? 'Collapse message' : 'Show full message'}
+                  </sl-button>
+                </div>
+              `
+            : nothing
+        }
       </div>
     `;
   }
@@ -3777,42 +4230,50 @@ export class SessionReplayPanel extends LitElement {
       <div class="chat-turn-header">
         <div class="chat-turn-header-main">
           <span class="chat-turn-title">${turn.title}</span>
-          ${isMostExpensive
-            ? html`<span
-                class="chat-turn-cost-chip"
-                title="Highest-cost request in this session"
-              >
-                <sl-icon name="exclamation-triangle"></sl-icon>
-                Most expensive
-              </span>`
-            : nothing}
+          ${
+            isMostExpensive
+              ? html`<span
+                  class="chat-turn-cost-chip"
+                  title="Highest-cost request in this session"
+                >
+                  <sl-icon name="exclamation-triangle"></sl-icon>
+                  Most expensive
+                </span>`
+              : nothing
+          }
           <span class="chat-turn-time">${this.formatTime(turn.timestamp)}</span>
         </div>
         <div class="chat-turn-badges">
-          ${turn.isActivity
-            ? nothing
-            : html`
-                <span class="chat-turn-stat">
-                  ${formatNumber(turn.totalTokens)}
-                  tok${turn.cachedTokens
-                    ? html` (${this.formatCachedTokens(turn.cachedTokens)})`
-                    : nothing}
-                </span>
-                <span class="chat-turn-stat"
-                  >${formatCost(turn.estimatedCost)}</span
-                >
-                <span
-                  class="chat-turn-stat ${turn.toolCallCount
-                    ? 'has-tools'
-                    : ''}"
-                >
-                  ${formatNumber(turn.toolCallCount)}
-                  tool${turn.toolCallCount === 1 ? '' : 's'}
-                </span>
-              `}
-          ${turn.failed
-            ? html`<sl-badge variant="danger" pill>failed</sl-badge>`
-            : nothing}
+          ${
+            turn.isActivity
+              ? nothing
+              : html`
+                  <span class="chat-turn-stat">
+                    ${formatNumber(turn.totalTokens)}
+                    tok${
+                      turn.cachedTokens
+                        ? html` (${this.formatCachedTokens(turn.cachedTokens)})`
+                        : nothing
+                    }
+                  </span>
+                  <span class="chat-turn-stat"
+                    >${formatCost(turn.estimatedCost)}</span
+                  >
+                  <span
+                    class="chat-turn-stat ${
+                      turn.toolCallCount ? 'has-tools' : ''
+                    }"
+                  >
+                    ${formatNumber(turn.toolCallCount)}
+                    tool${turn.toolCallCount === 1 ? '' : 's'}
+                  </span>
+                `
+          }
+          ${
+            turn.failed
+              ? html`<sl-badge variant="danger" pill>failed</sl-badge>`
+              : nothing
+          }
         </div>
       </div>
     `;
@@ -3850,13 +4311,17 @@ export class SessionReplayPanel extends LitElement {
           Model: ${payload.model_alias || payload.requested_model || 'n/a'} ·
           Prompt ${formatNumber(Number(payload.prompt_tokens || 0))} ·
           Completion ${formatNumber(Number(payload.completion_tokens || 0))}
-          ${cachedTokens
-            ? html`· Cached ${formatNumber(cachedTokens)}`
-            : nothing}
+          ${
+            cachedTokens
+              ? html`· Cached ${formatNumber(cachedTokens)}`
+              : nothing
+          }
           · Finish: ${payload.finish_reason || 'n/a'}
-          ${payload.is_retry || Number(payload.gateway_attempt || 1) > 1
-            ? html`· retry #${Number(payload.gateway_attempt || 1)}`
-            : nothing}
+          ${
+            payload.is_retry || Number(payload.gateway_attempt || 1) > 1
+              ? html`· retry #${Number(payload.gateway_attempt || 1)}`
+              : nothing
+          }
         </div>
         <sl-details>
           <div slot="summary" class="segment-title">
@@ -3864,60 +4329,66 @@ export class SessionReplayPanel extends LitElement {
             message${fullMessages.length === 1 ? '' : 's'})
           </div>
           <div class="message-list">
-            ${fullMessages.length
-              ? fullMessages.map((message) =>
-                  this.renderMessage(message, 'chat', message.key)
-                )
-              : html`<div class="event-meta">
-                  No request messages captured for this event.
-                </div>`}
+            ${
+              fullMessages.length
+                ? fullMessages.map((message) =>
+                    this.renderMessage(message, 'chat', message.key)
+                  )
+                : html`<div class="event-meta">
+                    No request messages captured for this event.
+                  </div>`
+            }
           </div>
         </sl-details>
-        ${tools.length
-          ? html`
-              <sl-details>
-                <div slot="summary" class="segment-title">
-                  Tools carried (${tools.length})
-                </div>
-                <div class="message-list">
-                  ${tools.map((tool) => {
-                    const record = (tool || {}) as Record<string, unknown>;
-                    const fn = (record.function || record) as Record<
-                      string,
-                      unknown
-                    >;
-                    const name = String(fn.name || record.name || 'tool');
-                    const schemaTokens = Math.ceil(
-                      JSON.stringify(tool).length / 4
-                    );
-                    return html`
-                      <div class="tool-row">
-                        <div class="tool-row-main">
-                          <sl-icon name="wrench-adjustable"></sl-icon>
-                          <span class="tool-row-name">${name}</span>
+        ${
+          tools.length
+            ? html`
+                <sl-details>
+                  <div slot="summary" class="segment-title">
+                    Tools carried (${tools.length})
+                  </div>
+                  <div class="message-list">
+                    ${tools.map((tool) => {
+                      const record = (tool || {}) as Record<string, unknown>;
+                      const fn = (record.function || record) as Record<
+                        string,
+                        unknown
+                      >;
+                      const name = String(fn.name || record.name || 'tool');
+                      const schemaTokens = Math.ceil(
+                        JSON.stringify(tool).length / 4
+                      );
+                      return html`
+                        <div class="tool-row">
+                          <div class="tool-row-main">
+                            <sl-icon name="wrench-adjustable"></sl-icon>
+                            <span class="tool-row-name">${name}</span>
+                          </div>
+                          <div class="tool-row-chips">
+                            <span class="metric-pill"
+                              >~${formatNumber(schemaTokens)} schema tok</span
+                            >
+                          </div>
                         </div>
-                        <div class="tool-row-chips">
-                          <span class="metric-pill"
-                            >~${formatNumber(schemaTokens)} schema tok</span
-                          >
-                        </div>
-                      </div>
-                    `;
-                  })}
+                      `;
+                    })}
+                  </div>
+                </sl-details>
+              `
+            : nothing
+        }
+        ${
+          this.rawPayloads
+            ? html`
+                <div class="raw-event-container">
+                  <preloop-gateway-event
+                    .event=${detail}
+                    expanded
+                  ></preloop-gateway-event>
                 </div>
-              </sl-details>
-            `
-          : nothing}
-        ${this.rawPayloads
-          ? html`
-              <div class="raw-event-container">
-                <preloop-gateway-event
-                  .event=${detail}
-                  expanded
-                ></preloop-gateway-event>
-              </div>
-            `
-          : nothing}
+              `
+            : nothing
+        }
       </div>
     `;
   }
@@ -3944,62 +4415,70 @@ export class SessionReplayPanel extends LitElement {
       !this.fullTextEventIds.has(event?.id || '');
     return html`
       <div
-        class="chat-turn ${turn.failed ? 'failed' : ''} ${isMostExpensive
-          ? 'most-expensive'
-          : ''} ${needsSummary ? 'summary-candidate' : ''}"
+        class="chat-turn ${turn.failed ? 'failed' : ''} ${
+          isMostExpensive ? 'most-expensive' : ''
+        } ${needsSummary ? 'summary-candidate' : ''}"
         data-event-id=${event ? event.id : nothing}
       >
         ${this.renderChatTurnHeader(turn, isMostExpensive)}
-        ${showSummary && summary
-          ? html`
-              <div class="summary-card">
-                <div class="summary-text">${summary.summary}</div>
-                ${summary.key_points.length
-                  ? html`
-                      <ul class="summary-points">
-                        ${summary.key_points.map(
-                          (point) => html`<li>${point}</li>`
-                        )}
-                      </ul>
-                    `
-                  : nothing}
+        ${
+          showSummary && summary
+            ? html`
+                <div class="summary-card">
+                  <div class="summary-text">${summary.summary}</div>
+                  ${
+                    summary.key_points.length
+                      ? html`
+                          <ul class="summary-points">
+                            ${summary.key_points.map(
+                              (point) => html`<li>${point}</li>`
+                            )}
+                          </ul>
+                        `
+                      : nothing
+                  }
+                  <div class="detail-actions">
+                    <sl-button
+                      size="small"
+                      @click=${() => event && this.toggleEventFullText(event.id)}
+                    >
+                      Show full text
+                    </sl-button>
+                  </div>
+                </div>
+              `
+            : html`
+                <div class="chat-turn-bubbles">
+                  ${
+                    turn.deltaMessages.length
+                      ? repeat(
+                          turn.deltaMessages,
+                          (message) => message.key,
+                          (message) => this.renderChatBubble(message)
+                        )
+                      : html`<div class="chat-turn-empty">
+                          No new messages in this turn (resent context only).
+                        </div>`
+                  }
+                </div>
+              `
+        }
+        ${
+          event
+            ? html`
                 <div class="detail-actions">
                   <sl-button
                     size="small"
-                    @click=${() => event && this.toggleEventFullText(event.id)}
+                    ?loading=${this.loadingEventDetails.has(event.id)}
+                    @click=${() => this.toggleTurnExpanded(event.id)}
                   >
-                    Show full text
+                    ${expanded ? 'Hide full context' : 'Expand full context'}
                   </sl-button>
                 </div>
-              </div>
-            `
-          : html`
-              <div class="chat-turn-bubbles">
-                ${turn.deltaMessages.length
-                  ? repeat(
-                      turn.deltaMessages,
-                      (message) => message.key,
-                      (message) => this.renderChatBubble(message)
-                    )
-                  : html`<div class="chat-turn-empty">
-                      No new messages in this turn (resent context only).
-                    </div>`}
-              </div>
-            `}
-        ${event
-          ? html`
-              <div class="detail-actions">
-                <sl-button
-                  size="small"
-                  ?loading=${this.loadingEventDetails.has(event.id)}
-                  @click=${() => this.toggleTurnExpanded(event.id)}
-                >
-                  ${expanded ? 'Hide full context' : 'Expand full context'}
-                </sl-button>
-              </div>
-              ${expanded ? this.renderChatTurnDetail(turn) : nothing}
-            `
-          : nothing}
+                ${expanded ? this.renderChatTurnDetail(turn) : nothing}
+              `
+            : nothing
+        }
       </div>
     `;
   }
@@ -4037,21 +4516,25 @@ export class SessionReplayPanel extends LitElement {
           <span class="chat-summary-value"
             >${formatNumber(summary.totalTokens)}</span
           >
-          ${summary.cachedTokens > 0
-            ? html`<span class="chat-summary-sub"
-                >(${formatNumber(summary.cachedTokens)}
-                cached${summary.cachedPct !== null
-                  ? html` · ${summary.cachedPct}%`
-                  : nothing})</span
-              >`
-            : nothing}
+          ${
+            summary.cachedTokens > 0
+              ? html`<span class="chat-summary-sub"
+                  >(${formatNumber(summary.cachedTokens)}
+                  cached${
+                    summary.cachedPct !== null
+                      ? html` · ${summary.cachedPct}%`
+                      : nothing
+                  })</span
+                >`
+              : nothing
+          }
         </span>
         <span class="chat-summary-item">
           <span class="chat-summary-label">Tools</span>
           <span
-            class="chat-summary-value ${summary.toolCallCount
-              ? 'has-tools'
-              : ''}"
+            class="chat-summary-value ${
+              summary.toolCallCount ? 'has-tools' : ''
+            }"
             >${formatNumber(summary.toolCallCount)}</span
           >
         </span>
@@ -4064,9 +4547,9 @@ export class SessionReplayPanel extends LitElement {
         <span class="chat-summary-item">
           <span class="chat-summary-label">Outcome</span>
           <span
-            class="chat-summary-value ${summary.failedCount
-              ? 'has-failures'
-              : ''}"
+            class="chat-summary-value ${
+              summary.failedCount ? 'has-failures' : ''
+            }"
             >${formatNumber(summary.okCount)} ok /
             ${formatNumber(summary.failedCount)} failed</span
           >
@@ -4196,17 +4679,19 @@ export class SessionReplayPanel extends LitElement {
       <div class="panel">
         ${this.renderChatSummaryBar()}
         ${this.renderChatControlBar(turns.length)}
-        ${turns.length
-          ? html`
-              <div class="chat-thread">
-                ${repeat(
-                  turns,
-                  (turn) => turn.id,
-                  (turn) => this.renderChatTurn(turn, mostExpensiveTurnId)
-                )}
-              </div>
-            `
-          : html`<div class="empty">No turns match the current filters.</div>`}
+        ${
+          turns.length
+            ? html`
+                <div class="chat-thread">
+                  ${repeat(
+                    turns,
+                    (turn) => turn.id,
+                    (turn) => this.renderChatTurn(turn, mostExpensiveTurnId)
+                  )}
+                </div>
+              `
+            : html`<div class="empty">No turns match the current filters.</div>`
+        }
         ${this.renderEventPageSentinel()}
       </div>
     `;
@@ -4220,9 +4705,9 @@ export class SessionReplayPanel extends LitElement {
             (filter) => html`
               <sl-button
                 size="small"
-                variant=${this.transcriptFilter === filter.id
-                  ? 'primary'
-                  : 'default'}
+                variant=${
+                  this.transcriptFilter === filter.id ? 'primary' : 'default'
+                }
                 @click=${() => (this.transcriptFilter = filter.id)}
               >
                 ${filter.label}
@@ -4248,27 +4733,35 @@ export class SessionReplayPanel extends LitElement {
           <span class="tool-row-name">
             ${item.tool_name || item.title || 'Tool call'}
           </span>
-          ${item.server_name
-            ? html`<span class="event-meta">${item.server_name}</span>`
-            : nothing}
+          ${
+            item.server_name
+              ? html`<span class="event-meta">${item.server_name}</span>`
+              : nothing
+          }
           <span class="event-meta">${this.formatTime(item.timestamp)}</span>
         </div>
         <div class="tool-row-chips">
-          ${item.total_tokens
-            ? html`<span class="metric-pill">
-                ${formatNumber(item.total_tokens)} tok
-              </span>`
-            : nothing}
-          ${item.estimated_cost
-            ? html`<span class="metric-pill">
-                ${formatCost(item.estimated_cost)}
-              </span>`
-            : nothing}
-          ${item.status
-            ? html`<sl-badge variant=${failed ? 'danger' : 'neutral'} pill>
-                ${item.status}
-              </sl-badge>`
-            : nothing}
+          ${
+            item.total_tokens
+              ? html`<span class="metric-pill">
+                  ${formatNumber(item.total_tokens)} tok
+                </span>`
+              : nothing
+          }
+          ${
+            item.estimated_cost
+              ? html`<span class="metric-pill">
+                  ${formatCost(item.estimated_cost)}
+                </span>`
+              : nothing
+          }
+          ${
+            item.status
+              ? html`<sl-badge variant=${failed ? 'danger' : 'neutral'} pill>
+                  ${item.status}
+                </sl-badge>`
+              : nothing
+          }
         </div>
       </div>
     `;
@@ -4301,31 +4794,37 @@ export class SessionReplayPanel extends LitElement {
                       ${item.activity_type.replace(/_/g, ' ')}
                     </div>
                   </div>
-                  ${item.status
-                    ? html`<sl-badge pill>${item.status}</sl-badge>`
-                    : nothing}
+                  ${
+                    item.status
+                      ? html`<sl-badge pill>${item.status}</sl-badge>`
+                      : nothing
+                  }
                 </div>
-                ${item.summary
-                  ? html`<div class="preview">${item.summary}</div>`
-                  : ''}
+                ${
+                  item.summary
+                    ? html`<div class="preview">${item.summary}</div>`
+                    : ''
+                }
               </div>
             `
           )}
         </div>
-        ${hiddenCount > 0
-          ? html`
-              <div class="detail-actions">
-                <sl-button
-                  size="small"
-                  @click=${() => {
-                    this.visibleActivityCount += 20;
-                  }}
-                >
-                  Show ${Math.min(hiddenCount, 20)} more
-                </sl-button>
-              </div>
-            `
-          : nothing}
+        ${
+          hiddenCount > 0
+            ? html`
+                <div class="detail-actions">
+                  <sl-button
+                    size="small"
+                    @click=${() => {
+                      this.visibleActivityCount += 20;
+                    }}
+                  >
+                    Show ${Math.min(hiddenCount, 20)} more
+                  </sl-button>
+                </div>
+              `
+            : nothing
+        }
       </sl-details>
     `;
   }

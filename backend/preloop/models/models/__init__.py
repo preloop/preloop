@@ -51,6 +51,7 @@ from .runtime_session_optimization_action import RuntimeSessionOptimizationActio
 from .runtime_session_optimization_result import RuntimeSessionOptimizationResult
 from .secret_reference import SecretReference
 from .tool_cost_flag import ToolCostFlag
+from .tool_output_filter import ToolOutputFilter
 from .oauth_mcp_client import OAuthMCPClient
 from .oauth_mcp_token import (
     OAuthMCPAuthorizationCode,
@@ -127,6 +128,7 @@ __all__ = [
     "RuntimeSessionOptimizationResult",
     "SecretReference",
     "ToolCostFlag",
+    "ToolOutputFilter",
     "BudgetPolicy",
     "BudgetSpendActivity",
     "BudgetPeriod",

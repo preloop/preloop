@@ -13,8 +13,10 @@
   "permissions": [
     "read_config:plugins.entries.openclaw-plugin.config",
     "network:wss",
+    "network:https",
     "agent:send_message",
-    "agent:session_status"
+    "agent:session_status",
+    "agent:tool_approval"
   ],
   "configSchema": {
     "path": "plugins.entries.openclaw-plugin.config",

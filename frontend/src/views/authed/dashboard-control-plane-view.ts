@@ -41,6 +41,12 @@ import '../../components/preloop-flow-form';
 import '../../components/add-ai-model-modal';
 import '../../components/preloop-deploy-wizard';
 import { isSaaS } from '../../brand-config';
+import { normalizeObservedSession } from '../../utils/session-observer';
+import { renderAgentIcon } from '../../utils/agent-icons';
+import {
+  getAgentSourceLabel,
+  renderAgentIdentityBadges,
+} from '../../utils/agent-display';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import type {
   AccountGatewayUsageSummaryResponse,
@@ -188,6 +194,7 @@ export class DashboardView extends AuthedElement {
     '1d';
   @state() private fetchingActiveAgents = false;
   @state() private topModelsSortMetric: 'spend' | 'usage' = 'spend';
+  @state() private expandedOverviewGroups = new Set<string>();
   @state() private showSetupDialog = false;
   @state() private showBudgetDialog = false;
   @state() private welcomeCardDismissed = false;
@@ -318,6 +325,124 @@ export class DashboardView extends AuthedElement {
         bottom: 0;
         width: 2px;
         background: var(--sl-color-danger-600);
+      }
+      .expandable-group {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-2x-small);
+      }
+      .expandable-header {
+        align-items: flex-start;
+        cursor: pointer;
+        display: flex;
+        gap: var(--sl-spacing-x-small);
+        user-select: none;
+      }
+      .expand-icon {
+        color: var(--sl-color-neutral-500);
+        flex-shrink: 0;
+        margin-top: 2px;
+        transition: transform 0.2s ease;
+      }
+      .expand-icon.open {
+        transform: rotate(90deg);
+      }
+      .expandable-leading {
+        align-items: flex-start;
+        display: flex;
+        flex: 1;
+        gap: var(--sl-spacing-small);
+        min-width: 0;
+      }
+      .expandable-identity {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-3x-small);
+        min-width: 0;
+      }
+      .expandable-identity .row-primary {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .agent-meta-line {
+        color: var(--sl-color-neutral-500);
+        font-size: var(--sl-font-size-x-small);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .agent-identity-badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-2x-small);
+      }
+      .agent-identity-badges sl-badge {
+        max-width: 100%;
+      }
+      .expandable-trailing {
+        align-items: center;
+        display: flex;
+        flex-shrink: 0;
+        gap: var(--sl-spacing-x-small);
+        margin-left: auto;
+      }
+      .expandable-content {
+        border-left: 2px solid var(--sl-color-neutral-200);
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        margin-left: calc(1rem + var(--sl-spacing-x-small));
+        padding-left: var(--sl-spacing-medium);
+      }
+      .expandable-subheader {
+        align-items: center;
+        cursor: pointer;
+        display: flex;
+        gap: var(--sl-spacing-x-small);
+        user-select: none;
+      }
+      .expandable-subheader .row-primary {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .overview-nested-groups {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-2x-small);
+        margin-top: var(--sl-spacing-2x-small);
+      }
+      .expandable-subheader-metric {
+        color: var(--sl-color-neutral-500);
+        flex-shrink: 0;
+        font-size: var(--sl-font-size-x-small);
+        margin-left: auto;
+        white-space: nowrap;
+      }
+      .nested-session-list {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .nested-session-row {
+        align-items: center;
+        display: flex;
+        font-size: var(--sl-font-size-small);
+        gap: var(--sl-spacing-small);
+        justify-content: space-between;
+      }
+      .nested-session-row a {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .nested-session-metric {
+        color: var(--sl-color-neutral-500);
+        flex-shrink: 0;
+        font-size: var(--sl-font-size-x-small);
       }
       /* Compliance-specific styles */
       .compliance-progress {
@@ -1093,7 +1218,6 @@ export class DashboardView extends AuthedElement {
       const agentsParams: any = { status: 'all', limit: 100 };
       if (startDateStr) {
         runtimeSessionsParams.startDate = startDateStr;
-        agentsParams.lastSeenAfter = startDateStr;
       }
 
       const [runtimeSessions, managedAgents] = await Promise.all([
@@ -1119,6 +1243,12 @@ export class DashboardView extends AuthedElement {
     } finally {
       this.fetchingActiveAgents = false;
     }
+  }
+
+  private handleBudgetPoliciesChanged(
+    event: CustomEvent<{ policies: BudgetPolicy[] }>
+  ) {
+    this.budgetPolicies = event.detail.policies;
   }
 
   private async fetchBudgetSummary() {
@@ -1634,6 +1764,228 @@ export class DashboardView extends AuthedElement {
     return value.length > 8 ? value.substring(0, 8) : value;
   }
 
+  private getSessionDisplayTitle(
+    session: GatewayUsageBySession | RuntimeSessionSummary
+  ): string {
+    return normalizeObservedSession(session).title;
+  }
+
+  private getSessionDetailHref(
+    session: GatewayUsageBySession | RuntimeSessionSummary
+  ): string {
+    if ('flow_execution_id' in session && session.flow_execution_id) {
+      return `/console/flows/executions/${session.flow_execution_id}`;
+    }
+    if (
+      session.session_source_type === 'flow_execution' &&
+      session.session_source_id
+    ) {
+      return `/console/flows/executions/${session.session_source_id}`;
+    }
+    const observed = normalizeObservedSession(session);
+    return observed.canLoadEvents
+      ? `/console/runtime-sessions?sessionId=${observed.id}`
+      : '/console/runtime-sessions';
+  }
+
+  private renderNestedSessionRow(
+    session: GatewayUsageBySession | RuntimeSessionSummary,
+    metric: string
+  ) {
+    return html`
+      <div class="nested-session-row">
+        <a class="row-link" href=${this.getSessionDetailHref(session)}>
+          ${this.getSessionDisplayTitle(session)}
+        </a>
+        <span class="nested-session-metric">${metric}</span>
+      </div>
+    `;
+  }
+
+  private toggleOverviewGroup(groupId: string) {
+    const next = new Set(this.expandedOverviewGroups);
+    if (next.has(groupId)) {
+      next.delete(groupId);
+    } else {
+      next.add(groupId);
+    }
+    this.expandedOverviewGroups = next;
+  }
+
+  private isOverviewGroupExpanded(groupId: string): boolean {
+    return this.expandedOverviewGroups.has(groupId);
+  }
+
+  private renderExpandIcon(groupId: string) {
+    return html`
+      <sl-icon
+        class="expand-icon ${
+          this.isOverviewGroupExpanded(groupId) ? 'open' : ''
+        }"
+        name="chevron-right"
+      ></sl-icon>
+    `;
+  }
+
+  private renderExpandableSubGroup(
+    groupId: string,
+    name: string,
+    href: string | null,
+    summaryMetric: string,
+    content: ReturnType<typeof html>
+  ) {
+    const expanded = this.isOverviewGroupExpanded(groupId);
+    return html`
+      <div class="expandable-group">
+        <div
+          class="expandable-subheader"
+          @click=${() => this.toggleOverviewGroup(groupId)}
+        >
+          ${this.renderExpandIcon(groupId)}
+          ${
+            href
+              ? html`<a
+                  class="row-link row-primary"
+                  href=${href}
+                  @click=${(event: Event) => event.stopPropagation()}
+                  >${name}</a
+                >`
+              : html`<span class="row-primary">${name}</span>`
+          }
+          <span class="expandable-subheader-metric">${summaryMetric}</span>
+        </div>
+        ${expanded ? html`<div class="expandable-content">${content}</div>` : nothing}
+      </div>
+    `;
+  }
+
+  private renderAgentExpandableGroup(
+    groupId: string,
+    agent: ManagedAgentSummary,
+    sessions: Array<GatewayUsageBySession | RuntimeSessionSummary>,
+    trailingMetric: string,
+    options: {
+      showTalkComposer?: boolean;
+      onAgentControlSent?: () => void;
+    } = {}
+  ) {
+    const expanded = this.isOverviewGroupExpanded(groupId);
+    const agentKind = agent.agent_kind || agent.session_source_type;
+    const showTalkComposer = options.showTalkComposer ?? false;
+
+    return html`
+      <div class="expandable-group">
+        <div
+          class="expandable-header"
+          @click=${() => this.toggleOverviewGroup(groupId)}
+        >
+          ${this.renderExpandIcon(groupId)}
+          <div class="expandable-leading">
+            ${renderAgentIcon(
+              agentKind,
+              'font-size: 1.25rem; color: var(--sl-color-neutral-800); flex-shrink: 0;'
+            )}
+            <div class="expandable-identity">
+              <a
+                class="row-link row-primary"
+                href=${`/console/agents/${agent.id}`}
+                @click=${(event: Event) => event.stopPropagation()}
+              >
+                ${agent.display_name || 'Agent'}
+              </a>
+              <div class="agent-meta-line">
+                ${getAgentSourceLabel(agentKind)}${
+                  agent.session_source_id ? ` · ${agent.session_source_id}` : ''
+                }
+              </div>
+              ${renderAgentIdentityBadges(agent)}
+            </div>
+          </div>
+          <div
+            class="expandable-trailing"
+            @click=${(event: Event) => event.stopPropagation()}
+          >
+            ${
+              showTalkComposer && getAgentControlState(agent).visible
+                ? html`
+                    <agent-talk-composer
+                      .agent=${agent}
+                      .sessions=${sessions}
+                      sourceContext="dashboard-active-agents"
+                      compact
+                      @agent-control-sent=${() =>
+                        options.onAgentControlSent?.()}
+                    ></agent-talk-composer>
+                  `
+                : null
+            }
+            <span class="row-value">${trailingMetric}</span>
+          </div>
+        </div>
+        ${
+          expanded
+            ? html`
+                <div class="expandable-content">
+                  ${
+                    sessions.length > 0
+                      ? html`
+                          <div class="nested-session-list">
+                            ${sessions.map((session) =>
+                              this.renderNestedSessionRow(
+                                session,
+                                `${this.formatNumber(
+                                  'total_requests' in session
+                                    ? session.total_requests
+                                    : session.request_count
+                                )} req`
+                              )
+                            )}
+                          </div>
+                        `
+                      : html`<div class="nested-session-metric">
+                          No recent sessions
+                        </div>`
+                  }
+                </div>
+              `
+            : nothing
+        }
+      </div>
+    `;
+  }
+
+  private renderActiveAgentGroup(
+    agent: ManagedAgentSummary,
+    sessions: RuntimeSessionSummary[]
+  ) {
+    return this.renderAgentExpandableGroup(
+      `active-agent:${agent.id}`,
+      agent,
+      sessions,
+      `${this.formatCurrency(agent.estimated_cost)} · ${this.formatRelativeTime(agent.last_seen_at)}`,
+      {
+        showTalkComposer: true,
+        onAgentControlSent: () => this.fetchActiveAgentsData(),
+      }
+    );
+  }
+
+  private renderCollapsibleGroup(
+    groupId: string,
+    name: string,
+    href: string | null,
+    summaryMetric: string,
+    content: ReturnType<typeof html>
+  ) {
+    return this.renderExpandableSubGroup(
+      groupId,
+      name,
+      href,
+      summaryMetric,
+      content
+    );
+  }
+
   private formatRelativeTime(value: string | null | undefined): string {
     if (!value) {
       return 'Never';
@@ -1923,58 +2275,72 @@ export class DashboardView extends AuthedElement {
           </span>
           <span style="font-weight: 500; text-align: right;">
             ${this.formatCurrency(spend)}
-            ${maxLimit > 0
-              ? html` / ${this.formatCurrency(maxLimit)}`
-              : html`<span
-                  style="color: var(--sl-color-neutral-500); font-weight: 400;"
-                >
-                  spent</span
-                >`}
+            ${
+              maxLimit > 0
+                ? html` / ${this.formatCurrency(maxLimit)}`
+                : html`<span
+                    style="color: var(--sl-color-neutral-500); font-weight: 400;"
+                  >
+                    spent</span
+                  >`
+            }
           </span>
         </div>
-        ${maxLimit > 0
-          ? html`
-              <div class="budget-track">
+        ${
+          maxLimit > 0
+            ? html`
+                <div class="budget-track">
+                  <div
+                    class="budget-track-fill success"
+                    style="--budget-fill-width: ${successFillPercent}%;"
+                  ></div>
+                  ${
+                    warningFillPercent > 0
+                      ? html`<div
+                          class="budget-track-fill warning"
+                          style="--budget-fill-left: ${softPercent}%; --budget-fill-width: ${warningFillPercent}%;"
+                        ></div>`
+                      : nothing
+                  }
+                  ${
+                    softLimit > 0 && hardLimit > 0 && softLimit < hardLimit
+                      ? html`<div
+                          class="budget-soft-marker"
+                          title=${`Soft limit ${this.formatCurrency(softLimit)}`}
+                          style="--budget-soft-position: ${softPercent}%;"
+                        ></div>`
+                      : nothing
+                  }
+                  ${
+                    hardLimit > 0
+                      ? html`<div
+                          class="budget-hard-marker"
+                          title=${`Hard limit ${this.formatCurrency(hardLimit)}`}
+                        ></div>`
+                      : nothing
+                  }
+                </div>
                 <div
-                  class="budget-track-fill success"
-                  style="--budget-fill-width: ${successFillPercent}%;"
-                ></div>
-                ${warningFillPercent > 0
-                  ? html`<div
-                      class="budget-track-fill warning"
-                      style="--budget-fill-left: ${softPercent}%; --budget-fill-width: ${warningFillPercent}%;"
-                    ></div>`
-                  : nothing}
-                ${softLimit > 0 && hardLimit > 0 && softLimit < hardLimit
-                  ? html`<div
-                      class="budget-soft-marker"
-                      title=${`Soft limit ${this.formatCurrency(softLimit)}`}
-                      style="--budget-soft-position: ${softPercent}%;"
-                    ></div>`
-                  : nothing}
-                ${hardLimit > 0
-                  ? html`<div
-                      class="budget-hard-marker"
-                      title=${`Hard limit ${this.formatCurrency(hardLimit)}`}
-                    ></div>`
-                  : nothing}
-              </div>
-              <div
-                style="display: flex; justify-content: space-between; gap: var(--sl-spacing-small); color: var(--sl-color-neutral-500); font-size: var(--sl-font-size-x-small);"
-              >
-                <span>
-                  ${softLimit > 0
-                    ? html`Soft ${this.formatCurrency(softLimit)}`
-                    : nothing}
-                </span>
-                <span>
-                  ${hardLimit > 0
-                    ? html`Hard ${this.formatCurrency(hardLimit)}`
-                    : nothing}
-                </span>
-              </div>
-            `
-          : nothing}
+                  style="display: flex; justify-content: space-between; gap: var(--sl-spacing-small); color: var(--sl-color-neutral-500); font-size: var(--sl-font-size-x-small);"
+                >
+                  <span>
+                    ${
+                      softLimit > 0
+                        ? html`Soft ${this.formatCurrency(softLimit)}`
+                        : nothing
+                    }
+                  </span>
+                  <span>
+                    ${
+                      hardLimit > 0
+                        ? html`Hard ${this.formatCurrency(hardLimit)}`
+                        : nothing
+                    }
+                  </span>
+                </div>
+              `
+            : nothing
+        }
       </div>
     `;
   }
@@ -1986,52 +2352,91 @@ export class DashboardView extends AuthedElement {
       return undefined;
     }
     return [...this.managedAgents, ...this.budgetAgents].find(
-      (agent) => agent.id === sourceId || agent.session_source_id === sourceId
+      (agent) =>
+        agent.id === sourceId ||
+        agent.session_source_id === sourceId ||
+        agent.runtime_session_id === sourceId
+    );
+  }
+
+  private getManagedAgentForUsageSession(
+    session: GatewayUsageBySession
+  ): ManagedAgentSummary | undefined {
+    const lookupIds = [
+      session.agent_id,
+      session.runtime_session_id,
+      session.session_source_id,
+      session.runtime_principal_id,
+    ].filter((value): value is string => Boolean(value));
+
+    for (const sourceId of lookupIds) {
+      const agent = this.getManagedAgentBySourceId(sourceId);
+      if (agent) {
+        return agent;
+      }
+    }
+    return undefined;
+  }
+
+  private isFlowBackedUsageSession(session: GatewayUsageBySession): boolean {
+    return Boolean(
+      session.flow_execution_id ||
+      session.flow_id ||
+      session.session_source_type === 'flow_execution' ||
+      session.runtime_principal_type === 'flow_execution'
+    );
+  }
+
+  private isAgentBackedUsageSession(
+    session: GatewayUsageBySession,
+    agent?: ManagedAgentSummary
+  ): boolean {
+    return Boolean(
+      agent ||
+      session.agent_id ||
+      session.session_source_type === 'managed_agent' ||
+      session.runtime_principal_type === 'managed_agent'
     );
   }
 
   private getUsageSessionSubject(
     session: GatewayUsageBySession
   ): UsageSessionSubject {
-    const agent = this.getManagedAgentBySourceId(
-      session.session_source_id || session.runtime_principal_id
-    );
-    if (
-      agent ||
-      session.session_source_type === 'managed_agent' ||
-      session.runtime_principal_type === 'managed_agent'
-    ) {
-      const agentId = agent?.id || session.session_source_id;
+    if (this.isFlowBackedUsageSession(session)) {
+      return {
+        kind: 'flow',
+        name: session.flow_name || session.runtime_principal_name || 'Flow',
+        href: session.flow_id
+          ? `/console/flows/${session.flow_id}`
+          : '/console/flows',
+      };
+    }
+
+    const agent = this.getManagedAgentForUsageSession(session);
+    if (this.isAgentBackedUsageSession(session, agent)) {
+      const agentId =
+        agent?.id ||
+        session.agent_id ||
+        (session.session_source_type === 'managed_agent'
+          ? session.session_source_id
+          : null) ||
+        (session.runtime_principal_type === 'managed_agent'
+          ? session.runtime_principal_id
+          : null);
       return {
         kind: 'agent',
         name:
           agent?.display_name ||
+          session.agent_name ||
           session.runtime_principal_name ||
           'Managed agent',
         href: agentId ? `/console/agents/${agentId}` : '/console/agents',
       };
     }
 
-    if (
-      session.flow_name ||
-      session.flow_id ||
-      session.flow_execution_id ||
-      session.session_source_type === 'flow_execution'
-    ) {
-      return {
-        kind: 'flow',
-        name: session.flow_name || 'Flow',
-        href: session.flow_id
-          ? `/console/flows/${session.flow_id}`
-          : session.flow_execution_id
-            ? `/console/flows/executions/${session.flow_execution_id}`
-            : '/console/flows',
-      };
-    }
-
     return {
       kind: 'session',
-      name: this.formatRuntimeSessionId(session.runtime_session_id),
+      name: this.getSessionDisplayTitle(session),
       href: session.runtime_session_id
         ? `/console/runtime-sessions?sessionId=${session.runtime_session_id}`
         : '/console/runtime-sessions',
@@ -2123,88 +2528,96 @@ export class DashboardView extends AuthedElement {
         <div slot="header" class="chart-header">
           <sl-icon name="diagram-3"></sl-icon>
           Recent Flow Executions
-          ${this.failedFlowExecutions.length > 0
-            ? html`<sl-badge variant="danger" pulse
-                >${this.failedFlowExecutions.length} failed</sl-badge
-              >`
-            : ''}
+          ${
+            this.failedFlowExecutions.length > 0
+              ? html`<sl-badge variant="danger" pulse
+                  >${this.failedFlowExecutions.length} failed</sl-badge
+                >`
+              : ''
+          }
         </div>
 
-        ${this.recentFlowExecutions.length === 0
-          ? html`
-              <div class="empty-state">
-                <sl-icon name="inbox"></sl-icon>
-                <p>
-                  No flow executions yet.
-                  <a href="/console/flows">Create a flow</a>
-                </p>
-              </div>
-            `
-          : html`
-              <div class="item-list">
-                ${this.recentFlowExecutions
-                  .filter((exec) => !this.dismissedExecutions.includes(exec.id))
-                  .slice(0, 5)
-                  .map(
-                    (exec) => html`
-                      <div
-                        class="item-card ${exec.status === 'FAILED'
-                          ? 'danger'
-                          : ''}"
-                      >
-                        <div class="item-info">
-                          <span class="item-name"
-                            >${exec.flow_name || 'Unnamed Flow'}</span
-                          >
-                          ${exec.error_message
-                            ? html`<span class="item-error"
-                                >${exec.error_message}</span
-                              >`
-                            : ''}
-                          <span class="item-secondary"
-                            >${this.formatDate(exec.start_time)}</span
-                          >
-                        </div>
+        ${
+          this.recentFlowExecutions.length === 0
+            ? html`
+                <div class="empty-state">
+                  <sl-icon name="inbox"></sl-icon>
+                  <p>
+                    No flow executions yet.
+                    <a href="/console/flows">Create a flow</a>
+                  </p>
+                </div>
+              `
+            : html`
+                <div class="item-list">
+                  ${this.recentFlowExecutions
+                    .filter(
+                      (exec) => !this.dismissedExecutions.includes(exec.id)
+                    )
+                    .slice(0, 5)
+                    .map(
+                      (exec) => html`
                         <div
-                          style="display: flex; align-items: center; gap: var(--sl-spacing-small);"
+                          class="item-card ${
+                            exec.status === 'FAILED' ? 'danger' : ''
+                          }"
                         >
-                          <sl-tag
-                            size="small"
-                            variant="${this.getStatusColor(exec.status)}"
+                          <div class="item-info">
+                            <span class="item-name"
+                              >${exec.flow_name || 'Unnamed Flow'}</span
+                            >
+                            ${
+                              exec.error_message
+                                ? html`<span class="item-error"
+                                    >${exec.error_message}</span
+                                  >`
+                                : ''
+                            }
+                            <span class="item-secondary"
+                              >${this.formatDate(exec.start_time)}</span
+                            >
+                          </div>
+                          <div
+                            style="display: flex; align-items: center; gap: var(--sl-spacing-small);"
                           >
-                            ${exec.status}
-                          </sl-tag>
-                          <sl-button
-                            size="small"
-                            href="/console/flows/executions/${exec.id}"
-                          >
-                            View
-                          </sl-button>
-                          <sl-icon-button
-                            name="x-lg"
-                            label="Dismiss"
-                            @click=${(e: Event) => {
-                              e.preventDefault();
-                              this.dismissExecution(exec.id);
-                            }}
-                          ></sl-icon-button>
+                            <sl-tag
+                              size="small"
+                              variant="${this.getStatusColor(exec.status)}"
+                            >
+                              ${exec.status}
+                            </sl-tag>
+                            <sl-button
+                              size="small"
+                              href="/console/flows/executions/${exec.id}"
+                            >
+                              View
+                            </sl-button>
+                            <sl-icon-button
+                              name="x-lg"
+                              label="Dismiss"
+                              @click=${(e: Event) => {
+                                e.preventDefault();
+                                this.dismissExecution(exec.id);
+                              }}
+                            ></sl-icon-button>
+                          </div>
                         </div>
-                      </div>
-                    `
-                  )}
-              </div>
+                      `
+                    )}
+                </div>
 
-              <div class="quick-actions">
-                <sl-button size="small" href="/console/flows/executions">
-                  <sl-icon slot="prefix" name="list"></sl-icon>
-                  View All Executions
-                </sl-button>
-                <sl-button size="small" href="/console/flows">
-                  <sl-icon slot="prefix" name="plus-circle"></sl-icon>
-                  Create Flow
-                </sl-button>
-              </div>
-            `}
+                <div class="quick-actions">
+                  <sl-button size="small" href="/console/flows/executions">
+                    <sl-icon slot="prefix" name="list"></sl-icon>
+                    View All Executions
+                  </sl-button>
+                  <sl-button size="small" href="/console/flows">
+                    <sl-icon slot="prefix" name="plus-circle"></sl-icon>
+                    Create Flow
+                  </sl-button>
+                </div>
+              `
+        }
       </sl-card>
     `;
   }
@@ -2308,9 +2721,11 @@ export class DashboardView extends AuthedElement {
                 <div class="row-main">
                   <a
                     class="row-link row-primary"
-                    href=${item.runtime_session_id
-                      ? `/console/runtime-sessions?sessionId=${item.runtime_session_id}`
-                      : '/console/api-usage'}
+                    href=${
+                      item.runtime_session_id
+                        ? `/console/runtime-sessions?sessionId=${item.runtime_session_id}`
+                        : '/console/api-usage'
+                    }
                   >
                     ${item.model_alias || item.provider_name || item.endpoint}
                   </a>
@@ -2318,9 +2733,11 @@ export class DashboardView extends AuthedElement {
                 </div>
                 <div class="row-meta">
                   <span>
-                    ${item.runtime_principal_name ||
-                    item.session_reference ||
-                    item.endpoint}
+                    ${
+                      item.runtime_principal_name ||
+                      this.getSessionDisplayTitle(item) ||
+                      item.endpoint
+                    }
                   </span>
                   <span>${this.formatRelativeTime(item.timestamp)}</span>
                 </div>
@@ -2354,22 +2771,22 @@ export class DashboardView extends AuthedElement {
                     ${group.primary_event.action.replace(/_/g, ' ')}
                   </span>
                   <sl-badge
-                    variant=${group.outcome === 'budget_denied'
-                      ? 'warning'
-                      : 'danger'}
+                    variant=${
+                      group.outcome === 'budget_denied' ? 'warning' : 'danger'
+                    }
                   >
                     ${group.outcome}
                   </sl-badge>
                 </div>
                 <div class="row-meta">
                   <span>
-                    ${(group.primary_event.details?.requested_model as
-                      | string
-                      | undefined) ||
-                    (group.primary_event.details?.tool_name as
-                      | string
-                      | undefined) ||
-                    group.primary_event.id}
+                    ${
+                      (group.primary_event.details?.requested_model as
+                        string | undefined) ||
+                      (group.primary_event.details?.tool_name as
+                        string | undefined) ||
+                      group.primary_event.id
+                    }
                   </span>
                   <span>
                     ${this.formatRelativeTime(group.primary_event.timestamp)}
@@ -2450,6 +2867,7 @@ export class DashboardView extends AuthedElement {
             (item) =>
               `${item.ai_model_id}-${item.model_alias}-${item.provider_name}`,
             (item) => {
+              const modelKey = `${item.ai_model_id}-${item.model_alias}-${item.provider_name}`;
               const modelSessions = allSessions.filter(
                 (s) =>
                   (s.ai_model_id &&
@@ -2480,7 +2898,11 @@ export class DashboardView extends AuthedElement {
               modelSessions.forEach((s) => {
                 const subject = this.getUsageSessionSubject(s);
                 if (subject.kind === 'agent') {
+                  const agent = this.getManagedAgentForUsageSession(s);
                   const key =
+                    agent?.id ||
+                    s.agent_id ||
+                    s.runtime_session_id ||
                     s.session_source_id ||
                     s.runtime_principal_id ||
                     subject.href;
@@ -2489,11 +2911,7 @@ export class DashboardView extends AuthedElement {
                   }
                   agentGroups.get(key)!.sessions.push(s);
                 } else if (subject.kind === 'flow') {
-                  const key =
-                    s.flow_id ||
-                    s.flow_execution_id ||
-                    s.session_source_id ||
-                    subject.href;
+                  const key = s.flow_id || s.flow_name || subject.href;
                   if (!flowGroups.has(key)) {
                     flowGroups.set(key, { subject, sessions: [] });
                   }
@@ -2514,29 +2932,33 @@ export class DashboardView extends AuthedElement {
                     <div
                       style="display: flex; align-items: center; gap: var(--sl-spacing-2x-small); overflow: hidden;"
                     >
-                      ${item.ai_model_id
-                        ? html`
-                            <a
-                              class="row-link row-primary"
-                              href=${`/console/ai-models/${item.ai_model_id}`}
-                              style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
-                            >
-                              ${item.model_alias || 'Unknown model'}
-                            </a>
-                          `
-                        : html`
-                            <span
-                              class="row-primary"
-                              style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
-                            >
-                              ${item.model_alias || 'Unknown model'}
-                            </span>
-                          `}
+                      ${
+                        item.ai_model_id
+                          ? html`
+                              <a
+                                class="row-link row-primary"
+                                href=${`/console/ai-models/${item.ai_model_id}`}
+                                style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
+                              >
+                                ${item.model_alias || 'Unknown model'}
+                              </a>
+                            `
+                          : html`
+                              <span
+                                class="row-primary"
+                                style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
+                              >
+                                ${item.model_alias || 'Unknown model'}
+                              </span>
+                            `
+                      }
                     </div>
                     <span class="row-value">
-                      ${this.topModelsSortMetric === 'usage'
-                        ? `${this.formatNumber(item.request_count)} requests`
-                        : this.formatCurrency(item.estimated_cost)}
+                      ${
+                        this.topModelsSortMetric === 'usage'
+                          ? `${this.formatNumber(item.request_count)} requests`
+                          : this.formatCurrency(item.estimated_cost)
+                      }
                     </span>
                   </div>
                   <div
@@ -2544,179 +2966,124 @@ export class DashboardView extends AuthedElement {
                   >
                     <span>${item.provider_name || 'provider unknown'}</span>
                     <span
-                      >${this.topModelsSortMetric === 'spend'
-                        ? `${this.formatNumber(item.request_count)} requests`
-                        : this.formatCurrency(item.estimated_cost)}</span
+                      >${
+                        this.topModelsSortMetric === 'spend'
+                          ? `${this.formatNumber(item.request_count)} requests`
+                          : this.formatCurrency(item.estimated_cost)
+                      }</span
                     >
                   </div>
 
-                  ${agentGroups.size > 0 ||
-                  flowGroups.size > 0 ||
-                  otherSessions.length > 0
-                    ? html`
-                        <div
-                          style="display: flex; flex-direction: column; gap: 8px; padding-left: var(--sl-spacing-medium); margin-top: 4px; border-left: 2px solid var(--sl-color-neutral-200);"
-                        >
-                          ${Array.from(agentGroups.values()).map(
-                            ({ subject, sessions }) => {
-                              const totalAgentCost = sessions.reduce(
-                                (acc, s) => acc + s.estimated_cost,
-                                0
-                              );
-                              const totalAgentReqs = sessions.reduce(
-                                (acc, s) => acc + s.request_count,
-                                0
-                              );
-                              return html`
-                                <div
-                                  style="display: flex; flex-direction: column; gap: 4px;"
-                                >
-                                  <div
-                                    style="display: flex; justify-content: space-between; align-items: center; font-size: var(--sl-font-size-small);"
-                                  >
-                                    <div
-                                      style="display: flex; align-items: center; gap: var(--sl-spacing-3x-small);"
-                                    >
-                                      <sl-badge
-                                        variant="primary"
-                                        style="font-size: 0.5rem; line-height: 1; padding: 2px 4px;"
-                                        >agent</sl-badge
-                                      >
-                                      <a
-                                        class="row-link"
-                                        href=${subject.href}
-                                        style="color: var(--sl-color-neutral-800); font-weight: 500;"
-                                      >
-                                        ${subject.name}
-                                      </a>
+                  ${
+                    agentGroups.size > 0 ||
+                    flowGroups.size > 0 ||
+                    otherSessions.length > 0
+                      ? html`
+                          <div class="overview-nested-groups">
+                            ${Array.from(agentGroups.entries()).map(
+                              ([groupKey, { subject, sessions }]) => {
+                                const totalAgentCost = sessions.reduce(
+                                  (acc, s) => acc + s.estimated_cost,
+                                  0
+                                );
+                                const totalAgentReqs = sessions.reduce(
+                                  (acc, s) => acc + s.request_count,
+                                  0
+                                );
+                                const agent =
+                                  this.getManagedAgentForUsageSession(
+                                    sessions[0]
+                                  );
+                                const groupId = `top-model:${modelKey}:agent:${groupKey}`;
+                                const trailingMetric = `${this.formatCurrency(totalAgentCost)} (${this.formatNumber(totalAgentReqs)} req)`;
+                                if (agent) {
+                                  return this.renderAgentExpandableGroup(
+                                    groupId,
+                                    agent,
+                                    sessions,
+                                    trailingMetric
+                                  );
+                                }
+                                return this.renderCollapsibleGroup(
+                                  groupId,
+                                  subject.name,
+                                  subject.href,
+                                  trailingMetric,
+                                  html`
+                                    <div class="nested-session-list">
+                                      ${sessions.map((s) =>
+                                        this.renderNestedSessionRow(
+                                          s,
+                                          `${this.formatNumber(s.request_count)} req`
+                                        )
+                                      )}
                                     </div>
-                                    <span
-                                      style="color: var(--sl-color-neutral-600);"
-                                      >${this.formatCurrency(totalAgentCost)}
-                                      (${this.formatNumber(totalAgentReqs)}
-                                      req)</span
-                                    >
-                                  </div>
-
-                                  <div
-                                    style="display: flex; flex-direction: column; gap: 2px; padding-left: var(--sl-spacing-medium);"
-                                  >
-                                    ${sessions.map(
-                                      (s) => html`
-                                        <div
-                                          style="display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem;"
-                                        >
-                                          <a
-                                            class="row-link"
-                                            href=${`/console/runtime-sessions?sessionId=${s.runtime_session_id}`}
-                                            style="color: var(--sl-color-neutral-600);"
-                                          >
-                                            ${subject.name} /
-                                            ${this.formatRuntimeSessionId(
-                                              s.runtime_session_id
-                                            )}
-                                          </a>
-                                          <span
-                                            style="color: var(--sl-color-neutral-500);"
-                                            >${this.formatNumber(
-                                              s.request_count
-                                            )}
-                                            req</span
-                                          >
-                                        </div>
-                                      `
-                                    )}
-                                  </div>
-                                </div>
-                              `;
-                            }
-                          )}
-                          ${Array.from(flowGroups.values()).map(
-                            ({ subject, sessions }) => {
-                              const totalFlowCost = sessions.reduce(
-                                (acc, s) => acc + s.estimated_cost,
-                                0
-                              );
-                              const totalFlowReqs = sessions.reduce(
-                                (acc, s) => acc + s.request_count,
-                                0
-                              );
-                              return html`
-                                <div
-                                  style="display: flex; flex-direction: column; gap: 4px;"
-                                >
-                                  <div
-                                    style="display: flex; justify-content: space-between; align-items: center; font-size: var(--sl-font-size-small);"
-                                  >
-                                    <div
-                                      style="display: flex; align-items: center; gap: var(--sl-spacing-3x-small);"
-                                    >
-                                      <sl-badge
-                                        variant="primary"
-                                        style="font-size: 0.5rem; line-height: 1; padding: 2px 4px;"
-                                        >flow</sl-badge
-                                      >
-                                      <a
-                                        class="row-link"
-                                        href=${subject.href}
-                                        style="color: var(--sl-color-neutral-800); font-weight: 500;"
-                                      >
-                                        ${subject.name}
-                                      </a>
+                                  `
+                                );
+                              }
+                            )}
+                            ${Array.from(flowGroups.entries()).map(
+                              ([groupKey, { subject, sessions }]) => {
+                                const totalFlowCost = sessions.reduce(
+                                  (acc, s) => acc + s.estimated_cost,
+                                  0
+                                );
+                                const totalFlowReqs = sessions.reduce(
+                                  (acc, s) => acc + s.request_count,
+                                  0
+                                );
+                                return this.renderCollapsibleGroup(
+                                  `top-model:${modelKey}:flow:${groupKey}`,
+                                  subject.name,
+                                  subject.href,
+                                  `${this.formatCurrency(totalFlowCost)} (${this.formatNumber(totalFlowReqs)} req)`,
+                                  html`
+                                    <div class="nested-session-list">
+                                      ${sessions.map((s) =>
+                                        this.renderNestedSessionRow(
+                                          s,
+                                          `${this.formatNumber(s.request_count)} req`
+                                        )
+                                      )}
                                     </div>
-                                    <span
-                                      style="color: var(--sl-color-neutral-600);"
-                                      >${this.formatCurrency(totalFlowCost)}
-                                      (${this.formatNumber(totalFlowReqs)}
-                                      req)</span
-                                    >
-                                  </div>
-                                </div>
-                              `;
-                            }
-                          )}
-                          ${otherSessions.length > 0
-                            ? html`
-                                <div
-                                  style="display: flex; flex-direction: column; gap: 2px;"
-                                >
-                                  ${otherSessions.map(
-                                    (s) => html`
-                                      <div
-                                        style="display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem;"
-                                      >
-                                        <div
-                                          style="display: flex; align-items: center; gap: var(--sl-spacing-3x-small);"
-                                        >
-                                          <sl-badge
-                                            variant="neutral"
-                                            style="font-size: 0.5rem; line-height: 1; padding: 2px 4px;"
-                                            >session</sl-badge
-                                          >
-                                          <a
-                                            class="row-link"
-                                            href=${`/console/runtime-sessions?sessionId=${s.runtime_session_id}`}
-                                            style="color: var(--sl-color-neutral-600);"
-                                          >
-                                            ${this.formatRuntimeSessionId(
-                                              s.runtime_session_id
-                                            )}
-                                          </a>
-                                        </div>
-                                        <span
-                                          style="color: var(--sl-color-neutral-500);"
-                                          >${this.formatNumber(s.request_count)}
-                                          req</span
-                                        >
+                                  `
+                                );
+                              }
+                            )}
+                            ${
+                              otherSessions.length > 0
+                                ? this.renderCollapsibleGroup(
+                                    `top-model:${modelKey}:other`,
+                                    'Other',
+                                    null,
+                                    `${this.formatCurrency(
+                                      otherSessions.reduce(
+                                        (acc, s) => acc + s.estimated_cost,
+                                        0
+                                      )
+                                    )} (${this.formatNumber(
+                                      otherSessions.reduce(
+                                        (acc, s) => acc + s.request_count,
+                                        0
+                                      )
+                                    )} req)`,
+                                    html`
+                                      <div class="nested-session-list">
+                                        ${otherSessions.map((s) =>
+                                          this.renderNestedSessionRow(
+                                            s,
+                                            `${this.formatNumber(s.request_count)} req`
+                                          )
+                                        )}
                                       </div>
                                     `
-                                  )}
-                                </div>
-                              `
-                            : ''}
-                        </div>
-                      `
-                    : ''}
+                                  )
+                                : ''
+                            }
+                          </div>
+                        `
+                      : ''
+                  }
                 </div>
               `;
             }
@@ -2773,14 +3140,13 @@ export class DashboardView extends AuthedElement {
                 <div class="row-main">
                   <a
                     class="row-link row-primary"
-                    href=${item.runtime_session_id
-                      ? `/console/runtime-sessions?sessionId=${item.runtime_session_id}`
-                      : '/console/runtime-sessions'}
+                    href=${
+                      item.runtime_session_id
+                        ? `/console/runtime-sessions?sessionId=${item.runtime_session_id}`
+                        : '/console/runtime-sessions'
+                    }
                   >
-                    ${item.session_reference ||
-                    item.session_source_id ||
-                    item.runtime_session_id ||
-                    'Session'}
+                    ${this.getSessionDisplayTitle(item)}
                   </a>
                   <span class="row-value">
                     ${this.formatCurrency(item.estimated_cost)}
@@ -2864,11 +3230,13 @@ export class DashboardView extends AuthedElement {
             style="display: flex; align-items: center; gap: var(--sl-spacing-2x-small);"
           >
             Active agents
-            ${this.fetchingActiveAgents
-              ? html`<sl-spinner
-                  style="font-size: 1rem; width: 1rem; height: 1rem;"
-                ></sl-spinner>`
-              : ''}
+            ${
+              this.fetchingActiveAgents
+                ? html`<sl-spinner
+                    style="font-size: 1rem; width: 1rem; height: 1rem;"
+                  ></sl-spinner>`
+                : ''
+            }
           </div>
           <select
             style="background: transparent; border: none; font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-600); cursor: pointer; outline: none; margin-left: auto; margin-right: var(--sl-spacing-small);"
@@ -2893,148 +3261,65 @@ export class DashboardView extends AuthedElement {
             >
           </div>
         </div>
-        ${this.fetchingActiveAgents && !hasAnyExecutions
-          ? html`<div
-              class="loading-container"
-              style="padding: var(--sl-spacing-small); display: flex; justify-content: center; align-items: center;"
-            >
-              <sl-spinner style="font-size: 1.5rem;"></sl-spinner>
-            </div>`
-          : html`
-              <div class="list">
-                ${!hasAnyExecutions
-                  ? this.renderEmptyState('No active agents right now.')
-                  : ''}
-                ${repeat(
-                  agentsWithSessions.slice(0, 8),
-                  (item) => item.agent.id,
-                  (item) => html`
-                    <div
-                      class="row"
-                      style="flex-direction: column; align-items: stretch; gap: var(--sl-spacing-2x-small);"
-                    >
-                      <div
-                        style="display: flex; justify-content: space-between; align-items: center;"
-                      >
-                        <div
-                          style="display: flex; align-items: center; gap: var(--sl-spacing-2x-small); overflow: hidden;"
-                        >
-                          <sl-badge variant="primary" style="font-size: 0.6rem;"
-                            >agent</sl-badge
-                          >
-                          <a
-                            class="row-link row-primary"
-                            href=${`/console/agents/${item.agent.id}`}
-                            style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
-                          >
-                            ${item.agent.display_name || 'Agent'}
-                          </a>
-                        </div>
-                        <div
-                          style="display: flex; align-items: center; gap: var(--sl-spacing-x-small);"
-                        >
-                          ${getAgentControlState(item.agent).visible
-                            ? html`
-                                <agent-talk-composer
-                                  .agent=${item.agent}
-                                  .sessions=${item.sessions}
-                                  sourceContext="dashboard-active-agents"
-                                  compact
-                                  @agent-control-sent=${() =>
-                                    this.fetchActiveAgentsData()}
-                                ></agent-talk-composer>
+        ${
+          this.fetchingActiveAgents && !hasAnyExecutions
+            ? html`<div
+                class="loading-container"
+                style="padding: var(--sl-spacing-small); display: flex; justify-content: center; align-items: center;"
+              >
+                <sl-spinner style="font-size: 1.5rem;"></sl-spinner>
+              </div>`
+            : html`
+                <div class="list">
+                  ${
+                    !hasAnyExecutions
+                      ? this.renderEmptyState('No active agents right now.')
+                      : ''
+                  }
+                  ${repeat(
+                    agentsWithSessions.slice(0, 8),
+                    (item) => item.agent.id,
+                    (item) => html`
+                      <div class="row">
+                        ${this.renderActiveAgentGroup(item.agent, item.sessions)}
+                      </div>
+                    `
+                  )}
+                  ${
+                    orphanSessions.length > 0
+                      ? html`
+                          <div class="row">
+                            ${this.renderCollapsibleGroup(
+                              'active-agents:other',
+                              'Other',
+                              null,
+                              `${this.formatCurrency(
+                                orphanSessions.reduce(
+                                  (total, session) =>
+                                    total + (session.estimated_cost || 0),
+                                  0
+                                )
+                              )} · ${orphanSessions.length} sessions`,
+                              html`
+                                <div class="nested-session-list">
+                                  ${orphanSessions
+                                    .slice(0, 8)
+                                    .map((session) =>
+                                      this.renderNestedSessionRow(
+                                        session,
+                                        `${this.formatNumber(session.total_requests)} req`
+                                      )
+                                    )}
+                                </div>
                               `
-                            : null}
-                          <span class="row-value">
-                            ${this.formatCurrency(item.agent.estimated_cost)}
-                          </span>
-                        </div>
-                      </div>
-                      <div
-                        style="display: flex; justify-content: flex-end; align-items: center; font-size: var(--sl-font-size-x-small); color: var(--sl-color-neutral-500);"
-                      >
-                        <span
-                          >${this.formatRelativeTime(
-                            item.agent.last_seen_at
-                          )}</span
-                        >
-                      </div>
-
-                      ${item.sessions.length > 0
-                        ? html`
-                            <div
-                              style="display: flex; flex-direction: column; gap: 4px; padding-left: var(--sl-spacing-medium); margin-top: 4px; border-left: 2px solid var(--sl-color-neutral-200);"
-                            >
-                              ${item.sessions.map(
-                                (session) => html`
-                                  <div
-                                    style="display: flex; justify-content: space-between; align-items: center; font-size: var(--sl-font-size-small);"
-                                  >
-                                    <a
-                                      class="row-link"
-                                      href=${`/console/runtime-sessions?sessionId=${session.id}`}
-                                      style="color: var(--sl-color-neutral-700);"
-                                    >
-                                      ${this.formatRuntimeSessionId(session.id)}
-                                    </a>
-                                    <span
-                                      style="color: var(--sl-color-neutral-500);"
-                                      >${this.formatNumber(
-                                        session.total_requests
-                                      )}
-                                      req</span
-                                    >
-                                  </div>
-                                `
-                              )}
-                            </div>
-                          `
-                        : ''}
-                    </div>
-                  `
-                )}
-                ${repeat(
-                  orphanSessions.slice(0, 8),
-                  (session) => session.id,
-                  (session) => html`
-                    <div class="row">
-                      <div class="row-main">
-                        <div
-                          style="display: flex; align-items: center; gap: var(--sl-spacing-2x-small); overflow: hidden;"
-                        >
-                          <sl-badge variant="neutral" style="font-size: 0.6rem;"
-                            >session</sl-badge
-                          >
-                          <a
-                            class="row-link row-primary"
-                            href=${`/console/runtime-sessions?sessionId=${session.id}`}
-                            style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
-                          >
-                            ${session.runtime_principal_name ||
-                            this.formatRuntimeSessionId(session.id)}
-                          </a>
-                        </div>
-                        <span class="row-value">
-                          ${this.formatNumber(session.total_requests)} req
-                        </span>
-                      </div>
-                      <div class="row-meta">
-                        <span
-                          >${session.latest_model_alias ||
-                          session.latest_provider_name ||
-                          session.session_source_type}</span
-                        >
-                        <span
-                          >${this.formatRelativeTime(
-                            session.last_activity_at || session.started_at
-                          )}</span
-                        >
-                      </div>
-                    </div>
-                  `
-                )}
-              </div>
-            `}
+                            )}
+                          </div>
+                        `
+                      : ''
+                  }
+                </div>
+              `
+        }
       </sl-card>
     `;
   }
@@ -3089,15 +3374,17 @@ export class DashboardView extends AuthedElement {
               ? 'var(--sl-color-primary-600)'
               : 'var(--sl-color-neutral-400)';
     const content = html`
-      ${metric.icon.includes('/')
-        ? html`<sl-icon
-            src=${metric.icon}
-            style="color: ${iconColor};"
-          ></sl-icon>`
-        : html`<sl-icon
-            name=${metric.icon}
-            style="color: ${iconColor};"
-          ></sl-icon>`}
+      ${
+        metric.icon.includes('/')
+          ? html`<sl-icon
+              src=${metric.icon}
+              style="color: ${iconColor};"
+            ></sl-icon>`
+          : html`<sl-icon
+              name=${metric.icon}
+              style="color: ${iconColor};"
+            ></sl-icon>`
+      }
       <div class="tool-count-value">${metric.value}</div>
       <div class="tool-count-label ${metric.href ? 'hover-underline' : ''}">
         ${metric.label}
@@ -3298,21 +3585,23 @@ export class DashboardView extends AuthedElement {
         </div>
 
         <div class="metrics-grid">
-          ${this.fetchingGatewaySummary && !this.gatewaySummary
-            ? html`
-                <div
-                  style="grid-column: 1 / -1; display: flex; justify-content: center; align-items: center; padding: var(--sl-spacing-2x-large);"
-                >
-                  <sl-spinner style="font-size: 2rem;"></sl-spinner>
-                </div>
-              `
-            : html`
-                <div style="display: contents;">
-                  ${visibleMetrics.map((metric) =>
-                    this.renderMetricItem(metric)
-                  )}
-                </div>
-              `}
+          ${
+            this.fetchingGatewaySummary && !this.gatewaySummary
+              ? html`
+                  <div
+                    style="grid-column: 1 / -1; display: flex; justify-content: center; align-items: center; padding: var(--sl-spacing-2x-large);"
+                  >
+                    <sl-spinner style="font-size: 2rem;"></sl-spinner>
+                  </div>
+                `
+              : html`
+                  <div style="display: contents;">
+                    ${visibleMetrics.map((metric) =>
+                      this.renderMetricItem(metric)
+                    )}
+                  </div>
+                `
+          }
         </div>
         <div
           style="display: flex; justify-content: center; margin-top: calc(-1 * var(--sl-spacing-medium)); margin-bottom: var(--sl-spacing-medium);"
@@ -3322,14 +3611,16 @@ export class DashboardView extends AuthedElement {
             variant="text"
             @click=${this.toggleGatewayMetrics}
           >
-            ${this.gatewayMetricsExpanded
-              ? 'Show less metrics'
-              : 'Show more metrics'}
+            ${
+              this.gatewayMetricsExpanded
+                ? 'Show less metrics'
+                : 'Show more metrics'
+            }
             <sl-icon
               slot="suffix"
-              name=${this.gatewayMetricsExpanded
-                ? 'chevron-up'
-                : 'chevron-down'}
+              name=${
+                this.gatewayMetricsExpanded ? 'chevron-up' : 'chevron-down'
+              }
             ></sl-icon>
           </sl-button>
         </div>
@@ -3457,9 +3748,11 @@ export class DashboardView extends AuthedElement {
       <view-header headerText="Overview" width="extra-wide"></view-header>
       <p></p>
       <div class="extra-wide" style="margin-bottom: var(--sl-spacing-large);">
-        ${this.error
-          ? html`<sl-alert variant="danger" open>${this.error}</sl-alert>`
-          : nothing}
+        ${
+          this.error
+            ? html`<sl-alert variant="danger" open>${this.error}</sl-alert>`
+            : nothing
+        }
         <div class="updated-at">
           Last updated ${this.formatRelativeTime(this.lastUpdatedAt)}
         </div>
@@ -3496,12 +3789,20 @@ export class DashboardView extends AuthedElement {
           @sl-after-hide=${(e: Event) => {
             if (e.target === e.currentTarget) {
               this.showBudgetDialog = false;
-              this.fetchBudgetSummary();
             }
           }}
           style="--width: 600px;"
         >
-          <budget-policy-editor></budget-policy-editor>
+          ${
+            this.showBudgetDialog
+              ? html`
+                  <budget-policy-editor
+                    billingEnabled
+                    @budget-policies-changed=${this.handleBudgetPoliciesChanged}
+                  ></budget-policy-editor>
+                `
+              : nothing
+          }
         </sl-dialog>
         <preloop-invite-dialog
           ?open=${this.isInviteDialogOpen}

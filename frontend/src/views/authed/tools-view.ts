@@ -14,6 +14,7 @@ import {
   getFeatures,
   getUserProfile,
   getAIModels,
+  getToolUsageStats,
   createAccessRule,
   updateAccessRule,
   deleteAccessRule,
@@ -48,6 +49,7 @@ import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
 import consoleStyles from '../../styles/console-styles.css?inline';
 
 import type { ToolWithRules } from '../../components/tools-editor-component';
+import type { GatewayUsageByTool } from '../../types';
 
 interface StarterPolicyDiffChange {
   path: string;
@@ -88,6 +90,8 @@ export class ToolsView extends LitElement {
   @state() private isPreviewingStarterPolicyDiff = false;
   @state() private starterPolicyDiff: StarterPolicyDiff | null = null;
   @state() private starterPolicyReviewConfirmed = false;
+  @state() private toolUsageStats: GatewayUsageByTool[] = [];
+  @state() private toolStatsLoading = false;
 
   // Single active filter — only one at a time (besides text/policy)
   @state() private activeFilter:
@@ -666,6 +670,44 @@ export class ToolsView extends LitElement {
         justify-content: flex-end;
         gap: var(--sl-spacing-small);
       }
+
+      .tool-stats-panel {
+        margin-top: var(--sl-spacing-medium);
+        border-top: 1px solid var(--sl-color-neutral-200);
+        padding-top: var(--sl-spacing-medium);
+      }
+
+      .tool-stats-title {
+        font-size: var(--sl-font-size-x-small);
+        font-weight: var(--sl-font-weight-bold);
+        color: var(--sl-color-neutral-600);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: var(--sl-spacing-x-small);
+      }
+
+      .tool-stats-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: var(--sl-font-size-x-small);
+      }
+
+      .tool-stats-table th,
+      .tool-stats-table td {
+        padding: 4px 8px;
+        text-align: left;
+        border-bottom: 1px solid var(--sl-color-neutral-100);
+      }
+
+      .tool-stats-table th {
+        color: var(--sl-color-neutral-500);
+        font-weight: 600;
+      }
+
+      .tool-stats-table td:last-child,
+      .tool-stats-table th:last-child {
+        text-align: right;
+      }
     `,
   ];
 
@@ -733,6 +775,7 @@ export class ToolsView extends LitElement {
       this.mcpServers = servers;
       this.approvalPolicies = policies;
       this.hasDefaultAIModel = aiModels.some((model) => model.is_default);
+      void this._loadToolUsageStats();
 
       if (
         this._pendingStarterPolicyServerId ||
@@ -762,6 +805,34 @@ export class ToolsView extends LitElement {
         });
       }
     }
+  }
+
+  private async _loadToolUsageStats() {
+    this.toolStatsLoading = true;
+    try {
+      const end = new Date();
+      const start = new Date(end);
+      start.setDate(start.getDate() - 30);
+      const stats = await getToolUsageStats({
+        startDate: start.toISOString(),
+        endDate: end.toISOString(),
+      });
+      this.toolUsageStats = stats.tools || [];
+    } catch {
+      this.toolUsageStats = [];
+    } finally {
+      this.toolStatsLoading = false;
+    }
+  }
+
+  private _getToolStatsMap(): Map<string, GatewayUsageByTool> {
+    return new Map(this.toolUsageStats.map((row) => [row.tool_name, row]));
+  }
+
+  private _formatCurrency(value?: number | null): string {
+    const amount = Number(value || 0);
+    if (amount === 0) return '$0.00';
+    return amount >= 0.01 ? `$${amount.toFixed(2)}` : `$${amount.toFixed(4)}`;
   }
 
   // ─── Stats helpers ──────────────────────────────────
@@ -1014,36 +1085,40 @@ Return valid Preloop policy YAML only.`;
           (change) => html`
             <div class="starter-policy-diff-item ${operation}">
               <div class="starter-policy-diff-path">${change.path}</div>
-              ${change.old_value !== undefined || change.new_value !== undefined
-                ? html`
-                    <div class="starter-policy-diff-values">
-                      ${change.old_value !== undefined
-                        ? html`
-                            <div class="starter-policy-diff-value">
-                              <span class="starter-policy-diff-value-label"
-                                >Current</span
-                              >
-                              <pre>
-${this._formatStarterPolicyDiffValue(change.old_value)}</pre
-                              >
-                            </div>
-                          `
-                        : ''}
-                      ${change.new_value !== undefined
-                        ? html`
-                            <div class="starter-policy-diff-value">
-                              <span class="starter-policy-diff-value-label"
-                                >Generated</span
-                              >
-                              <pre>
-${this._formatStarterPolicyDiffValue(change.new_value)}</pre
-                              >
-                            </div>
-                          `
-                        : ''}
-                    </div>
-                  `
-                : ''}
+              ${
+                change.old_value !== undefined || change.new_value !== undefined
+                  ? html`
+                      <div class="starter-policy-diff-values">
+                        ${
+                          change.old_value !== undefined
+                            ? html`
+                                <div class="starter-policy-diff-value">
+                                  <span class="starter-policy-diff-value-label"
+                                    >Current</span
+                                  >
+                                  <pre>
+${this._formatStarterPolicyDiffValue(change.old_value)}</pre>
+                                </div>
+                              `
+                            : ''
+                        }
+                        ${
+                          change.new_value !== undefined
+                            ? html`
+                                <div class="starter-policy-diff-value">
+                                  <span class="starter-policy-diff-value-label"
+                                    >Generated</span
+                                  >
+                                  <pre>
+${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
+                                </div>
+                              `
+                            : ''
+                        }
+                      </div>
+                    `
+                  : ''
+              }
             </div>
           `
         )}
@@ -1538,9 +1613,9 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre
 
       const inner = html`
         <span
-          class="summary-stat ${isActive ? 'active' : ''} ${isMuted
-            ? 'muted'
-            : ''}"
+          class="summary-stat ${isActive ? 'active' : ''} ${
+            isMuted ? 'muted' : ''
+          }"
           @click=${onClick}
         >
           <span>${label}</span>
@@ -1549,9 +1624,11 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre
       `;
 
       return html`<td>
-        ${opts?.tooltip
-          ? html`<sl-tooltip content=${opts.tooltip}>${inner}</sl-tooltip>`
-          : inner}
+        ${
+          opts?.tooltip
+            ? html`<sl-tooltip content=${opts.tooltip}>${inner}</sl-tooltip>`
+            : inner
+        }
       </td>`;
     };
 
@@ -1596,6 +1673,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre
               ${statCell('No approval', stats.noApproval, 'no_approval')}
             </tr>
           </table>
+          ${0 ? this._renderToolUsageStatsPanel() : ''}
         </div>
 
         <!-- Right: MCP Server card -->
@@ -1655,6 +1733,52 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre
     `;
   }
 
+  private _renderToolUsageStatsPanel() {
+    const rows = this.toolUsageStats.slice(0, 8);
+    if (this.toolStatsLoading) {
+      return html`<div class="tool-stats-panel">
+        <div class="tool-stats-title">Tool activity (30 days)</div>
+        <sl-spinner style="font-size: 1rem;"></sl-spinner>
+      </div>`;
+    }
+    if (!rows.length) {
+      return html`<div class="tool-stats-panel">
+        <div class="tool-stats-title">Tool activity (30 days)</div>
+        <span
+          style="color: var(--sl-color-neutral-500); font-size: var(--sl-font-size-x-small);"
+          >No tool invocations recorded yet.</span
+        >
+      </div>`;
+    }
+    return html`
+      <div class="tool-stats-panel">
+        <div class="tool-stats-title">Tool activity (30 days)</div>
+        <table class="tool-stats-table" aria-label="Tool activity stats">
+          <thead>
+            <tr>
+              <th scope="col">Tool</th>
+              <th scope="col">Calls</th>
+              <th scope="col">Schema cost</th>
+              <th scope="col">Avg / call</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map(
+              (row) => html`
+                <tr>
+                  <td>${row.tool_name}</td>
+                  <td>${row.invocation_count.toLocaleString()}</td>
+                  <td>${this._formatCurrency(row.estimated_schema_cost)}</td>
+                  <td>${this._formatCurrency(row.avg_cost_per_invocation)}</td>
+                </tr>
+              `
+            )}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
   private _renderFilterBar() {
     const filteredPolicy = this.filterPolicyId
       ? this.approvalPolicies.find((p) => p.id === this.filterPolicyId)
@@ -1691,24 +1815,28 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre
           </sl-input>
 
           <div class="active-filters">
-            ${this.activeFilter !== 'all'
-              ? html`<span class="active-filter-tag">
-                  ${filterLabels[this.activeFilter] || this.activeFilter}
-                  <sl-icon-button
-                    name="x-lg"
-                    @click=${() => this._setFilter('available')}
-                  ></sl-icon-button>
-                </span>`
-              : ''}
-            ${this.filterPolicyId && filteredPolicy
-              ? html`<span class="active-filter-tag">
-                  Policy: ${filteredPolicy.name}
-                  <sl-icon-button
-                    name="x-lg"
-                    @click=${() => (this.filterPolicyId = null)}
-                  ></sl-icon-button>
-                </span>`
-              : ''}
+            ${
+              this.activeFilter !== 'all'
+                ? html`<span class="active-filter-tag">
+                    ${filterLabels[this.activeFilter] || this.activeFilter}
+                    <sl-icon-button
+                      name="x-lg"
+                      @click=${() => this._setFilter('available')}
+                    ></sl-icon-button>
+                  </span>`
+                : ''
+            }
+            ${
+              this.filterPolicyId && filteredPolicy
+                ? html`<span class="active-filter-tag">
+                    Policy: ${filteredPolicy.name}
+                    <sl-icon-button
+                      name="x-lg"
+                      @click=${() => (this.filterPolicyId = null)}
+                    ></sl-icon-button>
+                  </span>`
+                : ''
+            }
           </div>
         </div>
       </div>
@@ -1721,39 +1849,43 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre
     return html`
       <div class="policy-chip-bar">
         <span class="policy-chip-bar-label">Approval Workflows</span>
-        ${policies.length === 0
-          ? html`<span class="policy-chip-empty">None defined</span>`
-          : policies.map((policy) => {
-              const isActive = this.filterPolicyId === policy.id;
-              const isAi = policy.approval_type === 'ai_driven';
-              return html`
-                <span
-                  class="policy-chip ${isActive ? 'active' : ''}"
-                  @click=${() => {
-                    this.filterPolicyId = isActive ? null : policy.id;
-                  }}
-                >
-                  <span class="policy-chip-name">${policy.name}</span>
-                  <span class="policy-chip-type">${isAi ? 'AI' : 'Human'}</span>
-                  <sl-icon-button
-                    name="pencil"
-                    label="Edit policy"
-                    @click=${(e: Event) => {
-                      e.stopPropagation();
-                      this._openPolicyDialog(policy);
+        ${
+          policies.length === 0
+            ? html`<span class="policy-chip-empty">None defined</span>`
+            : policies.map((policy) => {
+                const isActive = this.filterPolicyId === policy.id;
+                const isAi = policy.approval_type === 'ai_driven';
+                return html`
+                  <span
+                    class="policy-chip ${isActive ? 'active' : ''}"
+                    @click=${() => {
+                      this.filterPolicyId = isActive ? null : policy.id;
                     }}
-                  ></sl-icon-button>
-                  <sl-icon-button
-                    name="x-lg"
-                    label="Delete policy"
-                    @click=${(e: Event) => {
-                      e.stopPropagation();
-                      this._handleDeletePolicy(policy);
-                    }}
-                  ></sl-icon-button>
-                </span>
-              `;
-            })}
+                  >
+                    <span class="policy-chip-name">${policy.name}</span>
+                    <span class="policy-chip-type"
+                      >${isAi ? 'AI' : 'Human'}</span
+                    >
+                    <sl-icon-button
+                      name="pencil"
+                      label="Edit policy"
+                      @click=${(e: Event) => {
+                        e.stopPropagation();
+                        this._openPolicyDialog(policy);
+                      }}
+                    ></sl-icon-button>
+                    <sl-icon-button
+                      name="x-lg"
+                      label="Delete policy"
+                      @click=${(e: Event) => {
+                        e.stopPropagation();
+                        this._handleDeletePolicy(policy);
+                      }}
+                    ></sl-icon-button>
+                  </span>
+                `;
+              })
+        }
         <span
           class="policy-chip-add"
           @click=${() => this._openPolicyDialog(null)}
@@ -1811,86 +1943,99 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre
 
       <div class="column-layout extra-wide">
         <div class="main-column">
-          ${this.isAddingMCPServer
-            ? html`<mcp-server-form
-                @server-added=${this._handleServerAdded}
-                @close-modal=${this._closeServerForm}
-              ></mcp-server-form>`
-            : ''}
-          ${this.editingMCPServer
-            ? html`<mcp-server-form
-                .server=${this.editingMCPServer}
-                @server-updated=${this._handleServerUpdated}
-                @close-modal=${this._closeServerForm}
-              ></mcp-server-form>`
-            : ''}
-          ${this.oauthAlert === 'success'
-            ? html`<sl-alert
-                variant="success"
-                open
-                closable
-                @sl-after-hide=${() => (this.oauthAlert = null)}
-              >
-                <sl-icon slot="icon" name="check2-circle"></sl-icon>
-                <strong>OAuth Connected!</strong> The MCP server has been
-                successfully authenticated via OAuth.
-              </sl-alert>`
-            : ''}
-          ${this.oauthAlert === 'error'
-            ? html`<sl-alert
-                variant="danger"
-                open
-                closable
-                @sl-after-hide=${() => (this.oauthAlert = null)}
-              >
-                <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
-                <strong>OAuth Failed</strong> — Could not authenticate with the
-                external MCP server. Please try again.
-              </sl-alert>`
-            : ''}
-          ${this.error
-            ? html`<sl-alert
-                variant="danger"
-                open
-                closable
-                @sl-after-hide=${() => (this.error = null)}
-              >
-                <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
-                <strong>Error:</strong> ${this.error}
-              </sl-alert>`
-            : ''}
-          ${this.loading
-            ? html`<div class="loading-indicator">
-                <sl-spinner></sl-spinner>
-              </div>`
-            : html` ${this._renderTopSection()}
-                <div class="tool-groups">
-                  ${this._renderFilterBar()}
-                  <tools-editor-component
-                    .tools=${this._getFilteredTools()}
-                    .mcpServers=${this.mcpServers}
-                    .approvalPolicies=${this.approvalPolicies}
-                    .features=${this.features}
-                    .hasDefaultAIModel=${this.hasDefaultAIModel}
-                    mode="global"
-                    @toggle-enabled=${this._handleToggleEnabled}
-                    @save-rule=${this._handleSaveRule}
-                    @delete-rule=${this._handleDeleteRule}
-                    @policy-created=${this._handlePolicyCreated}
-                    @reorder-rules=${this._handleReorderRules}
-                    @tool-updated=${() => this.loadData()}
-                    @scan-server=${(e: CustomEvent) =>
-                      this._handleScanMCPServer(e.detail)}
-                    @suggest-starter-policy=${(e: CustomEvent) =>
-                      this._openStarterPolicySuggestion(e.detail, {
-                        manual: true,
-                      })}
-                    @edit-server=${(e: CustomEvent) =>
-                      (this.editingMCPServer = e.detail)}
-                    @delete-server=${(e: CustomEvent) =>
-                      this._handleDeleteMCPServer(e.detail)}
-                  ></tools-editor-component>
-                </div>`}
+          ${
+            this.isAddingMCPServer
+              ? html`<mcp-server-form
+                  @server-added=${this._handleServerAdded}
+                  @close-modal=${this._closeServerForm}
+                ></mcp-server-form>`
+              : ''
+          }
+          ${
+            this.editingMCPServer
+              ? html`<mcp-server-form
+                  .server=${this.editingMCPServer}
+                  @server-updated=${this._handleServerUpdated}
+                  @close-modal=${this._closeServerForm}
+                ></mcp-server-form>`
+              : ''
+          }
+          ${
+            this.oauthAlert === 'success'
+              ? html`<sl-alert
+                  variant="success"
+                  open
+                  closable
+                  @sl-after-hide=${() => (this.oauthAlert = null)}
+                >
+                  <sl-icon slot="icon" name="check2-circle"></sl-icon>
+                  <strong>OAuth Connected!</strong> The MCP server has been
+                  successfully authenticated via OAuth.
+                </sl-alert>`
+              : ''
+          }
+          ${
+            this.oauthAlert === 'error'
+              ? html`<sl-alert
+                  variant="danger"
+                  open
+                  closable
+                  @sl-after-hide=${() => (this.oauthAlert = null)}
+                >
+                  <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+                  <strong>OAuth Failed</strong> — Could not authenticate with
+                  the external MCP server. Please try again.
+                </sl-alert>`
+              : ''
+          }
+          ${
+            this.error
+              ? html`<sl-alert
+                  variant="danger"
+                  open
+                  closable
+                  @sl-after-hide=${() => (this.error = null)}
+                >
+                  <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+                  <strong>Error:</strong> ${this.error}
+                </sl-alert>`
+              : ''
+          }
+          ${
+            this.loading
+              ? html`<div class="loading-indicator">
+                  <sl-spinner></sl-spinner>
+                </div>`
+              : html` ${this._renderTopSection()}
+                  <div class="tool-groups">
+                    ${this._renderFilterBar()}
+                    <tools-editor-component
+                      .tools=${this._getFilteredTools()}
+                      .toolStats=${Object.fromEntries(this._getToolStatsMap())}
+                      .mcpServers=${this.mcpServers}
+                      .approvalPolicies=${this.approvalPolicies}
+                      .features=${this.features}
+                      .hasDefaultAIModel=${this.hasDefaultAIModel}
+                      mode="global"
+                      @toggle-enabled=${this._handleToggleEnabled}
+                      @save-rule=${this._handleSaveRule}
+                      @delete-rule=${this._handleDeleteRule}
+                      @policy-created=${this._handlePolicyCreated}
+                      @reorder-rules=${this._handleReorderRules}
+                      @tool-updated=${() => this.loadData()}
+                      @scan-server=${(e: CustomEvent) =>
+                        this._handleScanMCPServer(e.detail)}
+                      @suggest-starter-policy=${(e: CustomEvent) =>
+                        this._openStarterPolicySuggestion(e.detail, {
+                          manual: true,
+                        })}
+                      @edit-server=${(e: CustomEvent) =>
+                        (this.editingMCPServer = e.detail)}
+                      @delete-server=${(e: CustomEvent) =>
+                        this._handleDeleteMCPServer(e.detail)}
+                    ></tools-editor-component>
+                  </div>`
+          }
         </div>
         <div class="side-column"></div>
       </div>
@@ -1905,9 +2050,11 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre
       ></approval-workflow-dialog>
 
       <sl-dialog
-        label=${this.starterPolicyServer
-          ? `Starter Policy Suggestion: ${this.starterPolicyServer.name}`
-          : 'Starter Policy Suggestion'}
+        label=${
+          this.starterPolicyServer
+            ? `Starter Policy Suggestion: ${this.starterPolicyServer.name}`
+            : 'Starter Policy Suggestion'
+        }
         ?open=${this.showStarterPolicyDialog}
         @sl-request-close=${this._closeStarterPolicyDialog}
         @sl-after-hide=${this._closeStarterPolicyDialog}
@@ -1918,121 +2065,147 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre
           MCP server.
         </p>
 
-        ${this.starterPolicyServer
-          ? html`<div class="starter-policy-meta">
-              Server: <code>${this.starterPolicyServer.name}</code>
-              (${this._getServerTools(this.starterPolicyServer.id).length}
-              tools)
-            </div>`
-          : ''}
-        ${this.starterPolicyError
-          ? html`<sl-alert variant="danger" open>
-              <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
-              ${this.starterPolicyError}
-            </sl-alert>`
-          : ''}
-        ${this.starterPolicyWarnings.length > 0
-          ? html`<div class="starter-policy-warnings">
-              ${this.starterPolicyWarnings.map(
-                (warning) =>
-                  html`<sl-alert variant="warning" open>
-                    <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
-                    ${warning}
-                  </sl-alert>`
-              )}
-            </div>`
-          : ''}
-        ${this.isPreviewingStarterPolicyDiff
-          ? html`<div class="starter-policy-loading">
-              <sl-spinner></sl-spinner>
-              <span>Comparing generated policy against current state…</span>
-            </div>`
-          : this.starterPolicyDiff
-            ? html`
-                <div class="starter-policy-diff-summary">
-                  <sl-alert
-                    variant=${this.starterPolicyDiff.has_changes
-                      ? 'primary'
-                      : 'success'}
-                    open
-                  >
-                    <sl-icon
-                      slot="icon"
-                      name=${this.starterPolicyDiff.has_changes
-                        ? 'eye'
-                        : 'check2-circle'}
-                    ></sl-icon>
-                    ${this.starterPolicyDiff.summary ||
-                    (this.starterPolicyDiff.has_changes
-                      ? 'Review these changes before applying.'
-                      : 'No changes detected against the current policy.')}
-                  </sl-alert>
-                </div>
-                ${removedStarterPolicyChanges.length > 0
-                  ? html`<sl-alert variant="danger" open>
-                      <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
-                      This generated policy removes
-                      ${removedStarterPolicyChanges.length} existing
-                      configuration
-                      item${removedStarterPolicyChanges.length === 1
-                        ? ''
-                        : 's'}.
+        ${
+          this.starterPolicyServer
+            ? html`<div class="starter-policy-meta">
+                Server: <code>${this.starterPolicyServer.name}</code>
+                (${this._getServerTools(this.starterPolicyServer.id).length}
+                tools)
+              </div>`
+            : ''
+        }
+        ${
+          this.starterPolicyError
+            ? html`<sl-alert variant="danger" open>
+                <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+                ${this.starterPolicyError}
+              </sl-alert>`
+            : ''
+        }
+        ${
+          this.starterPolicyWarnings.length > 0
+            ? html`<div class="starter-policy-warnings">
+                ${this.starterPolicyWarnings.map(
+                  (warning) =>
+                    html`<sl-alert variant="warning" open>
+                      <sl-icon
+                        slot="icon"
+                        name="exclamation-triangle"
+                      ></sl-icon>
+                      ${warning}
                     </sl-alert>`
-                  : ''}
-                ${this.starterPolicyDiff.has_changes
-                  ? html`
-                      <div class="starter-policy-diff-container">
-                        ${this._renderStarterPolicyDiffSection(
-                          'Added',
-                          'add',
-                          'plus-circle-fill'
-                        )}
-                        ${this._renderStarterPolicyDiffSection(
-                          'Modified',
-                          'modify',
-                          'pencil-fill'
-                        )}
-                        ${this._renderStarterPolicyDiffSection(
-                          'Removed',
-                          'remove',
-                          'dash-circle-fill'
-                        )}
-                      </div>
-                      <sl-checkbox
-                        class="starter-policy-review-confirm"
-                        ?checked=${this.starterPolicyReviewConfirmed}
-                        @sl-change=${(e: Event) =>
-                          (this.starterPolicyReviewConfirmed = (
-                            e.target as any
-                          ).checked)}
-                      >
-                        I reviewed this diff and want to apply these changes to
-                        the current policy.
-                      </sl-checkbox>
-                    `
-                  : ''}
-              `
-            : html``}
-        ${this.isGeneratingStarterPolicy
-          ? html`<div class="starter-policy-loading">
-              <sl-spinner></sl-spinner>
-              <span>Generating starter policy…</span>
-            </div>`
-          : this.starterPolicyYaml
-            ? html`
-                <div class="starter-policy-preview-header">
-                  <span class="starter-policy-preview-title"
-                    >Generated YAML</span
-                  >
-                  <sl-copy-button
-                    .value=${this.starterPolicyYaml}
-                  ></sl-copy-button>
-                </div>
-                <div class="starter-policy-preview">
-                  <pre>${this.starterPolicyYaml}</pre>
-                </div>
-              `
-            : html``}
+                )}
+              </div>`
+            : ''
+        }
+        ${
+          this.isPreviewingStarterPolicyDiff
+            ? html`<div class="starter-policy-loading">
+                <sl-spinner></sl-spinner>
+                <span>Comparing generated policy against current state…</span>
+              </div>`
+            : this.starterPolicyDiff
+              ? html`
+                  <div class="starter-policy-diff-summary">
+                    <sl-alert
+                      variant=${
+                        this.starterPolicyDiff.has_changes
+                          ? 'primary'
+                          : 'success'
+                      }
+                      open
+                    >
+                      <sl-icon
+                        slot="icon"
+                        name=${
+                          this.starterPolicyDiff.has_changes
+                            ? 'eye'
+                            : 'check2-circle'
+                        }
+                      ></sl-icon>
+                      ${
+                        this.starterPolicyDiff.summary ||
+                        (this.starterPolicyDiff.has_changes
+                          ? 'Review these changes before applying.'
+                          : 'No changes detected against the current policy.')
+                      }
+                    </sl-alert>
+                  </div>
+                  ${
+                    removedStarterPolicyChanges.length > 0
+                      ? html`<sl-alert variant="danger" open>
+                          <sl-icon
+                            slot="icon"
+                            name="exclamation-octagon"
+                          ></sl-icon>
+                          This generated policy removes
+                          ${removedStarterPolicyChanges.length} existing
+                          configuration
+                          item${
+                            removedStarterPolicyChanges.length === 1 ? '' : 's'
+                          }.
+                        </sl-alert>`
+                      : ''
+                  }
+                  ${
+                    this.starterPolicyDiff.has_changes
+                      ? html`
+                          <div class="starter-policy-diff-container">
+                            ${this._renderStarterPolicyDiffSection(
+                              'Added',
+                              'add',
+                              'plus-circle-fill'
+                            )}
+                            ${this._renderStarterPolicyDiffSection(
+                              'Modified',
+                              'modify',
+                              'pencil-fill'
+                            )}
+                            ${this._renderStarterPolicyDiffSection(
+                              'Removed',
+                              'remove',
+                              'dash-circle-fill'
+                            )}
+                          </div>
+                          <sl-checkbox
+                            class="starter-policy-review-confirm"
+                            ?checked=${this.starterPolicyReviewConfirmed}
+                            @sl-change=${(e: Event) =>
+                              (this.starterPolicyReviewConfirmed = (
+                                e.target as any
+                              ).checked)}
+                          >
+                            I reviewed this diff and want to apply these changes
+                            to the current policy.
+                          </sl-checkbox>
+                        `
+                      : ''
+                  }
+                `
+              : html``
+        }
+        ${
+          this.isGeneratingStarterPolicy
+            ? html`<div class="starter-policy-loading">
+                <sl-spinner></sl-spinner>
+                <span>Generating starter policy…</span>
+              </div>`
+            : this.starterPolicyYaml
+              ? html`
+                  <div class="starter-policy-preview-header">
+                    <span class="starter-policy-preview-title"
+                      >Generated YAML</span
+                    >
+                    <sl-copy-button
+                      .value=${this.starterPolicyYaml}
+                    ></sl-copy-button>
+                  </div>
+                  <div class="starter-policy-preview">
+                    <pre>${this.starterPolicyYaml}</pre>
+                  </div>
+                `
+              : html``
+        }
 
         <div slot="footer" class="starter-policy-footer">
           <sl-button variant="default" @click=${this._closeStarterPolicyDialog}>
@@ -2040,8 +2213,9 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre
           </sl-button>
           <sl-button
             variant="default"
-            ?disabled=${!this.starterPolicyServer ||
-            this.isApplyingStarterPolicy}
+            ?disabled=${
+              !this.starterPolicyServer || this.isApplyingStarterPolicy
+            }
             ?loading=${this.isGeneratingStarterPolicy}
             @click=${() =>
               this.starterPolicyServer &&
@@ -2055,11 +2229,13 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre
           </sl-button>
           <sl-button
             variant="primary"
-            ?disabled=${!this.starterPolicyYaml ||
-            this.isGeneratingStarterPolicy ||
-            this.isPreviewingStarterPolicyDiff ||
-            !this.starterPolicyDiff?.has_changes ||
-            !this.starterPolicyReviewConfirmed}
+            ?disabled=${
+              !this.starterPolicyYaml ||
+              this.isGeneratingStarterPolicy ||
+              this.isPreviewingStarterPolicyDiff ||
+              !this.starterPolicyDiff?.has_changes ||
+              !this.starterPolicyReviewConfirmed
+            }
             ?loading=${this.isApplyingStarterPolicy}
             @click=${this._handleApplyStarterPolicy}
           >

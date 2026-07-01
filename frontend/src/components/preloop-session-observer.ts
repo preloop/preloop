@@ -793,6 +793,7 @@ export class PreloopSessionObserver extends LitElement {
       sourceKinds?: string[];
       fromIndex?: number;
       toIndex?: number;
+      cacheOnly?: boolean;
     } = {}
   ): Promise<void> {
     if (!options.regenerate && this.loadedOptimizations[sessionId]) return;
@@ -800,6 +801,10 @@ export class PreloopSessionObserver extends LitElement {
     this.loadingOptimizationForSessionId = sessionId;
     try {
       const optimization = await optimizeRuntimeSession(sessionId, options);
+      // A cache-only miss means nothing was generated before — leave the
+      // session unloaded so the panel shows the "generate" prompt instead of an
+      // empty-suggestions state.
+      if (optimization.cache_miss) return;
       this.loadedOptimizations = {
         ...this.loadedOptimizations,
         [sessionId]: optimization,
@@ -1045,6 +1050,11 @@ export class PreloopSessionObserver extends LitElement {
     }
     if (mode === 'optimize' && this.activeSessionId) {
       void this.loadOptimizationActions(this.activeSessionId);
+      // Surface previously generated suggestions on open (cache-only: no
+      // generation on a miss).
+      void this.loadSessionOptimization(this.activeSessionId, {
+        cacheOnly: true,
+      });
     }
   }
 
@@ -1061,53 +1071,61 @@ export class PreloopSessionObserver extends LitElement {
               <span class="live-dot"></span>
               ${this.followLive ? 'Following live' : 'Paused'}
             </span>
-            ${session
-              ? html`
-                  <span class="meta">
-                    ${formatNumber(session.tokenUsage.total_tokens)} tokens ·
-                    ${formatCost(session.estimatedCost)}
-                  </span>
-                `
-              : nothing}
+            ${
+              session
+                ? html`
+                    <span class="meta">
+                      ${formatNumber(session.tokenUsage.total_tokens)} tokens ·
+                      ${formatCost(session.estimatedCost)}
+                    </span>
+                  `
+                : nothing
+            }
           </div>
         </div>
         <div class="mode-row">
-          ${this.enabledFeatures.liveFollow
-            ? html`
-                <sl-button
-                  size="small"
-                  variant=${this.followLive ? 'primary' : 'default'}
-                  @click=${() => (this.followLive = !this.followLive)}
-                >
-                  ${this.followLive ? 'Pause follow' : 'Follow live'}
-                </sl-button>
-              `
-            : nothing}
-          ${this.enabledFeatures.replayModes
-            ? html`
-                <sl-button-group>
-                  ${this.replayModeTabs.map(
-                    (tab) => html`
-                      <sl-button
-                        size="small"
-                        variant=${this.replayMode === tab.mode
-                          ? 'primary'
-                          : 'default'}
-                        @click=${() => this.setReplayMode(tab.mode)}
-                      >
-                        ${tab.icon
-                          ? html`<sl-icon
-                              slot="prefix"
-                              name=${tab.icon}
-                            ></sl-icon>`
-                          : nothing}
-                        ${tab.label}
-                      </sl-button>
-                    `
-                  )}
-                </sl-button-group>
-              `
-            : nothing}
+          ${
+            this.enabledFeatures.liveFollow
+              ? html`
+                  <sl-button
+                    size="small"
+                    variant=${this.followLive ? 'primary' : 'default'}
+                    @click=${() => (this.followLive = !this.followLive)}
+                  >
+                    ${this.followLive ? 'Pause follow' : 'Follow live'}
+                  </sl-button>
+                `
+              : nothing
+          }
+          ${
+            this.enabledFeatures.replayModes
+              ? html`
+                  <sl-button-group>
+                    ${this.replayModeTabs.map(
+                      (tab) => html`
+                        <sl-button
+                          size="small"
+                          variant=${
+                            this.replayMode === tab.mode ? 'primary' : 'default'
+                          }
+                          @click=${() => this.setReplayMode(tab.mode)}
+                        >
+                          ${
+                            tab.icon
+                              ? html`<sl-icon
+                                  slot="prefix"
+                                  name=${tab.icon}
+                                ></sl-icon>`
+                              : nothing
+                          }
+                          ${tab.label}
+                        </sl-button>
+                      `
+                    )}
+                  </sl-button-group>
+                `
+              : nothing
+          }
           <sl-button
             size="small"
             variant=${this.requestsView ? 'primary' : 'default'}
@@ -1127,18 +1145,20 @@ export class PreloopSessionObserver extends LitElement {
           <sl-button size="small" @click=${() => this.reloadActiveSession()}>
             Refresh
           </sl-button>
-          ${this.enabledFeatures.endSession && session?.canLoadEvents
-            ? html`
-                <sl-button
-                  size="small"
-                  variant="warning"
-                  ?disabled=${session.status === 'ended'}
-                  @click=${this.endActiveSession}
-                >
-                  End session
-                </sl-button>
-              `
-            : nothing}
+          ${
+            this.enabledFeatures.endSession && session?.canLoadEvents
+              ? html`
+                  <sl-button
+                    size="small"
+                    variant="warning"
+                    ?disabled=${session.status === 'ended'}
+                    @click=${this.endActiveSession}
+                  >
+                    End session
+                  </sl-button>
+                `
+              : nothing
+          }
         </div>
       </div>
     `;
@@ -1157,97 +1177,119 @@ export class PreloopSessionObserver extends LitElement {
     const content = html`
       <div class="content">
         ${this.renderToolbar()}
-        ${this.error
-          ? html`
-              <sl-alert variant="danger" open>
-                <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
-                ${this.error}
-              </sl-alert>
-            `
-          : nothing}
-        ${this.requestsView
-          ? html`
-              <session-request-timeline
-                .requests=${this.activeSessionId
-                  ? this.loadedRequests[this.activeSessionId] || []
-                  : []}
-                .total=${this.activeSessionId
-                  ? (this.loadedRequestPages[this.activeSessionId]?.total ?? 0)
-                  : 0}
-                .failedCount=${this.activeSessionId
-                  ? (this.requestFailedCount[this.activeSessionId] ?? 0)
-                  : 0}
-                .failedOnly=${this.requestsFailedOnly}
-                .loading=${this.loadingRequestsForSessionId ===
-                this.activeSessionId}
-                .hasMore=${this.activeSessionId
-                  ? (this.loadedRequestPages[this.activeSessionId]?.hasMore ??
-                    false)
-                  : false}
-                @request-timeline-failed-only=${(event: CustomEvent) =>
-                  this.setRequestsFailedOnly(Boolean(event.detail?.failedOnly))}
-                @request-timeline-load-more=${() =>
-                  this.activeSessionId
-                    ? this.loadSessionRequests(this.activeSessionId)
-                    : undefined}
-              ></session-request-timeline>
-            `
-          : nothing}
-        ${this.budgetDialogSession
-          ? html`
-              <sl-dialog
-                label="Create budget for this agent"
-                open
-                @sl-after-hide=${() => {
-                  this.budgetDialogSession = null;
-                }}
-              >
-                <div>
-                  Create a hard spend budget for
-                  <strong>${this.budgetDialogSession.title}</strong>.
-                </div>
-                <div style="display:flex;gap:8px;margin-top:12px;">
-                  <sl-input
-                    type="number"
-                    label="Hard limit (USD)"
-                    .value=${this.budgetDialogLimit}
-                    @sl-input=${(event: Event) => {
-                      this.budgetDialogLimit = (
-                        event.target as HTMLInputElement
-                      ).value;
-                    }}
-                  ></sl-input>
-                </div>
-                ${this.budgetDialogResult
-                  ? html`<div style="margin-top:8px;">
-                      ${this.budgetDialogResult}
-                    </div>`
-                  : nothing}
-                <sl-button
-                  slot="footer"
-                  @click=${() => {
+        ${
+          this.error
+            ? html`
+                <sl-alert variant="danger" open>
+                  <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+                  ${this.error}
+                </sl-alert>
+              `
+            : nothing
+        }
+        ${
+          this.requestsView
+            ? html`
+                <session-request-timeline
+                  .requests=${
+                    this.activeSessionId
+                      ? this.loadedRequests[this.activeSessionId] || []
+                      : []
+                  }
+                  .total=${
+                    this.activeSessionId
+                      ? (this.loadedRequestPages[this.activeSessionId]?.total ??
+                        0)
+                      : 0
+                  }
+                  .failedCount=${
+                    this.activeSessionId
+                      ? (this.requestFailedCount[this.activeSessionId] ?? 0)
+                      : 0
+                  }
+                  .failedOnly=${this.requestsFailedOnly}
+                  .loading=${
+                    this.loadingRequestsForSessionId === this.activeSessionId
+                  }
+                  .hasMore=${
+                    this.activeSessionId
+                      ? (this.loadedRequestPages[this.activeSessionId]
+                          ?.hasMore ?? false)
+                      : false
+                  }
+                  @request-timeline-failed-only=${(event: CustomEvent) =>
+                    this.setRequestsFailedOnly(
+                      Boolean(event.detail?.failedOnly)
+                    )}
+                  @request-timeline-load-more=${() =>
+                    this.activeSessionId
+                      ? this.loadSessionRequests(this.activeSessionId)
+                      : undefined}
+                ></session-request-timeline>
+              `
+            : nothing
+        }
+        ${
+          this.budgetDialogSession
+            ? html`
+                <sl-dialog
+                  label="Create budget for this agent"
+                  open
+                  @sl-after-hide=${() => {
                     this.budgetDialogSession = null;
                   }}
                 >
-                  Close
-                </sl-button>
-                <sl-button
-                  slot="footer"
-                  variant="primary"
-                  ?loading=${this.budgetDialogBusy}
-                  @click=${() => this.submitBudgetForActiveSession()}
-                >
-                  Create budget
-                </sl-button>
-              </sl-dialog>
-            `
-          : nothing}
+                  <div>
+                    Create a hard spend budget for
+                    <strong>${this.budgetDialogSession.title}</strong>.
+                  </div>
+                  <div style="display:flex;gap:8px;margin-top:12px;">
+                    <sl-input
+                      type="number"
+                      label="Hard limit (USD)"
+                      .value=${this.budgetDialogLimit}
+                      @sl-input=${(event: Event) => {
+                        this.budgetDialogLimit = (
+                          event.target as HTMLInputElement
+                        ).value;
+                      }}
+                    ></sl-input>
+                  </div>
+                  ${
+                    this.budgetDialogResult
+                      ? html`<div style="margin-top:8px;">
+                          ${this.budgetDialogResult}
+                        </div>`
+                      : nothing
+                  }
+                  <sl-button
+                    slot="footer"
+                    @click=${() => {
+                      this.budgetDialogSession = null;
+                    }}
+                  >
+                    Close
+                  </sl-button>
+                  <sl-button
+                    slot="footer"
+                    variant="primary"
+                    ?loading=${this.budgetDialogBusy}
+                    @click=${() => this.submitBudgetForActiveSession()}
+                  >
+                    Create budget
+                  </sl-button>
+                </sl-dialog>
+              `
+            : nothing
+        }
         <session-replay-panel
           .session=${this.activeSession}
           .events=${this.activeEvents}
-          .timelineEvents=${this.activeSessionId
-            ? this.loadedReplayMetadata[this.activeSessionId] || []
-            : []}
+          .timelineEvents=${
+            this.activeSessionId
+              ? this.loadedReplayMetadata[this.activeSessionId] || []
+              : []
+          }
           .activity=${this.activeActivity}
           .replayMode=${this.replayMode}
           .loading=${this.loadingSessionId === this.activeSessionId}
@@ -1258,22 +1300,29 @@ export class PreloopSessionObserver extends LitElement {
           .loadingInteractionSummaries=${this.loadingInteractionSummaries}
           .summarizeVisibleContent=${this.summarizeVisibleContent}
           .hasMoreEvents=${this.activeEventPage?.hasMore ?? false}
-          .loadingMoreEvents=${this.loadingMoreEventsForSessionId ===
-          this.activeSessionId}
+          .loadingMoreEvents=${
+            this.loadingMoreEventsForSessionId === this.activeSessionId
+          }
           .totalEvents=${this.activeEventPage?.total ?? null}
           .optimizationEnabled=${this.enabledFeatures.optimization}
           .availableModels=${this.aiModels}
-          .optimizationResult=${this.activeSessionId
-            ? this.loadedOptimizations[this.activeSessionId] || null
-            : null}
+          .optimizationResult=${
+            this.activeSessionId
+              ? this.loadedOptimizations[this.activeSessionId] || null
+              : null
+          }
           .optimizationSuggestions=${this.getActiveOptimizationSuggestions()}
-          .optimizationAppliedActions=${this.activeSessionId
-            ? this.loadedOptimizationActions[this.activeSessionId] || []
-            : []}
-          .applyingOptimizationSuggestionId=${this
-            .applyingOptimizationSuggestionId}
-          .loadingOptimization=${this.loadingOptimizationForSessionId ===
-          this.activeSessionId}
+          .optimizationAppliedActions=${
+            this.activeSessionId
+              ? this.loadedOptimizationActions[this.activeSessionId] || []
+              : []
+          }
+          .applyingOptimizationSuggestionId=${
+            this.applyingOptimizationSuggestionId
+          }
+          .loadingOptimization=${
+            this.loadingOptimizationForSessionId === this.activeSessionId
+          }
           @session-event-detail-requested=${(event: CustomEvent) =>
             this.loadEventDetail(event.detail.eventId)}
           @session-interaction-summary-requested=${(event: CustomEvent) =>
@@ -1311,33 +1360,37 @@ export class PreloopSessionObserver extends LitElement {
     return html`
       <div
         class="observer ${this.hideSidebar ? '' : 'with-sidebar'}"
-        style=${this.layout === 'full'
-          ? 'min-height: 720px;'
-          : 'min-height: 520px;'}
+        style=${
+          this.layout === 'full' ? 'min-height: 720px;' : 'min-height: 520px;'
+        }
       >
-        ${this.hideSidebar
-          ? nothing
-          : html`
-              <div class="sidebar">
-                <sl-input
-                  placeholder="Search sessions"
-                  clearable
-                  .value=${this.searchQuery}
-                  @sl-input=${(event: Event) => {
-                    this.searchQuery = (event.target as HTMLInputElement).value;
-                  }}
-                  style="margin-bottom: var(--sl-spacing-small);"
-                >
-                  <sl-icon name="search" slot="prefix"></sl-icon>
-                </sl-input>
-                <session-list-panel
-                  .sessions=${this.filteredSessions}
-                  .activeSessionId=${this.activeSessionId}
-                  @session-selected=${(event: CustomEvent) =>
-                    this.selectSession(event.detail.sessionId)}
-                ></session-list-panel>
-              </div>
-            `}
+        ${
+          this.hideSidebar
+            ? nothing
+            : html`
+                <div class="sidebar">
+                  <sl-input
+                    placeholder="Search sessions"
+                    clearable
+                    .value=${this.searchQuery}
+                    @sl-input=${(event: Event) => {
+                      this.searchQuery = (
+                        event.target as HTMLInputElement
+                      ).value;
+                    }}
+                    style="margin-bottom: var(--sl-spacing-small);"
+                  >
+                    <sl-icon name="search" slot="prefix"></sl-icon>
+                  </sl-input>
+                  <session-list-panel
+                    .sessions=${this.filteredSessions}
+                    .activeSessionId=${this.activeSessionId}
+                    @session-selected=${(event: CustomEvent) =>
+                      this.selectSession(event.detail.sessionId)}
+                  ></session-list-panel>
+                </div>
+              `
+        }
         ${content}
       </div>
     `;

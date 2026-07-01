@@ -255,113 +255,123 @@ export class FlowExecutionsView extends AuthedElement {
             </div>
           </div>
 
-          ${this.paginatedExecutions.length === 0
-            ? html`
-                <div
-                  style="text-align: center; padding: 40px; color: var(--sl-color-neutral-600);"
-                >
-                  <sl-icon name="inbox" style="font-size: 3rem;"></sl-icon>
-                  <p>No executions found.</p>
-                </div>
-              `
-            : html`
-                <div
-                  style="margin-bottom: 12px; color: var(--sl-color-neutral-600); font-size: 0.9rem;"
-                >
-                  Showing ${(this.currentPage - 1) * this.pageSize + 1} -
-                  ${(this.currentPage - 1) * this.pageSize +
-                  this.paginatedExecutions.length}
-                  executions
-                </div>
+          ${
+            this.paginatedExecutions.length === 0
+              ? html`
+                  <div
+                    style="text-align: center; padding: 40px; color: var(--sl-color-neutral-600);"
+                  >
+                    <sl-icon name="inbox" style="font-size: 3rem;"></sl-icon>
+                    <p>No executions found.</p>
+                  </div>
+                `
+              : html`
+                  <div
+                    style="margin-bottom: 12px; color: var(--sl-color-neutral-600); font-size: 0.9rem;"
+                  >
+                    Showing ${(this.currentPage - 1) * this.pageSize + 1} -
+                    ${
+                      (this.currentPage - 1) * this.pageSize +
+                      this.paginatedExecutions.length
+                    }
+                    executions
+                  </div>
 
-                <div class="table-wrapper">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Flow Name</th>
-                        <th>Execution ID</th>
-                        <th>Status</th>
-                        <th>Start Time</th>
-                        <th>End Time</th>
-                        <th>Actions</th>
-                        <th>Details</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      ${this.paginatedExecutions.map(
-                        (exec) => html`
-                          <tr>
-                            <td>${exec.flow_name || 'Unnamed Flow'}</td>
-                            <td>${exec.id.slice(0, 8)}...</td>
-                            <td>
-                              <div class="status-cell">
-                                ${exec.status === 'RUNNING' ||
-                                exec.status === 'PENDING'
-                                  ? html`
-                                      <div
-                                        class="status-indicator ${exec.status.toLowerCase()}"
-                                      ></div>
-                                    `
-                                  : ''}
-                                <sl-badge
-                                  variant=${this.getStatusVariant(exec.status)}
-                                  >${exec.status}</sl-badge
+                  <div class="table-wrapper">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Flow Name</th>
+                          <th>Execution ID</th>
+                          <th>Status</th>
+                          <th>Start Time</th>
+                          <th>End Time</th>
+                          <th>Actions</th>
+                          <th>Details</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${this.paginatedExecutions.map(
+                          (exec) => html`
+                            <tr>
+                              <td>${exec.flow_name || 'Unnamed Flow'}</td>
+                              <td>${exec.id.slice(0, 8)}...</td>
+                              <td>
+                                <div class="status-cell">
+                                  ${
+                                    exec.status === 'RUNNING' ||
+                                    exec.status === 'PENDING'
+                                      ? html`
+                                          <div
+                                            class="status-indicator ${exec.status.toLowerCase()}"
+                                          ></div>
+                                        `
+                                      : ''
+                                  }
+                                  <sl-badge
+                                    variant=${this.getStatusVariant(exec.status)}
+                                    >${exec.status}</sl-badge
+                                  >
+                                </div>
+                              </td>
+                              <td>${formatLocalDateTime(exec.start_time)}</td>
+                              <td>
+                                ${
+                                  exec.end_time
+                                    ? formatLocalDateTime(exec.end_time)
+                                    : '-'
+                                }
+                              </td>
+                              <td>${exec.tool_calls_count || 0}</td>
+                              <td>
+                                <sl-button
+                                  size="small"
+                                  href=${router.urlForPath(
+                                    `/console/flows/executions/${exec.id}`
+                                  )}
                                 >
-                              </div>
-                            </td>
-                            <td>${formatLocalDateTime(exec.start_time)}</td>
-                            <td>
-                              ${exec.end_time
-                                ? formatLocalDateTime(exec.end_time)
-                                : '-'}
-                            </td>
-                            <td>${exec.tool_calls_count || 0}</td>
-                            <td>
-                              <sl-button
-                                size="small"
-                                href=${router.urlForPath(
-                                  `/console/flows/executions/${exec.id}`
-                                )}
-                              >
-                                <sl-icon name="eye"></sl-icon>
-                                View
-                              </sl-button>
-                            </td>
-                          </tr>
-                        `
-                      )}
-                    </tbody>
-                  </table>
-                </div>
+                                  <sl-icon name="eye"></sl-icon>
+                                  View
+                                </sl-button>
+                              </td>
+                            </tr>
+                          `
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
 
-                ${this.currentPage > 1 || this.hasNextPage
-                  ? html`
-                      <div
-                        style="display: flex; justify-content: space-between; align-items: center; margin-top: 16px; padding: 12px; background: var(--sl-color-neutral-50); border-radius: 4px;"
-                      >
-                        <sl-button
-                          size="small"
-                          @click=${this.prevPage}
-                          ?disabled=${this.currentPage === 1}
-                        >
-                          <sl-icon name="chevron-left"></sl-icon>
-                          Previous
-                        </sl-button>
-                        <div style="color: var(--sl-color-neutral-700);">
-                          Page ${this.currentPage}
-                        </div>
-                        <sl-button
-                          size="small"
-                          @click=${this.nextPage}
-                          ?disabled=${!this.hasNextPage}
-                        >
-                          Next
-                          <sl-icon name="chevron-right"></sl-icon>
-                        </sl-button>
-                      </div>
-                    `
-                  : ''}
-              `}
+                  ${
+                    this.currentPage > 1 || this.hasNextPage
+                      ? html`
+                          <div
+                            style="display: flex; justify-content: space-between; align-items: center; margin-top: 16px; padding: 12px; background: var(--sl-color-neutral-50); border-radius: 4px;"
+                          >
+                            <sl-button
+                              size="small"
+                              @click=${this.prevPage}
+                              ?disabled=${this.currentPage === 1}
+                            >
+                              <sl-icon name="chevron-left"></sl-icon>
+                              Previous
+                            </sl-button>
+                            <div style="color: var(--sl-color-neutral-700);">
+                              Page ${this.currentPage}
+                            </div>
+                            <sl-button
+                              size="small"
+                              @click=${this.nextPage}
+                              ?disabled=${!this.hasNextPage}
+                            >
+                              Next
+                              <sl-icon name="chevron-right"></sl-icon>
+                            </sl-button>
+                          </div>
+                        `
+                      : ''
+                  }
+                `
+          }
         </div>
       </div>
     `;

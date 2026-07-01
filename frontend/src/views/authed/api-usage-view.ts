@@ -699,11 +699,15 @@ export class ApiUsageView extends LitElement {
             <sl-icon name="cash-stack"></sl-icon>
             <span>Budget Snapshot</span>
           </div>
-          ${budget.hard_limit_exceeded
-            ? html`<sl-badge variant="danger">Hard limit exceeded</sl-badge>`
-            : budget.soft_limit_exceeded
-              ? html`<sl-badge variant="warning">Soft limit exceeded</sl-badge>`
-              : html`<sl-badge variant="success">Within limits</sl-badge>`}
+          ${
+            budget.hard_limit_exceeded
+              ? html`<sl-badge variant="danger">Hard limit exceeded</sl-badge>`
+              : budget.soft_limit_exceeded
+                ? html`<sl-badge variant="warning"
+                    >Soft limit exceeded</sl-badge
+                  >`
+                : html`<sl-badge variant="success">Within limits</sl-badge>`
+          }
         </div>
 
         <div class="budget-summary">
@@ -717,41 +721,47 @@ export class ApiUsageView extends LitElement {
             <div class="budget-meta-item">
               <div class="budget-meta-label">Soft Limit</div>
               <div class="budget-meta-value">
-                ${budget.soft_limit_usd === null
-                  ? 'Not set'
-                  : this.formatCost(budget.soft_limit_usd)}
+                ${
+                  budget.soft_limit_usd === null
+                    ? 'Not set'
+                    : this.formatCost(budget.soft_limit_usd)
+                }
               </div>
             </div>
             <div class="budget-meta-item">
               <div class="budget-meta-label">Monthly Limit</div>
               <div class="budget-meta-value">
-                ${budget.monthly_limit_usd === null
-                  ? 'Not set'
-                  : this.formatCost(budget.monthly_limit_usd)}
+                ${
+                  budget.monthly_limit_usd === null
+                    ? 'Not set'
+                    : this.formatCost(budget.monthly_limit_usd)
+                }
               </div>
             </div>
           </div>
 
-          ${limit
-            ? html`
-                <div>
-                  <div class="section-subtitle">
-                    ${this.formatPercent(progress)} of
-                    ${budget.soft_limit_usd !== null ? 'soft' : 'monthly'} limit
-                    used
+          ${
+            limit
+              ? html`
+                  <div>
+                    <div class="section-subtitle">
+                      ${this.formatPercent(progress)} of
+                      ${budget.soft_limit_usd !== null ? 'soft' : 'monthly'}
+                      limit used
+                    </div>
+                    <sl-progress-bar
+                      value=${progress}
+                      style="margin-top: var(--sl-spacing-small);"
+                    ></sl-progress-bar>
                   </div>
-                  <sl-progress-bar
-                    value=${progress}
-                    style="margin-top: var(--sl-spacing-small);"
-                  ></sl-progress-bar>
-                </div>
-              `
-            : html`
-                <div class="section-subtitle">
-                  No account limit is configured yet, but gateway usage is being
-                  tracked.
-                </div>
-              `}
+                `
+              : html`
+                  <div class="section-subtitle">
+                    No account limit is configured yet, but gateway usage is
+                    being tracked.
+                  </div>
+                `
+          }
         </div>
       </sl-card>
     `;
@@ -932,49 +942,59 @@ export class ApiUsageView extends LitElement {
             <div class="session-row">
               <div class="session-primary">
                 <div class="breakdown-name">
-                  ${this.getRuntimeSessionHref(session)
-                    ? html`
-                        <a
-                          class="session-link"
-                          href=${this.getRuntimeSessionHref(session)!}
-                          >${this.getSessionDisplayName(session)}</a
-                        >
-                      `
-                    : this.getSessionDisplayName(session)}
+                  ${
+                    this.getRuntimeSessionHref(session)
+                      ? html`
+                          <a
+                            class="session-link"
+                            href=${this.getRuntimeSessionHref(session)!}
+                            >${this.getSessionDisplayName(session)}</a
+                          >
+                        `
+                      : this.getSessionDisplayName(session)
+                  }
                 </div>
                 <div class="breakdown-secondary">
                   ${session.model_alias || 'Unknown model'}
-                  ${session.provider_name
-                    ? html`· ${session.provider_name}`
-                    : ''}
+                  ${
+                    session.provider_name
+                      ? html`· ${session.provider_name}`
+                      : ''
+                  }
                 </div>
                 <div class="session-meta">
                   Source: ${this.getSessionSourceLabel(sourceType)}
                 </div>
-                ${sourceId
-                  ? html`
-                      <div class="session-meta">
-                        ${flowBacked
-                          ? html`
-                              Flow execution:
-                              <a
-                                class="session-link"
-                                href=${`/console/flows/executions/${sourceId}`}
-                                >${sourceId}</a
-                              >
-                            `
-                          : html` Source ID: <code>${sourceId}</code> `}
-                      </div>
-                    `
-                  : ''}
-                ${session.session_reference
-                  ? html`
-                      <div class="session-meta">
-                        Session reference:
-                        <code>${session.session_reference}</code>
-                      </div>
-                    `
-                  : ''}
+                ${
+                  sourceId
+                    ? html`
+                        <div class="session-meta">
+                          ${
+                            flowBacked
+                              ? html`
+                                  Flow execution:
+                                  <a
+                                    class="session-link"
+                                    href=${`/console/flows/executions/${sourceId}`}
+                                    >${sourceId}</a
+                                  >
+                                `
+                              : html` Source ID: <code>${sourceId}</code> `
+                          }
+                        </div>
+                      `
+                    : ''
+                }
+                ${
+                  session.session_reference
+                    ? html`
+                        <div class="session-meta">
+                          Session reference:
+                          <code>${session.session_reference}</code>
+                        </div>
+                      `
+                    : ''
+                }
               </div>
               <div class="cell-numeric">
                 ${this.formatNumber(session.request_count)}
@@ -986,9 +1006,11 @@ export class ApiUsageView extends LitElement {
                 ${this.formatCost(session.estimated_cost)}
               </div>
               <div>
-                ${lastActivity
-                  ? this.formatDateTimeLabel(lastActivity)
-                  : 'Unknown'}
+                ${
+                  lastActivity
+                    ? this.formatDateTimeLabel(lastActivity)
+                    : 'Unknown'
+                }
               </div>
             </div>
           `;
@@ -1005,9 +1027,11 @@ export class ApiUsageView extends LitElement {
         <div class="empty-state">
           <sl-icon name="search"></sl-icon>
           <div>
-            ${this.searchQuery.trim()
-              ? 'No captured gateway interactions matched this search.'
-              : 'No captured gateway interactions are available yet.'}
+            ${
+              this.searchQuery.trim()
+                ? 'No captured gateway interactions matched this search.'
+                : 'No captured gateway interactions are available yet.'
+            }
           </div>
         </div>
       `;
@@ -1033,9 +1057,11 @@ export class ApiUsageView extends LitElement {
             </div>
             <div class="search-meta">
               ${item.method} ${item.endpoint} · ${sourceLabel}
-              ${item.session_reference
-                ? html` · Session <code>${item.session_reference}</code>`
-                : ''}
+              ${
+                item.session_reference
+                  ? html` · Session <code>${item.session_reference}</code>`
+                  : ''
+              }
             </div>
           </div>
           <sl-badge variant=${item.outcome === 'error' ? 'danger' : 'success'}>
@@ -1048,9 +1074,11 @@ export class ApiUsageView extends LitElement {
           ${this.formatNumber(item.token_usage.total_tokens)} tokens ·
           ${this.formatCost(item.estimated_cost)}
           ${item.flow_name ? html` · ${item.flow_name}` : ''}
-          ${item.runtime_principal_name
-            ? html` · Principal ${item.runtime_principal_name}`
-            : ''}
+          ${
+            item.runtime_principal_name
+              ? html` · Principal ${item.runtime_principal_name}`
+              : ''
+          }
         </div>
       </div>
     `;
@@ -1151,127 +1179,138 @@ export class ApiUsageView extends LitElement {
                 </div>
               </div>
 
-              ${this.summary
-                ? html`
-                    <div class="period-caption">
-                      Showing gateway usage from
-                      ${this.formatDateTimeLabel(this.summary.period_start)} to
-                      ${this.formatDateTimeLabel(this.summary.period_end)}.
-                    </div>
-                  `
-                : ''}
+              ${
+                this.summary
+                  ? html`
+                      <div class="period-caption">
+                        Showing gateway usage from
+                        ${this.formatDateTimeLabel(this.summary.period_start)}
+                        to ${this.formatDateTimeLabel(this.summary.period_end)}.
+                      </div>
+                    `
+                  : ''
+              }
             </sl-card>
 
-            ${this.error
-              ? html`
-                  <sl-alert variant="danger" open>
-                    <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
-                    ${this.error}
-                  </sl-alert>
-                `
-              : ''}
-            ${this.loading
-              ? html`
-                  <sl-card>
-                    <div class="loading-state">
-                      <sl-spinner></sl-spinner>
-                      <div>Loading gateway usage summary...</div>
-                    </div>
-                  </sl-card>
-                `
-              : this.summary
+            ${
+              this.error
                 ? html`
-                    ${this.renderSummary(this.summary)}
-
-                    <sl-card class="breakdown-card">
-                      <div slot="header" class="section-header">
-                        <div class="section-title">
-                          <sl-icon name="collection"></sl-icon>
-                          <span>Recent Runtime Sessions</span>
-                        </div>
-                        <span class="section-subtitle">
-                          Recent gateway activity grouped by runtime session
-                        </span>
-                      </div>
-                      ${this.renderSessionBreakdown(
-                        this.summary.usage_by_session
-                      )}
-                    </sl-card>
-
-                    <sl-card class="breakdown-card">
-                      <div slot="header" class="section-header">
-                        <div class="section-title">
-                          <sl-icon name="search"></sl-icon>
-                          <span>Captured Interactions</span>
-                        </div>
-                        <span class="section-subtitle">
-                          ${this.searchQuery.trim()
-                            ? 'Search results from the indexed gateway corpus'
-                            : 'Recent indexed gateway interactions'}
-                        </span>
-                      </div>
-                      ${this.renderSearchResults(this.searchResults)}
-                    </sl-card>
-
-                    <div class="content-grid">
-                      <div class="stack">
-                        <sl-card class="breakdown-card">
-                          <div slot="header" class="section-header">
-                            <div class="section-title">
-                              <sl-icon name="bar-chart"></sl-icon>
-                              <span>Daily Activity</span>
-                            </div>
-                            <span class="section-subtitle">
-                              Requests and spend over time
-                            </span>
-                          </div>
-                          ${this.renderDailyUsage(this.summary.requests_by_day)}
-                        </sl-card>
-
-                        <sl-card class="breakdown-card">
-                          <div slot="header" class="section-header">
-                            <div class="section-title">
-                              <sl-icon name="cpu"></sl-icon>
-                              <span>Usage By Model</span>
-                            </div>
-                            <span class="section-subtitle">
-                              Top models by cost and volume
-                            </span>
-                          </div>
-                          ${this.renderModelBreakdown(
-                            this.summary.usage_by_model
-                          )}
-                        </sl-card>
-                      </div>
-
-                      <div class="stack">
-                        ${this.renderBudgetCard(this.summary)}
-
-                        <sl-card class="breakdown-card">
-                          <div slot="header" class="section-header">
-                            <div class="section-title">
-                              <sl-icon name="diagram-3"></sl-icon>
-                              <span>Usage By Flow</span>
-                            </div>
-                            <span class="section-subtitle">
-                              Flow-level gateway consumption
-                            </span>
-                          </div>
-                          ${this.renderFlowBreakdown(
-                            this.summary.usage_by_flow
-                          )}
-                        </sl-card>
-                      </div>
-                    </div>
+                    <sl-alert variant="danger" open>
+                      <sl-icon
+                        slot="icon"
+                        name="exclamation-triangle"
+                      ></sl-icon>
+                      ${this.error}
+                    </sl-alert>
                   `
-                : html`
+                : ''
+            }
+            ${
+              this.loading
+                ? html`
                     <sl-card>
-                      <div class="empty-state">
-                        <sl-icon name="inbox"></sl-icon>
-                        <div>No gateway usage summary is available yet.</div>
+                      <div class="loading-state">
+                        <sl-spinner></sl-spinner>
+                        <div>Loading gateway usage summary...</div>
                       </div>
                     </sl-card>
-                  `}
+                  `
+                : this.summary
+                  ? html`
+                      ${this.renderSummary(this.summary)}
+
+                      <sl-card class="breakdown-card">
+                        <div slot="header" class="section-header">
+                          <div class="section-title">
+                            <sl-icon name="collection"></sl-icon>
+                            <span>Recent Runtime Sessions</span>
+                          </div>
+                          <span class="section-subtitle">
+                            Recent gateway activity grouped by runtime session
+                          </span>
+                        </div>
+                        ${this.renderSessionBreakdown(
+                          this.summary.usage_by_session
+                        )}
+                      </sl-card>
+
+                      <sl-card class="breakdown-card">
+                        <div slot="header" class="section-header">
+                          <div class="section-title">
+                            <sl-icon name="search"></sl-icon>
+                            <span>Captured Interactions</span>
+                          </div>
+                          <span class="section-subtitle">
+                            ${
+                              this.searchQuery.trim()
+                                ? 'Search results from the indexed gateway corpus'
+                                : 'Recent indexed gateway interactions'
+                            }
+                          </span>
+                        </div>
+                        ${this.renderSearchResults(this.searchResults)}
+                      </sl-card>
+
+                      <div class="content-grid">
+                        <div class="stack">
+                          <sl-card class="breakdown-card">
+                            <div slot="header" class="section-header">
+                              <div class="section-title">
+                                <sl-icon name="bar-chart"></sl-icon>
+                                <span>Daily Activity</span>
+                              </div>
+                              <span class="section-subtitle">
+                                Requests and spend over time
+                              </span>
+                            </div>
+                            ${this.renderDailyUsage(this.summary.requests_by_day)}
+                          </sl-card>
+
+                          <sl-card class="breakdown-card">
+                            <div slot="header" class="section-header">
+                              <div class="section-title">
+                                <sl-icon name="cpu"></sl-icon>
+                                <span>Usage By Model</span>
+                              </div>
+                              <span class="section-subtitle">
+                                Top models by cost and volume
+                              </span>
+                            </div>
+                            ${this.renderModelBreakdown(
+                              this.summary.usage_by_model
+                            )}
+                          </sl-card>
+                        </div>
+
+                        <div class="stack">
+                          ${this.renderBudgetCard(this.summary)}
+
+                          <sl-card class="breakdown-card">
+                            <div slot="header" class="section-header">
+                              <div class="section-title">
+                                <sl-icon name="diagram-3"></sl-icon>
+                                <span>Usage By Flow</span>
+                              </div>
+                              <span class="section-subtitle">
+                                Flow-level gateway consumption
+                              </span>
+                            </div>
+                            ${this.renderFlowBreakdown(
+                              this.summary.usage_by_flow
+                            )}
+                          </sl-card>
+                        </div>
+                      </div>
+                    `
+                  : html`
+                      <sl-card>
+                        <div class="empty-state">
+                          <sl-icon name="inbox"></sl-icon>
+                          <div>No gateway usage summary is available yet.</div>
+                        </div>
+                      </sl-card>
+                    `
+            }
           </div>
         </div>
       </div>

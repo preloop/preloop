@@ -136,50 +136,58 @@ export class MCPServerForm extends LitElement {
           <sl-option value="oauth">OAuth 2.0</sl-option>
         </sl-select>
 
-        ${this.authType === 'bearer'
-          ? html`
-              <sl-input
-                label="Bearer Token"
-                name="bearer_token"
-                type="password"
-                .value=${this.bearerToken}
-                @sl-input=${(e: any) => (this.bearerToken = e.target.value)}
-                placeholder="Enter your bearer token"
-                password-toggle
-              ></sl-input>
-              <div class="help-text">
-                Enter the bearer token required to authenticate with this MCP
-                server
-              </div>
-            `
-          : ''}
-        ${this.authType === 'oauth'
-          ? html`
-              <div class="help-text">
-                OAuth credentials will be obtained automatically via the MCP
-                standard discovery flow. After saving, click "Connect OAuth
-                Account" to authorize.
-              </div>
-              ${this.server
-                ? html`
-                    <sl-button
-                      variant="primary"
-                      outline
-                      @click=${() => this._startOAuthFlow()}
-                    >
-                      <sl-icon
-                        slot="prefix"
-                        name="box-arrow-up-right"
-                      ></sl-icon>
-                      Connect OAuth Account
-                    </sl-button>
-                  `
-                : ''}
-            `
-          : ''}
-        ${this.errorMessage
-          ? html`<p class="error">${this.errorMessage}</p>`
-          : ''}
+        ${
+          this.authType === 'bearer'
+            ? html`
+                <sl-input
+                  label="Bearer Token"
+                  name="bearer_token"
+                  type="password"
+                  .value=${this.bearerToken}
+                  @sl-input=${(e: any) => (this.bearerToken = e.target.value)}
+                  placeholder="Enter your bearer token"
+                  password-toggle
+                ></sl-input>
+                <div class="help-text">
+                  Enter the bearer token required to authenticate with this MCP
+                  server
+                </div>
+              `
+            : ''
+        }
+        ${
+          this.authType === 'oauth'
+            ? html`
+                <div class="help-text">
+                  OAuth credentials will be obtained automatically via the MCP
+                  standard discovery flow. After saving, click "Connect OAuth
+                  Account" to authorize.
+                </div>
+                ${
+                  this.server
+                    ? html`
+                        <sl-button
+                          variant="primary"
+                          outline
+                          @click=${() => this._startOAuthFlow()}
+                        >
+                          <sl-icon
+                            slot="prefix"
+                            name="box-arrow-up-right"
+                          ></sl-icon>
+                          Connect OAuth Account
+                        </sl-button>
+                      `
+                    : ''
+                }
+              `
+            : ''
+        }
+        ${
+          this.errorMessage
+            ? html`<p class="error">${this.errorMessage}</p>`
+            : ''
+        }
 
         <div slot="footer">
           <sl-button @click=${() => this.closeModal()}>Cancel</sl-button>

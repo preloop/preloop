@@ -94,9 +94,15 @@ type managedEnrollmentOptions struct {
 	// for ``preloop agents onboard --all``: every agent gets onboarded in
 	// the per-agent loop, then all the live checks fan out in parallel.
 	DeferLiveValidate bool
-	Tags              map[string]string
-	Input             io.Reader
-	Output            io.Writer
+	// Approvals opts the agent into local-hook tool-permission routing: at
+	// apply time we install a native pre-tool hook (Claude Code PreToolUse,
+	// Codex PermissionRequest, Cursor before*Execution) that escalates
+	// would-prompt tool calls to Preloop's mobile/watch approval flow. Off by
+	// default; enabled via `preloop agents onboard --approvals`.
+	Approvals bool
+	Tags      map[string]string
+	Input     io.Reader
+	Output    io.Writer
 }
 
 type managedLiveValidationOutcome struct {
@@ -508,6 +514,11 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	}
 	if err := syncManagedAgentRuntimeArtifacts(agent, baseURL, credentialResp.Token); err != nil {
 		return err
+	}
+	if opts.Approvals && isApprovalHookSupportedAgent(agent) {
+		if err := installApprovalHooks(agent, baseURL, credentialResp.Token, output); err != nil {
+			return err
+		}
 	}
 	pluginInstallResult := installAgentControlRuntimePlugin(agent, output)
 	gatewayRestartResult := restartHermesGatewayAfterReconfig(agent, output)

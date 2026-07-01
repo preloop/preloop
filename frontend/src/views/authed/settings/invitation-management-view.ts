@@ -371,44 +371,51 @@ export class InvitationManagementView extends LitElement {
                     >
                       ${invitation.status}
                     </sl-badge>
-                    ${invitation.status === 'pending'
-                      ? html`
-                          <sl-badge variant="neutral">
-                            Expires: ${this.formatDate(invitation.expires_at)}
-                          </sl-badge>
-                        `
-                      : ''}
-                    ${invitation.accepted_at
-                      ? html`
-                          <sl-badge variant="success">
-                            Accepted: ${this.formatDate(invitation.accepted_at)}
-                          </sl-badge>
-                        `
-                      : ''}
+                    ${
+                      invitation.status === 'pending'
+                        ? html`
+                            <sl-badge variant="neutral">
+                              Expires: ${this.formatDate(invitation.expires_at)}
+                            </sl-badge>
+                          `
+                        : ''
+                    }
+                    ${
+                      invitation.accepted_at
+                        ? html`
+                            <sl-badge variant="success">
+                              Accepted:
+                              ${this.formatDate(invitation.accepted_at)}
+                            </sl-badge>
+                          `
+                        : ''
+                    }
                   </div>
                 </div>
                 <div class="invitation-actions">
-                  ${invitation.status === 'pending'
-                    ? html`
-                        <sl-button
-                          size="small"
-                          @click=${() =>
-                            this.handleResendInvitation(invitation)}
-                          title="Resend invitation"
-                        >
-                          <sl-icon name="arrow-repeat"></sl-icon>
-                        </sl-button>
-                        <sl-button
-                          size="small"
-                          variant="danger"
-                          @click=${() =>
-                            this.handleCancelInvitation(invitation)}
-                          title="Cancel invitation"
-                        >
-                          <sl-icon name="x-lg"></sl-icon>
-                        </sl-button>
-                      `
-                    : ''}
+                  ${
+                    invitation.status === 'pending'
+                      ? html`
+                          <sl-button
+                            size="small"
+                            @click=${() =>
+                              this.handleResendInvitation(invitation)}
+                            title="Resend invitation"
+                          >
+                            <sl-icon name="arrow-repeat"></sl-icon>
+                          </sl-button>
+                          <sl-button
+                            size="small"
+                            variant="danger"
+                            @click=${() =>
+                              this.handleCancelInvitation(invitation)}
+                            title="Cancel invitation"
+                          >
+                            <sl-icon name="x-lg"></sl-icon>
+                          </sl-button>
+                        `
+                      : ''
+                  }
                 </div>
               </div>
             </sl-card>

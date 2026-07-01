@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Native agent tool approvals**: Onboarded agents can route built-in tool calls (e.g. Claude Code `Bash`/`Edit`, Codex CLI, Cursor) through Preloop human approvals via `POST /api/v1/agents/permission-check`, authenticated with the agent's managed-runtime credential. The endpoint reuses the existing approval pipeline (create → notify mobile/watch → wait → allow/deny) and records `managed_agent_id`, `runtime_session_id`, and `managed_agent_name` on each request so operator surfaces show which agent is asking.
+- **CLI approval hooks**: `preloop agents onboard --approvals` installs local permission hooks for Claude Code (PreToolUse), Codex CLI, and Cursor that call the permission-check API before mutating native tools. OpenClaw and Hermes runtime plugins ship matching tool-approval adapters with tests.
+- **MCP tool output filters**: Account-scoped rules strip named top-level fields from MCP tool JSON results on the proxy hot path before they reach the calling agent, trimming wasted context tokens. Core model, CRUD, and proxy application live in OSS; Enterprise billing exposes `/api/v1/billing/cost/output-filters` CRUD and the Console tools editor includes a filter dialog.
+- **Budget notification recipients**: Budget policies accept optional `notification_user_ids` and `notification_team_ids` so threshold alerts can target specific users and teams instead of only the policy owner.
+- **Tool usage stats**: `GET /api/v1/tools/stats` aggregates per-tool call counts, schema-injection token estimates, and spend attribution across managed agents for the Console tools view.
 - **Agent Control backend**: WebSocket control channel, operator command endpoint, runtime adapter scaffolding, audio transcription endpoint, and mobile/web Talk UI foundations for audited operator messages to managed agents.
 - **Cost analytics (OSS)**: Dedicated Console Cost view with spend overview, grouped usage drill-downs, and budget-health alerts backed by `/api/v1/cost/*` endpoints. Enterprise billing plugin owns budget policy CRUD and enforcement.
 - **Runtime session observer**: Shared session replay, timeline/chat views, gateway event inspection, and opt-in session summaries in the Console.
@@ -23,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Approvals and session console UX**: Approval lists and detail views show managed-agent identity; budget policy editor adds recipient pickers and richer health cards; session replay, optimization panel, and agent detail views were refreshed for clearer operator workflows.
 - **Enterprise cost features**: Moved model price override CRUD and runtime-session optimization recommendations into the billing plugin (`/api/v1/billing/cost/*`) with `model_price_overrides` and `session_optimization` feature flags gating the shared frontend.
 - **Service role deployment modes**: API startup and route registration now respect `PRELOOP_SERVICE_ROLE` so API-only, gateway-only, and combined trial deployments can run the right surface area.
 - **Release changelog generation**: AI-authored changelog drafting is now opt-in via `--generate-changelog-ai`, keeping deterministic release prep from depending on a local AI CLI.

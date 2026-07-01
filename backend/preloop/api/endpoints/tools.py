@@ -5,6 +5,7 @@ preloop/services/initialize_mcp.py to ensure consistency between REST API and MC
 """
 
 import logging
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
@@ -41,7 +42,10 @@ from preloop.schemas.tool_approval_condition import (
     ConditionTestResponse,
 )
 from preloop.services.policy_evaluator import evaluate_cel_expression
+from preloop.services.tool_usage_stats import ToolUsageStatsService
+from preloop.schemas.gateway_usage import GatewayUsageByTool
 from preloop.utils.audit import log_config_change
+from preloop.utils.permissions import require_permission
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -441,6 +445,38 @@ BUILTIN_TOOLS = [
         },
     },
 ]
+
+
+class ToolUsageStatsResponse(BaseModel):
+    """Account-wide tool invocation and schema-cost stats."""
+
+    period_start: datetime
+    period_end: datetime
+    tools: List[GatewayUsageByTool] = Field(default_factory=list)
+
+
+@router.get("/tools/stats", response_model=ToolUsageStatsResponse)
+@require_permission("view_ai_models")
+def get_tool_usage_stats(
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    account: Account = Depends(get_account_for_user),
+    db: Session = Depends(get_db_session),
+) -> ToolUsageStatsResponse:
+    """Return account-wide tool invocation counts and schema-injection cost."""
+    service = ToolUsageStatsService(db)
+    end = end_date or datetime.now().astimezone()
+    start = start_date or datetime.fromtimestamp(0, tz=end.tzinfo)
+    tools = service.get_account_usage_by_tool(
+        account_id=str(account.id),
+        start_date=start,
+        end_date=end,
+    )
+    return ToolUsageStatsResponse(
+        period_start=start,
+        period_end=end,
+        tools=tools,
+    )
 
 
 @router.get("/tools", response_model=List[Dict])

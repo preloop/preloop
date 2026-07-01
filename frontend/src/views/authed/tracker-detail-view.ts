@@ -437,11 +437,13 @@ export class TrackerDetailView extends LitElement {
                       ></sl-icon>
                       <div class="project-text">
                         <div class="project-name">${project.name}</div>
-                        ${project.description
-                          ? html`<div class="project-description">
-                              ${project.description}
-                            </div>`
-                          : ''}
+                        ${
+                          project.description
+                            ? html`<div class="project-description">
+                                ${project.description}
+                              </div>`
+                            : ''
+                        }
                       </div>
                     </div>
                     <sl-button
@@ -507,13 +509,15 @@ export class TrackerDetailView extends LitElement {
     const hasProjects = this._projects.length > 0;
 
     return html`
-      ${this._editingTracker
-        ? html`<add-tracker-modal
-            .tracker=${this._editingTracker}
-            @tracker-updated=${this._handleTrackerUpdated}
-            @close-modal=${this._closeAddTrackerForm}
-          ></add-tracker-modal>`
-        : ''}
+      ${
+        this._editingTracker
+          ? html`<add-tracker-modal
+              .tracker=${this._editingTracker}
+              @tracker-updated=${this._handleTrackerUpdated}
+              @close-modal=${this._closeAddTrackerForm}
+            ></add-tracker-modal>`
+          : ''
+      }
       <view-header headerText=${tracker.name} width="narrow">
         <div slot="top" style="margin-bottom: var(--sl-spacing-small);">
           <sl-button
@@ -576,58 +580,74 @@ export class TrackerDetailView extends LitElement {
               <sl-icon name="clock-history"></sl-icon>
               Updated ${updatedDate}
             </span>
-            ${tracker.url
-              ? html`<span>
-                  <sl-icon name="link-45deg"></sl-icon>
-                  ${tracker.url}
-                </span>`
-              : ''}
+            ${
+              tracker.url
+                ? html`<span>
+                    <sl-icon name="link-45deg"></sl-icon>
+                    ${tracker.url}
+                  </span>`
+                : ''
+            }
           </div>
 
           <p class="scope-summary">
             <strong>Scope:</strong> ${this._describeScope()}
-            ${tracker.scope_rules && tracker.scope_rules.length > 0
-              ? html` Use <strong>Edit</strong> to change which groups and
-                  projects are scanned.`
-              : ''}
+            ${
+              tracker.scope_rules && tracker.scope_rules.length > 0
+                ? html` Use <strong>Edit</strong> to change which groups and
+                    projects are scanned.`
+                : ''
+            }
           </p>
 
-          ${this._syncMessage
-            ? html`<sl-alert
-                variant="success"
-                open
-                style="margin-bottom: 1rem;"
-              >
-                <sl-icon slot="icon" name="check-circle"></sl-icon>
-                ${this._syncMessage}
-              </sl-alert>`
-            : ''}
-          ${this._error
-            ? html`<sl-alert variant="danger" open style="margin-bottom: 1rem;">
-                <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
-                ${this._error}
-              </sl-alert>`
-            : ''}
+          ${
+            this._syncMessage
+              ? html`<sl-alert
+                  variant="success"
+                  open
+                  style="margin-bottom: 1rem;"
+                >
+                  <sl-icon slot="icon" name="check-circle"></sl-icon>
+                  ${this._syncMessage}
+                </sl-alert>`
+              : ''
+          }
+          ${
+            this._error
+              ? html`<sl-alert
+                  variant="danger"
+                  open
+                  style="margin-bottom: 1rem;"
+                >
+                  <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+                  ${this._error}
+                </sl-alert>`
+              : ''
+          }
 
           <div class="section-header">
             <h2 class="section-title">
               Synced projects
-              ${hasProjects
-                ? html`<sl-badge variant="neutral" pill
-                    >${this._projects.length}</sl-badge
-                  >`
-                : ''}
+              ${
+                hasProjects
+                  ? html`<sl-badge variant="neutral" pill
+                      >${this._projects.length}</sl-badge
+                    >`
+                  : ''
+              }
             </h2>
-            ${hasProjects
-              ? html`<sl-button
-                  variant="primary"
-                  size="small"
-                  href=${this._buildIssuesUrl('')}
-                >
-                  View all issues
-                  <sl-icon slot="suffix" name="arrow-right"></sl-icon>
-                </sl-button>`
-              : ''}
+            ${
+              hasProjects
+                ? html`<sl-button
+                    variant="primary"
+                    size="small"
+                    href=${this._buildIssuesUrl('')}
+                  >
+                    View all issues
+                    <sl-icon slot="suffix" name="arrow-right"></sl-icon>
+                  </sl-button>`
+                : ''
+            }
           </div>
 
           ${this._renderProjectGroups()}
@@ -636,76 +656,86 @@ export class TrackerDetailView extends LitElement {
 
           <h2 class="section-title">Issue analytics</h2>
 
-          ${hasAnalytics && hasProjects
-            ? html`
-                <div class="analytics-grid">
-                  ${this._features.issue_duplicates
-                    ? html`
-                        <a
-                          href=${this._buildIssuesUrl('')}
-                          style="text-decoration: none; color: inherit;"
-                        >
-                          <sl-card class="analytics-card">
-                            <div class="card-header">
-                              <sl-icon name="intersect"></sl-icon>
-                              <h3>Similarity</h3>
-                            </div>
-                            <p>
-                              Find duplicate and overlapping issues across
-                              ${this._projects.length} synced
-                              project${this._projects.length === 1 ? '' : 's'}.
-                            </p>
-                          </sl-card>
-                        </a>
-                      `
-                    : ''}
-                  ${this._features.issue_compliance
-                    ? html`
-                        <a
-                          href=${this._buildIssuesUrl('/compliance')}
-                          style="text-decoration: none; color: inherit;"
-                        >
-                          <sl-card class="analytics-card">
-                            <div class="card-header">
-                              <sl-icon name="clipboard-check"></sl-icon>
-                              <h3>Compliance</h3>
-                            </div>
-                            <p>
-                              Evaluate issue quality against compliance metrics
-                              for synced projects.
-                            </p>
-                          </sl-card>
-                        </a>
-                      `
-                    : ''}
-                  ${this._features.issue_dependencies
-                    ? html`
-                        <a
-                          href=${this._buildIssuesUrl('/dependencies')}
-                          style="text-decoration: none; color: inherit;"
-                        >
-                          <sl-card class="analytics-card">
-                            <div class="card-header">
-                              <sl-icon name="diagram-3"></sl-icon>
-                              <h3>Dependencies</h3>
-                            </div>
-                            <p>
-                              Detect unmapped dependencies between issues in
-                              synced projects.
-                            </p>
-                          </sl-card>
-                        </a>
-                      `
-                    : ''}
-                </div>
-              `
-            : html`
-                <div class="no-analytics">
-                  ${!hasProjects
-                    ? 'Issue analytics become available after projects sync. Run Sync Now once scope is configured.'
-                    : 'Issue analytics features are not enabled for this instance.'}
-                </div>
-              `}
+          ${
+            hasAnalytics && hasProjects
+              ? html`
+                  <div class="analytics-grid">
+                    ${
+                      this._features.issue_duplicates
+                        ? html`
+                            <a
+                              href=${this._buildIssuesUrl('')}
+                              style="text-decoration: none; color: inherit;"
+                            >
+                              <sl-card class="analytics-card">
+                                <div class="card-header">
+                                  <sl-icon name="intersect"></sl-icon>
+                                  <h3>Similarity</h3>
+                                </div>
+                                <p>
+                                  Find duplicate and overlapping issues across
+                                  ${this._projects.length} synced
+                                  project${this._projects.length === 1 ? '' : 's'}.
+                                </p>
+                              </sl-card>
+                            </a>
+                          `
+                        : ''
+                    }
+                    ${
+                      this._features.issue_compliance
+                        ? html`
+                            <a
+                              href=${this._buildIssuesUrl('/compliance')}
+                              style="text-decoration: none; color: inherit;"
+                            >
+                              <sl-card class="analytics-card">
+                                <div class="card-header">
+                                  <sl-icon name="clipboard-check"></sl-icon>
+                                  <h3>Compliance</h3>
+                                </div>
+                                <p>
+                                  Evaluate issue quality against compliance
+                                  metrics for synced projects.
+                                </p>
+                              </sl-card>
+                            </a>
+                          `
+                        : ''
+                    }
+                    ${
+                      this._features.issue_dependencies
+                        ? html`
+                            <a
+                              href=${this._buildIssuesUrl('/dependencies')}
+                              style="text-decoration: none; color: inherit;"
+                            >
+                              <sl-card class="analytics-card">
+                                <div class="card-header">
+                                  <sl-icon name="diagram-3"></sl-icon>
+                                  <h3>Dependencies</h3>
+                                </div>
+                                <p>
+                                  Detect unmapped dependencies between issues in
+                                  synced projects.
+                                </p>
+                              </sl-card>
+                            </a>
+                          `
+                        : ''
+                    }
+                  </div>
+                `
+              : html`
+                  <div class="no-analytics">
+                    ${
+                      !hasProjects
+                        ? 'Issue analytics become available after projects sync. Run Sync Now once scope is configured.'
+                        : 'Issue analytics features are not enabled for this instance.'
+                    }
+                  </div>
+                `
+          }
         </div>
       </div>
     `;

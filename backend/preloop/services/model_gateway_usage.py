@@ -25,6 +25,7 @@ from preloop.schemas.gateway_usage import (
     GatewayUsageSearchResultItem,
     GatewayUsageBySession,
 )
+from preloop.services.tool_usage_stats import ToolUsageStatsService
 
 
 class ModelGatewayUsageService:
@@ -72,6 +73,11 @@ class ModelGatewayUsageService:
                 end_date=end_date,
                 runtime_principal_id=runtime_principal_id,
             )
+            usage_by_tool = ToolUsageStatsService(self.db).get_account_usage_by_tool(
+                account_id=str(account.id),
+                start_date=start_date,
+                end_date=end_date,
+            )
             requests_by_day = crud_api_usage.get_gateway_usage_timeseries(
                 self.db,
                 account_id=str(account.id),
@@ -83,6 +89,7 @@ class ModelGatewayUsageService:
             usage_by_model = []
             usage_by_flow = []
             usage_by_session = []
+            usage_by_tool = []
             requests_by_day = []
 
         budget_cfg = self._normalize_budget_config(
@@ -121,6 +128,7 @@ class ModelGatewayUsageService:
             usage_by_session=[
                 self._session_row_to_schema(row) for row in usage_by_session
             ],
+            usage_by_tool=usage_by_tool,
         )
 
     def get_flow_summary(
@@ -432,6 +440,7 @@ class ModelGatewayUsageService:
             runtime_session_id=row["runtime_session_id"],
             session_source_type=row["session_source_type"],
             session_source_id=row["session_source_id"],
+            title=row.get("title"),
             session_summary=row.get("session_summary"),
             session_summary_updated_at=row.get("session_summary_updated_at"),
             runtime_principal_type=row.get("runtime_principal_type"),

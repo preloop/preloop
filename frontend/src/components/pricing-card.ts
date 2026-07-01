@@ -42,9 +42,11 @@ export class PricingCard extends LitElement {
     return html`
       <div class="price-main">$${amount}</div>
       <div class="unit">${unit}</div>
-      ${!isMonthly && perMo !== null
-        ? html`<div class="price-sub">~$${perMo}/mo billed annually</div>`
-        : null}
+      ${
+        !isMonthly && perMo !== null
+          ? html`<div class="price-sub">~$${perMo}/mo billed annually</div>`
+          : null
+      }
     `;
   }
 
@@ -77,14 +79,18 @@ export class PricingCard extends LitElement {
     return html`
       <li class=${included ? 'feature included' : 'feature excluded'}>
         <span class="feat-icon"
-          >${included
-            ? html`<sl-icon name="check-lg"></sl-icon>`
-            : html`<sl-icon name="x-lg"></sl-icon>`}</span
+          >${
+            included
+              ? html`<sl-icon name="check-lg"></sl-icon>`
+              : html`<sl-icon name="x-lg"></sl-icon>`
+          }</span
         >
         <span class="feat-text">
-          ${label}${displayValue
-            ? html`<span class="feat-value">: ${displayValue}</span>`
-            : ''}
+          ${label}${
+            displayValue
+              ? html`<span class="feat-value">: ${displayValue}</span>`
+              : ''
+          }
         </span>
       </li>
     `;
@@ -265,40 +271,48 @@ export class PricingCard extends LitElement {
 
     return html`
       <div
-        class="plan-card ${isPopular ? 'popular' : ''} ${this.dark
-          ? 'sl-theme-dark'
-          : ''}"
+        class="plan-card ${isPopular ? 'popular' : ''} ${
+          this.dark ? 'sl-theme-dark' : ''
+        }"
       >
-        ${this.plan.badge
-          ? html`<div class="badge">${this.plan.badge}</div>`
-          : null}
-        ${this.plan.id === 'enterprise' && !this.plan.badge
-          ? html`<div class="badge alt">Enterprise</div>`
-          : null}
-        ${this.plan.id !== 'free'
-          ? html`<h3 class="plan-name">${this.plan.name}</h3>`
-          : ''}
+        ${
+          this.plan.badge
+            ? html`<div class="badge">${this.plan.badge}</div>`
+            : null
+        }
+        ${
+          this.plan.id === 'enterprise' && !this.plan.badge
+            ? html`<div class="badge alt">Enterprise</div>`
+            : null
+        }
+        ${
+          this.plan.id !== 'free'
+            ? html`<h3 class="plan-name">${this.plan.name}</h3>`
+            : ''
+        }
         <div class="price-wrap">${this.formatPrice(this.plan)}</div>
 
         <hr class="divider" />
 
         <ul class="features">
-          ${hasArrayFeatures
-            ? (this.plan.features as string[]).map(
-                (feature) =>
-                  html`<li class="feature included">
-                    <span class="feat-icon"
-                      ><sl-icon name="check-lg"></sl-icon
-                    ></span>
-                    <span class="feat-text">${feature}</span>
-                  </li>`
-              )
-            : this.featureOrder.map((key) =>
-                this.renderFeature(
-                  (this.plan.features as { [key: string]: any })[key],
-                  key
+          ${
+            hasArrayFeatures
+              ? (this.plan.features as string[]).map(
+                  (feature) =>
+                    html`<li class="feature included">
+                      <span class="feat-icon"
+                        ><sl-icon name="check-lg"></sl-icon
+                      ></span>
+                      <span class="feat-text">${feature}</span>
+                    </li>`
                 )
-              )}
+              : this.featureOrder.map((key) =>
+                  this.renderFeature(
+                    (this.plan.features as { [key: string]: any })[key],
+                    key
+                  )
+                )
+          }
         </ul>
 
         <sl-button
@@ -307,15 +321,17 @@ export class PricingCard extends LitElement {
           variant="default"
           @click=${this._handleSignUp}
         >
-          ${this.plan.id === 'enterprise'
-            ? 'Contact Sales'
-            : this.plan.id === 'opensource'
-              ? 'View on GitHub'
-              : this.plan.id === 'free'
-                ? 'Get Free'
-                : this.plan.id === 'teams'
-                  ? 'Start Free Trial'
-                  : `Get ${this.plan.name}`}
+          ${
+            this.plan.id === 'enterprise'
+              ? 'Contact Sales'
+              : this.plan.id === 'opensource'
+                ? 'View on GitHub'
+                : this.plan.id === 'free'
+                  ? 'Get Free'
+                  : this.plan.id === 'teams'
+                    ? 'Start Free Trial'
+                    : `Get ${this.plan.name}`
+          }
         </sl-button>
       </div>
     `;

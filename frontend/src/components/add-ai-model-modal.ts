@@ -204,9 +204,7 @@ export class AddAIModelModal extends LitElement {
     ) as SlSelect | null;
     if (serviceKindSelect?.value) {
       this._currentModel.model_kind = serviceKindSelect.value as
-        | 'llm'
-        | 'stt'
-        | 'tts';
+        'llm' | 'stt' | 'tts';
     }
   }
 
@@ -497,33 +495,37 @@ export class AddAIModelModal extends LitElement {
               this._currentModel.api_key = (e.target as HTMLInputElement).value;
               this.requestUpdate();
             }}
-            placeholder=${this._isEditing
-              ? 'Leave blank to keep existing key'
-              : ''}
+            placeholder=${
+              this._isEditing ? 'Leave blank to keep existing key' : ''
+            }
             ?disabled=${this._isSubmitting}
           >
-            ${!this._isEditing &&
-            this._getProviderKeyUrl(this._currentModel.provider_name)
-              ? html`
-                  <div slot="help-text">
-                    Enter your API key to fetch available models.
-                    <a
-                      href=${this._getProviderKeyUrl(
-                        this._currentModel.provider_name
-                      )}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      >Get your API key here.</a
-                    >
-                  </div>
-                `
-              : html`
-                  <div slot="help-text">
-                    ${this._isEditing
-                      ? ''
-                      : 'Enter your API key to fetch available models'}
-                  </div>
-                `}
+            ${
+              !this._isEditing &&
+              this._getProviderKeyUrl(this._currentModel.provider_name)
+                ? html`
+                    <div slot="help-text">
+                      Enter your API key to fetch available models.
+                      <a
+                        href=${this._getProviderKeyUrl(
+                          this._currentModel.provider_name
+                        )}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        >Get your API key here.</a
+                      >
+                    </div>
+                  `
+                : html`
+                    <div slot="help-text">
+                      ${
+                        this._isEditing
+                          ? ''
+                          : 'Enter your API key to fetch available models'
+                      }
+                    </div>
+                  `
+            }
           </sl-input>
 
           <div class="full-width">
@@ -534,8 +536,9 @@ export class AddAIModelModal extends LitElement {
                 this._preloopGatewayEnabled = Boolean(el.checked);
                 this.requestUpdate();
               }}
-              ?disabled=${this._isSubmitting ||
-              this._currentModel.model_kind !== 'llm'}
+              ?disabled=${
+                this._isSubmitting || this._currentModel.model_kind !== 'llm'
+              }
             >
               Route inference through the Preloop gateway (OpenAI-compatible
               /openai/v1)
@@ -543,33 +546,38 @@ export class AddAIModelModal extends LitElement {
             <div
               style="font-size: 0.875rem; color: var(--sl-color-neutral-600); margin-top: 0.35rem;"
             >
-              ${this._currentModel.model_kind !== 'llm'
-                ? html`STT/TTS models are used directly for server audio
-                  fallback.`
-                : this._currentModel.provider_name &&
-                    this._currentModel.model_identifier
-                  ? html`Gateway alias
-                      <code
-                        >${String(
-                          this._currentModel.provider_name
-                        ).toLowerCase()}/${this._currentModel
-                          .model_identifier}</code
-                      >`
-                  : html`Save provider and model id to show the gateway alias.`}
-              ${this._currentModel.model_kind === 'llm' &&
-              !this._canEnablePreloopGateway &&
-              this._preloopGatewayEnabled
-                ? html`
-                    <sl-alert
-                      variant="warning"
-                      open
-                      style="margin-top: 0.5rem;"
-                    >
-                      Add an API key (or keep an existing one when editing) to
-                      enable gateway routing.
-                    </sl-alert>
-                  `
-                : ''}
+              ${
+                this._currentModel.model_kind !== 'llm'
+                  ? html`STT/TTS models are used directly for server audio
+                    fallback.`
+                  : this._currentModel.provider_name &&
+                      this._currentModel.model_identifier
+                    ? html`Gateway alias
+                        <code
+                          >${String(
+                            this._currentModel.provider_name
+                          ).toLowerCase()}/${
+                            this._currentModel.model_identifier
+                          }</code
+                        >`
+                    : html`Save provider and model id to show the gateway alias.`
+              }
+              ${
+                this._currentModel.model_kind === 'llm' &&
+                !this._canEnablePreloopGateway &&
+                this._preloopGatewayEnabled
+                  ? html`
+                      <sl-alert
+                        variant="warning"
+                        open
+                        style="margin-top: 0.5rem;"
+                      >
+                        Add an API key (or keep an existing one when editing) to
+                        enable gateway routing.
+                      </sl-alert>
+                    `
+                  : ''
+              }
             </div>
           </div>
 
@@ -580,67 +588,75 @@ export class AddAIModelModal extends LitElement {
               ?disabled=${this._isSubmitting || this._isFetchingModels}
               style="width: 100%;"
             >
-              ${this._modelSuggestions.length > 0
-                ? 'Refresh Models'
-                : 'Fetch Available Models'}
+              ${
+                this._modelSuggestions.length > 0
+                  ? 'Refresh Models'
+                  : 'Fetch Available Models'
+              }
             </sl-button>
-            ${this._modelsFetchError
-              ? html`
-                  <div
-                    style="color: var(--sl-color-danger-600); font-size: 0.875rem; margin-top: 0.5rem;"
-                  >
-                    ${this._modelsFetchError}
-                  </div>
-                `
-              : ''}
+            ${
+              this._modelsFetchError
+                ? html`
+                    <div
+                      style="color: var(--sl-color-danger-600); font-size: 0.875rem; margin-top: 0.5rem;"
+                    >
+                      ${this._modelsFetchError}
+                    </div>
+                  `
+                : ''
+            }
           </div>
 
-          ${this._modelSuggestions.length > 0
-            ? html`
-                <sl-select
-                  class="full-width"
-                  label="Model Name / ID"
-                  .value=${this._isOtherModel
-                    ? 'other'
-                    : this._currentModel.model_identifier || ''}
-                  @sl-change=${this._handleModelNameChange}
-                  ?disabled=${this._isSubmitting}
-                >
-                  ${repeat(
-                    this._modelSuggestions,
-                    (s) => s,
-                    (s) => html`<sl-option value="${s}">${s}</sl-option>`
-                  )}
-                  <sl-option value="other">Other...</sl-option>
-                </sl-select>
+          ${
+            this._modelSuggestions.length > 0
+              ? html`
+                  <sl-select
+                    class="full-width"
+                    label="Model Name / ID"
+                    .value=${
+                      this._isOtherModel
+                        ? 'other'
+                        : this._currentModel.model_identifier || ''
+                    }
+                    @sl-change=${this._handleModelNameChange}
+                    ?disabled=${this._isSubmitting}
+                  >
+                    ${repeat(
+                      this._modelSuggestions,
+                      (s) => s,
+                      (s) => html`<sl-option value="${s}">${s}</sl-option>`
+                    )}
+                    <sl-option value="other">Other...</sl-option>
+                  </sl-select>
 
-                ${when(
-                  this._isOtherModel,
-                  () => html`
+                  ${when(
+                    this._isOtherModel,
+                    () => html`
+                      <sl-input
+                        class="full-width"
+                        label="Custom Model Name / ID"
+                        placeholder="Enter custom model name"
+                        .value=${this._currentModel.model_identifier || ''}
+                        @sl-input=${this._handleCustomModelInput}
+                        ?disabled=${this._isSubmitting}
+                      ></sl-input>
+                    `
+                  )}
+                `
+              : this._modelsFetchError
+                ? html`
                     <sl-input
                       class="full-width"
-                      label="Custom Model Name / ID"
-                      placeholder="Enter custom model name"
+                      label="Model Name / ID"
+                      placeholder="Enter model name manually"
                       .value=${this._currentModel.model_identifier || ''}
                       @sl-input=${this._handleCustomModelInput}
                       ?disabled=${this._isSubmitting}
+                      help-text="Could not fetch models. You can enter the model name manually."
                     ></sl-input>
                   `
-                )}
-              `
-            : this._modelsFetchError
-              ? html`
-                  <sl-input
-                    class="full-width"
-                    label="Model Name / ID"
-                    placeholder="Enter model name manually"
-                    .value=${this._currentModel.model_identifier || ''}
-                    @sl-input=${this._handleCustomModelInput}
-                    ?disabled=${this._isSubmitting}
-                    help-text="Could not fetch models. You can enter the model name manually."
-                  ></sl-input>
-                `
-              : ''}
+                : ''
+          }
         </div>
         <sl-button
           slot="footer"

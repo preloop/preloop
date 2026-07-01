@@ -480,338 +480,437 @@ export class PreloopAgentDeployer extends LitElement {
     return html`
       <div style="width: 100%;">
         <div class="wizard-shell">
-          ${!this.hideBackButton
-            ? html`
-                <sl-button
-                  class="wizard-back"
-                  variant="text"
-                  size="small"
-                  @click=${this.handleBack}
-                >
-                  <sl-icon name="arrow-left" slot="prefix"></sl-icon> Back
-                </sl-button>
-              `
-            : nothing}
-          ${this.deploySubStep === 'agent-host'
-            ? html`
-                <div class="wizard-header">
-                  <h3 class="wizard-title">Choose Agent Hosting Target</h3>
-                  <p class="wizard-copy">
-                    Where would you like to host this persistent agent?
-                  </p>
-                </div>
-
-                <div class="wizard-card-grid">
+          ${
+            !this.hideBackButton
+              ? html`
                   <sl-button
-                    class="wizard-option-button"
-                    variant="default"
-                    @click=${() => {
-                      this.deploySubStep = 'existing-host-method';
-                      this.requestUpdate();
-                    }}
+                    class="wizard-back"
+                    variant="text"
+                    size="small"
+                    @click=${this.handleBack}
                   >
-                    <div class="wizard-option-body">
-                      <span class="wizard-option-icon">
-                        <sl-icon name="hdd-network"></sl-icon>
-                      </span>
-                      <span class="wizard-option-copy">
-                        <span class="wizard-option-title">
-                          Deploy on Existing Host
-                        </span>
-                        <span class="wizard-option-description">
-                          Install a Hermes or OpenClaw agent on a machine you
-                          control using SSH or the Preloop CLI.
-                        </span>
-                      </span>
-                    </div>
+                    <sl-icon name="arrow-left" slot="prefix"></sl-icon> Back
                   </sl-button>
+                `
+              : nothing
+          }
+          ${
+            this.deploySubStep === 'agent-host'
+              ? html`
+                  <div class="wizard-header">
+                    <h3 class="wizard-title">Choose Agent Hosting Target</h3>
+                    <p class="wizard-copy">
+                      Where would you like to host this persistent agent?
+                    </p>
+                  </div>
 
-                  ${this.isEnterprise
-                    ? html`
-                        <sl-button
-                          class="wizard-option-button"
-                          variant="default"
-                          @click=${this.handleFreshVmSelection}
-                        >
-                          <div class="wizard-option-body">
-                            <span class="wizard-option-icon">
-                              <sl-icon name="cpu"></sl-icon>
-                            </span>
-                            <span class="wizard-option-copy">
-                              <span class="wizard-option-title">
-                                Deploy on Fresh VM (Cloud)
-                              </span>
-                              <span class="wizard-option-description">
-                                Provision a brand new isolated VM instance
-                                managed by Preloop compute backends.
-                              </span>
-                            </span>
-                          </div>
-                        </sl-button>
-                      `
-                    : nothing}
-                </div>
-              `
-            : nothing}
-          ${this.deploySubStep === 'existing-host-method'
-            ? html`
-                <div class="wizard-header">
-                  <h3 class="wizard-title">Deploy on Existing Host</h3>
-                  <p class="wizard-copy">
-                    Choose how Preloop should reach the host where the agent
-                    will run.
-                  </p>
-                </div>
-
-                <div class="wizard-card-grid">
-                  <sl-button
-                    class="wizard-option-button"
-                    variant="default"
-                    @click=${() => {
-                      this.deploySubStep = 'ssh-config';
-                      this.requestUpdate();
-                    }}
-                  >
-                    <div class="wizard-option-body">
-                      <span class="wizard-option-icon">
-                        <sl-icon name="key"></sl-icon>
-                      </span>
-                      <span class="wizard-option-copy">
-                        <span class="wizard-option-title">SSH Access</span>
-                        <span class="wizard-option-description">
-                          Preloop connects to the host over SSH and deploys the
-                          agent. Requires a public IP or routable address from
-                          your Preloop instance.
+                  <div class="wizard-card-grid">
+                    <sl-button
+                      class="wizard-option-button"
+                      variant="default"
+                      @click=${() => {
+                        this.deploySubStep = 'existing-host-method';
+                        this.requestUpdate();
+                      }}
+                    >
+                      <div class="wizard-option-body">
+                        <span class="wizard-option-icon">
+                          <sl-icon name="hdd-network"></sl-icon>
                         </span>
-                      </span>
-                    </div>
-                  </sl-button>
-
-                  <sl-button
-                    class="wizard-option-button"
-                    variant="default"
-                    @click=${() => {
-                      this.deploySubStep = 'cli-install';
-                      this.requestUpdate();
-                    }}
-                  >
-                    <div class="wizard-option-body">
-                      <span class="wizard-option-icon">
-                        <sl-icon name="terminal"></sl-icon>
-                      </span>
-                      <span class="wizard-option-copy">
-                        <span class="wizard-option-title">
-                          Install with Preloop CLI
+                        <span class="wizard-option-copy">
+                          <span class="wizard-option-title">
+                            Deploy on Existing Host
+                          </span>
+                          <span class="wizard-option-description">
+                            Install a Hermes or OpenClaw agent on a machine you
+                            control using SSH or the Preloop CLI.
+                          </span>
                         </span>
-                        <span class="wizard-option-description">
-                          Run commands on the host to install Hermes or OpenClaw
-                          and onboard through Preloop. Works when the host only
-                          has outbound access to Preloop.
+                      </div>
+                    </sl-button>
+
+                    ${
+                      this.isEnterprise
+                        ? html`
+                            <sl-button
+                              class="wizard-option-button"
+                              variant="default"
+                              @click=${this.handleFreshVmSelection}
+                            >
+                              <div class="wizard-option-body">
+                                <span class="wizard-option-icon">
+                                  <sl-icon name="cpu"></sl-icon>
+                                </span>
+                                <span class="wizard-option-copy">
+                                  <span class="wizard-option-title">
+                                    Deploy on Fresh VM (Cloud)
+                                  </span>
+                                  <span class="wizard-option-description">
+                                    Provision a brand new isolated VM instance
+                                    managed by Preloop compute backends.
+                                  </span>
+                                </span>
+                              </div>
+                            </sl-button>
+                          `
+                        : nothing
+                    }
+                  </div>
+                `
+              : nothing
+          }
+          ${
+            this.deploySubStep === 'existing-host-method'
+              ? html`
+                  <div class="wizard-header">
+                    <h3 class="wizard-title">Deploy on Existing Host</h3>
+                    <p class="wizard-copy">
+                      Choose how Preloop should reach the host where the agent
+                      will run.
+                    </p>
+                  </div>
+
+                  <div class="wizard-card-grid">
+                    <sl-button
+                      class="wizard-option-button"
+                      variant="default"
+                      @click=${() => {
+                        this.deploySubStep = 'ssh-config';
+                        this.requestUpdate();
+                      }}
+                    >
+                      <div class="wizard-option-body">
+                        <span class="wizard-option-icon">
+                          <sl-icon name="key"></sl-icon>
                         </span>
-                      </span>
-                    </div>
-                  </sl-button>
-                </div>
-              `
-            : nothing}
-          ${this.deploySubStep === 'cli-install'
-            ? html`
-                <div class="wizard-header">
-                  <h3 class="wizard-title">
-                    Install Agent Runtime with Preloop CLI
-                  </h3>
-                  <p class="wizard-copy">
-                    Run these commands on the host where the agent should run.
-                    The agent connects outbound to Preloop, so inbound SSH
-                    access from Preloop is not required.
-                  </p>
-                </div>
+                        <span class="wizard-option-copy">
+                          <span class="wizard-option-title">SSH Access</span>
+                          <span class="wizard-option-description">
+                            Preloop connects to the host over SSH and deploys
+                            the agent. Requires a public IP or routable address
+                            from your Preloop instance.
+                          </span>
+                        </span>
+                      </div>
+                    </sl-button>
 
-                <div class="wizard-panel">
-                  <sl-select
-                    label="Agent Runtime"
-                    value=${this.deployAgentType}
-                    @sl-change=${(e: any) => {
-                      this.deployAgentType = e.target.value;
-                      this.requestUpdate();
-                    }}
-                    style="margin-bottom: var(--sl-spacing-large);"
-                  >
-                    <sl-option value="hermes">Hermes</sl-option>
-                    <sl-option value="openclaw">OpenClaw</sl-option>
-                  </sl-select>
+                    <sl-button
+                      class="wizard-option-button"
+                      variant="default"
+                      @click=${() => {
+                        this.deploySubStep = 'cli-install';
+                        this.requestUpdate();
+                      }}
+                    >
+                      <div class="wizard-option-body">
+                        <span class="wizard-option-icon">
+                          <sl-icon name="terminal"></sl-icon>
+                        </span>
+                        <span class="wizard-option-copy">
+                          <span class="wizard-option-title">
+                            Install with Preloop CLI
+                          </span>
+                          <span class="wizard-option-description">
+                            Run commands on the host to install Hermes or
+                            OpenClaw and onboard through Preloop. Works when the
+                            host only has outbound access to Preloop.
+                          </span>
+                        </span>
+                      </div>
+                    </sl-button>
+                  </div>
+                `
+              : nothing
+          }
+          ${
+            this.deploySubStep === 'cli-install'
+              ? html`
+                  <div class="wizard-header">
+                    <h3 class="wizard-title">
+                      Install Agent Runtime with Preloop CLI
+                    </h3>
+                    <p class="wizard-copy">
+                      Run these commands on the host where the agent should run.
+                      The agent connects outbound to Preloop, so inbound SSH
+                      access from Preloop is not required.
+                    </p>
+                  </div>
 
-                  <div class="command-steps">
-                    <div class="command-step">
-                      <div class="command-label">
-                        1. Install the Preloop CLI on the host
-                      </div>
-                      <div class="command-row">
-                        <code class="command-code"
-                          >${this.preloopCliInstallCommand()}</code
-                        >
-                        <sl-copy-button
-                          .value=${this.preloopCliInstallCommand()}
-                        ></sl-copy-button>
-                      </div>
-                    </div>
+                  <div class="wizard-panel">
+                    <sl-select
+                      label="Agent Runtime"
+                      value=${this.deployAgentType}
+                      @sl-change=${(e: any) => {
+                        this.deployAgentType = e.target.value;
+                        this.requestUpdate();
+                      }}
+                      style="margin-bottom: var(--sl-spacing-large);"
+                    >
+                      <sl-option value="hermes">Hermes</sl-option>
+                      <sl-option value="openclaw">OpenClaw</sl-option>
+                    </sl-select>
 
-                    <div class="command-step">
-                      <div class="command-label">2. Authenticate the CLI</div>
-                      <div class="command-row">
-                        <code class="command-code"
-                          >${this.preloopLoginCommand()}</code
-                        >
-                        <sl-copy-button
-                          .value=${this.preloopLoginCommand()}
-                        ></sl-copy-button>
+                    <div class="command-steps">
+                      <div class="command-step">
+                        <div class="command-label">
+                          1. Install the Preloop CLI on the host
+                        </div>
+                        <div class="command-row">
+                          <code class="command-code"
+                            >${this.preloopCliInstallCommand()}</code
+                          >
+                          <sl-copy-button
+                            .value=${this.preloopCliInstallCommand()}
+                          ></sl-copy-button>
+                        </div>
                       </div>
-                    </div>
 
-                    <div class="command-step">
-                      <div class="command-label">
-                        3. Install
-                        ${this.deployAgentType === 'hermes'
-                          ? 'Hermes'
-                          : 'OpenClaw'}
-                        and onboard through Preloop
+                      <div class="command-step">
+                        <div class="command-label">2. Authenticate the CLI</div>
+                        <div class="command-row">
+                          <code class="command-code"
+                            >${this.preloopLoginCommand()}</code
+                          >
+                          <sl-copy-button
+                            .value=${this.preloopLoginCommand()}
+                          ></sl-copy-button>
+                        </div>
                       </div>
-                      <div class="command-row">
-                        <code class="command-code"
-                          >${this.runtimeInstallAndOnboardCommand(
-                            this.deployAgentType
-                          )}</code
-                        >
-                        <sl-copy-button
-                          .value=${this.runtimeInstallAndOnboardCommand(
-                            this.deployAgentType
-                          )}
-                        ></sl-copy-button>
-                      </div>
-                    </div>
 
-                    <div class="command-step">
-                      <div class="command-label">
-                        Or run the steps separately
+                      <div class="command-step">
+                        <div class="command-label">
+                          3. Install
+                          ${
+                            this.deployAgentType === 'hermes'
+                              ? 'Hermes'
+                              : 'OpenClaw'
+                          }
+                          and onboard through Preloop
+                        </div>
+                        <div class="command-row">
+                          <code class="command-code"
+                            >${this.runtimeInstallAndOnboardCommand(
+                              this.deployAgentType
+                            )}</code
+                          >
+                          <sl-copy-button
+                            .value=${this.runtimeInstallAndOnboardCommand(
+                              this.deployAgentType
+                            )}
+                          ></sl-copy-button>
+                        </div>
                       </div>
-                      <div class="command-row">
-                        <code class="command-code"
-                          >${this.runtimeInstallCommand(
-                            this.deployAgentType
-                          )}</code
-                        >
-                        <sl-copy-button
-                          .value=${this.runtimeInstallCommand(
-                            this.deployAgentType
-                          )}
-                        ></sl-copy-button>
-                      </div>
-                      <div class="command-row">
-                        <code class="command-code"
-                          >${this.runtimeOnboardCommand(
-                            this.deployAgentType
-                          )}</code
-                        >
-                        <sl-copy-button
-                          .value=${this.runtimeOnboardCommand(
-                            this.deployAgentType
-                          )}
-                        ></sl-copy-button>
+
+                      <div class="command-step">
+                        <div class="command-label">
+                          Or run the steps separately
+                        </div>
+                        <div class="command-row">
+                          <code class="command-code"
+                            >${this.runtimeInstallCommand(
+                              this.deployAgentType
+                            )}</code
+                          >
+                          <sl-copy-button
+                            .value=${this.runtimeInstallCommand(
+                              this.deployAgentType
+                            )}
+                          ></sl-copy-button>
+                        </div>
+                        <div class="command-row">
+                          <code class="command-code"
+                            >${this.runtimeOnboardCommand(
+                              this.deployAgentType
+                            )}</code
+                          >
+                          <sl-copy-button
+                            .value=${this.runtimeOnboardCommand(
+                              this.deployAgentType
+                            )}
+                          ></sl-copy-button>
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
 
-                <div class="wizard-actions">
-                  <sl-button
-                    variant="default"
-                    @click=${() =>
-                      (this.deploySubStep = 'existing-host-method')}
-                    >Back</sl-button
-                  >
-                </div>
-              `
-            : nothing}
-          ${this.deploySubStep === 'ssh-config'
-            ? html`
-                <div class="wizard-header">
-                  <h3 class="wizard-title">Deploy via SSH</h3>
-                  <p class="wizard-copy">
-                    Provide SSH credentials for the host where the agent should
-                    run. Preloop must be able to connect to this address.
-                  </p>
-                </div>
-
-                <div class="wizard-panel deploy-grid">
-                  <div
-                    style="display: flex; flex-direction: column; gap: var(--sl-spacing-medium);"
-                  >
-                    <sl-input
-                      label="Host Address / IP"
-                      placeholder="e.g. 192.168.1.100"
-                      .value=${this.sshHost}
-                      @sl-input=${(e: any) => (this.sshHost = e.target.value)}
-                    ></sl-input>
-                    <sl-input
-                      label="SSH Username"
-                      placeholder="e.g. ubuntu"
-                      .value=${this.sshUsername}
-                      @sl-input=${(e: any) =>
-                        (this.sshUsername = e.target.value)}
-                    ></sl-input>
-                    <sl-input
-                      label="SSH Port"
-                      placeholder="22"
-                      .value=${this.sshPort}
-                      @sl-input=${(e: any) => (this.sshPort = e.target.value)}
-                    ></sl-input>
+                  <div class="wizard-actions">
+                    <sl-button
+                      variant="default"
+                      @click=${() =>
+                        (this.deploySubStep = 'existing-host-method')}
+                      >Back</sl-button
+                    >
+                  </div>
+                `
+              : nothing
+          }
+          ${
+            this.deploySubStep === 'ssh-config'
+              ? html`
+                  <div class="wizard-header">
+                    <h3 class="wizard-title">Deploy via SSH</h3>
+                    <p class="wizard-copy">
+                      Provide SSH credentials for the host where the agent
+                      should run. Preloop must be able to connect to this
+                      address.
+                    </p>
                   </div>
 
-                  <div
-                    style="display: flex; flex-direction: column; gap: var(--sl-spacing-medium);"
-                  >
-                    <div style="margin-bottom: var(--sl-spacing-small);">
-                      <label
-                        style="display: block; margin-bottom: 0.5rem; font-weight: 500; font-size: 0.875rem;"
-                        >Authentication Method</label
-                      >
-                      <sl-radio-group
-                        value=${this.sshAuthType}
-                        @sl-change=${(e: any) => {
-                          this.sshAuthType = e.target.value;
-                          this.requestUpdate();
-                        }}
-                        style="display: flex; gap: var(--sl-spacing-medium);"
-                      >
-                        <sl-radio value="password">Password</sl-radio>
-                        <sl-radio value="key">Private Key</sl-radio>
-                      </sl-radio-group>
+                  <div class="wizard-panel deploy-grid">
+                    <div
+                      style="display: flex; flex-direction: column; gap: var(--sl-spacing-medium);"
+                    >
+                      <sl-input
+                        label="Host Address / IP"
+                        placeholder="e.g. 192.168.1.100"
+                        .value=${this.sshHost}
+                        @sl-input=${(e: any) => (this.sshHost = e.target.value)}
+                      ></sl-input>
+                      <sl-input
+                        label="SSH Username"
+                        placeholder="e.g. ubuntu"
+                        .value=${this.sshUsername}
+                        @sl-input=${(e: any) =>
+                          (this.sshUsername = e.target.value)}
+                      ></sl-input>
+                      <sl-input
+                        label="SSH Port"
+                        placeholder="22"
+                        .value=${this.sshPort}
+                        @sl-input=${(e: any) => (this.sshPort = e.target.value)}
+                      ></sl-input>
                     </div>
 
-                    ${this.sshAuthType === 'password'
-                      ? html`
-                          <sl-input
-                            type="password"
-                            label="SSH Password"
-                            placeholder="Enter SSH password"
-                            password-toggle
-                            .value=${this.sshPassword}
-                            @sl-input=${(e: any) =>
-                              (this.sshPassword = e.target.value)}
-                          ></sl-input>
-                        `
-                      : html`
-                          <sl-textarea
-                            label="SSH Private Key"
-                            placeholder="Paste your SSH Private Key here..."
-                            rows="4"
-                            .value=${this.sshPrivateKey}
-                            @sl-input=${(e: any) =>
-                              (this.sshPrivateKey = e.target.value)}
-                          ></sl-textarea>
-                        `}
+                    <div
+                      style="display: flex; flex-direction: column; gap: var(--sl-spacing-medium);"
+                    >
+                      <div style="margin-bottom: var(--sl-spacing-small);">
+                        <label
+                          style="display: block; margin-bottom: 0.5rem; font-weight: 500; font-size: 0.875rem;"
+                          >Authentication Method</label
+                        >
+                        <sl-radio-group
+                          value=${this.sshAuthType}
+                          @sl-change=${(e: any) => {
+                            this.sshAuthType = e.target.value;
+                            this.requestUpdate();
+                          }}
+                          style="display: flex; gap: var(--sl-spacing-medium);"
+                        >
+                          <sl-radio value="password">Password</sl-radio>
+                          <sl-radio value="key">Private Key</sl-radio>
+                        </sl-radio-group>
+                      </div>
 
-                    <div class="inner-deploy-grid">
+                      ${
+                        this.sshAuthType === 'password'
+                          ? html`
+                              <sl-input
+                                type="password"
+                                label="SSH Password"
+                                placeholder="Enter SSH password"
+                                password-toggle
+                                .value=${this.sshPassword}
+                                @sl-input=${(e: any) =>
+                                  (this.sshPassword = e.target.value)}
+                              ></sl-input>
+                            `
+                          : html`
+                              <sl-textarea
+                                label="SSH Private Key"
+                                placeholder="Paste your SSH Private Key here..."
+                                rows="4"
+                                .value=${this.sshPrivateKey}
+                                @sl-input=${(e: any) =>
+                                  (this.sshPrivateKey = e.target.value)}
+                              ></sl-textarea>
+                            `
+                      }
+
+                      <div class="inner-deploy-grid">
+                        <sl-select
+                          label="Agent Runtime Kind"
+                          value=${this.deployAgentType}
+                          @sl-change=${(e: any) =>
+                            (this.deployAgentType = e.target.value)}
+                        >
+                          <sl-option value="hermes">Hermes</sl-option>
+                          <sl-option value="openclaw">OpenClaw</sl-option>
+                        </sl-select>
+
+                        <div
+                          style="display: flex; flex-direction: column; gap: var(--sl-spacing-2x-small);"
+                        >
+                          <sl-select
+                            label="AI Model"
+                            value=${this.deployModel}
+                            @sl-change=${(e: any) =>
+                              (this.deployModel = e.target.value)}
+                            style="margin-bottom: 0; width: 100%;"
+                          >
+                            ${this.aiModels
+                              .filter(
+                                (m) =>
+                                  m.model_kind !== 'stt' &&
+                                  m.model_kind !== 'tts'
+                              )
+                              .map(
+                                (m) =>
+                                  html`<sl-option .value=${m.id}
+                                    >${m.name}</sl-option
+                                  >`
+                              )}
+                          </sl-select>
+                          <sl-button
+                            size="small"
+                            variant="text"
+                            @click=${() => (this.isAddingAIModel = true)}
+                            style="align-self: flex-start; margin-top: -0.25rem; height: auto; padding: 0;"
+                          >
+                            <sl-icon slot="prefix" name="plus-lg"></sl-icon> Add
+                            New AI Model
+                          </sl-button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="wizard-actions">
+                    <sl-button
+                      variant="default"
+                      @click=${() =>
+                        (this.deploySubStep = 'existing-host-method')}
+                      >Back</sl-button
+                    >
+                    <sl-button
+                      variant="primary"
+                      ?disabled=${
+                        !this.sshHost ||
+                        !this.sshUsername ||
+                        (this.sshAuthType === 'password'
+                          ? !this.sshPassword
+                          : !this.sshPrivateKey)
+                      }
+                      @click=${this.startSshDeployBootSequence}
+                      >Deploy Agent</sl-button
+                    >
+                  </div>
+                `
+              : nothing
+          }
+          ${
+            this.deploySubStep === 'fresh-vm-premium'
+              ? html`
+                  <div class="wizard-header">
+                    <h3 class="wizard-title">
+                      Provision Secure Cloud Agent VM
+                    </h3>
+                  </div>
+
+                  <div class="wizard-panel deploy-grid">
+                    <div
+                      style="display: flex; flex-direction: column; gap: var(--sl-spacing-medium);"
+                    >
                       <sl-select
                         label="Agent Runtime Kind"
                         value=${this.deployAgentType}
@@ -822,148 +921,73 @@ export class PreloopAgentDeployer extends LitElement {
                         <sl-option value="openclaw">OpenClaw</sl-option>
                       </sl-select>
 
-                      <div
-                        style="display: flex; flex-direction: column; gap: var(--sl-spacing-2x-small);"
+                      <sl-select
+                        label="Compute Sandbox Size"
+                        value=${this.deployComputeSize}
+                        @sl-change=${(e: any) =>
+                          (this.deployComputeSize = e.target.value)}
                       >
-                        <sl-select
-                          label="AI Model"
-                          value=${this.deployModel}
+                        <sl-option value="standard"
+                          >Standard (2 vCPU, 4GB RAM)</sl-option
+                        >
+                        <sl-option value="performance"
+                          >Performance (4 vCPU, 8GB RAM)</sl-option
+                        >
+                        <sl-option value="high-mem"
+                          >High Memory (8 vCPU, 16GB RAM)</sl-option
+                        >
+                      </sl-select>
+                    </div>
+
+                    <div
+                      style="display: flex; flex-direction: column; gap: var(--sl-spacing-medium);"
+                    >
+                      <sl-select
+                        label="AI Model"
+                        value=${this.deployModel}
+                        @sl-change=${(e: any) =>
+                          (this.deployModel = e.target.value)}
+                      >
+                        ${this.aiModels
+                          .filter(
+                            (m) =>
+                              m.model_kind !== 'stt' && m.model_kind !== 'tts'
+                          )
+                          .map(
+                            (m) =>
+                              html`<sl-option .value=${m.id}
+                                >${m.name}</sl-option
+                              >`
+                          )}
+                      </sl-select>
+
+                      <div style="margin-top: var(--sl-spacing-medium);">
+                        <sl-checkbox
+                          ?checked=${this.deployEnableVnc}
                           @sl-change=${(e: any) =>
-                            (this.deployModel = e.target.value)}
-                          style="margin-bottom: 0; width: 100%;"
+                            (this.deployEnableVnc = e.target.checked)}
                         >
-                          ${this.aiModels
-                            .filter(
-                              (m) =>
-                                m.model_kind !== 'stt' && m.model_kind !== 'tts'
-                            )
-                            .map(
-                              (m) =>
-                                html`<sl-option .value=${m.id}
-                                  >${m.name}</sl-option
-                                >`
-                            )}
-                        </sl-select>
-                        <sl-button
-                          size="small"
-                          variant="text"
-                          @click=${() => (this.isAddingAIModel = true)}
-                          style="align-self: flex-start; margin-top: -0.25rem; height: auto; padding: 0;"
-                        >
-                          <sl-icon slot="prefix" name="plus-lg"></sl-icon> Add
-                          New AI Model
-                        </sl-button>
+                          Enable VNC Graphical Desktop access
+                        </sl-checkbox>
                       </div>
                     </div>
                   </div>
-                </div>
 
-                <div class="wizard-actions">
-                  <sl-button
-                    variant="default"
-                    @click=${() =>
-                      (this.deploySubStep = 'existing-host-method')}
-                    >Back</sl-button
-                  >
-                  <sl-button
-                    variant="primary"
-                    ?disabled=${!this.sshHost ||
-                    !this.sshUsername ||
-                    (this.sshAuthType === 'password'
-                      ? !this.sshPassword
-                      : !this.sshPrivateKey)}
-                    @click=${this.startSshDeployBootSequence}
-                    >Deploy Agent</sl-button
-                  >
-                </div>
-              `
-            : nothing}
-          ${this.deploySubStep === 'fresh-vm-premium'
-            ? html`
-                <div class="wizard-header">
-                  <h3 class="wizard-title">Provision Secure Cloud Agent VM</h3>
-                </div>
-
-                <div class="wizard-panel deploy-grid">
-                  <div
-                    style="display: flex; flex-direction: column; gap: var(--sl-spacing-medium);"
-                  >
-                    <sl-select
-                      label="Agent Runtime Kind"
-                      value=${this.deployAgentType}
-                      @sl-change=${(e: any) =>
-                        (this.deployAgentType = e.target.value)}
+                  <div class="wizard-actions">
+                    <sl-button
+                      variant="default"
+                      @click=${() => (this.deploySubStep = 'agent-host')}
+                      >Back</sl-button
                     >
-                      <sl-option value="hermes">Hermes</sl-option>
-                      <sl-option value="openclaw">OpenClaw</sl-option>
-                    </sl-select>
-
-                    <sl-select
-                      label="Compute Sandbox Size"
-                      value=${this.deployComputeSize}
-                      @sl-change=${(e: any) =>
-                        (this.deployComputeSize = e.target.value)}
+                    <sl-button
+                      variant="primary"
+                      @click=${this.startDeployBootSequence}
+                      >Provision VM Agent Node</sl-button
                     >
-                      <sl-option value="standard"
-                        >Standard (2 vCPU, 4GB RAM)</sl-option
-                      >
-                      <sl-option value="performance"
-                        >Performance (4 vCPU, 8GB RAM)</sl-option
-                      >
-                      <sl-option value="high-mem"
-                        >High Memory (8 vCPU, 16GB RAM)</sl-option
-                      >
-                    </sl-select>
                   </div>
-
-                  <div
-                    style="display: flex; flex-direction: column; gap: var(--sl-spacing-medium);"
-                  >
-                    <sl-select
-                      label="AI Model"
-                      value=${this.deployModel}
-                      @sl-change=${(e: any) =>
-                        (this.deployModel = e.target.value)}
-                    >
-                      ${this.aiModels
-                        .filter(
-                          (m) =>
-                            m.model_kind !== 'stt' && m.model_kind !== 'tts'
-                        )
-                        .map(
-                          (m) =>
-                            html`<sl-option .value=${m.id}
-                              >${m.name}</sl-option
-                            >`
-                        )}
-                    </sl-select>
-
-                    <div style="margin-top: var(--sl-spacing-medium);">
-                      <sl-checkbox
-                        ?checked=${this.deployEnableVnc}
-                        @sl-change=${(e: any) =>
-                          (this.deployEnableVnc = e.target.checked)}
-                      >
-                        Enable VNC Graphical Desktop access
-                      </sl-checkbox>
-                    </div>
-                  </div>
-                </div>
-
-                <div class="wizard-actions">
-                  <sl-button
-                    variant="default"
-                    @click=${() => (this.deploySubStep = 'agent-host')}
-                    >Back</sl-button
-                  >
-                  <sl-button
-                    variant="primary"
-                    @click=${this.startDeployBootSequence}
-                    >Provision VM Agent Node</sl-button
-                  >
-                </div>
-              `
-            : nothing}
+                `
+              : nothing
+          }
         </div>
 
         <!-- Compute Backends Support Dialogs -->
@@ -1093,39 +1117,41 @@ export class PreloopAgentDeployer extends LitElement {
           ${this.bootLogs.map((log) => {
             const isSuccess = log.startsWith('SUCCESS');
             return html`<div
-              style="margin-bottom: 6px; line-height: 1.4; color: ${isSuccess
-                ? '#4ade80'
-                : '#38bdf8'}; font-weight: ${isSuccess ? 'bold' : 'normal'};"
+              style="margin-bottom: 6px; line-height: 1.4; color: ${
+                isSuccess ? '#4ade80' : '#38bdf8'
+              }; font-weight: ${isSuccess ? 'bold' : 'normal'};"
             >
               ${log}
             </div>`;
           })}
-          ${this.bootLogs.length < 8 &&
-          !this.bootLogs[this.bootLogs.length - 1]?.startsWith('SUCCESS')
-            ? html`<div style="color: #38bdf8; animation: pulse 1s infinite;">
-                _
-              </div>`
-            : html`
-                <div
-                  style="margin-top: var(--sl-spacing-large); display: flex; justify-content: flex-end;"
-                >
-                  <sl-button
-                    variant="success"
-                    size="small"
-                    @click=${() => {
-                      this.isBooting = false;
-                      this.dispatchEvent(
-                        new CustomEvent('deploy-wizard-done', {
-                          bubbles: true,
-                          composed: true,
-                        })
-                      );
-                    }}
+          ${
+            this.bootLogs.length < 8 &&
+            !this.bootLogs[this.bootLogs.length - 1]?.startsWith('SUCCESS')
+              ? html`<div style="color: #38bdf8; animation: pulse 1s infinite;">
+                  _
+                </div>`
+              : html`
+                  <div
+                    style="margin-top: var(--sl-spacing-large); display: flex; justify-content: flex-end;"
                   >
-                    View Connected Agent Node
-                  </sl-button>
-                </div>
-              `}
+                    <sl-button
+                      variant="success"
+                      size="small"
+                      @click=${() => {
+                        this.isBooting = false;
+                        this.dispatchEvent(
+                          new CustomEvent('deploy-wizard-done', {
+                            bubbles: true,
+                            composed: true,
+                          })
+                        );
+                      }}
+                    >
+                      View Connected Agent Node
+                    </sl-button>
+                  </div>
+                `
+          }
         </div>
       </div>
     `;

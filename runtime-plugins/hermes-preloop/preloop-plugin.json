@@ -1,20 +1,33 @@
 {
   "name": "preloop-hermes-plugin",
   "displayName": "Preloop",
-  "description": "Expose Hermes to Preloop for discovery, status, Agent Control, and voice-transcript delivery.",
+  "description": "Expose Hermes to Preloop for discovery, status, Agent Control, voice-transcript delivery, and native tool-call approval on mobile/watch.",
   "version": "0.1.0",
   "runtime": "hermes",
   "license": "Apache-2.0",
   "homepage": "https://preloop.ai",
   "repository": "https://github.com/spacecode-ai/preloop/tree/main/runtime-plugins/hermes-preloop",
-  "keywords": ["preloop", "agent-control", "hermes", "voice", "observability"],
+  "keywords": [
+    "preloop",
+    "agent-control",
+    "hermes",
+    "voice",
+    "observability",
+    "tool-approval"
+  ],
   "entrypoint": "preloop_hermes_plugin:plugin",
   "permissions": [
     "read_config:preloop.control",
     "network:wss",
+    "network:https",
     "agent:send_message",
-    "agent:session_status"
+    "agent:session_status",
+    "agent:tool_approval"
   ],
+  "capabilities": {
+    "tool_approval": true
+  },
+  "hooks": ["pre_tool_call"],
   "configSchema": {
     "path": "preloop.control",
     "required": ["control_ws_url", "bearer_token", "runtime_principal_id"]

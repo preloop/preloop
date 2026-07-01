@@ -115,11 +115,13 @@ export class SessionListPanel extends LitElement {
         <sl-badge variant=${this.getWasteVariant(score)} pill>
           Waste ${score}%
         </sl-badge>
-        ${savings && savings > 0
-          ? html`<span class="waste-savings">
-              save up to ${formatCost(savings)}
-            </span>`
-          : ''}
+        ${
+          savings && savings > 0
+            ? html`<span class="waste-savings">
+                save up to ${formatCost(savings)}
+              </span>`
+            : ''
+        }
       </div>
     `;
   }
@@ -169,9 +171,9 @@ export class SessionListPanel extends LitElement {
           (session) => session.id,
           (session) => html`
             <button
-              class="session-card ${this.activeSessionId === session.id
-                ? 'active'
-                : ''}"
+              class="session-card ${
+                this.activeSessionId === session.id ? 'active' : ''
+              }"
               @click=${() => this.selectSession(session)}
             >
               <div class="title-row">
@@ -180,9 +182,11 @@ export class SessionListPanel extends LitElement {
                   ${this.getLabel(session)}
                 </sl-badge>
               </div>
-              ${session.subtitle
-                ? html`<div class="meta">${session.subtitle}</div>`
-                : ''}
+              ${
+                session.subtitle
+                  ? html`<div class="meta">${session.subtitle}</div>`
+                  : ''
+              }
               <div class="meta">
                 Last activity ${this.formatDate(session.lastActivityAt)}
               </div>

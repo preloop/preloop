@@ -1500,28 +1500,34 @@ export class FlowExecutionView extends LitElement {
                     ${entry.serverName} · ${formatLocalTime(entry.timestamp)}
                   </div>
                 </div>
-                ${entry.status
-                  ? html`
-                      <sl-badge
-                        variant=${entry.status === 'error' ||
-                        entry.status === 'failed'
-                          ? 'danger'
-                          : 'success'}
-                      >
-                        ${entry.status}
-                      </sl-badge>
-                    `
-                  : ''}
+                ${
+                  entry.status
+                    ? html`
+                        <sl-badge
+                          variant=${
+                            entry.status === 'error' ||
+                            entry.status === 'failed'
+                              ? 'danger'
+                              : 'success'
+                          }
+                        >
+                          ${entry.status}
+                        </sl-badge>
+                      `
+                    : ''
+                }
               </div>
               <div class="payload-block" style="margin-top: 8px;">
-                ${entry.detail
-                  ? html`<div
-                      class="tool-activity-meta"
-                      style="margin-bottom: 8px; font-weight: 600;"
-                    >
-                      ${entry.detail}
-                    </div>`
-                  : ''}
+                ${
+                  entry.detail
+                    ? html`<div
+                        class="tool-activity-meta"
+                        style="margin-bottom: 8px; font-weight: 600;"
+                      >
+                        ${entry.detail}
+                      </div>`
+                    : ''
+                }
                 <json-tree .data=${entry.payload}></json-tree>
               </div>
             </sl-details>
@@ -1551,24 +1557,28 @@ export class FlowExecutionView extends LitElement {
             >${toolEntries.length}</sl-badge
           >
         </div>
-        ${toolEntries.length > 0
-          ? this.renderToolActivityList(toolEntries)
-          : html`
-              <div class="tool-activity-empty">
-                Tool calls are being counted, but no structured tool names have
-                been captured yet.
-              </div>
-            `}
-        ${totalToolCalls > toolEntries.length
-          ? html`
-              <div class="tool-activity-note">
-                ${totalToolCalls.toLocaleString()} total
-                call${totalToolCalls === 1 ? '' : 's'} recorded, showing
-                ${toolEntries.length.toLocaleString()} structured
-                entr${toolEntries.length === 1 ? 'y' : 'ies'}.
-              </div>
-            `
-          : ''}
+        ${
+          toolEntries.length > 0
+            ? this.renderToolActivityList(toolEntries)
+            : html`
+                <div class="tool-activity-empty">
+                  Tool calls are being counted, but no structured tool names
+                  have been captured yet.
+                </div>
+              `
+        }
+        ${
+          totalToolCalls > toolEntries.length
+            ? html`
+                <div class="tool-activity-note">
+                  ${totalToolCalls.toLocaleString()} total
+                  call${totalToolCalls === 1 ? '' : 's'} recorded, showing
+                  ${toolEntries.length.toLocaleString()} structured
+                  entr${toolEntries.length === 1 ? 'y' : 'ies'}.
+                </div>
+              `
+            : ''
+        }
       </sl-card>
     `;
   }
@@ -1588,19 +1598,25 @@ export class FlowExecutionView extends LitElement {
             Gateway Events
           </span>
           <div style="display: flex; align-items: center; gap: 8px;">
-            ${this.gatewayEventsSource
-              ? html`
-                  <span class="gateway-panel-intro">
-                    ${this.gatewayEventsSource === 'database'
-                      ? 'Stored execution events'
-                      : 'Live execution events'}
-                  </span>
-                `
-              : ''}
+            ${
+              this.gatewayEventsSource
+                ? html`
+                    <span class="gateway-panel-intro">
+                      ${
+                        this.gatewayEventsSource === 'database'
+                          ? 'Stored execution events'
+                          : 'Live execution events'
+                      }
+                    </span>
+                  `
+                : ''
+            }
             <sl-badge pill>
-              ${query
-                ? `${filteredEvents.length}/${this.gatewayEvents.length}`
-                : this.gatewayEvents.length}
+              ${
+                query
+                  ? `${filteredEvents.length}/${this.gatewayEvents.length}`
+                  : this.gatewayEvents.length
+              }
             </sl-badge>
           </div>
         </div>
@@ -1617,50 +1633,59 @@ export class FlowExecutionView extends LitElement {
             @sl-input=${this.handleGatewaySearchQueryChange}
           ></sl-input>
           <div class="search-summary">
-            ${query
-              ? `Showing ${filteredEvents.length} matching event${filteredEvents.length === 1 ? '' : 's'} for "${query}".`
-              : `Showing all ${this.gatewayEvents.length} captured event${this.gatewayEvents.length === 1 ? '' : 's'}.`}
+            ${
+              query
+                ? `Showing ${filteredEvents.length} matching event${filteredEvents.length === 1 ? '' : 's'} for "${query}".`
+                : `Showing all ${this.gatewayEvents.length} captured event${this.gatewayEvents.length === 1 ? '' : 's'}.`
+            }
           </div>
 
-          ${this.gatewayEventsError
-            ? html`
-                <sl-alert variant="warning" open>
-                  <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
-                  ${this.gatewayEventsError}
-                </sl-alert>
-              `
-            : ''}
-          ${this.isLoadingGatewayEvents && this.gatewayEvents.length === 0
-            ? html`
-                <div class="gateway-event-empty">
-                  <sl-spinner style="font-size: 2rem;"></sl-spinner>
-                  <p>Loading gateway events...</p>
-                </div>
-              `
-            : this.gatewayEvents.length === 0
+          ${
+            this.gatewayEventsError
+              ? html`
+                  <sl-alert variant="warning" open>
+                    <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+                    ${this.gatewayEventsError}
+                  </sl-alert>
+                `
+              : ''
+          }
+          ${
+            this.isLoadingGatewayEvents && this.gatewayEvents.length === 0
               ? html`
                   <div class="gateway-event-empty">
-                    <sl-icon
-                      name="diagram-3"
-                      style="font-size: 2rem;"
-                    ></sl-icon>
-                    <p>No gateway events recorded for this execution.</p>
+                    <sl-spinner style="font-size: 2rem;"></sl-spinner>
+                    <p>Loading gateway events...</p>
                   </div>
                 `
-              : filteredEvents.length === 0
+              : this.gatewayEvents.length === 0
                 ? html`
                     <div class="gateway-event-empty">
-                      <sl-icon name="search" style="font-size: 2rem;"></sl-icon>
-                      <p>No gateway events matched "${query}".</p>
+                      <sl-icon
+                        name="diagram-3"
+                        style="font-size: 2rem;"
+                      ></sl-icon>
+                      <p>No gateway events recorded for this execution.</p>
                     </div>
                   `
-                : html`
-                    <div class="gateway-events-list">
-                      ${filteredEvents.map((event) =>
-                        this.renderGatewayEvent(event)
-                      )}
-                    </div>
-                  `}
+                : filteredEvents.length === 0
+                  ? html`
+                      <div class="gateway-event-empty">
+                        <sl-icon
+                          name="search"
+                          style="font-size: 2rem;"
+                        ></sl-icon>
+                        <p>No gateway events matched "${query}".</p>
+                      </div>
+                    `
+                  : html`
+                      <div class="gateway-events-list">
+                        ${filteredEvents.map((event) =>
+                          this.renderGatewayEvent(event)
+                        )}
+                      </div>
+                    `
+          }
         </div>
       </sl-card>
     `;
@@ -1819,46 +1844,53 @@ export class FlowExecutionView extends LitElement {
             >
               <sl-icon slot="prefix" name="arrow-left"></sl-icon> All Executions
             </sl-button>
-            ${this.flow
-              ? html`
-                  <sl-button
-                    variant="default"
-                    size="small"
-                    href="/console/flows/${this.flow.id}"
-                  >
-                    <sl-icon slot="prefix" name="diagram-3"></sl-icon> View Flow
-                  </sl-button>
-                `
-              : ''}
+            ${
+              this.flow
+                ? html`
+                    <sl-button
+                      variant="default"
+                      size="small"
+                      href="/console/flows/${this.flow.id}"
+                    >
+                      <sl-icon slot="prefix" name="diagram-3"></sl-icon> View
+                      Flow
+                    </sl-button>
+                  `
+                : ''
+            }
           </div>
         </div>
         <div
           slot="main-column"
           style="display: flex; justify-content: flex-end; flex: 1; min-width: 0; gap: 8px;"
         >
-          ${isRunning
-            ? html`
-                <sl-button
-                  size="small"
-                  variant="danger"
-                  @click=${this.stopExecution}
-                >
-                  <sl-icon slot="prefix" name="x-circle"></sl-icon> Cancel
-                </sl-button>
-              `
-            : ''}
-          ${this.canRetry()
-            ? html`
-                <sl-button
-                  size="small"
-                  variant="warning"
-                  ?loading=${this.isRetrying}
-                  @click=${this.retryExecution}
-                >
-                  <sl-icon slot="prefix" name="arrow-repeat"></sl-icon> Retry
-                </sl-button>
-              `
-            : ''}
+          ${
+            isRunning
+              ? html`
+                  <sl-button
+                    size="small"
+                    variant="danger"
+                    @click=${this.stopExecution}
+                  >
+                    <sl-icon slot="prefix" name="x-circle"></sl-icon> Cancel
+                  </sl-button>
+                `
+              : ''
+          }
+          ${
+            this.canRetry()
+              ? html`
+                  <sl-button
+                    size="small"
+                    variant="warning"
+                    ?loading=${this.isRetrying}
+                    @click=${this.retryExecution}
+                  >
+                    <sl-icon slot="prefix" name="arrow-repeat"></sl-icon> Retry
+                  </sl-button>
+                `
+              : ''
+          }
         </div>
       </view-header>
       <div class="column-layout wide">
@@ -1879,16 +1911,20 @@ export class FlowExecutionView extends LitElement {
             <sl-card>
               <div slot="header"><sl-icon name="diagram-3"></sl-icon> Flow</div>
               <div class="summary-value">
-                ${this.flow
-                  ? html`<a href="/console/flows/${this.flow.id}"
-                      >${this.flow.name}</a
-                    >`
-                  : 'Unknown flow'}
+                ${
+                  this.flow
+                    ? html`<a href="/console/flows/${this.flow.id}"
+                        >${this.flow.name}</a
+                      >`
+                    : 'Unknown flow'
+                }
               </div>
               <div class="summary-subtext">
-                ${this.flow?.agent_type
-                  ? html`Agent: <sl-badge>${this.flow.agent_type}</sl-badge>`
-                  : this.getTriggerSource()}
+                ${
+                  this.flow?.agent_type
+                    ? html`Agent: <sl-badge>${this.flow.agent_type}</sl-badge>`
+                    : this.getTriggerSource()
+                }
               </div>
             </sl-card>
             <sl-card>
@@ -1905,12 +1941,14 @@ export class FlowExecutionView extends LitElement {
                 </div>
               </sl-tooltip>
               <div class="summary-subtext">
-                ${this.execution.end_time
-                  ? calculateDuration(
-                      this.execution.start_time,
-                      this.execution.end_time
-                    )
-                  : 'Running'}
+                ${
+                  this.execution.end_time
+                    ? calculateDuration(
+                        this.execution.start_time,
+                        this.execution.end_time
+                      )
+                    : 'Running'
+                }
               </div>
             </sl-card>
             <sl-card>
@@ -1919,15 +1957,17 @@ export class FlowExecutionView extends LitElement {
               </div>
               <div class="summary-value">${this.getTriggerSource()}</div>
               <div class="summary-subtext">
-                ${this.execution.agent_session_reference
-                  ? html`Session:
-                      <code
-                        >${this.execution.agent_session_reference.slice(
-                          0,
-                          12
-                        )}...</code
-                      >`
-                  : 'Flow-triggered run'}
+                ${
+                  this.execution.agent_session_reference
+                    ? html`Session:
+                        <code
+                          >${this.execution.agent_session_reference.slice(
+                            0,
+                            12
+                          )}...</code
+                        >`
+                    : 'Flow-triggered run'
+                }
               </div>
             </sl-card>
             <sl-card>
@@ -1936,53 +1976,59 @@ export class FlowExecutionView extends LitElement {
                 ${this.hasPricing ? 'Cost' : 'Tokens'}
               </div>
               <div class="summary-value">
-                ${this.hasPricing
-                  ? html`$${this.budgetUsed.toFixed(2)}`
-                  : this.totalTokens.toLocaleString()}
+                ${
+                  this.hasPricing
+                    ? html`$${this.budgetUsed.toFixed(2)}`
+                    : this.totalTokens.toLocaleString()
+                }
               </div>
               <div class="summary-subtext">
-                ${this.hasPricing
-                  ? `${this.totalTokens.toLocaleString()} tokens`
-                  : `${this.getTotalToolCallCount().toLocaleString()} tool calls recorded`}
+                ${
+                  this.hasPricing
+                    ? `${this.totalTokens.toLocaleString()} tokens`
+                    : `${this.getTotalToolCallCount().toLocaleString()} tool calls recorded`
+                }
               </div>
             </sl-card>
           </div>
 
           <!-- Trigger Event Details (collapsible) -->
-          ${this.execution.trigger_event_details
-            ? html`
-                <sl-details
-                  summary="Trigger Event"
-                  style="margin-bottom: 16px;"
-                >
-                  <sl-card>
-                    <pre
-                      style="white-space: pre-wrap; word-wrap: break-word; margin: 0; font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace; font-size: 12px; line-height: 1.4; background: var(--sl-color-neutral-100); padding: 12px; border-radius: 4px; max-height: 400px; overflow-y: auto;"
-                    >
-${JSON.stringify(this.execution.trigger_event_details, null, 2)}</pre
-                    >
-                  </sl-card>
-                </sl-details>
-              `
-            : ''}
+          ${
+            this.execution.trigger_event_details
+              ? html`
+                  <sl-details
+                    summary="Trigger Event"
+                    style="margin-bottom: 16px;"
+                  >
+                    <sl-card>
+                      <pre
+                        style="white-space: pre-wrap; word-wrap: break-word; margin: 0; font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace; font-size: 12px; line-height: 1.4; background: var(--sl-color-neutral-100); padding: 12px; border-radius: 4px; max-height: 400px; overflow-y: auto;"
+                      >
+${JSON.stringify(this.execution.trigger_event_details, null, 2)}</pre>
+                    </sl-card>
+                  </sl-details>
+                `
+              : ''
+          }
 
           <!-- Resolved Input Prompt (collapsible) -->
-          ${this.execution.resolved_input_prompt
-            ? html`
-                <sl-details
-                  summary="Resolved Input Prompt"
-                  style="margin-bottom: 16px;"
-                >
-                  <sl-card>
-                    <pre
-                      style="white-space: pre-wrap; word-wrap: break-word; margin: 0; font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace; font-size: 13px; line-height: 1.5; background: var(--sl-color-neutral-100); padding: 12px; border-radius: 4px;"
-                    >
-${this.execution.resolved_input_prompt}</pre
-                    >
-                  </sl-card>
-                </sl-details>
-              `
-            : ''}
+          ${
+            this.execution.resolved_input_prompt
+              ? html`
+                  <sl-details
+                    summary="Resolved Input Prompt"
+                    style="margin-bottom: 16px;"
+                  >
+                    <sl-card>
+                      <pre
+                        style="white-space: pre-wrap; word-wrap: break-word; margin: 0; font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace; font-size: 13px; line-height: 1.5; background: var(--sl-color-neutral-100); padding: 12px; border-radius: 4px;"
+                      >
+${this.execution.resolved_input_prompt}</pre>
+                    </sl-card>
+                  </sl-details>
+                `
+              : ''
+          }
           ${this.renderToolActivityCard()}
 
           <sl-tab-group
@@ -2004,100 +2050,113 @@ ${this.execution.resolved_input_prompt}</pre
                         <sl-icon name="terminal"></sl-icon>
                         Output
                       </span>
-                      ${isRunning
-                        ? html`
-                            <div class="controls">
-                              <sl-button-group>
-                                <sl-button
-                                  size="small"
-                                  variant=${this.isAutoScroll
-                                    ? 'primary'
-                                    : 'default'}
-                                  @click=${() =>
-                                    (this.isAutoScroll = !this.isAutoScroll)}
-                                >
-                                  <sl-icon name="arrow-down"></sl-icon>
-                                  Auto-scroll
-                                </sl-button>
-                                <sl-button
-                                  size="small"
-                                  variant="danger"
-                                  @click=${this.stopExecution}
-                                >
-                                  <sl-icon name="stop-circle"></sl-icon>
-                                  Stop
-                                </sl-button>
-                              </sl-button-group>
-                            </div>
-                          `
-                        : ''}
+                      ${
+                        isRunning
+                          ? html`
+                              <div class="controls">
+                                <sl-button-group>
+                                  <sl-button
+                                    size="small"
+                                    variant=${
+                                      this.isAutoScroll ? 'primary' : 'default'
+                                    }
+                                    @click=${() =>
+                                      (this.isAutoScroll = !this.isAutoScroll)}
+                                  >
+                                    <sl-icon name="arrow-down"></sl-icon>
+                                    Auto-scroll
+                                  </sl-button>
+                                  <sl-button
+                                    size="small"
+                                    variant="danger"
+                                    @click=${this.stopExecution}
+                                  >
+                                    <sl-icon name="stop-circle"></sl-icon>
+                                    Stop
+                                  </sl-button>
+                                </sl-button-group>
+                              </div>
+                            `
+                          : ''
+                      }
                     </div>
 
                     <div class="log-container">
-                      ${this.hasMoreLogs
-                        ? html`
-                            <div
-                              style="text-align: center; padding: 10px 0; border-bottom: 1px solid var(--sl-color-neutral-200); margin-bottom: 10px;"
-                            >
-                              <sl-button
-                                size="small"
-                                variant="default"
-                                ?loading=${this.isFetchingMoreLogs}
-                                @click=${this.loadPreviousLogs}
+                      ${
+                        this.hasMoreLogs
+                          ? html`
+                              <div
+                                style="text-align: center; padding: 10px 0; border-bottom: 1px solid var(--sl-color-neutral-200); margin-bottom: 10px;"
                               >
-                                Load Previous Logs
+                                <sl-button
+                                  size="small"
+                                  variant="default"
+                                  ?loading=${this.isFetchingMoreLogs}
+                                  @click=${this.loadPreviousLogs}
+                                >
+                                  Load Previous Logs
+                                </sl-button>
+                              </div>
+                            `
+                          : ''
+                      }
+                      ${
+                        this.logs.length === 0
+                          ? html`
+                              <div class="empty-logs">
+                                <sl-icon
+                                  name="inbox"
+                                  style="font-size: 3rem;"
+                                ></sl-icon>
+                                <p>Waiting for logs...</p>
+                              </div>
+                            `
+                          : this.logs.map((log) => this.renderLogEntry(log))
+                      }
+                      ${
+                        isRunning
+                          ? html`
+                              <div class="loading-indicator">
+                                <div class="loading-dots">
+                                  <span></span>
+                                  <span></span>
+                                  <span></span>
+                                </div>
+                              </div>
+                            `
+                          : ''
+                      }
+                    </div>
+
+                    ${
+                      false && isRunning
+                        ? html`
+                            <div class="terminal-input">
+                              <sl-input
+                                placeholder="Enter command (e.g., 'pause', 'message: Hello')"
+                                .value=${this.commandInput}
+                                @input=${(e: any) =>
+                                  (this.commandInput = e.target.value)}
+                                @keydown=${this.handleInputKeydown}
+                                style="flex: 1;"
+                              >
+                                <sl-icon
+                                  name="terminal"
+                                  slot="prefix"
+                                ></sl-icon>
+                              </sl-input>
+                              <sl-button
+                                variant="primary"
+                                ?loading=${this.isSendingCommand}
+                                @click=${this.sendCommand}
+                              >
+                                <sl-icon name="send"></sl-icon>
+                                Send
                               </sl-button>
                             </div>
                           `
-                        : ''}
-                      ${this.logs.length === 0
-                        ? html`
-                            <div class="empty-logs">
-                              <sl-icon
-                                name="inbox"
-                                style="font-size: 3rem;"
-                              ></sl-icon>
-                              <p>Waiting for logs...</p>
-                            </div>
-                          `
-                        : this.logs.map((log) => this.renderLogEntry(log))}
-                      ${isRunning
-                        ? html`
-                            <div class="loading-indicator">
-                              <div class="loading-dots">
-                                <span></span>
-                                <span></span>
-                                <span></span>
-                              </div>
-                            </div>
-                          `
-                        : ''}
-                    </div>
-
-                    ${false && isRunning
-                      ? html`
-                          <div class="terminal-input">
-                            <sl-input
-                              placeholder="Enter command (e.g., 'pause', 'message: Hello')"
-                              .value=${this.commandInput}
-                              @input=${(e: any) =>
-                                (this.commandInput = e.target.value)}
-                              @keydown=${this.handleInputKeydown}
-                              style="flex: 1;"
-                            >
-                              <sl-icon name="terminal" slot="prefix"></sl-icon>
-                            </sl-input>
-                            <sl-button
-                              variant="primary"
-                              ?loading=${this.isSendingCommand}
-                              @click=${this.sendCommand}
-                            >
-                              <sl-icon name="send"></sl-icon>
-                              Send
-                            </sl-button>
-                          </div>
-                        `
-                      : ''}
+                        : ''
+                    }
                   </sl-card>
                 </div>
               </div>
@@ -2108,24 +2167,28 @@ ${this.execution.resolved_input_prompt}</pre
             </sl-tab-panel>
           </sl-tab-group>
 
-          ${this.execution.error_message
-            ? html`
-                <sl-card>
-                  <div slot="header" style="color: var(--sl-color-danger-600);">
-                    <sl-icon name="exclamation-triangle"></sl-icon>
-                    Error
-                  </div>
-                  <sl-alert variant="danger" open>
-                    <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
-                    <pre
-                      style="white-space: pre-wrap; word-wrap: break-word; margin: 0;"
+          ${
+            this.execution.error_message
+              ? html`
+                  <sl-card>
+                    <div
+                      slot="header"
+                      style="color: var(--sl-color-danger-600);"
                     >
-${this.execution.error_message}</pre
-                    >
-                  </sl-alert>
-                </sl-card>
-              `
-            : ''}
+                      <sl-icon name="exclamation-triangle"></sl-icon>
+                      Error
+                    </div>
+                    <sl-alert variant="danger" open>
+                      <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+                      <pre
+                        style="white-space: pre-wrap; word-wrap: break-word; margin: 0;"
+                      >
+${this.execution.error_message}</pre>
+                    </sl-alert>
+                  </sl-card>
+                `
+              : ''
+          }
         </div>
       </div>
     `;
@@ -2144,8 +2207,7 @@ ${this.execution.error_message}</pre
             <pre
               style="white-space: pre-wrap; word-wrap: break-word; margin: 0; color: #b5cea8;"
             >
-${log.payload.content}</pre
-            >
+${log.payload.content}</pre>
           </div>
         </div>
       `;

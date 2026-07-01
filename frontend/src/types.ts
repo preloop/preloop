@@ -174,6 +174,7 @@ export interface GatewayUsageBySession {
   runtime_session_name?: string | null;
   session_source_type?: string | null;
   session_source_id?: string | null;
+  title?: string | null;
   session_summary?: string | null;
   session_summary_updated_at?: string | null;
   runtime_principal_type?: string | null;
@@ -194,6 +195,35 @@ export interface GatewayUsageBySession {
   last_activity_at?: string | null;
   last_request_at: string | null;
   ended_at?: string | null;
+}
+
+export interface GatewayToolUsageByAgent {
+  runtime_principal_type?: string | null;
+  runtime_principal_id?: string | null;
+  runtime_principal_name?: string | null;
+  agent_id?: string | null;
+  invocation_count: number;
+  estimated_schema_cost: number;
+}
+
+export interface GatewayUsageByTool {
+  tool_name: string;
+  server_name?: string | null;
+  invocation_count: number;
+  successful_invocations: number;
+  failed_invocations: number;
+  schema_injections: number;
+  schema_tokens_total: number;
+  estimated_schema_cost: number;
+  avg_cost_per_invocation: number;
+  last_activity_at?: string | null;
+  usage_by_agent: GatewayToolUsageByAgent[];
+}
+
+export interface ToolUsageStatsResponse {
+  period_start: string;
+  period_end: string;
+  tools: GatewayUsageByTool[];
 }
 
 export interface GatewayUsageSearchResultItem {
@@ -335,11 +365,7 @@ export interface ManagedAgentSummary {
   live_validation_supported: boolean;
   live_validation_passed: boolean | null;
   live_validation_status:
-    | 'unsupported'
-    | 'not_run'
-    | 'passed'
-    | 'failed'
-    | string;
+    'unsupported' | 'not_run' | 'passed' | 'failed' | string;
   last_validated_at: string | null;
   control_feature_name?: string;
   control_capabilities?: string[];
@@ -567,8 +593,35 @@ export interface RuntimeSessionInteractionSummary {
 }
 
 export interface RuntimeSessionOptimizationActionSpec {
-  type: 'scope_tools' | 'set_budget' | 'open_events' | string;
+  type:
+    | 'scope_tools'
+    | 'set_budget'
+    | 'open_events'
+    | 'manage_output_filter'
+    | string;
   params: Record<string, unknown>;
+}
+
+export interface ToolOutputFilter {
+  id: string;
+  account_id: string;
+  server_name: string | null;
+  tool_name: string;
+  managed_agent_id: string | null;
+  dropped_fields: string[];
+  enabled: boolean;
+  created_at: string;
+}
+
+export interface ToolOutputFilterListResponse {
+  items: ToolOutputFilter[];
+}
+
+export interface ToolOutputFilterCreateRequest {
+  server_name: string | null;
+  tool_name: string;
+  dropped_fields: string[];
+  managed_agent_id: string | null;
 }
 
 export interface RuntimeSessionOptimizationSuggestion {
@@ -613,10 +666,13 @@ export interface RuntimeSessionOptimizationResponse {
   estimated_optimization_cost?: number;
   generated_at?: string | null;
   from_cache?: boolean;
+  cache_miss?: boolean;
   llm_skipped_reason?: string | null;
   waste_score?: number | null;
   potential_savings_tokens?: number;
   potential_savings_usd?: number;
+  analyzed_scope_total_tokens?: number;
+  analyzed_scope_estimated_cost?: number;
   context_profile?: SessionContextProfileData | null;
   suggestions: RuntimeSessionOptimizationSuggestion[];
 }
@@ -653,6 +709,7 @@ export interface AccountGatewayUsageSummaryResponse {
   usage_by_model: GatewayUsageByModel[];
   usage_by_flow: GatewayUsageByFlow[];
   usage_by_session: GatewayUsageBySession[];
+  usage_by_tool?: GatewayUsageByTool[];
 }
 
 export interface ModelPriceOverride {
@@ -782,11 +839,7 @@ export interface ApiKey {
   runtime_principal_name?: string | null;
   last_activity_at?: string | null;
   activity_status?:
-    | 'active_now'
-    | 'recently_active'
-    | 'idle'
-    | 'revoked'
-    | string;
+    'active_now' | 'recently_active' | 'idle' | 'revoked' | string;
   recent_model_calls?: number;
   recent_tool_calls?: number;
 }

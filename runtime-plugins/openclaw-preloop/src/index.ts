@@ -13,7 +13,65 @@ type ControlConfig = {
   runtime_principal_id?: string;
   runtime_principal_name?: string;
   session_reference?: string;
+  /** Gate the native-tool approval hook. Defaults to enabled. */
+  tool_approval_enabled?: boolean;
+  /**
+   * When the permission-check endpoint is unreachable, allow the tool to run
+   * instead of blocking. Defaults to false (fail closed / block on error).
+   */
+  tool_approval_fail_open?: boolean;
+  /** Override for the permission-check endpoint (derived from the WS URL otherwise). */
+  permission_check_url?: string;
 };
+
+// Mirror of OpenClaw's `before_tool_call` plugin hook contract
+// (src/plugins/types.ts: PluginHookBeforeToolCallEvent / PluginHookToolContext /
+// PluginHookBeforeToolCallResult). Declared locally so the plugin keeps a zero
+// runtime dependency on the OpenClaw SDK.
+type BeforeToolCallEvent = {
+  toolName: string;
+  params: Record<string, unknown>;
+  runId?: string;
+  toolCallId?: string;
+};
+
+type ToolHookContext = {
+  agentId?: string;
+  sessionKey?: string;
+  sessionId?: string;
+  runId?: string;
+  toolName: string;
+  toolCallId?: string;
+};
+
+type BeforeToolCallResult = {
+  params?: Record<string, unknown>;
+  block?: boolean;
+  blockReason?: string;
+};
+
+type PermissionDecision = {
+  decision: "allow" | "deny";
+  reason?: string;
+  request_id?: string;
+};
+
+type FetchLike = (
+  input: string,
+  init?: {
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+    signal?: AbortSignal;
+  },
+) => Promise<{
+  ok: boolean;
+  status: number;
+  json: () => Promise<unknown>;
+}>;
+
+/** Upper bound for the blocking permission check; backend blocks up to ~300s. */
+const PERMISSION_CHECK_TIMEOUT_MS = 310_000;
 
 type OpenClawRuntime = {
   sendPrompt?: (
@@ -57,7 +115,10 @@ export class PreloopOpenClawPlugin {
   private controlConfig?: ControlConfig;
   private socket?: WebSocket;
 
-  constructor(private readonly configPath?: string) {}
+  constructor(
+    private readonly configPath?: string,
+    private readonly fetchImpl?: FetchLike,
+  ) {}
 
   configure(config: ControlConfig): void {
     this.controlConfig = config;
@@ -116,6 +177,7 @@ export class PreloopOpenClawPlugin {
               text: true,
               voice: true,
               interrupt: true,
+              tool_approval: this.toolApprovalEnabled(config),
             },
             runtime_principal_id: config.runtime_principal_id,
             runtime_principal_name: config.runtime_principal_name,
@@ -161,6 +223,101 @@ export class PreloopOpenClawPlugin {
   stop(): void {
     this.socket?.close();
     this.socket = undefined;
+  }
+
+  toolApprovalEnabled(config?: ControlConfig): boolean {
+    const resolved = config ?? this.controlConfig;
+    return resolved?.tool_approval_enabled !== false;
+  }
+
+  toolApprovalFailOpen(config?: ControlConfig): boolean {
+    const resolved = config ?? this.controlConfig;
+    return resolved?.tool_approval_fail_open === true;
+  }
+
+  /**
+   * Derive the REST API base URL from the Agent Control WS URL, e.g.
+   * `wss://host/api/v1/agents/control/ws` -> `https://host`.
+   */
+  permissionCheckUrl(config: ControlConfig): string {
+    if (config.permission_check_url) {
+      return config.permission_check_url;
+    }
+    const wsUrl = new URL(config.control_ws_url!);
+    const httpProtocol = wsUrl.protocol === "wss:" ? "https:" : "http:";
+    return `${httpProtocol}//${wsUrl.host}/api/v1/agents/permission-check`;
+  }
+
+  /**
+   * Gate a native OpenClaw tool call through Preloop's approval system.
+   *
+   * Returns a `before_tool_call` hook result: `{ block: true, blockReason }`
+   * when the operator denies (or the check fails while failing closed), or
+   * `undefined` to allow execution.
+   */
+  async checkToolPermission(
+    event: BeforeToolCallEvent,
+    ctx: ToolHookContext,
+  ): Promise<BeforeToolCallResult | undefined> {
+    const config = this.controlConfig ?? this.loadConfig();
+    if (!this.toolApprovalEnabled(config)) {
+      return undefined;
+    }
+    const params = event.params ?? {};
+    const cwd =
+      typeof params["cwd"] === "string" ? (params["cwd"] as string) : process.cwd();
+    const sessionId =
+      ctx.sessionId ?? ctx.sessionKey ?? config.session_reference ?? undefined;
+    const requestBody = {
+      source: "openclaw",
+      tool_name: event.toolName,
+      tool_input: params,
+      session_id: sessionId,
+      cwd,
+    };
+
+    const doFetch = this.fetchImpl ?? (fetch as unknown as FetchLike);
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(),
+      PERMISSION_CHECK_TIMEOUT_MS,
+    );
+    try {
+      const response = await doFetch(this.permissionCheckUrl(config), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${config.bearer_token}`,
+        },
+        body: JSON.stringify(requestBody),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        throw new Error(`permission-check returned HTTP ${response.status}`);
+      }
+      const decision = (await response.json()) as PermissionDecision;
+      if (decision.decision === "deny") {
+        return {
+          block: true,
+          blockReason:
+            decision.reason ?? "Tool call denied by Preloop approval.",
+        };
+      }
+      // allow (or any non-deny decision) -> let the tool run.
+      return undefined;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (this.toolApprovalFailOpen(config)) {
+        return undefined;
+      }
+      // Fail closed: block when the approval service is unreachable.
+      return {
+        block: true,
+        blockReason: `Preloop approval unavailable (failing closed): ${message}`,
+      };
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async dispatch(
@@ -268,10 +425,20 @@ export function register(api: {
     warn?: (message: string) => void;
     error?: (message: string) => void;
   };
-  on?: (
-    hookName: "gateway_start" | "gateway_stop",
-    handler: () => void | Promise<void>,
-  ) => void;
+  on?: {
+    (
+      hookName: "gateway_start" | "gateway_stop",
+      handler: () => void | Promise<void>,
+    ): void;
+    (
+      hookName: "before_tool_call",
+      handler: (
+        event: BeforeToolCallEvent,
+        ctx: ToolHookContext,
+      ) => BeforeToolCallResult | void | Promise<BeforeToolCallResult | void>,
+      opts?: { priority?: number },
+    ): void;
+  };
 }): void {
   const instance = new PreloopOpenClawPlugin();
   if (api.pluginConfig && Object.keys(api.pluginConfig).length > 0) {
@@ -295,6 +462,26 @@ export function register(api: {
     started = false;
     instance.stop();
   });
+
+  // Gate native OpenClaw tool calls through Preloop's approval system so they
+  // can be approved/denied on mobile/watch. `before_tool_call` returning
+  // `{ block: true, blockReason }` is terminal and stops the tool execution.
+  api.on?.(
+    "before_tool_call",
+    async (event: BeforeToolCallEvent, ctx: ToolHookContext) => {
+      try {
+        return await instance.checkToolPermission(event, ctx);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        api.logger?.error?.(
+          `Preloop tool approval check failed: ${message}`,
+        );
+        // checkToolPermission already handles its own fail-open/closed policy;
+        // an error escaping here is unexpected, so block to stay safe.
+        return { block: true, blockReason: `Preloop approval error: ${message}` };
+      }
+    },
+  );
   if (process.argv.includes("gateway")) {
     start();
   }

@@ -89,6 +89,7 @@ export class CostView extends AuthedElement {
   @state() private prepaidTokens = '';
   @state() private prepaidCredit = '';
   @state() private priceCurrency = 'USD';
+  @state() private expandedToolRows = new Set<string>();
 
   private get modelPriceOverridesEnabled(): boolean {
     return this.featureFlags.model_price_overrides === true;
@@ -257,6 +258,20 @@ export class CostView extends AuthedElement {
         gap: var(--sl-spacing-2x-small);
       }
 
+      .agent-breakdown {
+        margin-top: var(--sl-spacing-x-small);
+        padding-left: var(--sl-spacing-medium);
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-x-small);
+      }
+
+      .agent-breakdown-row {
+        display: flex;
+        justify-content: space-between;
+        gap: var(--sl-spacing-small);
+        padding: 2px 0;
+      }
+
       sl-dialog::part(panel) {
         --width: 640px;
       }
@@ -352,6 +367,22 @@ export class CostView extends AuthedElement {
     };
   }
 
+  private async loadBudgetPolicies() {
+    if (!this.billingEnabled) {
+      this.budgetPolicies = [];
+      return;
+    }
+    this.budgetPolicies = await getBudgetPolicies().catch(
+      () => [] as BudgetPolicy[]
+    );
+  }
+
+  private handleBudgetPoliciesChanged(
+    event: CustomEvent<{ policies: BudgetPolicy[] }>
+  ) {
+    this.budgetPolicies = event.detail.policies;
+  }
+
   private async load() {
     this.loading = true;
     this.error = null;
@@ -367,9 +398,7 @@ export class CostView extends AuthedElement {
       this.summary = summary;
       this.previousRangeSummary = previousSummary;
       this.featureFlags = features.features || {};
-      this.budgetPolicies = this.billingEnabled
-        ? await getBudgetPolicies().catch(() => [] as BudgetPolicy[])
-        : [];
+      await this.loadBudgetPolicies();
       this.aiModels = aiModels;
       if (this.featureFlags.model_price_overrides === true) {
         this.pricingOverrides = await getModelPriceOverrides({
@@ -590,9 +619,11 @@ export class CostView extends AuthedElement {
       <div class="metric-grid" role="region" aria-label="Cost summary metrics">
         <div class="metric-card">
           <div class="metric-label">
-            ${this.selectedRange === 'this-month'
-              ? 'Month-to-date Spend'
-              : 'Estimated Spend'}
+            ${
+              this.selectedRange === 'this-month'
+                ? 'Month-to-date Spend'
+                : 'Estimated Spend'
+            }
           </div>
           <div class="metric-value">
             ${this.formatCurrency(summary?.estimated_cost)}
@@ -619,109 +650,234 @@ export class CostView extends AuthedElement {
             completion
           </div>
         </div>
-        ${projectedPeriodCost !== null
-          ? html`
-              <div class="metric-card">
-                <div class="metric-label">${this.projectedPeriodLabel()}</div>
-                <div class="metric-value">
-                  ${this.formatCurrency(projectedPeriodCost)}
+        ${
+          projectedPeriodCost !== null
+            ? html`
+                <div class="metric-card">
+                  <div class="metric-label">${this.projectedPeriodLabel()}</div>
+                  <div class="metric-value">
+                    ${this.formatCurrency(projectedPeriodCost)}
+                  </div>
+                  <div class="metric-detail">
+                    ${this.projectedPeriodComparisonDetail(projectedPeriodCost)}
+                  </div>
                 </div>
-                <div class="metric-detail">
-                  ${this.projectedPeriodComparisonDetail(projectedPeriodCost)}
-                </div>
-              </div>
-            `
-          : nothing}
+              `
+            : nothing
+        }
       </div>
     `;
   }
 
   private renderBreakdown() {
     const rows = this.summary?.usage_by_model || [];
+    const toolRows = this.summary?.usage_by_tool || [];
     return html`
       <sl-card class="analytics-card">
+        ${this.renderSectionHeader('tools', 'Tool schema cost')}
+        ${
+          toolRows.length
+            ? html`
+                <div class="analytics-table-wrap">
+                  <table class="styled-table" aria-label="Tool schema cost">
+                    <thead>
+                      <tr>
+                        <th scope="col">Tool</th>
+                        <th scope="col">Invocations</th>
+                        <th scope="col">Schema tokens</th>
+                        <th scope="col">Total cost</th>
+                        <th scope="col">Avg / invocation</th>
+                        <th scope="col">Agents</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${toolRows.map((row) => {
+                        const key = row.tool_name;
+                        const expanded = this.expandedToolRows.has(key);
+                        const agentCount = row.usage_by_agent?.length || 0;
+                        return html`
+                          <tr>
+                            <td>
+                              <div>${row.tool_name}</div>
+                              ${
+                                row.server_name
+                                  ? html`<div
+                                      style="color: var(--sl-color-neutral-500); font-size: var(--sl-font-size-x-small);"
+                                    >
+                                      ${row.server_name}
+                                    </div>`
+                                  : nothing
+                              }
+                            </td>
+                            <td>${this.formatNumber(row.invocation_count)}</td>
+                            <td>
+                              ${this.formatNumber(row.schema_tokens_total)}
+                            </td>
+                            <td>
+                              ${this.formatCurrency(row.estimated_schema_cost)}
+                            </td>
+                            <td>
+                              ${this.formatCurrency(row.avg_cost_per_invocation)}
+                            </td>
+                            <td>
+                              ${
+                                agentCount
+                                  ? html`<sl-button
+                                      size="small"
+                                      variant="text"
+                                      @click=${() => {
+                                        const next = new Set(
+                                          this.expandedToolRows
+                                        );
+                                        if (expanded) next.delete(key);
+                                        else next.add(key);
+                                        this.expandedToolRows = next;
+                                      }}
+                                    >
+                                      ${agentCount}
+                                      agent${agentCount === 1 ? '' : 's'}
+                                    </sl-button>`
+                                  : html`<span>n/a</span>`
+                              }
+                            </td>
+                          </tr>
+                          ${
+                            expanded && agentCount
+                              ? html`<tr>
+                                  <td colspan="6">
+                                    <div class="agent-breakdown">
+                                      ${row.usage_by_agent.map(
+                                        (agent) => html`
+                                          <div class="agent-breakdown-row">
+                                            <span>
+                                              ${
+                                                agent.agent_id
+                                                  ? html`<a
+                                                      href=${`/console/agents/${encodeURIComponent(agent.agent_id)}`}
+                                                      >${agent.runtime_principal_name || agent.agent_id}</a
+                                                    >`
+                                                  : agent.runtime_principal_name ||
+                                                    agent.runtime_principal_id ||
+                                                    'Unknown agent'
+                                              }
+                                            </span>
+                                            <span>
+                                              ${this.formatNumber(agent.invocation_count)}
+                                              calls ·
+                                              ${this.formatCurrency(
+                                                agent.estimated_schema_cost
+                                              )}
+                                            </span>
+                                          </div>
+                                        `
+                                      )}
+                                    </div>
+                                  </td>
+                                </tr>`
+                              : nothing
+                          }
+                        `;
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              `
+            : html`<div class="empty">No tool usage recorded yet.</div>`
+        }
+      </sl-card>
+      <sl-card class="analytics-card">
         ${this.renderSectionHeader('cpu', 'Spend by model')}
-        ${rows.length
-          ? html`
-              <div class="analytics-table-wrap">
-                <table class="styled-table" aria-label="Spend by model">
-                  <thead>
-                    <tr>
-                      <th scope="col">Model</th>
-                      <th scope="col">Provider</th>
-                      <th scope="col">Requests</th>
-                      <th scope="col">Tokens</th>
-                      <th scope="col">Cost</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    ${rows.map(
-                      (row) => html`
-                        <tr>
-                          <td>
-                            ${row.ai_model_id
-                              ? html`<a
-                                  href=${`/console/ai-models/${row.ai_model_id}`}
-                                  >${row.model_alias || 'Unknown model'}</a
-                                >`
-                              : row.model_alias || 'Unknown model'}
-                          </td>
-                          <td>${row.provider_name || 'Unknown'}</td>
-                          <td>${this.formatNumber(row.request_count)}</td>
-                          <td>
-                            ${this.formatNumber(row.token_usage.total_tokens)}
-                          </td>
-                          <td>${this.formatCurrency(row.estimated_cost)}</td>
-                        </tr>
-                      `
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            `
-          : html`<div class="empty">No model gateway usage yet.</div>`}
+        ${
+          rows.length
+            ? html`
+                <div class="analytics-table-wrap">
+                  <table class="styled-table" aria-label="Spend by model">
+                    <thead>
+                      <tr>
+                        <th scope="col">Model</th>
+                        <th scope="col">Provider</th>
+                        <th scope="col">Requests</th>
+                        <th scope="col">Tokens</th>
+                        <th scope="col">Cost</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${rows.map(
+                        (row) => html`
+                          <tr>
+                            <td>
+                              ${
+                                row.ai_model_id
+                                  ? html`<a
+                                      href=${`/console/ai-models/${row.ai_model_id}`}
+                                      >${row.model_alias || 'Unknown model'}</a
+                                    >`
+                                  : row.model_alias || 'Unknown model'
+                              }
+                            </td>
+                            <td>${row.provider_name || 'Unknown'}</td>
+                            <td>${this.formatNumber(row.request_count)}</td>
+                            <td>
+                              ${this.formatNumber(row.token_usage.total_tokens)}
+                            </td>
+                            <td>${this.formatCurrency(row.estimated_cost)}</td>
+                          </tr>
+                        `
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              `
+            : html`<div class="empty">No model gateway usage yet.</div>`
+        }
       </sl-card>
       <sl-card class="analytics-card">
         ${this.renderSectionHeader('collection', 'Recent session spend')}
-        ${this.summary?.usage_by_session?.length
-          ? html`
-              <div class="analytics-table-wrap">
-                <table class="styled-table" aria-label="Recent session spend">
-                  <thead>
-                    <tr>
-                      <th scope="col">Session</th>
-                      <th scope="col">Agent</th>
-                      <th scope="col">Model</th>
-                      <th scope="col">Requests</th>
-                      <th scope="col">Cost</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    ${this.summary.usage_by_session.map(
-                      (row) => html`
-                        <tr>
-                          <td>
-                            ${row.runtime_session_id
-                              ? html`<a
-                                  href="/console/runtime-sessions?sessionId=${row.runtime_session_id}"
-                                  >${row.session_summary ||
-                                  row.session_reference ||
-                                  row.runtime_session_id}</a
-                                >`
-                              : row.session_reference || 'Legacy execution'}
-                          </td>
-                          <td>${this.renderSessionSubjects(row)}</td>
-                          <td>${row.model_alias || 'Unknown'}</td>
-                          <td>${this.formatNumber(row.request_count)}</td>
-                          <td>${this.formatCurrency(row.estimated_cost)}</td>
-                        </tr>
-                      `
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            `
-          : html`<div class="empty">No session-attributed usage yet.</div>`}
+        ${
+          this.summary?.usage_by_session?.length
+            ? html`
+                <div class="analytics-table-wrap">
+                  <table class="styled-table" aria-label="Recent session spend">
+                    <thead>
+                      <tr>
+                        <th scope="col">Session</th>
+                        <th scope="col">Agent</th>
+                        <th scope="col">Model</th>
+                        <th scope="col">Requests</th>
+                        <th scope="col">Cost</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${this.summary.usage_by_session.map(
+                        (row) => html`
+                          <tr>
+                            <td>
+                              ${
+                                row.runtime_session_id
+                                  ? html`<a
+                                      href="/console/runtime-sessions?sessionId=${row.runtime_session_id}"
+                                      >${
+                                        row.session_summary ||
+                                        row.session_reference ||
+                                        row.runtime_session_id
+                                      }</a
+                                    >`
+                                  : row.session_reference || 'Legacy execution'
+                              }
+                            </td>
+                            <td>${this.renderSessionSubjects(row)}</td>
+                            <td>${row.model_alias || 'Unknown'}</td>
+                            <td>${this.formatNumber(row.request_count)}</td>
+                            <td>${this.formatCurrency(row.estimated_cost)}</td>
+                          </tr>
+                        `
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              `
+            : html`<div class="empty">No session-attributed usage yet.</div>`
+        }
       </sl-card>
     `;
   }
@@ -819,8 +975,7 @@ export class CostView extends AuthedElement {
           <datalist id="cost-model-aliases">
             ${this.aiModels.map((model) => {
               const gateway = model.meta_data?.gateway as
-                | Record<string, unknown>
-                | undefined;
+                Record<string, unknown> | undefined;
               const alias =
                 typeof gateway?.model_alias === 'string'
                   ? gateway.model_alias
@@ -854,105 +1009,115 @@ export class CostView extends AuthedElement {
             <sl-option value="prepaid_tokens">Prepaid token balance</sl-option>
             <sl-option value="prepaid_credit">Prepaid dollar credit</sl-option>
           </sl-select>
-          ${this.priceMode === 'custom_token_price'
-            ? html`
-                <sl-input
-                  label="Input $ / 1K"
-                  type="number"
-                  min="0"
-                  step="0.0001"
-                  .value=${this.priceInput}
-                  @sl-input=${(event: Event) =>
-                    (this.priceInput = (
-                      event.target as HTMLInputElement
-                    ).value)}
-                ></sl-input>
-                <sl-input
-                  label="Output $ / 1K"
-                  type="number"
-                  min="0"
-                  step="0.0001"
-                  .value=${this.priceOutput}
-                  @sl-input=${(event: Event) =>
-                    (this.priceOutput = (
-                      event.target as HTMLInputElement
-                    ).value)}
-                ></sl-input>
-                <sl-input
-                  label="Blended $ / 1K (optional)"
-                  type="number"
-                  min="0"
-                  step="0.0001"
-                  .value=${this.pricePer1k}
-                  @sl-input=${(event: Event) =>
-                    (this.pricePer1k = (
-                      event.target as HTMLInputElement
-                    ).value)}
-                ></sl-input>
-              `
-            : nothing}
-          ${this.priceMode === 'fixed_request_price'
-            ? html`
-                <sl-input
-                  label="Request price"
-                  help-text="Use 0 for free usage."
-                  type="number"
-                  min="0"
-                  step="0.0001"
-                  .value=${this.requestPrice}
-                  @sl-input=${(event: Event) =>
-                    (this.requestPrice = (
-                      event.target as HTMLInputElement
-                    ).value)}
-                ></sl-input>
-              `
-            : nothing}
-          ${this.priceMode === 'discount'
-            ? html`
-                <sl-input
-                  label="Discount percent"
-                  type="number"
-                  min="0"
-                  max="100"
-                  step="0.01"
-                  .value=${this.discountPercent}
-                  @sl-input=${(event: Event) =>
-                    (this.discountPercent = (
-                      event.target as HTMLInputElement
-                    ).value)}
-                ></sl-input>
-              `
-            : nothing}
-          ${this.priceMode === 'prepaid_tokens'
-            ? html`
-                <sl-input
-                  label="Prepaid token balance"
-                  type="number"
-                  min="0"
-                  step="1"
-                  .value=${this.prepaidTokens}
-                  @sl-input=${(event: Event) =>
-                    (this.prepaidTokens = (
-                      event.target as HTMLInputElement
-                    ).value)}
-                ></sl-input>
-              `
-            : nothing}
-          ${this.priceMode === 'prepaid_credit'
-            ? html`
-                <sl-input
-                  label="Prepaid credit balance"
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  .value=${this.prepaidCredit}
-                  @sl-input=${(event: Event) =>
-                    (this.prepaidCredit = (
-                      event.target as HTMLInputElement
-                    ).value)}
-                ></sl-input>
-              `
-            : nothing}
+          ${
+            this.priceMode === 'custom_token_price'
+              ? html`
+                  <sl-input
+                    label="Input $ / 1K"
+                    type="number"
+                    min="0"
+                    step="0.0001"
+                    .value=${this.priceInput}
+                    @sl-input=${(event: Event) =>
+                      (this.priceInput = (
+                        event.target as HTMLInputElement
+                      ).value)}
+                  ></sl-input>
+                  <sl-input
+                    label="Output $ / 1K"
+                    type="number"
+                    min="0"
+                    step="0.0001"
+                    .value=${this.priceOutput}
+                    @sl-input=${(event: Event) =>
+                      (this.priceOutput = (
+                        event.target as HTMLInputElement
+                      ).value)}
+                  ></sl-input>
+                  <sl-input
+                    label="Blended $ / 1K (optional)"
+                    type="number"
+                    min="0"
+                    step="0.0001"
+                    .value=${this.pricePer1k}
+                    @sl-input=${(event: Event) =>
+                      (this.pricePer1k = (
+                        event.target as HTMLInputElement
+                      ).value)}
+                  ></sl-input>
+                `
+              : nothing
+          }
+          ${
+            this.priceMode === 'fixed_request_price'
+              ? html`
+                  <sl-input
+                    label="Request price"
+                    help-text="Use 0 for free usage."
+                    type="number"
+                    min="0"
+                    step="0.0001"
+                    .value=${this.requestPrice}
+                    @sl-input=${(event: Event) =>
+                      (this.requestPrice = (
+                        event.target as HTMLInputElement
+                      ).value)}
+                  ></sl-input>
+                `
+              : nothing
+          }
+          ${
+            this.priceMode === 'discount'
+              ? html`
+                  <sl-input
+                    label="Discount percent"
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.01"
+                    .value=${this.discountPercent}
+                    @sl-input=${(event: Event) =>
+                      (this.discountPercent = (
+                        event.target as HTMLInputElement
+                      ).value)}
+                  ></sl-input>
+                `
+              : nothing
+          }
+          ${
+            this.priceMode === 'prepaid_tokens'
+              ? html`
+                  <sl-input
+                    label="Prepaid token balance"
+                    type="number"
+                    min="0"
+                    step="1"
+                    .value=${this.prepaidTokens}
+                    @sl-input=${(event: Event) =>
+                      (this.prepaidTokens = (
+                        event.target as HTMLInputElement
+                      ).value)}
+                  ></sl-input>
+                `
+              : nothing
+          }
+          ${
+            this.priceMode === 'prepaid_credit'
+              ? html`
+                  <sl-input
+                    label="Prepaid credit balance"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    .value=${this.prepaidCredit}
+                    @sl-input=${(event: Event) =>
+                      (this.prepaidCredit = (
+                        event.target as HTMLInputElement
+                      ).value)}
+                  ></sl-input>
+                `
+              : nothing
+          }
           <sl-input
             label="Currency"
             maxlength="3"
@@ -984,30 +1149,42 @@ export class CostView extends AuthedElement {
 
   private renderDialogs() {
     return html`
-      ${this.billingEnabled
-        ? html`
-            <sl-dialog
-              label="Configure Budget Limits"
-              ?open=${this.budgetDialogOpen}
-              @sl-after-hide=${(event: Event) => {
-                if (event.target === event.currentTarget) {
-                  this.budgetDialogOpen = false;
-                  void this.load();
+      ${
+        this.billingEnabled
+          ? html`
+              <sl-dialog
+                label="Configure Budget Limits"
+                ?open=${this.budgetDialogOpen}
+                @sl-after-hide=${(event: Event) => {
+                  if (event.target === event.currentTarget) {
+                    this.budgetDialogOpen = false;
+                  }
+                }}
+              >
+                ${
+                  this.budgetDialogOpen
+                    ? html`
+                        <budget-policy-editor
+                          billingEnabled
+                          @budget-policies-changed=${this.handleBudgetPoliciesChanged}
+                        ></budget-policy-editor>
+                      `
+                    : nothing
                 }
-              }}
-            >
-              <budget-policy-editor></budget-policy-editor>
-              <div slot="footer">
-                <sl-button @click=${() => (this.budgetDialogOpen = false)}>
-                  Close
-                </sl-button>
-              </div>
-            </sl-dialog>
-          `
-        : null}
-      ${this.modelPriceOverridesEnabled
-        ? this.renderPriceOverrideDialog()
-        : null}
+                <div slot="footer">
+                  <sl-button @click=${() => (this.budgetDialogOpen = false)}>
+                    Close
+                  </sl-button>
+                </div>
+              </sl-dialog>
+            `
+          : null
+      }
+      ${
+        this.modelPriceOverridesEnabled
+          ? this.renderPriceOverrideDialog()
+          : null
+      }
     `;
   }
 
@@ -1041,34 +1218,38 @@ export class CostView extends AuthedElement {
           <sl-button @click=${this.load}>Refresh</sl-button>
         </div>
 
-        ${this.error
-          ? html`<sl-alert
-              variant="danger"
-              open
-              role="alert"
-              aria-live="assertive"
-              >${this.error}</sl-alert
-            >`
-          : null}
-        ${this.loading
-          ? html`<sl-card>
-              <div
-                class="loading-state"
-                role="status"
-                aria-live="polite"
-                aria-busy="true"
-              >
-                <sl-spinner></sl-spinner>
-                <span>Loading cost analytics...</span>
-              </div>
-            </sl-card>`
-          : html`
-              ${this.renderMetrics()} ${this.renderToolCostFlagsSection()}
-              <div class="column-layout dashboard extra-wide">
-                <div class="main-column">${this.renderBreakdown()}</div>
-                <div class="side-column">${this.renderControls()}</div>
-              </div>
-            `}
+        ${
+          this.error
+            ? html`<sl-alert
+                variant="danger"
+                open
+                role="alert"
+                aria-live="assertive"
+                >${this.error}</sl-alert
+              >`
+            : null
+        }
+        ${
+          this.loading
+            ? html`<sl-card>
+                <div
+                  class="loading-state"
+                  role="status"
+                  aria-live="polite"
+                  aria-busy="true"
+                >
+                  <sl-spinner></sl-spinner>
+                  <span>Loading cost analytics...</span>
+                </div>
+              </sl-card>`
+            : html`
+                ${this.renderMetrics()} ${this.renderToolCostFlagsSection()}
+                <div class="column-layout dashboard extra-wide">
+                  <div class="main-column">${this.renderBreakdown()}</div>
+                  <div class="side-column">${this.renderControls()}</div>
+                </div>
+              `
+        }
         ${this.renderDialogs()}
       </div>
     `;

@@ -377,74 +377,82 @@ export class FlowsView extends LitElement {
             </div>
           </div>
 
-          ${activeExecutions.length > 0
-            ? html`
-                <div class="active-executions">
-                  <div class="section-header">
-                    <h2>
-                      <sl-icon name="lightning-fill"></sl-icon>
-                      Active Executions
-                    </h2>
-                    <sl-button
-                      size="small"
-                      href=${router.urlForPath('/console/flows/executions')}
-                    >
-                      View All
-                    </sl-button>
+          ${
+            activeExecutions.length > 0
+              ? html`
+                  <div class="active-executions">
+                    <div class="section-header">
+                      <h2>
+                        <sl-icon name="lightning-fill"></sl-icon>
+                        Active Executions
+                      </h2>
+                      <sl-button
+                        size="small"
+                        href=${router.urlForPath('/console/flows/executions')}
+                      >
+                        View All
+                      </sl-button>
+                    </div>
+                    <div class="executions-list">
+                      ${activeExecutions
+                        .slice(0, 5)
+                        .map((exec) => this.renderExecutionItem(exec))}
+                    </div>
                   </div>
-                  <div class="executions-list">
-                    ${activeExecutions
-                      .slice(0, 5)
-                      .map((exec) => this.renderExecutionItem(exec))}
+                `
+              : ''
+          }
+          ${
+            this.flows.length > 0
+              ? html`
+                  <div class="flows-grid">
+                    ${this.flows.map((flow) => this.renderFlowCard(flow))}
                   </div>
-                </div>
-              `
-            : ''}
-          ${this.flows.length > 0
-            ? html`
-                <div class="flows-grid">
-                  ${this.flows.map((flow) => this.renderFlowCard(flow))}
-                </div>
-              `
-            : html`
-                <div class="empty-state">
-                  <sl-icon
-                    name="inbox"
-                    style="font-size: 3rem; opacity: 0.3;"
-                  ></sl-icon>
-                  <p>
-                    No flows yet. Create your first flow or clone a preset
-                    below.
-                  </p>
-                </div>
-              `}
+                `
+              : html`
+                  <div class="empty-state">
+                    <sl-icon
+                      name="inbox"
+                      style="font-size: 3rem; opacity: 0.3;"
+                    ></sl-icon>
+                    <p>
+                      No flows yet. Create your first flow or clone a preset
+                      below.
+                    </p>
+                  </div>
+                `
+          }
 
           <sl-divider></sl-divider>
 
           <div class="section-header">
             <h2>Presets</h2>
-            ${this.flows.length > 0
-              ? html`
-                  <sl-button size="small" @click=${this.togglePresets}>
-                    <sl-icon
-                      slot="prefix"
-                      name=${this.showPresets ? 'chevron-up' : 'chevron-down'}
-                    ></sl-icon>
-                    ${this.showPresets ? 'Hide presets' : 'Show presets'}
-                  </sl-button>
-                `
-              : ''}
+            ${
+              this.flows.length > 0
+                ? html`
+                    <sl-button size="small" @click=${this.togglePresets}>
+                      <sl-icon
+                        slot="prefix"
+                        name=${this.showPresets ? 'chevron-up' : 'chevron-down'}
+                      ></sl-icon>
+                      ${this.showPresets ? 'Hide presets' : 'Show presets'}
+                    </sl-button>
+                  `
+                : ''
+            }
           </div>
-          ${this.showPresets
-            ? html`
-                <div class="presets-grid">
-                  ${this.presets.map((preset) => this.renderPresetCard(preset))}
-                </div>
-              `
-            : html`<div class="presets-collapsed">
-                Presets are hidden. Use "Show presets" to explore starter
-                workflows.
-              </div>`}
+          ${
+            this.showPresets
+              ? html`
+                  <div class="presets-grid">
+                    ${this.presets.map((preset) => this.renderPresetCard(preset))}
+                  </div>
+                `
+              : html`<div class="presets-collapsed">
+                  Presets are hidden. Use "Show presets" to explore starter
+                  workflows.
+                </div>`
+          }
         </div>
       </div>
       <sl-dialog
@@ -481,11 +489,13 @@ export class FlowsView extends LitElement {
       >
         <div slot="header" class="flow-header">
           <div class="flow-title">${flow.name}</div>
-          ${activeCount > 0
-            ? html`<sl-badge variant="primary" pulse
-                >${activeCount} active</sl-badge
-              >`
-            : ''}
+          ${
+            activeCount > 0
+              ? html`<sl-badge variant="primary" pulse
+                  >${activeCount} active</sl-badge
+                >`
+              : ''
+          }
         </div>
 
         ${this.renderFlowDescription(flow)}
@@ -549,17 +559,19 @@ export class FlowsView extends LitElement {
             <sl-button size="small" @click=${() => this.clonePreset(preset.id)}>
               Use Template
             </sl-button>
-            ${preset.account_id
-              ? html`
-                  <sl-button
-                    size="small"
-                    variant="danger"
-                    @click=${() => this.removePreset(preset.id)}
-                  >
-                    Remove
-                  </sl-button>
-                `
-              : ''}
+            ${
+              preset.account_id
+                ? html`
+                    <sl-button
+                      size="small"
+                      variant="danger"
+                      @click=${() => this.removePreset(preset.id)}
+                    >
+                      Remove
+                    </sl-button>
+                  `
+                : ''
+            }
           </div>
         </div>
         ${this.renderFlowDescription(preset)}
@@ -679,31 +691,35 @@ export class FlowsView extends LitElement {
 
     return html`
       <div class="flow-description">
-        ${description
-          ? html`
-              <div class="flow-description-text">${preview}</div>
-              ${shouldShowFull
-                ? html`
-                    <sl-button
-                      class="flow-description-action"
-                      size="small"
-                      variant="text"
-                      @click=${(event: Event) => {
-                        event.stopPropagation();
-                        this.expandedDescription = {
-                          title: flow.name,
-                          description,
-                        };
-                      }}
-                    >
-                      Show full description
-                    </sl-button>
-                  `
-                : null}
-            `
-          : html`<span class="flow-description-placeholder"
-              >No description</span
-            >`}
+        ${
+          description
+            ? html`
+                <div class="flow-description-text">${preview}</div>
+                ${
+                  shouldShowFull
+                    ? html`
+                        <sl-button
+                          class="flow-description-action"
+                          size="small"
+                          variant="text"
+                          @click=${(event: Event) => {
+                            event.stopPropagation();
+                            this.expandedDescription = {
+                              title: flow.name,
+                              description,
+                            };
+                          }}
+                        >
+                          Show full description
+                        </sl-button>
+                      `
+                    : null
+                }
+              `
+            : html`<span class="flow-description-placeholder"
+                >No description</span
+              >`
+        }
       </div>
     `;
   }

@@ -610,50 +610,60 @@ export class FlowView extends LitElement {
               <strong>Name:</strong>
               <span>${this.flow.name}</span>
 
-              ${this.flow.description
-                ? html`
-                    <strong>Description:</strong>
-                    <span>${this.flow.description}</span>
-                  `
-                : ''}
+              ${
+                this.flow.description
+                  ? html`
+                      <strong>Description:</strong>
+                      <span>${this.flow.description}</span>
+                    `
+                  : ''
+              }
 
               <strong>Agent Type:</strong>
               <sl-badge>${this.flow.agent_type}</sl-badge>
 
-              ${this.flow.ai_model_id
-                ? html`
-                    <strong>AI Model:</strong>
-                    <span>${this.getModelName(this.flow.ai_model_id)}</span>
-                  `
-                : ''}
+              ${
+                this.flow.ai_model_id
+                  ? html`
+                      <strong>AI Model:</strong>
+                      <span>${this.getModelName(this.flow.ai_model_id)}</span>
+                    `
+                  : ''
+              }
 
               <strong>Trigger:</strong>
               <span>
-                ${this.flow.trigger_event_source === 'webhook'
-                  ? 'Webhook'
-                  : `${this.getTrackerName(this.flow.trigger_event_source)} - ${this.flow.trigger_event_types?.join(', ') || 'No events'}`}
+                ${
+                  this.flow.trigger_event_source === 'webhook'
+                    ? 'Webhook'
+                    : `${this.getTrackerName(this.flow.trigger_event_source)} - ${this.flow.trigger_event_types?.join(', ') || 'No events'}`
+                }
               </span>
 
-              ${this.flow.trigger_organization_id
-                ? html`
-                    <strong>Organization:</strong>
-                    <span
-                      >${this.getOrganizationName(
-                        this.flow.trigger_organization_id
-                      )}</span
-                    >
-                  `
-                : ''}
-              ${this.flow.trigger_project_ids?.length
-                ? html`
-                    <strong>Projects:</strong>
-                    <span
-                      >${this.flow.trigger_project_ids
-                        .map((id) => this.getProjectName(id))
-                        .join(', ')}</span
-                    >
-                  `
-                : ''}
+              ${
+                this.flow.trigger_organization_id
+                  ? html`
+                      <strong>Organization:</strong>
+                      <span
+                        >${this.getOrganizationName(
+                          this.flow.trigger_organization_id
+                        )}</span
+                      >
+                    `
+                  : ''
+              }
+              ${
+                this.flow.trigger_project_ids?.length
+                  ? html`
+                      <strong>Projects:</strong>
+                      <span
+                        >${this.flow.trigger_project_ids
+                          .map((id) => this.getProjectName(id))
+                          .join(', ')}</span
+                      >
+                    `
+                  : ''
+              }
 
               <strong>Status:</strong>
               <sl-badge
@@ -662,166 +672,190 @@ export class FlowView extends LitElement {
                 ${this.flow.is_enabled ? 'Enabled' : 'Disabled'}
               </sl-badge>
 
-              ${this.flow.git_clone_config?.enabled
-                ? html`
-                    <strong>Git Clone:</strong>
-                    <sl-badge variant="primary">Enabled</sl-badge>
-                  `
-                : ''}
-              ${this.flow.custom_commands?.enabled && this.isAdmin
-                ? html`
-                    <strong>Custom Commands:</strong>
-                    <sl-badge variant="warning">Enabled</sl-badge>
-                  `
-                : ''}
+              ${
+                this.flow.git_clone_config?.enabled
+                  ? html`
+                      <strong>Git Clone:</strong>
+                      <sl-badge variant="primary">Enabled</sl-badge>
+                    `
+                  : ''
+              }
+              ${
+                this.flow.custom_commands?.enabled && this.isAdmin
+                  ? html`
+                      <strong>Custom Commands:</strong>
+                      <sl-badge variant="warning">Enabled</sl-badge>
+                    `
+                  : ''
+              }
             </div>
           </sl-card>
 
-          ${this.flow.prompt_template
-            ? html`
-                <sl-card>
-                  <div slot="header">
-                    <sl-icon name="chat-left-text"></sl-icon>
-                    Prompt Template
-                  </div>
-                  <pre
-                    style="white-space: pre-wrap; word-wrap: break-word; font-family: var(--sl-font-mono); font-size: var(--sl-font-size-small); background: var(--sl-color-neutral-50); padding: var(--sl-spacing-medium); border-radius: var(--sl-border-radius-medium); margin: 0; max-height: 300px; overflow-y: auto;"
-                  >
-${this.flow.prompt_template}</pre
-                  >
-                </sl-card>
-              `
-            : ''}
-          ${this.flow.trigger_event_source === 'webhook' &&
-          this.flow.webhook_config
-            ? html`
-                <sl-card>
-                  <div slot="header">
-                    <sl-icon name="link-45deg"></sl-icon>
-                    Webhook URL
-                  </div>
-                  <div>
-                    <p
-                      style="margin-bottom: var(--sl-spacing-medium); color: var(--sl-color-neutral-600);"
-                    >
-                      Use this URL to trigger the flow from external services.
-                      Keep it secret!
-                    </p>
-                    <div
-                      style="display: flex; gap: var(--sl-spacing-small); align-items: center;"
-                    >
-                      <sl-input
-                        readonly
-                        style="flex: 1;"
-                        value="${window.location
-                          .origin}/api/v1/webhooks/flows/${this.flowId}/${this
-                          .flow.webhook_config.webhook_secret}"
-                      ></sl-input>
-                      <sl-button @click=${() => this.copyWebhookUrl()}>
-                        <sl-icon name="clipboard"></sl-icon>
-                        Copy
-                      </sl-button>
+          ${
+            this.flow.prompt_template
+              ? html`
+                  <sl-card>
+                    <div slot="header">
+                      <sl-icon name="chat-left-text"></sl-icon>
+                      Prompt Template
                     </div>
-                  </div>
-                </sl-card>
-              `
-            : ''}
-          ${this.flow.git_clone_config?.enabled &&
-          (this.flow.git_clone_config.repositories?.length || 0) > 0
-            ? html`
-                <sl-card>
-                  <div slot="header">
-                    <sl-icon name="git"></sl-icon>
-                    Git Clone Configuration
-                  </div>
-                  ${(this.flow.git_clone_config.repositories || []).map(
-                    (repo, index) => html`
-                      <div
-                        style="border-bottom: ${index <
-                        (this.flow.git_clone_config?.repositories?.length ||
-                          0) -
-                          1
-                          ? '1px solid var(--sl-color-neutral-200)'
-                          : 'none'}; padding-bottom: ${index <
-                        (this.flow.git_clone_config?.repositories?.length ||
-                          0) -
-                          1
-                          ? '12px'
-                          : '0'}; margin-bottom: ${index <
-                        (this.flow.git_clone_config?.repositories?.length ||
-                          0) -
-                          1
-                          ? '12px'
-                          : '0'};"
-                      >
-                        <strong style="display: block; margin-bottom: 8px;">
-                          Repository ${index + 1}
-                        </strong>
-                        <div
-                          style="display: grid; grid-template-columns: 150px 1fr; gap: var(--sl-spacing-small); padding-left: var(--sl-spacing-medium);"
-                        >
-                          <strong>Tracker:</strong>
-                          <span
-                            >${this.trackers.find(
-                              (t) => t.id === repo.tracker_id
-                            )?.name || repo.tracker_id}</span
-                          >
-
-                          ${repo.repository_url
-                            ? html`
-                                <strong>Repository:</strong>
-                                <span>${repo.repository_url}</span>
-                              `
-                            : html`
-                                <strong>Repository:</strong>
-                                <span
-                                  style="color: var(--sl-color-neutral-600);"
-                                  >Auto-detect from trigger</span
-                                >
-                              `}
-
-                          <strong>Clone Path:</strong>
-                          <span>${repo.clone_path}</span>
-
-                          ${repo.branch
-                            ? html`
-                                <strong>Branch:</strong>
-                                <span>${repo.branch}</span>
-                              `
-                            : ''}
-                        </div>
-                      </div>
-                    `
-                  )}
-                </sl-card>
-              `
-            : ''}
-          ${this.flow.custom_commands?.enabled && this.isAdmin
-            ? html`
-                <sl-card>
-                  <div slot="header">
-                    <sl-icon name="terminal"></sl-icon>
-                    Custom Commands
-                    <sl-badge
-                      variant="warning"
-                      size="small"
-                      style="margin-left: 8px;"
-                      >Admin Only</sl-badge
-                    >
-                  </div>
-                  <div>
-                    <strong style="display: block; margin-bottom: 8px;"
-                      >Commands:</strong
-                    >
                     <pre
-                      style="background: var(--sl-color-neutral-50); padding: 12px; border-radius: 4px; overflow-x: auto;"
+                      style="white-space: pre-wrap; word-wrap: break-word; font-family: var(--sl-font-mono); font-size: var(--sl-font-size-small); background: var(--sl-color-neutral-50); padding: var(--sl-spacing-medium); border-radius: var(--sl-border-radius-medium); margin: 0; max-height: 300px; overflow-y: auto;"
                     >
-${(this.flow.custom_commands.commands || []).join('\n')}</pre
-                    >
-                  </div>
-                </sl-card>
-              `
-            : ''}
+${this.flow.prompt_template}</pre>
+                  </sl-card>
+                `
+              : ''
+          }
+          ${
+            this.flow.trigger_event_source === 'webhook' &&
+            this.flow.webhook_config
+              ? html`
+                  <sl-card>
+                    <div slot="header">
+                      <sl-icon name="link-45deg"></sl-icon>
+                      Webhook URL
+                    </div>
+                    <div>
+                      <p
+                        style="margin-bottom: var(--sl-spacing-medium); color: var(--sl-color-neutral-600);"
+                      >
+                        Use this URL to trigger the flow from external services.
+                        Keep it secret!
+                      </p>
+                      <div
+                        style="display: flex; gap: var(--sl-spacing-small); align-items: center;"
+                      >
+                        <sl-input
+                          readonly
+                          style="flex: 1;"
+                          value="${
+                            window.location.origin
+                          }/api/v1/webhooks/flows/${this.flowId}/${
+                            this.flow.webhook_config.webhook_secret
+                          }"
+                        ></sl-input>
+                        <sl-button @click=${() => this.copyWebhookUrl()}>
+                          <sl-icon name="clipboard"></sl-icon>
+                          Copy
+                        </sl-button>
+                      </div>
+                    </div>
+                  </sl-card>
+                `
+              : ''
+          }
+          ${
+            this.flow.git_clone_config?.enabled &&
+            (this.flow.git_clone_config.repositories?.length || 0) > 0
+              ? html`
+                  <sl-card>
+                    <div slot="header">
+                      <sl-icon name="git"></sl-icon>
+                      Git Clone Configuration
+                    </div>
+                    ${(this.flow.git_clone_config.repositories || []).map(
+                      (repo, index) => html`
+                        <div
+                          style="border-bottom: ${
+                            index <
+                            (this.flow.git_clone_config?.repositories?.length ||
+                              0) -
+                              1
+                              ? '1px solid var(--sl-color-neutral-200)'
+                              : 'none'
+                          }; padding-bottom: ${
+                            index <
+                            (this.flow.git_clone_config?.repositories?.length ||
+                              0) -
+                              1
+                              ? '12px'
+                              : '0'
+                          }; margin-bottom: ${
+                            index <
+                            (this.flow.git_clone_config?.repositories?.length ||
+                              0) -
+                              1
+                              ? '12px'
+                              : '0'
+                          };"
+                        >
+                          <strong style="display: block; margin-bottom: 8px;">
+                            Repository ${index + 1}
+                          </strong>
+                          <div
+                            style="display: grid; grid-template-columns: 150px 1fr; gap: var(--sl-spacing-small); padding-left: var(--sl-spacing-medium);"
+                          >
+                            <strong>Tracker:</strong>
+                            <span
+                              >${
+                                this.trackers.find(
+                                  (t) => t.id === repo.tracker_id
+                                )?.name || repo.tracker_id
+                              }</span
+                            >
+
+                            ${
+                              repo.repository_url
+                                ? html`
+                                    <strong>Repository:</strong>
+                                    <span>${repo.repository_url}</span>
+                                  `
+                                : html`
+                                    <strong>Repository:</strong>
+                                    <span
+                                      style="color: var(--sl-color-neutral-600);"
+                                      >Auto-detect from trigger</span
+                                    >
+                                  `
+                            }
+
+                            <strong>Clone Path:</strong>
+                            <span>${repo.clone_path}</span>
+
+                            ${
+                              repo.branch
+                                ? html`
+                                    <strong>Branch:</strong>
+                                    <span>${repo.branch}</span>
+                                  `
+                                : ''
+                            }
+                          </div>
+                        </div>
+                      `
+                    )}
+                  </sl-card>
+                `
+              : ''
+          }
+          ${
+            this.flow.custom_commands?.enabled && this.isAdmin
+              ? html`
+                  <sl-card>
+                    <div slot="header">
+                      <sl-icon name="terminal"></sl-icon>
+                      Custom Commands
+                      <sl-badge
+                        variant="warning"
+                        size="small"
+                        style="margin-left: 8px;"
+                        >Admin Only</sl-badge
+                      >
+                    </div>
+                    <div>
+                      <strong style="display: block; margin-bottom: 8px;"
+                        >Commands:</strong
+                      >
+                      <pre
+                        style="background: var(--sl-color-neutral-50); padding: 12px; border-radius: 4px; overflow-x: auto;"
+                      >
+${(this.flow.custom_commands.commands || []).join('\n')}</pre>
+                    </div>
+                  </sl-card>
+                `
+              : ''
+          }
 
           <!-- Recent Executions -->
           <sl-card>
@@ -829,57 +863,67 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre
               <sl-icon name="clock-history"></sl-icon>
               Recent Executions
             </div>
-            ${this.recentExecutions.length === 0
-              ? html`<p>No executions yet. Click "Test Run" to start one.</p>`
-              : html`
-                  <table style="width: 100%; border-collapse: collapse;">
-                    <thead>
-                      <tr>
-                        <th style="text-align: left; padding: 8px;">Status</th>
-                        <th style="text-align: left; padding: 8px;">Started</th>
-                        <th style="text-align: left; padding: 8px;">
-                          Duration
-                        </th>
-                        <th style="text-align: left; padding: 8px;">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      ${this.recentExecutions.map(
-                        (exec) => html`
-                          <tr>
-                            <td style="padding: 8px;">
-                              <sl-badge
-                                variant=${this.getStatusVariant(exec.status)}
-                              >
-                                ${exec.status}
-                              </sl-badge>
-                            </td>
-                            <td style="padding: 8px;">
-                              ${formatLocalDateTime(exec.start_time)}
-                            </td>
-                            <td style="padding: 8px;">
-                              ${exec.end_time
-                                ? calculateDuration(
-                                    exec.start_time,
-                                    exec.end_time
-                                  )
-                                : 'Running...'}
-                            </td>
-                            <td style="padding: 8px;">
-                              <sl-button
-                                size="small"
-                                href="/console/flows/executions/${exec.id}"
-                              >
-                                <sl-icon name="eye"></sl-icon>
-                                View
-                              </sl-button>
-                            </td>
-                          </tr>
-                        `
-                      )}
-                    </tbody>
-                  </table>
-                `}
+            ${
+              this.recentExecutions.length === 0
+                ? html`<p>No executions yet. Click "Test Run" to start one.</p>`
+                : html`
+                    <table style="width: 100%; border-collapse: collapse;">
+                      <thead>
+                        <tr>
+                          <th style="text-align: left; padding: 8px;">
+                            Status
+                          </th>
+                          <th style="text-align: left; padding: 8px;">
+                            Started
+                          </th>
+                          <th style="text-align: left; padding: 8px;">
+                            Duration
+                          </th>
+                          <th style="text-align: left; padding: 8px;">
+                            Actions
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${this.recentExecutions.map(
+                          (exec) => html`
+                            <tr>
+                              <td style="padding: 8px;">
+                                <sl-badge
+                                  variant=${this.getStatusVariant(exec.status)}
+                                >
+                                  ${exec.status}
+                                </sl-badge>
+                              </td>
+                              <td style="padding: 8px;">
+                                ${formatLocalDateTime(exec.start_time)}
+                              </td>
+                              <td style="padding: 8px;">
+                                ${
+                                  exec.end_time
+                                    ? calculateDuration(
+                                        exec.start_time,
+                                        exec.end_time
+                                      )
+                                    : 'Running...'
+                                }
+                              </td>
+                              <td style="padding: 8px;">
+                                <sl-button
+                                  size="small"
+                                  href="/console/flows/executions/${exec.id}"
+                                >
+                                  <sl-icon name="eye"></sl-icon>
+                                  View
+                                </sl-button>
+                              </td>
+                            </tr>
+                          `
+                        )}
+                      </tbody>
+                    </table>
+                  `
+            }
           </sl-card>
         </div>
       </div>
@@ -1334,94 +1378,106 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre
 
     return html`
       <div>
-        ${builtinTools.length > 0
-          ? html`
-              <div style="margin-bottom: 1.5rem;">
-                <h4
-                  style="margin-bottom: 0.75rem; font-size: 0.875rem; color: var(--sl-color-neutral-600); text-transform: uppercase; font-weight: 600;"
-                >
-                  Built-in Tools
-                </h4>
-                <div
-                  style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0.75rem;"
-                >
-                  ${supportedBuiltinTools.map(
-                    (tool) => html`
-                      <sl-checkbox
-                        .checked=${this.isToolSelected(
-                          'preloop-mcp',
-                          tool.name
-                        )}
-                        @sl-change=${(e: any) =>
-                          this.handleToolToggle(
+        ${
+          builtinTools.length > 0
+            ? html`
+                <div style="margin-bottom: 1.5rem;">
+                  <h4
+                    style="margin-bottom: 0.75rem; font-size: 0.875rem; color: var(--sl-color-neutral-600); text-transform: uppercase; font-weight: 600;"
+                  >
+                    Built-in Tools
+                  </h4>
+                  <div
+                    style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0.75rem;"
+                  >
+                    ${supportedBuiltinTools.map(
+                      (tool) => html`
+                        <sl-checkbox
+                          .checked=${this.isToolSelected(
                             'preloop-mcp',
-                            tool.name,
-                            e.target.checked
+                            tool.name
                           )}
-                        ?disabled=${!tool.is_enabled ||
-                        tool.is_supported === false}
-                      >
-                        ${tool.name}
-                        ${!tool.is_enabled
-                          ? html`<sl-badge variant="neutral" size="small"
-                              >Disabled</sl-badge
-                            >`
-                          : ''}
-                      </sl-checkbox>
-                    `
-                  )}
-                </div>
-              </div>
-            `
-          : ''}
-        ${mcpTools.length > 0
-          ? html`
-              <div>
-                <h4
-                  style="margin-bottom: 0.75rem; font-size: 0.875rem; color: var(--sl-color-neutral-600); text-transform: uppercase; font-weight: 600;"
-                >
-                  MCP Server Tools
-                </h4>
-                <div
-                  style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0.75rem;"
-                >
-                  ${mcpTools.map(
-                    (tool) => html`
-                      <sl-checkbox
-                        .checked=${this.isToolSelected(
-                          'preloop-mcp',
-                          tool.name
-                        )}
-                        @sl-change=${(e: any) =>
-                          this.handleToolToggle(
-                            'preloop-mcp',
-                            tool.name,
-                            e.target.checked
-                          )}
-                        ?disabled=${!tool.is_enabled ||
-                        tool.is_supported === false}
-                      >
-                        ${tool.name}
-                        <sl-badge variant="primary" size="small"
-                          >${tool.source_name}</sl-badge
+                          @sl-change=${(e: any) =>
+                            this.handleToolToggle(
+                              'preloop-mcp',
+                              tool.name,
+                              e.target.checked
+                            )}
+                          ?disabled=${
+                            !tool.is_enabled || tool.is_supported === false
+                          }
                         >
-                        ${tool.is_supported === false
-                          ? html`<sl-badge variant="warning" size="small"
-                              >Unsupported</sl-badge
-                            >`
-                          : ''}
-                        ${!tool.is_enabled
-                          ? html`<sl-badge variant="neutral" size="small"
-                              >Disabled</sl-badge
-                            >`
-                          : ''}
-                      </sl-checkbox>
-                    `
-                  )}
+                          ${tool.name}
+                          ${
+                            !tool.is_enabled
+                              ? html`<sl-badge variant="neutral" size="small"
+                                  >Disabled</sl-badge
+                                >`
+                              : ''
+                          }
+                        </sl-checkbox>
+                      `
+                    )}
+                  </div>
                 </div>
-              </div>
-            `
-          : ''}
+              `
+            : ''
+        }
+        ${
+          mcpTools.length > 0
+            ? html`
+                <div>
+                  <h4
+                    style="margin-bottom: 0.75rem; font-size: 0.875rem; color: var(--sl-color-neutral-600); text-transform: uppercase; font-weight: 600;"
+                  >
+                    MCP Server Tools
+                  </h4>
+                  <div
+                    style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0.75rem;"
+                  >
+                    ${mcpTools.map(
+                      (tool) => html`
+                        <sl-checkbox
+                          .checked=${this.isToolSelected(
+                            'preloop-mcp',
+                            tool.name
+                          )}
+                          @sl-change=${(e: any) =>
+                            this.handleToolToggle(
+                              'preloop-mcp',
+                              tool.name,
+                              e.target.checked
+                            )}
+                          ?disabled=${
+                            !tool.is_enabled || tool.is_supported === false
+                          }
+                        >
+                          ${tool.name}
+                          <sl-badge variant="primary" size="small"
+                            >${tool.source_name}</sl-badge
+                          >
+                          ${
+                            tool.is_supported === false
+                              ? html`<sl-badge variant="warning" size="small"
+                                  >Unsupported</sl-badge
+                                >`
+                              : ''
+                          }
+                          ${
+                            !tool.is_enabled
+                              ? html`<sl-badge variant="neutral" size="small"
+                                  >Disabled</sl-badge
+                                >`
+                              : ''
+                          }
+                        </sl-checkbox>
+                      `
+                    )}
+                  </div>
+                </div>
+              `
+            : ''
+        }
       </div>
     `;
   }
@@ -1596,29 +1652,32 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre
               </sl-button>
             </div>
 
-            ${gitTrackers.length > 1
-              ? html`
-                  <sl-select
-                    label="Tracker"
-                    .value=${repo.tracker_id}
-                    @sl-change=${(e: any) => {
-                      repo.tracker_id = e.target.value;
-                      this.requestUpdate();
-                    }}
-                  >
-                    ${gitTrackers.map(
-                      (tracker) =>
-                        html`<sl-option value=${tracker.id}
-                          >${tracker.name} (${tracker.tracker_type})</sl-option
-                        >`
-                    )}
-                  </sl-select>
-                `
-              : html`
-                  <p style="margin-bottom: 0.5rem;">
-                    <strong>Tracker:</strong> ${gitTrackers[0]?.name}
-                  </p>
-                `}
+            ${
+              gitTrackers.length > 1
+                ? html`
+                    <sl-select
+                      label="Tracker"
+                      .value=${repo.tracker_id}
+                      @sl-change=${(e: any) => {
+                        repo.tracker_id = e.target.value;
+                        this.requestUpdate();
+                      }}
+                    >
+                      ${gitTrackers.map(
+                        (tracker) =>
+                          html`<sl-option value=${tracker.id}
+                            >${tracker.name}
+                            (${tracker.tracker_type})</sl-option
+                          >`
+                      )}
+                    </sl-select>
+                  `
+                : html`
+                    <p style="margin-bottom: 0.5rem;">
+                      <strong>Tracker:</strong> ${gitTrackers[0]?.name}
+                    </p>
+                  `
+            }
 
             <sl-input
               label="Repository URL (optional)"
@@ -1695,8 +1754,9 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre
               <sl-input
                 readonly
                 style="flex: 1;"
-                value="${window.location.origin}/api/v1/webhooks/flows/${this
-                  .flowId}/${this.flow.webhook_config.webhook_secret}"
+                value="${window.location.origin}/api/v1/webhooks/flows/${
+                  this.flowId
+                }/${this.flow.webhook_config.webhook_secret}"
               ></sl-input>
               <sl-button @click=${() => this.copyWebhookUrl()}>
                 <sl-icon name="clipboard"></sl-icon>
@@ -1777,23 +1837,26 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre
           label="Organization"
           .value=${this.flow.trigger_organization_id || ''}
           @sl-change=${this.handleOrganizationChange}
-          ?disabled=${this.isPollingOrganizations ||
-          !this.flow.trigger_event_source}
+          ?disabled=${
+            this.isPollingOrganizations || !this.flow.trigger_event_source
+          }
         >
-          ${this.isPollingOrganizations
-            ? html`<sl-option value="">
-                <sl-spinner style="font-size: 1rem;"></sl-spinner>
-                Loading organizations...
-              </sl-option>`
-            : this.organizations.length === 0 &&
-                this.flow.trigger_organization_id
-              ? html`<sl-option value=${this.flow.trigger_organization_id}>
-                  ${this.flow.trigger_organization_id} (syncing...)
+          ${
+            this.isPollingOrganizations
+              ? html`<sl-option value="">
+                  <sl-spinner style="font-size: 1rem;"></sl-spinner>
+                  Loading organizations...
                 </sl-option>`
-              : this.organizations.map(
-                  (org) =>
-                    html`<sl-option value=${org.id}>${org.name}</sl-option>`
-                )}
+              : this.organizations.length === 0 &&
+                  this.flow.trigger_organization_id
+                ? html`<sl-option value=${this.flow.trigger_organization_id}>
+                    ${this.flow.trigger_organization_id} (syncing...)
+                  </sl-option>`
+                : this.organizations.map(
+                    (org) =>
+                      html`<sl-option value=${org.id}>${org.name}</sl-option>`
+                  )
+          }
         </sl-select>
         <sl-select
           label="Projects"
@@ -1806,26 +1869,29 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre
               values.length > 0 ? values : undefined;
             this.requestUpdate();
           }}
-          ?disabled=${this.isPollingProjects ||
-          !this.flow.trigger_organization_id}
+          ?disabled=${
+            this.isPollingProjects || !this.flow.trigger_organization_id
+          }
           help-text="Select one or more projects, or leave empty for all projects in the organization"
         >
-          ${this.isPollingProjects
-            ? html`<sl-option value="">
-                <sl-spinner style="font-size: 1rem;"></sl-spinner>
-                Loading projects...
-              </sl-option>`
-            : (() => {
-                // Filter projects by selected organization for trigger
-                const orgProjects = this.projects.filter(
-                  (proj: any) =>
-                    proj.organization_id === this.flow.trigger_organization_id
-                );
-                return orgProjects.map(
-                  (proj: any) =>
-                    html`<sl-option value=${proj.id}>${proj.name}</sl-option>`
-                );
-              })()}
+          ${
+            this.isPollingProjects
+              ? html`<sl-option value="">
+                  <sl-spinner style="font-size: 1rem;"></sl-spinner>
+                  Loading projects...
+                </sl-option>`
+              : (() => {
+                  // Filter projects by selected organization for trigger
+                  const orgProjects = this.projects.filter(
+                    (proj: any) =>
+                      proj.organization_id === this.flow.trigger_organization_id
+                  );
+                  return orgProjects.map(
+                    (proj: any) =>
+                      html`<sl-option value=${proj.id}>${proj.name}</sl-option>`
+                  );
+                })()
+          }
         </sl-select>
         <sl-select
           label="Events"
@@ -1845,15 +1911,17 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre
           )}
           <sl-option value="other">Other</sl-option>
         </sl-select>
-        ${this.flow.trigger_event_types?.includes('other')
-          ? html`
-              <sl-input
-                label="Custom Event"
-                .value=${this.customEventType}
-                @sl-input=${(e: any) => (this.customEventType = e.target.value)}
-              ></sl-input>
-            `
-          : ''}
+        ${
+          this.flow.trigger_event_types?.includes('other')
+            ? html`
+                <sl-input
+                  label="Custom Event"
+                  .value=${this.customEventType}
+                  @sl-input=${(e: any) => (this.customEventType = e.target.value)}
+                ></sl-input>
+              `
+            : ''
+        }
       </div>
 
       ${this.flow.trigger_event_source ? this.renderEventFilters() : ''}
@@ -1895,339 +1963,366 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre
               - Only trigger when conditions match
             </span>
           </label>
-          ${!showFilters
-            ? html`
-                <sl-button
-                  size="small"
-                  @click=${() => (this.filtersExpanded = true)}
-                >
-                  <sl-icon slot="prefix" name="plus-circle"></sl-icon>
-                  Add Filters
-                </sl-button>
-              `
-            : html`
-                <sl-button
-                  size="small"
-                  variant="text"
-                  @click=${() => (this.filtersExpanded = false)}
-                >
-                  <sl-icon slot="prefix" name="dash-circle"></sl-icon>
-                  Hide Filters
-                </sl-button>
-              `}
+          ${
+            !showFilters
+              ? html`
+                  <sl-button
+                    size="small"
+                    @click=${() => (this.filtersExpanded = true)}
+                  >
+                    <sl-icon slot="prefix" name="plus-circle"></sl-icon>
+                    Add Filters
+                  </sl-button>
+                `
+              : html`
+                  <sl-button
+                    size="small"
+                    variant="text"
+                    @click=${() => (this.filtersExpanded = false)}
+                  >
+                    <sl-icon slot="prefix" name="dash-circle"></sl-icon>
+                    Hide Filters
+                  </sl-button>
+                `
+          }
         </div>
 
-        ${showFilters
-          ? html`
-              <div class="form-grid">
-                <!-- Author/Creator filter -->
-                <sl-input
-                  label="Created By (username)"
-                  placeholder="e.g., octocat, admin@example.com"
-                  .value=${this.flow.trigger_config?.author || ''}
-                  @sl-input=${(e: any) => {
-                    if (!this.flow.trigger_config)
-                      this.flow.trigger_config = {};
-                    const value = e.target.value.trim();
-                    if (value) {
-                      this.flow.trigger_config.author = value;
-                    } else {
-                      delete this.flow.trigger_config.author;
-                    }
-                    this.requestUpdate();
-                  }}
-                  help-text="Filter by who created the issue/PR"
-                ></sl-input>
+        ${
+          showFilters
+            ? html`
+                <div class="form-grid">
+                  <!-- Author/Creator filter -->
+                  <sl-input
+                    label="Created By (username)"
+                    placeholder="e.g., octocat, admin@example.com"
+                    .value=${this.flow.trigger_config?.author || ''}
+                    @sl-input=${(e: any) => {
+                      if (!this.flow.trigger_config)
+                        this.flow.trigger_config = {};
+                      const value = e.target.value.trim();
+                      if (value) {
+                        this.flow.trigger_config.author = value;
+                      } else {
+                        delete this.flow.trigger_config.author;
+                      }
+                      this.requestUpdate();
+                    }}
+                    help-text="Filter by who created the issue/PR"
+                  ></sl-input>
 
-                <!-- Assignee filter -->
-                <sl-input
-                  label="Assigned To (username)"
-                  placeholder="e.g., john_doe"
-                  .value=${this.flow.trigger_config?.assignee || ''}
-                  @sl-input=${(e: any) => {
-                    if (!this.flow.trigger_config)
-                      this.flow.trigger_config = {};
-                    const value = e.target.value.trim();
-                    if (value) {
-                      this.flow.trigger_config.assignee = value;
-                    } else {
-                      delete this.flow.trigger_config.assignee;
-                    }
-                    this.requestUpdate();
-                  }}
-                  help-text="Filter by assignee (matches if any assignee matches)"
-                ></sl-input>
+                  <!-- Assignee filter -->
+                  <sl-input
+                    label="Assigned To (username)"
+                    placeholder="e.g., john_doe"
+                    .value=${this.flow.trigger_config?.assignee || ''}
+                    @sl-input=${(e: any) => {
+                      if (!this.flow.trigger_config)
+                        this.flow.trigger_config = {};
+                      const value = e.target.value.trim();
+                      if (value) {
+                        this.flow.trigger_config.assignee = value;
+                      } else {
+                        delete this.flow.trigger_config.assignee;
+                      }
+                      this.requestUpdate();
+                    }}
+                    help-text="Filter by assignee (matches if any assignee matches)"
+                  ></sl-input>
 
-                <!-- Reviewer filter (PR/MR only) -->
-                ${isMREvent
-                  ? html`
-                      <sl-input
-                        label="${tracker.tracker_type === 'gitlab'
-                          ? 'Reviewer (username)'
-                          : 'Requested Reviewer (username)'}"
-                        placeholder="e.g., jane_smith"
-                        .value=${this.flow.trigger_config?.reviewer || ''}
-                        @sl-input=${(e: any) => {
-                          if (!this.flow.trigger_config)
-                            this.flow.trigger_config = {};
-                          const value = e.target.value.trim();
-                          if (value) {
-                            this.flow.trigger_config.reviewer = value;
-                          } else {
-                            delete this.flow.trigger_config.reviewer;
+                  <!-- Reviewer filter (PR/MR only) -->
+                  ${
+                    isMREvent
+                      ? html`
+                          <sl-input
+                            label="${
+                              tracker.tracker_type === 'gitlab'
+                                ? 'Reviewer (username)'
+                                : 'Requested Reviewer (username)'
+                            }"
+                            placeholder="e.g., jane_smith"
+                            .value=${this.flow.trigger_config?.reviewer || ''}
+                            @sl-input=${(e: any) => {
+                              if (!this.flow.trigger_config)
+                                this.flow.trigger_config = {};
+                              const value = e.target.value.trim();
+                              if (value) {
+                                this.flow.trigger_config.reviewer = value;
+                              } else {
+                                delete this.flow.trigger_config.reviewer;
+                              }
+                              this.requestUpdate();
+                            }}
+                            help-text="Filter by reviewer (matches if any reviewer matches)"
+                          ></sl-input>
+                        `
+                      : ''
+                  }
+
+                  <!-- Labels filter -->
+                  <sl-input
+                    label="Labels (comma-separated)"
+                    placeholder="e.g., bug, critical, backend"
+                    .value=${this.flow.trigger_config?.labels?.join(', ') || ''}
+                    @sl-input=${(e: any) => {
+                      if (!this.flow.trigger_config)
+                        this.flow.trigger_config = {};
+                      const value = e.target.value.trim();
+                      if (value) {
+                        this.flow.trigger_config.labels = value
+                          .split(',')
+                          .map((l: string) => l.trim())
+                          .filter((l: string) => l.length > 0);
+                      } else {
+                        delete this.flow.trigger_config.labels;
+                      }
+                      this.requestUpdate();
+                    }}
+                    help-text="Filter by labels (triggers if ANY label matches)"
+                  ></sl-input>
+
+                  <!-- Milestone filter (GitHub/GitLab only) -->
+                  ${
+                    tracker.tracker_type !== 'jira'
+                      ? html`
+                          <sl-input
+                            label="Milestone"
+                            placeholder="e.g., v1.0, Sprint 10"
+                            .value=${this.flow.trigger_config?.milestone || ''}
+                            @sl-input=${(e: any) => {
+                              if (!this.flow.trigger_config)
+                                this.flow.trigger_config = {};
+                              const value = e.target.value.trim();
+                              if (value) {
+                                this.flow.trigger_config.milestone = value;
+                              } else {
+                                delete this.flow.trigger_config.milestone;
+                              }
+                              this.requestUpdate();
+                            }}
+                            help-text="Filter by milestone name"
+                          ></sl-input>
+                        `
+                      : ''
+                  }
+
+                  <!-- Priority filter (Jira only) -->
+                  ${
+                    tracker.tracker_type === 'jira'
+                      ? html`
+                          <sl-select
+                            label="Priority"
+                            .value=${this.flow.trigger_config?.priority || ''}
+                            @sl-change=${(e: any) => {
+                              if (!this.flow.trigger_config)
+                                this.flow.trigger_config = {};
+                              const value = e.target.value;
+                              if (value) {
+                                this.flow.trigger_config.priority = value;
+                              } else {
+                                delete this.flow.trigger_config.priority;
+                              }
+                              this.requestUpdate();
+                            }}
+                            clearable
+                          >
+                            <sl-option value="">Any Priority</sl-option>
+                            <sl-option value="Highest">Highest</sl-option>
+                            <sl-option value="High">High</sl-option>
+                            <sl-option value="Medium">Medium</sl-option>
+                            <sl-option value="Low">Low</sl-option>
+                            <sl-option value="Lowest">Lowest</sl-option>
+                          </sl-select>
+
+                          <sl-input
+                            label="Issue Type"
+                            placeholder="e.g., Task, Bug, Story"
+                            .value=${this.flow.trigger_config?.issue_type || ''}
+                            @sl-input=${(e: any) => {
+                              if (!this.flow.trigger_config)
+                                this.flow.trigger_config = {};
+                              const value = e.target.value.trim();
+                              if (value) {
+                                this.flow.trigger_config.issue_type = value;
+                              } else {
+                                delete this.flow.trigger_config.issue_type;
+                              }
+                              this.requestUpdate();
+                            }}
+                            help-text="Filter by Jira issue type"
+                          ></sl-input>
+                        `
+                      : ''
+                  }
+
+                  <!-- Merge Request / Pull Request State Filters -->
+                  ${
+                    isMREvent && tracker.tracker_type !== 'jira'
+                      ? html`
+                          <sl-checkbox
+                            ?checked=${this.flow.trigger_config?.merged === true}
+                            @sl-change=${(e: any) => {
+                              if (!this.flow.trigger_config)
+                                this.flow.trigger_config = {};
+                              if (e.target.checked) {
+                                this.flow.trigger_config.merged = true;
+                              } else {
+                                delete this.flow.trigger_config.merged;
+                              }
+                              this.requestUpdate();
+                            }}
+                          >
+                            Only when
+                            ${
+                              tracker.tracker_type === 'gitlab'
+                                ? 'Merge Request'
+                                : 'Pull Request'
+                            }
+                            is merged
+                          </sl-checkbox>
+
+                          <sl-checkbox
+                            ?checked=${this.flow.trigger_config?.draft === false}
+                            @sl-change=${(e: any) => {
+                              if (!this.flow.trigger_config)
+                                this.flow.trigger_config = {};
+                              if (e.target.checked) {
+                                this.flow.trigger_config.draft = false;
+                              } else {
+                                delete this.flow.trigger_config.draft;
+                              }
+                              this.requestUpdate();
+                            }}
+                          >
+                            Only when marked as ready (not draft)
+                          </sl-checkbox>
+
+                          ${
+                            tracker.tracker_type === 'gitlab'
+                              ? html`
+                                  <sl-checkbox
+                                    ?checked=${
+                                      this.flow.trigger_config
+                                        ?.detailed_merge_status === 'approved'
+                                    }
+                                    @sl-change=${(e: any) => {
+                                      if (!this.flow.trigger_config)
+                                        this.flow.trigger_config = {};
+                                      if (e.target.checked) {
+                                        this.flow.trigger_config.detailed_merge_status =
+                                          'approved';
+                                      } else {
+                                        delete this.flow.trigger_config
+                                          .detailed_merge_status;
+                                      }
+                                      this.requestUpdate();
+                                    }}
+                                  >
+                                    Only when approved
+                                  </sl-checkbox>
+
+                                  <sl-select
+                                    label="Merge Status"
+                                    .value=${this.flow.trigger_config?.state || ''}
+                                    @sl-change=${(e: any) => {
+                                      if (!this.flow.trigger_config)
+                                        this.flow.trigger_config = {};
+                                      const value = e.target.value;
+                                      if (value) {
+                                        this.flow.trigger_config.state = value;
+                                      } else {
+                                        delete this.flow.trigger_config.state;
+                                      }
+                                      this.requestUpdate();
+                                    }}
+                                    clearable
+                                    help-text="Filter by merge request state"
+                                  >
+                                    <sl-option value="">Any State</sl-option>
+                                    <sl-option value="opened">Opened</sl-option>
+                                    <sl-option value="closed">Closed</sl-option>
+                                    <sl-option value="merged">Merged</sl-option>
+                                  </sl-select>
+                                `
+                              : tracker.tracker_type === 'github'
+                                ? html`
+                                    <sl-select
+                                      label="Pull Request State"
+                                      .value=${this.flow.trigger_config?.state || ''}
+                                      @sl-change=${(e: any) => {
+                                        if (!this.flow.trigger_config)
+                                          this.flow.trigger_config = {};
+                                        const value = e.target.value;
+                                        if (value) {
+                                          this.flow.trigger_config.state =
+                                            value;
+                                        } else {
+                                          delete this.flow.trigger_config.state;
+                                        }
+                                        this.requestUpdate();
+                                      }}
+                                      clearable
+                                      help-text="Filter by pull request state"
+                                    >
+                                      <sl-option value="">Any State</sl-option>
+                                      <sl-option value="open">Open</sl-option>
+                                      <sl-option value="closed"
+                                        >Closed</sl-option
+                                      >
+                                    </sl-select>
+
+                                    <sl-select
+                                      label="Mergeable State"
+                                      .value=${
+                                        this.flow.trigger_config
+                                          ?.mergeable_state || ''
+                                      }
+                                      @sl-change=${(e: any) => {
+                                        if (!this.flow.trigger_config)
+                                          this.flow.trigger_config = {};
+                                        const value = e.target.value;
+                                        if (value) {
+                                          this.flow.trigger_config.mergeable_state =
+                                            value;
+                                        } else {
+                                          delete this.flow.trigger_config
+                                            .mergeable_state;
+                                        }
+                                        this.requestUpdate();
+                                      }}
+                                      clearable
+                                      help-text="Filter by whether PR can be merged"
+                                    >
+                                      <sl-option value="">Any</sl-option>
+                                      <sl-option value="clean"
+                                        >Clean (can merge)</sl-option
+                                      >
+                                      <sl-option value="unstable"
+                                        >Unstable (tests failing)</sl-option
+                                      >
+                                      <sl-option value="dirty"
+                                        >Dirty (merge conflict)</sl-option
+                                      >
+                                      <sl-option value="blocked"
+                                        >Blocked</sl-option
+                                      >
+                                    </sl-select>
+                                  `
+                                : ''
                           }
-                          this.requestUpdate();
-                        }}
-                        help-text="Filter by reviewer (matches if any reviewer matches)"
-                      ></sl-input>
-                    `
-                  : ''}
+                        `
+                      : ''
+                  }
+                </div>
 
-                <!-- Labels filter -->
-                <sl-input
-                  label="Labels (comma-separated)"
-                  placeholder="e.g., bug, critical, backend"
-                  .value=${this.flow.trigger_config?.labels?.join(', ') || ''}
-                  @sl-input=${(e: any) => {
-                    if (!this.flow.trigger_config)
-                      this.flow.trigger_config = {};
-                    const value = e.target.value.trim();
-                    if (value) {
-                      this.flow.trigger_config.labels = value
-                        .split(',')
-                        .map((l: string) => l.trim())
-                        .filter((l: string) => l.length > 0);
-                    } else {
-                      delete this.flow.trigger_config.labels;
-                    }
-                    this.requestUpdate();
-                  }}
-                  help-text="Filter by labels (triggers if ANY label matches)"
-                ></sl-input>
-
-                <!-- Milestone filter (GitHub/GitLab only) -->
-                ${tracker.tracker_type !== 'jira'
-                  ? html`
-                      <sl-input
-                        label="Milestone"
-                        placeholder="e.g., v1.0, Sprint 10"
-                        .value=${this.flow.trigger_config?.milestone || ''}
-                        @sl-input=${(e: any) => {
-                          if (!this.flow.trigger_config)
-                            this.flow.trigger_config = {};
-                          const value = e.target.value.trim();
-                          if (value) {
-                            this.flow.trigger_config.milestone = value;
-                          } else {
-                            delete this.flow.trigger_config.milestone;
-                          }
-                          this.requestUpdate();
-                        }}
-                        help-text="Filter by milestone name"
-                      ></sl-input>
-                    `
-                  : ''}
-
-                <!-- Priority filter (Jira only) -->
-                ${tracker.tracker_type === 'jira'
-                  ? html`
-                      <sl-select
-                        label="Priority"
-                        .value=${this.flow.trigger_config?.priority || ''}
-                        @sl-change=${(e: any) => {
-                          if (!this.flow.trigger_config)
-                            this.flow.trigger_config = {};
-                          const value = e.target.value;
-                          if (value) {
-                            this.flow.trigger_config.priority = value;
-                          } else {
-                            delete this.flow.trigger_config.priority;
-                          }
-                          this.requestUpdate();
-                        }}
-                        clearable
-                      >
-                        <sl-option value="">Any Priority</sl-option>
-                        <sl-option value="Highest">Highest</sl-option>
-                        <sl-option value="High">High</sl-option>
-                        <sl-option value="Medium">Medium</sl-option>
-                        <sl-option value="Low">Low</sl-option>
-                        <sl-option value="Lowest">Lowest</sl-option>
-                      </sl-select>
-
-                      <sl-input
-                        label="Issue Type"
-                        placeholder="e.g., Task, Bug, Story"
-                        .value=${this.flow.trigger_config?.issue_type || ''}
-                        @sl-input=${(e: any) => {
-                          if (!this.flow.trigger_config)
-                            this.flow.trigger_config = {};
-                          const value = e.target.value.trim();
-                          if (value) {
-                            this.flow.trigger_config.issue_type = value;
-                          } else {
-                            delete this.flow.trigger_config.issue_type;
-                          }
-                          this.requestUpdate();
-                        }}
-                        help-text="Filter by Jira issue type"
-                      ></sl-input>
-                    `
-                  : ''}
-
-                <!-- Merge Request / Pull Request State Filters -->
-                ${isMREvent && tracker.tracker_type !== 'jira'
-                  ? html`
-                      <sl-checkbox
-                        ?checked=${this.flow.trigger_config?.merged === true}
-                        @sl-change=${(e: any) => {
-                          if (!this.flow.trigger_config)
-                            this.flow.trigger_config = {};
-                          if (e.target.checked) {
-                            this.flow.trigger_config.merged = true;
-                          } else {
-                            delete this.flow.trigger_config.merged;
-                          }
-                          this.requestUpdate();
-                        }}
-                      >
-                        Only when
-                        ${tracker.tracker_type === 'gitlab'
-                          ? 'Merge Request'
-                          : 'Pull Request'}
-                        is merged
-                      </sl-checkbox>
-
-                      <sl-checkbox
-                        ?checked=${this.flow.trigger_config?.draft === false}
-                        @sl-change=${(e: any) => {
-                          if (!this.flow.trigger_config)
-                            this.flow.trigger_config = {};
-                          if (e.target.checked) {
-                            this.flow.trigger_config.draft = false;
-                          } else {
-                            delete this.flow.trigger_config.draft;
-                          }
-                          this.requestUpdate();
-                        }}
-                      >
-                        Only when marked as ready (not draft)
-                      </sl-checkbox>
-
-                      ${tracker.tracker_type === 'gitlab'
-                        ? html`
-                            <sl-checkbox
-                              ?checked=${this.flow.trigger_config
-                                ?.detailed_merge_status === 'approved'}
-                              @sl-change=${(e: any) => {
-                                if (!this.flow.trigger_config)
-                                  this.flow.trigger_config = {};
-                                if (e.target.checked) {
-                                  this.flow.trigger_config.detailed_merge_status =
-                                    'approved';
-                                } else {
-                                  delete this.flow.trigger_config
-                                    .detailed_merge_status;
-                                }
-                                this.requestUpdate();
-                              }}
-                            >
-                              Only when approved
-                            </sl-checkbox>
-
-                            <sl-select
-                              label="Merge Status"
-                              .value=${this.flow.trigger_config?.state || ''}
-                              @sl-change=${(e: any) => {
-                                if (!this.flow.trigger_config)
-                                  this.flow.trigger_config = {};
-                                const value = e.target.value;
-                                if (value) {
-                                  this.flow.trigger_config.state = value;
-                                } else {
-                                  delete this.flow.trigger_config.state;
-                                }
-                                this.requestUpdate();
-                              }}
-                              clearable
-                              help-text="Filter by merge request state"
-                            >
-                              <sl-option value="">Any State</sl-option>
-                              <sl-option value="opened">Opened</sl-option>
-                              <sl-option value="closed">Closed</sl-option>
-                              <sl-option value="merged">Merged</sl-option>
-                            </sl-select>
-                          `
-                        : tracker.tracker_type === 'github'
-                          ? html`
-                              <sl-select
-                                label="Pull Request State"
-                                .value=${this.flow.trigger_config?.state || ''}
-                                @sl-change=${(e: any) => {
-                                  if (!this.flow.trigger_config)
-                                    this.flow.trigger_config = {};
-                                  const value = e.target.value;
-                                  if (value) {
-                                    this.flow.trigger_config.state = value;
-                                  } else {
-                                    delete this.flow.trigger_config.state;
-                                  }
-                                  this.requestUpdate();
-                                }}
-                                clearable
-                                help-text="Filter by pull request state"
-                              >
-                                <sl-option value="">Any State</sl-option>
-                                <sl-option value="open">Open</sl-option>
-                                <sl-option value="closed">Closed</sl-option>
-                              </sl-select>
-
-                              <sl-select
-                                label="Mergeable State"
-                                .value=${this.flow.trigger_config
-                                  ?.mergeable_state || ''}
-                                @sl-change=${(e: any) => {
-                                  if (!this.flow.trigger_config)
-                                    this.flow.trigger_config = {};
-                                  const value = e.target.value;
-                                  if (value) {
-                                    this.flow.trigger_config.mergeable_state =
-                                      value;
-                                  } else {
-                                    delete this.flow.trigger_config
-                                      .mergeable_state;
-                                  }
-                                  this.requestUpdate();
-                                }}
-                                clearable
-                                help-text="Filter by whether PR can be merged"
-                              >
-                                <sl-option value="">Any</sl-option>
-                                <sl-option value="clean"
-                                  >Clean (can merge)</sl-option
-                                >
-                                <sl-option value="unstable"
-                                  >Unstable (tests failing)</sl-option
-                                >
-                                <sl-option value="dirty"
-                                  >Dirty (merge conflict)</sl-option
-                                >
-                                <sl-option value="blocked">Blocked</sl-option>
-                              </sl-select>
-                            `
-                          : ''}
-                    `
-                  : ''}
-              </div>
-
-              <sl-alert variant="primary" open style="margin-top: 1rem;">
-                <sl-icon slot="icon" name="info-circle"></sl-icon>
-                <strong>How filters work:</strong> Leave empty to match all
-                events. When multiple filters are set, ALL conditions must match
-                for the flow to trigger.
-              </sl-alert>
-            `
-          : ''}
+                <sl-alert variant="primary" open style="margin-top: 1rem;">
+                  <sl-icon slot="icon" name="info-circle"></sl-icon>
+                  <strong>How filters work:</strong> Leave empty to match all
+                  events. When multiple filters are set, ALL conditions must
+                  match for the flow to trigger.
+                </sl-alert>
+              `
+            : ''
+        }
       </div>
     `;
   }

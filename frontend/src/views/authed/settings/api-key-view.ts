@@ -159,11 +159,7 @@ export class ApiKeyView extends LitElement {
     null;
   @state() private aiModels: AIModel[] = [];
   @state() private budgetTimeRange:
-    | 'day'
-    | 'week'
-    | 'month'
-    | 'year'
-    | 'total' = 'total';
+    'day' | 'week' | 'month' | 'year' | 'total' = 'total';
   @state() private loading = true;
   @state() private error: string | null = null;
   @state() private updatingGovernance = false;
@@ -457,10 +453,12 @@ export class ApiKeyView extends LitElement {
 
                 <div class="label">Status</div>
                 <div class="value">
-                  ${this.apiKey.expires_at &&
-                  new Date(this.apiKey.expires_at) < new Date()
-                    ? html`<sl-badge variant="danger">Expired</sl-badge>`
-                    : html`<sl-badge variant="success">Active</sl-badge>`}
+                  ${
+                    this.apiKey.expires_at &&
+                    new Date(this.apiKey.expires_at) < new Date()
+                      ? html`<sl-badge variant="danger">Expired</sl-badge>`
+                      : html`<sl-badge variant="success">Active</sl-badge>`
+                  }
                 </div>
 
                 <div class="label">Created</div>
@@ -477,28 +475,32 @@ export class ApiKeyView extends LitElement {
 
                 <div class="label">Expires</div>
                 <div class="value">
-                  ${this.apiKey.expires_at
-                    ? html`<sl-format-date
-                        date=${this.apiKey.expires_at}
-                        month="short"
-                        day="numeric"
-                        year="numeric"
-                      ></sl-format-date>`
-                    : html`<i>Never</i>`}
+                  ${
+                    this.apiKey.expires_at
+                      ? html`<sl-format-date
+                          date=${this.apiKey.expires_at}
+                          month="short"
+                          day="numeric"
+                          year="numeric"
+                        ></sl-format-date>`
+                      : html`<i>Never</i>`
+                  }
                 </div>
 
                 <div class="label">Last Used</div>
                 <div class="value">
-                  ${this.apiKey.last_used_at
-                    ? html`<sl-format-date
-                        date=${this.apiKey.last_used_at}
-                        month="short"
-                        day="numeric"
-                        year="numeric"
-                        hour="numeric"
-                        minute="numeric"
-                      ></sl-format-date>`
-                    : html`<i>Never</i>`}
+                  ${
+                    this.apiKey.last_used_at
+                      ? html`<sl-format-date
+                          date=${this.apiKey.last_used_at}
+                          month="short"
+                          day="numeric"
+                          year="numeric"
+                          hour="numeric"
+                          minute="numeric"
+                        ></sl-format-date>`
+                      : html`<i>Never</i>`
+                  }
                 </div>
                 <div class="label">Total Spend (${this.budgetTimeRange})</div>
                 <div class="value">
@@ -565,20 +567,22 @@ export class ApiKeyView extends LitElement {
                       >
                         ${model.name}
                       </sl-checkbox>
-                      ${modelUsage
-                        ? html`
-                            <div
-                              style="font-size: 0.85rem; color: var(--sl-color-neutral-600);"
-                            >
-                              <span
-                                style="color: var(--sl-color-primary-600); font-weight: 500;"
-                                >$${(modelUsage.estimated_cost || 0).toFixed(
-                                  4
-                                )}</span
+                      ${
+                        modelUsage
+                          ? html`
+                              <div
+                                style="font-size: 0.85rem; color: var(--sl-color-neutral-600);"
                               >
-                            </div>
-                          `
-                        : ''}
+                                <span
+                                  style="color: var(--sl-color-primary-600); font-weight: 500;"
+                                  >$${(modelUsage.estimated_cost || 0).toFixed(
+                                    4
+                                  )}</span
+                                >
+                              </div>
+                            `
+                          : ''
+                      }
                     </div>
                   `;
                 })}

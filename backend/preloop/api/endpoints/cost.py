@@ -56,4 +56,5 @@ def get_cost_summary(
         usage_by_model=summary.usage_by_model,
         usage_by_flow=summary.usage_by_flow,
         usage_by_session=summary.usage_by_session,
+        usage_by_tool=summary.usage_by_tool,
     )

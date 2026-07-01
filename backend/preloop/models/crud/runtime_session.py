@@ -25,6 +25,33 @@ from .base import CRUDBase
 
 _summary_columns_cache: dict[int, bool] = {}
 
+# Preloop-internal model-gateway calls (session summarization/optimization and
+# session-title generation) are logged against the runtime session they operate
+# on, tagged via ``ApiUsage.meta_data->>'purpose'``. Real agent traffic has no
+# ``purpose`` (NULL meta_data or a NULL ``purpose`` key). These internal calls
+# must be excluded from a session's aggregated token/cost/request metrics so the
+# session reflects only the agent's own traffic, not Preloop's overhead.
+INTERNAL_USAGE_PURPOSES = ("session_optimization", "session_title")
+
+
+def _exclude_internal_usage_condition():
+    """Return a NULL-safe filter that excludes Preloop-internal usage rows.
+
+    Rows are INCLUDED (treated as agent traffic) when ``meta_data`` is NULL or
+    when its ``purpose`` key is NULL. Only rows whose ``purpose`` is explicitly
+    one of :data:`INTERNAL_USAGE_PURPOSES` are EXCLUDED. The JSONB accessor
+    ``ApiUsage.meta_data["purpose"].astext`` matches the style used elsewhere in
+    the codebase (see ``crud/api_usage.py``).
+
+    Returns:
+        A SQLAlchemy boolean expression suitable for use in a WHERE/JOIN clause.
+    """
+    purpose_expr = ApiUsage.meta_data["purpose"].astext
+    return or_(
+        purpose_expr.is_(None),
+        purpose_expr.notin_(INTERNAL_USAGE_PURPOSES),
+    )
+
 
 def _gateway_usage_base_query(
     db: Session,
@@ -39,6 +66,8 @@ def _gateway_usage_base_query(
         ApiUsage.account_id == account_id,
         ApiUsage.action_type == "model_gateway",
         ApiUsage.runtime_session_id.isnot(None),
+        # Never surface a Preloop-internal call as the session's latest model.
+        _exclude_internal_usage_condition(),
     )
     if start_date is not None:
         query = query.filter(ApiUsage.timestamp >= start_date)
@@ -384,8 +413,21 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.runtime_principal_type == runtime_principal_type
             )
         if runtime_principal_id:
+            # A managed agent's principal id is the *base* id (e.g.
+            # ``custom_ABC``). Per-run sessions key off a derived id that appends
+            # the X-Preloop-Session-Id as ``<base>:<run-id>``. Match the base
+            # exactly OR any per-run variant so agent-scoped views surface every
+            # run, not just sessions whose principal id equals the base verbatim.
+            escaped = (
+                runtime_principal_id.replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_")
+            )
             session_query = session_query.filter(
-                self.model.runtime_principal_id == runtime_principal_id
+                or_(
+                    self.model.runtime_principal_id == runtime_principal_id,
+                    self.model.runtime_principal_id.like(f"{escaped}:%", escape="\\"),
+                )
             )
         if status == "active":
             session_query = session_query.filter(self.model.ended_at.is_(None))
@@ -783,6 +825,14 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 ApiUsage.runtime_session_id == RuntimeSession.id,
                 legacy_flow_execution_match,
             ),
+            # Exclude Preloop-internal usage (session optimization + title
+            # generation) from the summed metrics so a session's token/cost/
+            # request totals reflect only real agent traffic. This join is the
+            # shared chokepoint for both ``get_account_session_summary`` and
+            # ``list_account_sessions`` (via ``_account_sessions_query``), so a
+            # single filter here fixes both aggregations. NULL-safe: rows with
+            # NULL meta_data or NULL purpose are agent traffic and stay counted.
+            _exclude_internal_usage_condition(),
         ]
         if start_date is not None:
             conditions.append(ApiUsage.timestamp >= start_date)

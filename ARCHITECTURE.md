@@ -498,6 +498,9 @@ graph TD
 - `GET /api/v1/approval-requests` - List approval requests
 - `GET /approval/{id}/data` - Public endpoint for getting approval request details (token-based)
 - `POST /approval/{id}/decide` - Public endpoint for approval responses (token-based)
+- `POST /api/v1/agents/permission-check` - Lets an onboarded agent raise an approval for one of its **native/built-in** tool calls (not just MCP tools), authenticated with the agent's managed-runtime credential. It reuses `ApprovalService.create_and_notify` → `wait_for_approval` and blocks until decided, returning `{"decision":"allow"|"deny","reason","request_id"}` (deny is the safe default).
+
+**Managed-agent linkage:** `ApprovalRequest` carries optional `managed_agent_id`, `runtime_session_id`, and `managed_agent_name` fields, populated from the runtime token context so approval surfaces can show which agent is asking. The endpoint and these identity columns are part of the open-source core. The per-agent native-tool interception adapters (Claude Code, Codex CLI, Cursor, OpenClaw, Hermes) and any future central per-agent/global policy UI live in the Enterprise Edition / CLI.
 
 #### Access Rules System
 

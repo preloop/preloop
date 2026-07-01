@@ -257,6 +257,29 @@ def _synthetic_events(person: str, topic: Optional[str], n: int) -> List[dict]:
             f"{rng.randint(120, 900)} tokens of raw narrative context that the "
             f"agent must carry forward in its working memory for the rest of the run."
         )
+        # Obviously-unused, bulky fields that a research report never reads.
+        # These exist so the optimizer's unused-output detection has something
+        # to flag and the tool output filter has something to strip. All
+        # deterministic via the seeded ``rng``.
+        raw_record_html = (
+            "<div class='es-record'><table>"
+            + "".join(
+                f"<tr><td class='k'>field_{rng.randint(0, 999)}</td>"
+                f"<td class='v'>{rng.choice(_OUTLETS)}-"
+                f"{rng.randint(10000, 99999)}</td></tr>"
+                for _ in range(12)
+            )
+            + "</table><pre>"
+            + " ".join(rng.choice(_ORGS).replace(" ", "_") for _ in range(40))
+            + "</pre></div>"
+        )
+        embedding = [round(rng.uniform(-1.0, 1.0), 6) for _ in range(64)]
+        internal_scores = {
+            "shard_affinity": round(rng.uniform(0.0, 1.0), 4),
+            "rerank_delta": round(rng.uniform(-0.5, 0.5), 4),
+            "index_generation": rng.randint(1, 50),
+            "retrieval_cost_ms": rng.randint(2, 180),
+        }
         events.append(
             {
                 "date": evt_date.isoformat(),
@@ -266,6 +289,9 @@ def _synthetic_events(person: str, topic: Optional[str], n: int) -> List[dict]:
                 "source": f"es://events/{seed % 100000}/{i}",
                 "confidence": round(rng.uniform(0.55, 0.97), 2),
                 "details": details,
+                "raw_record_html": raw_record_html,
+                "embedding": embedding,
+                "internal_scores": internal_scores,
             }
         )
     events.sort(key=lambda e: e["date"], reverse=True)

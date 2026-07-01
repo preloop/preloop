@@ -214,17 +214,19 @@ export class PreloopInviteDialog extends LitElement {
             )}
           </sl-select>
 
-          ${this.showPermissionWarning
-            ? html`
-                <sl-alert variant="warning" open class="warning-alert">
-                  <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
-                  <strong>Insufficient Permissions Warning:</strong><br />
-                  The selected roles do not have sufficient permissions to
-                  create or execute flows, which are required for onboarding or
-                  adding agents.
-                </sl-alert>
-              `
-            : ''}
+          ${
+            this.showPermissionWarning
+              ? html`
+                  <sl-alert variant="warning" open class="warning-alert">
+                    <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+                    <strong>Insufficient Permissions Warning:</strong><br />
+                    The selected roles do not have sufficient permissions to
+                    create or execute flows, which are required for onboarding
+                    or adding agents.
+                  </sl-alert>
+                `
+              : ''
+          }
 
           <sl-select
             label="Assign Teams (Optional)"
@@ -235,9 +237,9 @@ export class PreloopInviteDialog extends LitElement {
             @sl-change=${(e: any) => {
               this.selectedTeamIds = e.target.value;
             }}
-            ?disabled=${this.isSending ||
-            this.isLoading ||
-            this.teams.length === 0}
+            ?disabled=${
+              this.isSending || this.isLoading || this.teams.length === 0
+            }
           >
             ${this.teams.map(
               (team) => html`
@@ -246,22 +248,26 @@ export class PreloopInviteDialog extends LitElement {
             )}
           </sl-select>
 
-          ${this.error
-            ? html`
-                <sl-alert variant="danger" open class="error-alert">
-                  <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
-                  ${this.error}
-                </sl-alert>
-              `
-            : ''}
-          ${this.successMessage
-            ? html`
-                <sl-alert variant="success" open class="success-alert">
-                  <sl-icon slot="icon" name="check-circle"></sl-icon>
-                  ${this.successMessage}
-                </sl-alert>
-              `
-            : ''}
+          ${
+            this.error
+              ? html`
+                  <sl-alert variant="danger" open class="error-alert">
+                    <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+                    ${this.error}
+                  </sl-alert>
+                `
+              : ''
+          }
+          ${
+            this.successMessage
+              ? html`
+                  <sl-alert variant="success" open class="success-alert">
+                    <sl-icon slot="icon" name="check-circle"></sl-icon>
+                    ${this.successMessage}
+                  </sl-alert>
+                `
+              : ''
+          }
         </div>
 
         <sl-button

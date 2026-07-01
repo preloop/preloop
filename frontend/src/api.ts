@@ -41,6 +41,9 @@ import type {
   RuntimeSessionOptimizationActionSpec,
   RuntimeSessionOptimizationAppliedAction,
   RuntimeSessionOptimizationActionListResponse,
+  ToolOutputFilter,
+  ToolOutputFilterListResponse,
+  ToolOutputFilterCreateRequest,
   AccountGatewayUsageSummaryResponse,
   FlowGatewayUsageSummaryResponse,
   AIModelGatewayUsageSummaryResponse,
@@ -50,6 +53,7 @@ import type {
   AIModel,
   DashboardTelemetryResponse,
   CostAnalyticsSummaryResponse,
+  ToolUsageStatsResponse,
   ModelPriceOverride,
   ModelPriceOverrideCreate,
   ModelPriceOverrideUpdate,
@@ -463,6 +467,18 @@ export async function getCostAnalyticsSummary(
   );
   if (!response.ok) {
     throw new Error('Failed to fetch cost analytics summary');
+  }
+  return response.json();
+}
+
+export async function getToolUsageStats(
+  params: GatewayUsageSummaryParams = {}
+): Promise<ToolUsageStatsResponse> {
+  const response = await fetchWithAuth(
+    `/api/v1/tools/stats${buildGatewayUsageQuery(params)}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch tool usage stats');
   }
   return response.json();
 }
@@ -1037,6 +1053,7 @@ export async function optimizeRuntimeSession(
     sourceKinds?: string[];
     fromIndex?: number;
     toIndex?: number;
+    cacheOnly?: boolean;
   } = {}
 ): Promise<RuntimeSessionOptimizationResponse> {
   const response = await fetchWithAuth(
@@ -1051,6 +1068,7 @@ export async function optimizeRuntimeSession(
         source_kinds: options.sourceKinds || [],
         from_index: options.fromIndex ?? null,
         to_index: options.toIndex ?? null,
+        cache_only: Boolean(options.cacheOnly),
       }),
     }
   );
@@ -1104,6 +1122,61 @@ export async function listRuntimeSessionOptimizationActions(
     throw new Error('Failed to load applied optimization actions');
   }
   return response.json();
+}
+
+/**
+ * List the account's tool output filters. Each filter drops a set of fields
+ * from a given tool's output (optionally scoped to a single managed agent) so
+ * that bloated tool responses stop entering the model's context window.
+ * GET /api/v1/billing/cost/output-filters → { items: ToolOutputFilter[] }
+ */
+export async function listToolOutputFilters(): Promise<ToolOutputFilter[]> {
+  const response = await fetchWithAuth('/api/v1/billing/cost/output-filters');
+  if (!response.ok) {
+    throw new Error('Failed to load tool output filters');
+  }
+  const data: ToolOutputFilterListResponse = await response.json();
+  return Array.isArray(data?.items) ? data.items : [];
+}
+
+/**
+ * Create a tool output filter that drops the given fields from a tool's output.
+ * POST /api/v1/billing/cost/output-filters
+ */
+export async function createToolOutputFilter(
+  payload: ToolOutputFilterCreateRequest
+): Promise<ToolOutputFilter> {
+  const response = await fetchWithAuth('/api/v1/billing/cost/output-filters', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      server_name: payload.server_name ?? null,
+      tool_name: payload.tool_name,
+      dropped_fields: payload.dropped_fields,
+      managed_agent_id: payload.managed_agent_id ?? null,
+    }),
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to create tool output filter')
+    );
+  }
+  return response.json();
+}
+
+/**
+ * Delete a tool output filter by id.
+ * DELETE /api/v1/billing/cost/output-filters/{id}
+ */
+export async function deleteToolOutputFilter(id: string): Promise<void> {
+  const response = await fetchWithAuth(
+    `/api/v1/billing/cost/output-filters/${id}`,
+    { method: 'DELETE' }
+  );
+  if (!response.ok) {
+    throw new Error('Failed to delete tool output filter');
+  }
 }
 
 export async function updateAccountRuntimeSession(
@@ -3318,6 +3391,8 @@ export interface BudgetPolicy {
   soft_limit_usd: number | null;
   notify_on_soft: boolean;
   notify_on_hard: boolean;
+  notification_user_ids: string[] | null;
+  notification_team_ids: string[] | null;
   notification_emails: string[] | null;
 }
 
@@ -3330,6 +3405,8 @@ export interface BudgetPolicyCreate {
   soft_limit_usd: number | null;
   notify_on_soft: boolean;
   notify_on_hard: boolean;
+  notification_user_ids: string[] | null;
+  notification_team_ids: string[] | null;
   notification_emails: string[] | null;
 }
 
