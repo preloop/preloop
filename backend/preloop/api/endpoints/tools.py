@@ -5,7 +5,7 @@ preloop/services/initialize_mcp.py to ensure consistency between REST API and MC
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
@@ -465,8 +465,8 @@ def get_tool_usage_stats(
 ) -> ToolUsageStatsResponse:
     """Return account-wide tool invocation counts and schema-injection cost."""
     service = ToolUsageStatsService(db)
-    end = end_date or datetime.now().astimezone()
-    start = start_date or datetime.fromtimestamp(0, tz=end.tzinfo)
+    end = end_date or datetime.now(timezone.utc)
+    start = start_date or (end - timedelta(days=30))
     tools = service.get_account_usage_by_tool(
         account_id=str(account.id),
         start_date=start,

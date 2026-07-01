@@ -174,6 +174,7 @@ def test_gateway_request_recording_survives_activity_touch_timeout():
         flow_id=None,
         flow_execution_id=None,
         upstream_request_id="upstream-123",
+        estimated_cost=0.01,
     )
     service = OpenAIGatewayService(
         db=MagicMock(),

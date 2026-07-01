@@ -1070,7 +1070,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         )
         if failed_only:
             query = query.filter(self.model.status_code >= 400)
-        if event_ids:
+        if event_ids is not None:
             query = query.filter(self.model.id.in_(event_ids))
         return (
             query.order_by(self.model.timestamp.asc(), self.model.id.asc())
@@ -1107,7 +1107,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         )
         if failed_only:
             query = query.filter(self.model.status_code >= 400)
-        if event_ids:
+        if event_ids is not None:
             query = query.filter(self.model.id.in_(event_ids))
         return int(query.scalar() or 0)
 

@@ -8,7 +8,6 @@ decision (or timeout) and returns a simple allow/deny.
 """
 
 import logging
-import os
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
@@ -20,6 +19,7 @@ from preloop.api.auth.jwt import (
     _managed_agent_for_api_key,
     _runtime_session_id_from_api_key,
 )
+from preloop.config import settings
 from preloop.models.crud import crud_api_key, crud_runtime_session
 from preloop.models.db.session import get_db_session
 from preloop.services.agent_permission_service import request_agent_permission
@@ -27,6 +27,17 @@ from preloop.services.agent_permission_service import request_agent_permission
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _permission_check_base_url() -> str:
+    """Resolve the public Preloop base URL used in approval notifications."""
+    base_url = (settings.preloop_url or "").strip().rstrip("/")
+    if not base_url:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="PRELOOP_URL is not configured",
+        )
+    return base_url
 
 
 class AgentPermissionCheckRequest(BaseModel):
@@ -108,8 +119,12 @@ async def agent_permission_check(
         or "Agent"
     )
 
+    tool_input = dict(payload.tool_input or {})
+    if payload.cwd:
+        tool_input["cwd"] = payload.cwd
+
     decision, reason, request_id = await request_agent_permission(
-        base_url=os.getenv("PRELOOP_URL", "http://localhost:8000"),
+        base_url=_permission_check_base_url(),
         account_id=str(api_key.account_id),
         user_id=user.id,
         managed_agent_id=managed_agent.id,
@@ -119,7 +134,7 @@ async def agent_permission_check(
         managed_agent_name=agent_name,
         source=payload.source,
         tool_name=payload.tool_name,
-        tool_input=payload.tool_input,
+        tool_input=tool_input,
         agent_reasoning=payload.agent_reasoning,
         client_decision=payload.client_decision,
     )

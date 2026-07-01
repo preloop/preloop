@@ -13,7 +13,7 @@ from preloop.models.models import User
 from preloop.services.activity_tracker import handle_activity
 from preloop.services.session_manager import session_manager
 from preloop.services.websocket_manager import manager
-from preloop.sync.services.event_bus import EventBus
+from preloop.sync.services.event_bus import EventBus, get_nats_client
 from preloop.utils import get_client_ip
 
 router = APIRouter()
@@ -497,15 +497,15 @@ async def unified_websocket(websocket: WebSocket):
                     if execution_id and command:
                         # Forward command to NATS for orchestrator to handle
                         try:
-                            event_bus = EventBus()
-                            if event_bus.nc and event_bus.nc.is_connected:
+                            nc = await get_nats_client()
+                            if nc and nc.is_connected:
                                 command_subject = f"flow-commands.{execution_id}"
                                 command_data = {
                                     "command": command,
                                     "payload": payload or {},
                                     "message": data.get("message"),  # For send_message
                                 }
-                                await event_bus.nc.publish(
+                                await nc.publish(
                                     command_subject, json.dumps(command_data).encode()
                                 )
                                 logger.info(f"Published command to {command_subject}")

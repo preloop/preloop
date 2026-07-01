@@ -155,6 +155,41 @@ def test_count_session_request_rows_honors_failed_only_and_event_ids(
     assert listed[0].id == failure.id
 
 
+def test_empty_event_ids_returns_no_rows(db_session, create_account) -> None:
+    """An explicit empty event_ids filter should match nothing, not everything."""
+    account = create_account()
+    runtime_session = _create_runtime_session(db_session, account.id)
+    db_session.commit()
+
+    _log_gateway_row(
+        db_session,
+        account_id=account.id,
+        runtime_session_id=runtime_session.id,
+        status_code=200,
+        total_tokens=100,
+        estimated_cost=0.01,
+    )
+
+    assert (
+        crud_api_usage.count_session_request_rows(
+            db_session,
+            account_id=account.id,
+            runtime_session_id=runtime_session.id,
+            event_ids=[],
+        )
+        == 0
+    )
+    assert (
+        crud_api_usage.list_session_request_rows(
+            db_session,
+            account_id=account.id,
+            runtime_session_id=runtime_session.id,
+            event_ids=[],
+        )
+        == []
+    )
+
+
 def test_get_runtime_principal_gateway_averages_excludes_session_and_zeros(
     db_session, create_account
 ) -> None:

@@ -1650,14 +1650,22 @@ async def update_account_managed_agent(
         owner_user_id = owner.id
 
     lifecycle_state = None
-    if update.lifecycle_action == "suspend":
-        lifecycle_state = "suspended"
-    elif update.lifecycle_action == "resume":
-        lifecycle_state = "active"
-    elif update.lifecycle_action == "decommission":
-        lifecycle_state = "decommissioned"
-    elif update.lifecycle_action == "reenroll":
-        lifecycle_state = "active"
+    if (
+        "lifecycle_action" in update.model_fields_set
+        and update.lifecycle_action is not None
+    ):
+        lifecycle_map = {
+            "suspend": "suspended",
+            "resume": "active",
+            "decommission": "decommissioned",
+            "reenroll": "active",
+        }
+        lifecycle_state = lifecycle_map.get(update.lifecycle_action)
+        if lifecycle_state is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invalid lifecycle_action",
+            )
 
     bound_runtime_session_id = (
         str(agent.runtime_session_id) if agent.runtime_session_id is not None else None

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from sqlalchemy.orm import Session
@@ -131,7 +131,7 @@ class ToolUsageStatsService:
     ) -> list[GatewayUsageByTool]:
         """Return merged invocation counts and schema-injection cost per tool."""
         end = end_date or datetime.now(timezone.utc)
-        start = start_date or datetime.fromtimestamp(0, tz=timezone.utc)
+        start = start_date or (end - timedelta(days=30))
 
         invocation_rows = crud_runtime_session_activity.get_tool_summary_for_account(
             self.db,
