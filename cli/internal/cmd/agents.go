@@ -3430,6 +3430,18 @@ func ensureLegacyCodexMCPServer(agent AgentConfig, doc map[string]interface{}, b
 		entry["bearer_token_env_var"] = "PRELOOP_TOKEN"
 	}
 	servers["preloop"] = entry
+
+	// Codex ignores the [mcp] table, so drop any empty [mcp.servers]/[mcp]
+	// tables left behind by earlier onboarding runs. This keeps config.toml to
+	// a single [mcp_servers.preloop] block and avoids orphaned [mcp] tables.
+	if mcp, ok := asObjectMap(doc["mcp"]); ok {
+		if inner, ok := asObjectMap(mcp["servers"]); ok && len(inner) == 0 {
+			delete(mcp, "servers")
+		}
+		if len(mcp) == 0 {
+			delete(doc, "mcp")
+		}
+	}
 }
 
 func ensureDiscoveredRemoteServers(client *api.Client, agent AgentConfig, publicURL string) (*remoteServerSyncResult, error) {
@@ -3876,16 +3888,23 @@ func (a genericManagedMCPAdapter) Key() string {
 }
 
 func (a genericManagedMCPAdapter) EnsureServerContainer(doc map[string]interface{}) (map[string]interface{}, error) {
+	if strings.EqualFold(strings.TrimSpace(a.agent.Name), "codex cli") {
+		// Codex reads MCP servers from the top-level [mcp_servers] table.
+		// It ignores an [mcp] table entirely (verified on Codex 0.142.5), so
+		// target/create mcp_servers and never write the nested [mcp.servers]
+		// shape.
+		if servers, ok := asObjectMap(doc["mcp_servers"]); ok {
+			return servers, nil
+		}
+		created := make(map[string]interface{})
+		doc["mcp_servers"] = created
+		return created, nil
+	}
 	if servers, ok := asObjectMap(doc["mcpServers"]); ok {
 		return servers, nil
 	}
 	if servers, ok := asObjectMap(doc["servers"]); ok {
 		return servers, nil
-	}
-	if strings.EqualFold(strings.TrimSpace(a.agent.Name), "codex cli") {
-		if servers, ok := asObjectMap(doc["mcp_servers"]); ok {
-			return servers, nil
-		}
 	}
 	if mcp, ok := asObjectMap(doc["mcp"]); ok {
 		if servers, ok := asObjectMap(mcp["servers"]); ok {
@@ -3904,10 +3923,6 @@ func (a genericManagedMCPAdapter) EnsureServerContainer(doc map[string]interface
 		created := make(map[string]interface{})
 		doc["servers"] = created
 		return created, nil
-	case "codex cli":
-		created := make(map[string]interface{})
-		doc["mcp"] = map[string]interface{}{"servers": created}
-		return created, nil
 	case "opencode":
 		created := make(map[string]interface{})
 		doc["mcp"] = created
@@ -3923,14 +3938,18 @@ func (a genericManagedMCPAdapter) BuildManagedServer(baseURL, token string) map[
 	url := strings.TrimRight(baseURL, "/") + "/mcp/v1"
 	switch strings.ToLower(strings.TrimSpace(a.agent.Name)) {
 	case "codex cli":
-		return map[string]interface{}{
-			"url":       url,
-			"transport": "http",
-			"auth": map[string]interface{}{
-				"type":  "bearer",
-				"token": token,
-			},
+		// Codex reads the [mcp_servers.preloop] table with `url` +
+		// [mcp_servers.preloop.http_headers]. This mirrors
+		// ensureLegacyCodexMCPServer, the authoritative writer for this entry.
+		entry := map[string]interface{}{"url": url}
+		if strings.TrimSpace(token) != "" {
+			entry["http_headers"] = map[string]interface{}{
+				"Authorization": "Bearer " + token,
+			}
+		} else {
+			entry["bearer_token_env_var"] = "PRELOOP_TOKEN"
 		}
+		return entry
 	case "gemini cli":
 		return map[string]interface{}{
 			"url":  url,

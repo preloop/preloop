@@ -1,7 +1,8 @@
 """CRUD operations for ApiUsage model."""
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+import uuid
+from typing import Any, Dict, List, Optional, Union
 from sqlalchemy import String, and_, case, cast, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -157,6 +158,15 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                     subject_scopes.append(("api_key", str(api_key_id)))
                 if managed_agent_id:
                     subject_scopes.append(("managed_agent", str(managed_agent_id)))
+                    # A per-user budget counts spend from every agent the user
+                    # owns, so record this spend against the owning user too.
+                    owner_user_id = (
+                        db.query(ManagedAgent.owner_user_id)
+                        .filter(ManagedAgent.id == managed_agent_id)
+                        .scalar()
+                    )
+                    if owner_user_id:
+                        subject_scopes.append(("user", str(owner_user_id)))
                 elif auth_subject_type == "managed_agents" and runtime_principal_id:
                     subject_scopes.append(("managed_agents", str(runtime_principal_id)))
                 elif auth_subject_type == "flows" and flow_id:
@@ -183,8 +193,8 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         self,
         db: Session,
         *,
-        account_id: Any,
-        runtime_session_id: Any,
+        account_id: Union[uuid.UUID, str],
+        runtime_session_id: Union[uuid.UUID, str],
         request_fingerprint: str,
     ) -> Dict[str, Any]:
         """Return prior attempts for the same logical gateway request."""
@@ -700,7 +710,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             .limit(limit)
             .all()
         )
-        return [
+        result: list[dict[str, Any]] = [
             {
                 "ai_model_id": str(row.ai_model_id) if row.ai_model_id else None,
                 "runtime_session_id": (
@@ -732,6 +742,66 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             }
             for row in rows
         ]
+        self._resolve_missing_session_agents(db, account_id=account_id, rows=result)
+        return result
+
+    @staticmethod
+    def _resolve_missing_session_agents(
+        db: Session,
+        *,
+        account_id: str,
+        rows: list[dict[str, Any]],
+    ) -> None:
+        """Backfill agent_id/agent_name for per-run sessions in place.
+
+        The SQL join links a managed agent by its single bound
+        ``runtime_session_id``, but an agent has many per-run sessions whose
+        ``session_source_id`` is the agent's base source id plus a run suffix
+        (``<base>:<id>`` or ``<base>-<timestamp|uuid>``). This matches each
+        still-unresolved row to the managed agent whose base source id the
+        session's source id starts with (longest match wins), so grouping-by-
+        agent surfaces every session under its agent rather than under "Other".
+
+        Args:
+            db: Database session.
+            account_id: Owning account id.
+            rows: Session usage rows to enrich in place.
+        """
+        pending = [
+            row
+            for row in rows
+            if not row.get("agent_id") and row.get("session_source_id")
+        ]
+        if not pending:
+            return
+        agents = (
+            db.query(
+                ManagedAgent.id,
+                ManagedAgent.display_name,
+                ManagedAgent.session_source_id,
+            )
+            .filter(
+                ManagedAgent.account_id == account_id,
+                ManagedAgent.session_source_id.isnot(None),
+            )
+            .all()
+        )
+        # Longest base source id first so a more specific agent wins.
+        agents = sorted(
+            agents, key=lambda a: len(a.session_source_id or ""), reverse=True
+        )
+        for row in pending:
+            source_id = row["session_source_id"]
+            for agent in agents:
+                base = agent.session_source_id
+                if (
+                    source_id == base
+                    or source_id.startswith(f"{base}:")
+                    or source_id.startswith(f"{base}-")
+                ):
+                    row["agent_id"] = str(agent.id)
+                    row["agent_name"] = agent.display_name
+                    break
 
     def get_gateway_usage_timeseries(
         self,
@@ -888,28 +958,47 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         model_alias: Optional[str] = None,
         purpose: Optional[str] = None,
     ) -> float:
-        query = db.query(func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0)).filter(
-            ApiUsage.action_type == "model_gateway",
-            ApiUsage.account_id == account_id,
-            ApiUsage.timestamp >= start,
+        """Sum estimated gateway spend for an account since a timestamp.
+
+        Args:
+            db: Database session.
+            account_id: Owning account id.
+            start: Inclusive lower bound on ``timestamp``.
+            flow_id: Optional flow id filter.
+            api_key_id: Optional API key id filter.
+            runtime_principal_id: Optional runtime principal filter.
+            model_alias: Optional gateway model alias filter.
+            purpose: Optional ``meta_data.purpose`` filter.
+
+        Returns:
+            Total estimated gateway spend in USD (``0.0`` when none).
+        """
+        query = db.query(
+            func.coalesce(func.sum(self.model.estimated_cost), 0.0)
+        ).filter(
+            self.model.action_type == "model_gateway",
+            self.model.account_id == account_id,
+            self.model.timestamp >= start,
         )
         if flow_id:
-            query = query.filter(ApiUsage.flow_id == flow_id)
+            query = query.filter(self.model.flow_id == flow_id)
         if api_key_id:
-            query = query.filter(ApiUsage.api_key_id == api_key_id)
+            query = query.filter(self.model.api_key_id == api_key_id)
         if runtime_principal_id:
-            query = query.filter(ApiUsage.runtime_principal_id == runtime_principal_id)
+            query = query.filter(
+                self.model.runtime_principal_id == runtime_principal_id
+            )
         if model_alias:
-            query = query.filter(ApiUsage.model_alias == model_alias)
+            query = query.filter(self.model.model_alias == model_alias)
         if purpose:
-            query = query.filter(ApiUsage.meta_data["purpose"].astext == purpose)
+            query = query.filter(self.model.meta_data["purpose"].astext == purpose)
         return float(query.scalar() or 0.0)
 
     def list_gateway_rows_in_window(
         self,
         db: Session,
         *,
-        account_id: Any,
+        account_id: Union[uuid.UUID, str],
         start: datetime,
         end: datetime,
         limit: int = 5000,
@@ -932,14 +1021,14 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             Matching gateway usage rows ordered newest-first.
         """
         return (
-            db.query(ApiUsage)
+            db.query(self.model)
             .filter(
-                ApiUsage.action_type == "model_gateway",
-                ApiUsage.account_id == account_id,
-                ApiUsage.timestamp >= start,
-                ApiUsage.timestamp < end,
+                self.model.action_type == "model_gateway",
+                self.model.account_id == account_id,
+                self.model.timestamp >= start,
+                self.model.timestamp < end,
             )
-            .order_by(ApiUsage.timestamp.desc())
+            .order_by(self.model.timestamp.desc())
             .limit(limit)
             .all()
         )
@@ -948,8 +1037,8 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         self,
         db: Session,
         *,
-        account_id: Any,
-        runtime_session_id: Any,
+        account_id: Union[uuid.UUID, str],
+        runtime_session_id: Union[uuid.UUID, str],
         limit: int = 100,
         offset: int = 0,
         failed_only: bool = False,
@@ -974,17 +1063,17 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         Returns:
             Matching gateway usage rows ordered oldest-first.
         """
-        query = db.query(ApiUsage).filter(
-            ApiUsage.action_type == "model_gateway",
-            ApiUsage.account_id == account_id,
-            ApiUsage.runtime_session_id == runtime_session_id,
+        query = db.query(self.model).filter(
+            self.model.action_type == "model_gateway",
+            self.model.account_id == account_id,
+            self.model.runtime_session_id == runtime_session_id,
         )
         if failed_only:
-            query = query.filter(ApiUsage.status_code >= 400)
+            query = query.filter(self.model.status_code >= 400)
         if event_ids:
-            query = query.filter(ApiUsage.id.in_(event_ids))
+            query = query.filter(self.model.id.in_(event_ids))
         return (
-            query.order_by(ApiUsage.timestamp.asc(), ApiUsage.id.asc())
+            query.order_by(self.model.timestamp.asc(), self.model.id.asc())
             .limit(limit)
             .offset(offset)
             .all()
@@ -994,8 +1083,8 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         self,
         db: Session,
         *,
-        account_id: Any,
-        runtime_session_id: Any,
+        account_id: Union[uuid.UUID, str],
+        runtime_session_id: Union[uuid.UUID, str],
         failed_only: bool = False,
         event_ids: Optional[List[str]] = None,
     ) -> int:
@@ -1011,15 +1100,15 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         Returns:
             Number of matching gateway usage rows.
         """
-        query = db.query(func.count(ApiUsage.id)).filter(
-            ApiUsage.action_type == "model_gateway",
-            ApiUsage.account_id == account_id,
-            ApiUsage.runtime_session_id == runtime_session_id,
+        query = db.query(func.count(self.model.id)).filter(
+            self.model.action_type == "model_gateway",
+            self.model.account_id == account_id,
+            self.model.runtime_session_id == runtime_session_id,
         )
         if failed_only:
-            query = query.filter(ApiUsage.status_code >= 400)
+            query = query.filter(self.model.status_code >= 400)
         if event_ids:
-            query = query.filter(ApiUsage.id.in_(event_ids))
+            query = query.filter(self.model.id.in_(event_ids))
         return int(query.scalar() or 0)
 
     def get_runtime_principal_gateway_averages(

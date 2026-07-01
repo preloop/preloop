@@ -10,21 +10,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 from fastapi.testclient import TestClient
 from preloop.api.app import create_app
 
-
-def _collect_route_paths(routes, *, prefix: str = "") -> set[str]:
-    """Collect HTTP route paths, including nested mounts and included routers."""
-    paths: set[str] = set()
-    for route in routes:
-        route_path = getattr(route, "path", None)
-        if route_path is not None:
-            paths.add(f"{prefix}{route_path}".replace("//", "/"))
-        nested = getattr(route, "routes", None)
-        if nested:
-            nested_prefix = prefix
-            if route_path is not None:
-                nested_prefix = f"{prefix}{route_path}".rstrip("/")
-            paths.update(_collect_route_paths(nested, prefix=nested_prefix))
-    return paths
+from tests.route_paths import collect_route_paths
 
 
 @pytest.fixture
@@ -225,7 +211,7 @@ def test_create_app_configuration():
 def test_gateway_role_mounts_only_gateway_surface():
     """Gateway role should not expose the core control-plane API routes."""
     app = create_app()
-    route_paths = _collect_route_paths(app.routes)
+    route_paths = collect_route_paths(app.routes)
 
     assert "/api/v1/health" in route_paths
     assert "/api/v1/version" in route_paths
@@ -238,7 +224,7 @@ def test_gateway_role_mounts_only_gateway_surface():
 def test_api_role_excludes_model_gateway_surface():
     """Core API role should not serve long-lived model gateway endpoints."""
     app = create_app()
-    route_paths = _collect_route_paths(app.routes)
+    route_paths = collect_route_paths(app.routes)
 
     assert "/api/v1/health" in route_paths
     assert "/api/v1/trackers" in route_paths

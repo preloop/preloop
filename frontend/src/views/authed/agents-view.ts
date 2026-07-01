@@ -2420,8 +2420,12 @@ export class AgentsView extends LitElement {
         </sl-badge>
         ${
           agent.owner_username
-            ? html`<sl-badge variant="primary" pill
-                >Owner: ${agent.owner_username}</sl-badge
+            ? html`<sl-badge variant="neutral" pill title="Owner">
+                <sl-icon
+                  name="person"
+                  style="margin-right: 3px; opacity: 0.7;"
+                ></sl-icon
+                >${agent.owner_username}</sl-badge
               >`
             : null
         }

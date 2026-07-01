@@ -1246,6 +1246,7 @@ async def create_account_managed_agent(
         account_id=account.id,
         display_name=payload.display_name,
         description=payload.description,
+        owner_user_id=current_user.id,
         commit=True,
     )
     summary = crud_managed_agent.get_summary_for_account(

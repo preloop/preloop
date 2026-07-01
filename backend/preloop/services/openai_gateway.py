@@ -415,7 +415,11 @@ class OpenAIGatewayService:
                 }
             )
 
-        return {"object": "list", "data": data}
+        # `data` is the OpenAI-standard field. Codex CLI's model-manager
+        # deserializes this endpoint into a struct with a top-level `models`
+        # array and errors ("missing field `models`") without it, so we mirror
+        # the list under `models` too. Additive — standard clients read `data`.
+        return {"object": "list", "data": data, "models": data}
 
     def create_chat_completion(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Handle OpenAI-compatible chat completions."""
@@ -3303,6 +3307,31 @@ class OpenAIGatewayService:
                     "call_id": call_id,
                     "name": function_payload.get("name", ""),
                     "arguments": function_payload.get("arguments", ""),
+                }
+            )
+        if output_items:
+            return output_items
+
+        # No chat-completions `choices` were present. Some upstreams (notably
+        # the Codex ChatGPT-OAuth backend) speak the Responses API natively and
+        # return their reply under `output`/`output_text` instead. Pass those
+        # `output` items through so clients that read the `output` array (Codex
+        # reads `output`, NOT `output_text`) actually see the assistant reply.
+        upstream_output = response_dict.get("output")
+        if isinstance(upstream_output, list) and upstream_output:
+            return upstream_output
+
+        # Last resort: synthesize a single assistant message from `output_text`
+        # so the `output` array is never empty when there IS assistant text.
+        fallback_text = str(response_dict.get("output_text") or "").strip()
+        if fallback_text:
+            output_items.append(
+                {
+                    "id": response_dict.get("id", f"msg_{int(time.time())}"),
+                    "type": "message",
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": fallback_text}],
                 }
             )
         return output_items

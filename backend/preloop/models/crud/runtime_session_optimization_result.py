@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+import uuid
+from typing import Any, Optional, Union
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -20,8 +21,8 @@ class CRUDRuntimeSessionOptimizationResult(CRUDBase[RuntimeSessionOptimizationRe
         self,
         db: Session,
         *,
-        account_id: Any,
-        runtime_session_id: Any,
+        account_id: Union[uuid.UUID, str],
+        runtime_session_id: Union[uuid.UUID, str],
         scope_hash: str,
     ) -> Optional[RuntimeSessionOptimizationResult]:
         """Return the cached result for one session/scope pair, if any.
@@ -49,8 +50,8 @@ class CRUDRuntimeSessionOptimizationResult(CRUDBase[RuntimeSessionOptimizationRe
         self,
         db: Session,
         *,
-        account_id: Any,
-        runtime_session_ids: list[Any],
+        account_id: Union[uuid.UUID, str],
+        runtime_session_ids: list[Union[uuid.UUID, str]],
     ) -> list[RuntimeSessionOptimizationResult]:
         """Return cached results for a set of sessions, newest-first.
 
@@ -80,8 +81,8 @@ class CRUDRuntimeSessionOptimizationResult(CRUDBase[RuntimeSessionOptimizationRe
         self,
         db: Session,
         *,
-        account_id: Any,
-        runtime_session_id: Any,
+        account_id: Union[uuid.UUID, str],
+        runtime_session_id: Union[uuid.UUID, str],
         scope_hash: str,
         model_id: Optional[str],
         response: dict[str, Any],

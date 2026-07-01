@@ -127,8 +127,28 @@ async def request_agent_permission(
 ) -> Tuple[str, str, Optional[str]]:
     """Decide whether an agent's native tool call may proceed.
 
-    Returns ``(decision, reason, request_id)`` where ``decision`` is
-    ``"allow"`` or ``"deny"``.
+    When ``client_decision`` is ``allow`` or ``deny``, the client's own policy
+    is honored immediately. Otherwise an approval request is created, human
+    approvers are notified, and this function polls until decided or timed out.
+
+    Args:
+        base_url: Preloop base URL for approval links and notifications.
+        account_id: Owning account id.
+        user_id: User associated with the managed agent credential.
+        managed_agent_id: Managed agent raising the request, if known.
+        runtime_session_id: Active runtime session id, if known.
+        managed_agent_name: Display name shown to approvers.
+        source: Originating agent adapter (e.g. ``claude_code``).
+        tool_name: Native tool name (e.g. ``Bash``).
+        tool_input: Tool arguments persisted as approval ``tool_args``.
+        agent_reasoning: Optional explanation shown to the approver.
+        client_decision: Client policy outcome: ``allow``, ``deny``, or absent/
+            ``ask`` to escalate to human approval.
+
+    Returns:
+        Tuple of ``(decision, reason, request_id)`` where ``decision`` is
+        ``"allow"`` or ``"deny"`` and ``request_id`` is set when an approval
+        row was created.
     """
     decision = (client_decision or "").strip().lower()
     if decision == "allow":

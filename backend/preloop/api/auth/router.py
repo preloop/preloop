@@ -1040,6 +1040,7 @@ async def create_runtime_session_token(
         session_reference=session_data.session_reference,
         managed_mcp_servers=allowed_mcp_servers,
         last_seen_at=now,
+        owner_user_id=current_user.id,
     )
     db.commit()
     db.refresh(runtime_session)

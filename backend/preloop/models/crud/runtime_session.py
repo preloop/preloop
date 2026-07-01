@@ -786,6 +786,8 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
         """Return whether the runtime session summary migration has been applied."""
         bind = db.get_bind()
         if bind is None:
+            bind = db.bind
+        if bind is None:
             return False
         cache_key = id(bind)
         if cache_key in _summary_columns_cache:

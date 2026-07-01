@@ -1,7 +1,6 @@
-"""Tests for the WebSocket short-lived database session helpers.
+"""Tests for short-lived database session helpers used by WebSocket handlers.
 
-``preloop.api.endpoints.websocket_db`` is not an HTTP router -- it re-exports
-two helpers used by WebSocket handlers:
+``preloop.services.db_executor`` provides:
 
 * ``detach_user`` -- eagerly loads a user's scalar attributes and expunges it
   from its session so it can be safely used after the session closes.
@@ -17,8 +16,8 @@ import asyncio
 
 from sqlalchemy import text
 
-from preloop.api.endpoints import websocket_db
 from preloop.models.crud import crud_account, crud_user
+from preloop.services import db_executor
 
 
 def _make_user(db, email="ws@example.com"):
@@ -42,26 +41,15 @@ def _make_user(db, email="ws@example.com"):
     return user
 
 
-# ---------------------------------------------------------------------------
-# Module surface
-# ---------------------------------------------------------------------------
-
-
-def test_module_exports_expected_helpers():
-    """The module should publicly re-export the two helper callables."""
-    assert set(websocket_db.__all__) == {"detach_user", "run_db_async"}
-    assert callable(websocket_db.detach_user)
-    assert asyncio.iscoroutinefunction(websocket_db.run_db_async)
-
-
-# ---------------------------------------------------------------------------
-# detach_user
-# ---------------------------------------------------------------------------
+def test_db_executor_exports_expected_helpers():
+    """The module should expose the WebSocket DB helper callables."""
+    assert callable(db_executor.detach_user)
+    assert asyncio.iscoroutinefunction(db_executor.run_db_async)
 
 
 def test_detach_user_none_returns_none(db_session):
     """Passing None should be a no-op returning None."""
-    assert websocket_db.detach_user(db_session, None) is None
+    assert db_executor.detach_user(db_session, None) is None
 
 
 def test_detach_user_expunges_user_from_session(db_session):
@@ -69,7 +57,7 @@ def test_detach_user_expunges_user_from_session(db_session):
     user = _make_user(db_session, "detach@example.com")
     assert user in db_session
 
-    returned = websocket_db.detach_user(db_session, user)
+    returned = db_executor.detach_user(db_session, user)
 
     assert returned is user
     assert user not in db_session
@@ -81,10 +69,8 @@ def test_detach_user_scalars_remain_accessible_after_detach(db_session):
     user_id = user.id
     account_id = user.account_id
 
-    detached = websocket_db.detach_user(db_session, user)
+    detached = db_executor.detach_user(db_session, user)
 
-    # Accessing these after expunge would raise DetachedInstanceError if the
-    # helper had not eagerly loaded them.
     assert detached.id == user_id
     assert detached.account_id == account_id
     assert detached.username == "scalars"
@@ -92,15 +78,10 @@ def test_detach_user_scalars_remain_accessible_after_detach(db_session):
     assert detached.is_active is True
 
 
-# ---------------------------------------------------------------------------
-# run_db_async
-# ---------------------------------------------------------------------------
-
-
 def test_run_db_async_returns_operation_result():
     """The helper should run the callable and return its value."""
     result = asyncio.run(
-        websocket_db.run_db_async(lambda db: db.execute(text("SELECT 1")).scalar())
+        db_executor.run_db_async(lambda db: db.execute(text("SELECT 1")).scalar())
     )
     assert result == 1
 
@@ -109,10 +90,9 @@ def test_run_db_async_provides_a_usable_session():
     """The callable should receive a live Session it can query through."""
 
     def _op(db):
-        # A trivial scalar query proves the session is connected/usable.
         return db.execute(text("SELECT 42")).scalar()
 
-    assert asyncio.run(websocket_db.run_db_async(_op)) == 42
+    assert asyncio.run(db_executor.run_db_async(_op)) == 42
 
 
 def test_run_db_async_propagates_exceptions():
@@ -122,7 +102,7 @@ def test_run_db_async_propagates_exceptions():
         raise ValueError("kaboom")
 
     try:
-        asyncio.run(websocket_db.run_db_async(_boom))
+        asyncio.run(db_executor.run_db_async(_boom))
     except ValueError as exc:
         assert str(exc) == "kaboom"
     else:  # pragma: no cover - failure path
@@ -133,10 +113,10 @@ def test_run_db_async_runs_off_the_event_loop():
     """Successive calls should each complete with their own short-lived session."""
 
     async def _drive():
-        first = await websocket_db.run_db_async(
+        first = await db_executor.run_db_async(
             lambda db: db.execute(text("SELECT 1")).scalar()
         )
-        second = await websocket_db.run_db_async(
+        second = await db_executor.run_db_async(
             lambda db: db.execute(text("SELECT 2")).scalar()
         )
         return first, second

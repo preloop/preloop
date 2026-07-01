@@ -213,6 +213,10 @@ export class BudgetPolicyEditor extends LitElement {
       const agent = this.agents.find((a) => a.id === id);
       return agent ? agent.display_name || agent.id : id;
     }
+    if (type === 'user') {
+      const user = this.availableUsers.find((u) => u.id === id);
+      return user ? user.username || user.email || user.id : id;
+    }
     return id;
   }
 
@@ -412,7 +416,9 @@ export class BudgetPolicyEditor extends LitElement {
           ? 'AI Model'
           : subjectType === 'managed_agent'
             ? 'Agent'
-            : subjectType;
+            : subjectType === 'user'
+              ? 'User'
+              : subjectType;
     return html`
       <div class="form-row">
         <div class="readonly-field">
@@ -564,7 +570,9 @@ export class BudgetPolicyEditor extends LitElement {
                                           ? 'Model'
                                           : p.subject_type === 'managed_agent'
                                             ? 'Agent'
-                                            : p.subject_type
+                                            : p.subject_type === 'user'
+                                              ? 'User'
+                                              : p.subject_type
                                     }
                                   </sl-badge>
                                   <span
@@ -681,6 +689,7 @@ export class BudgetPolicyEditor extends LitElement {
                                 <sl-option value="managed_agent"
                                   >Agent</sl-option
                                 >
+                                <sl-option value="user">User</sl-option>
                               </sl-select>
 
                               ${
@@ -719,7 +728,30 @@ export class BudgetPolicyEditor extends LitElement {
                                           )}
                                         </sl-select>
                                       `
-                                    : html`<div style="flex: 1"></div>`
+                                    : this.newSubjectType === 'user'
+                                      ? html`
+                                          <sl-select
+                                            label="Select User"
+                                            value=${this.newSubjectId}
+                                            @sl-change=${(e: any) =>
+                                              (this.newSubjectId =
+                                                e.target.value)}
+                                            ?disabled=${this.loadingSubjects}
+                                            help-text="Enforces across all agents owned by this user"
+                                          >
+                                            ${this.availableUsers.map(
+                                              (u) =>
+                                                html`<sl-option value=${u.id}
+                                                  >${
+                                                    u.username ||
+                                                    u.email ||
+                                                    u.id
+                                                  }</sl-option
+                                                >`
+                                            )}
+                                          </sl-select>
+                                        `
+                                      : html`<div style="flex: 1"></div>`
                               }
                             </div>
                             <sl-select

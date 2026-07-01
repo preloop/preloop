@@ -254,6 +254,8 @@ def normalize_budget_subject_type(subject_type: str) -> str:
         return "managed_agent"
     if subject_type == "flows":
         return "flow"
+    if subject_type == "users":
+        return "user"
     return subject_type
 
 
@@ -270,7 +272,16 @@ def spend_bucket_for_policy(
 
 
 def get_period_start(ts: datetime, period: BudgetPeriod) -> Optional[datetime]:
-    """Get the truncated start datetime for a given period."""
+    """Return the inclusive start of the budget period containing ``ts``.
+
+    Args:
+        ts: Timestamp to truncate.
+        period: Budget period granularity.
+
+    Returns:
+        Period start aligned to the period boundary, or ``None`` for
+        :data:`BudgetPeriod.all_time`.
+    """
     if period == BudgetPeriod.hourly:
         return ts.replace(minute=0, second=0, microsecond=0)
     elif period == BudgetPeriod.daily:
@@ -288,7 +299,16 @@ def get_period_start(ts: datetime, period: BudgetPeriod) -> Optional[datetime]:
 
 
 def get_period_end(ts: datetime, period: BudgetPeriod) -> Optional[datetime]:
-    """Get the truncated end datetime for a given period."""
+    """Return the exclusive end of the budget period containing ``ts``.
+
+    Args:
+        ts: Timestamp whose period end should be computed.
+        period: Budget period granularity.
+
+    Returns:
+        Period end (start of the next period), or ``None`` when the period
+        is :data:`BudgetPeriod.all_time`.
+    """
     start = get_period_start(ts, period)
     if start is None:
         return None
@@ -318,7 +338,24 @@ def record_spend_for_request(
     *,
     subject_scopes: Optional[Sequence[tuple[str, Optional[str]]]] = None,
 ) -> None:
-    """Record spend for a gateway request across all configured granularities."""
+    """Record gateway spend into budget buckets for every applicable scope.
+
+    Upserts spend for the account and each configured subject scope (API key,
+    managed agent, etc.) across all :class:`BudgetPeriod` values and, when
+    ``model_alias`` is set, both the model-specific and account-wide buckets.
+
+    Args:
+        db: Database session.
+        account_id: Owning account id.
+        subject_type: Primary subject type for this request, if any.
+        subject_id: Primary subject id for this request, if any.
+        model_alias: Gateway model alias, when the spend is model-specific.
+        estimated_cost: Estimated request cost in USD; non-positive values are
+            ignored.
+        timestamp: Request timestamp used to derive period boundaries.
+        subject_scopes: Additional ``(subject_type, subject_id)`` pairs to
+            record against (e.g. managed agent plus API key).
+    """
     if estimated_cost <= 0:
         return
 

@@ -430,7 +430,7 @@ class Settings(BaseSettings):
             ).lower()
             in ("true", "1", "t", "yes"),
             model_gateway_max_preview_chars=int(
-                os.getenv("MODEL_GATEWAY_MAX_PREVIEW_CHARS", "4096")
+                os.getenv("MODEL_GATEWAY_MAX_PREVIEW_CHARS", "32768")
             ),
             flow_execution_max_wait_seconds=int(
                 os.getenv("FLOW_EXECUTION_MAX_WAIT_SECONDS", "3600")

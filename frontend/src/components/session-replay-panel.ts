@@ -3456,15 +3456,21 @@ export class SessionReplayPanel extends LitElement {
                       >
                         ${
                           this.availableModels.length
-                            ? this.availableModels.map(
-                                (model) => html`
-                                  <option value=${model.id}>
-                                    ${model.name}${
-                                      model.is_default ? ' (default)' : ''
-                                    }
-                                  </option>
-                                `
-                              )
+                            ? [...this.availableModels]
+                                .sort(
+                                  (a, b) =>
+                                    Number(Boolean(b.is_default)) -
+                                    Number(Boolean(a.is_default))
+                                )
+                                .map(
+                                  (model) => html`
+                                    <option value=${model.id}>
+                                      ${model.name}${
+                                        model.is_default ? ' (default)' : ''
+                                      }
+                                    </option>
+                                  `
+                                )
                             : html`<option value="">Local fallback</option>`
                         }
                       </select>

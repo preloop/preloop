@@ -1827,12 +1827,22 @@ export class DashboardView extends AuthedElement {
     `;
   }
 
+  private renderFlowIcon(): ReturnType<typeof html> {
+    // flow.svg strokes with currentColor, so it adapts to light/dark on its
+    // own — do not apply the inverting .flow-icon filter here.
+    return html`<sl-icon
+      src="/images/flow.svg"
+      style="font-size: 1rem; color: var(--sl-color-neutral-600);"
+    ></sl-icon>`;
+  }
+
   private renderExpandableSubGroup(
     groupId: string,
     name: string,
     href: string | null,
     summaryMetric: string,
-    content: ReturnType<typeof html>
+    content: ReturnType<typeof html>,
+    icon: ReturnType<typeof html> | null = null
   ) {
     const expanded = this.isOverviewGroupExpanded(groupId);
     return html`
@@ -1842,6 +1852,16 @@ export class DashboardView extends AuthedElement {
           @click=${() => this.toggleOverviewGroup(groupId)}
         >
           ${this.renderExpandIcon(groupId)}
+          ${
+            icon
+              ? html`<span
+                  class="group-icon"
+                  aria-hidden="true"
+                  style="display: inline-flex; align-items: center; margin-right: var(--sl-spacing-2x-small);"
+                  >${icon}</span
+                >`
+              : nothing
+          }
           ${
             href
               ? html`<a
@@ -1975,14 +1995,16 @@ export class DashboardView extends AuthedElement {
     name: string,
     href: string | null,
     summaryMetric: string,
-    content: ReturnType<typeof html>
+    content: ReturnType<typeof html>,
+    icon: ReturnType<typeof html> | null = null
   ) {
     return this.renderExpandableSubGroup(
       groupId,
       name,
       href,
       summaryMetric,
-      content
+      content,
+      icon
     );
   }
 
@@ -2351,12 +2373,33 @@ export class DashboardView extends AuthedElement {
     if (!sourceId) {
       return undefined;
     }
-    return [...this.managedAgents, ...this.budgetAgents].find(
+    const agents = [...this.managedAgents, ...this.budgetAgents];
+    const exact = agents.find(
       (agent) =>
         agent.id === sourceId ||
         agent.session_source_id === sourceId ||
         agent.runtime_session_id === sourceId
     );
+    if (exact) {
+      return exact;
+    }
+    // Per-run sessions append a suffix to the agent's base source id, e.g.
+    // "custom_ABC:demo-123" (custom) or "hermes-0161afa5e616-<timestamp|uuid>"
+    // (runtime-token agents). Match the agent whose base source id the session
+    // id starts with (delimited by ':' or '-'); prefer the longest match so a
+    // more specific agent wins over a shorter prefix.
+    return agents
+      .filter(
+        (agent) =>
+          Boolean(agent.session_source_id) &&
+          (sourceId.startsWith(`${agent.session_source_id}:`) ||
+            sourceId.startsWith(`${agent.session_source_id}-`))
+      )
+      .sort(
+        (a, b) =>
+          (b.session_source_id?.length ?? 0) -
+          (a.session_source_id?.length ?? 0)
+      )[0];
   }
 
   private getManagedAgentForUsageSession(
@@ -3046,7 +3089,8 @@ export class DashboardView extends AuthedElement {
                                         )
                                       )}
                                     </div>
-                                  `
+                                  `,
+                                  this.renderFlowIcon()
                                 );
                               }
                             )}
@@ -3166,6 +3210,24 @@ export class DashboardView extends AuthedElement {
     `;
   }
 
+  private sessionBelongsToAgent(
+    session: RuntimeSessionSummary,
+    agent: ManagedAgentSummary
+  ): boolean {
+    const base = agent.session_source_id;
+    const candidates = [
+      session.runtime_principal_id,
+      session.session_source_id,
+    ].filter((value): value is string => Boolean(value));
+    return candidates.some(
+      (id) =>
+        id === base ||
+        id === agent.id ||
+        (Boolean(base) &&
+          (id.startsWith(`${base}:`) || id.startsWith(`${base}-`)))
+    );
+  }
+
   private renderActiveExecutionsCard() {
     if (this.managedAgents.length === 0 && this.runtimeSessions.length === 0) {
       return nothing;
@@ -3178,14 +3240,8 @@ export class DashboardView extends AuthedElement {
     const usedSessionIds = new Set<string>();
 
     for (const agent of this.activeAgents) {
-      const sessions = this.activeSessions.filter(
-        (s) =>
-          (s.runtime_principal_id === agent.session_source_id ||
-            s.runtime_principal_id === agent.id ||
-            s.session_source_id === agent.session_source_id ||
-            s.session_source_id === agent.id) &&
-          (s.runtime_principal_type === agent.session_source_type ||
-            s.session_source_type === agent.session_source_type)
+      const sessions = this.activeSessions.filter((s) =>
+        this.sessionBelongsToAgent(s, agent)
       );
       if (sessions.length > 0) {
         agentsWithSessions.push({ agent, sessions });
@@ -3204,8 +3260,44 @@ export class DashboardView extends AuthedElement {
       return bTime - aTime;
     });
 
-    const orphanSessions = this.activeSessions.filter(
+    const unmatchedSessions = this.activeSessions.filter(
       (s) => !usedSessionIds.has(s.id)
+    );
+
+    // Flow-execution sessions group under their flow; only sessions with no
+    // resolvable agent AND no flow remain as true "Other".
+    const flowGroupMap = new Map<
+      string,
+      {
+        name: string;
+        flowId: string | null;
+        sessions: typeof unmatchedSessions;
+      }
+    >();
+    const orphanSessions: typeof unmatchedSessions = [];
+    for (const s of unmatchedSessions) {
+      const isFlow = Boolean(
+        s.flow_id ||
+        s.flow_execution_id ||
+        s.runtime_principal_type === 'flow_execution' ||
+        s.session_source_type === 'flow_execution'
+      );
+      if (isFlow) {
+        const key = s.flow_id || s.flow_name || 'flow';
+        if (!flowGroupMap.has(key)) {
+          flowGroupMap.set(key, {
+            name: s.flow_name || s.runtime_principal_name || 'Flow',
+            flowId: s.flow_id || null,
+            sessions: [],
+          });
+        }
+        flowGroupMap.get(key)!.sessions.push(s);
+      } else {
+        orphanSessions.push(s);
+      }
+    }
+    const flowGroups = Array.from(flowGroupMap.values()).sort(
+      (a, b) => b.sessions.length - a.sessions.length
     );
     orphanSessions.sort((a, b) => {
       const aTime =
@@ -3220,7 +3312,9 @@ export class DashboardView extends AuthedElement {
     });
 
     const hasAnyExecutions =
-      agentsWithSessions.length > 0 || orphanSessions.length > 0;
+      agentsWithSessions.length > 0 ||
+      flowGroups.length > 0 ||
+      orphanSessions.length > 0;
 
     return html`
       <sl-card class="content-card">
@@ -3282,6 +3376,41 @@ export class DashboardView extends AuthedElement {
                     (item) => html`
                       <div class="row">
                         ${this.renderActiveAgentGroup(item.agent, item.sessions)}
+                      </div>
+                    `
+                  )}
+                  ${repeat(
+                    flowGroups.slice(0, 8),
+                    (group) => group.flowId || group.name,
+                    (group) => html`
+                      <div class="row">
+                        ${this.renderCollapsibleGroup(
+                          `active-agents:flow:${group.flowId || group.name}`,
+                          group.name,
+                          group.flowId
+                            ? `/console/flows/${group.flowId}`
+                            : '/console/flows',
+                          `${this.formatCurrency(
+                            group.sessions.reduce(
+                              (total, session) =>
+                                total + (session.estimated_cost || 0),
+                              0
+                            )
+                          )} · ${group.sessions.length} exec`,
+                          html`
+                            <div class="nested-session-list">
+                              ${group.sessions
+                                .slice(0, 8)
+                                .map((session) =>
+                                  this.renderNestedSessionRow(
+                                    session,
+                                    `${this.formatNumber(session.total_requests)} req`
+                                  )
+                                )}
+                            </div>
+                          `,
+                          this.renderFlowIcon()
+                        )}
                       </div>
                     `
                   )}

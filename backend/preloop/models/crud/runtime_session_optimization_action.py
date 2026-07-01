@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Optional, Union
+
+import uuid
 
 from sqlalchemy.orm import Session
 
@@ -19,8 +21,8 @@ class CRUDRuntimeSessionOptimizationAction(CRUDBase[RuntimeSessionOptimizationAc
         self,
         db: Session,
         *,
-        account_id: Any,
-        runtime_session_id: Any,
+        account_id: Union[uuid.UUID, str],
+        runtime_session_id: Union[uuid.UUID, str],
         suggestion_id: str,
         suggestion_title: Optional[str],
         action_type: str,
@@ -73,8 +75,8 @@ class CRUDRuntimeSessionOptimizationAction(CRUDBase[RuntimeSessionOptimizationAc
         self,
         db: Session,
         *,
-        account_id: Any,
-        runtime_session_id: Any,
+        account_id: Union[uuid.UUID, str],
+        runtime_session_id: Union[uuid.UUID, str],
         limit: int = 50,
     ) -> list[RuntimeSessionOptimizationAction]:
         """Return applied actions for one session, latest-first.
@@ -103,8 +105,8 @@ class CRUDRuntimeSessionOptimizationAction(CRUDBase[RuntimeSessionOptimizationAc
         self,
         db: Session,
         *,
-        account_id: Any,
-        runtime_session_id: Any,
+        account_id: Union[uuid.UUID, str],
+        runtime_session_id: Union[uuid.UUID, str],
         suggestion_id: str,
         action_type: str,
     ) -> bool:

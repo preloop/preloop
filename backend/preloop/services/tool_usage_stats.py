@@ -27,6 +27,29 @@ def _coerce_int(value: Any) -> int:
     return max(result, 0)
 
 
+def _normalize_tool_name(name: str) -> str:
+    """Strip an MCP client prefix so advertised and invoked names align.
+
+    Some clients advertise MCP tools to the model as ``mcp__<server>__<tool>``
+    while tool invocations are always recorded under the bare ``<tool>`` name.
+    Keying schema cost by the raw advertised name therefore splits one tool
+    into a bare row (invocations, no schema cost) and a phantom prefixed row
+    (schema cost, no invocations). Normalizing both to the bare name merges
+    them so per-tool schema tokens and cost line up with invocations.
+
+    Args:
+        name: Raw tool name from ``tools_meta`` or an activity row.
+
+    Returns:
+        The tool name with a leading ``mcp__<server>__`` prefix removed.
+    """
+    if name.startswith("mcp__"):
+        parts = name.split("__", 2)
+        if len(parts) == 3 and parts[2]:
+            return parts[2]
+    return name
+
+
 def _tools_meta(row: ApiUsage) -> Optional[list[dict[str, Any]]]:
     meta = row.meta_data
     if not isinstance(meta, dict):
@@ -54,6 +77,30 @@ def _per_prompt_token_price(
     if prompt_tokens > 0 and estimated_cost > 0:
         return estimated_cost / prompt_tokens, True
     return 0.0, True
+
+
+def _empty_tool_merge_entry(
+    tool_name: str,
+    *,
+    server_name: Optional[str] = None,
+    invocation_count: int = 0,
+    successful_invocations: int = 0,
+    failed_invocations: int = 0,
+    last_activity_at: Optional[datetime] = None,
+) -> dict[str, Any]:
+    """Return a fresh merge bucket for one tool name."""
+    return {
+        "tool_name": tool_name,
+        "server_name": server_name,
+        "invocation_count": invocation_count,
+        "successful_invocations": successful_invocations,
+        "failed_invocations": failed_invocations,
+        "last_activity_at": last_activity_at,
+        "schema_injections": 0,
+        "schema_tokens_total": 0,
+        "estimated_schema_cost": 0.0,
+        "usage_by_agent": [],
+    }
 
 
 @dataclass
@@ -112,18 +159,14 @@ class ToolUsageStatsService:
             tool_name = row["tool_name"]
             if not tool_name:
                 continue
-            merged[tool_name] = {
-                "tool_name": tool_name,
-                "server_name": row.get("server_name"),
-                "invocation_count": row.get("call_count", 0),
-                "successful_invocations": row.get("successful_calls", 0),
-                "failed_invocations": row.get("failed_calls", 0),
-                "last_activity_at": row.get("last_activity_at"),
-                "schema_injections": 0,
-                "schema_tokens_total": 0,
-                "estimated_schema_cost": 0.0,
-                "usage_by_agent": [],
-            }
+            merged[tool_name] = _empty_tool_merge_entry(
+                tool_name,
+                server_name=row.get("server_name"),
+                invocation_count=row.get("call_count", 0),
+                successful_invocations=row.get("successful_calls", 0),
+                failed_invocations=row.get("failed_calls", 0),
+                last_activity_at=row.get("last_activity_at"),
+            )
 
         for row in agent_rows:
             tool_name = row["tool_name"]
@@ -131,18 +174,7 @@ class ToolUsageStatsService:
                 continue
             entry = merged.setdefault(
                 tool_name,
-                {
-                    "tool_name": tool_name,
-                    "server_name": None,
-                    "invocation_count": 0,
-                    "successful_invocations": 0,
-                    "failed_invocations": 0,
-                    "last_activity_at": None,
-                    "schema_injections": 0,
-                    "schema_tokens_total": 0,
-                    "estimated_schema_cost": 0.0,
-                    "usage_by_agent": [],
-                },
+                _empty_tool_merge_entry(tool_name),
             )
             principal_id = row.get("runtime_principal_id")
             principal_type = row.get("runtime_principal_type")
@@ -165,18 +197,7 @@ class ToolUsageStatsService:
         for tool_name, schema in schema_costs.items():
             entry = merged.setdefault(
                 tool_name,
-                {
-                    "tool_name": tool_name,
-                    "server_name": None,
-                    "invocation_count": 0,
-                    "successful_invocations": 0,
-                    "failed_invocations": 0,
-                    "last_activity_at": None,
-                    "schema_injections": 0,
-                    "schema_tokens_total": 0,
-                    "estimated_schema_cost": 0.0,
-                    "usage_by_agent": [],
-                },
+                _empty_tool_merge_entry(tool_name),
             )
             entry["schema_injections"] = schema.schema_injections
             entry["schema_tokens_total"] = schema.schema_tokens_total
@@ -246,9 +267,10 @@ class ToolUsageStatsService:
             principal_type = row.runtime_principal_type
 
             for tool in tools_meta:
-                name = tool.get("name")
-                if not isinstance(name, str) or not name.strip():
+                raw_name = tool.get("name")
+                if not isinstance(raw_name, str) or not raw_name.strip():
                     continue
+                name = _normalize_tool_name(raw_name)
                 schema_tokens = _coerce_int(tool.get("schema_tokens_estimate"))
                 source = str(tool.get("source") or "payload")
                 tool_cost = schema_tokens * price_per_token

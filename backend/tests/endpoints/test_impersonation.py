@@ -23,6 +23,7 @@ from fastapi import HTTPException
 from preloop.api.auth.jwt import decode_token
 from preloop.api.endpoints import impersonation
 from preloop.models.crud import crud_account, crud_audit_log, crud_user
+from tests.route_paths import collect_route_paths
 
 
 def _run(coro):
@@ -62,7 +63,7 @@ def _make_user(db, account, email, *, is_superuser=False, is_active=True):
 
 def test_impersonation_routes_not_registered_in_oss_app(app):
     """Impersonation is plugin-gated and must not be mounted in the OSS app."""
-    paths = {route.path for route in app.routes}
+    paths = collect_route_paths(app.routes)
     assert not any("/admin/impersonate" in path for path in paths)
 
 

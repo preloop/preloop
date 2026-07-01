@@ -675,18 +675,18 @@ export class SessionOptimizationPanel extends LitElement {
                     @click=${() => this.emitInspectEvents(suggestion)}
                   >
                     <sl-icon slot="prefix" name="search"></sl-icon>
-                    ${suggestion.actionLabel}
+                    Inspect evidence
                   </sl-button>
                 `
-              : isOutputFilter
+              : isOutputFilter || serverApplyable
                 ? nothing
                 : html`
                     <sl-button
                       size="small"
                       @click=${() => this.emitSuggestion(suggestion)}
                     >
-                      <sl-icon slot="prefix" name="magic"></sl-icon>
-                      ${suggestion.actionLabel}
+                      <sl-icon slot="prefix" name="search"></sl-icon>
+                      View evidence
                     </sl-button>
                   `
           }

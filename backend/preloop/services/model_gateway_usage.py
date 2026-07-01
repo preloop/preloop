@@ -72,6 +72,10 @@ class ModelGatewayUsageService:
                 start_date=start_date,
                 end_date=end_date,
                 runtime_principal_id=runtime_principal_id,
+                # Cover all agents' sessions for the cost-view breakdown tabs;
+                # the default of 20 truncates to the most-recent sessions and
+                # drops agents whose traffic isn't in that window.
+                limit=250,
             )
             usage_by_tool = ToolUsageStatsService(self.db).get_account_usage_by_tool(
                 account_id=str(account.id),

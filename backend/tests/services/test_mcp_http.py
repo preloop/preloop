@@ -711,7 +711,9 @@ class TestSetupMCPRoutes:
                 setup_mcp_routes(app)
 
         # Verify app was mounted (check routes were added)
-        assert any(route.path.startswith("/mcp") for route in app.routes)
+        from tests.route_paths import collect_route_paths
+
+        assert any(path.startswith("/mcp") for path in collect_route_paths(app.routes))
 
     def test_setup_mcp_routes_stores_lifespan(self):
         """Test setup_mcp_routes stores lifespan manager."""

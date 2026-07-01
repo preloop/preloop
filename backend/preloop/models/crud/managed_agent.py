@@ -315,8 +315,15 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         managed_mcp_servers: Optional[list[str]] = None,
         enrolled_via: str = "runtime_session_token",
         last_seen_at: Optional[datetime] = None,
+        owner_user_id: Any = None,
     ) -> ManagedAgent:
-        """Create or update one registry entry from a runtime-session token flow."""
+        """Create or update one registry entry from a runtime-session token flow.
+
+        ``owner_user_id`` (the enrolling user) is set on create and backfilled on
+        update only when the agent has no owner yet, so a manually assigned owner
+        is never overwritten. This owner drives per-user cost attribution and
+        per-user budgets.
+        """
         db_obj = self.get_by_source(
             db,
             account_id=str(account_id),
@@ -337,6 +344,7 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
                 display_name=display_name,
                 enrolled_via=enrolled_via,
                 managed_mcp_servers=normalized_servers,
+                owner_user_id=owner_user_id,
                 lifecycle_state="active",
                 lifecycle_reason=None,
                 lifecycle_updated_at=observed_at,
@@ -353,6 +361,8 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         db_obj.last_seen_at = observed_at
         if session_reference is not None:
             db_obj.session_reference = session_reference
+        if owner_user_id is not None and db_obj.owner_user_id is None:
+            db_obj.owner_user_id = owner_user_id
         db_obj.managed_mcp_servers = normalized_servers
         db.add(db_obj)
         db.flush()
@@ -365,6 +375,7 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         account_id: Any,
         display_name: str,
         description: Optional[str] = None,
+        owner_user_id: Any = None,
         commit: bool = True,
     ) -> ManagedAgent:
         """Register a custom managed agent the discovery CLI cannot find.
@@ -402,6 +413,7 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             display_name=normalized_name,
             enrolled_via="operator_registration",
             managed_mcp_servers=[],
+            owner_user_id=owner_user_id,
             tags=tags,
             lifecycle_state="active",
             lifecycle_reason=None,

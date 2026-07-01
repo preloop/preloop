@@ -158,7 +158,8 @@ def test_latest_gateway_usage_for_sessions_returns_latest_per_session(
 def test_summary_columns_available_caches_per_bind(db_session) -> None:
     """Summary-column detection should introspect the schema only once per bind."""
     _summary_columns_cache.clear()
-    bind = db_session.get_bind()
+    bind = db_session.get_bind() or db_session.bind
+    assert bind is not None
     inspector = MagicMock()
     inspector.get_columns.return_value = [
         {"name": "summary"},
@@ -167,13 +168,12 @@ def test_summary_columns_available_caches_per_bind(db_session) -> None:
         {"name": "title_request_count"},
         {"name": "id"},
     ]
+    inspect_mock = MagicMock(return_value=inspector)
 
-    with patch(
-        "preloop.models.crud.runtime_session.inspect",
-        return_value=inspector,
-    ):
+    with patch("preloop.models.crud.runtime_session.inspect", inspect_mock):
         assert crud_runtime_session._summary_columns_available(db_session) is True
         assert crud_runtime_session._summary_columns_available(db_session) is True
 
+    inspect_mock.assert_called_once_with(bind)
     assert inspector.get_columns.call_count == 1
     assert id(bind) in _summary_columns_cache
