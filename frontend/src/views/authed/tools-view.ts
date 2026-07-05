@@ -1638,7 +1638,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
         <div class="summary-table-wrapper">
           <table class="summary-table">
             <tr>
-              ${statCell('Total tools', stats.total, 'all')}
+              ${statCell('Total toolss', stats.total, 'all')}
               ${statCell('Available', stats.available, 'available')}
               ${statCell('Unavailable', stats.unavailable, 'unavailable', {
                 muted: stats.unavailable === 0,

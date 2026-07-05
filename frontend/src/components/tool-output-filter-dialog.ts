@@ -162,9 +162,12 @@ export class ToolOutputFilterDialog extends LitElement {
     this.loadingFilters = true;
     try {
       this.existingFilters = await listToolOutputFilters();
+      this.errorMessage = null;
     } catch (error) {
       console.error('Failed to load tool output filters:', error);
       this.existingFilters = [];
+      this.errorMessage =
+        'Could not load existing filters. You can still create a new one.';
     } finally {
       this.loadingFilters = false;
     }

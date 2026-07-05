@@ -25,6 +25,7 @@ from ..models import (
     RuntimeSession,
     RuntimeSessionActivity,
     RuntimeSessionOptimizationAction,
+    RuntimeSessionReplayRun,
     RuntimeSessionOptimizationResult,
 )
 from .account import CRUDAccount
@@ -102,6 +103,7 @@ from .runtime_session_optimization_action import (
 from .runtime_session_optimization_result import (
     CRUDRuntimeSessionOptimizationResult,
 )
+from .runtime_session_replay_run import CRUDRuntimeSessionReplayRun
 from .secret_reference import CRUDSecretReference, crud_secret_reference
 from .tool_cost_flag import CRUDToolCostFlag, crud_tool_cost_flag
 from .tool_output_filter import CRUDToolOutputFilter, crud_tool_output_filter
@@ -149,6 +151,7 @@ crud_runtime_session_optimization_action = CRUDRuntimeSessionOptimizationAction(
 crud_runtime_session_optimization_result = CRUDRuntimeSessionOptimizationResult(
     RuntimeSessionOptimizationResult
 )
+crud_runtime_session_replay_run = CRUDRuntimeSessionReplayRun(RuntimeSessionReplayRun)
 crud_tool_configuration = CRUDToolConfiguration()  # Instantiate CRUDToolConfiguration
 crud_mcp_server = CRUDMCPServer()  # Instantiate CRUDMCPServer
 crud_mcp_tool = CRUDMCPTool()  # Instantiate CRUDMCPTool
@@ -261,6 +264,7 @@ __all__ = [
     "crud_runtime_session",
     "crud_runtime_session_activity",
     "crud_runtime_session_optimization_action",
+    "crud_runtime_session_replay_run",
     "crud_runtime_session_optimization_result",
     "CRUDBudgetPolicy",
     "CRUDBudgetSpendActivity",

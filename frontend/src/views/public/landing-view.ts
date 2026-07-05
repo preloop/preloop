@@ -931,7 +931,11 @@ export class LandingView extends LitElement {
             </div>
             ${
               this._heroImage
-                ? html`<div class="hero-visual" aria-hidden="true">
+                ? html`<div
+                    class="hero-visual"
+                    aria-hidden="true"
+                    @click=${() => (this._lightboxImage = this._heroImage)}
+                  >
                     <img src=${this._heroImage} alt=${this._heroImageAlt} />
                   </div>`
                 : ''

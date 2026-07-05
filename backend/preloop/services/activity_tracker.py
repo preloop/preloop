@@ -14,6 +14,32 @@ from preloop.services.session_manager import WebSocketSession, session_manager
 
 logger = logging.getLogger(__name__)
 
+# Max lengths for Event string columns (must stay aligned with event.py).
+_EVENT_FIELD_LIMITS: dict[str, int] = {
+    "path": 512,
+    "referrer": 512,
+    "action": 128,
+    "element": 128,
+    "element_text": 256,
+    "conversion_event": 128,
+}
+
+
+def _truncate_activity_field(field: str, value: object | None) -> str | None:
+    """Truncate client-provided activity strings to fit Event column limits."""
+    if value is None:
+        return None
+    text = str(value)
+    limit = _EVENT_FIELD_LIMITS.get(field)
+    if limit is None:
+        return text
+    if len(text) <= limit:
+        return text
+    logger.debug(
+        "Truncating activity field %s from %d to %d chars", field, len(text), limit
+    )
+    return text[:limit]
+
 
 class ActivityEventType(str, Enum):
     """Activity event types."""
@@ -63,16 +89,22 @@ def _build_activity_event(data: dict, session: WebSocketSession) -> Event:
     metadata = data.get("metadata", {})
 
     if event_type == ActivityEventType.PAGE_VIEW:
-        activity.path = data.get("path")
-        activity.referrer = data.get("referrer") or metadata.get("referrer")
+        activity.path = _truncate_activity_field("path", data.get("path"))
+        activity.referrer = _truncate_activity_field(
+            "referrer", data.get("referrer") or metadata.get("referrer")
+        )
         activity.event_data = metadata
     elif event_type == ActivityEventType.ACTION:
-        activity.action = data.get("action")
-        activity.element = metadata.get("element")
-        activity.element_text = metadata.get("text")
+        activity.action = _truncate_activity_field("action", data.get("action"))
+        activity.element = _truncate_activity_field("element", metadata.get("element"))
+        activity.element_text = _truncate_activity_field(
+            "element_text", metadata.get("text")
+        )
         activity.event_data = metadata
     elif event_type == ActivityEventType.CONVERSION:
-        activity.conversion_event = data.get("conversion_event")
+        activity.conversion_event = _truncate_activity_field(
+            "conversion_event", data.get("conversion_event")
+        )
         activity.conversion_value = data.get("value")
         activity.event_data = metadata
     else:

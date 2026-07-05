@@ -225,7 +225,7 @@ def strip_disabled_tools(
     kept: List[Any] = []
     removed: List[str] = []
     for definition in tools:
-        name = _tool_definition_name(definition)
+        name = tool_definition_name(definition)
         if name and not is_tool_enabled_for_subject(
             meta_data, tool_name=name, subject_context=subject_context
         ):
@@ -236,18 +236,15 @@ def strip_disabled_tools(
 
 
 def tool_definition_name(definition: Any) -> str:
-    """Extract the tool name from an OpenAI or Anthropic tool definition.
-
-    Public wrapper over the internal extractor so other gateway modules can
-    reuse the same name resolution.
-
-    Args:
-        definition: A single tool definition (OpenAI or Anthropic shaped).
-
-    Returns:
-        The resolved tool name, or an empty string when none can be found.
-    """
-    return _tool_definition_name(definition)
+    """Extract the tool name from an OpenAI or Anthropic tool definition."""
+    if not isinstance(definition, dict):
+        return ""
+    function = definition.get("function")
+    if isinstance(function, dict) and function.get("name"):
+        return str(function["name"])
+    if definition.get("name"):
+        return str(definition["name"])
+    return ""
 
 
 def tool_choice_named_tool(tool_choice: Any) -> Optional[str]:
@@ -440,16 +437,4 @@ def _content_to_text(content: Any) -> str:
             elif isinstance(item, str):
                 parts.append(item)
         return "\n".join(parts)
-    return ""
-
-
-def _tool_definition_name(definition: Any) -> str:
-    """Extract the tool name from an OpenAI or Anthropic tool definition."""
-    if not isinstance(definition, dict):
-        return ""
-    function = definition.get("function")
-    if isinstance(function, dict) and function.get("name"):
-        return str(function["name"])
-    if definition.get("name"):
-        return str(definition["name"])
     return ""

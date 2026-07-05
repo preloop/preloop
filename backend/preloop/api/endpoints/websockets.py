@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import uuid
 from typing import Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -149,7 +150,7 @@ async def websocket_endpoint(websocket: WebSocket):
 @router.websocket("/ws/flow-executions/{execution_id}")
 async def flow_execution_websocket(
     websocket: WebSocket,
-    execution_id: str,
+    execution_id: uuid.UUID,
 ):
     """
     WebSocket endpoint for bidirectional flow execution monitoring.
@@ -177,24 +178,20 @@ async def flow_execution_websocket(
         if token:
             user = await _resolve_token_user(token)
             if not user:
-                logger.warning(
-                    f"Invalid token for WebSocket connection to execution {execution_id}"
-                )
+                logger.warning("Invalid token for WebSocket connection")
                 await websocket.send_json(
                     {"error": "Invalid or expired authentication token"}
                 )
                 await websocket.close(code=1008)
                 return
         else:
-            logger.warning(
-                f"WebSocket connection attempted without authentication for execution {execution_id}"
-            )
+            logger.warning("WebSocket connection attempted without authentication")
             await websocket.send_json({"error": "Authentication required"})
             await websocket.close(code=1008)
             return
 
     def _load_execution(db: Session):
-        execution = crud_flow_execution.get(db, id=execution_id)
+        execution = crud_flow_execution.get(db, id=str(execution_id))
         if not execution:
             return None
         flow = crud_flow.get(db, id=execution.flow_id)
@@ -256,7 +253,7 @@ async def flow_execution_websocket(
         await websocket.send_json(
             {
                 "type": "connected",
-                "execution_id": execution_id,
+                "execution_id": str(execution_id),
                 "message": "Connected to flow execution stream",
             }
         )

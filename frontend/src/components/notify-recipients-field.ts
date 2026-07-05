@@ -28,6 +28,13 @@ export class NotifyRecipientsField extends LitElement {
     'Recipients are notified using their email and mobile app preferences.';
 
   @state() private customEmailInput = '';
+  @state() private customEmailError = '';
+
+  private static readonly EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+  private isValidEmail(value: string): boolean {
+    return NotifyRecipientsField.EMAIL_PATTERN.test(value);
+  }
 
   static styles = css`
     :host {
@@ -95,11 +102,21 @@ export class NotifyRecipientsField extends LitElement {
 
   private addCustomEmail() {
     const email = this.customEmailInput.trim();
-    if (!email || this.customEmails.includes(email)) {
+    if (!email) {
+      this.customEmailError = '';
+      return;
+    }
+    if (!this.isValidEmail(email)) {
+      this.customEmailError = 'Enter a valid email address.';
+      return;
+    }
+    if (this.customEmails.includes(email)) {
+      this.customEmailError = 'That email is already listed.';
       return;
     }
     this.customEmails = [...this.customEmails, email];
     this.customEmailInput = '';
+    this.customEmailError = '';
     this.dispatchChange();
   }
 
@@ -156,6 +173,9 @@ export class NotifyRecipientsField extends LitElement {
                       this.customEmailInput = (
                         event.target as HTMLInputElement
                       ).value;
+                      if (this.customEmailError) {
+                        this.customEmailError = '';
+                      }
                     }}
                     @keydown=${(event: KeyboardEvent) => {
                       if (event.key === 'Enter') {
@@ -166,7 +186,16 @@ export class NotifyRecipientsField extends LitElement {
                   ></sl-input>
                   <sl-button @click=${this.addCustomEmail}>Add</sl-button>
                 </div>
-
+                ${
+                  this.customEmailError
+                    ? html`<div
+                        class="help-text"
+                        style="color: var(--sl-color-danger-600);"
+                      >
+                        ${this.customEmailError}
+                      </div>`
+                    : null
+                }
                 ${
                   this.customEmails.length > 0
                     ? html`

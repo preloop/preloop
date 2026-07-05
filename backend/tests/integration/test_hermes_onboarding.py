@@ -15,12 +15,14 @@ and gateway authorization for Hermes-issued tokens.
 """
 
 import os
+import time
 import uuid
 from typing import Iterator
 
 import httpx
 import pytest
 
+from tests.integration.http_client import create_integration_sync_client
 from tests.integration.mcp_client import MCPTestClient
 
 
@@ -30,6 +32,7 @@ PRELOOP_API_KEY = os.getenv("PRELOOP_TEST_API_KEY", "")
 # Hermes is identified by the canonical session_source_type the Preloop CLI
 # emits for `~/.hermes/config.yaml`-based installations.
 HERMES_SOURCE_TYPE = "hermes"
+_TRANSIENT_GATEWAY_STATUSES = {502, 503, 504}
 
 
 def _skip_if_missing_env() -> None:
@@ -45,7 +48,10 @@ def authed_client() -> Iterator[httpx.Client]:
         "Authorization": f"Bearer {PRELOOP_API_KEY}",
         "Content-Type": "application/json",
     }
-    with httpx.Client(base_url=PRELOOP_URL, headers=headers, timeout=30.0) as client:
+    with create_integration_sync_client(
+        base_url=PRELOOP_URL,
+        headers=headers,
+    ) as client:
         yield client
 
 
@@ -54,20 +60,33 @@ def _mint_hermes_runtime_session_token(
     *,
     session_source_id: str,
 ) -> dict:
-    response = authed_client.post(
-        "/api/v1/auth/runtime-sessions/token",
-        json={
-            "session_source_type": HERMES_SOURCE_TYPE,
-            "session_source_id": session_source_id,
-            "session_reference": f"~/.hermes/config.yaml@{session_source_id}",
-            "runtime_principal_name": f"Hermes Agent ({session_source_id})",
-            "expires_in_minutes": 30,
-        },
+    payload = {
+        "session_source_type": HERMES_SOURCE_TYPE,
+        "session_source_id": session_source_id,
+        "session_reference": f"~/.hermes/config.yaml@{session_source_id}",
+        "runtime_principal_name": f"Hermes Agent ({session_source_id})",
+        "expires_in_minutes": 30,
+    }
+    last_response: httpx.Response | None = None
+    for attempt in range(5):
+        response = authed_client.post(
+            "/api/v1/auth/runtime-sessions/token",
+            json=payload,
+        )
+        if response.status_code == 201:
+            return response.json()
+        last_response = response
+        if response.status_code in _TRANSIENT_GATEWAY_STATUSES and attempt < 4:
+            time.sleep(1.0 * (attempt + 1))
+            continue
+        break
+
+    assert last_response is not None
+    assert last_response.status_code == 201, (
+        f"Hermes onboarding failed (HTTP {last_response.status_code}): "
+        f"{last_response.text}"
     )
-    assert response.status_code == 201, (
-        f"Hermes onboarding failed (HTTP {response.status_code}): {response.text}"
-    )
-    return response.json()
+    return last_response.json()
 
 
 @pytest.mark.integration

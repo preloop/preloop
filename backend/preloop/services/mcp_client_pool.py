@@ -14,7 +14,33 @@ from mcp import types
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
+from preloop.services.mcp_httpx_client import create_streamable_mcp_http_client
+
 logger = logging.getLogger(__name__)
+
+
+def _unwrap_exception_group(exc: BaseException) -> BaseException:
+    """Return the first meaningful leaf from a (possibly nested) exception group.
+
+    The MCP streamable-HTTP client runs inside AnyIO task groups, so an upstream
+    failure (connection error, HTTP 502, ``McpError: Session terminated``) surfaces
+    wrapped in one or more ``ExceptionGroup``/``BaseExceptionGroup`` layers. This
+    descends those layers and returns the first ``Exception`` leaf (preferred), or
+    the first leaf of any kind, so callers can surface an actionable cause instead
+    of the opaque "unhandled errors in a TaskGroup" wrapper.
+    """
+    if type(exc).__name__ in ("ExceptionGroup", "BaseExceptionGroup"):
+        subs = list(getattr(exc, "exceptions", []) or [])
+        # Prefer a normal Exception leaf over BaseExceptions (GeneratorExit, etc.).
+        for sub in subs:
+            leaf = _unwrap_exception_group(sub)
+            if isinstance(leaf, Exception):
+                return leaf
+        for sub in subs:
+            leaf = _unwrap_exception_group(sub)
+            if leaf is not None:
+                return leaf
+    return exc
 
 
 class MCPClient:
@@ -89,6 +115,7 @@ class MCPClient:
             timeout=30.0,
             sse_read_timeout=sse_read_timeout,
             auth=auth,
+            httpx_client_factory=create_streamable_mcp_http_client,
         ) as (read_stream, write_stream, _):
             session = ClientSession(
                 read_stream=read_stream,
@@ -269,29 +296,37 @@ class MCPClient:
                         )
 
                 return content_list
-        except Exception as e:
-            logger.error(f"Error calling tool {tool_name}: {e}")
-            raise
         except BaseException as e:
-            target_exc = e
-            if type(e).__name__ in ("ExceptionGroup", "BaseExceptionGroup"):
-                exceptions = getattr(e, "exceptions", [])
-                for exc in exceptions:
-                    if isinstance(exc, Exception):
-                        target_exc = exc
-                        break
-
-            logger.error(f"Error calling tool {tool_name}: {target_exc}")
+            # NOTE: ExceptionGroup (py3.11) subclasses Exception, so it would
+            # otherwise be swallowed by a bare `except Exception` and re-raised
+            # verbatim as "unhandled errors in a TaskGroup (N sub-exceptions)",
+            # hiding the real cause (e.g. an upstream 502 → "Session
+            # terminated"). Unwrap to the meaningful leaf so callers and logs
+            # get an actionable message.
+            target_exc = _unwrap_exception_group(e)
 
             if isinstance(target_exc, Exception):
-                raise target_exc
+                logger.error(
+                    "Error calling tool %s on %s: %s",
+                    tool_name,
+                    self.url,
+                    target_exc,
+                )
+                raise target_exc from None
 
+            # Pure BaseException (GeneratorExit/cancel scope, etc.): convert the
+            # noisy async-teardown case into a clean ConnectionError, otherwise
+            # re-raise untouched.
+            logger.error(
+                "Error calling tool %s on %s: %s", tool_name, self.url, target_exc
+            )
             if "cancel scope" in str(target_exc).lower() or type(e).__name__ in (
                 "ExceptionGroup",
                 "BaseExceptionGroup",
             ):
-                raise ConnectionError(f"Operation aborted: {target_exc}")
-
+                raise ConnectionError(
+                    f"MCP server '{self.url}' is unavailable: {target_exc}"
+                ) from None
             raise e
 
 

@@ -273,3 +273,25 @@ async def test_nats_message_format_is_correct(
         assert activity["user_id"] == str(mock_session.user_id)
         assert activity["event_type"] == "page_view"
         assert activity["path"] == "/admin/accounts"
+
+
+@pytest.mark.asyncio
+async def test_activity_fields_are_truncated_to_column_limits(
+    mock_session, mock_run_db, mock_event_bus
+):
+    """Oversized client strings should be truncated instead of failing inserts."""
+    long_path = "/x" * 400
+    data = {
+        "event": "page_view",
+        "path": long_path,
+        "referrer": "https://example.com/" + ("ref/" * 200),
+    }
+
+    with patch("preloop.services.activity_tracker.session_manager") as mock_sm:
+        mock_sm.update_activity = MagicMock()
+
+        await handle_activity(data, mock_session)
+
+        added_event = mock_run_db.add.call_args[0][0]
+        assert len(added_event.path) == 512
+        assert len(added_event.referrer) == 512

@@ -186,6 +186,30 @@ def test_no_tools_means_no_tools_meta(db_session, test_user):
     assert usage.meta_data["tools_meta"] is None
 
 
+def test_upstream_credential_type_recorded_on_usage_row(db_session, test_user):
+    """T12: the resolved upstream credential type lands in meta_data.
+
+    Doubles as a regression guard that adding the field did not break the
+    usage-row write on the hot gateway path.
+    """
+    _create_gateway_model(db_session, test_user.account_id)
+    api_key = _runtime_key(db_session, test_user)
+    service = _service(db_session, test_user, api_key)
+
+    _run_chat(
+        service,
+        {
+            "model": "openai/gpt-5",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+
+    usage = _latest_usage(db_session)
+    assert usage is not None
+    # The gateway model is provisioned with an api_key credential.
+    assert usage.meta_data["upstream_credential_type"] == "api_key"
+
+
 def test_tools_meta_marks_stripped_tool(db_session, test_user):
     _create_gateway_model(db_session, test_user.account_id)
     api_key = _runtime_key(db_session, test_user)

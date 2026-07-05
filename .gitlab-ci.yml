@@ -381,6 +381,26 @@ test:unit:preloop-services-approval:
   variables:
     TEST_PATHS: "backend/tests/services/test_approval_service.py"
 
+test:unit:preloop-endpoints-cost:
+  extends: .test:unit:template
+  variables:
+    TEST_PATHS: "backend/tests/endpoints/test_cost.py"
+
+test:unit:preloop-endpoints-impersonation:
+  extends: .test:unit:template
+  variables:
+    TEST_PATHS: "backend/tests/endpoints/test_impersonation.py"
+
+test:unit:preloop-endpoints-websocket-db:
+  extends: .test:unit:template
+  variables:
+    TEST_PATHS: "backend/tests/endpoints/test_websocket_db.py"
+
+test:unit:preloop-integration-gateway-e2e:
+  extends: .test:unit:template
+  variables:
+    TEST_PATHS: "backend/tests/integration/test_gateway_e2e.py"
+
 test:unit:cli:
   stage: test
   needs: []
@@ -442,6 +462,10 @@ test:coverage:
     - test:unit:preloop-api
     - test:unit:preloop-endpoints-policies
     - test:unit:preloop-services-approval
+    - test:unit:preloop-endpoints-cost
+    - test:unit:preloop-endpoints-impersonation
+    - test:unit:preloop-endpoints-websocket-db
+    - test:unit:preloop-integration-gateway-e2e
   image: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
   before_script:
     - pip install coverage junitparser
@@ -593,11 +617,21 @@ test:coverage:
 
     - echo "Helm deployment finished."
     - echo "Checking deployed environment..."
-    - for i in $(seq 1 12); do
-        curl -f https://${TARGET_DOMAIN}/api/v1/health && break;
+    - for i in $(seq 1 36); do
+        HEALTH=$(curl -fsS "https://${TARGET_DOMAIN}/api/v1/health" || true);
+        if echo "$HEALTH" | grep -q '"database":"connected"' && echo "$HEALTH" | grep -q '"mcp_server":"available"'; then
+          echo "Deployed environment is ready.";
+          break;
+        fi;
+        echo "Waiting for full health (attempt ${i}/36)...";
         sleep 5;
       done
-    - if [ $? -eq 0 ]; then echo "Deployed environment is ready."; else echo "Deployed environment is not ready."; fi
+    - |
+      HEALTH=$(curl -fsS "https://${TARGET_DOMAIN}/api/v1/health" || true)
+      if ! echo "$HEALTH" | grep -q '"database":"connected"'; then
+        echo "Deployed environment is not ready: ${HEALTH}"
+        exit 1
+      fi
 
 deploy:test:
   extends: .deploy:template
@@ -649,7 +683,7 @@ deploy:review:
   variables:
     PRELOOP_TEST_URL: "https://oss-$CI_COMMIT_REF_SLUG.test.preloop.ai"
   before_script:
-    - pip install pytest httpx playwright fastapi dotenv sqlalchemy pytest-playwright
+    - pip install pytest httpx certifi playwright fastapi dotenv sqlalchemy pytest-playwright
     - playwright install
     - cd backend
 
@@ -668,7 +702,7 @@ test:integration:ui:
   extends: .test:integration:template
   image: python:3.12-alpine
   before_script:
-    - pip install pytest httpx dotenv mcp
+    - pip install pytest httpx certifi dotenv mcp
     - cd backend
 
 test:integration:api:github:
@@ -689,7 +723,7 @@ test:integration:api:jira:
 test:integration:api:mcp:
   extends: .test:integration:api:template
   before_script:
-    - pip install pytest pytest-asyncio httpx dotenv mcp
+    - pip install pytest pytest-asyncio httpx certifi dotenv mcp
     - cd backend
   script:
     - pytest --confcutdir=tests/integration tests/integration/test_mcp.py -v -s
@@ -697,7 +731,7 @@ test:integration:api:mcp:
 test:integration:api:hermes:
   extends: .test:integration:api:template
   before_script:
-    - pip install pytest pytest-asyncio httpx dotenv mcp
+    - pip install pytest pytest-asyncio httpx certifi dotenv mcp
     - cd backend
   script:
     - pytest --confcutdir=tests/integration tests/integration/test_hermes_onboarding.py -v -s

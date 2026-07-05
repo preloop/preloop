@@ -677,6 +677,20 @@ export interface RuntimeSessionOptimizationResponse {
   suggestions: RuntimeSessionOptimizationSuggestion[];
 }
 
+export interface RuntimeSessionReplayResponse {
+  id: string;
+  runtime_session_id: string;
+  status: 'completed' | 'aborted_budget' | 'no_payload' | string;
+  input_delta_tokens: number;
+  input_pct_saved: number;
+  end_to_end_delta_median: number | null;
+  end_to_end_delta_low: number | null;
+  end_to_end_delta_high: number | null;
+  inconclusive: boolean;
+  cost_spent: number | null;
+  n_runs: number;
+}
+
 export interface RuntimeSessionOptimizationAppliedAction {
   id: string;
   runtime_session_id: string;

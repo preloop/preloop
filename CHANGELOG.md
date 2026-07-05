@@ -23,7 +23,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Gateway context optimization**: Subject-scoped dedupe, noise stripping, and tool-result caps on the gateway hot path before upstream dispatch.
 - **CLI agent adapters**: Antigravity (Google Gemini MCP tree) and Devin (Cognition) MCP-only onboarding adapters alongside existing managed runtimes.
 - **Deploy wizard**: Expanded console deploy wizard for guided agent onboarding.
-- **OSS hosted trial path**: Added a self-contained Railway trial deployment map for Preloop OSS, including private API/gateway, worker/scheduler, Postgres/pgvector, and NATS services, generated Railway variable guidance, README onboarding, and teardown documentation.
 - **Test coverage expansion**: Substantial backend endpoint, service, integration (gateway e2e), and frontend component test suites across the OSS core and Enterprise plugins.
 
 ### Changed

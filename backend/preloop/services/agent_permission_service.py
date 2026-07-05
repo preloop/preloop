@@ -18,15 +18,33 @@ import uuid
 from typing import Any, Optional, Tuple
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from preloop.models import models
 from preloop.models.db.session import get_async_db_session
+from preloop.services.approval_workflow_service import DEFAULT_APPROVAL_TYPE
 
 logger = logging.getLogger(__name__)
 
 # Tool source recorded for native agent tools, distinct from "mcp"/"builtin"
 # so central-policy rules and analytics can target them later.
 AGENT_TOOL_SOURCE = "agent"
+AGENT_TOOL_APPROVALS_WORKFLOW_NAME = "Agent Tool Approvals"
+
+
+async def _fetch_agent_tool_approvals_workflow(
+    db: Any, account_id: str
+) -> models.ApprovalWorkflow | None:
+    """Return the auto-created agent-tool workflow for an account, if present."""
+    result = await db.execute(
+        select(models.ApprovalWorkflow)
+        .where(
+            models.ApprovalWorkflow.account_id == account_id,
+            models.ApprovalWorkflow.name == AGENT_TOOL_APPROVALS_WORKFLOW_NAME,
+        )
+        .limit(1)
+    )
+    return result.scalars().first()
 
 
 async def _resolve_workflow(
@@ -35,8 +53,8 @@ async def _resolve_workflow(
     """Resolve the approval workflow to use, creating a minimal one if needed.
 
     Prefers the account default, then any existing workflow, then creates a
-    dedicated "Agent Tool Approvals" manual workflow that notifies the calling
-    user so the request can reach their devices.
+    dedicated "Agent Tool Approvals" standard workflow that notifies the
+    calling user so the request can reach their devices.
     """
     result = await db.execute(
         select(models.ApprovalWorkflow)
@@ -59,12 +77,16 @@ async def _resolve_workflow(
     if workflow is not None:
         return workflow
 
+    workflow = await _fetch_agent_tool_approvals_workflow(db, account_id)
+    if workflow is not None:
+        return workflow
+
     workflow = models.ApprovalWorkflow(
         id=uuid.uuid4(),
         account_id=account_id,
-        name="Agent Tool Approvals",
+        name=AGENT_TOOL_APPROVALS_WORKFLOW_NAME,
         description="Auto-created for onboarded-agent native tool approvals",
-        approval_type="manual",
+        approval_type=DEFAULT_APPROVAL_TYPE,
         timeout_seconds=300,
         require_reason=False,
         async_approval_enabled=False,
@@ -72,8 +94,16 @@ async def _resolve_workflow(
         approver_user_ids=[str(approver_user_id)] if approver_user_id else [],
     )
     db.add(workflow)
-    await db.commit()
-    await db.refresh(workflow)
+    try:
+        await db.commit()
+        await db.refresh(workflow)
+    except IntegrityError:
+        await db.rollback()
+        existing = await _fetch_agent_tool_approvals_workflow(db, account_id)
+        if existing is None:
+            raise
+        return existing
+
     logger.info("Created default Agent Tool Approvals workflow %s", workflow.id)
     return workflow
 

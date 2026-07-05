@@ -111,7 +111,7 @@ export class CostView extends AuthedElement {
   @state() private loading = true;
   @state() private saving = false;
   @state() private error: string | null = null;
-  @state() private selectedRange: DateRangePreset = 'today';
+  @state() private selectedRange: DateRangePreset = 'last-30';
   @state() private budgetDialogOpen = false;
   @state() private priceDialogOpen = false;
   @state() private priceMode:
@@ -396,7 +396,7 @@ export class CostView extends AuthedElement {
     const stored = window.localStorage.getItem(COST_DATE_RANGE_STORAGE_KEY);
     return DATE_RANGE_PRESETS.includes(stored as DateRangePreset)
       ? (stored as DateRangePreset)
-      : 'today';
+      : 'last-30';
   }
 
   private persistDateRange(value: DateRangePreset) {

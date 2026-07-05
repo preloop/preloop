@@ -38,6 +38,7 @@ import type {
   RuntimeSessionSummaryInsight,
   RuntimeSessionInteractionSummary,
   RuntimeSessionOptimizationResponse,
+  RuntimeSessionReplayResponse,
   RuntimeSessionOptimizationActionSpec,
   RuntimeSessionOptimizationAppliedAction,
   RuntimeSessionOptimizationActionListResponse,
@@ -1120,6 +1121,53 @@ export async function listRuntimeSessionOptimizationActions(
   );
   if (!response.ok) {
     throw new Error('Failed to load applied optimization actions');
+  }
+  return response.json();
+}
+
+/**
+ * Verify a candidate optimization's savings by re-executing the session's
+ * stored request with and without the candidate applied. This re-sends the
+ * stored request upstream and spends budget, so `consented` must be true.
+ * POST /api/v1/billing/cost/runtime-sessions/{id}/replay
+ */
+export async function replayRuntimeSession(
+  runtimeSessionId: string,
+  payload: {
+    candidate: {
+      removedToolNames?: string[];
+      filteredOutputFields?: Record<string, string[]>;
+    };
+    suggestionId?: string | null;
+    consented: boolean;
+    nRuns?: number;
+  }
+): Promise<RuntimeSessionReplayResponse> {
+  const response = await fetchWithAuth(
+    `/api/v1/billing/cost/runtime-sessions/${runtimeSessionId}/replay`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        candidate: {
+          removed_tool_names: payload.candidate.removedToolNames || [],
+          filtered_output_fields: payload.candidate.filteredOutputFields || {},
+        },
+        suggestion_id: payload.suggestionId || null,
+        consented: payload.consented,
+        n_runs: payload.nRuns ?? 3,
+      }),
+    }
+  );
+  if (!response.ok) {
+    let detail = 'Failed to verify savings';
+    try {
+      const body = await response.json();
+      if (body && typeof body.detail === 'string') detail = body.detail;
+    } catch {
+      // Keep the generic message when the body is not JSON.
+    }
+    throw new Error(detail);
   }
   return response.json();
 }

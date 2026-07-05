@@ -14,6 +14,7 @@ import type {
   RuntimeSessionActivityItem,
   RuntimeSessionOptimizationAppliedAction,
   RuntimeSessionOptimizationResponse,
+  RuntimeSessionReplayResponse,
   SessionContextProfileSegment,
 } from '../types';
 import type {
@@ -25,6 +26,7 @@ import {
   formatNumber,
   suggestSessionOptimizations,
 } from '../utils/session-observer';
+import { replayRuntimeSession } from '../api';
 
 const SEGMENT_LABELS: Record<string, string> = {
   system_prompt: 'System prompt',
@@ -71,6 +73,24 @@ export class SessionOptimizationPanel extends LitElement {
   @state()
   private outputFilterSuggestion: SessionOptimizationSuggestion | null = null;
 
+  // Consent-dialog target for "Verify savings", or null when closed. A replay
+  // re-sends the stored request upstream and spends budget, so it is gated
+  // behind an explicit consent step.
+  @state()
+  private pendingVerify: SessionOptimizationSuggestion | null = null;
+
+  // Suggestion id whose replay is currently in flight, or null.
+  @state()
+  private verifyingSuggestionId: string | null = null;
+
+  // Measured replay results, keyed by suggestion id.
+  @state()
+  private verifyResults: Record<string, RuntimeSessionReplayResponse> = {};
+
+  // Replay error messages, keyed by suggestion id.
+  @state()
+  private verifyErrors: Record<string, string> = {};
+
   static styles = css`
     :host {
       display: block;
@@ -113,6 +133,39 @@ export class SessionOptimizationPanel extends LitElement {
     .savings {
       color: var(--sl-color-success-700);
       font-weight: 600;
+    }
+
+    .verify-result {
+      margin-top: var(--sl-spacing-small);
+      padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
+      border-radius: var(--sl-border-radius-medium);
+      background: var(--sl-color-neutral-50);
+      border: 1px solid var(--sl-color-neutral-200);
+      color: var(--sl-color-neutral-700);
+      font-size: var(--sl-font-size-small);
+      line-height: 1.45;
+    }
+
+    .verify-headline {
+      align-items: center;
+      color: var(--sl-color-success-700);
+      display: flex;
+      font-weight: 600;
+      gap: var(--sl-spacing-2x-small);
+    }
+
+    .verify-note {
+      margin-top: var(--sl-spacing-2x-small);
+      color: var(--sl-color-neutral-600);
+    }
+
+    .verify-error {
+      align-items: center;
+      background: var(--sl-color-danger-50);
+      border-color: var(--sl-color-danger-200);
+      color: var(--sl-color-danger-700);
+      display: flex;
+      gap: var(--sl-spacing-2x-small);
     }
 
     .savings-summary {
@@ -323,6 +376,70 @@ export class SessionOptimizationPanel extends LitElement {
     return this.getScopeToolNames(suggestion).filter(
       (name) => this.scopeToolSelection[name]
     );
+  }
+
+  // A suggestion can be verified by replay when we can build a candidate from
+  // its action: tool removal (scope_tools) or output-field filtering
+  // (manage_output_filter).
+  private canVerify(suggestion: SessionOptimizationSuggestion): boolean {
+    const type = suggestion.action?.type;
+    return type === 'scope_tools' || type === 'manage_output_filter';
+  }
+
+  private buildReplayCandidate(suggestion: SessionOptimizationSuggestion): {
+    removedToolNames: string[];
+    filteredOutputFields: Record<string, string[]>;
+  } {
+    const type = suggestion.action?.type;
+    const params = suggestion.action?.params || {};
+    if (type === 'scope_tools') {
+      return {
+        removedToolNames: this.getScopeToolNames(suggestion),
+        filteredOutputFields: {},
+      };
+    }
+    if (type === 'manage_output_filter') {
+      const toolName =
+        typeof params.tool_name === 'string' ? params.tool_name : '';
+      const fields = Array.isArray(params.suggested_fields)
+        ? (params.suggested_fields as unknown[]).filter(
+            (field): field is string => typeof field === 'string'
+          )
+        : [];
+      return {
+        removedToolNames: [],
+        filteredOutputFields:
+          toolName && fields.length ? { [toolName]: fields } : {},
+      };
+    }
+    return { removedToolNames: [], filteredOutputFields: {} };
+  }
+
+  // Run the consented replay for the pending suggestion and store its result.
+  private async confirmVerify(): Promise<void> {
+    const suggestion = this.pendingVerify;
+    if (!suggestion || !this.session) return;
+    const runtimeSessionId = this.session.id;
+    this.pendingVerify = null;
+    this.verifyingSuggestionId = suggestion.id;
+    const { [suggestion.id]: _removed, ...restErrors } = this.verifyErrors;
+    this.verifyErrors = restErrors;
+    try {
+      const result = await replayRuntimeSession(runtimeSessionId, {
+        candidate: this.buildReplayCandidate(suggestion),
+        suggestionId: suggestion.id,
+        consented: true,
+      });
+      this.verifyResults = { ...this.verifyResults, [suggestion.id]: result };
+    } catch (error) {
+      this.verifyErrors = {
+        ...this.verifyErrors,
+        [suggestion.id]:
+          error instanceof Error ? error.message : 'Verification failed',
+      };
+    } finally {
+      this.verifyingSuggestionId = null;
+    }
   }
 
   // Open the rich scope_tools dialog, seeding every advertised tool as checked
@@ -690,8 +807,120 @@ export class SessionOptimizationPanel extends LitElement {
                     </sl-button>
                   `
           }
+          ${
+            this.canVerify(suggestion)
+              ? html`
+                  <sl-button
+                    size="small"
+                    variant="default"
+                    ?loading=${this.verifyingSuggestionId === suggestion.id}
+                    ?disabled=${Boolean(this.verifyingSuggestionId)}
+                    @click=${() => {
+                      this.pendingVerify = suggestion;
+                    }}
+                  >
+                    <sl-icon slot="prefix" name="clipboard-check"></sl-icon>
+                    Verify savings
+                  </sl-button>
+                `
+              : nothing
+          }
         </div>
+        ${this.renderVerifyResult(suggestion)}
       </div>
+    `;
+  }
+
+  private renderVerifyResult(suggestion: SessionOptimizationSuggestion) {
+    const error = this.verifyErrors[suggestion.id];
+    if (error) {
+      return html`<div class="verify-result verify-error">
+        <sl-icon name="exclamation-triangle"></sl-icon>
+        ${error}
+      </div>`;
+    }
+    const result = this.verifyResults[suggestion.id];
+    if (!result) return nothing;
+    if (result.status === 'no_payload') {
+      return html`<div class="verify-result">
+        No stored request payload for this session, so end-to-end savings can't
+        be replayed. The exact input-token estimate still applies.
+      </div>`;
+    }
+    const pct = Math.round((result.input_pct_saved || 0) * 100);
+    const aborted = result.status === 'aborted_budget';
+    const hasBand =
+      result.end_to_end_delta_median !== null &&
+      result.end_to_end_delta_low !== null &&
+      result.end_to_end_delta_high !== null;
+    return html`
+      <div class="verify-result">
+        <div class="verify-headline">
+          <sl-icon name="clipboard-check"></sl-icon>
+          Measured input savings: ${formatNumber(result.input_delta_tokens)}
+          tokens (${pct}%)
+        </div>
+        ${
+          aborted
+            ? html`<div class="verify-note">
+                End-to-end replay stopped at the spend cap; the input-token
+                number above is exact.
+              </div>`
+            : hasBand
+              ? result.inconclusive
+                ? html`<div class="verify-note">
+                    End-to-end delta was within measurement noise
+                    (${formatNumber(result.end_to_end_delta_low as number)} to
+                    ${formatNumber(result.end_to_end_delta_high as number)}
+                    tokens) — treat the exact input number as the result.
+                  </div>`
+                : html`<div class="verify-note">
+                    End-to-end (incl. output):
+                    ~${formatNumber(result.end_to_end_delta_median as number)}
+                    tokens (band
+                    ${formatNumber(result.end_to_end_delta_low as number)}–${formatNumber(
+                      result.end_to_end_delta_high as number
+                    )},
+                    ${result.n_runs} runs)
+                  </div>`
+              : nothing
+        }
+      </div>
+    `;
+  }
+
+  private renderVerifyConsentDialog() {
+    const suggestion = this.pendingVerify;
+    if (!suggestion) return nothing;
+    return html`
+      <sl-dialog
+        label="Verify savings by replay"
+        open
+        @sl-request-close=${() => {
+          this.pendingVerify = null;
+        }}
+      >
+        <p>
+          This re-runs this session's stored request through the gateway with
+          and without the change applied, to measure the real savings including
+          model output. It re-sends the stored request to the model and spends
+          from your budget (capped per run). Nothing is applied to your live
+          configuration.
+        </p>
+        <sl-button
+          slot="footer"
+          variant="default"
+          @click=${() => {
+            this.pendingVerify = null;
+          }}
+        >
+          Cancel
+        </sl-button>
+        <sl-button slot="footer" variant="primary" @click=${this.confirmVerify}>
+          <sl-icon slot="prefix" name="clipboard-check"></sl-icon>
+          I understand, verify
+        </sl-button>
+      </sl-dialog>
     `;
   }
 
@@ -974,7 +1203,7 @@ export class SessionOptimizationPanel extends LitElement {
           <sl-tab-panel name="history">${this.renderHistoryTab()}</sl-tab-panel>
         </sl-tab-group>
         ${this.renderTransparency()} ${this.renderApplyDialog()}
-        ${this.renderOutputFilterDialog()}
+        ${this.renderOutputFilterDialog()} ${this.renderVerifyConsentDialog()}
       </div>
     `;
   }

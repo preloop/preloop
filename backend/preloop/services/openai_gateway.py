@@ -218,6 +218,7 @@ class OpenAIGatewayService:
         upstream_backend: Optional[ModelGatewayBackend] = None,
         budget_enforcer: Optional[Any] = None,
         client_session_id: Optional[str] = None,
+        skip_runtime_session_resolution: bool = False,
     ) -> None:
         self.db = db
         self.auth_context = auth_context
@@ -227,9 +228,17 @@ class OpenAIGatewayService:
         # Validated/normalized once; invalid values fall back to source keying.
         self._client_session_id = _normalize_client_session_id(client_session_id)
         self._resolved_runtime_session_id: Optional[str] = None
-        self._resolved_runtime_session_attempted = False
+        self._resolved_runtime_session_attempted = skip_runtime_session_resolution
         self._last_context_optimization: Optional[ContextOptimizationStats] = None
         self._last_tools_meta: Optional[List[Dict[str, Any]]] = None
+        # Upstream credential type ("oauth" | "api_key" | "ambient") of the
+        # credential used to call the provider on THIS request, captured at
+        # resolution time and read into the usage row at log time. Powers
+        # subscription-vs-API-key savings denomination. None when never
+        # resolved (error paths, unknown provider) -> non-dollar fallback,
+        # never a false dollar claim. Set at both credential-resolution
+        # choke points; reset there per request to avoid stale carryover.
+        self._last_upstream_credential_type: Optional[str] = None
 
     def _resolve_runtime_session(self) -> Optional[str]:
         if self._resolved_runtime_session_attempted:
@@ -1644,6 +1653,9 @@ class OpenAIGatewayService:
     def _resolve_openai_codex_credentials(
         self, ai_model: AIModel
     ) -> ResolvedModelCredentials:
+        # Reset per request (mirrors _build_completion_kwargs) so an errored
+        # resolution never leaves a stale value on the usage row.
+        self._last_upstream_credential_type = None
         resolved = get_secret_service().resolve_ai_model_credentials(
             ai_model,
             db=self.db,
@@ -1658,6 +1670,9 @@ class OpenAIGatewayService:
                 status_code=400,
                 message="OpenAI Codex OAuth credentials are not configured",
             )
+        # Codex always authenticates upstream via subscription OAuth: no
+        # marginal dollar cost, so savings denominate as rate-limit window.
+        self._last_upstream_credential_type = "oauth"
         payload = resolved.payload or {}
         if not resolved.value or not payload.get("account_id"):
             raise ModelGatewayAPIError(
@@ -2657,6 +2672,9 @@ class OpenAIGatewayService:
         stream: bool,
         provider: GatewayProvider,
     ) -> Dict[str, Any]:
+        # Reset per request so a prior request's value never leaks if
+        # resolution below raises before the credential type is determined.
+        self._last_upstream_credential_type = None
         try:
             resolved_credentials = get_secret_service().resolve_ai_model_credentials(
                 ai_model,
@@ -2695,6 +2713,15 @@ class OpenAIGatewayService:
                 status_code=400,
                 message="Model credentials are not configured",
             )
+        # Record the upstream credential type for savings denomination. oauth
+        # (e.g. Claude Code subscription) has no marginal dollar cost, so its
+        # savings are shown as a share of the rate-limit window, not dollars.
+        if supports_oauth:
+            self._last_upstream_credential_type = "oauth"
+        elif supports_api_key:
+            self._last_upstream_credential_type = "api_key"
+        elif supports_ambient:
+            self._last_upstream_credential_type = "ambient"
 
         kwargs: Dict[str, Any] = {
             "model": self._to_litellm_model(ai_model),
@@ -3678,6 +3705,7 @@ class OpenAIGatewayService:
                     else None
                 ),
                 "tools_meta": self._last_tools_meta,
+                "upstream_credential_type": self._last_upstream_credential_type,
                 "purpose": ((request_payload or {}).get("metadata") or {}).get(
                     "purpose"
                 ),

@@ -57,7 +57,13 @@
  * skips the two-sessions assertion.
  */
 
-import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
+import {
+  test,
+  expect,
+  type APIRequestContext,
+  type Locator,
+  type Page,
+} from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -119,14 +125,40 @@ async function login(page: Page, creds: Creds): Promise<void> {
 }
 
 /**
+ * Read the `.value` of the <sl-copy-button> in the labelled `.command-step`
+ * containing `labelSubstring`. The result screen renders three labelled steps
+ * (base URL, credential, snippet), each mirroring its exact string onto a copy
+ * button. Keying off the visible label is robust to step reordering, unlike
+ * positional `.nth()` indexing. Playwright's CSS engine pierces the wizard's
+ * open shadow root, so `.command-step` resolves inside it.
+ */
+async function readCopyValueByLabel(
+  wizard: Locator,
+  labelSubstring: string
+): Promise<string> {
+  const step = wizard
+    .locator('.command-step')
+    .filter({ hasText: labelSubstring })
+    .first();
+  await step.waitFor({ state: 'attached', timeout: 15_000 });
+  return step
+    .locator('sl-copy-button')
+    .first()
+    .evaluate((el) => (el as HTMLElement & { value: string }).value);
+}
+
+/**
  * Open the deploy wizard, take the "Connect a custom agent" path, register the
- * agent + mint a credential, and return the gateway base URL + minted token
- * read off the result screen.
+ * agent + mint a credential, and return the gateway base URL, minted token, and
+ * copy-paste snippet read off the result screen. Also asserts the result screen
+ * is internally consistent: base URL is the OpenAI-compatible gateway on THIS
+ * origin, the credential is surfaced with a shown-once warning, and the snippet
+ * wires the exact base URL + per-run session header.
  */
 async function runCustomAgentWizard(
   page: Page,
   agentName: string
-): Promise<{ baseUrl: string; token: string }> {
+): Promise<{ baseUrl: string; token: string; snippet: string }> {
   // Navigate to the agents view, which hosts the deploy wizard dialog.
   await page.goto('/console/agents');
 
@@ -159,28 +191,37 @@ async function runCustomAgentWizard(
     .getByRole('button', { name: /Register agent .* mint credential/i })
     .click();
 
-  // Result screen: "Your agent is connected" + base URL + token.
+  // Result screen: "Your agent is connected" + base URL + token + snippet.
   await expect(
     wizard.getByText('Your agent is connected')
   ).toBeVisible({ timeout: 30_000 });
 
-  // The base URL and minted token are rendered in <code class="command-code">
-  // and mirrored onto <sl-copy-button .value>. Read them off the copy buttons,
-  // which carry the exact values.
-  const baseUrl = await wizard
-    .locator('sl-copy-button')
-    .first()
-    .evaluate((el) => (el as HTMLElement & { value: string }).value);
-  // Second copy button holds the credential token (order: base URL, token,
-  // snippet — see renderCustomResultState()).
-  const token = await wizard
-    .locator('sl-copy-button')
-    .nth(1)
-    .evaluate((el) => (el as HTMLElement & { value: string }).value);
+  // The credential is surfaced exactly once with an explicit shown-once warning.
+  await expect(wizard.getByText(/shown only once/i).first()).toBeVisible();
 
-  expect(baseUrl).toMatch(/\/openai\/v1$/);
+  // Read the exact values off each labelled step's copy button (robust to
+  // ordering). See renderCustomResultState() in preloop-deploy-wizard.ts.
+  // Use fully-qualified label text: the snippet body also mentions "gateway
+  // credential" in a comment, so the parenthesised form keys the credential
+  // step unambiguously.
+  const baseUrl = await readCopyValueByLabel(wizard, 'Gateway base URL');
+  const token = await readCopyValueByLabel(wizard, 'Gateway credential (api_key)');
+  const snippet = await readCopyValueByLabel(wizard, 'per-run session id');
+
+  // The gateway base URL must be the OpenAI-compatible endpoint on THIS origin
+  // (dev: http://localhost:5173, staging: https://staging.preloop.ai). This is
+  // exactly how buildGatewayBaseUrl() derives it from window.location.origin.
+  const pageOrigin = await page.evaluate(() => window.location.origin);
+  expect(baseUrl).toBe(`${pageOrigin}/openai/v1`);
   expect(token).toBeTruthy();
-  return { baseUrl, token };
+
+  // The copy-paste snippet must wire the exact base URL AND reference the
+  // per-run session header the gateway reads, so a user pasting it gets working
+  // per-run session attribution out of the box.
+  expect(snippet).toContain(`base_url="${baseUrl}"`);
+  expect(snippet).toContain(SESSION_HEADER);
+
+  return { baseUrl, token, snippet };
 }
 
 /** Fire one gateway chat-completion using the minted token + a session id. */
@@ -232,12 +273,18 @@ test.describe('Custom-agent onboarding + per-run session', () => {
     const creds = resolveCreds();
     await login(page, creds);
     const agentName = `E2E Custom Agent ${Date.now()}`;
-    const { baseUrl, token } = await runCustomAgentWizard(page, agentName);
+    const { baseUrl, token, snippet } = await runCustomAgentWizard(
+      page,
+      agentName
+    );
 
-    // The result screen must expose the OpenAI-compatible gateway base URL and
-    // a per-run session-id snippet referencing the exact header name.
+    // Origin match + snippet wiring are asserted inside runCustomAgentWizard for
+    // both CI and staging. Re-assert the headline surface here so this smoke
+    // test fails loudly if the result screen stops exposing them.
     expect(baseUrl.endsWith('/openai/v1')).toBeTruthy();
     expect(token.length).toBeGreaterThan(8);
+    expect(snippet).toContain(SESSION_HEADER);
+    // The header must also be visible on-screen (not just in the copied value).
     await expect(
       page
         .locator('preloop-deploy-wizard')

@@ -117,6 +117,8 @@ export class AgentsView extends LitElement {
   @state() private showOnboardingDialog = false;
   // Used to track agents count from the last fetch to detect new registrations
   private previousAgentCount = -1;
+  // Used to track the exact set of agent IDs to detect additions/removals for layout resets
+  private previousAgentIds: string[] = [];
   // Tracks if the onboarding dialog was automatically opened at least once upon page load
   private hasAutoOpenedOnboarding = false;
 
@@ -995,6 +997,18 @@ export class AgentsView extends LitElement {
   private initializeNodePositions(forceReset = false) {
     if (!this.agents) return;
     const items = this.getCanvasItems({ includeExiting: false });
+
+    // Detect if agents were added or removed to trigger a layout reset
+    const currentAgentIds = items.map((item) => item.id).sort();
+    const hasMembershipChanged =
+      JSON.stringify(currentAgentIds) !==
+      JSON.stringify(this.previousAgentIds.sort());
+
+    if (hasMembershipChanged) {
+      forceReset = true;
+      this.previousAgentIds = currentAgentIds;
+    }
+
     // Sort items by last active timestamp descending so active nodes get closer slots
     items.sort((a, b) => {
       const aTime = new Date(

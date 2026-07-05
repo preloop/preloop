@@ -15,6 +15,11 @@ from ..models.runtime_session import RuntimeSession
 from ..models.user import User
 from .base import CRUDBase
 
+# Known ``meta_data.purpose`` tags for internal model-gateway usage rows.
+GATEWAY_USAGE_PURPOSES = frozenset(
+    {"session_title", "session_optimization", "replay_validation"}
+)
+
 
 class CRUDApiUsage(CRUDBase[ApiUsage]):
     """CRUD operations for API usage tracking."""
@@ -973,6 +978,8 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         Returns:
             Total estimated gateway spend in USD (``0.0`` when none).
         """
+        if purpose is not None and purpose not in GATEWAY_USAGE_PURPOSES:
+            raise ValueError(f"Invalid gateway usage purpose: {purpose!r}")
         query = db.query(
             func.coalesce(func.sum(self.model.estimated_cost), 0.0)
         ).filter(

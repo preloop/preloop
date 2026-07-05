@@ -11,6 +11,8 @@ from sqlalchemy.dialects.postgresql import insert
 from .base import CRUDBase
 from ..models.budget import BudgetPolicy, BudgetSpendActivity, BudgetPeriod
 
+ACCOUNT_LEVEL_SUBJECT_TYPES = frozenset({"account", "global"})
+
 
 class CRUDBudgetPolicy(CRUDBase[BudgetPolicy]):
     """CRUD operations for BudgetPolicy model."""
@@ -240,8 +242,6 @@ class CRUDBudgetSpendActivity(CRUDBase[BudgetSpendActivity]):
 
 crud_budget_policy = CRUDBudgetPolicy(BudgetPolicy)
 crud_budget_spend = CRUDBudgetSpendActivity(BudgetSpendActivity)
-
-ACCOUNT_LEVEL_SUBJECT_TYPES = frozenset({"account", "global"})
 
 
 def normalize_budget_subject_type(subject_type: str) -> str:

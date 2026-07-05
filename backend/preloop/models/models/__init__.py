@@ -49,6 +49,7 @@ from .runtime_session import RuntimeSession
 from .runtime_session_activity import RuntimeSessionActivity
 from .runtime_session_optimization_action import RuntimeSessionOptimizationAction
 from .runtime_session_optimization_result import RuntimeSessionOptimizationResult
+from .runtime_session_replay_run import RuntimeSessionReplayRun
 from .secret_reference import SecretReference
 from .tool_cost_flag import ToolCostFlag
 from .tool_output_filter import ToolOutputFilter
@@ -125,6 +126,7 @@ __all__ = [
     "RuntimeSession",
     "RuntimeSessionActivity",
     "RuntimeSessionOptimizationAction",
+    "RuntimeSessionReplayRun",
     "RuntimeSessionOptimizationResult",
     "SecretReference",
     "ToolCostFlag",

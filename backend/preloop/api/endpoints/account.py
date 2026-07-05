@@ -102,114 +102,122 @@ AGENT_CONTROL_STATE_PLUGIN_CONFIGURED = "plugin_configured"
 AGENT_CONTROL_STATE_PLUGIN_CONNECTED = "plugin_connected"
 
 
-def _managed_agent_onboarding_flags(
-    latest_enrollment: Optional[dict],
-) -> tuple[bool, bool, str]:
-    if not latest_enrollment:
-        return False, False, "incomplete"
+def _enrollment_section(enrollment: dict, key: str) -> dict:
+    """Return a dict section from an enrollment payload, or an empty dict."""
+    value = enrollment.get(key)
+    return value if isinstance(value, dict) else {}
 
-    validation = (
-        latest_enrollment.get("validation_result")
-        if isinstance(latest_enrollment.get("validation_result"), dict)
-        else {}
-    )
-    managed_config = (
-        latest_enrollment.get("managed_config")
-        if isinstance(latest_enrollment.get("managed_config"), dict)
-        else {}
-    )
 
-    mcp_proxy_configured = bool(
+def _servers_dict_contains_preloop(servers: object) -> bool:
+    """Return True when a servers map includes the Preloop MCP entry."""
+    return isinstance(servers, dict) and "preloop" in servers
+
+
+def _validation_mcp_proxy_configured(validation: dict) -> bool:
+    """Return True when validation flags confirm MCP proxy wiring."""
+    return bool(
         validation.get("preloop_server_present")
         or validation.get("nested_mcp_servers_ok")
-        or (
-            isinstance(managed_config.get("servers"), dict)
-            and "preloop" in managed_config["servers"]
-        )
-        or (
-            isinstance(managed_config.get("mcpServers"), dict)
-            and "preloop" in managed_config["mcpServers"]
-        )
-        or (
-            isinstance(managed_config.get("mcp_servers"), dict)
-            and "preloop" in managed_config["mcp_servers"]
-        )
-        or (
-            isinstance(managed_config.get("mcp"), dict)
-            and isinstance(managed_config["mcp"].get("servers"), dict)
-            and "preloop" in managed_config["mcp"]["servers"]
-        )
-        or (
-            isinstance(managed_config.get("mcp"), dict)
-            and "preloop" in managed_config["mcp"]
-        )
     )
-    # Each CLI adapter emits ``gateway_provider_ok`` and ``gateway_base_url_ok``
-    # in its validation payload after it has rewritten the agent config to
-    # route through Preloop's gateway. Treat that as the canonical signal so
-    # we don't have to re-derive it from each agent's bespoke nested config
-    # shape (Hermes uses ``model.{provider,base_url,api_key,default}``,
-    # OpenClaw uses Anthropic env vars, etc.).
-    cli_gateway_configured = bool(
+
+
+def _managed_config_mcp_proxy_configured(managed_config: dict) -> bool:
+    """Return True when managed config includes a Preloop MCP server entry."""
+    if _servers_dict_contains_preloop(managed_config.get("servers")):
+        return True
+    if _servers_dict_contains_preloop(managed_config.get("mcpServers")):
+        return True
+    if _servers_dict_contains_preloop(managed_config.get("mcp_servers")):
+        return True
+    mcp = managed_config.get("mcp")
+    if isinstance(mcp, dict):
+        if _servers_dict_contains_preloop(mcp.get("servers")):
+            return True
+        if "preloop" in mcp:
+            return True
+    return False
+
+
+def _validation_gateway_configured(validation: dict) -> bool:
+    """Return True when validation flags confirm gateway routing."""
+    return bool(
         validation.get("gateway_provider_ok") and validation.get("gateway_base_url_ok")
     )
-    model_gateway_configured = bool(
-        cli_gateway_configured
-        or validation.get("gateway_model_configured")
-        or (
-            isinstance(managed_config.get("models"), dict)
-            and isinstance(managed_config["models"].get("providers"), dict)
-            and "preloop" in managed_config["models"]["providers"]
+
+
+def _hermes_managed_gateway_configured(managed_config: dict) -> bool:
+    """Return True for Hermes-style managed model gateway config."""
+    model = managed_config.get("model")
+    if not isinstance(model, dict):
+        return False
+    base_url = model.get("base_url")
+    return (
+        model.get("provider") == "custom"
+        and isinstance(base_url, str)
+        and "/openai/v1" in base_url
+        and (
+            isinstance(model.get("api_key"), str)
+            or isinstance(model.get("apiKey"), str)
         )
-        or (
-            managed_config.get("model_provider") == "preloop"
-            and isinstance(managed_config.get("model_providers"), dict)
-            and "preloop" in managed_config["model_providers"]
-        )
-        or (
-            isinstance(managed_config.get("provider"), dict)
-            and "preloop" in managed_config["provider"]
-            and isinstance(managed_config.get("model"), str)
-            and managed_config["model"].startswith("preloop/")
-        )
-        or (
-            # Hermes stores its managed model gateway configuration under
-            # model.{provider,base_url,api_key,default}. Newer CLI builds also
-            # emit gateway_provider_ok / gateway_base_url_ok, but staging can
-            # legitimately contain enrollments written by older CLI binaries
-            # that have the correct managed config but not those validation
-            # flags. Recognize the config shape directly so those agents don't
-            # appear incomplete after successful onboarding.
-            isinstance(managed_config.get("model"), dict)
-            and managed_config["model"].get("provider") == "custom"
-            and isinstance(managed_config["model"].get("base_url"), str)
-            and "/openai/v1" in managed_config["model"]["base_url"]
-            and (
-                isinstance(managed_config["model"].get("api_key"), str)
-                or isinstance(managed_config["model"].get("apiKey"), str)
-            )
-            and (
-                isinstance(managed_config["model"].get("default"), str)
-                or isinstance(managed_config["model"].get("model"), str)
-            )
-        )
-        or (
-            isinstance(managed_config.get("env"), dict)
-            and isinstance(managed_config["env"].get("ANTHROPIC_BASE_URL"), str)
-            and isinstance(managed_config["env"].get("ANTHROPIC_MODEL"), str)
-        )
-        or (
-            isinstance(managed_config.get("baseUrl"), str)
-            and isinstance(managed_config.get("apiKey"), str)
-            and (
-                (
-                    isinstance(managed_config.get("model"), dict)
-                    and isinstance(managed_config["model"].get("name"), str)
-                )
-                or isinstance(managed_config.get("model"), str)
-            )
+        and (
+            isinstance(model.get("default"), str) or isinstance(model.get("model"), str)
         )
     )
+
+
+def _openclaw_managed_gateway_configured(managed_config: dict) -> bool:
+    """Return True for OpenClaw-style Anthropic gateway env wiring."""
+    env = managed_config.get("env")
+    return (
+        isinstance(env, dict)
+        and isinstance(env.get("ANTHROPIC_BASE_URL"), str)
+        and isinstance(env.get("ANTHROPIC_MODEL"), str)
+    )
+
+
+def _generic_managed_gateway_configured(managed_config: dict) -> bool:
+    """Return True for other adapter managed gateway config shapes."""
+    models = managed_config.get("models")
+    if isinstance(models, dict) and isinstance(models.get("providers"), dict):
+        if "preloop" in models["providers"]:
+            return True
+    if (
+        managed_config.get("model_provider") == "preloop"
+        and isinstance(managed_config.get("model_providers"), dict)
+        and "preloop" in managed_config["model_providers"]
+    ):
+        return True
+    provider = managed_config.get("provider")
+    model = managed_config.get("model")
+    if (
+        isinstance(provider, dict)
+        and "preloop" in provider
+        and isinstance(model, str)
+        and model.startswith("preloop/")
+    ):
+        return True
+    base_url = managed_config.get("baseUrl")
+    api_key = managed_config.get("apiKey")
+    if isinstance(base_url, str) and isinstance(api_key, str):
+        nested_model = managed_config.get("model")
+        if isinstance(nested_model, dict) and isinstance(nested_model.get("name"), str):
+            return True
+        if isinstance(nested_model, str):
+            return True
+    return False
+
+
+def _managed_config_gateway_configured(managed_config: dict) -> bool:
+    """Return True when managed config routes models through Preloop."""
+    return (
+        _hermes_managed_gateway_configured(managed_config)
+        or _openclaw_managed_gateway_configured(managed_config)
+        or _generic_managed_gateway_configured(managed_config)
+    )
+
+
+def _live_validation_disables_gateway(validation: dict) -> bool:
+    """Return True when live validation results invalidate gateway onboarding."""
     live_validation_status = str(validation.get("live_validation_status") or "").strip()
     live_validation_failed = live_validation_status in {"failed", "throttled"}
     live_validation_missing_gateway = (
@@ -224,10 +232,30 @@ def _managed_agent_onboarding_flags(
         or validation.get("model_provider_rewritten") is False
         or validation.get("gateway_model_configured") is False
     )
-    if (live_validation_failed or live_validation_missing_gateway) and (
+    return (live_validation_failed or live_validation_missing_gateway) and (
         explicit_gateway_unavailable
         or validation.get("live_validation_attempted") is True
-    ):
+    )
+
+
+def _managed_agent_onboarding_flags(
+    latest_enrollment: Optional[dict],
+) -> tuple[bool, bool, str]:
+    if not latest_enrollment:
+        return False, False, "incomplete"
+
+    validation = _enrollment_section(latest_enrollment, "validation_result")
+    managed_config = _enrollment_section(latest_enrollment, "managed_config")
+
+    mcp_proxy_configured = _validation_mcp_proxy_configured(
+        validation
+    ) or _managed_config_mcp_proxy_configured(managed_config)
+    cli_gateway_configured = _validation_gateway_configured(validation)
+    model_gateway_configured = cli_gateway_configured or (
+        bool(validation.get("gateway_model_configured"))
+        or _managed_config_gateway_configured(managed_config)
+    )
+    if _live_validation_disables_gateway(validation):
         model_gateway_configured = False
 
     if mcp_proxy_configured and model_gateway_configured:

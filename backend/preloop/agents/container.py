@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import shlex
 from typing import Any, Dict, Optional
 
 import aiodocker
@@ -1421,8 +1422,8 @@ class ContainerAgentExecutor(AgentExecutor):
 
         return [
             "mkdir -p /workspace",
-            f'git config --global user.name "{git_user_name}"',
-            f'git config --global user.email "{git_user_email}"',
+            f"git config --global user.name {shlex.quote(git_user_name)}",
+            f"git config --global user.email {shlex.quote(git_user_email)}",
         ]
 
     def _resolve_repository_clone_url(
@@ -1573,10 +1574,10 @@ fi
     ) -> str:
         """Build the guarded ``git clone`` shell command."""
 
-        branch_arg = f" -b {clone_branch}" if clone_branch else ""
+        branch_arg = f" -b {shlex.quote(clone_branch)}" if clone_branch else ""
         return f"""
 echo "Cloning repository to {full_path}..."
-if ! git clone{branch_arg} {repo_url} {full_path}; then
+if ! git clone{branch_arg} {shlex.quote(repo_url)} {shlex.quote(full_path)}; then
     echo "========================================="
     echo "FATAL ERROR: Git clone failed!"
     echo "Could not clone repository to {full_path}"
@@ -1597,42 +1598,49 @@ fi
     ) -> str:
         """Build post-clone branch and commit checkout commands."""
 
+        q_path = shlex.quote(full_path)
+        q_source = shlex.quote(source_branch)
+        q_target = shlex.quote(target_branch)
+
         if commit_sha:
+            q_commit = shlex.quote(commit_sha)
+            q_commit_short = shlex.quote(commit_sha[:8])
             mr_fetch_ref = self._extract_merge_request_ref_from_trigger(trigger_data)
             mr_fetch_line = ""
             if mr_fetch_ref:
+                q_mr_ref = shlex.quote(mr_fetch_ref)
                 mr_fetch_line = (
-                    f'echo "Fetching merge request ref {mr_fetch_ref}..."\n'
-                    f"git fetch origin {mr_fetch_ref}:preloop-mr-head "
+                    f"echo Fetching merge request ref {q_mr_ref}...\n"
+                    f"git fetch origin {q_mr_ref}:preloop-mr-head "
                     f"2>/dev/null || true"
                 )
             return f"""
-cd {full_path}
+cd {q_path}
 echo "========================================="
-echo "Checking out specific commit: {commit_sha}"
+echo Checking out specific commit: {q_commit}
 echo "========================================="
-if ! git checkout {commit_sha} 2>/dev/null; then
+if ! git checkout {q_commit} 2>/dev/null; then
     echo "Direct checkout failed, fetching commit..."
-    git fetch origin {commit_sha} 2>/dev/null || true
+    git fetch origin {q_commit} 2>/dev/null || true
 fi
-if ! git checkout {commit_sha} 2>/dev/null; then
-    echo "Commit fetch failed, trying source branch {source_branch}..."
-    git fetch origin {source_branch}:preloop-source-head 2>/dev/null || true
+if ! git checkout {q_commit} 2>/dev/null; then
+    echo "Commit fetch failed, trying source branch {q_source}..."
+    git fetch origin {q_source}:preloop-source-head 2>/dev/null || true
 fi
-if ! git checkout {commit_sha} 2>/dev/null; then
+if ! git checkout {q_commit} 2>/dev/null; then
 {mr_fetch_line}
-    if ! git checkout {commit_sha} 2>/dev/null; then
+    if ! git checkout {q_commit} 2>/dev/null; then
         echo "========================================="
-        echo "FATAL ERROR: Could not checkout commit {commit_sha[:8]}"
+        echo "FATAL ERROR: Could not checkout commit {q_commit_short}"
         echo "Tried direct checkout, commit fetch, source branch, and MR ref."
         echo "========================================="
         exit 1
     fi
 fi
-echo "Creating agent target branch {target_branch} from commit {commit_sha[:8]}"
-if ! git checkout -b {target_branch}; then
+echo Creating agent target branch {q_target} from commit {q_commit_short}
+if ! git checkout -b {q_target}; then
     echo "========================================="
-    echo "FATAL ERROR: Could not create target branch '{target_branch}'"
+    echo "FATAL ERROR: Could not create target branch {q_target}"
     echo "========================================="
     exit 1
 fi
@@ -1640,17 +1648,17 @@ cd /workspace
 """.strip()
 
         return f"""
-cd {full_path}
-echo "Setting up branches: source={source_branch}, target={target_branch}"
+cd {q_path}
+echo Setting up branches: source={q_source}, target={q_target}
 # Checkout source branch (create if it doesn't exist remotely)
-if ! git checkout {source_branch} 2>/dev/null; then
-    echo "Source branch '{source_branch}' not found, creating from current HEAD"
-    git checkout -b {source_branch}
+if ! git checkout {q_source} 2>/dev/null; then
+    echo Source branch {q_source} not found, creating from current HEAD
+    git checkout -b {q_source}
 fi
 # Create and checkout target branch for commits
-if ! git checkout -b {target_branch}; then
+if ! git checkout -b {q_target}; then
     echo "========================================="
-    echo "FATAL ERROR: Could not create target branch '{target_branch}'"
+    echo "FATAL ERROR: Could not create target branch {q_target}"
     echo "========================================="
     exit 1
 fi
@@ -1667,19 +1675,25 @@ cd /workspace
     ) -> str:
         """Build shell that verifies the clone succeeded."""
 
-        sha_display = f'\necho "  Commit: {commit_sha}"' if commit_sha else ""
+        q_path = shlex.quote(full_path)
+        q_git_dir = shlex.quote(f"{full_path}/.git")
+        q_source = shlex.quote(source_branch)
+        q_target = shlex.quote(target_branch)
+        sha_display = (
+            f'\necho "  Commit: {shlex.quote(commit_sha)}"' if commit_sha else ""
+        )
         return f"""
-if [ ! -d "{full_path}" ] || [ ! -d "{full_path}/.git" ]; then
+if [ ! -d {q_path} ] || [ ! -d {q_git_dir} ]; then
     echo "========================================="
     echo "FATAL ERROR: Git clone validation failed!"
-    echo "Repository directory '{full_path}' does not exist or is not a git repository."
+    echo "Repository directory {q_path} does not exist or is not a git repository."
     echo "Flow execution cannot continue without repository access."
     echo "========================================="
     exit 1
 fi
 echo "========================================="
-echo "✓ Repository successfully cloned to {full_path}"
-echo "  Branch: {target_branch} (from {source_branch})"{sha_display}
+echo "✓ Repository successfully cloned to {q_path}"
+echo "  Branch: {q_target} (from {q_source})"{sha_display}
 echo "========================================="
 """.strip()
 

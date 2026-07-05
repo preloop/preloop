@@ -241,6 +241,101 @@ def test_call_litellm_maps_claude_code_oauth_refresh_failure():
     upstream_backend.completion.assert_not_called()
 
 
+def _oauth_service_and_model():
+    auth_context = ModelGatewayAuthContext(
+        token="token",
+        user=SimpleNamespace(id="user-1", account_id="account-1"),
+    )
+    service = OpenAIGatewayService(
+        MagicMock(), auth_context, upstream_backend=MagicMock()
+    )
+    ai_model = SimpleNamespace(
+        provider_name="anthropic",
+        model_identifier="claude-opus-4-6",
+        api_endpoint=None,
+        meta_data={},
+    )
+    return service, ai_model
+
+
+def test_call_litellm_records_oauth_upstream_credential_type():
+    """T12: subscription-OAuth traffic is tagged 'oauth' for savings denomination."""
+    service, ai_model = _oauth_service_and_model()
+    with patch(
+        "preloop.services.openai_gateway.get_secret_service"
+    ) as mock_secret_service:
+        mock_secret_service.return_value.resolve_ai_model_credentials.return_value = (
+            SimpleNamespace(
+                credential_type="oauth_anthropic_claude_code",
+                value="sk-ant-oat01-access-token",
+            )
+        )
+        service._call_litellm(
+            ai_model,
+            messages=[{"role": "user", "content": "Hello"}],
+            payload={"max_tokens": 1},
+            provider="anthropic",
+        )
+    assert service._last_upstream_credential_type == "oauth"
+
+
+def test_call_litellm_records_api_key_upstream_credential_type():
+    """T12: API-key traffic is tagged 'api_key' (dollar-denominated savings)."""
+    auth_context = ModelGatewayAuthContext(
+        token="token",
+        user=SimpleNamespace(id="user-1", account_id="account-1"),
+    )
+    service = OpenAIGatewayService(
+        MagicMock(), auth_context, upstream_backend=MagicMock()
+    )
+    ai_model = SimpleNamespace(
+        provider_name="openai",
+        model_identifier="gpt-5",
+        api_endpoint=None,
+        meta_data={},
+    )
+    with patch(
+        "preloop.services.openai_gateway.get_secret_service"
+    ) as mock_secret_service:
+        mock_secret_service.return_value.resolve_ai_model_credentials.return_value = (
+            SimpleNamespace(credential_type="api_key", value="sk-provider-key")
+        )
+        service._call_litellm(
+            ai_model,
+            messages=[{"role": "user", "content": "Hello"}],
+            payload={"max_tokens": 1},
+            provider="openai",
+        )
+    assert service._last_upstream_credential_type == "api_key"
+
+
+def test_call_litellm_resets_upstream_credential_type_on_refresh_failure():
+    """T12 safety: an errored resolution must not leave a prior request's value."""
+    service, ai_model = _oauth_service_and_model()
+    # Simulate a stale value carried over from a previous request on this
+    # reused service instance.
+    service._last_upstream_credential_type = "oauth"
+    with patch(
+        "preloop.services.openai_gateway.get_secret_service"
+    ) as mock_secret_service:
+        mock_secret_service.return_value.resolve_ai_model_credentials.side_effect = (
+            CredentialRefreshError(
+                "refresh failed",
+                provider="anthropic",
+                status_code=403,
+                code="1010",
+            )
+        )
+        with pytest.raises(ModelGatewayAPIError):
+            service._call_litellm(
+                ai_model,
+                messages=[{"role": "user", "content": "Hello"}],
+                payload={"max_tokens": 1},
+                provider="anthropic",
+            )
+    assert service._last_upstream_credential_type is None
+
+
 def test_litellm_backend_masks_ambient_anthropic_api_key_for_oauth(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "ambient-platform-key")
     monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
