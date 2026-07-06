@@ -108,6 +108,7 @@ p.lead {
 .hero-inner.has-visual .hero-content {
   flex: 0 0 520px;
   max-width: 520px;
+  flex-shrink: 0;
 }
 
 /* Narrower copy column needs a smaller headline so it doesn't wrap to 4 lines. */
@@ -118,6 +119,7 @@ p.lead {
 .hero-visual {
   flex: 1.5 1 0;
   min-width: 0;
+  flex-shrink: 0;
   cursor: pointer;
   transition: transform 0.2s ease-out;
 }
@@ -1045,24 +1047,64 @@ summary.faq-question:hover sl-icon {
   }
 }
 
-@media (max-width: 768px) {
+@media (max-width: 1150px) {
   .hero-inner {
+    display: flex;
     flex-direction: column;
     text-align: center;
   }
 
-  .hero-content,
-  .hero-inner.has-visual .hero-content {
-    max-width: 100%;
+  .hero-content {
+    display: contents;
+  }
+
+  .product-hunt-badge {
+    order: 0;
+  }
+
+  .hero-content h1 {
+    order: 1;
+    width: 100%;
+  }
+
+  .hero-content .lead {
+    order: 2;
+    width: 100%;
+    margin-bottom: 2rem;
   }
 
   .hero-visual {
-    display: none;
+    order: 3;
+    display: block;
+    width: 100%;
+    margin-top: 0;
+    margin-bottom: 3rem;
+  }
+
+  .hero-buttons {
+    order: 4;
+    justify-content: center;
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .hero-install {
+    order: 5;
+    margin-left: auto;
+    margin-right: auto;
+    text-align: center;
+    width: 100%;
+    margin-top: 2rem;
   }
 
   .hero-trust-tags {
+    order: 6;
     justify-content: center;
+    width: 100%;
   }
+}
+
+@media (max-width: 768px) {
 
   .hero-content h1 {
     font-size: 2.8rem;
@@ -1074,17 +1116,7 @@ summary.faq-question:hover sl-icon {
     font-size: 1.1rem;
   }
 
-  .hero-buttons {
-    justify-content: center;
-    flex-wrap: wrap;
-  }
 
-  .hero-install {
-    margin-left: auto;
-    margin-right: auto;
-    text-align: center;
-    width: 100%;
-  }
 
   .hero-install-row {
     font-size: 0.85rem;

@@ -26,9 +26,6 @@ def generate_openapi_schema() -> None:
     openapi_schema = app.openapi()
 
     output_paths = [project_root / "openapi.yaml"]
-    docs_output = project_root.parent / "docs" / "guide" / "assets" / "openapi.yaml"
-    if docs_output.parent.exists():
-        output_paths.append(docs_output)
 
     for output_path in output_paths:
         print(f"Writing schema to {output_path}...")

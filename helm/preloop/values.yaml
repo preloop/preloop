@@ -286,6 +286,19 @@ database:
       max_wal_size: "2GB"
       min_wal_size: "1GB"
       checkpoint_completion_target: "0.9"
+    # CNPG rolling-update / shutdown behaviour. Tune per environment via --set.
+    lifecycle:
+      primaryUpdateStrategy: unsupervised
+      # Use switchover for HA (instances > 1); restart is fine for single-instance.
+      primaryUpdateMethod: restart
+      stopDelay: 1800
+      smartShutdownTimeout: 180
+      switchoverDelay: 3600
+      startDelay: 3600
+      failoverDelay: 0
+      enablePDB: true
+      # Align kube grace period with stopDelay (+60s buffer for CNPG shutdown hooks).
+      terminationGracePeriodSeconds: 1860
 
 # Sentry configuration for error tracking
 sentry:

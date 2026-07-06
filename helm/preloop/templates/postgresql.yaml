@@ -1,4 +1,11 @@
 {{- if and .Values.database.enabled (not .Values.database.external) }}
+{{- $instances := int .Values.database.cnpg.instances }}
+{{- $lifecycle := .Values.database.cnpg.lifecycle }}
+{{- $primaryUpdateMethod := $lifecycle.primaryUpdateMethod }}
+{{- if gt $instances 1 }}
+{{- $primaryUpdateMethod = "switchover" }}
+{{- end }}
+{{- $enablePDB := and $lifecycle.enablePDB (gt $instances 1) }}
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
@@ -6,13 +13,13 @@ metadata:
   labels:
     {{- include "preloop.labels" . | nindent 4 }}
 spec:
-  instances: {{ .Values.database.cnpg.instances }}
+  instances: {{ $instances }}
   imageName: {{ .Values.database.cnpg.imageName }}
-  primaryUpdateStrategy: unsupervised
-  primaryUpdateMethod: restart
+  primaryUpdateStrategy: {{ $lifecycle.primaryUpdateStrategy }}
+  primaryUpdateMethod: {{ $primaryUpdateMethod }}
 
   # HA: replication slots for reliable WAL streaming to replicas
-  {{- if gt (int .Values.database.cnpg.instances) 1 }}
+  {{- if gt $instances 1 }}
   replicationSlots:
     highAvailability:
       enabled: true
@@ -27,12 +34,17 @@ spec:
     podAntiAffinityType: preferred
 
   # Graceful shutdown/failover timeouts
-  failoverDelay: 0
-  switchoverDelay: 3600
-  smartShutdownTimeout: 180
-  startDelay: 3600
-  stopDelay: 1800
-  enablePDB: true
+  failoverDelay: {{ $lifecycle.failoverDelay }}
+  switchoverDelay: {{ $lifecycle.switchoverDelay }}
+  smartShutdownTimeout: {{ $lifecycle.smartShutdownTimeout }}
+  startDelay: {{ $lifecycle.startDelay }}
+  stopDelay: {{ $lifecycle.stopDelay }}
+  enablePDB: {{ $enablePDB }}
+  {{- with $lifecycle.terminationGracePeriodSeconds }}
+  podTemplate:
+    spec:
+      terminationGracePeriodSeconds: {{ . }}
+  {{- end }}
   postgresql:
     parameters:
       {{- range $key, $value := .Values.database.cnpg.parameters }}

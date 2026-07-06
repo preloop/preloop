@@ -118,7 +118,7 @@ export class AgentsView extends LitElement {
   // Used to track agents count from the last fetch to detect new registrations
   private previousAgentCount = -1;
   // Used to track the exact set of agent IDs to detect additions/removals for layout resets
-  private previousAgentIds: string[] = [];
+  private previousAgentIds: string[] | null = null;
   // Tracks if the onboarding dialog was automatically opened at least once upon page load
   private hasAutoOpenedOnboarding = false;
 
@@ -483,6 +483,11 @@ export class AgentsView extends LitElement {
       }
 
       /* Canvas specific styles */
+      .section-container {
+        max-width: 1400px;
+        margin: 0 auto;
+        padding: 0 2rem;
+      }
       .content-bounds {
         width: 100%;
         max-width: 80rem;
@@ -982,7 +987,22 @@ export class AgentsView extends LitElement {
         this.getCanvasItems({ includeExiting: false }),
         previousCanvasItems
       );
-      this.initializeNodePositions(false);
+
+      const items = this.getCanvasItems({ includeExiting: false });
+      const currentAgentIds = items.map((item) => item.id).sort();
+      const hasMembershipChanged =
+        this.previousAgentIds !== null &&
+        (currentAgentIds.length !== this.previousAgentIds.length ||
+          JSON.stringify(currentAgentIds) !==
+            JSON.stringify(this.previousAgentIds));
+
+      if (hasMembershipChanged) {
+        // Membership changed (agent added/removed). Trigger a full view reset.
+        this.resetView();
+      } else {
+        this.initializeNodePositions(false);
+      }
+      this.previousAgentIds = currentAgentIds;
     } catch (error) {
       console.error('Failed to load managed agents or gateway summary:', error);
       this.error =
@@ -999,15 +1019,19 @@ export class AgentsView extends LitElement {
     const items = this.getCanvasItems({ includeExiting: false });
 
     // Detect if agents were added or removed to trigger a layout reset
-    const currentAgentIds = items.map((item) => item.id).sort();
+    const currentAgentIds = [...items.map((item) => item.id)].sort();
     const hasMembershipChanged =
-      JSON.stringify(currentAgentIds) !==
-      JSON.stringify(this.previousAgentIds.sort());
+      this.previousAgentIds !== null &&
+      (currentAgentIds.length !== this.previousAgentIds.length ||
+        JSON.stringify(currentAgentIds) !==
+          JSON.stringify(this.previousAgentIds));
 
     if (hasMembershipChanged) {
       forceReset = true;
-      this.previousAgentIds = currentAgentIds;
     }
+
+    // Always update the tracking list
+    this.previousAgentIds = currentAgentIds;
 
     // Sort items by last active timestamp descending so active nodes get closer slots
     items.sort((a, b) => {
@@ -1234,7 +1258,10 @@ export class AgentsView extends LitElement {
     let prevR = 0;
 
     while (candidates.length < desiredCount) {
-      const N = remainingVisible > 0 ? Math.min(8, remainingVisible) : 8;
+      let N = remainingVisible > 0 ? Math.min(8, remainingVisible) : 8;
+      if (layerIdx === 0 && visibleCount > 1) {
+        N = Math.max(6, N);
+      }
       remainingVisible -= N;
 
       let R = layerIdx === 0 ? minRFromGateway : prevR + minDy;
@@ -1294,6 +1321,16 @@ export class AgentsView extends LitElement {
       }
 
       layerIdx++;
+    }
+
+    // If we have fewer items than candidates in the first layer, distribute them better
+    if (layerIdx === 1 && candidates.length > desiredCount) {
+      const distributed: Array<{ x: number; y: number }> = [];
+      const step = candidates.length / desiredCount;
+      for (let i = 0; i < desiredCount; i++) {
+        distributed.push(candidates[Math.floor(i * step)]);
+      }
+      return distributed;
     }
 
     return candidates.slice(0, desiredCount);
@@ -2785,7 +2822,7 @@ export class AgentsView extends LitElement {
               </sl-button>
             </sl-tooltip>
             <sl-tooltip content="Reset View" placement="left">
-              <sl-button size="medium" circle @click=${this.resetView}>
+              <sl-button size="medium" circle @click=${() => this.resetView()}>
                 <sl-icon name="arrows-collapse"></sl-icon>
               </sl-button>
             </sl-tooltip>
@@ -3420,7 +3457,7 @@ export class AgentsView extends LitElement {
             style="color: var(--sl-color-neutral-500); font-size: 0.9rem; margin-top: -12px; margin-bottom: var(--sl-spacing-large);"
           >
             Connections, telemetry, and live sessions managed by the Preloop
-            gateway.
+            gateway
           </div>
 
           <div class="agents-toolbar">

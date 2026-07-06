@@ -133,7 +133,7 @@ export class LandingView extends LitElement {
         margin: 0 auto;
       }
 
-      @media (min-width: 900px) {
+      @media (min-width: 1100px) {
         .feature-stacked-block {
           flex-direction: row;
           gap: 6rem;
@@ -153,6 +153,7 @@ export class LandingView extends LitElement {
       .feature-stacked-image-wrapper {
         flex: 1.5;
         width: 100%;
+        flex-shrink: 0;
         cursor: pointer;
         transition: transform 0.2s ease-out;
       }

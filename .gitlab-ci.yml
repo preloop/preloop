@@ -563,9 +563,24 @@ test:coverage:
     - helm repo add nats https://nats-io.github.io/k8s/helm/charts
     - helm dependency update ./helm/preloop
     - helm dependency build ./helm/preloop
-    - helm uninstall oss-$CI_COMMIT_REF_SLUG --namespace ${NAMESPACE} || true
+    # Do NOT helm uninstall before upgrade. Uninstall deletes the CNPG Cluster CR
+    # while the old pod is still Terminating (stopDelay up to 30 min). The new
+    # install then races for the same RWO PVC and hangs until the pod is force-deleted.
+    - EPHEMERAL_DB_ARGS=""
+    - |
+      if [ "${SEED_ENABLED}" = "true" ]; then
+        EPHEMERAL_DB_ARGS="\
+          --set database.cnpg.lifecycle.stopDelay=120 \
+          --set database.cnpg.lifecycle.smartShutdownTimeout=60 \
+          --set database.cnpg.lifecycle.terminationGracePeriodSeconds=180 \
+          --set database.cnpg.resilience.enabled=true"
+      fi
     - helm upgrade --install ${ENV_NAME} ./helm/preloop
       --namespace ${NAMESPACE}
+      --timeout 20m
+      --wait
+      --wait-for-jobs
+      ${EPHEMERAL_DB_ARGS}
       --set image.repository=${CI_REGISTRY_IMAGE}
       --set image.tag=${CI_COMMIT_SHA}
       --set console.tag=${CI_COMMIT_SHA}
@@ -757,6 +772,19 @@ test:integration:api:hermes:
   script:
     - helm delete ${ENV_NAME} --namespace $NAMESPACE || true
     - kubectl delete job --namespace $NAMESPACE ${ENV_NAME}-preloop-migration-job ${ENV_NAME}-preloop-init-db-job ${ENV_NAME}-preloop-webhook-cleanup-job || true
+    # CNPG graceful shutdown can take minutes; don't leave Terminating pods blocking
+    # the PVC if this branch is redeployed before cleanup finishes.
+    - CNPG_CLUSTER="${ENV_NAME}-preloop-db"
+    - kubectl delete cluster.postgresql.cnpg.io --namespace $NAMESPACE ${CNPG_CLUSTER} --ignore-not-found --wait=false
+    - |
+      kubectl wait --for=delete pod \
+        --namespace "$NAMESPACE" \
+        -l "cnpg.io/cluster=${CNPG_CLUSTER}" \
+        --timeout=180s || \
+      kubectl delete pod \
+        --namespace "$NAMESPACE" \
+        -l "cnpg.io/cluster=${CNPG_CLUSTER}" \
+        --force --grace-period=0 || true
 
 stop-test-env:
   extends: .stop-env:template
