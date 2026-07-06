@@ -488,22 +488,26 @@ export class NotificationPreferencesView extends AuthedElement {
         <p>Manage how you receive approval request notifications</p>
       </div>
 
-      ${this.successMessage
-        ? html`
-            <sl-alert variant="success" open closable>
-              <sl-icon slot="icon" name="check-circle"></sl-icon>
-              ${this.successMessage}
-            </sl-alert>
-          `
-        : ''}
-      ${this.errorMessage
-        ? html`
-            <sl-alert variant="danger" open closable>
-              <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
-              ${this.errorMessage}
-            </sl-alert>
-          `
-        : ''}
+      ${
+        this.successMessage
+          ? html`
+              <sl-alert variant="success" open closable>
+                <sl-icon slot="icon" name="check-circle"></sl-icon>
+                ${this.successMessage}
+              </sl-alert>
+            `
+          : ''
+      }
+      ${
+        this.errorMessage
+          ? html`
+              <sl-alert variant="danger" open closable>
+                <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+                ${this.errorMessage}
+              </sl-alert>
+            `
+          : ''
+      }
 
       <div class="content">
         <sl-card>
@@ -552,64 +556,71 @@ export class NotificationPreferencesView extends AuthedElement {
             </sl-button>
           </div>
 
-          ${this.preferences?.mobile_device_tokens &&
-          this.preferences.mobile_device_tokens.length > 0
-            ? html`
-                <div class="devices-list">
-                  ${this.preferences.mobile_device_tokens.map(
-                    (device) => html`
-                      <div class="device-item">
-                        <div class="device-info">
-                          <div class="device-platform">
-                            <sl-icon
-                              name=${device.platform === 'ios'
-                                ? 'phone'
-                                : 'phone-fill'}
-                              style="font-size: 1.5rem;"
-                            ></sl-icon>
-                            <sl-badge
-                              variant=${device.platform === 'ios'
-                                ? 'primary'
-                                : 'success'}
-                            >
-                              ${device.platform === 'ios' ? 'iOS' : 'Android'}
-                            </sl-badge>
-                          </div>
-                          <div class="device-details">
-                            <div class="device-token">
-                              ${device.token.substring(0, 20)}...
+          ${
+            this.preferences?.mobile_device_tokens &&
+            this.preferences.mobile_device_tokens.length > 0
+              ? html`
+                  <div class="devices-list">
+                    ${this.preferences.mobile_device_tokens.map(
+                      (device) => html`
+                        <div class="device-item">
+                          <div class="device-info">
+                            <div class="device-platform">
+                              <sl-icon
+                                name=${
+                                  device.platform === 'ios'
+                                    ? 'phone'
+                                    : 'phone-fill'
+                                }
+                                style="font-size: 1.5rem;"
+                              ></sl-icon>
+                              <sl-badge
+                                variant=${
+                                  device.platform === 'ios'
+                                    ? 'primary'
+                                    : 'success'
+                                }
+                              >
+                                ${device.platform === 'ios' ? 'iOS' : 'Android'}
+                              </sl-badge>
                             </div>
-                            <div class="device-date">
-                              Registered:
-                              ${this.formatDate(device.registered_at)}
+                            <div class="device-details">
+                              <div class="device-token">
+                                ${device.token.substring(0, 20)}...
+                              </div>
+                              <div class="device-date">
+                                Registered:
+                                ${this.formatDate(device.registered_at)}
+                              </div>
                             </div>
                           </div>
+                          <sl-button
+                            size="small"
+                            variant="danger"
+                            @click=${() =>
+                              this.handleUnregisterDevice(device.token)}
+                          >
+                            <sl-icon slot="prefix" name="trash"></sl-icon>
+                            Unregister
+                          </sl-button>
                         </div>
-                        <sl-button
-                          size="small"
-                          variant="danger"
-                          @click=${() =>
-                            this.handleUnregisterDevice(device.token)}
-                        >
-                          <sl-icon slot="prefix" name="trash"></sl-icon>
-                          Unregister
-                        </sl-button>
-                      </div>
-                    `
-                  )}
-                </div>
-              `
-            : html`
-                <div class="empty-state">
-                  <sl-icon name="phone"></sl-icon>
-                  <p>No mobile devices registered</p>
-                  <p
-                    style="font-size: var(--sl-font-size-small); margin-top: var(--sl-spacing-small);"
-                  >
-                    Scan a QR code with your mobile app to register your device
-                  </p>
-                </div>
-              `}
+                      `
+                    )}
+                  </div>
+                `
+              : html`
+                  <div class="empty-state">
+                    <sl-icon name="phone"></sl-icon>
+                    <p>No mobile devices registered</p>
+                    <p
+                      style="font-size: var(--sl-font-size-small); margin-top: var(--sl-spacing-small);"
+                    >
+                      Scan a QR code with your mobile app to register your
+                      device
+                    </p>
+                  </div>
+                `
+          }
         </sl-card>
 
         <div class="app-store-links">
@@ -642,31 +653,33 @@ export class NotificationPreferencesView extends AuthedElement {
         @sl-request-close=${this.handleCloseQRDialog}
         style="--width: 600px;"
       >
-        ${this.qrCodeData
-          ? html`
-              <div class="qr-container">
-                <div class="qr-instructions">
-                  <h4>Scan with your mobile app</h4>
-                  <p>
-                    Open the Preloop mobile app and scan this QR code to
-                    register your device for push notifications.
-                  </p>
-                </div>
+        ${
+          this.qrCodeData
+            ? html`
+                <div class="qr-container">
+                  <div class="qr-instructions">
+                    <h4>Scan with your mobile app</h4>
+                    <p>
+                      Open the Preloop mobile app and scan this QR code to
+                      register your device for push notifications.
+                    </p>
+                  </div>
 
-                <div class="qr-code-wrapper">
-                  <sl-qr-code
-                    value=${this.qrCodeData.qr_data}
-                    size="300"
-                  ></sl-qr-code>
-                </div>
+                  <div class="qr-code-wrapper">
+                    <sl-qr-code
+                      value=${this.qrCodeData.qr_data}
+                      size="300"
+                    ></sl-qr-code>
+                  </div>
 
-                <div class="qr-expiry">
-                  <sl-icon name="clock"></sl-icon>
-                  Expires in: ${this.formatExpiry(this.qrExpiry)}
+                  <div class="qr-expiry">
+                    <sl-icon name="clock"></sl-icon>
+                    Expires in: ${this.formatExpiry(this.qrExpiry)}
+                  </div>
                 </div>
-              </div>
-            `
-          : html`<sl-spinner></sl-spinner>`}
+              `
+            : html`<sl-spinner></sl-spinner>`
+        }
 
         <sl-button slot="footer" @click=${this.handleCloseQRDialog}>
           Close

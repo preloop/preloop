@@ -78,6 +78,60 @@ describe('PreloopSessionObserver', () => {
           { status: 200, headers: { 'Content-Type': 'application/json' } }
         );
       }
+      if (url.includes('/requests')) {
+        const failedOnly = url.includes('failed_only=true');
+        const items = [
+          {
+            id: 'req-ok',
+            timestamp: '2026-03-09T20:00:00Z',
+            model_alias: 'gpt-4o',
+            provider_name: 'openai',
+            status_code: 200,
+            is_error: false,
+            finish_reason: 'stop',
+            is_retry: false,
+            prompt_tokens: 500,
+            completion_tokens: 500,
+            total_tokens: 1000,
+            estimated_cost: 0.02,
+            endpoint: '/v1/chat/completions',
+            tools: [],
+            tools_total_schema_tokens: 0,
+          },
+          {
+            id: 'req-fail',
+            timestamp: '2026-03-09T20:05:00Z',
+            model_alias: 'gpt-4o',
+            provider_name: 'openai',
+            status_code: 500,
+            is_error: true,
+            finish_reason: null,
+            is_retry: false,
+            prompt_tokens: 10,
+            completion_tokens: 0,
+            total_tokens: 10,
+            estimated_cost: 0.0,
+            endpoint: '/v1/chat/completions',
+            tools: [],
+            tools_total_schema_tokens: 0,
+          },
+        ];
+        const filtered = failedOnly
+          ? items.filter((item) => item.is_error)
+          : items;
+        return new Response(
+          JSON.stringify({
+            items: filtered,
+            total: filtered.length,
+            failed_count: 1,
+            limit: 25,
+            offset: 0,
+            next_offset: null,
+            has_more: false,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
       if (url.includes('/gateway-events')) {
         return new Response(
           JSON.stringify({
@@ -225,10 +279,12 @@ describe('PreloopSessionObserver', () => {
     );
     const text = deepText(el.shadowRoot);
     expect(text).to.include('Claude Workspace');
-    expect(text).to.include('Supporting activity (1)');
+    // The unified chat renders the conversation as turns (supporting activity is
+    // now inline rather than in a separate "Supporting activity" section).
+    expect(text).to.include('Build a widget');
     expect(text).to.not.include('Duplicate model summary');
-    expect(text).to.include('Open replay');
-    expect(text).to.include('Summarize');
+    expect(text).to.include('Transcript');
+    expect(text).to.include('Replay');
     expect(
       fetchStub.calledWithMatch(
         '/api/v1/runtime-sessions/runtime-session-1/optimizations'
@@ -250,11 +306,11 @@ describe('PreloopSessionObserver', () => {
         timeout: 3000,
       }
     );
-    const chatButton = Array.from(
+    const replayButton = Array.from(
       el.shadowRoot?.querySelectorAll('sl-button') || []
-    ).find((button) => button.textContent?.trim() === 'chat');
-    expect(chatButton).to.exist;
-    chatButton!.click();
+    ).find((button) => button.textContent?.trim() === 'Replay');
+    expect(replayButton).to.exist;
+    replayButton!.click();
     await el.updateComplete;
 
     expect(deepText(el.shadowRoot)).to.include(
@@ -262,7 +318,7 @@ describe('PreloopSessionObserver', () => {
     );
   });
 
-  it('opens replay in a dialog with time controls', async () => {
+  it('shows replay view with time controls when replay mode is selected', async () => {
     const el = (await fixture(
       html`<preloop-session-observer
         .sessions=${[session]}
@@ -270,26 +326,26 @@ describe('PreloopSessionObserver', () => {
       ></preloop-session-observer>`
     )) as PreloopSessionObserver;
 
-    await waitUntil(() => deepText(el.shadowRoot).includes('Open replay'), '', {
+    await waitUntil(() => deepText(el.shadowRoot).includes('Replay'), '', {
       timeout: 3000,
     });
-    const replayPanel = el.shadowRoot?.querySelector('session-replay-panel');
-    const openButton = Array.from(
-      replayPanel?.shadowRoot?.querySelectorAll('sl-button') || []
-    ).find((button) => button.textContent?.trim() === 'Open replay');
-    expect(openButton).to.exist;
-    openButton!.dispatchEvent(
-      new MouseEvent('click', { bubbles: true, composed: true })
-    );
+    const replayButton = Array.from(
+      el.shadowRoot?.querySelectorAll('sl-button') || []
+    ).find((button) => button.textContent?.trim() === 'Replay');
+    expect(replayButton).to.exist;
+    replayButton!.click();
     await el.updateComplete;
+
+    const replayPanel = el.shadowRoot?.querySelector('session-replay-panel');
     await replayPanel?.updateComplete;
 
-    const dialog = replayPanel?.shadowRoot?.querySelector('sl-dialog') as
-      | HTMLElement
-      | undefined;
-    expect((dialog as any)?.open).to.equal(true);
+    await waitUntil(
+      () => deepText(replayPanel?.shadowRoot).includes('Start'),
+      'Replay view did not load controls',
+      { timeout: 3000 }
+    );
+
     const replayText = deepText(replayPanel?.shadowRoot);
-    expect(replayText).to.include('Start');
     expect(
       replayPanel?.shadowRoot?.querySelector('sl-button[title="Jump to start"]')
     ).to.exist;
@@ -306,7 +362,6 @@ describe('PreloopSessionObserver', () => {
     ).to.exist;
     expect(replayPanel?.shadowRoot?.querySelector('select.speed-select-native'))
       .to.exist;
-    expect(replayText).to.include('Optimize');
     expect(replayText).to.include('Tool call');
     expect(replayText).to.not.include('Loaded');
     expect(replayText).to.not.include('Comic');
@@ -331,12 +386,8 @@ describe('PreloopSessionObserver', () => {
         timeout: 3000,
       }
     );
-    const summarizeButton = Array.from(
-      el.shadowRoot?.querySelectorAll('sl-button') || []
-    ).find((button) => button.textContent?.trim() === 'Summarize');
-    summarizeButton!.dispatchEvent(
-      new MouseEvent('click', { bubbles: true, composed: true })
-    );
+    // Programmatically enable summarizeVisibleContent as the toolbar button is removed
+    (el as any).summarizeVisibleContent = true;
     await el.updateComplete;
 
     await waitUntil(
@@ -349,5 +400,115 @@ describe('PreloopSessionObserver', () => {
         '/api/v1/runtime-sessions/runtime-session-1/gateway-events/event-1/summary'
       )
     ).to.be.true;
+  });
+
+  it('loads the unified request timeline from /requests when Requests is clicked', async () => {
+    const el = (await fixture(
+      html`<preloop-session-observer
+        .sessions=${[session]}
+      ></preloop-session-observer>`
+    )) as PreloopSessionObserver;
+
+    await waitUntil(
+      () => deepText(el.shadowRoot).includes('Build a widget'),
+      '',
+      {
+        timeout: 3000,
+      }
+    );
+
+    const requestsButton = Array.from(
+      el.shadowRoot?.querySelectorAll('sl-button') || []
+    ).find((button) => button.textContent?.trim().startsWith('Requests'));
+    expect(requestsButton).to.exist;
+    requestsButton!.click();
+
+    await waitUntil(
+      () =>
+        Boolean(el.shadowRoot?.querySelector('session-request-timeline')) &&
+        fetchStub.calledWithMatch(
+          '/api/v1/runtime-sessions/runtime-session-1/requests'
+        ),
+      'request timeline did not load',
+      { timeout: 3000 }
+    );
+
+    const timeline = el.shadowRoot?.querySelector('session-request-timeline');
+    expect(timeline).to.exist;
+  });
+
+  it('opens the budget creation dialog from a set_budget action', async () => {
+    const el = (await fixture(
+      html`<preloop-session-observer
+        .sessions=${[session]}
+      ></preloop-session-observer>`
+    )) as PreloopSessionObserver;
+
+    await waitUntil(
+      () => deepText(el.shadowRoot).includes('Build a widget'),
+      '',
+      {
+        timeout: 3000,
+      }
+    );
+
+    el.dispatchEvent(
+      new CustomEvent('session-create-budget', {
+        detail: {
+          action: { type: 'set_budget', params: {} },
+          suggestion: { id: 'budget' },
+        },
+        bubbles: true,
+        composed: true,
+      })
+    );
+    await el.updateComplete;
+
+    const dialog = el.shadowRoot?.querySelector('sl-dialog');
+    expect(dialog).to.exist;
+    expect(deepText(el.shadowRoot)).to.include('Create budget for this agent');
+  });
+
+  it('switches to a failed-only request view from an open_events action', async () => {
+    const el = (await fixture(
+      html`<preloop-session-observer
+        .sessions=${[session]}
+      ></preloop-session-observer>`
+    )) as PreloopSessionObserver;
+
+    await waitUntil(
+      () => deepText(el.shadowRoot).includes('Build a widget'),
+      '',
+      {
+        timeout: 3000,
+      }
+    );
+
+    el.dispatchEvent(
+      new CustomEvent('session-inspect-requests', {
+        detail: { failedOnly: true, eventIds: [] },
+        bubbles: true,
+        composed: true,
+      })
+    );
+
+    await waitUntil(
+      () =>
+        fetchStub.calledWithMatch(
+          '/api/v1/runtime-sessions/runtime-session-1/requests'
+        ),
+      'failed requests were not loaded',
+      { timeout: 3000 }
+    );
+
+    const failedCall = fetchStub
+      .getCalls()
+      .find(
+        (call) =>
+          typeof call.args[0] === 'string' &&
+          call.args[0].includes('/requests') &&
+          call.args[0].includes('failed_only=true')
+      );
+    expect(failedCall, 'expected a failed_only request call').to.exist;
   });
 });

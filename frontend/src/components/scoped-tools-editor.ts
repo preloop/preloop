@@ -163,38 +163,42 @@ export class ScopedToolsEditor extends LitElement {
                 ></sl-icon>
                 <span class="section-title">${group.name}</span>
               </div>
-              ${!group.collapsed
-                ? html`
-                    <div class="tool-list">
-                      ${group.tools.length === 0
-                        ? html`
-                            <div
-                              style="padding: var(--sl-spacing-small); color: var(--sl-color-neutral-400); font-size: var(--sl-font-size-small);"
-                            >
-                              No tools discovered.
-                            </div>
-                          `
-                        : repeat(
-                            group.tools,
-                            (t) => t.name,
-                            (tool) => {
-                              const rules =
-                                this.scopedToolRules[tool.name] || [];
-                              return html`
-                                <tool-list-item
-                                  .tool=${tool}
-                                  .accessRules=${rules}
-                                  .policies=${this.approvalPolicies}
-                                  .features=${this.features}
-                                  ?expanded=${this.expandedTools.has(tool.name)}
-                                  @toggle-expand=${this._handleToggleExpand}
-                                ></tool-list-item>
-                              `;
-                            }
-                          )}
-                    </div>
-                  `
-                : null}
+              ${
+                !group.collapsed
+                  ? html`
+                      <div class="tool-list">
+                        ${
+                          group.tools.length === 0
+                            ? html`
+                                <div
+                                  style="padding: var(--sl-spacing-small); color: var(--sl-color-neutral-400); font-size: var(--sl-font-size-small);"
+                                >
+                                  No tools discovered.
+                                </div>
+                              `
+                            : repeat(
+                                group.tools,
+                                (t) => t.name,
+                                (tool) => {
+                                  const rules =
+                                    this.scopedToolRules[tool.name] || [];
+                                  return html`
+                                    <tool-list-item
+                                      .tool=${tool}
+                                      .accessRules=${rules}
+                                      .policies=${this.approvalPolicies}
+                                      .features=${this.features}
+                                      ?expanded=${this.expandedTools.has(tool.name)}
+                                      @toggle-expand=${this._handleToggleExpand}
+                                    ></tool-list-item>
+                                  `;
+                                }
+                              )
+                        }
+                      </div>
+                    `
+                  : null
+              }
             </div>
           `
         )}

@@ -196,9 +196,13 @@ export class RequestDemoView extends LitElement {
               @sl-input=${(e: any) => (this._comments = e.target.value)}
             ></sl-textarea>
 
-            ${this._error
-              ? html`<sl-alert variant="danger" open>${this._error}</sl-alert>`
-              : ''}
+            ${
+              this._error
+                ? html`<sl-alert variant="danger" open
+                    >${this._error}</sl-alert
+                  >`
+                : ''
+            }
 
             <sl-button
               type="submit"

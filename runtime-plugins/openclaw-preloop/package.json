@@ -13,7 +13,8 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "verify": "node dist/index.js verify"
+    "verify": "node dist/index.js verify",
+    "test": "npm run build && node --test"
   },
   "keywords": [
     "preloop",

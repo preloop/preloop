@@ -25,6 +25,33 @@ from .base import CRUDBase
 
 _summary_columns_cache: dict[int, bool] = {}
 
+# Preloop-internal model-gateway calls (session summarization/optimization and
+# session-title generation) are logged against the runtime session they operate
+# on, tagged via ``ApiUsage.meta_data->>'purpose'``. Real agent traffic has no
+# ``purpose`` (NULL meta_data or a NULL ``purpose`` key). These internal calls
+# must be excluded from a session's aggregated token/cost/request metrics so the
+# session reflects only the agent's own traffic, not Preloop's overhead.
+INTERNAL_USAGE_PURPOSES = ("session_optimization", "session_title")
+
+
+def _exclude_internal_usage_condition():
+    """Return a NULL-safe filter that excludes Preloop-internal usage rows.
+
+    Rows are INCLUDED (treated as agent traffic) when ``meta_data`` is NULL or
+    when its ``purpose`` key is NULL. Only rows whose ``purpose`` is explicitly
+    one of :data:`INTERNAL_USAGE_PURPOSES` are EXCLUDED. The JSONB accessor
+    ``ApiUsage.meta_data["purpose"].astext`` matches the style used elsewhere in
+    the codebase (see ``crud/api_usage.py``).
+
+    Returns:
+        A SQLAlchemy boolean expression suitable for use in a WHERE/JOIN clause.
+    """
+    purpose_expr = ApiUsage.meta_data["purpose"].astext
+    return or_(
+        purpose_expr.is_(None),
+        purpose_expr.notin_(INTERNAL_USAGE_PURPOSES),
+    )
+
 
 def _gateway_usage_base_query(
     db: Session,
@@ -39,6 +66,8 @@ def _gateway_usage_base_query(
         ApiUsage.account_id == account_id,
         ApiUsage.action_type == "model_gateway",
         ApiUsage.runtime_session_id.isnot(None),
+        # Never surface a Preloop-internal call as the session's latest model.
+        _exclude_internal_usage_condition(),
     )
     if start_date is not None:
         query = query.filter(ApiUsage.timestamp >= start_date)
@@ -357,8 +386,23 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 .having(func.count(ApiUsage.id) >= min_requests)
                 .subquery()
             )
+            # Keep historical empty "shell" sessions hidden, but a freshly
+            # created session (e.g. a Hermes "/new") has zero requests for the
+            # first few seconds before its first gateway call lands. Surface it
+            # immediately when it is recent and still open, so a new session is
+            # visible the moment it is created instead of only after its request
+            # count catches up.
+            recent_cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(
+                minutes=15
+            )
             session_query = session_query.filter(
-                self.model.id.in_(usage_count_subq.select())
+                or_(
+                    self.model.id.in_(usage_count_subq.select()),
+                    and_(
+                        self.model.started_at >= recent_cutoff,
+                        self.model.ended_at.is_(None),
+                    ),
+                )
             )
         if session_source_type:
             session_query = session_query.filter(
@@ -369,8 +413,21 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.runtime_principal_type == runtime_principal_type
             )
         if runtime_principal_id:
+            # A managed agent's principal id is the *base* id (e.g.
+            # ``custom_ABC``). Per-run sessions key off a derived id that appends
+            # the X-Preloop-Session-Id as ``<base>:<run-id>``. Match the base
+            # exactly OR any per-run variant so agent-scoped views surface every
+            # run, not just sessions whose principal id equals the base verbatim.
+            escaped = (
+                runtime_principal_id.replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_")
+            )
             session_query = session_query.filter(
-                self.model.runtime_principal_id == runtime_principal_id
+                or_(
+                    self.model.runtime_principal_id == runtime_principal_id,
+                    self.model.runtime_principal_id.like(f"{escaped}:%", escape="\\"),
+                )
             )
         if status == "active":
             session_query = session_query.filter(self.model.ended_at.is_(None))
@@ -440,6 +497,16 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             if summary_columns_available
             else literal(None)
         )
+        title_column = (
+            literal_column("runtime_session.title")
+            if summary_columns_available
+            else literal(None)
+        )
+        title_request_count_column = (
+            literal_column("runtime_session.title_request_count")
+            if summary_columns_available
+            else literal(None)
+        )
         return (
             session_query.outerjoin(ApiUsage, usage_join)
             .outerjoin(Flow, ApiUsage.flow_id == Flow.id)
@@ -454,6 +521,8 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.runtime_principal_name,
                 summary_column.label("summary"),
                 summary_updated_at_column.label("summary_updated_at"),
+                title_column.label("title"),
+                title_request_count_column.label("title_request_count"),
                 self.model.started_at,
                 self.model.last_activity_at,
                 self.model.ended_at,
@@ -494,11 +563,60 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.runtime_principal_name,
                 summary_column,
                 summary_updated_at_column,
+                title_column,
+                title_request_count_column,
                 self.model.started_at,
                 self.model.last_activity_at,
                 self.model.ended_at,
             )
         )
+
+    def update_session_title(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        runtime_session_id: str,
+        title: Optional[str],
+        summary: Optional[str] = None,
+        title_request_count: Optional[int] = None,
+        commit: bool = True,
+    ) -> Optional[RuntimeSession]:
+        """Persist a generated title (and optional summary) for one session.
+
+        Args:
+            db: Database session.
+            account_id: Owning account id.
+            runtime_session_id: Runtime session to update.
+            title: Short human-readable title, or ``None`` to leave unchanged.
+            summary: Optional longer summary; updates ``summary_updated_at``
+                when provided.
+            title_request_count: Session request count captured when the title
+                was generated, used to drive the periodic refresh watermark.
+            commit: Whether to commit the change.
+
+        Returns:
+            The updated runtime session, or ``None`` when it was not found.
+        """
+        db_obj = self.get_account_session(
+            db, account_id=account_id, runtime_session_id=runtime_session_id
+        )
+        if db_obj is None:
+            return None
+        if title is not None:
+            db_obj.title = title
+        if summary is not None:
+            db_obj.summary = summary
+            db_obj.summary_updated_at = datetime.now(UTC)
+        if title_request_count is not None:
+            db_obj.title_request_count = title_request_count
+        db.add(db_obj)
+        if commit:
+            db.commit()
+            db.refresh(db_obj)
+        else:
+            db.flush()
+        return db_obj
 
     def get_account_session(
         self, db: Session, *, account_id: str, runtime_session_id: str
@@ -569,6 +687,16 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             if summary_columns_available
             else literal(None)
         )
+        title_column = (
+            literal_column("runtime_session.title")
+            if summary_columns_available
+            else literal(None)
+        )
+        title_request_count_column = (
+            literal_column("runtime_session.title_request_count")
+            if summary_columns_available
+            else literal(None)
+        )
         row = (
             db.query(
                 self.model.account_id,
@@ -581,6 +709,8 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.runtime_principal_name,
                 summary_column.label("summary"),
                 summary_updated_at_column.label("summary_updated_at"),
+                title_column.label("title"),
+                title_request_count_column.label("title_request_count"),
                 self.model.started_at,
                 self.model.last_activity_at,
                 self.model.ended_at,
@@ -626,6 +756,8 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.runtime_principal_name,
                 summary_column,
                 summary_updated_at_column,
+                title_column,
+                title_request_count_column,
                 self.model.started_at,
                 self.model.last_activity_at,
                 self.model.ended_at,
@@ -654,6 +786,8 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
         """Return whether the runtime session summary migration has been applied."""
         bind = db.get_bind()
         if bind is None:
+            bind = db.bind
+        if bind is None:
             return False
         cache_key = id(bind)
         if cache_key in _summary_columns_cache:
@@ -663,7 +797,12 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 column["name"]
                 for column in inspect(bind).get_columns("runtime_session")
             }
-            available = {"summary", "summary_updated_at"}.issubset(columns)
+            available = {
+                "summary",
+                "summary_updated_at",
+                "title",
+                "title_request_count",
+            }.issubset(columns)
         except Exception:
             available = False
         _summary_columns_cache[cache_key] = available
@@ -688,6 +827,14 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 ApiUsage.runtime_session_id == RuntimeSession.id,
                 legacy_flow_execution_match,
             ),
+            # Exclude Preloop-internal usage (session optimization + title
+            # generation) from the summed metrics so a session's token/cost/
+            # request totals reflect only real agent traffic. This join is the
+            # shared chokepoint for both ``get_account_session_summary`` and
+            # ``list_account_sessions`` (via ``_account_sessions_query``), so a
+            # single filter here fixes both aggregations. NULL-safe: rows with
+            # NULL meta_data or NULL purpose are agent traffic and stay counted.
+            _exclude_internal_usage_condition(),
         ]
         if start_date is not None:
             conditions.append(ApiUsage.timestamp >= start_date)
@@ -730,6 +877,12 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             "runtime_principal_name": row.runtime_principal_name,
             "summary": row.summary,
             "summary_updated_at": row.summary_updated_at,
+            "title": row.title,
+            "title_request_count": (
+                int(row.title_request_count)
+                if row.title_request_count is not None
+                else None
+            ),
             "started_at": row.started_at,
             "last_activity_at": row.last_activity_at,
             "ended_at": row.ended_at,

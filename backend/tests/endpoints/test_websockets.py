@@ -40,7 +40,7 @@ class TestUnifiedWebSocket:
 
     @patch("preloop.api.endpoints.websockets.handle_activity")
     @patch("preloop.api.endpoints.websockets.session_manager")
-    @patch("preloop.api.endpoints.websockets.get_user_from_token_if_valid")
+    @patch("preloop.api.endpoints.websockets._resolve_token_user")
     @patch("preloop.api.endpoints.websockets.manager")
     def test_unified_websocket_handshake(
         self,
@@ -69,7 +69,7 @@ class TestUnifiedWebSocket:
 
     @patch("preloop.api.endpoints.websockets.handle_activity")
     @patch("preloop.api.endpoints.websockets.session_manager")
-    @patch("preloop.api.endpoints.websockets.get_user_from_token_if_valid")
+    @patch("preloop.api.endpoints.websockets._resolve_token_user")
     @patch("preloop.api.endpoints.websockets.manager")
     def test_unified_websocket_ping_pong(
         self,
@@ -143,7 +143,7 @@ class TestUnifiedWebSocket:
 
     @patch("preloop.api.endpoints.websockets.handle_activity")
     @patch("preloop.api.endpoints.websockets.session_manager")
-    @patch("preloop.api.endpoints.websockets.get_user_from_token_if_valid")
+    @patch("preloop.api.endpoints.websockets._resolve_token_user")
     @patch("preloop.api.endpoints.websockets.manager")
     def test_unified_websocket_anonymous_connection(
         self,
@@ -187,7 +187,7 @@ class TestUnifiedWebSocket:
 
     @patch("preloop.api.endpoints.websockets.handle_activity")
     @patch("preloop.api.endpoints.websockets.session_manager")
-    @patch("preloop.api.endpoints.websockets.get_user_from_token_if_valid")
+    @patch("preloop.api.endpoints.websockets._resolve_token_user")
     @patch("preloop.api.endpoints.websockets.manager")
     def test_unified_websocket_activity_tracking(
         self,

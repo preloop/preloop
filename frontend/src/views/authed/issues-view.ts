@@ -203,13 +203,9 @@ export class IssuesView extends LitElement {
     const params = new URLSearchParams(window.location.search);
     this._currentPage = parseInt(params.get('page') || '1', 10);
     this._selectedStatus = (params.get('status') || 'opened') as
-      | 'opened'
-      | 'closed'
-      | 'all';
+      'opened' | 'closed' | 'all';
     this._selectedResolutionStatus = (params.get('resolution') || 'all') as
-      | 'resolved'
-      | 'unresolved'
-      | 'all';
+      'resolved' | 'unresolved' | 'all';
     const shortProjectIds = params.get('projects');
     if (shortProjectIds && this._allProjects.length > 0) {
       const shortIdSet = new Set(shortProjectIds.split(','));
@@ -446,30 +442,36 @@ export class IssuesView extends LitElement {
             </sl-tag>
           `
         )}
-        ${this._selectedStatus !== 'opened'
-          ? html`
-              <sl-tag
-                size="medium"
-                removable
-                @sl-remove=${() => this._clearStatusFilter()}
-              >
-                ${this._selectedStatus === 'closed' ? 'Closed' : 'All'}
-              </sl-tag>
-            `
-          : ''}
-        ${this._selectedResolutionStatus !== 'all'
-          ? html`
-              <sl-tag
-                size="medium"
-                removable
-                @sl-remove=${() => this._clearResolutionFilter()}
-              >
-                ${this._selectedResolutionStatus === 'resolved'
-                  ? 'Resolved'
-                  : 'Unresolved'}
-              </sl-tag>
-            `
-          : ''}
+        ${
+          this._selectedStatus !== 'opened'
+            ? html`
+                <sl-tag
+                  size="medium"
+                  removable
+                  @sl-remove=${() => this._clearStatusFilter()}
+                >
+                  ${this._selectedStatus === 'closed' ? 'Closed' : 'All'}
+                </sl-tag>
+              `
+            : ''
+        }
+        ${
+          this._selectedResolutionStatus !== 'all'
+            ? html`
+                <sl-tag
+                  size="medium"
+                  removable
+                  @sl-remove=${() => this._clearResolutionFilter()}
+                >
+                  ${
+                    this._selectedResolutionStatus === 'resolved'
+                      ? 'Resolved'
+                      : 'Unresolved'
+                  }
+                </sl-tag>
+              `
+            : ''
+        }
         <sl-button size="small" pill @click=${this._clearAllFilters}
           >Clear all</sl-button
         >
@@ -537,8 +539,9 @@ export class IssuesView extends LitElement {
                   <div slot="header" class="chart-header">
                     Similar Issues per Project
                     <sl-tooltip
-                      content="Showing issues with a similarity score of ${this
-                        ._similarityThresholdCharts * 100}% or higher."
+                      content="Showing issues with a similarity score of ${
+                        this._similarityThresholdCharts * 100
+                      }% or higher."
                     >
                       <sl-icon name="question-circle"></sl-icon>
                     </sl-tooltip>
@@ -605,15 +608,17 @@ export class IssuesView extends LitElement {
 
                             return html`
                               <tr
-                                class="clickable-row ${isFaint
-                                  ? 'faint-row'
-                                  : ''} ${isExpanded ? 'row-expanded' : ''}"
+                                class="clickable-row ${
+                                  isFaint ? 'faint-row' : ''
+                                } ${isExpanded ? 'row-expanded' : ''}"
                                 @click=${() => this._toggleRow(pairKey)}
                               >
                                 <td>
                                   <a
-                                    href="${pair.issue1.meta_data?.url ||
-                                    pair.issue1.url}"
+                                    href="${
+                                      pair.issue1.meta_data?.url ||
+                                      pair.issue1.url
+                                    }"
                                     target="_blank"
                                     rel="noopener noreferrer"
                                     class="issue-id-link"
@@ -636,8 +641,10 @@ export class IssuesView extends LitElement {
                                 </td>
                                 <td>
                                   <a
-                                    href="${pair.issue2.meta_data?.url ||
-                                    pair.issue2.url}"
+                                    href="${
+                                      pair.issue2.meta_data?.url ||
+                                      pair.issue2.url
+                                    }"
                                     target="_blank"
                                     rel="noopener noreferrer"
                                     class="issue-id-link"
@@ -663,16 +670,19 @@ export class IssuesView extends LitElement {
                                 </td>
                                 <td
                                   class="text-right"
-                                  id="verdict-${pair.issue1.id}-${pair.issue2
-                                    .id}"
+                                  id="verdict-${pair.issue1.id}-${
+                                    pair.issue2.id
+                                  }"
                                 >
-                                  ${pair.similarity >= 0.999
-                                    ? html`<sl-badge
-                                        variant="warning"
-                                        style="--sl-color-warning-text: var(--sl-color-orange-50); --sl-color-warning-600: var(--sl-color-orange-700);"
-                                        >Identical</sl-badge
-                                      >`
-                                    : renderVerdict(verdict)}
+                                  ${
+                                    pair.similarity >= 0.999
+                                      ? html`<sl-badge
+                                          variant="warning"
+                                          style="--sl-color-warning-text: var(--sl-color-orange-50); --sl-color-warning-600: var(--sl-color-orange-700);"
+                                          >Identical</sl-badge
+                                        >`
+                                      : renderVerdict(verdict)
+                                  }
                                 </td>
                                 <td>
                                   <div class="actions-container">
@@ -731,11 +741,13 @@ export class IssuesView extends LitElement {
                 : html`
                     <sl-alert variant="primary" open>
                       <sl-icon slot="icon" name="info-circle"></sl-icon>
-                      ${this._hasProjects
-                        ? 'No duplicate issues found for the current filters.'
-                        : unsafeHTML(
-                            'No projects found. Did you <a href="/console/trackers">add a tracker</a>?'
-                          )}
+                      ${
+                        this._hasProjects
+                          ? 'No duplicate issues found for the current filters.'
+                          : unsafeHTML(
+                              'No projects found. Did you <a href="/console/trackers">add a tracker</a>?'
+                            )
+                      }
                     </sl-alert>
                   `
             )}

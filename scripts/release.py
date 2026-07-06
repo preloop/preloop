@@ -126,8 +126,6 @@ def update_readme(plan: ReleasePlan) -> Path:
         f"PRELOOP_VERSION={plan.version}",
         text,
     )
-    # if count == 0:
-    #     raise ValueError(f"Expected at least one match for PRELOOP_VERSION in {path}")
 
     # Also update any ?version= query parameters
     updated, _ = re.subn(

@@ -9,9 +9,36 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from preloop.models.models import Event
+from preloop.services.db_executor import run_db_async
 from preloop.services.session_manager import WebSocketSession, session_manager
 
 logger = logging.getLogger(__name__)
+
+# Max lengths for Event string columns (must stay aligned with event.py).
+_EVENT_FIELD_LIMITS: dict[str, int] = {
+    "path": 512,
+    "referrer": 512,
+    "action": 128,
+    "element": 128,
+    "element_text": 256,
+    "conversion_event": 128,
+}
+
+
+def _truncate_activity_field(field: str, value: object | None) -> str | None:
+    """Truncate client-provided activity strings to fit Event column limits."""
+    if value is None:
+        return None
+    text = str(value)
+    limit = _EVENT_FIELD_LIMITS.get(field)
+    if limit is None:
+        return text
+    if len(text) <= limit:
+        return text
+    logger.debug(
+        "Truncating activity field %s from %d to %d chars", field, len(text), limit
+    )
+    return text[:limit]
 
 
 class ActivityEventType(str, Enum):
@@ -28,28 +55,15 @@ class ActivityEventType(str, Enum):
     BACKGROUND_TASK_COMPLETED = "background_task_completed"
 
 
-async def handle_activity(data: dict, session: WebSocketSession, db: Session) -> None:
-    """Handle activity tracking messages from client.
-
-    Args:
-        data: Activity data from client
-        session: WebSocket session
-        db: Database session
-    """
+def _build_activity_event(data: dict, session: WebSocketSession) -> Event:
+    """Build an Event model from client activity data."""
     event_type = data.get("event")
-
     if not event_type:
-        logger.warning(f"Activity message missing event type: {data}")
-        return
+        raise ValueError("Activity message missing event type")
 
-    # Update session activity timestamp
-    session_manager.update_activity(session.id)
-
-    # Parse timestamp (client-provided or use server time)
     timestamp_str = data.get("timestamp")
     if timestamp_str:
         try:
-            # Handle both ISO format and Unix timestamp (milliseconds)
             if isinstance(timestamp_str, int):
                 timestamp = datetime.fromtimestamp(
                     timestamp_str / 1000, tz=timezone.utc
@@ -62,7 +76,6 @@ async def handle_activity(data: dict, session: WebSocketSession, db: Session) ->
     else:
         timestamp = datetime.now(timezone.utc)
 
-    # Create activity log based on event type
     activity = Event(
         session_id=uuid.UUID(session.id),
         user_id=session.user_id,
@@ -73,76 +86,103 @@ async def handle_activity(data: dict, session: WebSocketSession, db: Session) ->
         ip_address=session.ip_address,
     )
 
-    # Populate event-specific fields
     metadata = data.get("metadata", {})
 
     if event_type == ActivityEventType.PAGE_VIEW:
-        activity.path = data.get("path")
-        activity.referrer = data.get("referrer") or metadata.get("referrer")
+        activity.path = _truncate_activity_field("path", data.get("path"))
+        activity.referrer = _truncate_activity_field(
+            "referrer", data.get("referrer") or metadata.get("referrer")
+        )
         activity.event_data = metadata
-
     elif event_type == ActivityEventType.ACTION:
-        activity.action = data.get("action")
-        activity.element = metadata.get("element")
-        activity.element_text = metadata.get("text")
+        activity.action = _truncate_activity_field("action", data.get("action"))
+        activity.element = _truncate_activity_field("element", metadata.get("element"))
+        activity.element_text = _truncate_activity_field(
+            "element_text", metadata.get("text")
+        )
         activity.event_data = metadata
-
     elif event_type == ActivityEventType.CONVERSION:
-        activity.conversion_event = data.get("conversion_event")
+        activity.conversion_event = _truncate_activity_field(
+            "conversion_event", data.get("conversion_event")
+        )
         activity.conversion_value = data.get("value")
         activity.event_data = metadata
-
     else:
-        # Store all data in event_data for unknown event types
         activity.event_data = data.copy()
-        # Remove fields already stored in specific columns
         for field in ["event", "timestamp", "metadata"]:
             activity.event_data.pop(field, None)
 
-    # Persist to database
+    return activity
+
+
+def _activity_broadcast_payload(activity: Event) -> dict[str, object]:
+    """Capture activity fields while the SQLAlchemy session is still open."""
+    return {
+        "id": str(activity.id),
+        "session_id": str(activity.session_id) if activity.session_id else None,
+        "user_id": str(activity.user_id) if activity.user_id else None,
+        "account_id": str(activity.account_id) if activity.account_id else None,
+        "event_type": activity.event_type,
+        "timestamp": activity.timestamp.isoformat(),
+        "path": activity.path,
+        "action": activity.action,
+        "event_data": activity.event_data,
+    }
+
+
+async def handle_activity(data: dict, session: WebSocketSession) -> None:
+    """Handle activity tracking messages from client."""
+    event_type = data.get("event")
+    if not event_type:
+        logger.warning(f"Activity message missing event type: {data}")
+        return
+
+    session_manager.update_activity(session.id)
+
     try:
-        db.add(activity)
-        db.commit()
+        activity = _build_activity_event(data, session)
+    except ValueError as e:
+        logger.warning(str(e))
+        return
 
-        logger.debug(
-            f"Tracked {event_type} activity for session {session.id} "
-            f"({'user ' + str(session.user_id) if session.user_id else 'anonymous'})"
+    try:
+        activity_payload = await run_db_async(
+            lambda db: _persist_activity_event(db, activity)
         )
-
-        # Broadcast activity to admin WebSocket connections
-        # Import here to avoid circular dependency
-        import json
-        from preloop.sync.services.event_bus import event_bus_service
-
-        activity_message = {
-            "type": "activity_update",
-            "account_id": str(activity.account_id) if activity.account_id else None,
-            "activity": {
-                "id": str(activity.id),
-                "session_id": str(activity.session_id) if activity.session_id else None,
-                "user_id": str(activity.user_id) if activity.user_id else None,
-                "account_id": str(activity.account_id) if activity.account_id else None,
-                "event_type": activity.event_type,
-                "timestamp": activity.timestamp.isoformat(),
-                "path": activity.path,
-                "action": activity.action,
-                "event_data": activity.event_data,
-            },
-        }
-
-        # Publish to NATS if connected
-        if event_bus_service.nc and event_bus_service.nc.is_connected:
-            try:
-                await event_bus_service.nc.publish(
-                    "admin.activity", json.dumps(activity_message).encode()
-                )
-                logger.debug(f"Published activity event to NATS: {event_type}")
-            except Exception as nats_error:
-                logger.error(f"Failed to publish to NATS: {nats_error}")
-
     except Exception as e:
         logger.error(f"Failed to persist activity: {e}", exc_info=True)
-        db.rollback()
+        return
+
+    logger.debug(
+        f"Tracked {event_type} activity for session {session.id} "
+        f"({'user ' + str(session.user_id) if session.user_id else 'anonymous'})"
+    )
+
+    import json
+    from preloop.sync.services.event_bus import event_bus_service
+
+    activity_message = {
+        "type": "activity_update",
+        "account_id": activity_payload["account_id"],
+        "activity": activity_payload,
+    }
+
+    if event_bus_service.nc and event_bus_service.nc.is_connected:
+        try:
+            await event_bus_service.nc.publish(
+                "admin.activity", json.dumps(activity_message).encode()
+            )
+            logger.debug(f"Published activity event to NATS: {event_type}")
+        except Exception as nats_error:
+            logger.error(f"Failed to publish to NATS: {nats_error}")
+
+
+def _persist_activity_event(db: Session, activity: Event) -> dict[str, object]:
+    """Persist an activity event and return a detached broadcast payload."""
+    db.add(activity)
+    db.commit()
+    db.refresh(activity)
+    return _activity_broadcast_payload(activity)
 
 
 async def track_system_event(
@@ -151,17 +191,10 @@ async def track_system_event(
     event_data: dict,
     db: Session,
 ) -> None:
-    """Track a system event (not tied to a user session).
-
-    Args:
-        event_type: Type of system event
-        account_id: Account this event belongs to
-        event_data: Event-specific data
-        db: Database session
-    """
+    """Track a system event (not tied to a user session)."""
     activity = Event(
-        session_id=None,  # System events have no session
-        user_id=None,  # System events may not have a specific user
+        session_id=None,
+        user_id=None,
         account_id=account_id,
         fingerprint=None,
         event_type=event_type,
@@ -172,7 +205,6 @@ async def track_system_event(
     try:
         db.add(activity)
         db.commit()
-
         logger.debug(f"Tracked system event {event_type} for account {account_id}")
     except Exception as e:
         logger.error(f"Failed to persist system event: {e}", exc_info=True)
@@ -188,17 +220,7 @@ async def track_flow_execution_event(
     error: Optional[str] = None,
     db: Session = None,
 ) -> None:
-    """Track a flow execution event.
-
-    Args:
-        event_type: Type of execution event (started/completed/failed)
-        execution_id: Flow execution ID
-        flow_id: Flow ID
-        account_id: Account ID
-        status: Execution status
-        error: Error message (if failed)
-        db: Database session
-    """
+    """Track a flow execution event."""
     event_data = {
         "execution_id": str(execution_id),
         "flow_id": str(flow_id),

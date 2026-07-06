@@ -73,6 +73,9 @@ describe('DashboardView', () => {
           runtime_session_id: 'runtime-session-1',
           session_source_type: 'managed_agent',
           session_source_id: 'hermes-runtime-principal',
+          agent_id: 'agent-1',
+          agent_name: 'Ops Agent',
+          title: 'Agent Session',
           flow_execution_id: null,
           flow_id: null,
           flow_name: null,
@@ -570,9 +573,13 @@ describe('DashboardView', () => {
     const warningSegments = budgetCard?.shadowRoot?.querySelectorAll(
       '.budget-track-fill.warning'
     );
+    const dangerSegments = budgetCard?.shadowRoot?.querySelectorAll(
+      '.budget-track-fill.danger'
+    );
     expect(softMarkers?.length).to.be.greaterThan(0);
     expect(hardMarkers?.length).to.be.greaterThan(0);
-    expect(warningSegments?.length).to.be.greaterThan(0);
+    expect(dangerSegments?.length).to.be.greaterThan(0);
+    expect(warningSegments?.length || 0).to.equal(0);
   });
 
   it('renders budget health when there is no gateway usage or configured limit', async () => {
@@ -716,9 +723,12 @@ describe('DashboardView', () => {
     );
     await element.updateComplete;
 
+    element['expandedOverviewGroups'] = new Set(['active-agent:agent-1']);
+    await element.updateComplete;
+
     const content = element.shadowRoot?.textContent || '';
-    expect(content).to.contain('runtime-');
-    expect(content).to.contain('8');
+    expect(content).to.contain('Ops Agent');
+    expect(content).to.contain('8 req');
     expect(content).to.not.contain('/Users/dimo/.openclaw/openclaw.json');
   });
 
@@ -763,5 +773,62 @@ describe('DashboardView', () => {
     expect(content).to.contain('Ops Agent');
     expect(content).to.contain('Refund Assistant');
     expect(content).to.not.contain('flow-session-ref');
+  });
+
+  it('links flow-backed top model sessions to flow execution pages', async () => {
+    gatewaySummaryResponse = {
+      ...gatewaySummaryResponse,
+      usage_by_session: [
+        {
+          runtime_session_id: 'flow-runtime-session-1',
+          session_source_type: 'flow_execution',
+          session_source_id: 'execution-1',
+          flow_execution_id: 'execution-1',
+          flow_id: 'flow-1',
+          flow_name: 'Pull Request Reviewer',
+          title: 'PR #42 review',
+          model_alias: 'gpt-5.4',
+          provider_name: 'openai',
+          ai_model_id: 'model-1',
+          request_count: 2,
+          token_usage: {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            total_tokens: 15,
+          },
+          estimated_cost: 1.2,
+          last_request_at: '2026-03-07T10:00:00Z',
+        },
+      ],
+    };
+
+    const element = await mountDashboard();
+    await waitUntil(
+      () =>
+        !element['loading'] &&
+        !element['fetchingActiveAgents'] &&
+        !element['fetchingBudget'],
+      'dashboard did not finish loading'
+    );
+    await element.updateComplete;
+
+    element['expandedOverviewGroups'] = new Set([
+      'top-model:model-1-gpt-5.4-openai:flow:flow-1',
+    ]);
+    await element.updateComplete;
+
+    const flowLink = element.shadowRoot?.querySelector(
+      'a[href="/console/flows/flow-1"]'
+    );
+    const executionLink = element.shadowRoot?.querySelector(
+      'a[href="/console/flows/executions/execution-1"]'
+    );
+
+    expect(flowLink).to.exist;
+    expect(executionLink).to.exist;
+    expect(element.shadowRoot?.textContent || '').to.contain(
+      'Pull Request Reviewer'
+    );
+    expect(element.shadowRoot?.textContent || '').to.contain('PR #42 review');
   });
 });

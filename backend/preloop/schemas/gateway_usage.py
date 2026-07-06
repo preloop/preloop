@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -45,6 +45,33 @@ class GatewayUsageByModel(BaseModel):
     token_usage: GatewayTokenUsage
     estimated_cost: float = 0.0
     last_request_at: Optional[datetime] = None
+
+
+class GatewayToolUsageByAgent(BaseModel):
+    """Tool activity attributed to one runtime principal (managed agent)."""
+
+    runtime_principal_type: Optional[str] = None
+    runtime_principal_id: Optional[str] = None
+    runtime_principal_name: Optional[str] = None
+    agent_id: Optional[str] = None
+    invocation_count: int = 0
+    estimated_schema_cost: float = 0.0
+
+
+class GatewayUsageByTool(BaseModel):
+    """Tool usage aggregate combining invocation counts and schema-injection cost."""
+
+    tool_name: str
+    server_name: Optional[str] = None
+    invocation_count: int = 0
+    successful_invocations: int = 0
+    failed_invocations: int = 0
+    schema_injections: int = 0
+    schema_tokens_total: int = 0
+    estimated_schema_cost: float = 0.0
+    avg_cost_per_invocation: float = 0.0
+    last_activity_at: Optional[datetime] = None
+    usage_by_agent: List["GatewayToolUsageByAgent"] = Field(default_factory=list)
 
 
 class ManagedAgentModelBindingSummary(BaseModel):
@@ -108,6 +135,7 @@ class GatewayUsageBySession(BaseModel):
     runtime_session_id: Optional[str] = None
     session_source_type: Optional[str] = None
     session_source_id: Optional[str] = None
+    title: Optional[str] = None
     session_summary: Optional[str] = None
     session_summary_updated_at: Optional[datetime] = None
     runtime_principal_type: Optional[str] = None
@@ -180,6 +208,7 @@ class RuntimeSessionSummary(BaseModel):
     runtime_principal_type: Optional[str] = None
     runtime_principal_id: Optional[str] = None
     runtime_principal_name: Optional[str] = None
+    title: Optional[str] = None
     summary: Optional[str] = None
     summary_updated_at: Optional[datetime] = None
     started_at: datetime
@@ -198,6 +227,9 @@ class RuntimeSessionSummary(BaseModel):
     token_usage: GatewayTokenUsage
     estimated_cost: float = 0.0
     last_request_at: Optional[datetime] = None
+    optimization_waste_score: Optional[int] = None
+    optimization_potential_savings_tokens: Optional[int] = None
+    optimization_potential_savings_usd: Optional[float] = None
 
 
 class AccountRuntimeSessionListResponse(BaseModel):
@@ -323,6 +355,18 @@ class ManagedAgentCredentialSummary(BaseModel):
     expires_at: Optional[datetime] = None
     revoked_at: Optional[datetime] = None
     revoked_reason: Optional[str] = None
+
+
+class ManagedAgentRegisterRequest(BaseModel):
+    """Request to register a custom managed agent the CLI cannot discover.
+
+    Used when an operator wants to onboard an agent (for example a customer's
+    LangGraph agent) that has never connected through a runtime session, so a
+    gateway credential can subsequently be minted for it.
+    """
+
+    display_name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
 
 
 class ManagedAgentCredentialCreateRequest(BaseModel):
@@ -472,6 +516,47 @@ class RuntimeSessionActivityListResponse(BaseModel):
     items: List[RuntimeSessionActivityItem] = Field(default_factory=list)
 
 
+class RuntimeSessionRequestTool(BaseModel):
+    """One tool carried by a single gateway request."""
+
+    name: Optional[str] = None
+    source: Optional[str] = None
+    schema_tokens_estimate: int = 0
+    stripped: bool = False
+
+
+class RuntimeSessionRequestItem(BaseModel):
+    """One per-request gateway usage row for the unified session timeline."""
+
+    id: str
+    timestamp: Optional[datetime] = None
+    model_alias: Optional[str] = None
+    provider_name: Optional[str] = None
+    status_code: int = 0
+    is_error: bool = False
+    finish_reason: Optional[str] = None
+    is_retry: bool = False
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    estimated_cost: float = 0.0
+    endpoint: Optional[str] = None
+    tools: List[RuntimeSessionRequestTool] = Field(default_factory=list)
+    tools_total_schema_tokens: int = 0
+
+
+class RuntimeSessionRequestListResponse(BaseModel):
+    """Paginated per-request rows for one runtime session."""
+
+    items: List[RuntimeSessionRequestItem] = Field(default_factory=list)
+    total: int = 0
+    failed_count: int = 0
+    limit: int = 100
+    offset: int = 0
+    next_offset: Optional[int] = None
+    has_more: bool = False
+
+
 class RuntimeSessionSummaryInsight(BaseModel):
     """Generated or locally derived summary for one runtime session."""
 
@@ -499,6 +584,22 @@ class RuntimeSessionInteractionSummary(BaseModel):
     estimated_summary_cost: float = 0.0
 
 
+class RuntimeSessionOptimizationActionSpec(BaseModel):
+    """Machine-applicable action attached to one optimization suggestion.
+
+    Supported types: ``scope_tools`` (disable unused tools via subject-scoped
+    governance), ``set_budget`` (create a scoped budget policy),
+    ``enable_compression`` / ``cap_tool_results`` (subject-scoped context
+    optimization transforms), ``manage_output_filter`` (open the output-filter
+    UI to drop unused bulky tool-result fields; ``params``: ``server_name``,
+    ``tool_name``, ``suggested_fields``, ``managed_agent_id``), and
+    ``open_events`` (client-side replay deep-link to evidence events).
+    """
+
+    type: str
+    params: Dict[str, Any] = Field(default_factory=dict)
+
+
 class RuntimeSessionOptimizationSuggestion(BaseModel):
     """One actionable optimization suggestion for a runtime session."""
 
@@ -510,6 +611,39 @@ class RuntimeSessionOptimizationSuggestion(BaseModel):
     confidence: str = "medium"
     action_label: str
     evidence: List[str] = Field(default_factory=list)
+    evidence_event_ids: List[str] = Field(default_factory=list)
+    action: Optional[RuntimeSessionOptimizationActionSpec] = None
+
+
+class RuntimeSessionOptimizationApplyRequest(BaseModel):
+    """Request payload to apply one suggestion's action server-side."""
+
+    suggestion_id: str
+    suggestion_title: Optional[str] = None
+    action: RuntimeSessionOptimizationActionSpec
+
+
+class RuntimeSessionOptimizationAppliedAction(BaseModel):
+    """One applied optimization action, with measured outcome when available."""
+
+    id: str
+    runtime_session_id: str
+    suggestion_id: str
+    suggestion_title: Optional[str] = None
+    action_type: str
+    params: Dict[str, Any] = Field(default_factory=dict)
+    status: str = "applied"
+    applied_by: Optional[str] = None
+    applied_at: datetime
+    result: Dict[str, Any] = Field(default_factory=dict)
+    baseline: Optional[Dict[str, Any]] = None
+    outcome: Optional[Dict[str, Any]] = None
+
+
+class RuntimeSessionOptimizationActionListResponse(BaseModel):
+    """Applied optimization actions for one runtime session."""
+
+    items: List[RuntimeSessionOptimizationAppliedAction] = Field(default_factory=list)
 
 
 class RuntimeSessionOptimizationRequest(BaseModel):
@@ -521,17 +655,36 @@ class RuntimeSessionOptimizationRequest(BaseModel):
     from_index: Optional[int] = None
     to_index: Optional[int] = None
     regenerate: bool = False
+    # When true, return the latest cached result for the session without
+    # generating anything (used to surface previously generated suggestions on
+    # panel open). A miss returns ``cache_miss=True`` instead of generating.
+    cache_only: bool = False
 
 
 class RuntimeSessionOptimizationResponse(BaseModel):
     """Optimization suggestions for a runtime session."""
 
     generated_by: str = "local"
+    # True only for a cache_only request that found no cached result; signals the
+    # UI to show the "generate" prompt rather than an empty-suggestions state.
+    cache_miss: bool = False
     fast_model_name: Optional[str] = None
     model_id: Optional[str] = None
     model_name: Optional[str] = None
     token_usage: GatewayTokenUsage = Field(default_factory=GatewayTokenUsage)
     estimated_optimization_cost: float = 0.0
+    generated_at: Optional[datetime] = None
+    from_cache: bool = False
+    llm_skipped_reason: Optional[str] = None
+    waste_score: Optional[int] = None
+    potential_savings_tokens: int = 0
+    potential_savings_usd: float = 0.0
+    # Totals for the analyzed scope (the events actually fed to the optimizer),
+    # so the UI can show savings against a coherent baseline instead of the
+    # whole-session summary, which may be unloaded or wider than the scope.
+    analyzed_scope_total_tokens: int = 0
+    analyzed_scope_estimated_cost: float = 0.0
+    context_profile: Optional[Dict[str, Any]] = None
     suggestions: List[RuntimeSessionOptimizationSuggestion] = Field(
         default_factory=list
     )
@@ -561,6 +714,7 @@ class AccountGatewayUsageSummaryResponse(BaseModel):
     usage_by_model: List[GatewayUsageByModel] = Field(default_factory=list)
     usage_by_flow: List[GatewayUsageByFlow] = Field(default_factory=list)
     usage_by_session: List[GatewayUsageBySession] = Field(default_factory=list)
+    usage_by_tool: List[GatewayUsageByTool] = Field(default_factory=list)
 
 
 class ApiKeyGatewayUsageSummaryResponse(BaseModel):

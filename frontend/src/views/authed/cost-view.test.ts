@@ -42,7 +42,30 @@ describe('CostView', () => {
       },
     ],
     usage_by_flow: [],
-    usage_by_session: [],
+    usage_by_session: [
+      {
+        runtime_session_id: 'runtime-session-1',
+        session_source_type: 'managed_agent',
+        session_source_id: 'agent-1',
+        agent_id: 'agent-1',
+        agent_name: 'Ops Agent',
+        title: 'Agent Session',
+        flow_execution_id: null,
+        flow_id: null,
+        flow_name: null,
+        session_reference: 'Agent Session',
+        model_alias: 'gpt-test',
+        provider_name: 'openai',
+        request_count: 5,
+        token_usage: {
+          prompt_tokens: 100,
+          completion_tokens: 50,
+          total_tokens: 150,
+        },
+        estimated_cost: 8.5,
+        last_request_at: '2026-03-07T10:00:00Z',
+      },
+    ],
   };
 
   beforeEach(() => {
@@ -94,11 +117,11 @@ describe('CostView', () => {
     );
     expect(metrics).to.exist;
 
-    const modelTable = element.shadowRoot?.querySelector(
-      'table[aria-label="Spend by model"]'
+    const agentTable = element.shadowRoot?.querySelector(
+      'table[aria-label="Spend by agent"]'
     );
-    expect(modelTable).to.exist;
-    expect(modelTable?.querySelector('th[scope="col"]')).to.exist;
+    expect(agentTable).to.exist;
+    expect(agentTable?.querySelector('th[scope="col"]')).to.exist;
   });
 
   it('exposes loading status while analytics are fetched', async () => {

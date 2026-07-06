@@ -862,10 +862,12 @@ export class ConsoleHeader extends LitElement {
                 <div class="approval-name">${approval.tool_name}</div>
                 <div class="approval-time">
                   ${this.formatRelativeTime(approval.requested_at)}
-                  ${approval.expires_at
-                    ? html` • Expires
-                      ${this.formatRelativeTime(approval.expires_at)}`
-                    : ''}
+                  ${
+                    approval.expires_at
+                      ? html` • Expires
+                        ${this.formatRelativeTime(approval.expires_at)}`
+                      : ''
+                  }
                 </div>
                 <div class="approval-actions">
                   <sl-button
@@ -907,11 +909,13 @@ export class ConsoleHeader extends LitElement {
           <div class="section-title">
             <sl-icon name="bell"></sl-icon>
             Notifications
-            ${unreadNotifications.length > 0
-              ? html`<span class="section-count"
-                  >(${unreadNotifications.length} unread)</span
-                >`
-              : ''}
+            ${
+              unreadNotifications.length > 0
+                ? html`<span class="section-count"
+                    >(${unreadNotifications.length} unread)</span
+                  >`
+                : ''
+            }
           </div>
         </div>
         <div class="notification-list">
@@ -983,22 +987,28 @@ export class ConsoleHeader extends LitElement {
                 name="bell"
                 label="Notifications"
               ></sl-icon-button>
-              ${this.totalNotificationCount > 0
-                ? html`<span class="notification-badge"
-                    >${this.totalNotificationCount > 99
-                      ? '99+'
-                      : this.totalNotificationCount}</span
-                  >`
-                : ''}
+              ${
+                this.totalNotificationCount > 0
+                  ? html`<span class="notification-badge"
+                      >${
+                        this.totalNotificationCount > 99
+                          ? '99+'
+                          : this.totalNotificationCount
+                      }</span
+                    >`
+                  : ''
+              }
             </div>
             <div class="notification-dropdown">
-              ${hasContent
-                ? html`
-                    ${this.renderExecutionsSection()}
-                    ${this.renderApprovalsSection()}
-                    ${this.renderNotificationsSection()}
-                  `
-                : this.renderEmptyState()}
+              ${
+                hasContent
+                  ? html`
+                      ${this.renderExecutionsSection()}
+                      ${this.renderApprovalsSection()}
+                      ${this.renderNotificationsSection()}
+                    `
+                  : this.renderEmptyState()
+              }
             </div>
           </sl-dropdown>
 

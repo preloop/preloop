@@ -66,6 +66,75 @@ describe('BudgetHealthCard', () => {
     expect(progressBars?.[0]?.getAttribute('aria-valuemax')).to.equal('100');
   });
 
+  it('shows green and warning fill when soft limit is reached', async () => {
+    const softLimitSummary: AccountGatewayUsageSummaryResponse = {
+      ...summary,
+      budget: {
+        monthly_limit_usd: 100,
+        soft_limit_usd: 80,
+        current_spend_usd: 90,
+        soft_limit_exceeded: true,
+        hard_limit_exceeded: false,
+      },
+    };
+    const softLimitPolicies: BudgetPolicy[] = [
+      {
+        ...policies[0],
+        period: 'daily',
+        hard_limit_usd: 120,
+        soft_limit_usd: 80,
+      },
+    ];
+
+    const element = (await fixture(html`
+      <budget-health-card
+        .summary=${softLimitSummary}
+        .policies=${softLimitPolicies}
+        .timeRange=${'day'}
+      ></budget-health-card>
+    `)) as BudgetHealthCard;
+    await element.updateComplete;
+
+    expect(
+      element.shadowRoot?.querySelector(
+        '.budget-track-fill:not(.warning):not(.danger)'
+      )
+    ).to.exist;
+    expect(element.shadowRoot?.querySelector('.budget-track-fill.warning')).to
+      .exist;
+    expect(element.shadowRoot?.querySelector('.budget-track-fill.danger')).to
+      .not.exist;
+  });
+
+  it('shows red styling when a hard limit is exceeded', async () => {
+    const exceededSummary: AccountGatewayUsageSummaryResponse = {
+      ...summary,
+      budget: {
+        monthly_limit_usd: 100,
+        soft_limit_usd: 80,
+        current_spend_usd: 105,
+        soft_limit_exceeded: true,
+        hard_limit_exceeded: true,
+      },
+    };
+
+    const element = (await fixture(html`
+      <budget-health-card
+        .summary=${exceededSummary}
+        .policies=${policies}
+      ></budget-health-card>
+    `)) as BudgetHealthCard;
+    await element.updateComplete;
+
+    expect(element.shadowRoot?.querySelector('.title.exceeded')).to.exist;
+    expect(element.shadowRoot?.querySelector('.row-value.exceeded')).to.exist;
+    expect(element.shadowRoot?.querySelector('.budget-track-fill.danger')).to
+      .exist;
+    expect(
+      element.shadowRoot?.querySelector('.limit-status')?.textContent
+    ).to.contain('Hard limit exceeded');
+  });
+
   it('dispatches configure when limits button is clicked', async () => {
     const element = (await fixture(html`
       <budget-health-card

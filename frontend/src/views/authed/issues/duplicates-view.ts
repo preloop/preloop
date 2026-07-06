@@ -41,20 +41,23 @@ export class DuplicatesView extends LitElement {
           <h1 class="title">Issues Dashboard</h1>
         </div>
         <div class="container">
-          ${this.issues.length > 0
-            ? html`
-                <sl-menu>
-                  ${this.issues.map(
-                    (issue) => html`<sl-menu-item>${issue.title}</sl-menu-item>`
-                  )}
-                </sl-menu>
-              `
-            : html`
-                <sl-alert variant="primary" open>
-                  <sl-icon slot="icon" name="info-circle"></sl-icon>
-                  No duplicate issues found.
-                </sl-alert>
-              `}
+          ${
+            this.issues.length > 0
+              ? html`
+                  <sl-menu>
+                    ${this.issues.map(
+                      (issue) =>
+                        html`<sl-menu-item>${issue.title}</sl-menu-item>`
+                    )}
+                  </sl-menu>
+                `
+              : html`
+                  <sl-alert variant="primary" open>
+                    <sl-icon slot="icon" name="info-circle"></sl-icon>
+                    No duplicate issues found.
+                  </sl-alert>
+                `
+          }
         </div>
       </div>
     `;

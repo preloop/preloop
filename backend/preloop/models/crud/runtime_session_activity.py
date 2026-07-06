@@ -348,6 +348,41 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
         query = query.limit(limit).offset(max(offset, 0))
         return query.all()
 
+    def list_full_model_gateway_call_payloads_for_session(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        runtime_session_id: Any,
+        limit: int = 50,
+    ) -> list[Any]:
+        """Return latest-first gateway call rows with complete stored metadata.
+
+        Unlike :meth:`list_model_gateway_calls_for_session`, the returned
+        ``metadata_`` retains the captured ``request``/``response`` payloads so
+        callers can analyze full message and tool-schema content.
+
+        Args:
+            db: Database session.
+            account_id: Owning account id.
+            runtime_session_id: Runtime session id.
+            limit: Maximum number of rows (capped at 100).
+
+        Returns:
+            Rows of ``(id, timestamp, metadata_)`` ordered latest-first.
+        """
+        return (
+            db.query(self.model.id, self.model.timestamp, self.model.metadata_)
+            .filter(
+                self.model.account_id == account_id,
+                self.model.runtime_session_id == runtime_session_id,
+                self.model.activity_type == "model_gateway_call",
+            )
+            .order_by(self.model.timestamp.desc())
+            .limit(min(max(limit, 1), 100))
+            .all()
+        )
+
     def list_recent_model_gateway_call_payloads_for_session(
         self,
         db: Session,
@@ -501,6 +536,107 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
                 "successful_calls": int(row.success_count or 0),
                 "failed_calls": int(row.failure_count or 0),
                 "last_activity_at": row.last_activity_at,
+            }
+            for row in rows
+        ]
+
+    def get_tool_summary_for_account(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Aggregate tool-call activity by server/tool for one account."""
+        query = db.query(
+            self.model.server_name,
+            self.model.tool_name,
+            func.count(self.model.id).label("call_count"),
+            func.coalesce(
+                func.sum(case((self.model.status == "success", 1), else_=0)), 0
+            ).label("success_count"),
+            func.coalesce(
+                func.sum(case((self.model.status != "success", 1), else_=0)), 0
+            ).label("failure_count"),
+            func.max(self.model.timestamp).label("last_activity_at"),
+        ).filter(
+            self.model.account_id == account_id,
+            self.model.activity_type == "tool_call",
+            self.model.tool_name.isnot(None),
+        )
+        if start_date is not None:
+            query = query.filter(self.model.timestamp >= start_date)
+        if end_date is not None:
+            query = query.filter(self.model.timestamp < end_date)
+        rows = (
+            query.group_by(self.model.server_name, self.model.tool_name)
+            .order_by(
+                func.count(self.model.id).desc(), func.max(self.model.timestamp).desc()
+            )
+            .limit(limit)
+            .all()
+        )
+        return [
+            {
+                "server_name": row.server_name,
+                "tool_name": row.tool_name,
+                "call_count": int(row.call_count or 0),
+                "successful_calls": int(row.success_count or 0),
+                "failed_calls": int(row.failure_count or 0),
+                "last_activity_at": row.last_activity_at,
+            }
+            for row in rows
+        ]
+
+    def get_tool_invocations_by_agent_for_account(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        """Aggregate tool-call counts by tool and runtime principal for one account."""
+        query = (
+            db.query(
+                self.model.tool_name,
+                RuntimeSession.runtime_principal_type,
+                RuntimeSession.runtime_principal_id,
+                RuntimeSession.runtime_principal_name,
+                func.count(self.model.id).label("call_count"),
+            )
+            .join(RuntimeSession, self.model.runtime_session_id == RuntimeSession.id)
+            .filter(
+                self.model.account_id == account_id,
+                self.model.activity_type == "tool_call",
+                self.model.tool_name.isnot(None),
+            )
+        )
+        if start_date is not None:
+            query = query.filter(self.model.timestamp >= start_date)
+        if end_date is not None:
+            query = query.filter(self.model.timestamp < end_date)
+        rows = (
+            query.group_by(
+                self.model.tool_name,
+                RuntimeSession.runtime_principal_type,
+                RuntimeSession.runtime_principal_id,
+                RuntimeSession.runtime_principal_name,
+            )
+            .order_by(func.count(self.model.id).desc())
+            .limit(limit)
+            .all()
+        )
+        return [
+            {
+                "tool_name": row.tool_name,
+                "runtime_principal_type": row.runtime_principal_type,
+                "runtime_principal_id": row.runtime_principal_id,
+                "runtime_principal_name": row.runtime_principal_name,
+                "call_count": int(row.call_count or 0),
             }
             for row in rows
         ]

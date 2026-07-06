@@ -693,9 +693,11 @@ export class AgentTalkComposer extends LitElement {
               Recent interaction context for this agent session.
             </div>
           </div>
-          ${this.sessionHistoryLoading
-            ? html`<sl-spinner></sl-spinner>`
-            : nothing}
+          ${
+            this.sessionHistoryLoading
+              ? html`<sl-spinner></sl-spinner>`
+              : nothing
+          }
         </div>
         <session-replay-panel
           .session=${this.sessionHistorySession}
@@ -751,22 +753,24 @@ export class AgentTalkComposer extends LitElement {
             }}
           ></sl-textarea>
           <sl-tooltip
-            content=${speechRecognitionAvailable
-              ? 'Dictate with on-device speech recognition'
-              : mediaRecorderAvailable
-                ? 'Dictate through Preloop server transcription'
-                : 'Microphone capture unavailable'}
+            content=${
+              speechRecognitionAvailable
+                ? 'Dictate with on-device speech recognition'
+                : mediaRecorderAvailable
+                  ? 'Dictate through Preloop server transcription'
+                  : 'Microphone capture unavailable'
+            }
           >
             <sl-button
               class="mic-button"
               size="small"
               circle
-              variant=${this.listening || this.recordingFallback
-                ? 'danger'
-                : 'default'}
-              ?disabled=${!controlState.enabled ||
-              this.sending ||
-              !microphoneAvailable}
+              variant=${
+                this.listening || this.recordingFallback ? 'danger' : 'default'
+              }
+              ?disabled=${
+                !controlState.enabled || this.sending || !microphoneAvailable
+              }
               @click=${() =>
                 this.listening
                   ? this.stopListening()
@@ -775,9 +779,9 @@ export class AgentTalkComposer extends LitElement {
                     : this.startListening()}
             >
               <sl-icon
-                name=${this.listening || this.recordingFallback
-                  ? 'mic-mute'
-                  : 'mic'}
+                name=${
+                  this.listening || this.recordingFallback ? 'mic-mute' : 'mic'
+                }
               ></sl-icon>
             </sl-button>
           </sl-tooltip>
@@ -834,26 +838,32 @@ export class AgentTalkComposer extends LitElement {
             </sl-button>
           </div>
         </div>
-        ${!speechRecognitionAvailable && mediaRecorderAvailable
-          ? html`
-              <div class="microcopy">
-                On-device speech recognition is unavailable here. Dictation uses
-                your configured Preloop STT model and inserts the transcript for
-                review before sending.
-              </div>
-            `
-          : nothing}
+        ${
+          !speechRecognitionAvailable && mediaRecorderAvailable
+            ? html`
+                <div class="microcopy">
+                  On-device speech recognition is unavailable here. Dictation
+                  uses your configured Preloop STT model and inserts the
+                  transcript for review before sending.
+                </div>
+              `
+            : nothing
+        }
         <div class="microcopy">Enter sends. Shift+Enter adds a new line.</div>
-        ${this.errorMessage
-          ? html`<sl-alert open variant="danger"
-              >${this.errorMessage}</sl-alert
-            >`
-          : nothing}
-        ${this.statusMessage
-          ? html`<sl-alert open variant="primary"
-              >${this.statusMessage}</sl-alert
-            >`
-          : nothing}
+        ${
+          this.errorMessage
+            ? html`<sl-alert open variant="danger"
+                >${this.errorMessage}</sl-alert
+              >`
+            : nothing
+        }
+        ${
+          this.statusMessage
+            ? html`<sl-alert open variant="primary"
+                >${this.statusMessage}</sl-alert
+              >`
+            : nothing
+        }
       </div>
     `;
   }

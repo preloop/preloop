@@ -997,6 +997,45 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+    post:
+      tags:
+      - Account
+      summary: Create Account Managed Agent
+      description: "Register a custom managed agent the discovery CLI cannot find.\n\
+        \nCreates a durable ManagedAgent row under the reserved ``custom`` source\n\
+        type with a generated ``session_source_id`` and ``lifecycle_state`` of\n``active``\
+        \ so the operator can immediately mint a gateway credential for it\nvia ``POST\
+        \ /agents/{agent_id}/credentials``.\n\nDuplicate ``display_name`` values are\
+        \ allowed within an account: each custom\nagent is keyed by a unique generated\
+        \ ``session_source_id``, so two agents\nsharing a display name remain distinct\
+        \ registry entries. Operators may\nlegitimately run several copies of the\
+        \ same agent, so we do not reject this.\n\nArgs:\n    payload: Display name\
+        \ and optional description for the new agent.\n    account: Resolved account\
+        \ for the authenticated user.\n    current_user: Authenticated active user\
+        \ performing the registration.\n    db: Database session.\n\nReturns:\n  \
+        \  The managed-agent summary for the newly registered agent."
+      operationId: create_account_managed_agent_api_v1_agents_post
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ManagedAgentRegisterRequest'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagedAgentSummary'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/agents/control:
     get:
       tags:
@@ -1835,6 +1874,78 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/runtime-sessions/{runtime_session_id}/requests:
+    get:
+      tags:
+      - Account
+      summary: List Account Runtime Session Requests
+      description: 'Return per-request gateway rows for one runtime session.
+
+
+        This powers the unified session timeline by reading the real per-request
+
+        ``ApiUsage`` rows (one per gateway request) rather than the sparse captured
+
+        gateway events. Each item carries its tokens, estimated spend, status, and
+
+        the tools it included with their per-tool schema token cost.'
+      operationId: list_account_runtime_session_requests_api_v1_runtime_sessions__runtime_session_id__requests_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: runtime_session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Runtime Session Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 100
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      - name: failed_only
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Failed Only
+      - name: event_ids
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: array
+            items:
+              type: string
+          - type: 'null'
+          title: Event Ids
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeSessionRequestListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/runtime-sessions/{runtime_session_id}/summaries:
     post:
       tags:
@@ -2626,6 +2737,48 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/tools/stats:
+    get:
+      tags:
+      - Tools
+      summary: Get Tool Usage Stats
+      description: Return account-wide tool invocation counts and schema-injection
+        cost.
+      operationId: get_tool_usage_stats_api_v1_tools_stats_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Start Date
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: End Date
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolUsageStatsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/tools:
     get:
       tags:
@@ -6863,6 +7016,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/agents/permission-check:
+    post:
+      tags:
+      - Agent Permissions
+      - Agent Permissions
+      summary: Agent Permission Check
+      description: Decide whether an onboarded agent's native tool call may proceed.
+      operationId: agent_permission_check_api_v1_agents_permission_check_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentPermissionCheckRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentPermissionCheckResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
   /api/v1/roles:
     get:
       tags:
@@ -7512,6 +7703,11 @@ components:
             $ref: '#/components/schemas/GatewayUsageBySession'
           type: array
           title: Usage By Session
+        usage_by_tool:
+          items:
+            $ref: '#/components/schemas/GatewayUsageByTool'
+          type: array
+          title: Usage By Tool
       type: object
       required:
       - period_start
@@ -7829,6 +8025,73 @@ components:
       - name
       title: AgentNameExtractionResponse
       description: Extracted agent name.
+    AgentPermissionCheckRequest:
+      properties:
+        tool_name:
+          type: string
+          title: Tool Name
+          description: Native tool name, e.g. 'Bash'
+        tool_input:
+          additionalProperties: true
+          type: object
+          title: Tool Input
+          description: Tool arguments (stored as tool_args)
+        source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source
+          description: Originating agent, e.g. 'claude_code'
+        session_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Id
+          description: Agent session id
+        cwd:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cwd
+          description: Working directory
+        agent_reasoning:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Reasoning
+          description: Why the agent wants this call (shown to the approver)
+        client_decision:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Client Decision
+          description: 'What the client''s own policy decided: ''allow'' | ''deny''
+            | ''ask''. Absent/''ask'' escalates to a human approver.'
+      type: object
+      required:
+      - tool_name
+      title: AgentPermissionCheckRequest
+      description: A native tool-call permission check from an onboarded agent.
+    AgentPermissionCheckResponse:
+      properties:
+        decision:
+          type: string
+          title: Decision
+          description: '''allow'' or ''deny'''
+        reason:
+          type: string
+          title: Reason
+          default: ''
+        request_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Request Id
+      type: object
+      required:
+      - decision
+      title: AgentPermissionCheckResponse
+      description: Allow/deny decision for the agent's native tool call.
     ApiKeyCreate:
       properties:
         name:
@@ -8104,6 +8367,23 @@ components:
           - type: string
           - type: 'null'
           title: Webhook Error
+        managed_agent_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Managed Agent Id
+        runtime_session_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Runtime Session Id
+        managed_agent_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Managed Agent Name
         decided_by_ai:
           type: boolean
           title: Decided By Ai
@@ -9068,6 +9348,11 @@ components:
             $ref: '#/components/schemas/GatewayUsageBySession'
           type: array
           title: Usage By Session
+        usage_by_tool:
+          items:
+            $ref: '#/components/schemas/GatewayUsageByTool'
+          type: array
+          title: Usage By Tool
       type: object
       required:
       - period_start
@@ -9986,6 +10271,39 @@ components:
       type: object
       title: GatewayTokenUsage
       description: Token usage totals.
+    GatewayToolUsageByAgent:
+      properties:
+        runtime_principal_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Runtime Principal Type
+        runtime_principal_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Runtime Principal Id
+        runtime_principal_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Runtime Principal Name
+        agent_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Id
+        invocation_count:
+          type: integer
+          title: Invocation Count
+          default: 0
+        estimated_schema_cost:
+          type: number
+          title: Estimated Schema Cost
+          default: 0.0
+      type: object
+      title: GatewayToolUsageByAgent
+      description: Tool activity attributed to one runtime principal (managed agent).
     GatewayUsageByDay:
       properties:
         date:
@@ -10123,6 +10441,11 @@ components:
           - type: string
           - type: 'null'
           title: Session Source Id
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Title
         session_summary:
           anyOf:
           - type: string
@@ -10210,6 +10533,61 @@ components:
       - token_usage
       title: GatewayUsageBySession
       description: Recent usage aggregate grouped by execution-backed session slices.
+    GatewayUsageByTool:
+      properties:
+        tool_name:
+          type: string
+          title: Tool Name
+        server_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Server Name
+        invocation_count:
+          type: integer
+          title: Invocation Count
+          default: 0
+        successful_invocations:
+          type: integer
+          title: Successful Invocations
+          default: 0
+        failed_invocations:
+          type: integer
+          title: Failed Invocations
+          default: 0
+        schema_injections:
+          type: integer
+          title: Schema Injections
+          default: 0
+        schema_tokens_total:
+          type: integer
+          title: Schema Tokens Total
+          default: 0
+        estimated_schema_cost:
+          type: number
+          title: Estimated Schema Cost
+          default: 0.0
+        avg_cost_per_invocation:
+          type: number
+          title: Avg Cost Per Invocation
+          default: 0.0
+        last_activity_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Activity At
+        usage_by_agent:
+          items:
+            $ref: '#/components/schemas/GatewayToolUsageByAgent'
+          type: array
+          title: Usage By Agent
+      type: object
+      required:
+      - tool_name
+      title: GatewayUsageByTool
+      description: Tool usage aggregate combining invocation counts and schema-injection
+        cost.
     GatewayUsageSearchResultItem:
       properties:
         api_usage_id:
@@ -11549,6 +11927,30 @@ components:
       type: object
       title: ManagedAgentModelBindingSyncRequest
       description: Replace request for one managed agent's configured model bindings.
+    ManagedAgentRegisterRequest:
+      properties:
+        display_name:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Display Name
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+      type: object
+      required:
+      - display_name
+      title: ManagedAgentRegisterRequest
+      description: 'Request to register a custom managed agent the CLI cannot discover.
+
+
+        Used when an operator wants to onboard an agent (for example a customer''s
+
+        LangGraph agent) that has never connected through a runtime session, so a
+
+        gateway credential can subsequently be minted for it.'
     ManagedAgentServerActivitySummary:
       properties:
         server_name:
@@ -12920,6 +13322,137 @@ components:
       - summary
       title: RuntimeSessionInteractionSummary
       description: Generated or locally derived summary for one gateway interaction.
+    RuntimeSessionRequestItem:
+      properties:
+        id:
+          type: string
+          title: Id
+        timestamp:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Timestamp
+        model_alias:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Alias
+        provider_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Name
+        status_code:
+          type: integer
+          title: Status Code
+          default: 0
+        is_error:
+          type: boolean
+          title: Is Error
+          default: false
+        finish_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Finish Reason
+        is_retry:
+          type: boolean
+          title: Is Retry
+          default: false
+        prompt_tokens:
+          type: integer
+          title: Prompt Tokens
+          default: 0
+        completion_tokens:
+          type: integer
+          title: Completion Tokens
+          default: 0
+        total_tokens:
+          type: integer
+          title: Total Tokens
+          default: 0
+        estimated_cost:
+          type: number
+          title: Estimated Cost
+          default: 0.0
+        endpoint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Endpoint
+        tools:
+          items:
+            $ref: '#/components/schemas/RuntimeSessionRequestTool'
+          type: array
+          title: Tools
+        tools_total_schema_tokens:
+          type: integer
+          title: Tools Total Schema Tokens
+          default: 0
+      type: object
+      required:
+      - id
+      title: RuntimeSessionRequestItem
+      description: One per-request gateway usage row for the unified session timeline.
+    RuntimeSessionRequestListResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/RuntimeSessionRequestItem'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+          default: 0
+        failed_count:
+          type: integer
+          title: Failed Count
+          default: 0
+        limit:
+          type: integer
+          title: Limit
+          default: 100
+        offset:
+          type: integer
+          title: Offset
+          default: 0
+        next_offset:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Next Offset
+        has_more:
+          type: boolean
+          title: Has More
+          default: false
+      type: object
+      title: RuntimeSessionRequestListResponse
+      description: Paginated per-request rows for one runtime session.
+    RuntimeSessionRequestTool:
+      properties:
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source
+        schema_tokens_estimate:
+          type: integer
+          title: Schema Tokens Estimate
+          default: 0
+        stripped:
+          type: boolean
+          title: Stripped
+          default: false
+      type: object
+      title: RuntimeSessionRequestTool
+      description: One tool carried by a single gateway request.
     RuntimeSessionSummary:
       properties:
         id:
@@ -12951,6 +13484,11 @@ components:
           - type: string
           - type: 'null'
           title: Runtime Principal Name
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Title
         summary:
           anyOf:
           - type: string
@@ -13035,6 +13573,21 @@ components:
             format: date-time
           - type: 'null'
           title: Last Request At
+        optimization_waste_score:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Optimization Waste Score
+        optimization_potential_savings_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Optimization Potential Savings Tokens
+        optimization_potential_savings_usd:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Optimization Potential Savings Usd
       type: object
       required:
       - id
@@ -13739,6 +14292,27 @@ components:
       type: object
       title: ToolConfigurationUpdate
       description: Schema for updating tool configuration.
+    ToolUsageStatsResponse:
+      properties:
+        period_start:
+          type: string
+          format: date-time
+          title: Period Start
+        period_end:
+          type: string
+          format: date-time
+          title: Period End
+        tools:
+          items:
+            $ref: '#/components/schemas/GatewayUsageByTool'
+          type: array
+          title: Tools
+      type: object
+      required:
+      - period_start
+      - period_end
+      title: ToolUsageStatsResponse
+      description: Account-wide tool invocation and schema-cost stats.
     TrackerCreateResponse:
       properties:
         id:

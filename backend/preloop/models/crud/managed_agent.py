@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any, Optional
 
@@ -314,8 +315,15 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         managed_mcp_servers: Optional[list[str]] = None,
         enrolled_via: str = "runtime_session_token",
         last_seen_at: Optional[datetime] = None,
+        owner_user_id: Any = None,
     ) -> ManagedAgent:
-        """Create or update one registry entry from a runtime-session token flow."""
+        """Create or update one registry entry from a runtime-session token flow.
+
+        ``owner_user_id`` (the enrolling user) is set on create and backfilled on
+        update only when the agent has no owner yet, so a manually assigned owner
+        is never overwritten. This owner drives per-user cost attribution and
+        per-user budgets.
+        """
         db_obj = self.get_by_source(
             db,
             account_id=str(account_id),
@@ -336,6 +344,7 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
                 display_name=display_name,
                 enrolled_via=enrolled_via,
                 managed_mcp_servers=normalized_servers,
+                owner_user_id=owner_user_id,
                 lifecycle_state="active",
                 lifecycle_reason=None,
                 lifecycle_updated_at=observed_at,
@@ -352,9 +361,71 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         db_obj.last_seen_at = observed_at
         if session_reference is not None:
             db_obj.session_reference = session_reference
+        if owner_user_id is not None and db_obj.owner_user_id is None:
+            db_obj.owner_user_id = owner_user_id
         db_obj.managed_mcp_servers = normalized_servers
         db.add(db_obj)
         db.flush()
+        return db_obj
+
+    def create_custom_agent(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        display_name: str,
+        description: Optional[str] = None,
+        owner_user_id: Any = None,
+        commit: bool = True,
+    ) -> ManagedAgent:
+        """Register a custom managed agent the discovery CLI cannot find.
+
+        Custom agents never connect through a runtime session, so they are
+        given a generated ``session_source_id`` (``custom_<token>``) under the
+        reserved ``custom`` source type. Because the id is random it can never
+        collide with the real local-config source ids that ``preloop agents
+        discover`` keys off, so a later discovery run will not be deduped
+        against this row.
+
+        Args:
+            db: Active database session.
+            account_id: Owning account identifier.
+            display_name: Operator-facing name for the agent.
+            description: Optional free-form description; stored under ``tags``.
+            commit: Whether to commit the transaction.
+
+        Returns:
+            The newly created ManagedAgent row.
+        """
+        now = _utc_now()
+        normalized_name = display_name.strip()
+        session_source_id = f"custom_{secrets.token_urlsafe(16)}"
+        tags: dict[str, str] = {}
+        if description and description.strip():
+            tags["description"] = description.strip()
+        db_obj = ManagedAgent(
+            account_id=account_id,
+            runtime_session_id=None,
+            agent_kind=normalize_managed_agent_kind("custom"),
+            session_source_type="custom",
+            session_source_id=session_source_id,
+            session_reference=None,
+            display_name=normalized_name,
+            enrolled_via="operator_registration",
+            managed_mcp_servers=[],
+            owner_user_id=owner_user_id,
+            tags=tags,
+            lifecycle_state="active",
+            lifecycle_reason=None,
+            lifecycle_updated_at=now,
+            last_seen_at=now,
+        )
+        db.add(db_obj)
+        if commit:
+            db.commit()
+            db.refresh(db_obj)
+        else:
+            db.flush()
         return db_obj
 
     def list_for_account(

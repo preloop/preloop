@@ -38,6 +38,13 @@ OPENAI_CODEX_REFRESH_SKEW_MS = 60_000
 ANTHROPIC_CLAUDE_CODE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 ANTHROPIC_CLAUDE_CODE_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 ANTHROPIC_CLAUDE_CODE_REFRESH_SKEW_MS = 60_000
+# platform.claude.com sits behind Cloudflare, which rejects requests whose
+# signature does not look like the real Claude Code client with HTTP 403
+# "error code: 1010" (browser-signature ban) — BEFORE the OAuth handler runs.
+# A bare urllib form-POST is blocked; sending a JSON body plus a Claude
+# Code-style User-Agent passes. Keep this UA in sync with a plausible
+# Claude Code release string.
+ANTHROPIC_CLAUDE_CODE_USER_AGENT = "claude-cli/2.1.168 (external, cli)"
 
 
 @dataclass
@@ -631,7 +638,11 @@ class SecretService:
     def _refresh_anthropic_claude_code_token(
         self, refresh_token: str
     ) -> Dict[str, Any]:
-        body = urllib_parse.urlencode(
+        # Match the real Claude Code client: JSON body + a Claude Code
+        # User-Agent. A form-encoded POST without a User-Agent is blocked by
+        # Cloudflare with HTTP 403 "error code: 1010" before reaching the
+        # OAuth handler (see ANTHROPIC_CLAUDE_CODE_USER_AGENT).
+        body = json.dumps(
             {
                 "grant_type": "refresh_token",
                 "refresh_token": refresh_token,
@@ -642,8 +653,10 @@ class SecretService:
             ANTHROPIC_CLAUDE_CODE_TOKEN_URL,
             data=body,
             headers={
-                "Content-Type": "application/x-www-form-urlencoded",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
                 "anthropic-beta": "oauth-2025-04-20",
+                "User-Agent": ANTHROPIC_CLAUDE_CODE_USER_AGENT,
             },
             method="POST",
         )

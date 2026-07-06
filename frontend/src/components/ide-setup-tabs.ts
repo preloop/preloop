@@ -84,36 +84,40 @@ export class IdeSetupTabs extends LitElement {
 
     return html`
       <div
-        class="ide-setup-tabs-container ${this.variant === 'modal'
-          ? 'modal-variant'
-          : ''}"
+        class="ide-setup-tabs-container ${
+          this.variant === 'modal' ? 'modal-variant' : ''
+        }"
       >
-        ${this.globalPrerequisite
-          ? html`
-              <div class="global-prereq">
-                <div class="global-prereq-content">
-                  <strong>${this.globalPrerequisite}</strong>
-                  ${this.globalPrerequisiteLink
-                    ? html`
-                        <a
-                          href="${this.globalPrerequisiteLink}"
-                          class="prereq-link"
-                          >${this.globalPrerequisiteLinkText}</a
-                        >
-                      `
-                    : ''}
+        ${
+          this.globalPrerequisite
+            ? html`
+                <div class="global-prereq">
+                  <div class="global-prereq-content">
+                    <strong>${this.globalPrerequisite}</strong>
+                    ${
+                      this.globalPrerequisiteLink
+                        ? html`
+                            <a
+                              href="${this.globalPrerequisiteLink}"
+                              class="prereq-link"
+                              >${this.globalPrerequisiteLinkText}</a
+                            >
+                          `
+                        : ''
+                    }
+                  </div>
                 </div>
-              </div>
-            `
-          : ''}
+              `
+            : ''
+        }
         <div class="tabs-wrapper">
           <div class="ide-tabs" role="tablist">
             ${this.configs.map(
               (config) => html`
                 <div
-                  class="ide-logo-container ${this._activeTab === config.ide
-                    ? 'active'
-                    : ''}"
+                  class="ide-logo-container ${
+                    this._activeTab === config.ide ? 'active' : ''
+                  }"
                   role="tab"
                   tabindex="0"
                   aria-selected="${this._activeTab === config.ide}"
@@ -136,56 +140,63 @@ export class IdeSetupTabs extends LitElement {
           </div>
 
           <div class="tab-content" role="tabpanel">
-            ${activeConfig
-              ? html`
-                  <div>
-                    <h4 style="margin-top: 0; margin-bottom: 1.5rem;">
-                      ${activeConfig.ide_name} Setup
-                    </h4>
-                    ${activeConfig.prerequisites.length > 0
-                      ? html` <h5>Prerequisites</h5>
-                          <ul>
-                            ${activeConfig.prerequisites.map(
-                              (prereq) => html`<li>${unsafeHTML(prereq)}</li>`
-                            )}
-                          </ul>`
-                      : ``}
-                    <h5>Setup</h5>
-                    <p>${unsafeHTML(activeConfig.setup_instructions)}</p>
-                    <div class="code-container">
-                      <pre><code>${activeConfig.code.trimStart()}</code></pre>
-                      <button
-                        class="copy-btn"
-                        @click=${this._copyCode}
-                        aria-label="Copy code to clipboard"
-                      >
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          width="16"
-                          height="16"
-                          fill="currentColor"
-                          class="bi bi-clipboard"
-                          viewBox="0 0 16 16"
+            ${
+              activeConfig
+                ? html`
+                    <div>
+                      <h4 style="margin-top: 0; margin-bottom: 1.5rem;">
+                        ${activeConfig.ide_name} Setup
+                      </h4>
+                      ${
+                        activeConfig.prerequisites.length > 0
+                          ? html` <h5>Prerequisites</h5>
+                              <ul>
+                                ${activeConfig.prerequisites.map(
+                                  (prereq) =>
+                                    html`<li>${unsafeHTML(prereq)}</li>`
+                                )}
+                              </ul>`
+                          : ``
+                      }
+                      <h5>Setup</h5>
+                      <p>${unsafeHTML(activeConfig.setup_instructions)}</p>
+                      <div class="code-container">
+                        <pre><code>${activeConfig.code.trimStart()}</code></pre>
+                        <button
+                          class="copy-btn"
+                          @click=${this._copyCode}
+                          aria-label="Copy code to clipboard"
                         >
-                          <path
-                            d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"
-                          />
-                          <path
-                            d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"
-                          />
-                        </svg>
-                      </button>
+                          <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            width="16"
+                            height="16"
+                            fill="currentColor"
+                            class="bi bi-clipboard"
+                            viewBox="0 0 16 16"
+                          >
+                            <path
+                              d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"
+                            />
+                            <path
+                              d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"
+                            />
+                          </svg>
+                        </button>
+                      </div>
+                      ${
+                        this.helpText
+                          ? html`<p
+                              style="margin-top: 1.5rem; font-size: 0.875rem; opacity: 0.9; line-height: 1.5;"
+                            >
+                              ${this.helpText}
+                            </p>`
+                          : ''
+                      }
                     </div>
-                    ${this.helpText
-                      ? html`<p
-                          style="margin-top: 1.5rem; font-size: 0.875rem; opacity: 0.9; line-height: 1.5;"
-                        >
-                          ${this.helpText}
-                        </p>`
-                      : ''}
-                  </div>
-                `
-              : html`<div>Please select an IDE from the tabs.</div>`}
+                  `
+                : html`<div>Please select an IDE from the tabs.</div>`
+            }
           </div>
         </div>
       </div>

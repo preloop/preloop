@@ -475,22 +475,29 @@ export class AccountView extends LitElement {
               Organization Details
             </h2>
 
-            ${this.orgSuccessMessage
-              ? html`
-                  <sl-alert variant="success" open closable>
-                    <sl-icon slot="icon" name="check-circle"></sl-icon>
-                    ${this.orgSuccessMessage}
-                  </sl-alert>
-                `
-              : ''}
-            ${this.orgErrorMessage
-              ? html`
-                  <sl-alert variant="danger" open closable>
-                    <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
-                    ${this.orgErrorMessage}
-                  </sl-alert>
-                `
-              : ''}
+            ${
+              this.orgSuccessMessage
+                ? html`
+                    <sl-alert variant="success" open closable>
+                      <sl-icon slot="icon" name="check-circle"></sl-icon>
+                      ${this.orgSuccessMessage}
+                    </sl-alert>
+                  `
+                : ''
+            }
+            ${
+              this.orgErrorMessage
+                ? html`
+                    <sl-alert variant="danger" open closable>
+                      <sl-icon
+                        slot="icon"
+                        name="exclamation-triangle"
+                      ></sl-icon>
+                      ${this.orgErrorMessage}
+                    </sl-alert>
+                  `
+                : ''
+            }
 
             <div style="display: flex; flex-direction: column; gap: 1rem;">
               <sl-input
@@ -518,180 +525,206 @@ export class AccountView extends LitElement {
             </div>
           </sl-card>
 
-          ${isProprietary
-            ? html`
-                <!-- Subscription Section (Proprietary Only) -->
-                <div class="card current-plan">
-                  <div class="current-row">
-                    <span class="plan-name">${currentPlanName}</span>
-                    <span
-                      class="status-chip ${this.subscription?.status ===
-                      'pending_cancellation'
-                        ? 'pending'
-                        : ''}"
-                    >
-                      ${this.subscription
-                        ? this.subscription.status === 'pending_cancellation'
-                          ? 'Pending cancellation'
-                          : this.subscription.status
-                        : 'Free'}
-                    </span>
+          ${
+            isProprietary
+              ? html`
+                  <!-- Subscription Section (Proprietary Only) -->
+                  <div class="card current-plan">
+                    <div class="current-row">
+                      <span class="plan-name">${currentPlanName}</span>
+                      <span
+                        class="status-chip ${
+                          this.subscription?.status === 'pending_cancellation'
+                            ? 'pending'
+                            : ''
+                        }"
+                      >
+                        ${
+                          this.subscription
+                            ? this.subscription.status ===
+                              'pending_cancellation'
+                              ? 'Pending cancellation'
+                              : this.subscription.status
+                            : 'Free'
+                        }
+                      </span>
+                    </div>
+                    ${
+                      this.subscription
+                        ? html`
+                            <div class="date">
+                              ${
+                                this.subscription.status ===
+                                'pending_cancellation'
+                                  ? 'Cancels on'
+                                  : 'Renews on'
+                              }
+                              ${new Date(
+                                this.subscription.current_period_end
+                              ).toLocaleDateString()}
+                            </div>
+                          `
+                        : html`<div class="date">
+                            You are currently on the Free plan.
+                          </div>`
+                    }
+                    ${
+                      trialSummary?.is_trialing
+                        ? html`
+                            <div class="date">
+                              Trial cap for built-in models:
+                              ${this._formatUsd(
+                                trialSummary.hosted_model_hard_cap_usd
+                              )}
+                            </div>
+                          `
+                        : ''
+                    }
+                    <div class="actions">
+                      <sl-button
+                        size="medium"
+                        variant="primary"
+                        ?disabled=${!this.subscription}
+                        @click=${this._handleManageSubscription}
+                      >
+                        Manage in Stripe
+                      </sl-button>
+                    </div>
                   </div>
-                  ${this.subscription
-                    ? html`
-                        <div class="date">
-                          ${this.subscription.status === 'pending_cancellation'
-                            ? 'Cancels on'
-                            : 'Renews on'}
-                          ${new Date(
-                            this.subscription.current_period_end
-                          ).toLocaleDateString()}
-                        </div>
-                      `
-                    : html`<div class="date">
-                        You are currently on the Free plan.
-                      </div>`}
-                  ${trialSummary?.is_trialing
-                    ? html`
-                        <div class="date">
-                          Trial cap for built-in models:
-                          ${this._formatUsd(
-                            trialSummary.hosted_model_hard_cap_usd
-                          )}
-                        </div>
-                      `
-                    : ''}
-                  <div class="actions">
-                    <sl-button
-                      size="medium"
-                      variant="primary"
-                      ?disabled=${!this.subscription}
-                      @click=${this._handleManageSubscription}
-                    >
-                      Manage in Stripe
-                    </sl-button>
-                  </div>
-                </div>
 
-                ${hostedSummary
-                  ? html`
-                      <div class="card">
-                        <div class="current-row">
-                          <span class="plan-name">Built-in model usage</span>
-                        </div>
-                        <div class="date">
-                          Current billing period ends
-                          ${new Date(
-                            hostedSummary.billing_period_end
-                          ).toLocaleDateString()}
-                        </div>
-                        <div class="usage-grid">
-                          <div class="usage-metric">
-                            <div class="usage-label">Plan limit</div>
-                            <div class="usage-value">
-                              ${this._formatUsd(
-                                hostedSummary.included_limit_usd
-                              )}
+                  ${
+                    hostedSummary
+                      ? html`
+                          <div class="card">
+                            <div class="current-row">
+                              <span class="plan-name"
+                                >Built-in model usage</span
+                              >
                             </div>
-                          </div>
-                          <div class="usage-metric">
-                            <div class="usage-label">Current active cap</div>
-                            <div class="usage-value">
-                              ${this._formatUsd(hostedSummary.active_limit_usd)}
+                            <div class="date">
+                              Current billing period ends
+                              ${new Date(
+                                hostedSummary.billing_period_end
+                              ).toLocaleDateString()}
                             </div>
-                          </div>
-                          <div class="usage-metric">
-                            <div class="usage-label">Usage so far</div>
-                            <div class="usage-value">
-                              ${this._formatUsd(
-                                hostedSummary.current_usage_usd
-                              )}
-                            </div>
-                          </div>
-                          <div class="usage-metric">
-                            <div class="usage-label">Remaining before cap</div>
-                            <div class="usage-value">
-                              ${this._formatUsd(
-                                hostedSummary.remaining_limit_usd
-                              )}
-                            </div>
-                          </div>
-                          <div class="usage-metric">
-                            <div class="usage-label">Extra credits</div>
-                            <div class="usage-value">
-                              ${this._formatExtraCreditPrice(
-                                hostedSummary.extra_credit_price_per_usd
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                        <div class="usage-note">
-                          Built-in models are Preloop-managed hosted models.
-                          BYOK usage is not counted here.
-                        </div>
-                        <div class="usage-models">
-                          ${hostedSummary.models.length > 0
-                            ? hostedSummary.models.map(
-                                (model) => html`
-                                  <div class="usage-model-row">
-                                    <div>
-                                      <div class="usage-model-name">
-                                        ${model.model_name}
-                                      </div>
-                                      <div class="usage-model-meta">
-                                        ${model.request_count}
-                                        request${model.request_count === 1
-                                          ? ''
-                                          : 's'}
-                                        · ${model.total_tokens.toLocaleString()}
-                                        tokens
-                                        ${model.tier ? `· ${model.tier}` : ''}
-                                      </div>
-                                    </div>
-                                    <div class="usage-model-cost">
-                                      ${this._formatUsd(model.estimated_cost)}
-                                    </div>
-                                  </div>
-                                `
-                              )
-                            : html`
-                                <div class="usage-note">
-                                  No built-in model usage recorded in this
-                                  billing period yet.
+                            <div class="usage-grid">
+                              <div class="usage-metric">
+                                <div class="usage-label">Plan limit</div>
+                                <div class="usage-value">
+                                  ${this._formatUsd(
+                                    hostedSummary.included_limit_usd
+                                  )}
                                 </div>
-                              `}
-                        </div>
-                      </div>
-                    `
-                  : ''}
-
-                <div>
-                  <billing-toggle
-                    .interval=${this._interval}
-                    @interval-change=${(e: CustomEvent) =>
-                      (this._interval = e.detail.value)}
-                  ></billing-toggle>
-
-                  <div
-                    class="plans-grid"
-                    @signup-requested=${this._handleUpgradeRequest}
-                  >
-                    ${availablePlans
-                      .filter((p) => p.id !== this.subscription?.plan_id)
-                      .map(
-                        (plan) => html`
-                          <pricing-card
-                            .plan=${plan}
-                            .interval=${this._interval}
-                            .featureOrder=${this._featureOrder}
-                            .featureLabels=${this._featureLabels}
-                          ></pricing-card>
+                              </div>
+                              <div class="usage-metric">
+                                <div class="usage-label">
+                                  Current active cap
+                                </div>
+                                <div class="usage-value">
+                                  ${this._formatUsd(hostedSummary.active_limit_usd)}
+                                </div>
+                              </div>
+                              <div class="usage-metric">
+                                <div class="usage-label">Usage so far</div>
+                                <div class="usage-value">
+                                  ${this._formatUsd(
+                                    hostedSummary.current_usage_usd
+                                  )}
+                                </div>
+                              </div>
+                              <div class="usage-metric">
+                                <div class="usage-label">
+                                  Remaining before cap
+                                </div>
+                                <div class="usage-value">
+                                  ${this._formatUsd(
+                                    hostedSummary.remaining_limit_usd
+                                  )}
+                                </div>
+                              </div>
+                              <div class="usage-metric">
+                                <div class="usage-label">Extra credits</div>
+                                <div class="usage-value">
+                                  ${this._formatExtraCreditPrice(
+                                    hostedSummary.extra_credit_price_per_usd
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                            <div class="usage-note">
+                              Built-in models are Preloop-managed hosted models.
+                              BYOK usage is not counted here.
+                            </div>
+                            <div class="usage-models">
+                              ${
+                                hostedSummary.models.length > 0
+                                  ? hostedSummary.models.map(
+                                      (model) => html`
+                                        <div class="usage-model-row">
+                                          <div>
+                                            <div class="usage-model-name">
+                                              ${model.model_name}
+                                            </div>
+                                            <div class="usage-model-meta">
+                                              ${model.request_count}
+                                              request${
+                                                model.request_count === 1
+                                                  ? ''
+                                                  : 's'
+                                              }
+                                              ·
+                                              ${model.total_tokens.toLocaleString()}
+                                              tokens
+                                              ${model.tier ? `· ${model.tier}` : ''}
+                                            </div>
+                                          </div>
+                                          <div class="usage-model-cost">
+                                            ${this._formatUsd(model.estimated_cost)}
+                                          </div>
+                                        </div>
+                                      `
+                                    )
+                                  : html`
+                                      <div class="usage-note">
+                                        No built-in model usage recorded in this
+                                        billing period yet.
+                                      </div>
+                                    `
+                              }
+                            </div>
+                          </div>
                         `
-                      )}
+                      : ''
+                  }
+
+                  <div>
+                    <billing-toggle
+                      .interval=${this._interval}
+                      @interval-change=${(e: CustomEvent) =>
+                        (this._interval = e.detail.value)}
+                    ></billing-toggle>
+
+                    <div
+                      class="plans-grid"
+                      @signup-requested=${this._handleUpgradeRequest}
+                    >
+                      ${availablePlans
+                        .filter((p) => p.id !== this.subscription?.plan_id)
+                        .map(
+                          (plan) => html`
+                            <pricing-card
+                              .plan=${plan}
+                              .interval=${this._interval}
+                              .featureOrder=${this._featureOrder}
+                              .featureLabels=${this._featureLabels}
+                            ></pricing-card>
+                          `
+                        )}
+                    </div>
                   </div>
-                </div>
-              `
-            : ''}
+                `
+              : ''
+          }
         </div>
       </div>
     `;

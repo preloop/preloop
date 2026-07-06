@@ -145,6 +145,7 @@ class WebSocketAuthMiddleware:
             from preloop.api.auth.jwt import decode_token
             from preloop.models.crud import crud_user
             from preloop.models.db.session import get_db_session
+            from preloop.services.db_executor import detach_user
 
             token_data = decode_token(token)
             if not token_data or not token_data.sub:
@@ -155,9 +156,7 @@ class WebSocketAuthMiddleware:
             try:
                 user = crud_user.get(db, id=UUID(token_data.sub))
                 if user and user.is_active:
-                    # Detach from session so it can be used in handlers
-                    db.expunge(user)
-                    return user
+                    return detach_user(db, user)
                 return None
             finally:
                 db.close()

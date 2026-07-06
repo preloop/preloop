@@ -6,3 +6,6 @@ node_modules
 coverage
 playwright-report
 test-results
+# E2E staging creds read by tests/e2e/custom-agent-session.spec.ts (never commit)
+tmp
+tmp/staging-creds.json

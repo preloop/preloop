@@ -291,17 +291,25 @@ export class PreloopGatewayEvent extends LitElement {
           )}
         </div>
         <div class="gateway-badges">
-          ${policy.sensitive_fields_redacted
-            ? html`<sl-badge pill>Sensitive fields redacted</sl-badge>`
-            : ''}
-          ${policy.content_redacted
-            ? html`<sl-badge pill variant="warning">Content redacted</sl-badge>`
-            : ''}
-          ${policy.content_truncated
-            ? html`<sl-badge pill variant="warning"
-                >Content truncated</sl-badge
-              >`
-            : ''}
+          ${
+            policy.sensitive_fields_redacted
+              ? html`<sl-badge pill>Sensitive fields redacted</sl-badge>`
+              : ''
+          }
+          ${
+            policy.content_redacted
+              ? html`<sl-badge pill variant="warning"
+                  >Content redacted</sl-badge
+                >`
+              : ''
+          }
+          ${
+            policy.content_truncated
+              ? html`<sl-badge pill variant="warning"
+                  >Content truncated</sl-badge
+                >`
+              : ''
+          }
         </div>
       </div>
     `;
@@ -324,35 +332,42 @@ export class PreloopGatewayEvent extends LitElement {
             ${this.formatGatewayLabel(message.role)}
           </div>
           <div class="gateway-badges">
-            ${message.redacted
-              ? html`<sl-badge pill variant="warning">Redacted</sl-badge>`
-              : ''}
-            ${message.truncated
-              ? html`<sl-badge pill variant="warning">Truncated</sl-badge>`
-              : ''}
-            ${typeof message.original_length === 'number'
-              ? html`
-                  <sl-badge pill variant="neutral">
-                    ${message.original_length.toLocaleString()} chars
-                  </sl-badge>
-                `
-              : ''}
+            ${
+              message.redacted
+                ? html`<sl-badge pill variant="warning">Redacted</sl-badge>`
+                : ''
+            }
+            ${
+              message.truncated
+                ? html`<sl-badge pill variant="warning">Truncated</sl-badge>`
+                : ''
+            }
+            ${
+              typeof message.original_length === 'number'
+                ? html`
+                    <sl-badge pill variant="neutral">
+                      ${message.original_length.toLocaleString()} chars
+                    </sl-badge>
+                  `
+                : ''
+            }
           </div>
         </div>
         <pre
-          class="conversation-preview-text ${message.redacted
-            ? 'conversation-preview-redacted'
-            : ''}"
+          class="conversation-preview-text ${
+            message.redacted ? 'conversation-preview-redacted' : ''
+          }"
         >
-${previewText}</pre
-        >
-        ${message.truncated
-          ? html`
-              <div class="search-summary">
-                This stored preview was truncated before display.
-              </div>
-            `
-          : ''}
+${previewText}</pre>
+        ${
+          message.truncated
+            ? html`
+                <div class="search-summary">
+                  This stored preview was truncated before display.
+                </div>
+              `
+            : ''
+        }
       </div>
     `;
   }
@@ -365,30 +380,36 @@ ${previewText}</pre
       <div class="payload-section-title">Conversation Preview</div>
       <div class="gateway-badges" style="margin-bottom: 12px;">
         <sl-badge pill>${messages.length} messages</sl-badge>
-        ${metadata?.has_redacted_content
-          ? html`<sl-badge pill variant="warning"
-              >Contains redactions</sl-badge
-            >`
-          : ''}
-        ${metadata?.has_truncated_content
-          ? html`<sl-badge pill variant="warning"
-              >Contains truncation</sl-badge
-            >`
-          : ''}
+        ${
+          metadata?.has_redacted_content
+            ? html`<sl-badge pill variant="warning"
+                >Contains redactions</sl-badge
+              >`
+            : ''
+        }
+        ${
+          metadata?.has_truncated_content
+            ? html`<sl-badge pill variant="warning"
+                >Contains truncation</sl-badge
+              >`
+            : ''
+        }
       </div>
-      ${messages.length > 0
-        ? html`
-            <div class="conversation-preview-list">
-              ${messages.map((message) =>
-                this.renderGatewayPreviewMessage(message)
-              )}
-            </div>
-          `
-        : html`
-            <div class="payload-block" style="margin-bottom: 16px;">
-              <pre>No conversation preview captured for this event.</pre>
-            </div>
-          `}
+      ${
+        messages.length > 0
+          ? html`
+              <div class="conversation-preview-list">
+                ${messages.map((message) =>
+                  this.renderGatewayPreviewMessage(message)
+                )}
+              </div>
+            `
+          : html`
+              <div class="payload-block" style="margin-bottom: 16px;">
+                <pre>No conversation preview captured for this event.</pre>
+              </div>
+            `
+      }
     `;
   }
 
@@ -439,25 +460,29 @@ ${previewText}</pre
               <sl-icon name=${icon}></sl-icon> ${title}
             </div>
             ${this.renderGatewayField('Timestamp', timestamp)}
-            ${payload.outcome
-              ? this.renderGatewayField(
-                  'Outcome',
-                  html` <sl-badge
-                    variant=${this.getGatewayOutcomeVariant(payload.outcome)}
-                    >${this.formatGatewayOutcome(payload.outcome)}</sl-badge
-                  >`
-                )
-              : ''}
+            ${
+              payload.outcome
+                ? this.renderGatewayField(
+                    'Outcome',
+                    html` <sl-badge
+                      variant=${this.getGatewayOutcomeVariant(payload.outcome)}
+                      >${this.formatGatewayOutcome(payload.outcome)}</sl-badge
+                    >`
+                  )
+                : ''
+            }
           </div>
 
-          ${payload.error_detail
-            ? html`
-                <sl-alert variant="danger" open style="margin-bottom: 16px;">
-                  <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
-                  ${payload.error_detail}
-                </sl-alert>
-              `
-            : ''}
+          ${
+            payload.error_detail
+              ? html`
+                  <sl-alert variant="danger" open style="margin-bottom: 16px;">
+                    <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+                    ${payload.error_detail}
+                  </sl-alert>
+                `
+              : ''
+          }
 
           <div class="payload-section-title">Event Payload</div>
           <div class="payload-block">
@@ -515,20 +540,24 @@ ${previewText}</pre
               ? `${payload.method || 'POST'} ${payload.status_code}`
               : payload.method || 'n/a'
           )}
-          ${payload.gateway_attempt
-            ? this.renderGatewayField(
-                'Gateway Attempt',
-                payload.is_retry
-                  ? `Retry #${payload.gateway_attempt}`
-                  : `#${payload.gateway_attempt}`
-              )
-            : ''}
-          ${payload.retry_of_api_usage_id
-            ? this.renderGatewayField(
-                'Retry Of',
-                String(payload.retry_of_api_usage_id)
-              )
-            : ''}
+          ${
+            payload.gateway_attempt
+              ? this.renderGatewayField(
+                  'Gateway Attempt',
+                  payload.is_retry
+                    ? `Retry #${payload.gateway_attempt}`
+                    : `#${payload.gateway_attempt}`
+                )
+              : ''
+          }
+          ${
+            payload.retry_of_api_usage_id
+              ? this.renderGatewayField(
+                  'Retry Of',
+                  String(payload.retry_of_api_usage_id)
+                )
+              : ''
+          }
           ${this.renderGatewayField(
             'Endpoint',
             payload.endpoint_kind || payload.endpoint || 'n/a'
@@ -557,14 +586,16 @@ ${previewText}</pre
           )}
         </div>
 
-        ${payload.error_detail
-          ? html`
-              <sl-alert variant="danger" open style="margin-bottom: 16px;">
-                <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
-                ${payload.error_detail}
-              </sl-alert>
-            `
-          : ''}
+        ${
+          payload.error_detail
+            ? html`
+                <sl-alert variant="danger" open style="margin-bottom: 16px;">
+                  <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+                  ${payload.error_detail}
+                </sl-alert>
+              `
+            : ''
+        }
         ${this.renderGatewayCapturePolicy(payload)}
         ${this.renderGatewayConversationPreview(payload)}
 

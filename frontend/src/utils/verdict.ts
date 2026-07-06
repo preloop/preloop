@@ -5,11 +5,7 @@ import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 
 export interface AIModelVerdict {
   decision:
-    | 'duplicate'
-    | 'overlapping'
-    | 'undecided'
-    | 'checking'
-    | 'unrelated';
+    'duplicate' | 'overlapping' | 'undecided' | 'checking' | 'unrelated';
   reason?: string;
   suggestion?: string;
   resolution?: string;
@@ -29,8 +25,10 @@ export function renderVerdict(
           name="check-all"
           style="margin-right: var(--sl-spacing-2x-small);"
         ></sl-icon>
-        ${verdict.resolution.charAt(0).toUpperCase() +
-        verdict.resolution.slice(1)}
+        ${
+          verdict.resolution.charAt(0).toUpperCase() +
+          verdict.resolution.slice(1)
+        }
       </sl-badge>
     `;
   }

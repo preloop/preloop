@@ -19,7 +19,12 @@ describe('AIModelDetailView', () => {
     fetchStub.callsFake(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
 
-      if (url === '/api/v1/ai-models/model-1') {
+      if (
+        url.includes('/api/v1/ai-models/model-1') &&
+        !url.includes('/summary') &&
+        !url.includes('/runtime-sessions') &&
+        !url.includes('/interactions')
+      ) {
         return new Response(
           JSON.stringify({
             id: 'model-1',
@@ -187,7 +192,7 @@ describe('AIModelDetailView', () => {
         );
       }
 
-      if (url === '/openai/v1/responses') {
+      if (url.includes('/openai/v1/responses')) {
         return new Response(
           JSON.stringify({
             output: [
@@ -207,14 +212,14 @@ describe('AIModelDetailView', () => {
         );
       }
 
-      if (url === '/api/v1/features') {
+      if (url.endsWith('/api/v1/features')) {
         return new Response(JSON.stringify({ features: {} }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
       }
 
-      if (url === '/api/v1/ai-models') {
+      if (url.endsWith('/api/v1/ai-models')) {
         return new Response(JSON.stringify([]), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
@@ -394,7 +399,9 @@ describe('AIModelDetailView', () => {
       () =>
         fetchStub
           .getCalls()
-          .some((call) => String(call.args[0]) === '/openai/v1/responses'),
+          .some((call) =>
+            String(call.args[0]).includes('/openai/v1/responses')
+          ),
       'Gateway request was not sent',
       { timeout: 5000 }
     );
@@ -402,7 +409,7 @@ describe('AIModelDetailView', () => {
 
     const requestCall = fetchStub
       .getCalls()
-      .find((call) => String(call.args[0]) === '/openai/v1/responses');
+      .find((call) => String(call.args[0]).includes('/openai/v1/responses'));
     expect(requestCall).to.not.equal(undefined);
     expect(requestCall?.args[1]).to.deep.include({ method: 'POST' });
     expect(String((requestCall?.args[1] as RequestInit)?.body)).to.contain(

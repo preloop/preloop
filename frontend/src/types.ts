@@ -174,6 +174,7 @@ export interface GatewayUsageBySession {
   runtime_session_name?: string | null;
   session_source_type?: string | null;
   session_source_id?: string | null;
+  title?: string | null;
   session_summary?: string | null;
   session_summary_updated_at?: string | null;
   runtime_principal_type?: string | null;
@@ -194,6 +195,35 @@ export interface GatewayUsageBySession {
   last_activity_at?: string | null;
   last_request_at: string | null;
   ended_at?: string | null;
+}
+
+export interface GatewayToolUsageByAgent {
+  runtime_principal_type?: string | null;
+  runtime_principal_id?: string | null;
+  runtime_principal_name?: string | null;
+  agent_id?: string | null;
+  invocation_count: number;
+  estimated_schema_cost: number;
+}
+
+export interface GatewayUsageByTool {
+  tool_name: string;
+  server_name?: string | null;
+  invocation_count: number;
+  successful_invocations: number;
+  failed_invocations: number;
+  schema_injections: number;
+  schema_tokens_total: number;
+  estimated_schema_cost: number;
+  avg_cost_per_invocation: number;
+  last_activity_at?: string | null;
+  usage_by_agent: GatewayToolUsageByAgent[];
+}
+
+export interface ToolUsageStatsResponse {
+  period_start: string;
+  period_end: string;
+  tools: GatewayUsageByTool[];
 }
 
 export interface GatewayUsageSearchResultItem {
@@ -236,6 +266,8 @@ export interface AccountGatewayUsageSearchResponse {
 
 export interface RuntimeSessionSummary {
   id: string;
+  title?: string | null;
+  summary?: string | null;
   session_source_type: string;
   session_source_id: string;
   session_reference: string | null;
@@ -258,6 +290,9 @@ export interface RuntimeSessionSummary {
   token_usage: GatewayTokenUsage;
   estimated_cost: number;
   last_request_at: string | null;
+  optimization_waste_score?: number | null;
+  optimization_potential_savings_tokens?: number | null;
+  optimization_potential_savings_usd?: number | null;
 }
 
 export interface AccountRuntimeSessionListResponse {
@@ -330,11 +365,7 @@ export interface ManagedAgentSummary {
   live_validation_supported: boolean;
   live_validation_passed: boolean | null;
   live_validation_status:
-    | 'unsupported'
-    | 'not_run'
-    | 'passed'
-    | 'failed'
-    | string;
+    'unsupported' | 'not_run' | 'passed' | 'failed' | string;
   last_validated_at: string | null;
   control_feature_name?: string;
   control_capabilities?: string[];
@@ -503,6 +534,41 @@ export interface RuntimeSessionActivityListResponse {
   items: RuntimeSessionActivityItem[];
 }
 
+export interface RuntimeSessionRequestTool {
+  name: string | null;
+  source: string | null;
+  schema_tokens_estimate: number;
+  stripped: boolean;
+}
+
+export interface RuntimeSessionRequestItem {
+  id: string;
+  timestamp: string | null;
+  model_alias: string | null;
+  provider_name: string | null;
+  status_code: number;
+  is_error: boolean;
+  finish_reason: string | null;
+  is_retry: boolean;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  estimated_cost: number;
+  endpoint: string | null;
+  tools: RuntimeSessionRequestTool[];
+  tools_total_schema_tokens: number;
+}
+
+export interface RuntimeSessionRequestListResponse {
+  items: RuntimeSessionRequestItem[];
+  total: number;
+  failed_count: number;
+  limit: number;
+  offset: number;
+  next_offset: number | null;
+  has_more: boolean;
+}
+
 export interface RuntimeSessionSummaryInsight {
   title: string;
   description: string;
@@ -526,6 +592,38 @@ export interface RuntimeSessionInteractionSummary {
   estimated_summary_cost: number;
 }
 
+export interface RuntimeSessionOptimizationActionSpec {
+  type:
+    | 'scope_tools'
+    | 'set_budget'
+    | 'open_events'
+    | 'manage_output_filter'
+    | string;
+  params: Record<string, unknown>;
+}
+
+export interface ToolOutputFilter {
+  id: string;
+  account_id: string;
+  server_name: string | null;
+  tool_name: string;
+  managed_agent_id: string | null;
+  dropped_fields: string[];
+  enabled: boolean;
+  created_at: string;
+}
+
+export interface ToolOutputFilterListResponse {
+  items: ToolOutputFilter[];
+}
+
+export interface ToolOutputFilterCreateRequest {
+  server_name: string | null;
+  tool_name: string;
+  dropped_fields: string[];
+  managed_agent_id: string | null;
+}
+
 export interface RuntimeSessionOptimizationSuggestion {
   id: string;
   title: string;
@@ -535,6 +633,28 @@ export interface RuntimeSessionOptimizationSuggestion {
   confidence: 'low' | 'medium' | 'high' | string;
   action_label: string;
   evidence: string[];
+  evidence_event_ids?: string[];
+  action?: RuntimeSessionOptimizationActionSpec | null;
+}
+
+export interface SessionContextProfileSegment {
+  kind: string;
+  estimated_tokens: number;
+  share: number;
+  event_ids?: string[];
+  sample_excerpt?: string | null;
+}
+
+export interface SessionContextProfileData {
+  session_id: string;
+  analyzed_event_count: number;
+  total_prompt_tokens: number;
+  total_completion_tokens: number;
+  segments?: SessionContextProfileSegment[];
+  cache_profile?: Record<string, unknown> | null;
+  retry_profile?: Record<string, unknown> | null;
+  tool_bloat?: Record<string, unknown> | null;
+  tool_schema_overhead?: Record<string, unknown> | null;
 }
 
 export interface RuntimeSessionOptimizationResponse {
@@ -544,7 +664,50 @@ export interface RuntimeSessionOptimizationResponse {
   model_name?: string | null;
   token_usage?: GatewayTokenUsage;
   estimated_optimization_cost?: number;
+  generated_at?: string | null;
+  from_cache?: boolean;
+  cache_miss?: boolean;
+  llm_skipped_reason?: string | null;
+  waste_score?: number | null;
+  potential_savings_tokens?: number;
+  potential_savings_usd?: number;
+  analyzed_scope_total_tokens?: number;
+  analyzed_scope_estimated_cost?: number;
+  context_profile?: SessionContextProfileData | null;
   suggestions: RuntimeSessionOptimizationSuggestion[];
+}
+
+export interface RuntimeSessionReplayResponse {
+  id: string;
+  runtime_session_id: string;
+  status: 'completed' | 'aborted_budget' | 'no_payload' | string;
+  input_delta_tokens: number;
+  input_pct_saved: number;
+  end_to_end_delta_median: number | null;
+  end_to_end_delta_low: number | null;
+  end_to_end_delta_high: number | null;
+  inconclusive: boolean;
+  cost_spent: number | null;
+  n_runs: number;
+}
+
+export interface RuntimeSessionOptimizationAppliedAction {
+  id: string;
+  runtime_session_id: string;
+  suggestion_id: string;
+  suggestion_title: string | null;
+  action_type: string;
+  params: Record<string, unknown>;
+  status: string;
+  applied_by: string | null;
+  applied_at: string;
+  result: Record<string, unknown>;
+  baseline?: Record<string, unknown> | null;
+  outcome?: Record<string, unknown> | null;
+}
+
+export interface RuntimeSessionOptimizationActionListResponse {
+  items: RuntimeSessionOptimizationAppliedAction[];
 }
 
 export interface AccountGatewayUsageSummaryResponse {
@@ -560,6 +723,7 @@ export interface AccountGatewayUsageSummaryResponse {
   usage_by_model: GatewayUsageByModel[];
   usage_by_flow: GatewayUsageByFlow[];
   usage_by_session: GatewayUsageBySession[];
+  usage_by_tool?: GatewayUsageByTool[];
 }
 
 export interface ModelPriceOverride {
@@ -689,11 +853,7 @@ export interface ApiKey {
   runtime_principal_name?: string | null;
   last_activity_at?: string | null;
   activity_status?:
-    | 'active_now'
-    | 'recently_active'
-    | 'idle'
-    | 'revoked'
-    | string;
+    'active_now' | 'recently_active' | 'idle' | 'revoked' | string;
   recent_model_calls?: number;
   recent_tool_calls?: number;
 }

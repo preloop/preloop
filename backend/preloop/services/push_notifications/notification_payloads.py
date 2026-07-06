@@ -11,6 +11,44 @@ class NotificationPayloadBuilder:
     """
 
     @staticmethod
+    def budget_limit_exceeded(
+        *,
+        limit_type: str,
+        subject_type: str,
+        period: str,
+        limit_usd: float,
+        current_spend_usd: float,
+        body: str,
+    ) -> Dict[str, Any]:
+        """Build payload for budget soft/hard limit alerts."""
+        title = f"Budget {limit_type.capitalize()} Limit Exceeded"
+        custom_data = {
+            "type": "budget_limit_exceeded",
+            "limit_type": limit_type,
+            "subject_type": subject_type,
+            "period": period,
+            "limit_usd": limit_usd,
+            "current_spend_usd": current_spend_usd,
+        }
+        return {
+            "aps": {
+                "alert": {
+                    "title": title,
+                    "subtitle": f"{subject_type} · {period}",
+                    "body": body,
+                },
+                "sound": "default",
+                "category": "BUDGET_ALERT",
+                "thread-id": "budget-alerts",
+                "interruption-level": "time-sensitive"
+                if limit_type == "hard"
+                else "active",
+            },
+            **custom_data,
+            "data": custom_data,
+        }
+
+    @staticmethod
     def new_approval_request(
         request_id: str,
         tool_name: str,

@@ -211,59 +211,69 @@ export class JsonTree extends LitElement {
 
     return html`
       <div class="node ${this.isRoot ? 'root' : ''}">
-        ${!this.isRoot && !isEmpty
-          ? html`
-              <span
-                class="toggle ${this.expanded ? 'expanded' : ''}"
-                @click=${this.toggle}
-                >▶</span
-              >
-            `
-          : nothing}
+        ${
+          !this.isRoot && !isEmpty
+            ? html`
+                <span
+                  class="toggle ${this.expanded ? 'expanded' : ''}"
+                  @click=${this.toggle}
+                  >▶</span
+                >
+              `
+            : nothing
+        }
 
         <div>
-          ${this.name
-            ? html`
-                <span class="key" @click=${this.toggle}>${this.name}</span
-                ><span class="colon">:</span>
-              `
-            : nothing}
+          ${
+            this.name
+              ? html`
+                  <span class="key" @click=${this.toggle}>${this.name}</span
+                  ><span class="colon">:</span>
+                `
+              : nothing
+          }
 
           <span class="brace">${startBrace}</span>
 
-          ${!this.expanded && !isEmpty
-            ? html`
-                <span class="summary" @click=${this.toggle}>${summary}</span>
-              `
-            : nothing}
+          ${
+            !this.expanded && !isEmpty
+              ? html`
+                  <span class="summary" @click=${this.toggle}>${summary}</span>
+                `
+              : nothing
+          }
 
           <div class="children ${this.expanded ? '' : 'hidden'}">
-            ${isArray
-              ? items.map(
-                  (item: any, i: number) => html`
-                    <json-tree
-                      .data=${item}
-                      .isRoot=${false}
-                      path="${this.path}[${i}]"
-                      .isLastArrayItem=${i === items.length - 1}
-                    ></json-tree>
-                  `
-                )
-              : items.map(
-                  ([key, value]: [string, any]) => html`
-                    <json-tree
-                      .data=${value}
-                      name=${key}
-                      .isRoot=${false}
-                      path="${this.path ? this.path + '.' : ''}${key}"
-                    ></json-tree>
-                  `
-                )}
+            ${
+              isArray
+                ? items.map(
+                    (item: any, i: number) => html`
+                      <json-tree
+                        .data=${item}
+                        .isRoot=${false}
+                        path="${this.path}[${i}]"
+                        .isLastArrayItem=${i === items.length - 1}
+                      ></json-tree>
+                    `
+                  )
+                : items.map(
+                    ([key, value]: [string, any]) => html`
+                      <json-tree
+                        .data=${value}
+                        name=${key}
+                        .isRoot=${false}
+                        path="${this.path ? this.path + '.' : ''}${key}"
+                      ></json-tree>
+                    `
+                  )
+            }
           </div>
 
-          ${isEmpty || this.expanded
-            ? html`<span class="brace">${endBrace}</span>`
-            : nothing}
+          ${
+            isEmpty || this.expanded
+              ? html`<span class="brace">${endBrace}</span>`
+              : nothing
+          }
         </div>
       </div>
     `;
@@ -280,12 +290,14 @@ export class JsonTree extends LitElement {
     return html`
       <div class="node ${this.isRoot ? 'root' : ''}">
         <div>
-          ${this.name
-            ? html`
-                <span class="key">${this.name}</span
-                ><span class="colon">:</span>
-              `
-            : nothing}
+          ${
+            this.name
+              ? html`
+                  <span class="key">${this.name}</span
+                  ><span class="colon">:</span>
+                `
+              : nothing
+          }
           <span class="value ${type}">${displayValue}</span>
         </div>
       </div>

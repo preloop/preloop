@@ -55,6 +55,8 @@ class BudgetPolicy(Base):
 
     notify_on_soft = Column(Boolean, default=False, nullable=False)
     notify_on_hard = Column(Boolean, default=False, nullable=False)
+    notification_user_ids = Column(ARRAY(UUID(as_uuid=True)), nullable=True)
+    notification_team_ids = Column(ARRAY(UUID(as_uuid=True)), nullable=True)
     notification_emails = Column(ARRAY(String), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())

@@ -9,8 +9,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from uuid import UUID
 
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 import litellm
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from preloop.models.models.ai_model import AIModel
@@ -20,6 +21,7 @@ from preloop.models.crud import (
     crud_gateway_usage_search_document,
     crud_runtime_session,
     crud_runtime_session_activity,
+    crud_runtime_session_optimization_result,
 )
 from preloop.models.models.account import Account
 from preloop.schemas.gateway_usage import (
@@ -36,6 +38,15 @@ from preloop.schemas.gateway_usage import (
 from preloop.services.model_gateway_usage import ModelGatewayUsageService
 
 logger = logging.getLogger(__name__)
+
+# Bound the per-request cost of list-path title generation: at most this many
+# sessions are titled per list call (most-recent first); the rest get titled on
+# subsequent loads.
+MAX_TITLES_PER_LIST_REQUEST = 8
+
+# Refresh a session's title once its request count has grown by at least this
+# many requests since the title was last generated.
+TITLE_REFRESH_REQUEST_DELTA = 5
 
 _PROVIDER_PREFIX = {
     "openai": "openai",
@@ -68,6 +79,7 @@ class RuntimeSessionExplorerService:
         end_date: Optional[datetime] = None,
         limit: int = 20,
         offset: int = 0,
+        background_tasks: Optional[BackgroundTasks] = None,
     ) -> AccountRuntimeSessionListResponse:
         start_date, end_date = self._normalize_period(start_date, end_date)
         results = crud_runtime_session.list_account_sessions(
@@ -82,6 +94,14 @@ class RuntimeSessionExplorerService:
             limit=limit,
             offset=offset,
         )
+        raw_items = results["items"]
+        self.schedule_missing_session_titles(
+            account_id=str(account.id),
+            rows=raw_items,
+            background_tasks=background_tasks,
+        )
+        items = [self._summary_row_to_schema(item) for item in raw_items]
+        self._attach_optimization_badges(account=account, items=items)
         return AccountRuntimeSessionListResponse(
             period_start=start_date,
             period_end=end_date,
@@ -91,8 +111,161 @@ class RuntimeSessionExplorerService:
             total=results["total"],
             limit=limit,
             offset=offset,
-            items=[self._summary_row_to_schema(item) for item in results["items"]],
+            items=items,
         )
+
+    def _attach_optimization_badges(
+        self, *, account: Account, items: list[RuntimeSessionSummary]
+    ) -> None:
+        """Attach cached waste-score badges to session summaries in place.
+
+        Reads previously generated optimization results (no model calls) so
+        the list view can cheaply surface which sessions are worth
+        optimizing.
+
+        Args:
+            account: Owning account.
+            items: Session summaries for the current page.
+        """
+        if not items:
+            return
+        try:
+            cached_rows = crud_runtime_session_optimization_result.list_for_sessions(
+                self.db,
+                account_id=account.id,
+                runtime_session_ids=[item.id for item in items],
+            )
+        except SQLAlchemyError:
+            logger.debug(
+                "Optimization badge lookup failed; returning plain list",
+                exc_info=True,
+            )
+            return
+        latest_by_session: dict[str, dict] = {}
+        for row in cached_rows:
+            session_id = str(row.runtime_session_id)
+            if session_id not in latest_by_session and isinstance(row.response, dict):
+                latest_by_session[session_id] = row.response
+        for item in items:
+            response = latest_by_session.get(item.id)
+            if not response:
+                continue
+            waste_score = response.get("waste_score")
+            if isinstance(waste_score, (int, float)):
+                item.optimization_waste_score = int(waste_score)
+            savings_tokens = response.get("potential_savings_tokens")
+            if isinstance(savings_tokens, (int, float)):
+                item.optimization_potential_savings_tokens = int(savings_tokens)
+            savings_usd = response.get("potential_savings_usd")
+            if isinstance(savings_usd, (int, float)):
+                item.optimization_potential_savings_usd = float(savings_usd)
+
+    def schedule_missing_session_titles(
+        self,
+        *,
+        account_id: str,
+        rows: list[dict],
+        background_tasks: Optional[BackgroundTasks] = None,
+    ) -> None:
+        """Schedule best-effort title generation off the request path.
+
+        Selects the most-recent sessions on the current page that are untitled,
+        or whose request count has grown by at least
+        :data:`TITLE_REFRESH_REQUEST_DELTA` since the title was last generated,
+        bounded to :data:`MAX_TITLES_PER_LIST_REQUEST` sessions; the remainder
+        are picked up on subsequent loads. The actual (LLM-backed) generation is
+        registered as a FastAPI background task so it runs *after* the HTTP
+        response is sent and never blocks it. The generated titles therefore
+        appear on a later load, not in the response that scheduled them.
+
+        When no ``background_tasks`` is provided (e.g. a non-request caller),
+        this is a no-op so the hot path never makes inline LLM calls.
+
+        Args:
+            account_id: Owning account id.
+            rows: Raw summary rows for the current page (most-recent first).
+            background_tasks: FastAPI background-task registry from the request.
+        """
+        if not rows or background_tasks is None:
+            return
+        session_ids: list[str] = []
+        for row in rows:
+            if len(session_ids) >= MAX_TITLES_PER_LIST_REQUEST:
+                break
+            if self._session_needs_title(row):
+                session_ids.append(str(row["id"]))
+        if not session_ids:
+            return
+        background_tasks.add_task(
+            self._run_title_generation,
+            account_id=account_id,
+            session_ids=session_ids,
+        )
+
+    @staticmethod
+    def _run_title_generation(*, account_id: str, session_ids: list[str]) -> None:
+        """Generate titles for the given sessions in a fresh DB session.
+
+        Runs as a FastAPI background task *after* the request DB session has
+        been closed, so it must NOT reuse the request's session. It opens its
+        own session from the app session factory and always closes it. Each
+        title is generated through the EE billing plugin via the plugin service
+        registry (so the OSS path carries no hard EE import); the per-session
+        daily cap and best-effort guards live inside that service. Any failure
+        is swallowed so a background title call never surfaces to the user.
+
+        Args:
+            account_id: Owning account id.
+            session_ids: Bounded list of runtime session ids to title.
+        """
+        if not session_ids:
+            return
+        try:
+            from preloop.plugins.base import get_plugin_manager
+
+            generate_title = get_plugin_manager().get_service("session_title_service")
+        except Exception:
+            logger.debug(
+                "Session title service unavailable; skipping background titles",
+                exc_info=True,
+            )
+            return
+        if generate_title is None:
+            return
+
+        from preloop.models.db.session import get_session_factory
+
+        db = get_session_factory()()
+        try:
+            for session_id in session_ids:
+                try:
+                    generate_title(
+                        db,
+                        account_id=account_id,
+                        runtime_session_id=session_id,
+                    )
+                except Exception:
+                    logger.info(
+                        "Background session title generation raised; "
+                        "leaving session untitled",
+                        exc_info=True,
+                    )
+        finally:
+            try:
+                db.close()
+            except Exception:
+                logger.debug(
+                    "Closing background title DB session failed", exc_info=True
+                )
+
+    @staticmethod
+    def _session_needs_title(row: dict) -> bool:
+        """Return whether a session row should (re)generate its title."""
+        if not row.get("title"):
+            return True
+        current_requests = int(row.get("total_requests") or 0)
+        last_titled_at = int(row.get("title_request_count") or 0)
+        return current_requests - last_titled_at >= TITLE_REFRESH_REQUEST_DELTA
 
     def get_account_session_detail(
         self,
@@ -518,7 +691,10 @@ class RuntimeSessionExplorerService:
                 },
             ],
             "temperature": 0.1,
-            "max_tokens": 500,
+            # Budget for a reasoning model's hidden reasoning pass plus the JSON
+            # summary; a tight cap is fully consumed by reasoning and returns
+            # empty content (no summary) on reasoning-model defaults.
+            "max_tokens": 2048,
         }
         if model.api_key:
             kwargs["api_key"] = model.api_key
@@ -562,6 +738,7 @@ class RuntimeSessionExplorerService:
             runtime_principal_type=row["runtime_principal_type"],
             runtime_principal_id=row["runtime_principal_id"],
             runtime_principal_name=row["runtime_principal_name"],
+            title=row.get("title"),
             summary=row.get("summary"),
             summary_updated_at=row.get("summary_updated_at"),
             started_at=row["started_at"],

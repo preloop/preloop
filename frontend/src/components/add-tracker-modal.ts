@@ -198,20 +198,24 @@ export class AddTrackerModal extends LitElement {
         @sl-request-close=${() => this.closeModal()}
       >
         ${this.step === 1 ? this.renderStep1() : this.renderStep2()}
-        ${this.warningMessages.length > 0
-          ? html`
-              <sl-alert variant="warning" open style="margin-top: 1rem;">
-                <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
-                <strong>Warnings:</strong>
-                <ul style="margin: 0.5rem 0 0 0; padding-left: 1.5rem;">
-                  ${this.warningMessages.map((w) => html`<li>${w}</li>`)}
-                </ul>
-              </sl-alert>
-            `
-          : ''}
-        ${this.errorMessage
-          ? html`<p class="error">${this.errorMessage}</p>`
-          : ''}
+        ${
+          this.warningMessages.length > 0
+            ? html`
+                <sl-alert variant="warning" open style="margin-top: 1rem;">
+                  <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+                  <strong>Warnings:</strong>
+                  <ul style="margin: 0.5rem 0 0 0; padding-left: 1.5rem;">
+                    ${this.warningMessages.map((w) => html`<li>${w}</li>`)}
+                  </ul>
+                </sl-alert>
+              `
+            : ''
+        }
+        ${
+          this.errorMessage
+            ? html`<p class="error">${this.errorMessage}</p>`
+            : ''
+        }
         <div slot="footer">${this.renderFooterButtons()}</div>
       </sl-dialog>
     `;
@@ -327,71 +331,76 @@ export class AddTrackerModal extends LitElement {
         @sl-input=${(e: any) => (this.trackerUrl = e.target.value)}
         placeholder="e.g., https://github.example.com"
       ></sl-input>
-      ${this.trackerType === 'jira'
-        ? html`
-            <sl-input
-              label="Jira Username"
-              name="username"
-              .value=${this.trackerUsername}
-              @sl-input=${(e: any) => (this.trackerUsername = e.target.value)}
-              required
-            ></sl-input>
-          `
-        : ''}
-      ${this.authMethod === 'github_app' && this.githubInstallationId
-        ? html`
-            <sl-alert variant="success" open>
-              <sl-icon slot="icon" name="check-circle"></sl-icon>
-              Connected to GitHub as <strong>${this.githubTargetLogin}</strong>
-            </sl-alert>
-          `
-        : this.trackerType === 'github' &&
-            this.githubAppConfigured &&
-            !this.tracker
+      ${
+        this.trackerType === 'jira'
           ? html`
-              <div style="margin-bottom: 1rem;">
-                <sl-button
-                  variant="primary"
-                  size="large"
-                  @click=${this.startGitHubOAuth}
-                  .loading=${this.isLoading}
-                  style="width: 100%;"
-                >
-                  <sl-icon slot="prefix" name="github"></sl-icon>
-                  Connect with GitHub
-                </sl-button>
-                <p
-                  style="text-align: center; margin: 0.75rem 0 0.5rem 0; color: var(--sl-color-neutral-500); font-size: var(--sl-font-size-small);"
-                >
-                  Recommended: One-click OAuth connection
-                </p>
-              </div>
-              <details style="margin-bottom: 1rem;">
-                <summary
-                  style="cursor: pointer; color: var(--sl-color-neutral-600); font-size: var(--sl-font-size-small);"
-                >
-                  Or use an API token instead
-                </summary>
+              <sl-input
+                label="Jira Username"
+                name="username"
+                .value=${this.trackerUsername}
+                @sl-input=${(e: any) => (this.trackerUsername = e.target.value)}
+                required
+              ></sl-input>
+            `
+          : ''
+      }
+      ${
+        this.authMethod === 'github_app' && this.githubInstallationId
+          ? html`
+              <sl-alert variant="success" open>
+                <sl-icon slot="icon" name="check-circle"></sl-icon>
+                Connected to GitHub as
+                <strong>${this.githubTargetLogin}</strong>
+              </sl-alert>
+            `
+          : this.trackerType === 'github' &&
+              this.githubAppConfigured &&
+              !this.tracker
+            ? html`
+                <div style="margin-bottom: 1rem;">
+                  <sl-button
+                    variant="primary"
+                    size="large"
+                    @click=${this.startGitHubOAuth}
+                    .loading=${this.isLoading}
+                    style="width: 100%;"
+                  >
+                    <sl-icon slot="prefix" name="github"></sl-icon>
+                    Connect with GitHub
+                  </sl-button>
+                  <p
+                    style="text-align: center; margin: 0.75rem 0 0.5rem 0; color: var(--sl-color-neutral-500); font-size: var(--sl-font-size-small);"
+                  >
+                    Recommended: One-click OAuth connection
+                  </p>
+                </div>
+                <details style="margin-bottom: 1rem;">
+                  <summary
+                    style="cursor: pointer; color: var(--sl-color-neutral-600); font-size: var(--sl-font-size-small);"
+                  >
+                    Or use an API token instead
+                  </summary>
+                  <sl-input
+                    type="password"
+                    label="API Key"
+                    name="api_key"
+                    .value=${this.trackerToken}
+                    @sl-input=${(e: any) => (this.trackerToken = e.target.value)}
+                    style="margin-top: 0.5rem;"
+                  ></sl-input>
+                </details>
+              `
+            : html`
                 <sl-input
                   type="password"
                   label="API Key"
                   name="api_key"
                   .value=${this.trackerToken}
                   @sl-input=${(e: any) => (this.trackerToken = e.target.value)}
-                  style="margin-top: 0.5rem;"
+                  required
                 ></sl-input>
-              </details>
-            `
-          : html`
-              <sl-input
-                type="password"
-                label="API Key"
-                name="api_key"
-                .value=${this.trackerToken}
-                @sl-input=${(e: any) => (this.trackerToken = e.target.value)}
-                required
-              ></sl-input>
-            `}
+              `
+      }
     `;
   }
 
@@ -453,18 +462,20 @@ export class AddTrackerModal extends LitElement {
                 this.loadProjects(org.id, e.target)}
             >
               ${org.name}
-              ${!isGitHubApp
-                ? this.projects[org.id]?.map(
-                    (proj: any) => html`
-                      <sl-tree-item
-                        value="${proj.id}"
-                        ?selected=${this.selectedProjects[org.id]?.[proj.id]}
-                      >
-                        ${proj.name}
-                      </sl-tree-item>
-                    `
-                  )
-                : ''}
+              ${
+                !isGitHubApp
+                  ? this.projects[org.id]?.map(
+                      (proj: any) => html`
+                        <sl-tree-item
+                          value="${proj.id}"
+                          ?selected=${this.selectedProjects[org.id]?.[proj.id]}
+                        >
+                          ${proj.name}
+                        </sl-tree-item>
+                      `
+                    )
+                  : ''
+              }
             </sl-tree-item>
           `
         )}

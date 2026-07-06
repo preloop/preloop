@@ -272,6 +272,21 @@ The API server exposes the following health endpoints:
 
 For Kubernetes probes, `/api/v1/ping` is recommended for liveness checks (fast, no dependencies) while `/api/v1/health` is suitable for readiness checks.
 
+### In-cluster health monitor
+
+When `healthMonitor.enabled` is `true` (default), the chart deploys a lightweight pod that polls the internal API health endpoint every 60 seconds. This avoids false negatives from external uptime checks over unreliable network paths. Configure via:
+
+```yaml
+healthMonitor:
+  enabled: true
+  url: ""  # defaults to http://<release>-api:80/api/v1/health
+  intervalSeconds: 60
+  timeoutSeconds: 10
+  failuresBeforeAlert: 3
+```
+
+Logs emit `OK`, `UNHEALTHY`, or `ALERT` lines suitable for log-based alerting.
+
 ## Database Production Settings
 
 For production deployments, enable resilience, logging, and query analysis:

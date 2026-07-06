@@ -20,7 +20,6 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from preloop.api.auth.permissions import require_permission
 from preloop.api.auth.jwt import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
     create_access_token,
@@ -62,6 +61,7 @@ from preloop.utils.tokens import (
 )
 from preloop.models.crud import (
     crud_account,
+    crud_audit_log,
     crud_user,
     crud_api_key,
     crud_api_usage,
@@ -960,7 +960,6 @@ def create_api_key(
     response_model=RuntimeSessionTokenResponse,
     status_code=status.HTTP_201_CREATED,
 )
-@require_permission("execute_tools")
 async def create_runtime_session_token(
     session_data: RuntimeSessionTokenCreate,
     current_user: UserModel = Depends(get_current_active_user),
@@ -1042,6 +1041,7 @@ async def create_runtime_session_token(
         session_reference=session_data.session_reference,
         managed_mcp_servers=allowed_mcp_servers,
         last_seen_at=now,
+        owner_user_id=current_user.id,
     )
     db.commit()
     db.refresh(runtime_session)
@@ -1572,6 +1572,24 @@ async def authenticate_user(
     user.last_login = datetime.now(timezone.utc)
     session.commit()
     session.refresh(user)
+
+    # Cohort telemetry: record a login event so the 7-day-return launch metric
+    # is queryable (last_login is updated in place and keeps no history).
+    # NOTE: audit_log is compliance-shaped (append-only, retention/PII rules);
+    # a dedicated user_activity_event table is the eventual clean home (deferred).
+    try:
+        crud_audit_log.log_action(
+            session,
+            account_id=user.account_id,
+            user_id=user.id,
+            action="user.login",
+            resource_type="user",
+            resource_id=str(user.id),
+            status="success",
+            ip_address=source_ip,
+        )
+    except Exception:
+        logger.debug("Failed to audit user login", exc_info=True)
 
     # Check if we should notify admins about login after inactivity
     if (

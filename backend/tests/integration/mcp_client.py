@@ -7,10 +7,62 @@ connect directly to Preloop's MCP HTTP endpoint.
 """
 
 import asyncio
+from contextlib import AsyncExitStack
 from typing import Any, Dict, List, Optional
 
+import httpx
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
+
+from tests.integration.mcp_http_client import create_streamable_mcp_http_client
+
+
+def _unwrap_exception_group(exc: BaseException) -> BaseException:
+    """Return the first meaningful leaf from a nested exception group."""
+    if type(exc).__name__ in ("ExceptionGroup", "BaseExceptionGroup"):
+        for sub in getattr(exc, "exceptions", []) or []:
+            leaf = _unwrap_exception_group(sub)
+            if isinstance(leaf, Exception):
+                return leaf
+        for sub in getattr(exc, "exceptions", []) or []:
+            return _unwrap_exception_group(sub)
+    return exc
+
+
+def _is_misdirected_request(exc: BaseException) -> bool:
+    """Return True when an exception chain includes HTTP 421."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code == 421
+    if type(exc).__name__ in ("ExceptionGroup", "BaseExceptionGroup"):
+        return any(_is_misdirected_request(sub) for sub in exc.exceptions)
+    cause = exc.__cause__ or exc.__context__
+    if cause is not None:
+        return _is_misdirected_request(cause)
+    return False
+
+
+def _is_transient_gateway_error(exc: BaseException) -> bool:
+    """Return True when an exception chain includes a retryable gateway status."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in {502, 503, 504}
+    if type(exc).__name__ in ("ExceptionGroup", "BaseExceptionGroup"):
+        return any(_is_transient_gateway_error(sub) for sub in exc.exceptions)
+    cause = exc.__cause__ or exc.__context__
+    if cause is not None:
+        return _is_transient_gateway_error(cause)
+    return False
+
+
+def _should_retry_mcp_connect(exc: BaseException) -> bool:
+    """Return True for transient transport failures during MCP initialize."""
+    if _is_misdirected_request(exc) or _is_transient_gateway_error(exc):
+        return True
+    if isinstance(exc, asyncio.CancelledError):
+        return True
+    leaf = _unwrap_exception_group(exc)
+    if isinstance(leaf, httpx.HTTPError):
+        return True
+    return False
 
 
 class MCPTestClient:
@@ -27,38 +79,63 @@ class MCPTestClient:
         self.base_url = base_url.rstrip("/")
         self.mcp_url = f"{self.base_url}/mcp/v1"
         self.api_key = api_key
+        self.session: ClientSession | None = None
+        self._stack: AsyncExitStack | None = None
+
+    async def _close_stack(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: object | None,
+    ) -> None:
+        if self._stack is not None:
+            await self._stack.__aexit__(exc_type, exc_val, exc_tb)
+        self._stack = None
         self.session = None
-        self.stream_context = None
+
+    async def _open_session(self) -> None:
+        """Open a Streamable HTTP MCP session against the deployed instance."""
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+
+        self._stack = AsyncExitStack()
+        await self._stack.__aenter__()
+
+        read_stream, write_stream, _ = await self._stack.enter_async_context(
+            streamablehttp_client(
+                url=self.mcp_url,
+                headers=headers,
+                httpx_client_factory=create_streamable_mcp_http_client,
+            )
+        )
+
+        self.session = await self._stack.enter_async_context(
+            ClientSession(read_stream, write_stream)
+        )
+        await self.session.initialize()
 
     async def __aenter__(self):
         """Async context manager entry."""
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-
-        # Create the streamable HTTP connection
-        self.stream_context = streamablehttp_client(url=self.mcp_url, headers=headers)
-        streams = await self.stream_context.__aenter__()
-        read_stream, write_stream, _ = streams
-
-        # Create session and enter its context
-        session = ClientSession(read_stream, write_stream)
-        self.session = await session.__aenter__()
-
-        # Initialize the MCP session
-        await self.session.initialize()
-
-        return self
+        last_error: BaseException | None = None
+        for attempt in range(5):
+            try:
+                await self._open_session()
+                return self
+            except BaseException as exc:
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                    raise
+                last_error = exc
+                await self._close_stack(type(exc), exc, exc.__traceback__)
+                if attempt < 4 and _should_retry_mcp_connect(exc):
+                    await asyncio.sleep(1.0 * (attempt + 1))
+                    continue
+                raise _unwrap_exception_group(exc) from exc
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Failed to open MCP session")
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit."""
-        # Exit session context first
-        if self.session:
-            await self.session.__aexit__(exc_type, exc_val, exc_tb)
-            self.session = None
-
-        # Then exit stream context
-        if self.stream_context:
-            await self.stream_context.__aexit__(exc_type, exc_val, exc_tb)
-            self.stream_context = None
+        await self._close_stack(exc_type, exc_val, exc_tb)
 
     async def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
         """

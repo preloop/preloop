@@ -207,9 +207,9 @@ export class SimilarIssuesWidget extends LitElement {
           You have
           <a href="/console/issues"
             ><strong
-              >${this._totalSuggestions > 100
-                ? '100+'
-                : this._totalSuggestions}</strong
+              >${
+                this._totalSuggestions > 100 ? '100+' : this._totalSuggestions
+              }</strong
             >
             unresolved suggestions</a
           >. ${renderTopSuggestionsText()}
@@ -231,27 +231,31 @@ export class SimilarIssuesWidget extends LitElement {
                     >${(pair.similarity * 100).toFixed(0)}%</sl-badge
                   >
                   <div class="verdict-container">
-                    ${pair.similarity > 0.999
-                      ? html`<sl-badge
-                          variant="warning"
-                          style="--sl-color-warning-text: var(--sl-color-orange-50); --sl-color-warning-600: var(--sl-color-orange-700);"
-                          pill
-                          >Identical</sl-badge
-                        >`
-                      : renderVerdict(this._aiVerdicts[pairKey])}
+                    ${
+                      pair.similarity > 0.999
+                        ? html`<sl-badge
+                            variant="warning"
+                            style="--sl-color-warning-text: var(--sl-color-orange-50); --sl-color-warning-600: var(--sl-color-orange-700);"
+                            pill
+                            >Identical</sl-badge
+                          >`
+                        : renderVerdict(this._aiVerdicts[pairKey])
+                    }
                   </div>
                 </div>
               </li>
             `;
           })}
         </ul>
-        ${this._totalSuggestions > 0
-          ? html`
-              <div class="see-all-container">
-                <a href="/console/issues">See all...</a>
-              </div>
-            `
-          : ''}
+        ${
+          this._totalSuggestions > 0
+            ? html`
+                <div class="see-all-container">
+                  <a href="/console/issues">See all...</a>
+                </div>
+              `
+            : ''
+        }
       </sl-card>
     `;
   }

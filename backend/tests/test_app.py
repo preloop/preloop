@@ -10,6 +10,8 @@ from unittest.mock import patch, MagicMock, AsyncMock
 from fastapi.testclient import TestClient
 from preloop.api.app import create_app
 
+from tests.route_paths import collect_route_paths
+
 
 @pytest.fixture
 def client():
@@ -209,7 +211,7 @@ def test_create_app_configuration():
 def test_gateway_role_mounts_only_gateway_surface():
     """Gateway role should not expose the core control-plane API routes."""
     app = create_app()
-    route_paths = {route.path for route in app.routes}
+    route_paths = collect_route_paths(app.routes)
 
     assert "/api/v1/health" in route_paths
     assert "/api/v1/version" in route_paths
@@ -222,7 +224,7 @@ def test_gateway_role_mounts_only_gateway_surface():
 def test_api_role_excludes_model_gateway_surface():
     """Core API role should not serve long-lived model gateway endpoints."""
     app = create_app()
-    route_paths = {route.path for route in app.routes}
+    route_paths = collect_route_paths(app.routes)
 
     assert "/api/v1/health" in route_paths
     assert "/api/v1/trackers" in route_paths

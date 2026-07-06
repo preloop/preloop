@@ -148,9 +148,11 @@ export class ResourceActions extends LitElement {
           }
         }}
       >
-        ${action.icon
-          ? html`<sl-icon slot="prefix" name=${action.icon}></sl-icon>`
-          : ''}
+        ${
+          action.icon
+            ? html`<sl-icon slot="prefix" name=${action.icon}></sl-icon>`
+            : ''
+        }
         ${action.label}
       </sl-button>
     `;
@@ -180,13 +182,15 @@ export class ResourceActions extends LitElement {
           }
         }}
       >
-        ${action.icon
-          ? html`<sl-icon
-              slot="prefix"
-              name=${action.icon}
-              style=${isDanger ? 'color: var(--sl-color-danger-600);' : ''}
-            ></sl-icon>`
-          : ''}
+        ${
+          action.icon
+            ? html`<sl-icon
+                slot="prefix"
+                name=${action.icon}
+                style=${isDanger ? 'color: var(--sl-color-danger-600);' : ''}
+              ></sl-icon>`
+            : ''
+        }
         ${action.label}
       </sl-menu-item>
     `;
@@ -238,27 +242,29 @@ export class ResourceActions extends LitElement {
 
     return html`
       <div class="actions-container" part="container">
-        ${overflowActions.length > 0
-          ? html`
-              <sl-dropdown placement="bottom-start">
-                <sl-button
-                  slot="trigger"
-                  variant="default"
-                  ?caret=${!this.menuOnly}
-                  aria-label="Resource actions"
-                >
-                  <sl-icon
-                    name=${this.menuOnly ? 'three-dots-vertical' : 'three-dots'}
-                  ></sl-icon>
-                </sl-button>
-                <sl-menu>
-                  ${overflowActions.map((action) =>
-                    this.renderMenuItem(action)
-                  )}
-                </sl-menu>
-              </sl-dropdown>
-            `
-          : ''}
+        ${
+          overflowActions.length > 0
+            ? html`
+                <sl-dropdown placement="bottom-start">
+                  <sl-button
+                    slot="trigger"
+                    variant="default"
+                    ?caret=${!this.menuOnly}
+                    aria-label="Resource actions"
+                  >
+                    <sl-icon
+                      name=${this.menuOnly ? 'three-dots-vertical' : 'three-dots'}
+                    ></sl-icon>
+                  </sl-button>
+                  <sl-menu>
+                    ${overflowActions.map((action) =>
+                      this.renderMenuItem(action)
+                    )}
+                  </sl-menu>
+                </sl-dropdown>
+              `
+            : ''
+        }
         ${visibleActions.map((action) => this.renderButton(action))}
       </div>
     `;

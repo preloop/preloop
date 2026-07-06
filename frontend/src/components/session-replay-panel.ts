@@ -9,6 +9,7 @@ import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
+import '@shoelace-style/shoelace/dist/components/range/range.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import type {
   AIModel,
@@ -16,6 +17,7 @@ import type {
   FlowGatewayEvent,
   RuntimeSessionActivityItem,
   RuntimeSessionInteractionSummary,
+  RuntimeSessionOptimizationAppliedAction,
   RuntimeSessionOptimizationResponse,
 } from '../types';
 import type {
@@ -52,6 +54,82 @@ type ReplayEventMarker = {
 
 type ReplayMarkerKind = 'user' | 'agent' | 'system' | 'developer' | 'tool';
 
+type TranscriptFilter = 'all' | 'model' | 'tools' | 'costly';
+
+type TranscriptRow =
+  | { kind: 'event'; timestamp: string | null; event: FlowGatewayEvent }
+  | {
+      kind: 'tool';
+      timestamp: string | null;
+      item: RuntimeSessionActivityItem;
+    };
+
+const TRANSCRIPT_FILTERS: Array<{ id: TranscriptFilter; label: string }> = [
+  { id: 'all', label: 'All' },
+  { id: 'model', label: 'Model calls' },
+  { id: 'tools', label: 'Tool calls' },
+  { id: 'costly', label: 'Costly first' },
+];
+
+// --- Unified sortable chat (turn/delta model) ---------------------------------
+//
+// Each gateway request is rendered as one "turn". Consecutive agentic requests
+// re-send a growing message list, so for each turn we render only the messages
+// it ADDED relative to the previous request (the delta) plus that request's
+// assistant response. This deduplicates the conversation and makes each turn a
+// self-contained, sortable unit.
+
+type ChatSort = 'oldest' | 'newest' | 'costliest' | 'cheapest' | 'type';
+
+type ChatTypeFilter = 'all' | 'messages' | 'tools';
+
+type ChatThresholdMode = 'tokens' | 'cost';
+
+// A single delta message belonging to a turn.
+type ChatTurnMessage = FlowGatewayConversationPreviewMessage & {
+  key: string;
+  signature: string;
+  isToolRelated: boolean;
+};
+
+// One turn = one gateway request (with only its delta messages) OR a standalone
+// supporting-activity message (e.g. an operator/agent-control message) shown
+// inline in the chat flow.
+type ChatTurn = {
+  id: string;
+  index: number;
+  event: FlowGatewayEvent | null;
+  timestamp: string | null;
+  title: string;
+  deltaMessages: ChatTurnMessage[];
+  totalTokens: number;
+  promptTokens: number;
+  completionTokens: number;
+  // Prompt-cache hits read off the usage details (OpenAI cached_tokens /
+  // Anthropic cache_read_input_tokens). null when the payload doesn't carry it.
+  cachedTokens: number | null;
+  estimatedCost: number;
+  toolCallCount: number;
+  failed: boolean;
+  // Activity (operator/talk) turns are NOT gateway requests: they carry no real
+  // token/cost/tool stats, so the header suppresses those meaningless zeros.
+  isActivity: boolean;
+};
+
+const CHAT_SORTS: Array<{ id: ChatSort; label: string }> = [
+  { id: 'oldest', label: 'Oldest first' },
+  { id: 'newest', label: 'Newest first' },
+  { id: 'costliest', label: 'Costliest first' },
+  { id: 'cheapest', label: 'Cheapest first' },
+  { id: 'type', label: 'By event type' },
+];
+
+const CHAT_TYPE_FILTERS: Array<{ id: ChatTypeFilter; label: string }> = [
+  { id: 'all', label: 'All' },
+  { id: 'messages', label: 'Messages only' },
+  { id: 'tools', label: 'Tool calls only' },
+];
+
 const REPLAY_MARKER_LEGEND: Array<{ kind: ReplayMarkerKind; label: string }> = [
   { kind: 'user', label: 'User' },
   { kind: 'agent', label: 'Agent' },
@@ -60,6 +138,11 @@ const REPLAY_MARKER_LEGEND: Array<{ kind: ReplayMarkerKind; label: string }> = [
   { kind: 'tool', label: 'Tool call' },
 ];
 const REPLAY_MARKER_KINDS = REPLAY_MARKER_LEGEND.map((item) => item.kind);
+
+// Progressive full-message reveal (#8): show this much initially, then reveal
+// another chunk per "Show more" click until the full body is shown.
+const MESSAGE_PREVIEW_CHARS = 900;
+const MESSAGE_REVEAL_CHUNK_CHARS = 20000;
 
 const REPLAY_MESSAGE_WINDOW_BEFORE = 18;
 const REPLAY_MESSAGE_WINDOW_AFTER = 24;
@@ -128,6 +211,12 @@ export class SessionReplayPanel extends LitElement {
   @property({ type: Object })
   optimizationResult: RuntimeSessionOptimizationResponse | null = null;
 
+  @property({ type: Array })
+  optimizationAppliedActions: RuntimeSessionOptimizationAppliedAction[] = [];
+
+  @property({ type: String })
+  applyingOptimizationSuggestionId: string | null = null;
+
   @state()
   private visibleActivityCount = 20;
 
@@ -137,11 +226,21 @@ export class SessionReplayPanel extends LitElement {
   @state()
   private fullTextEventIds = new Set<string>();
 
+  // Progressive reveal length (in characters) for very large message bodies,
+  // keyed by the message's stable `key`. Absent = use the default preview.
   @state()
-  private replayActive = false;
+  private revealedMessageChars = new Map<string, number>();
+
+  // Active transcript filter. 'all' shows everything, 'failed' shows only
+  // failed gateway requests (#7), and the object form pins the transcript to a
+  // specific set of gateway event ids (#5 inspect contract). A single state
+  // drives all three so the filtering mechanism is shared.
+  @state()
+  private transcriptInspectFilter:
+    'all' | 'failed' | { eventIds: Set<string> } = 'all';
 
   @state()
-  private replayDialogOpen = false;
+  private replayActive = false;
 
   @state()
   private replaySpeedMs = 1200;
@@ -151,9 +250,6 @@ export class SessionReplayPanel extends LitElement {
 
   @state()
   private replayReversed = false;
-
-  @state()
-  private optimizeOpen = false;
 
   @state()
   private optimizeControlsOpen = false;
@@ -172,6 +268,26 @@ export class SessionReplayPanel extends LitElement {
 
   @state()
   private visibleReplayKinds = new Set<ReplayMarkerKind>(REPLAY_MARKER_KINDS);
+
+  @state()
+  private transcriptFilter: TranscriptFilter = 'all';
+
+  // Unified sortable chat controls.
+  @state()
+  private chatSort: ChatSort = 'oldest';
+
+  @state()
+  private chatTypeFilter: ChatTypeFilter = 'all';
+
+  @state()
+  private chatThreshold = 0;
+
+  @state()
+  private chatThresholdMode: ChatThresholdMode = 'tokens';
+
+  // Turns expanded into their full request context (lazy-loaded on expand).
+  @state()
+  private expandedTurnEventIds = new Set<string>();
 
   private replayTimer: number | null = null;
   private summaryObserver: IntersectionObserver | null = null;
@@ -429,8 +545,13 @@ export class SessionReplayPanel extends LitElement {
       align-items: center;
       display: grid;
       gap: var(--sl-spacing-x-small);
-      grid-template-columns: auto auto auto minmax(260px, 1fr);
+      /* transport group | speed select | reverse | full-width scrubber */
+      grid-template-columns: auto auto auto 1fr;
       width: 100%;
+    }
+
+    .playback-bar .timeline-wrap {
+      grid-column: 4;
     }
 
     .playback-bar sl-button-group,
@@ -688,6 +809,260 @@ export class SessionReplayPanel extends LitElement {
       min-height: 76px;
     }
 
+    .transcript-filter-bar {
+      align-items: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--sl-spacing-x-small);
+      justify-content: space-between;
+    }
+
+    .chat-control-bar {
+      align-items: center;
+      background: var(--sl-color-neutral-50);
+      border: 1px solid var(--sl-color-neutral-200);
+      border-radius: var(--sl-border-radius-medium);
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--sl-spacing-small);
+      justify-content: space-between;
+      padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
+    }
+
+    .chat-control-cluster {
+      align-items: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--sl-spacing-x-small);
+    }
+
+    .chat-control-label {
+      color: var(--sl-color-neutral-600);
+      font-size: var(--sl-font-size-x-small);
+      font-weight: var(--sl-font-weight-semibold);
+    }
+
+    .chat-threshold-input {
+      background: var(--sl-color-neutral-0);
+      border: 1px solid var(--sl-color-neutral-300);
+      border-radius: var(--sl-border-radius-small);
+      color: var(--sl-color-neutral-800);
+      font: inherit;
+      height: 30px;
+      padding: 0 6px;
+      width: 96px;
+    }
+
+    .chat-threshold-slider {
+      --track-color-active: var(--sl-color-primary-500);
+      min-width: 120px;
+      width: clamp(120px, 18vw, 200px);
+    }
+
+    .chat-threshold-slider::part(form-control-label) {
+      color: var(--sl-color-neutral-500);
+      font-size: var(--sl-font-size-x-small);
+    }
+
+    .chat-select {
+      background: var(--sl-color-neutral-0);
+      border: 1px solid var(--sl-color-neutral-300);
+      border-radius: var(--sl-border-radius-small);
+      color: var(--sl-color-neutral-800);
+      font: inherit;
+      height: 30px;
+      padding: 0 4px;
+    }
+
+    /* Whole-session cost picture: a quiet dashboard strip, not a banner. Muted
+       secondary metadata in neutral tokens, consistent with the chat styling. */
+    .chat-summary-bar {
+      align-items: center;
+      background: var(--sl-color-neutral-50);
+      border: 1px solid var(--sl-color-neutral-200);
+      border-radius: var(--sl-border-radius-medium);
+      color: var(--sl-color-neutral-600);
+      display: flex;
+      flex-wrap: wrap;
+      font-size: var(--sl-font-size-x-small);
+      gap: var(--sl-spacing-x-small) var(--sl-spacing-medium);
+      padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
+    }
+
+    .chat-summary-item {
+      align-items: baseline;
+      display: inline-flex;
+      gap: var(--sl-spacing-2x-small);
+      white-space: nowrap;
+    }
+
+    .chat-summary-label {
+      color: var(--sl-color-neutral-500);
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+
+    .chat-summary-value {
+      color: var(--sl-color-neutral-800);
+      font-weight: var(--sl-font-weight-semibold);
+    }
+
+    .chat-summary-value.has-tools {
+      color: var(--sl-color-warning-700);
+    }
+
+    .chat-summary-value.has-failures {
+      color: var(--sl-color-danger-700);
+    }
+
+    .chat-summary-sub {
+      color: var(--sl-color-neutral-500);
+    }
+
+    .chat-thread {
+      display: flex;
+      flex-direction: column;
+      gap: var(--sl-spacing-medium);
+    }
+
+    .chat-turn {
+      border: 1px solid var(--sl-color-neutral-200);
+      border-radius: var(--sl-border-radius-medium);
+      display: flex;
+      flex-direction: column;
+      gap: var(--sl-spacing-x-small);
+      padding: var(--sl-spacing-small);
+    }
+
+    .chat-turn.failed {
+      border-color: var(--sl-color-danger-300);
+      box-shadow: inset 3px 0 0 var(--sl-color-danger-500);
+    }
+
+    /* Most-expensive request turn: a subtle warning-toned left accent so the
+       cost story is visible without sorting. Failed turns keep their danger
+       accent (the .failed rule wins by source order if both apply). */
+    .chat-turn.most-expensive {
+      border-color: var(--sl-color-warning-300);
+      box-shadow: inset 3px 0 0 var(--sl-color-warning-500);
+    }
+
+    .chat-turn-cost-chip {
+      align-items: center;
+      background: var(--sl-color-warning-50);
+      border: 1px solid var(--sl-color-warning-200);
+      border-radius: 999px;
+      color: var(--sl-color-warning-700);
+      display: inline-flex;
+      font-size: var(--sl-font-size-x-small);
+      font-weight: var(--sl-font-weight-semibold);
+      gap: var(--sl-spacing-2x-small);
+      padding: 1px 8px;
+      white-space: nowrap;
+    }
+
+    .chat-turn-header {
+      align-items: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--sl-spacing-x-small);
+      justify-content: space-between;
+    }
+
+    .chat-turn-header-main {
+      align-items: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--sl-spacing-x-small);
+      min-width: 0;
+    }
+
+    .chat-turn-title {
+      color: var(--sl-color-neutral-900);
+      font-size: var(--sl-font-size-small);
+      font-weight: var(--sl-font-weight-semibold);
+    }
+
+    .chat-turn-time {
+      color: var(--sl-color-neutral-500);
+      font-size: var(--sl-font-size-x-small);
+      font-weight: var(--sl-font-weight-normal);
+    }
+
+    .chat-turn-badges {
+      align-items: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--sl-spacing-small);
+    }
+
+    /* Per-turn token/cost/tool counts are secondary metadata: quiet, muted,
+       lighter weight and a touch smaller than the conversation text. */
+    .chat-turn-stat {
+      color: var(--sl-color-neutral-500);
+      font-size: var(--sl-font-size-x-small);
+      font-weight: var(--sl-font-weight-normal);
+      letter-spacing: 0.01em;
+      white-space: nowrap;
+    }
+
+    .chat-turn-stat.has-tools {
+      color: var(--sl-color-warning-700);
+    }
+
+    .chat-turn-bubbles {
+      display: flex;
+      flex-direction: column;
+      gap: var(--sl-spacing-x-small);
+    }
+
+    .chat-turn-empty {
+      color: var(--sl-color-neutral-500);
+      font-size: var(--sl-font-size-x-small);
+      font-style: italic;
+    }
+
+    .chat-turn-detail {
+      border-top: 1px dashed var(--sl-color-neutral-200);
+      display: grid;
+      gap: var(--sl-spacing-small);
+      margin-top: var(--sl-spacing-x-small);
+      padding-top: var(--sl-spacing-small);
+    }
+
+    .tool-row {
+      align-items: center;
+      background: var(--sl-color-neutral-50);
+      border: 1px solid var(--sl-color-neutral-200);
+      border-left: 3px solid var(--sl-color-amber-400);
+      border-radius: var(--sl-border-radius-medium);
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--sl-spacing-x-small);
+      justify-content: space-between;
+      padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
+    }
+
+    .tool-row-main {
+      align-items: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--sl-spacing-x-small);
+      min-width: 0;
+    }
+
+    .tool-row-name {
+      font-weight: var(--sl-font-weight-semibold);
+      font-size: var(--sl-font-size-small);
+    }
+
+    .tool-row-chips {
+      align-items: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--sl-spacing-2x-small);
+    }
+
     .optimize-drawer {
       border: 1px solid var(--sl-color-neutral-200);
       border-radius: var(--sl-border-radius-medium);
@@ -721,6 +1096,76 @@ export class SessionReplayPanel extends LitElement {
     .optimize-range {
       display: grid;
       gap: var(--sl-spacing-2x-small);
+    }
+
+    /* Two range inputs overlaid on one shared track so the scope reads as a
+       single bar with two thumbs instead of two stacked sliders. */
+    .optimize-range-dual {
+      position: relative;
+      height: 24px;
+    }
+
+    .optimize-range-dual::before {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 0;
+      right: 0;
+      height: 4px;
+      transform: translateY(-50%);
+      background: var(--sl-color-neutral-200);
+      border-radius: 999px;
+    }
+
+    .optimize-range-fill {
+      position: absolute;
+      top: 50%;
+      height: 4px;
+      transform: translateY(-50%);
+      background: var(--sl-color-primary-500);
+      border-radius: 999px;
+      pointer-events: none;
+    }
+
+    .optimize-range-dual input[type='range'] {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 24px;
+      margin: 0;
+      -webkit-appearance: none;
+      appearance: none;
+      background: transparent;
+      pointer-events: none;
+    }
+
+    .optimize-range-dual input[type='range']::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      pointer-events: auto;
+      height: 16px;
+      width: 16px;
+      border-radius: 50%;
+      background: var(--sl-color-primary-600);
+      border: 2px solid var(--sl-color-neutral-0);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+      cursor: pointer;
+    }
+
+    .optimize-range-dual input[type='range']::-moz-range-thumb {
+      pointer-events: auto;
+      height: 16px;
+      width: 16px;
+      border-radius: 50%;
+      background: var(--sl-color-primary-600);
+      border: 2px solid var(--sl-color-neutral-0);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+      cursor: pointer;
+    }
+
+    .optimize-range-dual input[type='range']::-moz-range-track {
+      background: transparent;
     }
 
     .optimize-range-markers {
@@ -786,6 +1231,17 @@ export class SessionReplayPanel extends LitElement {
       max-width: 920px;
     }
 
+    .transcript-header {
+      align-items: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--sl-spacing-x-small);
+    }
+
+    .transcript-header .clear-filter-button::part(base) {
+      padding-inline: var(--sl-spacing-x-small);
+    }
+
     .replay-message {
       opacity: 0.62;
       scroll-margin: var(--sl-spacing-2x-large);
@@ -838,8 +1294,49 @@ export class SessionReplayPanel extends LitElement {
     }
   `;
 
+  // #5 inspect contract: the child optimization panel dispatches
+  // 'optimization-inspect-events' (bubbles + composed). Pin the transcript to
+  // the referenced gateway events (or the failed-only filter when
+  // mode === 'failed'), switch to the replay view, and scroll to the match.
+  private readonly handleOptimizationInspectEvents = (event: Event): void => {
+    const detail = (event as CustomEvent).detail || {};
+    const mode = typeof detail.mode === 'string' ? detail.mode : '';
+    const eventIds: string[] = Array.isArray(detail.eventIds)
+      ? detail.eventIds.filter((id: unknown): id is string => Boolean(id))
+      : [];
+
+    // Make the transcript visible. replayMode is a property the parent owns,
+    // but it is reactive: assigning it here switches this component's view
+    // immediately so the inspect target is shown without a round-trip.
+    if (this.replayMode !== 'replay') {
+      this.replayMode = 'replay';
+      this.requestReplayMetadata();
+    }
+    // Inspecting must not be hidden by the per-kind source toggles.
+    this.visibleReplayKinds = new Set(REPLAY_MARKER_KINDS);
+
+    if (mode === 'failed' || !eventIds.length) {
+      this.transcriptInspectFilter = 'failed';
+    } else {
+      this.transcriptInspectFilter = { eventIds: new Set(eventIds) };
+    }
+    this.onTranscriptFilterChanged();
+  };
+
+  connectedCallback(): void {
+    super.connectedCallback();
+    this.addEventListener(
+      'optimization-inspect-events',
+      this.handleOptimizationInspectEvents
+    );
+  }
+
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    this.removeEventListener(
+      'optimization-inspect-events',
+      this.handleOptimizationInspectEvents
+    );
     this.stopReplay();
     this.summaryObserver?.disconnect();
     this.eventPageObserver?.disconnect();
@@ -850,6 +1347,14 @@ export class SessionReplayPanel extends LitElement {
   }
 
   updated(changed: Map<string | number | symbol, unknown>): void {
+    if (changed.has('availableModels') && !this.optimizeModelId) {
+      // Preselect the account default so the optimization model dropdown shows
+      // a concrete selection instead of an empty/first-option state.
+      const defaultModel = this.getDefaultOptimizationModel();
+      if (defaultModel) {
+        this.optimizeModelId = defaultModel.id;
+      }
+    }
     if (
       changed.has('summarizeVisibleContent') ||
       changed.has('events') ||
@@ -862,15 +1367,15 @@ export class SessionReplayPanel extends LitElement {
       changed.has('events') ||
       changed.has('hasMoreEvents') ||
       changed.has('loadingMoreEvents') ||
-      changed.has('replayDialogOpen')
+      changed.has('replayMode')
     ) {
       this.updateEventPageObserver();
     }
-    if (changed.has('replayIndex') || changed.has('replayDialogOpen')) {
+    if (changed.has('replayIndex') || changed.has('replayMode')) {
       this.scrollReplayToCurrentMessage();
     }
     if (
-      changed.has('replayDialogOpen') ||
+      changed.has('replayMode') ||
       changed.has('timelineEvents') ||
       changed.has('events') ||
       changed.has('eventDetails') ||
@@ -878,7 +1383,10 @@ export class SessionReplayPanel extends LitElement {
     ) {
       this.updateReplayDetailObserver();
     }
-    if (changed.has('timelineEvents') && this.replayDialogOpen) {
+    if (changed.has('replayMode')) {
+      this.handleReplayModeChange();
+    }
+    if (changed.has('timelineEvents') && this.replayViewActive) {
       const messages = this.getVisibleReplayMessages();
       if (messages.length) {
         this.replayIndex = messages.length - 1;
@@ -1035,8 +1543,38 @@ export class SessionReplayPanel extends LitElement {
     const next = new Set(this.fullTextEventIds);
     next.add(message.key);
     this.fullTextEventIds = next;
+    // Seed the progressive reveal at the first chunk so very large bodies are
+    // read incrementally rather than dumped all at once (#8).
+    const reveals = new Map(this.revealedMessageChars);
+    reveals.set(message.key, MESSAGE_REVEAL_CHUNK_CHARS);
+    this.revealedMessageChars = reveals;
     if (message.event && !this.eventDetails[message.event.id]) {
       this.requestEventDetail(message.event);
+    }
+  }
+
+  // Reveal the next chunk of a large message, clamped to its full length (#8).
+  private revealMoreMessage(message: ReplayMessage, fullLength: number): void {
+    const current =
+      this.revealedMessageChars.get(message.key) ?? MESSAGE_REVEAL_CHUNK_CHARS;
+    const reveals = new Map(this.revealedMessageChars);
+    reveals.set(
+      message.key,
+      Math.min(current + MESSAGE_REVEAL_CHUNK_CHARS, fullLength)
+    );
+    this.revealedMessageChars = reveals;
+  }
+
+  // Collapse a fully/partially revealed message back to the preview and reset
+  // its reveal progress so re-expanding starts from the first chunk.
+  private collapseFullReplayMessage(message: ReplayMessage): void {
+    const next = new Set(this.fullTextEventIds);
+    next.delete(message.key);
+    this.fullTextEventIds = next;
+    if (this.revealedMessageChars.has(message.key)) {
+      const reveals = new Map(this.revealedMessageChars);
+      reveals.delete(message.key);
+      this.revealedMessageChars = reveals;
     }
   }
 
@@ -1108,10 +1646,26 @@ export class SessionReplayPanel extends LitElement {
     });
   }
 
+  private get replayViewActive(): boolean {
+    return this.replayMode === 'replay';
+  }
+
+  private handleReplayModeChange(): void {
+    if (this.replayViewActive) {
+      this.initializeReplayView();
+      return;
+    }
+    this.pauseReplay();
+    // Do NOT auto-generate optimization suggestions on entering the optimize
+    // view. We only render previously cached results here; (re)generation
+    // happens exclusively when the user clicks the explicit Generate /
+    // Regenerate button.
+  }
+
   private updateReplayDetailObserver(): void {
     this.replayDetailObserver?.disconnect();
     this.replayDetailObserver = null;
-    if (!this.replayDialogOpen) return;
+    if (!this.replayViewActive) return;
 
     this.replayDetailObserver = new IntersectionObserver(
       (entries) => {
@@ -1162,7 +1716,7 @@ export class SessionReplayPanel extends LitElement {
       this.events,
       Object.values(this.eventDetails)
     );
-    const eventMessages = replayEvents.flatMap((event) => {
+    const eventMessages = replayEvents.flatMap((event): ReplayMessage[] => {
       const previewMessages = getGatewayEventPreviewMessages(event);
       if (previewMessages.length) {
         return previewMessages.map((message, index) => ({
@@ -1190,17 +1744,19 @@ export class SessionReplayPanel extends LitElement {
         },
       ];
     });
-    const activityMessages = this.getAgentControlActivityMessages().map(
-      (message, index) => ({
+    const activityMessages: ReplayMessage[] =
+      this.getAgentControlActivityMessages().map((message, index) => ({
         ...message,
         key: `activity:replay:${index}`,
         event: null,
         eventMessageIndex: null,
         timestamp: message.timestamp || null,
         title: 'Developer message',
-      })
-    );
-    const messages = [...eventMessages, ...activityMessages].sort(
+      }));
+    const messages: ReplayMessage[] = [
+      ...eventMessages,
+      ...activityMessages,
+    ].sort(
       (left, right) =>
         new Date(left.timestamp || 0).getTime() -
         new Date(right.timestamp || 0).getTime()
@@ -1210,6 +1766,7 @@ export class SessionReplayPanel extends LitElement {
 
   private getVisibleReplayMessages(): ReplayMessage[] {
     return this.getReplayMessages().filter((message) => {
+      if (!this.messageMatchesTranscriptFilter(message)) return false;
       if (!message.event) return this.visibleReplayKinds.has('developer');
       const kind = this.getReplayMarkerKind(
         message.event,
@@ -1217,6 +1774,64 @@ export class SessionReplayPanel extends LitElement {
       );
       return this.visibleReplayKinds.has(kind);
     });
+  }
+
+  // The underlying gateway event id a replay message belongs to (null for
+  // standalone activity/developer messages that aren't gateway requests).
+  private getMessageEventId(message: ReplayMessage): string | null {
+    return message.event?.id ?? null;
+  }
+
+  // #5/#7 transcript filter predicate. Shared by the failed-only toggle and the
+  // inspect-by-event-ids contract so a single @state drives both.
+  private messageMatchesTranscriptFilter(message: ReplayMessage): boolean {
+    const filter = this.transcriptInspectFilter;
+    if (filter === 'all') return true;
+    if (filter === 'failed') return this.eventIsFailure(message.event);
+    const eventId = this.getMessageEventId(message);
+    return eventId !== null && filter.eventIds.has(eventId);
+  }
+
+  private get transcriptFilterActive(): boolean {
+    return this.transcriptInspectFilter !== 'all';
+  }
+
+  private describeTranscriptFilter(): string {
+    const filter = this.transcriptInspectFilter;
+    if (filter === 'failed') return 'Failed requests only';
+    if (filter !== 'all') {
+      const count = filter.eventIds.size;
+      return `Inspecting ${count} request${count === 1 ? '' : 's'}`;
+    }
+    return '';
+  }
+
+  // Toggle the #7 "Failed only" filter. Clears any inspect-by-id pin.
+  private toggleFailedOnlyFilter(): void {
+    this.transcriptInspectFilter =
+      this.transcriptInspectFilter === 'failed' ? 'all' : 'failed';
+    this.onTranscriptFilterChanged();
+  }
+
+  private clearTranscriptFilter(): void {
+    if (this.transcriptInspectFilter === 'all') return;
+    this.transcriptInspectFilter = 'all';
+    this.onTranscriptFilterChanged();
+  }
+
+  // Keep the replay cursor valid after the visible set changes, then snap the
+  // view to the first matching message.
+  private onTranscriptFilterChanged(): void {
+    const messages = this.getVisibleReplayMessages();
+    this.replayIndex = Math.min(
+      this.replayIndex,
+      Math.max(messages.length - 1, 0)
+    );
+    if (messages.length) {
+      this.replayIndex = 0;
+      this.requestReplayCurrentEventDetail(messages[0]);
+    }
+    this.scrollReplayToCurrentMessage();
   }
 
   private mergeReplayEvents(
@@ -1272,7 +1887,7 @@ export class SessionReplayPanel extends LitElement {
           }
         });
         markers.push({
-          id: item.id,
+          id: item.api_usage_id || `activity:${item.timestamp}:${item.title}`,
           index: nearestIndex,
           kind: 'tool',
           role: 'tool',
@@ -1318,7 +1933,6 @@ export class SessionReplayPanel extends LitElement {
     this.userScrollingReplay = false;
     this.resumeReplayAfterScroll = false;
     this.replayActive = true;
-    this.replayDialogOpen = true;
     this.replayIndex = Math.min(
       Math.max(this.replayIndex, 0),
       messages.length - 1
@@ -1353,19 +1967,13 @@ export class SessionReplayPanel extends LitElement {
     this.resumeReplayAfterScroll = false;
   }
 
-  private openReplayDialog(): void {
+  private initializeReplayView(): void {
     this.requestReplayMetadata();
     const messages = this.getVisibleReplayMessages();
-    this.replayDialogOpen = true;
     this.replayIndex = this.getInitialReplayIndex(messages);
     this.optimizeFromIndex = 0;
     this.optimizeToIndex = Math.max(messages.length - 1, 0);
     this.requestReplayCurrentEventDetail(messages[this.replayIndex]);
-  }
-
-  private closeReplayDialog(): void {
-    this.pauseReplay();
-    this.replayDialogOpen = false;
   }
 
   private stepReplay(delta: number): void {
@@ -1436,10 +2044,29 @@ export class SessionReplayPanel extends LitElement {
     this.requestReplayCurrentEventDetail(messages[this.replayIndex]);
   }
 
+  // The effective optimization scope. optimizeToIndex defaults to 0 (unset);
+  // treat that as "the whole session" to match the end slider, which displays
+  // `optimizeToIndex || lastIndex`. Without this the slider looks full but the
+  // scope is just event 0, so Generate analyzes a single event and returns
+  // nothing — the reason the optimize view appeared to do nothing by default.
+  private getEffectiveOptimizeBounds(messages = this.getReplayMessages()): {
+    fromIndex: number;
+    toIndex: number;
+  } {
+    const lastIndex = Math.max(messages.length - 1, 0);
+    const effectiveTo =
+      this.optimizeToIndex > 0 ? this.optimizeToIndex : lastIndex;
+    const lo = Math.min(this.optimizeFromIndex, effectiveTo);
+    const hi = Math.max(this.optimizeFromIndex, effectiveTo);
+    return {
+      fromIndex: Math.min(Math.max(lo, 0), lastIndex),
+      toIndex: Math.min(Math.max(hi, 0), lastIndex),
+    };
+  }
+
   private requestOptimization(regenerate = false): void {
     const messages = this.getReplayMessages();
-    const fromIndex = Math.min(this.optimizeFromIndex, this.optimizeToIndex);
-    const toIndex = Math.max(this.optimizeFromIndex, this.optimizeToIndex);
+    const { fromIndex, toIndex } = this.getEffectiveOptimizeBounds(messages);
     const sourceKinds = Array.from(this.optimizeSources);
     this.dispatchEvent(
       new CustomEvent('session-optimization-requested', {
@@ -1488,42 +2115,35 @@ export class SessionReplayPanel extends LitElement {
           );
           return html`
             <span
-              class="optimize-range-marker ${marker.kind} ${marker.failed
-                ? 'failed'
-                : ''}"
+              class="optimize-range-marker ${marker.kind} ${
+                marker.failed ? 'failed' : ''
+              }"
               style=${`left: ${markerPercent}%;`}
               title=${`${this.formatDateTime(marker.timestamp)} - ${marker.title}`}
             ></span>
-            ${this.shouldShowTimelineLabel(markerIndex, eventMarkers.length)
-              ? html`
-                  <span
-                    class="optimize-range-label"
-                    style=${`left: ${markerPercent}%;`}
-                    title=${this.formatDateTime(marker.timestamp)}
-                  >
-                    ${this.formatTimelineLabel(marker.timestamp)}
-                  </span>
-                `
-              : nothing}
+            ${
+              this.shouldShowTimelineLabel(markerIndex, eventMarkers.length)
+                ? html`
+                    <span
+                      class="optimize-range-label"
+                      style=${`left: ${markerPercent}%;`}
+                      title=${this.formatDateTime(marker.timestamp)}
+                    >
+                      ${this.formatTimelineLabel(marker.timestamp)}
+                    </span>
+                  `
+                : nothing
+            }
           `;
         })}
       </div>
     `;
   }
 
-  private toggleOptimizeOpen(): void {
-    const nextOpen = !this.optimizeOpen;
-    this.optimizeOpen = nextOpen;
-    if (nextOpen && !this.optimizationSuggestions?.length) {
-      this.requestOptimization(false);
-    }
-  }
-
   private getOptimizationEvents(
     messages = this.getReplayMessages()
   ): FlowGatewayEvent[] {
-    const fromIndex = Math.min(this.optimizeFromIndex, this.optimizeToIndex);
-    const toIndex = Math.max(this.optimizeFromIndex, this.optimizeToIndex);
+    const { fromIndex, toIndex } = this.getEffectiveOptimizeBounds(messages);
     const byId = new Map<string, FlowGatewayEvent>();
     messages.slice(fromIndex, toIndex + 1).forEach((message) => {
       if (!message.event) return;
@@ -1572,9 +2192,52 @@ export class SessionReplayPanel extends LitElement {
   private handleOptimizationSelected(
     suggestion: SessionOptimizationSuggestion
   ): void {
+    // Wire the typed action buttons that the optimization panel emits. These
+    // previously fell through to local replay tricks and did nothing useful.
+    const action = suggestion.action;
+    if (action?.type === 'open_events') {
+      const params = action.params || {};
+      const eventIds = Array.isArray(params.event_ids)
+        ? (params.event_ids as string[])
+        : suggestion.evidenceEventIds || [];
+      const failedOnly = Boolean(params.failed_only ?? !eventIds.length);
+      this.dispatchEvent(
+        new CustomEvent('session-inspect-requests', {
+          detail: { eventIds, failedOnly, suggestion },
+          bubbles: true,
+          composed: true,
+        })
+      );
+      return;
+    }
+    if (action?.type === 'set_budget') {
+      this.dispatchEvent(
+        new CustomEvent('session-create-budget', {
+          detail: { action, suggestion, session: this.session },
+          bubbles: true,
+          composed: true,
+        })
+      );
+      return;
+    }
+
     this.optimizeControlsOpen = true;
     const messages = this.getVisibleReplayMessages();
     if (!messages.length) return;
+
+    if (suggestion.evidenceEventIds?.length) {
+      const evidenceIds = new Set(suggestion.evidenceEventIds);
+      this.visibleReplayKinds = new Set(REPLAY_MARKER_KINDS);
+      const allMessages = this.getReplayMessages();
+      const evidenceIndex = allMessages.findIndex((message) =>
+        evidenceIds.has(message.event?.id || '')
+      );
+      if (evidenceIndex >= 0) {
+        this.replayIndex = evidenceIndex;
+        this.requestReplayCurrentEventDetail(allMessages[evidenceIndex]);
+        return;
+      }
+    }
 
     if (suggestion.id === 'fix-failures') {
       this.visibleReplayKinds = new Set(REPLAY_MARKER_KINDS);
@@ -1653,7 +2316,7 @@ export class SessionReplayPanel extends LitElement {
   }
 
   private scrollReplayToCurrentMessage(): void {
-    if (!this.replayDialogOpen) return;
+    if (!this.replayViewActive) return;
     if (this.userScrollingReplay) return;
     if (this.suppressNextReplayAutoScroll) {
       this.suppressNextReplayAutoScroll = false;
@@ -1678,7 +2341,7 @@ export class SessionReplayPanel extends LitElement {
   }
 
   private syncReplayTimeFromScroll(): void {
-    if (!this.replayDialogOpen || this.autoScrollingReplay) return;
+    if (!this.replayViewActive || this.autoScrollingReplay) return;
     this.userScrollingReplay = true;
     if (this.replayActive) {
       this.resumeReplayAfterScroll = true;
@@ -1754,9 +2417,9 @@ export class SessionReplayPanel extends LitElement {
 
     return html`
       <div
-        class="timeline-event ${this.eventNeedsSummary(event)
-          ? 'summary-candidate'
-          : ''}"
+        class="timeline-event ${
+          this.eventNeedsSummary(event) ? 'summary-candidate' : ''
+        }"
         data-event-id=${event.id}
       >
         <div class="event-header">
@@ -1772,81 +2435,94 @@ export class SessionReplayPanel extends LitElement {
             ${event.payload?.outcome || 'event'}
           </sl-badge>
         </div>
-        ${showSummary
-          ? html`
-              <div class="summary-replacement">
-                <div class="event-title">${summary.title}</div>
-                <div class="summary-text">${summary.summary}</div>
-                ${summary.key_points.length
-                  ? html`
-                      <ul class="summary-points">
-                        ${summary.key_points.map(
-                          (point) => html`<li>${point}</li>`
-                        )}
-                      </ul>
-                    `
-                  : nothing}
-                <div class="detail-actions">
-                  <sl-button
-                    size="small"
-                    @click=${() => this.toggleEventFullText(event.id)}
-                  >
-                    Show full text
-                  </sl-button>
+        ${
+          showSummary
+            ? html`
+                <div class="summary-replacement">
+                  <div class="event-title">${summary.title}</div>
+                  <div class="summary-text">${summary.summary}</div>
+                  ${
+                    summary.key_points.length
+                      ? html`
+                          <ul class="summary-points">
+                            ${summary.key_points.map(
+                              (point) => html`<li>${point}</li>`
+                            )}
+                          </ul>
+                        `
+                      : nothing
+                  }
+                  <div class="detail-actions">
+                    <sl-button
+                      size="small"
+                      @click=${() => this.toggleEventFullText(event.id)}
+                    >
+                      Show full text
+                    </sl-button>
+                  </div>
                 </div>
-              </div>
-            `
-          : html`
-              ${userRequest
-                ? html`<div class="preview">${userRequest}</div>`
-                : canLoadMore
-                  ? html`
-                      <div class="preview">
-                        Message preview is available on demand. Load details to
-                        inspect the captured request without flooding the
-                        timeline.
-                      </div>
-                    `
-                  : html`<div class="preview">
-                      No user-request preview captured.
-                    </div>`}
-              ${summary && this.fullTextEventIds.has(event.id)
-                ? html`
-                    <div class="detail-actions">
-                      <sl-button
-                        size="small"
-                        @click=${() => this.toggleEventFullText(event.id)}
-                      >
-                        Show summary
-                      </sl-button>
-                    </div>
-                  `
-                : nothing}
-            `}
+              `
+            : html`
+                ${
+                  userRequest
+                    ? html`<div class="preview">${userRequest}</div>`
+                    : canLoadMore
+                      ? html`
+                          <div class="preview">
+                            Message preview is available on demand. Load details
+                            to inspect the captured request without flooding the
+                            timeline.
+                          </div>
+                        `
+                      : html`<div class="preview">
+                          No user-request preview captured.
+                        </div>`
+                }
+                ${
+                  summary && this.fullTextEventIds.has(event.id)
+                    ? html`
+                        <div class="detail-actions">
+                          <sl-button
+                            size="small"
+                            @click=${() => this.toggleEventFullText(event.id)}
+                          >
+                            Show summary
+                          </sl-button>
+                        </div>
+                      `
+                    : nothing
+                }
+              `
+        }
         <div class="segment-grid">
           <sl-details>
             <div slot="summary" class="segment-title">
-              ${expandedMessages.length
-                ? `Request messages (${expandedMessages.length})`
-                : 'Request messages available after loading details'}
+              ${
+                expandedMessages.length
+                  ? `Request messages (${expandedMessages.length})`
+                  : 'Request messages available after loading details'
+              }
             </div>
-            ${expandedMessages.length
-              ? html`
-                  <div class="message-list">
-                    ${expandedMessages.map((message) =>
-                      this.renderMessage(message, 'chat', message.key)
-                    )}
-                  </div>
-                `
-              : html`
-                  <div class="segment">
-                    <div class="event-meta">
-                      The compact event list keeps large request/response
-                      payloads out of the initial render. Use the details button
-                      below when you need the full captured conversation.
+            ${
+              expandedMessages.length
+                ? html`
+                    <div class="message-list">
+                      ${expandedMessages.map((message) =>
+                        this.renderMessage(message, 'chat', message.key)
+                      )}
                     </div>
-                  </div>
-                `}
+                  `
+                : html`
+                    <div class="segment">
+                      <div class="event-meta">
+                        The compact event list keeps large request/response
+                        payloads out of the initial render. Use the details
+                        button below when you need the full captured
+                        conversation.
+                      </div>
+                    </div>
+                  `
+            }
           </sl-details>
           <sl-details>
             <div slot="summary" class="segment-title">
@@ -1855,9 +2531,11 @@ export class SessionReplayPanel extends LitElement {
             <div class="segment">
               <div class="event-meta">
                 Endpoint:
-                ${event.payload?.endpoint_kind ||
-                event.payload?.endpoint ||
-                'n/a'}
+                ${
+                  event.payload?.endpoint_kind ||
+                  event.payload?.endpoint ||
+                  'n/a'
+                }
               </div>
               <div class="event-meta">
                 HTTP: ${event.payload?.method || 'POST'}
@@ -1871,29 +2549,33 @@ export class SessionReplayPanel extends LitElement {
             </div>
           </sl-details>
         </div>
-        ${this.rawPayloads
-          ? html`
-              <div class="detail-actions">
-                <sl-button
-                  size="small"
-                  ?loading=${this.loadingEventDetails.has(event.id)}
-                  @click=${() => this.requestEventDetail(event)}
-                >
-                  Load raw event
-                </sl-button>
-              </div>
-              ${detail
-                ? html`
-                    <div class="raw-event-container">
-                      <preloop-gateway-event
-                        .event=${detail}
-                        expanded
-                      ></preloop-gateway-event>
-                    </div>
-                  `
-                : nothing}
-            `
-          : nothing}
+        ${
+          this.rawPayloads
+            ? html`
+                <div class="detail-actions">
+                  <sl-button
+                    size="small"
+                    ?loading=${this.loadingEventDetails.has(event.id)}
+                    @click=${() => this.requestEventDetail(event)}
+                  >
+                    Load raw event
+                  </sl-button>
+                </div>
+                ${
+                  detail
+                    ? html`
+                        <div class="raw-event-container">
+                          <preloop-gateway-event
+                            .event=${detail}
+                            expanded
+                          ></preloop-gateway-event>
+                        </div>
+                      `
+                    : nothing
+                }
+              `
+            : nothing
+        }
       </div>
     `;
   }
@@ -1920,26 +2602,37 @@ export class SessionReplayPanel extends LitElement {
       <div class=${className}>
         <div class="message-role">
           ${role}
-          ${message.truncated
-            ? html`<sl-badge variant="warning" pill>Truncated</sl-badge>`
-            : nothing}
-          ${message.redacted
-            ? html`<sl-badge variant="warning" pill>Redacted</sl-badge>`
-            : nothing}
+          ${
+            message.truncated
+              ? html`<sl-badge variant="warning" pill>Truncated</sl-badge>`
+              : nothing
+          }
+          ${
+            message.redacted
+              ? html`<sl-badge variant="warning" pill>Redacted</sl-badge>`
+              : nothing
+          }
         </div>
         <div class="message-text">${text}</div>
-        ${channelLabel
-          ? html`<div class="message-footer">${channelLabel}</div>`
-          : nothing}
-        ${isLong
-          ? html`
-              <div class="detail-actions">
-                <sl-button size="small" @click=${() => this.toggleMessage(key)}>
-                  ${isExpanded ? 'Collapse message' : 'Show full message'}
-                </sl-button>
-              </div>
-            `
-          : nothing}
+        ${
+          channelLabel
+            ? html`<div class="message-footer">${channelLabel}</div>`
+            : nothing
+        }
+        ${
+          isLong
+            ? html`
+                <div class="detail-actions">
+                  <sl-button
+                    size="small"
+                    @click=${() => this.toggleMessage(key)}
+                  >
+                    ${isExpanded ? 'Collapse message' : 'Show full message'}
+                  </sl-button>
+                </div>
+              `
+            : nothing
+        }
       </div>
     `;
   }
@@ -2048,6 +2741,33 @@ export class SessionReplayPanel extends LitElement {
     return Number(event.payload?.estimated_cost || 0);
   }
 
+  // Read prompt-cache hits robustly across providers. Checks, in order:
+  // OpenAI usage_details.prompt_tokens_details.cached_tokens, the same nested
+  // under the payload root, then Anthropic cache_read_input_tokens (nested then
+  // root). Returns null when no cache field is present (older captures) so the
+  // header can omit the annotation gracefully.
+  private getEventCachedTokens(event: FlowGatewayEvent | null): number | null {
+    if (!event) return null;
+    const payload = (event.payload || {}) as Record<string, unknown>;
+    const usageDetails = (payload.usage_details ?? null) as Record<
+      string,
+      unknown
+    > | null;
+    const candidates: Array<unknown> = [
+      (usageDetails?.prompt_tokens_details as Record<string, unknown>)
+        ?.cached_tokens,
+      (payload.prompt_tokens_details as Record<string, unknown>)?.cached_tokens,
+      usageDetails?.cache_read_input_tokens,
+      payload.cache_read_input_tokens,
+    ];
+    for (const candidate of candidates) {
+      if (candidate === null || candidate === undefined) continue;
+      const value = Number(candidate);
+      if (Number.isFinite(value) && value > 0) return value;
+    }
+    return null;
+  }
+
   private getEventOutcome(event: FlowGatewayEvent | null): string {
     if (!event) return 'unknown';
     return String(event.payload?.outcome || event.payload?.status || 'unknown');
@@ -2102,25 +2822,33 @@ export class SessionReplayPanel extends LitElement {
         </span>
         <span class="metric-pill">${formatNumber(totalTokens)} tokens</span>
         <span class="metric-pill">${formatCost(estimatedCost)}</span>
-        ${isRetry || gatewayAttempt > 1
-          ? html`<span
-              class="metric-pill warning"
-              title=${retryOfApiUsageId
-                ? `Retry of usage ${retryOfApiUsageId}`
-                : 'Gateway retry attempt'}
-              >retry #${gatewayAttempt}</span
-            >`
-          : nothing}
-        ${apiUsageId
-          ? html`<span class="metric-pill" title=${apiUsageId}
-              >usage ${apiUsageId.slice(0, 8)}</span
-            >`
-          : nothing}
-        ${upstreamRequestId
-          ? html`<span class="metric-pill" title=${upstreamRequestId}
-              >upstream ${upstreamRequestId.slice(0, 8)}</span
-            >`
-          : nothing}
+        ${
+          isRetry || gatewayAttempt > 1
+            ? html`<span
+                class="metric-pill warning"
+                title=${
+                  retryOfApiUsageId
+                    ? `Retry of usage ${retryOfApiUsageId}`
+                    : 'Gateway retry attempt'
+                }
+                >retry #${gatewayAttempt}</span
+              >`
+            : nothing
+        }
+        ${
+          apiUsageId
+            ? html`<span class="metric-pill" title=${apiUsageId}
+                >usage ${apiUsageId.slice(0, 8)}</span
+              >`
+            : nothing
+        }
+        ${
+          upstreamRequestId
+            ? html`<span class="metric-pill" title=${upstreamRequestId}
+                >upstream ${upstreamRequestId.slice(0, 8)}</span
+              >`
+            : nothing
+        }
       </div>
     `;
   }
@@ -2132,18 +2860,19 @@ export class SessionReplayPanel extends LitElement {
   ) {
     const role = message.role || message.source || 'message';
     const character = this.getCharacterLabel(role);
+    const messageEvent = message.event;
     const isLazyMetadata =
       message.source === 'metadata' &&
-      message.event &&
-      !this.eventDetails[message.event.id] &&
-      !getGatewayEventPreviewMessages(message.event).length;
-    if (isLazyMetadata) {
-      const eventId = message.event.id;
+      messageEvent !== null &&
+      !this.eventDetails[messageEvent.id] &&
+      !getGatewayEventPreviewMessages(messageEvent).length;
+    if (isLazyMetadata && messageEvent) {
+      const eventId = messageEvent.id;
       return html`
         <div
-          class="replay-message ${index <= this.replayIndex
-            ? 'played'
-            : ''} ${isCurrent ? 'current' : ''}"
+          class="replay-message ${
+            index <= this.replayIndex ? 'played' : ''
+          } ${isCurrent ? 'current' : ''}"
           data-replay-index=${String(index)}
         >
           <div
@@ -2181,134 +2910,176 @@ export class SessionReplayPanel extends LitElement {
       this.summarizeVisibleContent &&
       !showFull &&
       this.messageShouldUseEventSummary(message);
-    const isLong = fullText.length > 900;
+    const isLong = fullText.length > MESSAGE_PREVIEW_CHARS;
     const shouldTruncate = isLong && !showSummary && !showFull;
-    const visibleText = shouldTruncate
-      ? `${fullText.slice(0, 900)}...`
-      : fullText;
+    // #8 progressive reveal: once "Show full message" is clicked, reveal the
+    // body in chunks instead of dumping everything at once. The revealed length
+    // is tracked per-message in revealedMessageChars; absent => first chunk.
+    const revealLength = showFull
+      ? Math.min(
+          this.revealedMessageChars.get(message.key) ??
+            MESSAGE_REVEAL_CHUNK_CHARS,
+          fullText.length
+        )
+      : 0;
+    const hasMoreToReveal = showFull && revealLength < fullText.length;
+    const remainingChars = fullText.length - revealLength;
+    const nextRevealChars = Math.min(
+      MESSAGE_REVEAL_CHUNK_CHARS,
+      remainingChars
+    );
+    let visibleText = fullText;
+    if (shouldTruncate) {
+      visibleText = `${fullText.slice(0, MESSAGE_PREVIEW_CHARS)}...`;
+    } else if (showFull && hasMoreToReveal) {
+      visibleText = `${fullText.slice(0, revealLength)}...`;
+    }
     const className = `chat-message ${role} ${this.eventIsFailure(message.event) ? 'failed' : ''}`;
 
     return html`
       <div
-        class="replay-message ${index <= this.replayIndex
-          ? 'played'
-          : ''} ${isCurrent ? 'current' : ''}"
+        class="replay-message ${
+          index <= this.replayIndex ? 'played' : ''
+        } ${isCurrent ? 'current' : ''}"
         data-replay-index=${String(index)}
       >
-        ${showSummary
-          ? html`
-              <div class="summary-card">
-                <div class="character-row">
-                  <span class="character-avatar">${character.slice(0, 1)}</span>
-                  <div>
-                    <div class="event-title">${character}</div>
-                    <div class="event-meta">
-                      <span title=${this.formatDateTime(message.timestamp)}>
-                        ${this.formatTime(message.timestamp)}
-                      </span>
-                      · ${message.title}
-                    </div>
-                    ${this.renderMessageMetrics(message)}
-                  </div>
-                </div>
-                <div class="summary-text">${summary.summary}</div>
-                <div class="detail-actions">
-                  <sl-button
-                    size="small"
-                    @click=${() => this.showFullReplayMessage(message)}
-                  >
-                    Show full message
-                  </sl-button>
-                </div>
-              </div>
-            `
-          : html`
-              <div class=${className}>
-                <div class="character-row">
-                  <span class="character-avatar">${character.slice(0, 1)}</span>
-                  <div>
-                    <div class="message-role">
-                      ${character}
-                      ${shouldTruncate
-                        ? html`<sl-badge variant="warning" pill
-                            >Truncated</sl-badge
-                          >`
-                        : nothing}
-                      ${summary && showFull
-                        ? html`<sl-badge variant="primary" pill
-                            >Full message</sl-badge
-                          >`
-                        : nothing}
-                    </div>
-                    <div class="event-meta">
-                      <span title=${this.formatDateTime(message.timestamp)}>
-                        ${this.formatTime(message.timestamp)}
-                      </span>
-                      · ${message.title}
-                    </div>
-                    ${this.renderMessageMetrics(message)}
-                  </div>
-                </div>
-                <div class="message-text">${visibleText}</div>
-                ${summary || shouldTruncate || showFull
-                  ? html`
-                      <div class="detail-actions">
-                        ${summary && showFull
-                          ? html`
-                              <sl-button
-                                size="small"
-                                @click=${() =>
-                                  this.toggleEventFullText(message.key)}
-                              >
-                                Show summary
-                              </sl-button>
-                            `
-                          : nothing}
-                        ${shouldTruncate
-                          ? html`
-                              <sl-button
-                                size="small"
-                                @click=${() =>
-                                  this.showFullReplayMessage(message)}
-                              >
-                                Show full message
-                              </sl-button>
-                            `
-                          : nothing}
-                        ${showFull && !summary
-                          ? html`
-                              <sl-button
-                                size="small"
-                                @click=${() =>
-                                  this.toggleEventFullText(message.key)}
-                              >
-                                Collapse message
-                              </sl-button>
-                            `
-                          : nothing}
+        ${
+          showSummary
+            ? html`
+                <div class="summary-card">
+                  <div class="character-row">
+                    <span class="character-avatar"
+                      >${character.slice(0, 1)}</span
+                    >
+                    <div>
+                      <div class="event-title">${character}</div>
+                      <div class="event-meta">
+                        <span title=${this.formatDateTime(message.timestamp)}>
+                          ${this.formatTime(message.timestamp)}
+                        </span>
+                        · ${message.title}
                       </div>
-                    `
-                  : nothing}
-              </div>
-            `}
-      </div>
-    `;
-  }
-
-  private renderChat() {
-    const messages = [
-      ...this.events.flatMap(getGatewayEventPreviewMessages),
-      ...this.getAgentControlActivityMessages(),
-    ];
-    if (!messages.length) {
-      return html`<div class="empty">No conversation preview captured.</div>`;
-    }
-    return html`
-      <div class="message-list">
-        ${messages.map((message, index) =>
-          this.renderMessage(message, 'chat', `chat:${index}`)
-        )}
-        ${this.renderEventPageSentinel()}
+                      ${this.renderMessageMetrics(message)}
+                    </div>
+                  </div>
+                  <div class="summary-text">${summary.summary}</div>
+                  <div class="detail-actions">
+                    <sl-button
+                      size="small"
+                      @click=${() => this.showFullReplayMessage(message)}
+                    >
+                      Show full message
+                    </sl-button>
+                  </div>
+                </div>
+              `
+            : html`
+                <div class=${className}>
+                  <div class="character-row">
+                    <span class="character-avatar"
+                      >${character.slice(0, 1)}</span
+                    >
+                    <div>
+                      <div class="message-role">
+                        ${character}
+                        ${
+                          shouldTruncate
+                            ? html`<sl-badge variant="warning" pill
+                                >Truncated</sl-badge
+                              >`
+                            : nothing
+                        }
+                        ${
+                          summary && showFull
+                            ? html`<sl-badge variant="primary" pill
+                                >Full message</sl-badge
+                              >`
+                            : nothing
+                        }
+                      </div>
+                      <div class="event-meta">
+                        <span title=${this.formatDateTime(message.timestamp)}>
+                          ${this.formatTime(message.timestamp)}
+                        </span>
+                        · ${message.title}
+                      </div>
+                      ${this.renderMessageMetrics(message)}
+                    </div>
+                  </div>
+                  <div class="message-text">${visibleText}</div>
+                  ${
+                    summary || shouldTruncate || showFull
+                      ? html`
+                          <div class="detail-actions">
+                            ${
+                              summary && showFull
+                                ? html`
+                                    <sl-button
+                                      size="small"
+                                      @click=${() =>
+                                        this.toggleEventFullText(message.key)}
+                                    >
+                                      Show summary
+                                    </sl-button>
+                                  `
+                                : nothing
+                            }
+                            ${
+                              shouldTruncate
+                                ? html`
+                                    <sl-button
+                                      size="small"
+                                      @click=${() =>
+                                        this.showFullReplayMessage(message)}
+                                    >
+                                      Show full message
+                                    </sl-button>
+                                  `
+                                : nothing
+                            }
+                            ${
+                              hasMoreToReveal
+                                ? html`
+                                    <sl-button
+                                      size="small"
+                                      variant="primary"
+                                      @click=${() =>
+                                        this.revealMoreMessage(
+                                          message,
+                                          fullText.length
+                                        )}
+                                    >
+                                      Show more
+                                      (+${formatNumber(nextRevealChars)} chars)
+                                    </sl-button>
+                                    <span class="event-meta reveal-progress">
+                                      ${formatNumber(revealLength)} /
+                                      ${formatNumber(fullText.length)} chars ·
+                                      ${formatNumber(remainingChars)} remaining
+                                    </span>
+                                  `
+                                : nothing
+                            }
+                            ${
+                              showFull && !summary
+                                ? html`
+                                    <sl-button
+                                      size="small"
+                                      @click=${() =>
+                                        this.collapseFullReplayMessage(message)}
+                                    >
+                                      Show less
+                                    </sl-button>
+                                  `
+                                : nothing
+                            }
+                          </div>
+                        `
+                      : nothing
+                  }
+                </div>
+              `
+        }
       </div>
     `;
   }
@@ -2341,15 +3112,30 @@ export class SessionReplayPanel extends LitElement {
       });
   }
 
+  // Label an agent-control activity turn from its role/source so an operator
+  // (talk) message is never shown as a "Developer message" gateway request.
+  private getActivityTurnLabel(
+    message: FlowGatewayConversationPreviewMessage
+  ): string {
+    const role = (message.role || '').toLowerCase();
+    if (role.includes('assistant') || role.includes('agent')) {
+      return 'Agent message';
+    }
+    if (role.includes('system')) return 'System message';
+    if (role.includes('developer')) return 'Developer message';
+    // agent_control messages default to operator/talk input.
+    return 'Operator message';
+  }
+
   private renderTimelineLegend() {
     return html`
       <div class="timeline-legend" aria-label="Timeline marker legend">
         ${REPLAY_MARKER_LEGEND.map(
           (item) => html`
             <button
-              class="legend-item toggle ${this.visibleReplayKinds.has(item.kind)
-                ? ''
-                : 'off'}"
+              class="legend-item toggle ${
+                this.visibleReplayKinds.has(item.kind) ? '' : 'off'
+              }"
               type="button"
               aria-pressed=${this.visibleReplayKinds.has(item.kind)}
               @click=${() => this.toggleReplaySource(item.kind)}
@@ -2394,8 +3180,10 @@ export class SessionReplayPanel extends LitElement {
               class="transport-button"
               size="medium"
               title="Previous event"
-              ?disabled=${!messages.length ||
-              (this.replayIndex <= 0 && !this.hasMoreEvents)}
+              ?disabled=${
+                !messages.length ||
+                (this.replayIndex <= 0 && !this.hasMoreEvents)
+              }
               @click=${() => this.stepReplay(-1)}
             >
               <sl-icon name="chevron-left" label="Previous event"></sl-icon>
@@ -2418,8 +3206,9 @@ export class SessionReplayPanel extends LitElement {
               class="transport-button"
               size="medium"
               title="Next event"
-              ?disabled=${!messages.length ||
-              this.replayIndex >= messages.length - 1}
+              ?disabled=${
+                !messages.length || this.replayIndex >= messages.length - 1
+              }
               @click=${() => this.stepReplay(1)}
             >
               <sl-icon name="chevron-right" label="Next event"></sl-icon>
@@ -2428,8 +3217,9 @@ export class SessionReplayPanel extends LitElement {
               class="transport-button"
               size="medium"
               title="Jump to end"
-              ?disabled=${!messages.length ||
-              this.replayIndex >= messages.length - 1}
+              ?disabled=${
+                !messages.length || this.replayIndex >= messages.length - 1
+              }
               @click=${() => this.jumpReplayToBoundary('end')}
             >
               <sl-icon name="skip-forward-fill" label="Jump to end"></sl-icon>
@@ -2488,10 +3278,9 @@ export class SessionReplayPanel extends LitElement {
                 );
                 return html`
                   <button
-                    class="timeline-marker ${marker.kind} ${marker.id ===
-                    currentMarkerId
-                      ? 'current'
-                      : ''} ${marker.failed ? 'failed' : ''}"
+                    class="timeline-marker ${marker.kind} ${
+                      marker.id === currentMarkerId ? 'current' : ''
+                    } ${marker.failed ? 'failed' : ''}"
                     style=${`left: ${markerPercent}%;`}
                     title=${`${this.formatDateTime(marker.timestamp)} - ${this.getCharacterLabel(marker.role)} - ${marker.title}`}
                     aria-label=${`Seek to ${this.formatDateTime(marker.timestamp)} ${marker.title}`}
@@ -2500,30 +3289,34 @@ export class SessionReplayPanel extends LitElement {
                       this.jumpReplayTo(marker.index);
                     }}
                   ></button>
-                  ${this.shouldShowTimelineLabel(
-                    markerIndex,
-                    eventMarkers.length
-                  )
-                    ? html`
-                        <span
-                          class="timeline-datetime-label"
-                          style=${`left: ${markerPercent}%;`}
-                          title=${this.formatDateTime(marker.timestamp)}
-                        >
-                          ${this.formatTimelineLabel(marker.timestamp)}
-                        </span>
-                      `
-                    : nothing}
+                  ${
+                    this.shouldShowTimelineLabel(
+                      markerIndex,
+                      eventMarkers.length
+                    )
+                      ? html`
+                          <span
+                            class="timeline-datetime-label"
+                            style=${`left: ${markerPercent}%;`}
+                            title=${this.formatDateTime(marker.timestamp)}
+                          >
+                            ${this.formatTimelineLabel(marker.timestamp)}
+                          </span>
+                        `
+                      : nothing
+                  }
                 `;
               })}
             </div>
             <div class="timeline-label-row">
               <span class="event-meta">Start</span>
               <span class="event-meta">
-                ${currentMessage
-                  ? html`${this.formatTime(currentMessage.timestamp)} ·
-                    ${this.replayIndex + 1} / ${messages.length}`
-                  : 'No replay messages'}
+                ${
+                  currentMessage
+                    ? html`${this.formatTime(currentMessage.timestamp)} ·
+                      ${this.replayIndex + 1} / ${messages.length}`
+                    : 'No replay messages'
+                }
               </span>
               <span class="event-meta">End</span>
             </div>
@@ -2551,12 +3344,14 @@ export class SessionReplayPanel extends LitElement {
     return html`
       <div class="replay-stage">
         ${this.renderEventPageSentinel()}
-        ${topSpacerHeight > 0
-          ? html`<div
-              class="replay-spacer"
-              style=${`height: ${topSpacerHeight}px;`}
-            ></div>`
-          : nothing}
+        ${
+          topSpacerHeight > 0
+            ? html`<div
+                class="replay-spacer"
+                style=${`height: ${topSpacerHeight}px;`}
+              ></div>`
+            : nothing
+        }
         ${visibleMessages.map((message, offset) =>
           this.renderReplayMessage(
             message,
@@ -2564,19 +3359,23 @@ export class SessionReplayPanel extends LitElement {
             startIndex + offset
           )
         )}
-        ${bottomSpacerHeight > 0
-          ? html`<div
-              class="replay-spacer"
-              style=${`height: ${bottomSpacerHeight}px;`}
-            ></div>`
-          : nothing}
+        ${
+          bottomSpacerHeight > 0
+            ? html`<div
+                class="replay-spacer"
+                style=${`height: ${bottomSpacerHeight}px;`}
+              ></div>`
+            : nothing
+        }
       </div>
     `;
   }
 
-  private renderOptimizationDrawer() {
-    if (!this.optimizeOpen || !this.optimizationEnabled || !this.session) {
-      return nothing;
+  private renderOptimizeView() {
+    if (!this.optimizationEnabled || !this.session) {
+      return html`<div class="empty">
+        Optimization is not enabled for this view.
+      </div>`;
     }
     const messages = this.getReplayMessages();
     const lastIndex = Math.max(messages.length - 1, 0);
@@ -2593,201 +3392,293 @@ export class SessionReplayPanel extends LitElement {
           <div>
             <div class="event-title">Optimization Suggestions</div>
             <div class="event-meta">
-              ${hasSuggestions
-                ? html`
-                    ${this.optimizationResult?.generated_by === 'model'
-                      ? `Generated by ${this.optimizationResult.model_name || selectedModel?.name || 'selected model'}`
-                      : 'Showing local suggestions for this session.'}
-                    ${optimizationTokenUsage?.total_tokens
-                      ? html`
-                          · ${formatNumber(optimizationTokenUsage.total_tokens)}
-                          generation tokens · ${formatCost(optimizationCost)}
-                        `
-                      : nothing}
-                  `
-                : html`
-                    Generate suggestions with
-                    ${selectedModel?.name || 'the account default model'}.
-                  `}
+              ${
+                hasSuggestions
+                  ? html`
+                      ${
+                        this.optimizationResult?.generated_by === 'model'
+                          ? `Generated by ${this.optimizationResult.model_name || selectedModel?.name || 'selected model'}`
+                          : 'Showing local suggestions for this session.'
+                      }
+                      ${
+                        optimizationTokenUsage?.total_tokens
+                          ? html`
+                              ·
+                              ${formatNumber(optimizationTokenUsage.total_tokens)}
+                              generation tokens ·
+                              ${formatCost(optimizationCost)}
+                            `
+                          : nothing
+                      }
+                    `
+                  : html`
+                      Generate suggestions with
+                      ${selectedModel?.name || 'the account default model'}.
+                    `
+              }
             </div>
           </div>
-          ${hasSuggestions
+          ${
+            hasSuggestions
+              ? html`
+                  <div class="replay-dialog-actions">
+                    <sl-button
+                      size="small"
+                      @click=${() =>
+                        (this.optimizeControlsOpen =
+                          !this.optimizeControlsOpen)}
+                    >
+                      Regenerate
+                    </sl-button>
+                  </div>
+                `
+              : nothing
+          }
+        </div>
+        ${
+          showControls
             ? html`
-                <div class="replay-dialog-actions">
-                  <sl-button
-                    size="small"
-                    @click=${() =>
-                      (this.optimizeControlsOpen = !this.optimizeControlsOpen)}
-                  >
-                    Regenerate
-                  </sl-button>
+                <div class="optimize-controls">
+                  <div class="optimize-control-row">
+                    <label>
+                      <div class="event-meta">Suggestion model</div>
+                      <select
+                        class="speed-select-native optimization-model-select"
+                        .value=${selectedModel?.id || ''}
+                        ?disabled=${
+                          !this.availableModels.length ||
+                          this.loadingOptimization
+                        }
+                        @change=${(event: Event) => {
+                          this.optimizeModelId =
+                            (event.target as HTMLSelectElement).value || null;
+                        }}
+                      >
+                        ${
+                          this.availableModels.length
+                            ? [...this.availableModels]
+                                .sort(
+                                  (a, b) =>
+                                    Number(Boolean(b.is_default)) -
+                                    Number(Boolean(a.is_default))
+                                )
+                                .map(
+                                  (model) => html`
+                                    <option value=${model.id}>
+                                      ${model.name}${
+                                        model.is_default ? ' (default)' : ''
+                                      }
+                                    </option>
+                                  `
+                                )
+                            : html`<option value="">Local fallback</option>`
+                        }
+                      </select>
+                    </label>
+                  </div>
+                  <div class="optimize-control-row">
+                    <label class="optimize-range" style="flex: 1 1 100%;">
+                      <div class="event-meta">
+                        Optimization scope (events
+                        ${this.getEffectiveOptimizeBounds(messages).fromIndex} –
+                        ${this.getEffectiveOptimizeBounds(messages).toIndex} of
+                        ${formatNumber(Math.max(messages.length, 1))})
+                      </div>
+                      <div class="optimize-range-dual">
+                        <div
+                          class="optimize-range-fill"
+                          style=${`left: ${
+                            lastIndex > 0
+                              ? (this.optimizeFromIndex / lastIndex) * 100
+                              : 0
+                          }%; right: ${
+                            lastIndex > 0
+                              ? 100 -
+                                ((this.optimizeToIndex || lastIndex) /
+                                  lastIndex) *
+                                  100
+                              : 0
+                          }%;`}
+                        ></div>
+                        <input
+                          class="timeline-range"
+                          type="range"
+                          aria-label="Range start"
+                          min="0"
+                          max=${String(lastIndex)}
+                          .value=${String(this.optimizeFromIndex)}
+                          @input=${(event: Event) => {
+                            const value = Number(
+                              (event.target as HTMLInputElement).value
+                            );
+                            this.optimizeFromIndex = Math.min(
+                              value,
+                              this.optimizeToIndex || lastIndex
+                            );
+                          }}
+                        />
+                        <input
+                          class="timeline-range"
+                          type="range"
+                          aria-label="Range end"
+                          min="0"
+                          max=${String(lastIndex)}
+                          .value=${String(this.optimizeToIndex || lastIndex)}
+                          @input=${(event: Event) => {
+                            const value = Number(
+                              (event.target as HTMLInputElement).value
+                            );
+                            this.optimizeToIndex = Math.max(
+                              value,
+                              this.optimizeFromIndex
+                            );
+                          }}
+                        />
+                      </div>
+                      ${this.renderOptimizationRangeMarkers(messages)}
+                    </label>
+                  </div>
+                  <div class="source-toggle-row">
+                    ${REPLAY_MARKER_LEGEND.map(
+                      (item) => html`
+                        <button
+                          class="legend-item toggle ${
+                            this.optimizeSources.has(item.kind) ? '' : 'off'
+                          }"
+                          type="button"
+                          aria-pressed=${this.optimizeSources.has(item.kind)}
+                          @click=${() => this.toggleOptimizationSource(item.kind)}
+                        >
+                          <span class="legend-swatch ${item.kind}"></span>
+                          ${item.label}
+                        </button>
+                      `
+                    )}
+                  </div>
+                  <div class="event-meta">
+                    Scope includes ${formatNumber(scopedEvents.length)}
+                    event${scopedEvents.length === 1 ? '' : 's'}.
+                  </div>
+                  <div class="detail-actions">
+                    <sl-button
+                      size="small"
+                      variant="primary"
+                      ?loading=${this.loadingOptimization}
+                      ?disabled=${
+                        this.loadingOptimization || scopedEvents.length === 0
+                      }
+                      @click=${() => this.requestOptimization(hasSuggestions)}
+                    >
+                      ${
+                        hasSuggestions
+                          ? 'Regenerate suggestions'
+                          : 'Generate suggestions'
+                      }
+                    </sl-button>
+                  </div>
                 </div>
               `
-            : nothing}
-        </div>
-        ${showControls
-          ? html`
-              <div class="optimize-controls">
-                <div class="optimize-control-row">
-                  <label>
-                    <div class="event-meta">Suggestion model</div>
-                    <select
-                      class="speed-select-native optimization-model-select"
-                      .value=${selectedModel?.id || ''}
-                      ?disabled=${!this.availableModels.length ||
-                      this.loadingOptimization}
-                      @change=${(event: Event) => {
-                        this.optimizeModelId =
-                          (event.target as HTMLSelectElement).value || null;
-                      }}
-                    >
-                      ${this.availableModels.length
-                        ? this.availableModels.map(
-                            (model) => html`
-                              <option value=${model.id}>
-                                ${model.name}${model.is_default
-                                  ? ' (default)'
-                                  : ''}
-                              </option>
-                            `
-                          )
-                        : html`<option value="">Local fallback</option>`}
-                    </select>
-                  </label>
-                </div>
-                <div class="optimize-control-row">
-                  <label class="optimize-range">
-                    <div class="event-meta">From event</div>
-                    <input
-                      class="timeline-range"
-                      type="range"
-                      min="0"
-                      max=${String(lastIndex)}
-                      .value=${String(this.optimizeFromIndex)}
-                      @input=${(event: Event) => {
-                        this.optimizeFromIndex = Number(
-                          (event.target as HTMLInputElement).value
-                        );
-                      }}
-                    />
-                    ${this.renderOptimizationRangeMarkers(messages)}
-                  </label>
-                  <label class="optimize-range">
-                    <div class="event-meta">To event</div>
-                    <input
-                      class="timeline-range"
-                      type="range"
-                      min="0"
-                      max=${String(lastIndex)}
-                      .value=${String(this.optimizeToIndex || lastIndex)}
-                      @input=${(event: Event) => {
-                        this.optimizeToIndex = Number(
-                          (event.target as HTMLInputElement).value
-                        );
-                      }}
-                    />
-                    ${this.renderOptimizationRangeMarkers(messages)}
-                  </label>
-                </div>
-                <div class="source-toggle-row">
-                  ${REPLAY_MARKER_LEGEND.map(
-                    (item) => html`
-                      <button
-                        class="legend-item toggle ${this.optimizeSources.has(
-                          item.kind
-                        )
-                          ? ''
-                          : 'off'}"
-                        type="button"
-                        aria-pressed=${this.optimizeSources.has(item.kind)}
-                        @click=${() => this.toggleOptimizationSource(item.kind)}
-                      >
-                        <span class="legend-swatch ${item.kind}"></span>
-                        ${item.label}
-                      </button>
-                    `
-                  )}
-                </div>
-                <div class="event-meta">
-                  Scope includes ${formatNumber(scopedEvents.length)}
-                  event${scopedEvents.length === 1 ? '' : 's'}.
-                </div>
-                <div class="detail-actions">
-                  <sl-button
-                    size="small"
-                    variant="primary"
-                    ?loading=${this.loadingOptimization}
-                    ?disabled=${this.loadingOptimization ||
-                    scopedEvents.length === 0}
-                    @click=${() => this.requestOptimization(hasSuggestions)}
-                  >
-                    ${hasSuggestions
-                      ? 'Regenerate suggestions'
-                      : 'Generate suggestions'}
-                  </sl-button>
-                </div>
-              </div>
-            `
-          : nothing}
-        ${hasSuggestions
-          ? html`
-              <session-optimization-panel
-                .session=${this.session}
-                .events=${scopedEvents.length ? scopedEvents : this.events}
-                .activity=${this.activity}
-                .suggestions=${this.optimizationSuggestions}
-                @session-optimization-selected=${(event: CustomEvent) => {
-                  this.handleOptimizationSelected(event.detail.suggestion);
-                }}
-              ></session-optimization-panel>
-            `
-          : nothing}
+            : nothing
+        }
+        ${
+          hasSuggestions
+            ? html`
+                <session-optimization-panel
+                  .session=${this.session}
+                  .events=${scopedEvents.length ? scopedEvents : this.events}
+                  .activity=${this.activity}
+                  .suggestions=${this.optimizationSuggestions}
+                  .optimization=${this.optimizationResult}
+                  .appliedActions=${this.optimizationAppliedActions}
+                  .applyingSuggestionId=${this.applyingOptimizationSuggestionId}
+                  @session-optimization-selected=${(event: CustomEvent) => {
+                    this.handleOptimizationSelected(event.detail.suggestion);
+                  }}
+                ></session-optimization-panel>
+              `
+            : this.optimizationResult && !this.loadingOptimization
+              ? html`
+                  <div class="empty">
+                    No optimization opportunities found for the selected scope.
+                    Widen the range, or run a longer / more tool-heavy session.
+                  </div>
+                `
+              : nothing
+        }
       </div>
     `;
   }
 
-  private renderReplayDialog() {
-    if (!this.replayDialogOpen) return nothing;
-    return html`
-      <sl-dialog
-        class="replay-dialog"
-        label="Replay session"
-        ?open=${this.replayDialogOpen}
-        @sl-hide=${() => this.closeReplayDialog()}
-      >
-        <div class="replay-dialog-body">
-          <div class="replay-dialog-header">
-            <div class="replay-title-row">
-              <div class="replay-title">
-                ${this.session
-                  ? `Replay ${this.session.title}`
-                  : 'Replay session'}
-              </div>
-              <div class="replay-dialog-actions">
-                ${this.optimizationEnabled
-                  ? html`
-                      <sl-button
-                        size="small"
-                        variant=${this.optimizeOpen ? 'primary' : 'default'}
-                        @click=${() => this.toggleOptimizeOpen()}
-                      >
-                        <sl-icon slot="prefix" name="magic"></sl-icon>
-                        Optimize
-                      </sl-button>
-                    `
-                  : nothing}
-              </div>
-            </div>
-            ${this.renderOptimizationDrawer()} ${this.renderReplayControls()}
+  private renderReplayView() {
+    const messages = this.getVisibleReplayMessages();
+    if (!messages.length) {
+      // A filter can legitimately match nothing; keep a way out instead of a
+      // dead-end empty state.
+      if (this.transcriptFilterActive) {
+        return html`<div class="empty">
+          <div>
+            No messages match the current filter
+            (${this.describeTranscriptFilter()}).
           </div>
-          <div
-            class="replay-scrollport"
-            @scroll=${() => this.syncReplayTimeFromScroll()}
-          >
-            <div class="replay-transcript">${this.renderReplaySession()}</div>
+          <sl-button size="small" @click=${() => this.clearTranscriptFilter()}>
+            <sl-icon name="x-circle" label="Clear filter"></sl-icon>
+            Clear filter
+          </sl-button>
+        </div>`;
+      }
+      return html`<div class="empty">
+        No replayable messages captured for this session.
+      </div>`;
+    }
+    return html`
+      <div class="replay-dialog-body replay-view">
+        <div class="replay-dialog-header">${this.renderReplayControls()}</div>
+        <div
+          class="replay-scrollport"
+          @scroll=${() => this.syncReplayTimeFromScroll()}
+        >
+          <div class="replay-transcript">
+            ${this.renderTranscriptHeader()}${this.renderReplaySession()}
           </div>
         </div>
-      </sl-dialog>
+      </div>
+    `;
+  }
+
+  // Small transcript toolbar rendered above the message list. Hosts the
+  // "Failed only" filter toggle (moved out of the playback controls) plus its
+  // companion "Clear" affordance. Filtering logic/state is unchanged.
+  private renderTranscriptHeader() {
+    return html`
+      <div class="transcript-header">
+        <sl-button
+          class="failed-filter-button"
+          size="small"
+          variant=${
+            this.transcriptInspectFilter === 'failed' ? 'danger' : 'default'
+          }
+          title="Show only failed requests"
+          aria-pressed=${this.transcriptInspectFilter === 'failed'}
+          @click=${() => this.toggleFailedOnlyFilter()}
+        >
+          <sl-icon name="exclamation-octagon" label="Failed only"></sl-icon>
+          Failed only
+        </sl-button>
+        ${
+          this.transcriptFilterActive
+            ? html`<sl-button
+                class="clear-filter-button"
+                size="small"
+                variant="text"
+                title=${this.describeTranscriptFilter()}
+                @click=${() => this.clearTranscriptFilter()}
+              >
+                <sl-icon name="x-circle" label="Clear filter"></sl-icon>
+                ${this.describeTranscriptFilter()} · Clear
+              </sl-button>`
+            : nothing
+        }
+      </div>
     `;
   }
 
@@ -2847,33 +3738,41 @@ export class SessionReplayPanel extends LitElement {
                     ${this.formatTime(event.timestamp)} ·
                     ${formatNumber(event.payload?.total_tokens as number)}
                     tokens
-                    ${generated && summary.model_name
-                      ? html`· summarized by ${summary.model_name}`
-                      : ''}
+                    ${
+                      generated && summary.model_name
+                        ? html`· summarized by ${summary.model_name}`
+                        : ''
+                    }
                   </div>
                 </div>
                 <sl-badge
-                  variant=${summary.risk_level === 'high'
-                    ? 'danger'
-                    : 'neutral'}
+                  variant=${
+                    summary.risk_level === 'high' ? 'danger' : 'neutral'
+                  }
                   pill
                 >
                   ${generated ? 'AI summary' : 'preview'}
                 </sl-badge>
               </div>
               <div class="summary-text">${summary.summary}</div>
-              ${summary.key_points.length
-                ? html`
-                    <ul class="summary-points">
-                      ${summary.key_points.map(
-                        (point) => html`<li>${point}</li>`
-                      )}
-                    </ul>
-                  `
-                : nothing}
-              ${summary.next_action
-                ? html`<div class="preview">Next: ${summary.next_action}</div>`
-                : nothing}
+              ${
+                summary.key_points.length
+                  ? html`
+                      <ul class="summary-points">
+                        ${summary.key_points.map(
+                          (point) => html`<li>${point}</li>`
+                        )}
+                      </ul>
+                    `
+                  : nothing
+              }
+              ${
+                summary.next_action
+                  ? html`<div class="preview">
+                      Next: ${summary.next_action}
+                    </div>`
+                  : nothing
+              }
               <div class="detail-actions">
                 <sl-button
                   size="small"
@@ -2890,39 +3789,27 @@ export class SessionReplayPanel extends LitElement {
                   Load full content
                 </sl-button>
               </div>
-              ${this.eventDetails[event.id]
-                ? html`
-                    <sl-details>
-                      <div slot="summary" class="segment-title">
-                        Full captured request messages
-                      </div>
-                      <div class="message-list">
-                        ${this.getRequestMessages(
-                          this.eventDetails[event.id]
-                        ).map((message) =>
-                          this.renderMessage(message, 'chat', message.key)
-                        )}
-                      </div>
-                    </sl-details>
-                  `
-                : nothing}
+              ${
+                this.eventDetails[event.id]
+                  ? html`
+                      <sl-details>
+                        <div slot="summary" class="segment-title">
+                          Full captured request messages
+                        </div>
+                        <div class="message-list">
+                          ${this.getRequestMessages(
+                            this.eventDetails[event.id]
+                          ).map((message) =>
+                            this.renderMessage(message, 'chat', message.key)
+                          )}
+                        </div>
+                      </sl-details>
+                    `
+                  : nothing
+              }
             </div>
           `;
         })}
-        ${this.renderEventPageSentinel()}
-      </div>
-    `;
-  }
-
-  private renderDebug() {
-    return html`
-      <div class="panel">
-        ${this.events.map(
-          (event) =>
-            html`<preloop-gateway-event
-              .event=${this.eventDetails[event.id] || event}
-            ></preloop-gateway-event>`
-        )}
         ${this.renderEventPageSentinel()}
       </div>
     `;
@@ -2933,8 +3820,957 @@ export class SessionReplayPanel extends LitElement {
     return this.activity.filter((item) => {
       if (item.activity_type === 'model_interaction') return false;
       if (item.activity_type === 'model_gateway_call') return false;
+      if (this.isToolCallActivity(item)) return false;
       return true;
     });
+  }
+
+  private isToolCallActivity(item: RuntimeSessionActivityItem): boolean {
+    return item.activity_type === 'tool_call' || Boolean(item.tool_name);
+  }
+
+  private getToolCallActivity(): RuntimeSessionActivityItem[] {
+    return this.activity.filter((item) => this.isToolCallActivity(item));
+  }
+
+  private getTranscriptRowCost(row: TranscriptRow): number {
+    if (row.kind === 'event') {
+      return Number(row.event.payload?.estimated_cost || 0);
+    }
+    return Number(row.item.estimated_cost || 0);
+  }
+
+  private getTranscriptRows(): TranscriptRow[] {
+    const eventRows: TranscriptRow[] = this.events.map((event) => ({
+      kind: 'event',
+      timestamp: event.timestamp,
+      event,
+    }));
+    const toolRows: TranscriptRow[] = this.getToolCallActivity().map(
+      (item) => ({
+        kind: 'tool',
+        timestamp: item.timestamp || null,
+        item,
+      })
+    );
+    let rows: TranscriptRow[];
+    switch (this.transcriptFilter) {
+      case 'model':
+        rows = eventRows;
+        break;
+      case 'tools':
+        rows = toolRows;
+        break;
+      case 'costly':
+        rows = [...eventRows, ...toolRows].filter(
+          (row) => this.getTranscriptRowCost(row) > 0
+        );
+        return rows.sort(
+          (left, right) =>
+            this.getTranscriptRowCost(right) - this.getTranscriptRowCost(left)
+        );
+      default:
+        rows = [...eventRows, ...toolRows];
+    }
+    return rows.sort(
+      (left, right) =>
+        new Date(left.timestamp || 0).getTime() -
+        new Date(right.timestamp || 0).getTime()
+    );
+  }
+
+  // --- Unified sortable chat (turn/delta model) -----------------------------
+
+  // The chat-eligible gateway events, merged across sources and de-duplicated by
+  // id, sorted oldest-first. This is the natural request order used as the basis
+  // for delta computation; sorting for display happens afterwards.
+  private getChatEvents(): FlowGatewayEvent[] {
+    const merged = this.mergeReplayEvents(
+      this.timelineEvents.length ? this.timelineEvents : this.events,
+      this.events,
+      Object.values(this.eventDetails)
+    );
+    return merged.filter((event) => {
+      // Keep model gateway requests; drop pure non-request markers that carry no
+      // conversation. Tool-only events still flow through as tool turns.
+      if (event.type.includes('model_gateway')) return true;
+      if (event.payload?.tool_name) return true;
+      if (getGatewayEventPreviewMessages(event).length) return true;
+      return false;
+    });
+  }
+
+  // A stable signature for a preview message so the same message re-sent across
+  // requests collapses to a single delta entry.
+  private getMessageSignature(
+    message: FlowGatewayConversationPreviewMessage
+  ): string {
+    const role = (message.role || message.source || 'message').toLowerCase();
+    const text = (message.text || '').trim();
+    return `${role}::${text}`;
+  }
+
+  private messageIsToolRelated(
+    message: FlowGatewayConversationPreviewMessage
+  ): boolean {
+    const role = (message.role || message.source || '').toLowerCase();
+    return role.includes('tool') || role.includes('function');
+  }
+
+  // Build turns: one per request, each holding only the messages it added
+  // relative to the previous request (the growing-prefix delta) plus this
+  // request's assistant response.
+  private getChatTurns(): ChatTurn[] {
+    const events = this.getChatEvents();
+    const seenSignatures = new Set<string>();
+    const eventTurns: ChatTurn[] = [];
+
+    events.forEach((event) => {
+      const previewMessages = getGatewayEventPreviewMessages(event);
+      const deltaMessages: ChatTurnMessage[] = [];
+      let toolCallCount = 0;
+
+      previewMessages.forEach((message, messageIndex) => {
+        const text = (message.text || '').trim();
+        // Skip empty/metadata noise so turns stay readable.
+        if (!text && !message.redacted) return;
+        const signature = this.getMessageSignature(message);
+        // Delta: only render a message the first time we encounter it across
+        // the growing message lists.
+        if (text && seenSignatures.has(signature)) return;
+        if (text) seenSignatures.add(signature);
+        const isToolRelated = this.messageIsToolRelated(message);
+        if (isToolRelated) toolCallCount += 1;
+        deltaMessages.push({
+          ...message,
+          key: `${event.id}:turn:${messageIndex}`,
+          signature,
+          isToolRelated,
+        });
+      });
+
+      eventTurns.push({
+        id: event.id,
+        index: 0,
+        event,
+        timestamp: event.timestamp,
+        title: this.getEventTitle(event),
+        deltaMessages,
+        totalTokens: this.getEventTotalTokens(event),
+        promptTokens: Number(event.payload?.prompt_tokens || 0),
+        completionTokens: Number(event.payload?.completion_tokens || 0),
+        cachedTokens: this.getEventCachedTokens(event),
+        estimatedCost: this.getEventEstimatedCost(event),
+        toolCallCount,
+        failed: this.eventIsFailure(event),
+        isActivity: false,
+      });
+    });
+
+    // Fold supporting agent-control messages (operator messages, etc.) inline so
+    // the talk dialog's live chat keeps showing them in the flow.
+    const activityTurns: ChatTurn[] =
+      this.getAgentControlActivityMessages().map((message, index) => ({
+        id: `activity:${message.timestamp || ''}:${index}`,
+        index: 0,
+        event: null,
+        timestamp: message.timestamp || null,
+        // An agent-control activity is an operator/talk message, NOT a gateway
+        // request, so it must not be mislabeled "Developer message".
+        title: this.getActivityTurnLabel(message),
+        deltaMessages: [
+          {
+            ...message,
+            key: `activity:turn:${index}`,
+            signature: this.getMessageSignature(message),
+            isToolRelated: this.messageIsToolRelated(message),
+          },
+        ],
+        totalTokens: 0,
+        promptTokens: 0,
+        completionTokens: 0,
+        cachedTokens: null,
+        estimatedCost: 0,
+        toolCallCount: 0,
+        failed: false,
+        // Suppress the meaningless 0 tok / $0 / 0 tools stats for activity turns.
+        isActivity: true,
+      }));
+
+    const turns = [...eventTurns, ...activityTurns].sort(
+      (left, right) =>
+        new Date(left.timestamp || 0).getTime() -
+        new Date(right.timestamp || 0).getTime()
+    );
+    // Re-index in natural chat order so sort/filter can reorder in place while
+    // preserving a stable oldest-first ordering reference.
+    turns.forEach((turn, index) => {
+      turn.index = index;
+    });
+    return turns;
+  }
+
+  private turnPassesTypeFilter(turn: ChatTurn): boolean {
+    if (this.chatTypeFilter === 'all') return true;
+    if (this.chatTypeFilter === 'tools') return turn.toolCallCount > 0;
+    // messages only: non-tool delta messages present.
+    return turn.deltaMessages.some((message) => !message.isToolRelated);
+  }
+
+  // Sensible slider ceiling: the costliest/largest turn currently in the
+  // thread (in the active unit), with a small floor so the slider is always
+  // usable even when every turn is tiny.
+  private getChatThresholdMax(turns = this.getChatTurns()): number {
+    const requestTurns = turns.filter((turn) => !turn.isActivity);
+    if (!requestTurns.length) {
+      return this.chatThresholdMode === 'tokens' ? 1000 : 1;
+    }
+    if (this.chatThresholdMode === 'tokens') {
+      const max = Math.max(...requestTurns.map((turn) => turn.totalTokens));
+      return Math.max(Math.ceil(max), 100);
+    }
+    const max = Math.max(...requestTurns.map((turn) => turn.estimatedCost));
+    return Math.max(Number(max.toFixed(4)), 0.01);
+  }
+
+  private turnPassesThreshold(turn: ChatTurn): boolean {
+    if (!this.chatThreshold) return true;
+    const value =
+      this.chatThresholdMode === 'tokens'
+        ? turn.totalTokens
+        : turn.estimatedCost;
+    return value >= this.chatThreshold;
+  }
+
+  // Apply filters then sort in place. Oldest-first is natural chat order.
+  private getVisibleChatTurns(): ChatTurn[] {
+    const turns = this.getChatTurns().filter(
+      (turn) =>
+        this.turnPassesTypeFilter(turn) && this.turnPassesThreshold(turn)
+    );
+    const sorted = [...turns];
+    switch (this.chatSort) {
+      case 'newest':
+        sorted.sort((left, right) => right.index - left.index);
+        break;
+      case 'costliest':
+        sorted.sort((left, right) => right.estimatedCost - left.estimatedCost);
+        break;
+      case 'cheapest':
+        sorted.sort((left, right) => left.estimatedCost - right.estimatedCost);
+        break;
+      case 'type':
+        sorted.sort((left, right) => {
+          const leftType = left.toolCallCount > 0 ? 1 : 0;
+          const rightType = right.toolCallCount > 0 ? 1 : 0;
+          if (leftType !== rightType) return leftType - rightType;
+          return left.index - right.index;
+        });
+        break;
+      case 'oldest':
+      default:
+        sorted.sort((left, right) => left.index - right.index);
+        break;
+    }
+    return sorted;
+  }
+
+  // Whole-session cost picture, aggregated from the same per-turn data the chat
+  // already computes. Only request turns (gateway calls) carry real
+  // tokens/cost/tools; activity turns are excluded from the numeric totals but
+  // do not affect the request/outcome counts either.
+  private getChatSummary(): {
+    totalCost: number;
+    totalTokens: number;
+    promptTokens: number;
+    cachedTokens: number;
+    cachedPct: number | null;
+    toolCallCount: number;
+    requestCount: number;
+    okCount: number;
+    failedCount: number;
+  } {
+    const requestTurns = this.getChatTurns().filter((turn) => !turn.isActivity);
+    let totalCost = 0;
+    let totalTokens = 0;
+    let promptTokens = 0;
+    let cachedTokens = 0;
+    let toolCallCount = 0;
+    let okCount = 0;
+    let failedCount = 0;
+    for (const turn of requestTurns) {
+      totalCost += turn.estimatedCost;
+      totalTokens += turn.totalTokens;
+      promptTokens += turn.promptTokens;
+      cachedTokens += turn.cachedTokens ?? 0;
+      toolCallCount += turn.toolCallCount;
+      if (turn.failed) failedCount += 1;
+      else okCount += 1;
+    }
+    const cachedPct =
+      promptTokens > 0 ? Math.round((cachedTokens / promptTokens) * 100) : null;
+    return {
+      totalCost,
+      totalTokens,
+      promptTokens,
+      cachedTokens,
+      cachedPct,
+      toolCallCount,
+      requestCount: requestTurns.length,
+      okCount,
+      failedCount,
+    };
+  }
+
+  // The single highest-cost request turn, used to mark the cost story without
+  // forcing the user to sort. Only meaningful when there is real spend (>$0) and
+  // more than one request turn to compare.
+  private getMostExpensiveTurnId(): string | null {
+    const requestTurns = this.getChatTurns().filter((turn) => !turn.isActivity);
+    if (requestTurns.length < 2) return null;
+    let topTurn: ChatTurn | null = null;
+    for (const turn of requestTurns) {
+      if (!topTurn || turn.estimatedCost > topTurn.estimatedCost) {
+        topTurn = turn;
+      }
+    }
+    if (!topTurn || topTurn.estimatedCost <= 0) return null;
+    return topTurn.id;
+  }
+
+  private toggleTurnExpanded(eventId: string): void {
+    const next = new Set(this.expandedTurnEventIds);
+    if (next.has(eventId)) {
+      next.delete(eventId);
+    } else {
+      next.add(eventId);
+      // Lazy-load the full payload only when expanded.
+      const event = this.getReplayEventById(eventId);
+      if (event && !this.eventDetails[eventId]) {
+        this.requestEventDetail(event);
+      }
+    }
+    this.expandedTurnEventIds = next;
+  }
+
+  private getChatRoleKind(
+    message: FlowGatewayConversationPreviewMessage
+  ): ReplayMarkerKind {
+    const role = (message.role || message.source || 'message').toLowerCase();
+    if (role.includes('tool') || role.includes('function')) return 'tool';
+    if (role.includes('system')) return 'system';
+    if (role.includes('developer')) return 'developer';
+    if (role.includes('assistant') || role.includes('agent')) return 'agent';
+    return 'user';
+  }
+
+  private renderChatBubble(message: ChatTurnMessage) {
+    const kind = this.getChatRoleKind(message);
+    const role = message.role || message.source || 'message';
+    const bubbleRole =
+      kind === 'agent'
+        ? 'assistant'
+        : kind === 'tool'
+          ? 'tool'
+          : kind === 'user'
+            ? 'user'
+            : kind;
+    const fullText = this.normalizeMessageText(message);
+    const displayText = fullText
+      ? fullText
+      : message.redacted
+        ? 'Content redacted by capture policy.'
+        : 'No text content captured.';
+    const isLong = displayText.length > 1800;
+    // Per-message expand state, keyed by this bubble's stable unique key. Each
+    // message toggles independently — read and write the SAME key so the right
+    // bubble (and only it) expands/collapses.
+    const isExpanded = this.expandedMessageKeys.has(message.key);
+    const text =
+      isLong && !isExpanded ? `${displayText.slice(0, 1800)}...` : displayText;
+    return html`
+      <div class="chat-message ${bubbleRole}">
+        <div class="message-role">
+          ${role}
+          ${
+            message.truncated
+              ? html`<sl-badge variant="warning" pill>Truncated</sl-badge>`
+              : nothing
+          }
+          ${
+            message.redacted
+              ? html`<sl-badge variant="warning" pill>Redacted</sl-badge>`
+              : nothing
+          }
+        </div>
+        <div class="message-text">${text}</div>
+        ${
+          isLong
+            ? html`
+                <div class="detail-actions">
+                  <sl-button
+                    size="small"
+                    @click=${() => this.toggleMessage(message.key)}
+                  >
+                    ${isExpanded ? 'Collapse message' : 'Show full message'}
+                  </sl-button>
+                </div>
+              `
+            : nothing
+        }
+      </div>
+    `;
+  }
+
+  // Compact, secondary-weight cached-tokens annotation (e.g. "14.2k cached")
+  // so prompt-cache savings are visible without dominating the header.
+  private formatCachedTokens(cached: number): string {
+    if (cached >= 1000) {
+      return `${(cached / 1000).toFixed(1).replace(/\.0$/, '')}k cached`;
+    }
+    return `${formatNumber(cached)} cached`;
+  }
+
+  private renderChatTurnHeader(turn: ChatTurn, isMostExpensive = false) {
+    return html`
+      <div class="chat-turn-header">
+        <div class="chat-turn-header-main">
+          <span class="chat-turn-title">${turn.title}</span>
+          ${
+            isMostExpensive
+              ? html`<span
+                  class="chat-turn-cost-chip"
+                  title="Highest-cost request in this session"
+                >
+                  <sl-icon name="exclamation-triangle"></sl-icon>
+                  Most expensive
+                </span>`
+              : nothing
+          }
+          <span class="chat-turn-time">${this.formatTime(turn.timestamp)}</span>
+        </div>
+        <div class="chat-turn-badges">
+          ${
+            turn.isActivity
+              ? nothing
+              : html`
+                  <span class="chat-turn-stat">
+                    ${formatNumber(turn.totalTokens)}
+                    tok${
+                      turn.cachedTokens
+                        ? html` (${this.formatCachedTokens(turn.cachedTokens)})`
+                        : nothing
+                    }
+                  </span>
+                  <span class="chat-turn-stat"
+                    >${formatCost(turn.estimatedCost)}</span
+                  >
+                  <span
+                    class="chat-turn-stat ${
+                      turn.toolCallCount ? 'has-tools' : ''
+                    }"
+                  >
+                    ${formatNumber(turn.toolCallCount)}
+                    tool${turn.toolCallCount === 1 ? '' : 's'}
+                  </span>
+                `
+          }
+          ${
+            turn.failed
+              ? html`<sl-badge variant="danger" pill>failed</sl-badge>`
+              : nothing
+          }
+        </div>
+      </div>
+    `;
+  }
+
+  // Drill-down: full request context for an expanded turn. Uses the lazy
+  // eventDetails fetch — the complete message list, model, tokens, finish
+  // reason, retries, and tools with per-tool schema cost.
+  // TODO: deeper nested-tree drill-down (per-message / per-tool sub-trees).
+  private renderChatTurnDetail(turn: ChatTurn) {
+    if (!turn.event) return nothing;
+    const detail = this.eventDetails[turn.event.id];
+    if (!detail) {
+      const eventId = turn.event.id;
+      return html`
+        <div class="chat-turn-detail">
+          <div class="replay-detail-placeholder" data-event-id=${eventId}>
+            <sl-spinner></sl-spinner>
+            <span class="event-meta">Loading full request context…</span>
+          </div>
+        </div>
+      `;
+    }
+    const fullMessages = this.getRequestMessages(detail);
+    const payload = detail.payload || {};
+    const cachedTokens = this.getEventCachedTokens(detail);
+    const tools = Array.isArray(
+      (payload.request as Record<string, unknown>)?.tools
+    )
+      ? ((payload.request as Record<string, unknown>).tools as unknown[])
+      : [];
+    return html`
+      <div class="chat-turn-detail">
+        <div class="event-meta">
+          Model: ${payload.model_alias || payload.requested_model || 'n/a'} ·
+          Prompt ${formatNumber(Number(payload.prompt_tokens || 0))} ·
+          Completion ${formatNumber(Number(payload.completion_tokens || 0))}
+          ${
+            cachedTokens
+              ? html`· Cached ${formatNumber(cachedTokens)}`
+              : nothing
+          }
+          · Finish: ${payload.finish_reason || 'n/a'}
+          ${
+            payload.is_retry || Number(payload.gateway_attempt || 1) > 1
+              ? html`· retry #${Number(payload.gateway_attempt || 1)}`
+              : nothing
+          }
+        </div>
+        <sl-details>
+          <div slot="summary" class="segment-title">
+            Full request context (${fullMessages.length}
+            message${fullMessages.length === 1 ? '' : 's'})
+          </div>
+          <div class="message-list">
+            ${
+              fullMessages.length
+                ? fullMessages.map((message) =>
+                    this.renderMessage(message, 'chat', message.key)
+                  )
+                : html`<div class="event-meta">
+                    No request messages captured for this event.
+                  </div>`
+            }
+          </div>
+        </sl-details>
+        ${
+          tools.length
+            ? html`
+                <sl-details>
+                  <div slot="summary" class="segment-title">
+                    Tools carried (${tools.length})
+                  </div>
+                  <div class="message-list">
+                    ${tools.map((tool) => {
+                      const record = (tool || {}) as Record<string, unknown>;
+                      const fn = (record.function || record) as Record<
+                        string,
+                        unknown
+                      >;
+                      const name = String(fn.name || record.name || 'tool');
+                      const schemaTokens = Math.ceil(
+                        JSON.stringify(tool).length / 4
+                      );
+                      return html`
+                        <div class="tool-row">
+                          <div class="tool-row-main">
+                            <sl-icon name="wrench-adjustable"></sl-icon>
+                            <span class="tool-row-name">${name}</span>
+                          </div>
+                          <div class="tool-row-chips">
+                            <span class="metric-pill"
+                              >~${formatNumber(schemaTokens)} schema tok</span
+                            >
+                          </div>
+                        </div>
+                      `;
+                    })}
+                  </div>
+                </sl-details>
+              `
+            : nothing
+        }
+        ${
+          this.rawPayloads
+            ? html`
+                <div class="raw-event-container">
+                  <preloop-gateway-event
+                    .event=${detail}
+                    expanded
+                  ></preloop-gateway-event>
+                </div>
+              `
+            : nothing
+        }
+      </div>
+    `;
+  }
+
+  private renderChatTurn(
+    turn: ChatTurn,
+    mostExpensiveTurnId: string | null = null
+  ) {
+    const event = turn.event;
+    const isMostExpensive = Boolean(
+      mostExpensiveTurnId && turn.id === mostExpensiveTurnId
+    );
+    const expanded = event ? this.expandedTurnEventIds.has(event.id) : false;
+    // Lazy AI-summary support: mark turns whose events warrant a summary so the
+    // summary IntersectionObserver can request one, and swap bubbles for the
+    // summary when one is available and summarisation is enabled.
+    const needsSummary = Boolean(event && this.eventNeedsSummary(event));
+    const summary =
+      event && needsSummary ? this.interactionSummaries[event.id] : null;
+    const showSummary =
+      this.summarizeVisibleContent &&
+      summary &&
+      Boolean(event) &&
+      !this.fullTextEventIds.has(event?.id || '');
+    return html`
+      <div
+        class="chat-turn ${turn.failed ? 'failed' : ''} ${
+          isMostExpensive ? 'most-expensive' : ''
+        } ${needsSummary ? 'summary-candidate' : ''}"
+        data-event-id=${event ? event.id : nothing}
+      >
+        ${this.renderChatTurnHeader(turn, isMostExpensive)}
+        ${
+          showSummary && summary
+            ? html`
+                <div class="summary-card">
+                  <div class="summary-text">${summary.summary}</div>
+                  ${
+                    summary.key_points.length
+                      ? html`
+                          <ul class="summary-points">
+                            ${summary.key_points.map(
+                              (point) => html`<li>${point}</li>`
+                            )}
+                          </ul>
+                        `
+                      : nothing
+                  }
+                  <div class="detail-actions">
+                    <sl-button
+                      size="small"
+                      @click=${() => event && this.toggleEventFullText(event.id)}
+                    >
+                      Show full text
+                    </sl-button>
+                  </div>
+                </div>
+              `
+            : html`
+                <div class="chat-turn-bubbles">
+                  ${
+                    turn.deltaMessages.length
+                      ? repeat(
+                          turn.deltaMessages,
+                          (message) => message.key,
+                          (message) => this.renderChatBubble(message)
+                        )
+                      : html`<div class="chat-turn-empty">
+                          No new messages in this turn (resent context only).
+                        </div>`
+                  }
+                </div>
+              `
+        }
+        ${
+          event
+            ? html`
+                <div class="detail-actions">
+                  <sl-button
+                    size="small"
+                    ?loading=${this.loadingEventDetails.has(event.id)}
+                    @click=${() => this.toggleTurnExpanded(event.id)}
+                  >
+                    ${expanded ? 'Hide full context' : 'Expand full context'}
+                  </sl-button>
+                </div>
+                ${expanded ? this.renderChatTurnDetail(turn) : nothing}
+              `
+            : nothing
+        }
+      </div>
+    `;
+  }
+
+  // Clamp + store the "hide below" threshold. Shared by the number input and
+  // the slider so the two stay in sync (and never exceed the slider ceiling).
+  private setChatThreshold(value: number): void {
+    if (!Number.isFinite(value) || value <= 0) {
+      this.chatThreshold = 0;
+      return;
+    }
+    this.chatThreshold = Math.min(value, this.getChatThresholdMax());
+  }
+
+  // Whole-session cost picture at a glance: a quiet dashboard line at the top of
+  // the chat. Renders in both the talk dialog and the observer (shared
+  // component). Suppressed when there are no request turns to summarise.
+  private renderChatSummaryBar() {
+    const summary = this.getChatSummary();
+    if (!summary.requestCount) return nothing;
+    return html`
+      <div
+        class="chat-summary-bar"
+        role="group"
+        aria-label="Session cost summary"
+      >
+        <span class="chat-summary-item">
+          <span class="chat-summary-label">Cost</span>
+          <span class="chat-summary-value"
+            >${formatCost(summary.totalCost)}</span
+          >
+        </span>
+        <span class="chat-summary-item">
+          <span class="chat-summary-label">Tokens</span>
+          <span class="chat-summary-value"
+            >${formatNumber(summary.totalTokens)}</span
+          >
+          ${
+            summary.cachedTokens > 0
+              ? html`<span class="chat-summary-sub"
+                  >(${formatNumber(summary.cachedTokens)}
+                  cached${
+                    summary.cachedPct !== null
+                      ? html` · ${summary.cachedPct}%`
+                      : nothing
+                  })</span
+                >`
+              : nothing
+          }
+        </span>
+        <span class="chat-summary-item">
+          <span class="chat-summary-label">Tools</span>
+          <span
+            class="chat-summary-value ${
+              summary.toolCallCount ? 'has-tools' : ''
+            }"
+            >${formatNumber(summary.toolCallCount)}</span
+          >
+        </span>
+        <span class="chat-summary-item">
+          <span class="chat-summary-label">Requests</span>
+          <span class="chat-summary-value"
+            >${formatNumber(summary.requestCount)}</span
+          >
+        </span>
+        <span class="chat-summary-item">
+          <span class="chat-summary-label">Outcome</span>
+          <span
+            class="chat-summary-value ${
+              summary.failedCount ? 'has-failures' : ''
+            }"
+            >${formatNumber(summary.okCount)} ok /
+            ${formatNumber(summary.failedCount)} failed</span
+          >
+        </span>
+      </div>
+    `;
+  }
+
+  private renderChatControlBar(turnCount: number) {
+    const thresholdMax = this.getChatThresholdMax();
+    const isTokens = this.chatThresholdMode === 'tokens';
+    // Token thresholds are integers (step 1 keeps slider + number input exactly
+    // in sync); cost steps finely so cents are reachable on the slider.
+    const thresholdStep = isTokens ? 1 : 0.01;
+    const thresholdMaxLabel = isTokens
+      ? `${formatNumber(thresholdMax)} tok`
+      : formatCost(thresholdMax);
+    return html`
+      <div class="chat-control-bar">
+        <div class="chat-control-cluster">
+          <span class="chat-control-label">Sort</span>
+          <select
+            class="chat-select"
+            aria-label="Sort turns"
+            .value=${this.chatSort}
+            @change=${(event: Event) => {
+              this.chatSort = (event.target as HTMLSelectElement)
+                .value as ChatSort;
+            }}
+          >
+            ${CHAT_SORTS.map(
+              (option) => html`
+                <option
+                  value=${option.id}
+                  ?selected=${this.chatSort === option.id}
+                >
+                  ${option.label}
+                </option>
+              `
+            )}
+          </select>
+          <span class="chat-control-label">Show</span>
+          <select
+            class="chat-select"
+            aria-label="Filter by type"
+            .value=${this.chatTypeFilter}
+            @change=${(event: Event) => {
+              this.chatTypeFilter = (event.target as HTMLSelectElement)
+                .value as ChatTypeFilter;
+            }}
+          >
+            ${CHAT_TYPE_FILTERS.map(
+              (option) => html`
+                <option
+                  value=${option.id}
+                  ?selected=${this.chatTypeFilter === option.id}
+                >
+                  ${option.label}
+                </option>
+              `
+            )}
+          </select>
+        </div>
+        <div class="chat-control-cluster">
+          <span class="chat-control-label">Hide below</span>
+          <input
+            class="chat-threshold-input"
+            type="number"
+            min="0"
+            step=${thresholdStep}
+            aria-label="Threshold"
+            .value=${String(this.chatThreshold || '')}
+            @input=${(event: Event) => {
+              const value = Number((event.target as HTMLInputElement).value);
+              this.setChatThreshold(value);
+            }}
+          />
+          <sl-range
+            class="chat-threshold-slider"
+            aria-label="Threshold slider"
+            label=${`up to ${thresholdMaxLabel}`}
+            min="0"
+            max=${thresholdMax}
+            step=${thresholdStep}
+            .value=${Math.min(this.chatThreshold, thresholdMax)}
+            .tooltip=${'none'}
+            @sl-input=${(event: Event) => {
+              const value = Number(
+                (event.target as HTMLInputElement & { value: number }).value
+              );
+              this.setChatThreshold(value);
+            }}
+          ></sl-range>
+          <select
+            class="chat-select"
+            aria-label="Threshold unit"
+            .value=${this.chatThresholdMode}
+            @change=${(event: Event) => {
+              this.chatThresholdMode = (event.target as HTMLSelectElement)
+                .value as ChatThresholdMode;
+              // Re-clamp the threshold to the new unit's slider ceiling.
+              this.setChatThreshold(this.chatThreshold);
+            }}
+          >
+            <option
+              value="tokens"
+              ?selected=${this.chatThresholdMode === 'tokens'}
+            >
+              tokens
+            </option>
+            <option value="cost" ?selected=${this.chatThresholdMode === 'cost'}>
+              $
+            </option>
+          </select>
+          <span class="event-meta">
+            ${formatNumber(turnCount)} turn${turnCount === 1 ? '' : 's'}
+          </span>
+        </div>
+      </div>
+    `;
+  }
+
+  private renderChatView() {
+    const turns = this.getVisibleChatTurns();
+    const mostExpensiveTurnId = this.getMostExpensiveTurnId();
+    return html`
+      <div class="panel">
+        ${this.renderChatSummaryBar()}
+        ${this.renderChatControlBar(turns.length)}
+        ${
+          turns.length
+            ? html`
+                <div class="chat-thread">
+                  ${repeat(
+                    turns,
+                    (turn) => turn.id,
+                    (turn) => this.renderChatTurn(turn, mostExpensiveTurnId)
+                  )}
+                </div>
+              `
+            : html`<div class="empty">No turns match the current filters.</div>`
+        }
+        ${this.renderEventPageSentinel()}
+      </div>
+    `;
+  }
+
+  private renderTranscriptFilterBar(rowCount: number) {
+    return html`
+      <div class="transcript-filter-bar">
+        <sl-button-group>
+          ${TRANSCRIPT_FILTERS.map(
+            (filter) => html`
+              <sl-button
+                size="small"
+                variant=${
+                  this.transcriptFilter === filter.id ? 'primary' : 'default'
+                }
+                @click=${() => (this.transcriptFilter = filter.id)}
+              >
+                ${filter.label}
+              </sl-button>
+            `
+          )}
+        </sl-button-group>
+        <span class="event-meta">
+          ${formatNumber(rowCount)} row${rowCount === 1 ? '' : 's'}
+        </span>
+      </div>
+    `;
+  }
+
+  private renderToolCallRow(item: RuntimeSessionActivityItem) {
+    const failed = String(item.status || '')
+      .toLowerCase()
+      .includes('fail');
+    return html`
+      <div class="tool-row">
+        <div class="tool-row-main">
+          <sl-icon name="wrench-adjustable"></sl-icon>
+          <span class="tool-row-name">
+            ${item.tool_name || item.title || 'Tool call'}
+          </span>
+          ${
+            item.server_name
+              ? html`<span class="event-meta">${item.server_name}</span>`
+              : nothing
+          }
+          <span class="event-meta">${this.formatTime(item.timestamp)}</span>
+        </div>
+        <div class="tool-row-chips">
+          ${
+            item.total_tokens
+              ? html`<span class="metric-pill">
+                  ${formatNumber(item.total_tokens)} tok
+                </span>`
+              : nothing
+          }
+          ${
+            item.estimated_cost
+              ? html`<span class="metric-pill">
+                  ${formatCost(item.estimated_cost)}
+                </span>`
+              : nothing
+          }
+          ${
+            item.status
+              ? html`<sl-badge variant=${failed ? 'danger' : 'neutral'} pill>
+                  ${item.status}
+                </sl-badge>`
+              : nothing
+          }
+        </div>
+      </div>
+    `;
   }
 
   private renderActivityItems() {
@@ -2964,31 +4800,37 @@ export class SessionReplayPanel extends LitElement {
                       ${item.activity_type.replace(/_/g, ' ')}
                     </div>
                   </div>
-                  ${item.status
-                    ? html`<sl-badge pill>${item.status}</sl-badge>`
-                    : nothing}
+                  ${
+                    item.status
+                      ? html`<sl-badge pill>${item.status}</sl-badge>`
+                      : nothing
+                  }
                 </div>
-                ${item.summary
-                  ? html`<div class="preview">${item.summary}</div>`
-                  : ''}
+                ${
+                  item.summary
+                    ? html`<div class="preview">${item.summary}</div>`
+                    : ''
+                }
               </div>
             `
           )}
         </div>
-        ${hiddenCount > 0
-          ? html`
-              <div class="detail-actions">
-                <sl-button
-                  size="small"
-                  @click=${() => {
-                    this.visibleActivityCount += 20;
-                  }}
-                >
-                  Show ${Math.min(hiddenCount, 20)} more
-                </sl-button>
-              </div>
-            `
-          : nothing}
+        ${
+          hiddenCount > 0
+            ? html`
+                <div class="detail-actions">
+                  <sl-button
+                    size="small"
+                    @click=${() => {
+                      this.visibleActivityCount += 20;
+                    }}
+                  >
+                    Show ${Math.min(hiddenCount, 20)} more
+                  </sl-button>
+                </div>
+              `
+            : nothing
+        }
       </sl-details>
     `;
   }
@@ -3013,32 +4855,11 @@ export class SessionReplayPanel extends LitElement {
       </div>`;
     }
 
-    if (this.replayMode === 'chat') return this.renderChat();
-    if (this.replayMode === 'debug') return this.renderDebug();
+    if (this.replayMode === 'replay') return this.renderReplayView();
+    if (this.replayMode === 'optimize') return this.renderOptimizeView();
 
-    return html`
-      <div class="panel">
-        <div class="replay-controls">
-          <div class="event-meta">
-            Replay this session as a timed chat transcript.
-          </div>
-          <sl-button
-            size="small"
-            variant="primary"
-            ?disabled=${this.getVisibleReplayMessages().length === 0}
-            @click=${() => this.openReplayDialog()}
-          >
-            Open replay
-          </sl-button>
-        </div>
-        ${this.renderReplayDialog()} ${this.renderActivityItems()}
-        ${repeat(
-          this.events,
-          (event) => event.id,
-          (event) => this.renderProgressiveEvent(event)
-        )}
-        ${this.renderEventPageSentinel()}
-      </div>
-    `;
+    // Unified sortable chat: the 'timeline'/transcript render (observer) and the
+    // talk dialog's 'chat' mode both resolve here so both callers get the chat.
+    return this.renderChatView();
   }
 }

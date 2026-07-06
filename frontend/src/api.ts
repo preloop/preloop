@@ -24,6 +24,7 @@ import type {
   AgentControlVoiceTranscriptRequest,
   ManagedAgentDetailResponse,
   ManagedAgentSummary,
+  ManagedAgentModelBindingSummary,
   ManagedAgentUpdateRequest,
   SubjectGovernanceConfig,
   SubjectGovernanceResponse,
@@ -33,9 +34,17 @@ import type {
   RuntimeSessionSummary,
   RuntimeSessionUpdateRequest,
   RuntimeSessionActivityListResponse,
+  RuntimeSessionRequestListResponse,
   RuntimeSessionSummaryInsight,
   RuntimeSessionInteractionSummary,
   RuntimeSessionOptimizationResponse,
+  RuntimeSessionReplayResponse,
+  RuntimeSessionOptimizationActionSpec,
+  RuntimeSessionOptimizationAppliedAction,
+  RuntimeSessionOptimizationActionListResponse,
+  ToolOutputFilter,
+  ToolOutputFilterListResponse,
+  ToolOutputFilterCreateRequest,
   AccountGatewayUsageSummaryResponse,
   FlowGatewayUsageSummaryResponse,
   AIModelGatewayUsageSummaryResponse,
@@ -45,6 +54,7 @@ import type {
   AIModel,
   DashboardTelemetryResponse,
   CostAnalyticsSummaryResponse,
+  ToolUsageStatsResponse,
   ModelPriceOverride,
   ModelPriceOverrideCreate,
   ModelPriceOverrideUpdate,
@@ -462,6 +472,18 @@ export async function getCostAnalyticsSummary(
   return response.json();
 }
 
+export async function getToolUsageStats(
+  params: GatewayUsageSummaryParams = {}
+): Promise<ToolUsageStatsResponse> {
+  const response = await fetchWithAuth(
+    `/api/v1/tools/stats${buildGatewayUsageQuery(params)}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch tool usage stats');
+  }
+  return response.json();
+}
+
 export async function getModelPriceOverrides(options?: {
   modelAlias?: string;
   activeOnly?: boolean;
@@ -530,6 +552,82 @@ export async function deleteModelPriceOverride(id: string): Promise<void> {
   if (!response.ok) {
     throw new Error('Failed to delete model price override');
   }
+}
+
+/**
+ * A single evidence-grounded "tool cost flag": Preloop's finding that an
+ * agent's tool definition is wasting money. Surfaced by the Phase B detection
+ * engine. The `tool_source` ("payload" | "mcp") is a HEURISTIC label and is
+ * NOT authoritative. `disable_eligible` is false when the tool name is too
+ * ambiguous for safe one-click disable (deferred phase).
+ */
+export interface ToolCostFlag {
+  id: string;
+  tool_name: string;
+  tool_source: string; // heuristic label: "payload" | "mcp" (not authoritative)
+  flag_kind: string;
+  evidence: { claim?: string; [key: string]: unknown };
+  estimated_weekly_cost: number;
+  status: 'open' | 'dismissed' | 'snoozed';
+  disable_eligible: boolean;
+  window_start: string;
+  window_end: string;
+}
+
+/**
+ * Fetch open tool cost flags. The backend response shape is being finalized in
+ * parallel, so accept EITHER a bare array OR an object envelope `{ flags: [...] }`
+ * and normalize to an array. Dismissed flags are excluded by the default GET.
+ */
+export async function getToolCostFlags(): Promise<ToolCostFlag[]> {
+  const response = await fetchWithAuth('/api/v1/billing/cost/tool-flags');
+  if (!response.ok) {
+    throw new Error('Failed to fetch tool cost flags');
+  }
+  const data = await response.json();
+  // Defensive: check for `.flags` envelope first, then fall back to a bare array.
+  if (data && Array.isArray(data.flags)) {
+    return data.flags as ToolCostFlag[];
+  }
+  return Array.isArray(data) ? (data as ToolCostFlag[]) : [];
+}
+
+/** Dismiss a single tool cost flag. */
+export async function dismissToolCostFlag(id: string): Promise<void> {
+  const response = await fetchWithAuth(
+    `/api/v1/billing/cost/tool-flags/${id}/dismiss`,
+    {
+      method: 'POST',
+    }
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to dismiss tool cost flag')
+    );
+  }
+}
+
+/**
+ * Optionally re-run tool cost flag detection. Returns the refreshed flags,
+ * normalized the same way as {@link getToolCostFlags}. The endpoint is
+ * optional; callers should degrade gracefully if it 404s.
+ */
+export async function refreshToolCostFlags(): Promise<ToolCostFlag[]> {
+  const response = await fetchWithAuth(
+    '/api/v1/billing/cost/tool-flags/refresh',
+    {
+      method: 'POST',
+    }
+  );
+  if (!response.ok) {
+    throw new Error('Failed to refresh tool cost flags');
+  }
+  const data = await response.json();
+  if (data && Array.isArray(data.flags)) {
+    return data.flags as ToolCostFlag[];
+  }
+  return Array.isArray(data) ? (data as ToolCostFlag[]) : [];
 }
 
 export async function getDashboardTelemetry(): Promise<DashboardTelemetryResponse> {
@@ -629,6 +727,151 @@ export async function removeAccountAgent(
   });
   if (!response.ok) {
     throw new Error('Failed to remove managed agent');
+  }
+  return response.json();
+}
+
+export interface CreateManagedAgentRequest {
+  display_name: string;
+  description?: string;
+}
+
+/**
+ * Register a custom agent that the CLI cannot auto-discover (e.g. a hosted
+ * LangGraph or custom SDK agent). Returns the managed agent summary.
+ * POST /api/v1/agents
+ */
+export async function createManagedAgent(
+  payload: CreateManagedAgentRequest
+): Promise<ManagedAgentSummary> {
+  const response = await fetchWithAuth('/api/v1/agents', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to register custom agent')
+    );
+  }
+  return response.json();
+}
+
+export interface UpdateManagedAgentRequest {
+  display_name?: string;
+  tags?: Record<string, string>;
+}
+
+/**
+ * Update a managed agent's display name and/or tags after registration.
+ * PATCH /api/v1/agents/{agentId}
+ *
+ * The registration endpoint (POST /api/v1/agents) accepts only
+ * {display_name, description}; tags are set here in a follow-up PATCH. Tags are
+ * a flat string->string map (e.g. {env: "prod", db: "true"}). Returns the
+ * updated managed agent summary.
+ */
+export async function updateManagedAgent(
+  agentId: string,
+  payload: UpdateManagedAgentRequest
+): Promise<ManagedAgentSummary> {
+  const response = await fetchWithAuth(`/api/v1/agents/${agentId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to update managed agent')
+    );
+  }
+  return response.json();
+}
+
+export interface ManagedAgentCredentialCreateRequest {
+  name: string;
+  description?: string;
+  scopes?: string[];
+  expires_in_days?: number;
+}
+
+export interface ManagedAgentCredentialCreateResult {
+  // The credential summary metadata (durable record).
+  credential: {
+    id: string;
+    name: string;
+    scopes: string[];
+    key_prefix?: string | null;
+    [key: string]: unknown;
+  };
+  // The presented token. Shown ONCE and cannot be recovered afterwards.
+  token: string;
+}
+
+/**
+ * Mint a durable gateway credential for a managed agent. The returned token is
+ * presented a single time and cannot be retrieved again.
+ * POST /api/v1/agents/{agentId}/credentials
+ */
+export async function createManagedAgentCredential(
+  agentId: string,
+  payload: ManagedAgentCredentialCreateRequest
+): Promise<ManagedAgentCredentialCreateResult> {
+  const response = await fetchWithAuth(
+    `/api/v1/agents/${agentId}/credentials`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to mint agent credential')
+    );
+  }
+  return response.json();
+}
+
+export interface ManagedAgentModelBindingSyncItem {
+  ai_model_id: string;
+  binding_type?: string;
+  config_key: string;
+  gateway_alias: string;
+  is_primary?: boolean;
+  status?: string;
+}
+
+export interface ManagedAgentModelBindingSyncRequest {
+  bindings: ManagedAgentModelBindingSyncItem[];
+}
+
+/**
+ * Replace the explicit AI model bindings for a managed agent. This is the set
+ * of gateway-enabled models the agent is allowed to route through Preloop.
+ * PUT /api/v1/agents/{agentId}/model-bindings
+ * Returns the persisted binding summaries.
+ */
+export async function replaceManagedAgentModelBindings(
+  agentId: string,
+  payload: ManagedAgentModelBindingSyncRequest
+): Promise<ManagedAgentModelBindingSummary[]> {
+  const response = await fetchWithAuth(
+    `/api/v1/agents/${agentId}/model-bindings`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to set agent model bindings')
+    );
   }
   return response.json();
 }
@@ -811,6 +1054,7 @@ export async function optimizeRuntimeSession(
     sourceKinds?: string[];
     fromIndex?: number;
     toIndex?: number;
+    cacheOnly?: boolean;
   } = {}
 ): Promise<RuntimeSessionOptimizationResponse> {
   const response = await fetchWithAuth(
@@ -825,6 +1069,7 @@ export async function optimizeRuntimeSession(
         source_kinds: options.sourceKinds || [],
         from_index: options.fromIndex ?? null,
         to_index: options.toIndex ?? null,
+        cache_only: Boolean(options.cacheOnly),
       }),
     }
   );
@@ -832,6 +1077,154 @@ export async function optimizeRuntimeSession(
     throw new Error('Failed to optimize runtime session');
   }
   return response.json();
+}
+
+export async function applyRuntimeSessionOptimization(
+  runtimeSessionId: string,
+  payload: {
+    suggestionId: string;
+    suggestionTitle?: string | null;
+    action: RuntimeSessionOptimizationActionSpec;
+  }
+): Promise<RuntimeSessionOptimizationAppliedAction> {
+  const response = await fetchWithAuth(
+    `/api/v1/billing/cost/runtime-sessions/${runtimeSessionId}/optimizations/apply`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        suggestion_id: payload.suggestionId,
+        suggestion_title: payload.suggestionTitle || null,
+        action: payload.action,
+      }),
+    }
+  );
+  if (!response.ok) {
+    let detail = 'Failed to apply optimization action';
+    try {
+      const body = await response.json();
+      if (body && typeof body.detail === 'string') detail = body.detail;
+    } catch {
+      // Keep the generic message when the body is not JSON.
+    }
+    throw new Error(detail);
+  }
+  return response.json();
+}
+
+export async function listRuntimeSessionOptimizationActions(
+  runtimeSessionId: string
+): Promise<RuntimeSessionOptimizationActionListResponse> {
+  const response = await fetchWithAuth(
+    `/api/v1/billing/cost/runtime-sessions/${runtimeSessionId}/optimizations/actions`,
+    { method: 'GET' }
+  );
+  if (!response.ok) {
+    throw new Error('Failed to load applied optimization actions');
+  }
+  return response.json();
+}
+
+/**
+ * Verify a candidate optimization's savings by re-executing the session's
+ * stored request with and without the candidate applied. This re-sends the
+ * stored request upstream and spends budget, so `consented` must be true.
+ * POST /api/v1/billing/cost/runtime-sessions/{id}/replay
+ */
+export async function replayRuntimeSession(
+  runtimeSessionId: string,
+  payload: {
+    candidate: {
+      removedToolNames?: string[];
+      filteredOutputFields?: Record<string, string[]>;
+    };
+    suggestionId?: string | null;
+    consented: boolean;
+    nRuns?: number;
+  }
+): Promise<RuntimeSessionReplayResponse> {
+  const response = await fetchWithAuth(
+    `/api/v1/billing/cost/runtime-sessions/${runtimeSessionId}/replay`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        candidate: {
+          removed_tool_names: payload.candidate.removedToolNames || [],
+          filtered_output_fields: payload.candidate.filteredOutputFields || {},
+        },
+        suggestion_id: payload.suggestionId || null,
+        consented: payload.consented,
+        n_runs: payload.nRuns ?? 3,
+      }),
+    }
+  );
+  if (!response.ok) {
+    let detail = 'Failed to verify savings';
+    try {
+      const body = await response.json();
+      if (body && typeof body.detail === 'string') detail = body.detail;
+    } catch {
+      // Keep the generic message when the body is not JSON.
+    }
+    throw new Error(detail);
+  }
+  return response.json();
+}
+
+/**
+ * List the account's tool output filters. Each filter drops a set of fields
+ * from a given tool's output (optionally scoped to a single managed agent) so
+ * that bloated tool responses stop entering the model's context window.
+ * GET /api/v1/billing/cost/output-filters → { items: ToolOutputFilter[] }
+ */
+export async function listToolOutputFilters(): Promise<ToolOutputFilter[]> {
+  const response = await fetchWithAuth('/api/v1/billing/cost/output-filters');
+  if (!response.ok) {
+    throw new Error('Failed to load tool output filters');
+  }
+  const data: ToolOutputFilterListResponse = await response.json();
+  return Array.isArray(data?.items) ? data.items : [];
+}
+
+/**
+ * Create a tool output filter that drops the given fields from a tool's output.
+ * POST /api/v1/billing/cost/output-filters
+ */
+export async function createToolOutputFilter(
+  payload: ToolOutputFilterCreateRequest
+): Promise<ToolOutputFilter> {
+  const response = await fetchWithAuth('/api/v1/billing/cost/output-filters', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      server_name: payload.server_name ?? null,
+      tool_name: payload.tool_name,
+      dropped_fields: payload.dropped_fields,
+      managed_agent_id: payload.managed_agent_id ?? null,
+    }),
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to create tool output filter')
+    );
+  }
+  return response.json();
+}
+
+/**
+ * Delete a tool output filter by id.
+ * DELETE /api/v1/billing/cost/output-filters/{id}
+ */
+export async function deleteToolOutputFilter(id: string): Promise<void> {
+  const response = await fetchWithAuth(
+    `/api/v1/billing/cost/output-filters/${id}`,
+    { method: 'DELETE' }
+  );
+  if (!response.ok) {
+    throw new Error('Failed to delete tool output filter');
+  }
 }
 
 export async function updateAccountRuntimeSession(
@@ -881,6 +1274,34 @@ export async function getRuntimeSessionGatewayEvents(
   );
   if (!response.ok) {
     throw new Error('Failed to fetch runtime session gateway events');
+  }
+  return response.json();
+}
+
+export async function getRuntimeSessionRequests(
+  sessionId: string,
+  options: {
+    limit?: number;
+    offset?: number;
+    failedOnly?: boolean;
+    eventIds?: string[];
+  } = {}
+): Promise<RuntimeSessionRequestListResponse> {
+  const searchParams = new URLSearchParams();
+  if (options.limit !== undefined)
+    searchParams.set('limit', String(options.limit));
+  if (options.offset !== undefined)
+    searchParams.set('offset', String(options.offset));
+  if (options.failedOnly) searchParams.set('failed_only', 'true');
+  if (options.eventIds) {
+    for (const id of options.eventIds) searchParams.append('event_ids', id);
+  }
+  const params = searchParams.toString() ? `?${searchParams.toString()}` : '';
+  const response = await fetchWithAuth(
+    `/api/v1/runtime-sessions/${sessionId}/requests${params}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch runtime session requests');
   }
   return response.json();
 }
@@ -3018,6 +3439,8 @@ export interface BudgetPolicy {
   soft_limit_usd: number | null;
   notify_on_soft: boolean;
   notify_on_hard: boolean;
+  notification_user_ids: string[] | null;
+  notification_team_ids: string[] | null;
   notification_emails: string[] | null;
 }
 
@@ -3030,6 +3453,8 @@ export interface BudgetPolicyCreate {
   soft_limit_usd: number | null;
   notify_on_soft: boolean;
   notify_on_hard: boolean;
+  notification_user_ids: string[] | null;
+  notification_team_ids: string[] | null;
   notification_emails: string[] | null;
 }
 

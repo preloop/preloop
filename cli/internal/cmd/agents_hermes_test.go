@@ -990,3 +990,78 @@ func TestManagedGatewayBindingConfigKey_Hermes(t *testing.T) {
 		t.Fatalf("expected model.default, got %q", got)
 	}
 }
+
+func TestRestartHermesGatewayAfterReconfigSkipsNonHermes(t *testing.T) {
+	result := restartHermesGatewayAfterReconfig(
+		AgentConfig{Name: "OpenClaw"},
+		io.Discard,
+	)
+	if len(result) != 0 {
+		t.Fatalf("expected empty result for non-Hermes agent, got %#v", result)
+	}
+}
+
+func TestRestartHermesGatewayAfterReconfigHermesNotFound(t *testing.T) {
+	t.Setenv("PATH", filepath.Join(t.TempDir(), "empty-path"))
+
+	result := restartHermesGatewayAfterReconfig(
+		AgentConfig{Name: hermesAgentName},
+		io.Discard,
+	)
+	if result["gateway_restart_status"] != "skipped" ||
+		result["gateway_restart_skip_reason"] != "hermes_not_found" ||
+		result["gateway_restarted"] != false {
+		t.Fatalf("expected skipped restart when hermes is missing, got %#v", result)
+	}
+}
+
+func TestRestartHermesGatewayAfterReconfigSuccess(t *testing.T) {
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("failed to create bin dir: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(binDir, "hermes"),
+		[]byte("#!/bin/sh\n[ \"$1\" = gateway ] && [ \"$2\" = restart ]\n"),
+		0755,
+	); err != nil {
+		t.Fatalf("failed to write fake Hermes binary: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	result := restartHermesGatewayAfterReconfig(
+		AgentConfig{Name: hermesAgentName},
+		io.Discard,
+	)
+	if result["gateway_restart_status"] != "restarted" ||
+		result["gateway_restarted"] != true {
+		t.Fatalf("expected successful Hermes gateway restart, got %#v", result)
+	}
+}
+
+func TestRestartHermesGatewayAfterReconfigFailure(t *testing.T) {
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("failed to create bin dir: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(binDir, "hermes"),
+		[]byte("#!/bin/sh\necho restart failed 1>&2\nexit 1\n"),
+		0755,
+	); err != nil {
+		t.Fatalf("failed to write fake Hermes binary: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	result := restartHermesGatewayAfterReconfig(
+		AgentConfig{Name: hermesAgentName},
+		io.Discard,
+	)
+	if result["gateway_restart_status"] != "failed" ||
+		result["gateway_restarted"] != false ||
+		!strings.Contains(result["gateway_restart_error"].(string), "restart failed") {
+		t.Fatalf("expected failed Hermes gateway restart, got %#v", result)
+	}
+}

@@ -503,22 +503,26 @@ export class AIModelsView extends LitElement {
                           ${model.name}
                         </a>
                         <div class="model-meta">${model.model_identifier}</div>
-                        ${this.getGatewayAlias(model)
-                          ? html`
-                              <div class="model-meta">
-                                Gateway alias:
-                                <code>${this.getGatewayAlias(model)}</code>
-                              </div>
-                            `
-                          : null}
-                        ${this.getManagedAgentDisplayName(model)
-                          ? html`
-                              <div class="model-meta">
-                                Managed agent:
-                                ${this.getManagedAgentDisplayName(model)}
-                              </div>
-                            `
-                          : null}
+                        ${
+                          this.getGatewayAlias(model)
+                            ? html`
+                                <div class="model-meta">
+                                  Gateway alias:
+                                  <code>${this.getGatewayAlias(model)}</code>
+                                </div>
+                              `
+                            : null
+                        }
+                        ${
+                          this.getManagedAgentDisplayName(model)
+                            ? html`
+                                <div class="model-meta">
+                                  Managed agent:
+                                  ${this.getManagedAgentDisplayName(model)}
+                                </div>
+                              `
+                            : null
+                        }
                       </td>
                       <td>
                         <div class="cell-stack">
@@ -537,17 +541,19 @@ export class AIModelsView extends LitElement {
                             >
                               ${this.getHealthLabel(model.id)}
                             </sl-badge>
-                            ${this.getModelOverview(model.id)?.activeSessions
-                              ? html`
-                                  <sl-badge variant="primary" pill>
-                                    ${this.formatNumber(
-                                      this.getModelOverview(model.id)
-                                        ?.activeSessions
-                                    )}
-                                    active sessions
-                                  </sl-badge>
-                                `
-                              : null}
+                            ${
+                              this.getModelOverview(model.id)?.activeSessions
+                                ? html`
+                                    <sl-badge variant="primary" pill>
+                                      ${this.formatNumber(
+                                        this.getModelOverview(model.id)
+                                          ?.activeSessions
+                                      )}
+                                      active sessions
+                                    </sl-badge>
+                                  `
+                                : null
+                            }
                           </div>
                           <div class="cell-secondary">
                             ${this.formatNumber(

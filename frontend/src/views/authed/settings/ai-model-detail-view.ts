@@ -845,23 +845,28 @@ export class AIModelDetailView extends LitElement {
                 </div>
                 <div class="session-meta">
                   ${this.getSourceLabel(session.session_source_type)}
-                  ${session.session_reference
-                    ? html` · Session <code>${session.session_reference}</code>`
-                    : ''}
+                  ${
+                    session.session_reference
+                      ? html` · Session
+                          <code>${session.session_reference}</code>`
+                      : ''
+                  }
                 </div>
-                ${session.flow_execution_id
-                  ? html`
-                      <div class="session-meta">
-                        Flow execution
-                        <a
-                          class="session-link"
-                          href=${`/console/flows/executions/${session.flow_execution_id}`}
-                        >
-                          ${session.flow_execution_id}
-                        </a>
-                      </div>
-                    `
-                  : ''}
+                ${
+                  session.flow_execution_id
+                    ? html`
+                        <div class="session-meta">
+                          Flow execution
+                          <a
+                            class="session-link"
+                            href=${`/console/flows/executions/${session.flow_execution_id}`}
+                          >
+                            ${session.flow_execution_id}
+                          </a>
+                        </div>
+                      `
+                    : ''
+                }
               </div>
               <div class="cell-numeric">
                 ${this.formatNumber(session.total_requests)}
@@ -892,20 +897,24 @@ export class AIModelDetailView extends LitElement {
             <div class="interaction-title">${item.method} ${item.endpoint}</div>
             <div class="interaction-meta">
               ${this.formatDateTime(item.timestamp)}
-              ${item.session_reference
-                ? html` · Session <code>${item.session_reference}</code>`
-                : ''}
-              ${item.runtime_session_id
-                ? html`
-                    ·
-                    <a
-                      class="session-link"
-                      href=${`/console/runtime-sessions?sessionId=${item.runtime_session_id}`}
-                    >
-                      Open runtime session
-                    </a>
-                  `
-                : ''}
+              ${
+                item.session_reference
+                  ? html` · Session <code>${item.session_reference}</code>`
+                  : ''
+              }
+              ${
+                item.runtime_session_id
+                  ? html`
+                      ·
+                      <a
+                        class="session-link"
+                        href=${`/console/runtime-sessions?sessionId=${item.runtime_session_id}`}
+                      >
+                        Open runtime session
+                      </a>
+                    `
+                  : ''
+              }
             </div>
           </div>
           <sl-badge variant=${item.outcome === 'error' ? 'danger' : 'success'}>
@@ -917,9 +926,11 @@ export class AIModelDetailView extends LitElement {
           ${this.formatNumber(item.token_usage.total_tokens)} tokens ·
           ${this.formatCost(item.estimated_cost)}
           ${item.flow_name ? html` · ${item.flow_name}` : ''}
-          ${item.runtime_principal_name
-            ? html` · Principal ${item.runtime_principal_name}`
-            : ''}
+          ${
+            item.runtime_principal_name
+              ? html` · Principal ${item.runtime_principal_name}`
+              : ''
+          }
         </div>
       </div>
     `;
@@ -931,9 +942,11 @@ export class AIModelDetailView extends LitElement {
         <div class="empty-state">
           <sl-icon name="search"></sl-icon>
           <div>
-            ${this.interactionQuery.trim()
-              ? 'No captured interactions matched this model search.'
-              : 'No captured interactions are available for this model yet.'}
+            ${
+              this.interactionQuery.trim()
+                ? 'No captured interactions matched this model search.'
+                : 'No captured interactions are available for this model yet.'
+            }
           </div>
         </div>
       `;
@@ -1000,73 +1013,87 @@ export class AIModelDetailView extends LitElement {
         <div slot="header" class="model-title">Try Through Gateway</div>
         <div class="validation-stack">
           <div class="meta-line">
-            ${this.gatewayEnabled
-              ? html`
-                  Send a real request through Preloop using
-                  <code>${this.gatewayModelAlias}</code>.
-                `
-              : 'This model is not currently configured for the Preloop gateway.'}
+            ${
+              this.gatewayEnabled
+                ? html`
+                    Send a real request through Preloop using
+                    <code>${this.gatewayModelAlias}</code>.
+                  `
+                : 'This model is not currently configured for the Preloop gateway.'
+            }
           </div>
-          ${gatewayConfig?.url
-            ? html`
-                <div class="meta-line">
-                  Gateway URL: <code>${gatewayConfig.url}</code>
-                </div>
-              `
-            : ''}
-          ${this.gatewayEnabled
-            ? html`
-                <sl-textarea
-                  label="Prompt"
-                  rows="4"
-                  value=${this.validationPrompt}
-                  @sl-input=${(event: Event) => {
-                    this.validationPrompt = (
-                      event.target as HTMLTextAreaElement & { value: string }
-                    ).value;
-                  }}
-                ></sl-textarea>
-                <div class="validation-toolbar">
-                  <sl-button
-                    variant="primary"
-                    ?loading=${this.validationInFlight}
-                    @click=${this.runValidationPrompt}
-                  >
-                    Send request
-                  </sl-button>
-                </div>
-              `
-            : html`
-                <div class="meta-line">
-                  ${this.model?.has_api_key
-                    ? html`
-                        <sl-button
-                          variant="primary"
-                          ?loading=${this.gatewayEnableInFlight}
-                          @click=${this.enableGatewayRouting}
-                        >
-                          Enable Preloop gateway routing
-                        </sl-button>
-                      `
-                    : html`
-                        Add upstream API credentials (edit this model) before
-                        enabling gateway routing.
-                      `}
-                </div>
-              `}
-          ${this.validationError
-            ? html`
-                <sl-alert variant="danger" open>
-                  <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
-                  ${this.validationError}
-                </sl-alert>
-              `
-            : null}
-          ${this.validationResponse
-            ? html`
-                <div class="validation-output">${this.validationResponse}</div>
-              `
-            : null}
+          ${
+            gatewayConfig?.url
+              ? html`
+                  <div class="meta-line">
+                    Gateway URL: <code>${gatewayConfig.url}</code>
+                  </div>
+                `
+              : ''
+          }
+          ${
+            this.gatewayEnabled
+              ? html`
+                  <sl-textarea
+                    label="Prompt"
+                    rows="4"
+                    value=${this.validationPrompt}
+                    @sl-input=${(event: Event) => {
+                      this.validationPrompt = (
+                        event.target as HTMLTextAreaElement & { value: string }
+                      ).value;
+                    }}
+                  ></sl-textarea>
+                  <div class="validation-toolbar">
+                    <sl-button
+                      variant="primary"
+                      ?loading=${this.validationInFlight}
+                      @click=${this.runValidationPrompt}
+                    >
+                      Send request
+                    </sl-button>
+                  </div>
+                `
+              : html`
+                  <div class="meta-line">
+                    ${
+                      this.model?.has_api_key
+                        ? html`
+                            <sl-button
+                              variant="primary"
+                              ?loading=${this.gatewayEnableInFlight}
+                              @click=${this.enableGatewayRouting}
+                            >
+                              Enable Preloop gateway routing
+                            </sl-button>
+                          `
+                        : html`
+                            Add upstream API credentials (edit this model)
+                            before enabling gateway routing.
+                          `
+                    }
+                  </div>
+                `
+          }
+          ${
+            this.validationError
+              ? html`
+                  <sl-alert variant="danger" open>
+                    <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+                    ${this.validationError}
+                  </sl-alert>
+                `
+              : null
+          }
+          ${
+            this.validationResponse
+              ? html`
+                  <div class="validation-output">
+                    ${this.validationResponse}
+                  </div>
+                `
+              : null
+          }
         </div>
       </sl-card>
     `;
@@ -1109,99 +1136,119 @@ export class AIModelDetailView extends LitElement {
               <div slot="header" class="model-heading">
                 <div class="model-title">Model Observability</div>
                 <div class="badge-row">
-                  ${this.model?.provider_name
-                    ? html`
-                        <sl-badge variant="neutral">
-                          ${this.model.provider_name}
-                        </sl-badge>
-                      `
-                    : ''}
-                  ${this.model?.is_default
-                    ? html`<sl-badge variant="success">Default</sl-badge>`
-                    : ''}
-                  ${this.model?.model_kind
-                    ? html`
-                        <sl-badge variant="neutral">
-                          ${this.model.model_kind === 'stt'
-                            ? 'Speech to text'
-                            : this.model.model_kind === 'tts'
-                              ? 'Text to speech'
-                              : 'Inference'}
-                        </sl-badge>
-                      `
-                    : ''}
+                  ${
+                    this.model?.provider_name
+                      ? html`
+                          <sl-badge variant="neutral">
+                            ${this.model.provider_name}
+                          </sl-badge>
+                        `
+                      : ''
+                  }
+                  ${
+                    this.model?.is_default
+                      ? html`<sl-badge variant="success">Default</sl-badge>`
+                      : ''
+                  }
+                  ${
+                    this.model?.model_kind
+                      ? html`
+                          <sl-badge variant="neutral">
+                            ${
+                              this.model.model_kind === 'stt'
+                                ? 'Speech to text'
+                                : this.model.model_kind === 'tts'
+                                  ? 'Text to speech'
+                                  : 'Inference'
+                            }
+                          </sl-badge>
+                        `
+                      : ''
+                  }
                 </div>
               </div>
-              ${this.model
-                ? html`
-                    <div class="metadata-stack">
-                      <div class="model-metadata">
-                        <span><strong>Name:</strong> ${this.model.name}</span>
-                        <span>
-                          <strong>Identifier:</strong>
-                          <code>${this.model.model_identifier}</code>
-                        </span>
-                        <span>
-                          <strong>Updated:</strong>
-                          ${this.formatDateTime(this.model.updated_at)}
-                        </span>
+              ${
+                this.model
+                  ? html`
+                      <div class="metadata-stack">
+                        <div class="model-metadata">
+                          <span><strong>Name:</strong> ${this.model.name}</span>
+                          <span>
+                            <strong>Identifier:</strong>
+                            <code>${this.model.model_identifier}</code>
+                          </span>
+                          <span>
+                            <strong>Updated:</strong>
+                            ${this.formatDateTime(this.model.updated_at)}
+                          </span>
+                        </div>
+                        <div class="model-metadata">
+                          <span>
+                            <strong>Gateway:</strong>
+                            ${
+                              this.model.model_kind === 'llm'
+                                ? this.gatewayEnabled
+                                  ? 'Enabled'
+                                  : 'Disabled'
+                                : 'Not used for audio fallback'
+                            }
+                          </span>
+                          ${
+                            this.gatewayModelAlias
+                              ? html`
+                                  <span>
+                                    <strong>Gateway alias:</strong>
+                                    <code>${this.gatewayModelAlias}</code>
+                                  </span>
+                                `
+                              : ''
+                          }
+                          <span>
+                            <strong>Upstream credentials:</strong>
+                            ${this.model.has_api_key ? 'Configured' : 'Missing'}
+                          </span>
+                          ${
+                            this.managedAgentDisplayName
+                              ? html`
+                                  <span>
+                                    <strong>Managed agent:</strong>
+                                    ${
+                                      this.managedAgentId
+                                        ? html`
+                                            <a
+                                              class="session-link"
+                                              href=${`/console/agents/${encodeURIComponent(this.managedAgentId)}`}
+                                            >
+                                              ${this.managedAgentDisplayName}
+                                            </a>
+                                          `
+                                        : this.managedAgentDisplayName
+                                    }
+                                  </span>
+                                `
+                              : ''
+                          }
+                          ${
+                            this.managedAgentRuntimePrincipalId
+                              ? html`
+                                  <span>
+                                    <strong>Runtime principal:</strong>
+                                    <code
+                                      >${this.managedAgentRuntimePrincipalId}</code
+                                    >
+                                  </span>
+                                `
+                              : ''
+                          }
+                        </div>
                       </div>
-                      <div class="model-metadata">
-                        <span>
-                          <strong>Gateway:</strong>
-                          ${this.model.model_kind === 'llm'
-                            ? this.gatewayEnabled
-                              ? 'Enabled'
-                              : 'Disabled'
-                            : 'Not used for audio fallback'}
-                        </span>
-                        ${this.gatewayModelAlias
-                          ? html`
-                              <span>
-                                <strong>Gateway alias:</strong>
-                                <code>${this.gatewayModelAlias}</code>
-                              </span>
-                            `
-                          : ''}
-                        <span>
-                          <strong>Upstream credentials:</strong>
-                          ${this.model.has_api_key ? 'Configured' : 'Missing'}
-                        </span>
-                        ${this.managedAgentDisplayName
-                          ? html`
-                              <span>
-                                <strong>Managed agent:</strong>
-                                ${this.managedAgentId
-                                  ? html`
-                                      <a
-                                        class="session-link"
-                                        href=${`/console/agents/${encodeURIComponent(this.managedAgentId)}`}
-                                      >
-                                        ${this.managedAgentDisplayName}
-                                      </a>
-                                    `
-                                  : this.managedAgentDisplayName}
-                              </span>
-                            `
-                          : ''}
-                        ${this.managedAgentRuntimePrincipalId
-                          ? html`
-                              <span>
-                                <strong>Runtime principal:</strong>
-                                <code
-                                  >${this.managedAgentRuntimePrincipalId}</code
-                                >
-                              </span>
-                            `
-                          : ''}
+                    `
+                  : html`
+                      <div class="meta-line">
+                        Loading model metadata and observability surfaces.
                       </div>
-                    </div>
-                  `
-                : html`
-                    <div class="meta-line">
-                      Loading model metadata and observability surfaces.
-                    </div>
-                  `}
+                    `
+              }
             </sl-card>
 
             <sl-card>
@@ -1255,61 +1302,70 @@ export class AIModelDetailView extends LitElement {
                   </sl-button>
                 </div>
               </div>
-              ${this.summary
-                ? html`
-                    <div class="period-caption">
-                      Showing model-scoped activity from
-                      ${this.formatDateTime(this.summary.period_start)} to
-                      ${this.formatDateTime(this.summary.period_end)}.
-                    </div>
-                  `
-                : ''}
+              ${
+                this.summary
+                  ? html`
+                      <div class="period-caption">
+                        Showing model-scoped activity from
+                        ${this.formatDateTime(this.summary.period_start)} to
+                        ${this.formatDateTime(this.summary.period_end)}.
+                      </div>
+                    `
+                  : ''
+              }
             </sl-card>
 
-            ${this.error
-              ? html`
-                  <sl-alert variant="danger" open>
-                    <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
-                    ${this.error}
-                  </sl-alert>
-                `
-              : ''}
-            ${this.loading
-              ? html`
-                  <sl-card>
-                    <div class="loading-state">
-                      <sl-spinner></sl-spinner>
-                      <div>Loading AI model observability...</div>
-                    </div>
-                  </sl-card>
-                `
-              : html`
-                  <sl-card>
-                    <div slot="header" class="model-title">Usage Summary</div>
-                    ${this.renderSummarySection()}
-                  </sl-card>
+            ${
+              this.error
+                ? html`
+                    <sl-alert variant="danger" open>
+                      <sl-icon
+                        slot="icon"
+                        name="exclamation-triangle"
+                      ></sl-icon>
+                      ${this.error}
+                    </sl-alert>
+                  `
+                : ''
+            }
+            ${
+              this.loading
+                ? html`
+                    <sl-card>
+                      <div class="loading-state">
+                        <sl-spinner></sl-spinner>
+                        <div>Loading AI model observability...</div>
+                      </div>
+                    </sl-card>
+                  `
+                : html`
+                    <sl-card>
+                      <div slot="header" class="model-title">Usage Summary</div>
+                      ${this.renderSummarySection()}
+                    </sl-card>
 
-                  <sl-card>
-                    <div slot="header" class="model-title">
-                      Session Observer
-                    </div>
-                    <div class="meta-line" style="margin-bottom: 0.75rem;">
-                      Recent sessions, replay, cost breakdown, and optimization
-                      suggestions scoped to this model.
-                    </div>
-                    <preloop-session-observer
-                      scope="ai_model"
-                      .scopeId=${this.modelId}
-                      .sessions=${this.sessions?.items || []}
-                      layout="embedded"
-                      defaultReplayMode="timeline"
-                      .features=${{
-                        summaries: true,
-                        auditLinks: true,
-                      }}
-                    ></preloop-session-observer>
-                  </sl-card>
-                `}
+                    <sl-card>
+                      <div slot="header" class="model-title">
+                        Session Observer
+                      </div>
+                      <div class="meta-line" style="margin-bottom: 0.75rem;">
+                        Recent sessions, replay, cost breakdown, and
+                        optimization suggestions scoped to this model.
+                      </div>
+                      <preloop-session-observer
+                        scope="ai_model"
+                        .scopeId=${this.modelId}
+                        .sessions=${this.sessions?.items || []}
+                        layout="embedded"
+                        defaultReplayMode="timeline"
+                        .features=${{
+                          summaries: true,
+                          auditLinks: true,
+                        }}
+                      ></preloop-session-observer>
+                    </sl-card>
+                  `
+            }
           </div>
         </div>
       </div>

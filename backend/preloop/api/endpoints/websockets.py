@@ -1,24 +1,38 @@
 import asyncio
 import json
 import logging
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
+import uuid
+from typing import Optional
+
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
-from preloop.api.auth import get_user_from_token_if_valid
-from preloop.services.websocket_manager import manager
-from preloop.services.session_manager import session_manager
+from preloop.api.auth.jwt import get_user_from_token_if_valid_sync
+from preloop.services.db_executor import detach_user, run_db_async
+from preloop.models.crud import crud_flow, crud_flow_execution
+from preloop.models.models import User
 from preloop.services.activity_tracker import handle_activity
+from preloop.services.session_manager import session_manager
+from preloop.services.websocket_manager import manager
+from preloop.sync.services.event_bus import EventBus, get_nats_client
 from preloop.utils import get_client_ip
-from preloop.models.db.session import get_db_session as get_db
-from preloop.models.crud import crud_flow_execution, crud_flow
-from preloop.sync.services.event_bus import EventBus
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+async def _resolve_token_user(token: str) -> Optional[User]:
+    """Validate a token using a short-lived database session."""
+
+    def _lookup(db: Session) -> Optional[User]:
+        user = get_user_from_token_if_valid_sync(token, db)
+        return detach_user(db, user)
+
+    return await run_db_async(_lookup)
+
+
 @router.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_db)):
+async def websocket_endpoint(websocket: WebSocket):
     """
     WebSocket endpoint for streaming Flow execution updates.
     Includes authentication and account-based filtering.
@@ -64,7 +78,6 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_db)
         fingerprint=None,
         ip_address=client_ip,
         user_agent=user_agent,
-        db=db,
     )
 
     # Add client type metadata
@@ -129,7 +142,7 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_db)
     finally:
         manager.disconnect(connection_id)
         try:
-            await session_manager.end_session(session.id, db)
+            await session_manager.end_session(session.id)
         except Exception as e:
             logger.error(f"Error ending session {session.id}: {e}")
 
@@ -137,8 +150,7 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_db)
 @router.websocket("/ws/flow-executions/{execution_id}")
 async def flow_execution_websocket(
     websocket: WebSocket,
-    execution_id: str,
-    db: Session = Depends(get_db),
+    execution_id: uuid.UUID,
 ):
     """
     WebSocket endpoint for bidirectional flow execution monitoring.
@@ -156,56 +168,54 @@ async def flow_execution_websocket(
     Args:
         websocket: WebSocket connection
         execution_id: UUID of the flow execution to monitor
-        db: Database session
     """
     await websocket.accept()
 
-    # Verify execution exists
-    execution = crud_flow_execution.get(db, id=execution_id)
-    if not execution:
-        await websocket.send_json({"error": "Execution not found"})
-        await websocket.close(code=1008)
-        return
-
-    # Try to get authenticated user from middleware (Authorization header)
     user = websocket.scope.get("state", {}).get("user")
 
     if not user:
-        # Fallback: Extract token from query parameters for backward compatibility
         token = websocket.query_params.get("token")
         if token:
-            # Validate token and get user
-            user = await get_user_from_token_if_valid(token, db)
+            user = await _resolve_token_user(token)
             if not user:
-                logger.warning(
-                    f"Invalid token for WebSocket connection to execution {execution_id}"
-                )
+                logger.warning("Invalid token for WebSocket connection")
                 await websocket.send_json(
                     {"error": "Invalid or expired authentication token"}
                 )
                 await websocket.close(code=1008)
                 return
         else:
-            logger.warning(
-                f"WebSocket connection attempted without authentication for execution {execution_id}"
-            )
+            logger.warning("WebSocket connection attempted without authentication")
             await websocket.send_json({"error": "Authentication required"})
             await websocket.close(code=1008)
             return
 
-    # Get the flow associated with this execution
-    flow = crud_flow.get(db, id=execution.flow_id)
-    if not flow:
-        logger.error(f"Flow {execution.flow_id} not found for execution {execution_id}")
+    def _load_execution(db: Session):
+        execution = crud_flow_execution.get(db, id=str(execution_id))
+        if not execution:
+            return None
+        flow = crud_flow.get(db, id=execution.flow_id)
+        if not flow:
+            return "missing_flow"
+        return flow.account_id
+
+    auth_result = await run_db_async(_load_execution)
+    if auth_result is None:
+        await websocket.send_json({"error": "Execution not found"})
+        await websocket.close(code=1008)
+        return
+
+    if auth_result == "missing_flow":
+        logger.error(f"Flow not found for execution {execution_id}")
         await websocket.send_json({"error": "Flow not found"})
         await websocket.close(code=1008)
         return
 
-    # Verify user has access to this flow
-    if flow.account_id and flow.account_id != user.account_id:
+    flow_account_id = auth_result
+    if flow_account_id and flow_account_id != user.account_id:
         logger.warning(
-            f"User {user.username} (account {user.account_id}) attempted to access flow {flow.id} "
-            f"(account {flow.account_id}) via WebSocket for execution {execution_id}"
+            f"User {user.username} (account {user.account_id}) attempted to access flow "
+            f"(account {flow_account_id}) via WebSocket for execution {execution_id}"
         )
         await websocket.send_json(
             {"error": "Unauthorized - you do not have access to this flow execution"}
@@ -243,7 +253,7 @@ async def flow_execution_websocket(
         await websocket.send_json(
             {
                 "type": "connected",
-                "execution_id": execution_id,
+                "execution_id": str(execution_id),
                 "message": "Connected to flow execution stream",
             }
         )
@@ -314,7 +324,7 @@ async def flow_execution_websocket(
 
 
 @router.websocket("/ws/unified")
-async def unified_websocket(websocket: WebSocket, db: Session = Depends(get_db)):
+async def unified_websocket(websocket: WebSocket):
     """Unified WebSocket endpoint for all real-time updates.
 
     Features:
@@ -352,13 +362,11 @@ async def unified_websocket(websocket: WebSocket, db: Session = Depends(get_db))
         fingerprint=fingerprint,
         ip_address=client_ip,
         user_agent=user_agent,
-        db=db,
     )
 
     logger.info(
         f"Unified WebSocket session {session.id} established for "
-        f"{'user ' + user.username if user else 'anonymous ' + (fingerprint[:8] if fingerprint else 'unknown')} "
-        f"from {client_ip}"
+        f"{session.display_name} from {client_ip}"
     )
 
     # Start heartbeat monitoring
@@ -424,16 +432,15 @@ async def unified_websocket(websocket: WebSocket, db: Session = Depends(get_db))
                         continue
 
                     # Validate token
-                    auth_user = await get_user_from_token_if_valid(token, db)
+                    auth_user = await _resolve_token_user(token)
                     if not auth_user:
                         await websocket.send_json(
                             {"type": "auth_error", "error": "Invalid or expired token"}
                         )
                         continue
 
-                    # Upgrade session to authenticated
-                    session_manager.upgrade_session(session.id, auth_user, db)
-                    user = auth_user  # Update local reference
+                    await session_manager.upgrade_session(session.id, auth_user)
+                    user = auth_user
 
                     # Re-register with manager for account-based broadcasts
                     subscribed_topics = (
@@ -471,8 +478,7 @@ async def unified_websocket(websocket: WebSocket, db: Session = Depends(get_db))
                     )
 
                 elif message_type == "activity":
-                    # Handle activity tracking (page views, actions, conversions)
-                    await handle_activity(data, session, db)
+                    await handle_activity(data, session)
 
                 elif message_type == "command":
                     # Handle commands for flow executions (stop, send_message, etc.)
@@ -488,15 +494,15 @@ async def unified_websocket(websocket: WebSocket, db: Session = Depends(get_db))
                     if execution_id and command:
                         # Forward command to NATS for orchestrator to handle
                         try:
-                            event_bus = EventBus()
-                            if event_bus.nc and event_bus.nc.is_connected:
+                            nc = await get_nats_client()
+                            if nc and nc.is_connected:
                                 command_subject = f"flow-commands.{execution_id}"
                                 command_data = {
                                     "command": command,
                                     "payload": payload or {},
                                     "message": data.get("message"),  # For send_message
                                 }
-                                await event_bus.nc.publish(
+                                await nc.publish(
                                     command_subject, json.dumps(command_data).encode()
                                 )
                                 logger.info(f"Published command to {command_subject}")
@@ -606,7 +612,7 @@ async def unified_websocket(websocket: WebSocket, db: Session = Depends(get_db))
                 except asyncio.TimeoutError:
                     logger.warning(
                         f"Session {session.id} did not respond to ping, disconnecting - "
-                        f"User: {user.username if user else 'anonymous'}, "
+                        f"User: {session.display_name}, "
                         f"IP: {client_ip}, "
                         f"User-Agent: {user_agent[:100]}"
                     )
@@ -623,30 +629,30 @@ async def unified_websocket(websocket: WebSocket, db: Session = Depends(get_db))
             duration_str = f"{duration}s"
         else:
             duration_str = "unknown"
-        username = getattr(user, "username", None) if user else None
+        username = session.display_name
         logger.info(
             f"Session {session.id} disconnected - "
-            f"User: {username or 'anonymous'}, "
+            f"User: {username}, "
             f"Duration: {duration_str}, "
             f"Reason: {e}"
         )
     except Exception as e:
         from sqlalchemy.exc import OperationalError
 
-        username = getattr(user, "username", None) if user else None
+        username = session.display_name
         if isinstance(e, OperationalError):
             logger.warning(
                 "Unified WebSocket session %s lost database connection: %s "
                 "(User: %s, IP: %s)",
                 session.id,
                 e,
-                username or "anonymous",
+                username,
                 client_ip,
             )
         else:
             logger.error(
                 f"Error in unified WebSocket session {session.id}: {e}, "
-                f"User: {username or 'anonymous'}, "
+                f"User: {username}, "
                 f"IP: {client_ip}",
                 exc_info=True,
             )
@@ -662,9 +668,8 @@ async def unified_websocket(websocket: WebSocket, db: Session = Depends(get_db))
             except Exception as e:
                 logger.error(f"Error disconnecting from manager: {e}")
 
-        # End session (only if session was created)
         try:
-            await session_manager.end_session(session.id, db)
+            await session_manager.end_session(session.id)
         except Exception as e:
             logger.error(f"Error ending session: {e}")
 

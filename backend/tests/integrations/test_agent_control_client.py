@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import aiohttp
 import pytest
 
 from preloop.integrations.agent_control import (
@@ -59,6 +60,13 @@ class FakeSession:
     ) -> FakeWebSocket:
         self.connect_calls.append({"url": url, "headers": self.headers})
         return self.websocket
+
+
+class InvalidJsonTextMessage:
+    type = aiohttp.WSMsgType.TEXT
+
+    def json(self) -> dict[str, Any]:
+        raise json.JSONDecodeError("Expecting value", "{not-json", 0)
 
 
 class FailingSession:
@@ -214,6 +222,44 @@ async def test_client_dispatches_send_message_and_reports_result() -> None:
     replies = [sent for sent in websocket.sent if sent["name"] == "agent_reply"]
     assert replies[0]["payload"]["text"] == "Done"
     assert replies[0]["payload"]["session_reference"] == "session-42"
+
+
+async def test_client_survives_malformed_json_without_disconnecting() -> None:
+    handled: list[str] = []
+
+    async def send_message(command: OperatorCommand) -> AgentControlResult:
+        handled.append(command.command_id)
+        return AgentControlResult(reply_text="Recovered")
+
+    websocket = FakeWebSocket(
+        [
+            InvalidJsonTextMessage(),
+            {
+                "type": "command",
+                "name": "send_message",
+                "message_id": "cmd-after-bad-json",
+                "payload": {"text": "continue"},
+            },
+        ]
+    )
+    client = AgentControlClient(
+        AgentControlConfig(
+            control_ws_url="wss://preloop.example/api/v1/agents/control/ws",
+            bearer_token="runtime-token",
+            runtime_principal_id="openclaw-live",
+        ),
+        HookedAgentControlAdapter.with_hooks(send_message=send_message),
+        session_factory=lambda headers: FakeSession(websocket, headers),
+    )
+
+    await client.run_until_disconnect()
+
+    invalid_json = [
+        sent for sent in websocket.sent if sent.get("name") == "invalid_json"
+    ]
+    assert len(invalid_json) == 1
+    assert invalid_json[0]["payload"]["status"] == "error"
+    assert handled == ["cmd-after-bad-json"]
 
 
 async def test_client_reconnects_after_connection_failure() -> None:

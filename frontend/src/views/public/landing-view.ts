@@ -36,11 +36,15 @@ export class LandingView extends LitElement {
   @state() private _heroTitle = '';
   @state() private _heroLead = '';
   @state() private _ctaPrimary = '';
+  @state() private _ctaPrimaryUrl = '';
   @state() private _ctaSecondary = '';
   @state() private _ctaSecondaryUrl = '';
   @state() private _heroInstall = '';
   @state() private _heroInstallCaption = '';
   @state() private _heroInstallCopied = false;
+  @state() private _heroTrustTags: string[] = [];
+  @state() private _heroImage = '';
+  @state() private _heroImageAlt = '';
   @state() private _getStartedTitle = '';
   @state() private _getStartedLinkText = '';
   @state() private _getStartedLinkUrl = '';
@@ -129,7 +133,7 @@ export class LandingView extends LitElement {
         margin: 0 auto;
       }
 
-      @media (min-width: 900px) {
+      @media (min-width: 1100px) {
         .feature-stacked-block {
           flex-direction: row;
           gap: 6rem;
@@ -149,6 +153,7 @@ export class LandingView extends LitElement {
       .feature-stacked-image-wrapper {
         flex: 1.5;
         width: 100%;
+        flex-shrink: 0;
         cursor: pointer;
         transition: transform 0.2s ease-out;
       }
@@ -313,6 +318,9 @@ export class LandingView extends LitElement {
     const ctaPrimary = children.find(
       (el) => el.getAttribute('slot') === 'cta-primary'
     ) as HTMLElement | undefined;
+    const ctaPrimaryUrl = children.find(
+      (el) => el.getAttribute('slot') === 'cta-primary-url'
+    ) as HTMLElement | undefined;
     const ctaSecondary = children.find(
       (el) => el.getAttribute('slot') === 'cta-secondary'
     ) as HTMLElement | undefined;
@@ -323,6 +331,8 @@ export class LandingView extends LitElement {
     if (heroTitle) this._heroTitle = heroTitle.innerHTML || '';
     if (heroLead) this._heroLead = heroLead.textContent || '';
     if (ctaPrimary) this._ctaPrimary = ctaPrimary.textContent || '';
+    if (ctaPrimaryUrl)
+      this._ctaPrimaryUrl = (ctaPrimaryUrl.textContent || '').trim();
     if (ctaSecondary) this._ctaSecondary = ctaSecondary.textContent || '';
     if (ctaSecondaryUrl)
       this._ctaSecondaryUrl = ctaSecondaryUrl.textContent || '';
@@ -337,6 +347,24 @@ export class LandingView extends LitElement {
     ) as HTMLElement | undefined;
     if (ctaInstallCaption)
       this._heroInstallCaption = (ctaInstallCaption.textContent || '').trim();
+
+    const ctaInstallTags = children.find(
+      (el) => el.getAttribute('slot') === 'cta-install-tags'
+    ) as HTMLElement | undefined;
+    if (ctaInstallTags) {
+      this._heroTrustTags = (ctaInstallTags.textContent || '')
+        .split('|')
+        .map((t) => t.trim())
+        .filter(Boolean);
+    }
+
+    const heroImage = children.find(
+      (el) => el.getAttribute('slot') === 'hero-image'
+    ) as HTMLElement | undefined;
+    if (heroImage) {
+      this._heroImage = heroImage.getAttribute('data-src') || '';
+      this._heroImageAlt = heroImage.getAttribute('data-alt') || '';
+    }
 
     // Read extended description from light DOM slot
     const extendedDescription = children.find(
@@ -546,10 +574,16 @@ export class LandingView extends LitElement {
     this._heroTitle = hero.title || '';
     this._heroLead = hero.lead || '';
     this._ctaPrimary = hero.cta_primary || '';
+    this._ctaPrimaryUrl = (hero.cta_primary_url || '').trim();
     this._ctaSecondary = hero.cta_secondary || '';
     this._ctaSecondaryUrl = hero.cta_secondary_url || '';
     this._heroInstall = (hero.install_command || '').trim();
     this._heroInstallCaption = (hero.install_caption || '').trim();
+    this._heroTrustTags = Array.isArray(hero.trust_tags)
+      ? hero.trust_tags.filter(Boolean)
+      : [];
+    this._heroImage = hero.image || '';
+    this._heroImageAlt = hero.image_alt || '';
     this._extendedDescription = content.extended_description || '';
     this._featuresLayout = content.features_layout || 'grid';
 
@@ -716,123 +750,197 @@ export class LandingView extends LitElement {
       <main>
         <section class="hero main-section">
           <!-- <news-capsule></news-capsule> -->
-          <div class="section-container hero-inner">
+          <div
+            class="section-container hero-inner ${
+              this._heroImage ? 'has-visual' : ''
+            }"
+          >
             <div class="hero-content">
-              ${this._productHunt?.enabled
-                ? html`
-                    <div class="product-hunt-badge">
-                      <a
-                        href="https://www.producthunt.com/products/preloop?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-preloop"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                      >
-                        <img
-                          alt="Preloop - The MCP Governance Layer | Product Hunt"
-                          width="250"
-                          height="54"
-                          src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=${this
-                            ._productHunt.post_id}&amp;theme=${this._productHunt
-                            .theme}&amp;t=${Date.now()}"
-                        />
-                      </a>
-                    </div>
-                  `
-                : ''}
+              ${
+                this._productHunt?.enabled
+                  ? html`
+                      <div class="product-hunt-badge">
+                        <a
+                          href="https://www.producthunt.com/products/preloop?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-preloop"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          <img
+                            alt="Preloop - The MCP Governance Layer | Product Hunt"
+                            width="250"
+                            height="54"
+                            src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=${
+                              this._productHunt.post_id
+                            }&amp;theme=${
+                              this._productHunt.theme
+                            }&amp;t=${Date.now()}"
+                          />
+                        </a>
+                      </div>
+                    `
+                  : ''
+              }
               <h1 class="fw-bold">${unsafeHTML(this._heroTitle)}</h1>
               <p class="lead">${this._heroLead}</p>
 
-              <div class="hero-buttons">
-                <sl-button
-                  variant="primary"
-                  size="large"
-                  @click=${this._handleSignup}
-                  >${this._ctaPrimary}</sl-button
-                >
-                <sl-button
-                  variant="text"
-                  size="large"
-                  href=${this._ctaSecondaryUrl}
-                  target=${this._ctaSecondaryUrl.startsWith('http')
-                    ? '_blank'
-                    : '_self'}
-                  >${this._ctaSecondary}</sl-button
-                >
-              </div>
-              ${this._heroInstall
-                ? html`
-                    <div
-                      class="hero-install"
-                      role="group"
-                      aria-label="Install the Preloop CLI"
-                    >
-                      <div class="hero-install-or" aria-hidden="true">
-                        <span class="hero-install-or-line"></span>
-                        <span class="hero-install-or-text"
-                          >or install the CLI</span
-                        >
-                        <span class="hero-install-or-line"></span>
+              ${
+                !this._heroInstall
+                  ? html`<div class="hero-buttons">
+                      ${
+                        this._ctaPrimaryUrl
+                          ? html`<sl-button
+                              variant="primary"
+                              size="large"
+                              href=${this._ctaPrimaryUrl}
+                              target=${
+                                this._ctaPrimaryUrl.startsWith('http')
+                                  ? '_blank'
+                                  : '_self'
+                              }
+                              >${this._ctaPrimary}</sl-button
+                            >`
+                          : html`<sl-button
+                              variant="primary"
+                              size="large"
+                              @click=${this._handleSignup}
+                              >${this._ctaPrimary}</sl-button
+                            >`
+                      }
+                      ${
+                        this._ctaSecondary
+                          ? html`<sl-button
+                              variant="text"
+                              size="large"
+                              href=${this._ctaSecondaryUrl}
+                              target=${
+                                this._ctaSecondaryUrl.startsWith('http')
+                                  ? '_blank'
+                                  : '_self'
+                              }
+                              >${this._ctaSecondary}</sl-button
+                            >`
+                          : ''
+                      }
+                    </div>`
+                  : ''
+              }
+              ${
+                this._heroInstall
+                  ? html`
+                      <div
+                        class="hero-install"
+                        role="group"
+                        aria-label="Install the Preloop CLI"
+                      >
+                        <span class="hero-install-label">Install the CLI</span>
+                        <div class="hero-install-row">
+                          <span class="hero-install-prompt" aria-hidden="true"
+                            >$</span
+                          >
+                          <code class="hero-install-cmd"
+                            >${this._heroInstall}</code
+                          >
+                          <button
+                            type="button"
+                            class="hero-install-copy"
+                            @click=${this._handleCopyHeroInstall}
+                            aria-label="Copy install command to clipboard"
+                            title="${
+                              this._heroInstallCopied
+                                ? 'Copied!'
+                                : 'Copy to clipboard'
+                            }"
+                          >
+                            ${
+                              this._heroInstallCopied
+                                ? html`
+                                    <svg
+                                      xmlns="http://www.w3.org/2000/svg"
+                                      width="16"
+                                      height="16"
+                                      fill="currentColor"
+                                      viewBox="0 0 16 16"
+                                      aria-hidden="true"
+                                    >
+                                      <path
+                                        d="M10.97 4.97a.75.75 0 0 1 1.07 1.05l-3.99 4.99a.75.75 0 0 1-1.08.02L4.324 8.384a.75.75 0 1 1 1.06-1.06l2.094 2.093 3.473-4.425a.267.267 0 0 1 .02-.022z"
+                                      />
+                                    </svg>
+                                    <span>Copied</span>
+                                  `
+                                : html`
+                                    <svg
+                                      xmlns="http://www.w3.org/2000/svg"
+                                      width="16"
+                                      height="16"
+                                      fill="currentColor"
+                                      viewBox="0 0 16 16"
+                                      aria-hidden="true"
+                                    >
+                                      <path
+                                        d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"
+                                      />
+                                      <path
+                                        d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"
+                                      />
+                                    </svg>
+                                    <span>Copy</span>
+                                  `
+                            }
+                          </button>
+                        </div>
+                        ${
+                          this._heroInstallCaption
+                            ? html`<p class="hero-install-caption">
+                                ${this._heroInstallCaption}
+                              </p>`
+                            : ''
+                        }
                       </div>
-                      <div class="hero-install-row">
-                        <span class="hero-install-prompt" aria-hidden="true"
-                          >$</span
-                        >
-                        <code class="hero-install-cmd"
-                          >${this._heroInstall}</code
-                        >
-                        <button
-                          type="button"
-                          class="hero-install-copy"
-                          @click=${this._handleCopyHeroInstall}
-                          aria-label="Copy install command to clipboard"
-                          title="${this._heroInstallCopied
-                            ? 'Copied!'
-                            : 'Copy to clipboard'}"
-                        >
-                          ${this._heroInstallCopied
-                            ? html`
-                                <svg
-                                  xmlns="http://www.w3.org/2000/svg"
-                                  width="16"
-                                  height="16"
-                                  fill="currentColor"
-                                  viewBox="0 0 16 16"
-                                  aria-hidden="true"
-                                >
-                                  <path
-                                    d="M10.97 4.97a.75.75 0 0 1 1.07 1.05l-3.99 4.99a.75.75 0 0 1-1.08.02L4.324 8.384a.75.75 0 1 1 1.06-1.06l2.094 2.093 3.473-4.425a.267.267 0 0 1 .02-.022z"
-                                  />
-                                </svg>
-                                <span>Copied</span>
-                              `
-                            : html`
-                                <svg
-                                  xmlns="http://www.w3.org/2000/svg"
-                                  width="16"
-                                  height="16"
-                                  fill="currentColor"
-                                  viewBox="0 0 16 16"
-                                  aria-hidden="true"
-                                >
-                                  <path
-                                    d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"
-                                  />
-                                  <path
-                                    d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"
-                                  />
-                                </svg>
-                                <span>Copy</span>
-                              `}
-                        </button>
-                      </div>
-                      ${this._heroInstallCaption
-                        ? html`<p class="hero-install-caption">
-                            ${this._heroInstallCaption}
-                          </p>`
-                        : ''}
-                    </div>
-                  `
-                : ''}
+                      ${
+                        this._ctaSecondary
+                          ? html`<div class="hero-secondary-cta">
+                              <span class="hero-secondary-text"
+                                >Want a guided tour first?</span
+                              >
+                              <sl-button
+                                variant="text"
+                                size="large"
+                                href=${this._ctaSecondaryUrl}
+                                target=${
+                                  this._ctaSecondaryUrl.startsWith('http')
+                                    ? '_blank'
+                                    : '_self'
+                                }
+                                >${this._ctaSecondary}</sl-button
+                              >
+                            </div>`
+                          : ''
+                      }
+                    `
+                  : ''
+              }
+              ${
+                this._heroTrustTags.length
+                  ? html`<ul class="hero-trust-tags">
+                      ${this._heroTrustTags.map(
+                        (tag) => html`<li class="hero-trust-tag">${tag}</li>`
+                      )}
+                    </ul>`
+                  : ''
+              }
             </div>
+            ${
+              this._heroImage
+                ? html`<div
+                    class="hero-visual"
+                    aria-hidden="true"
+                    @click=${() => (this._lightboxImage = this._heroImage)}
+                  >
+                    <img src=${this._heroImage} alt=${this._heroImageAlt} />
+                  </div>`
+                : ''
+            }
           </div>
         </section>
 
@@ -1008,242 +1116,264 @@ export class LandingView extends LitElement {
             </div>
           </div>
         </section>
-        ${this._featuredVideo?.enabled
-          ? html`
-              <section class="featured-video-section main-section">
-                <div class="section-container text-center">
-                  ${this._featuredVideo.title
-                    ? html`<h2>${this._featuredVideo.title}</h2>`
-                    : ''}
-                  <div class="featured-video-wrapper">
-                    <iframe
-                      width="560"
-                      height="315"
-                      src="${this._featuredVideo.youtube_embed}"
-                      title="YouTube video player"
-                      frameborder="0"
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                      referrerpolicy="strict-origin-when-cross-origin"
-                      allowfullscreen
-                    ></iframe>
-                  </div>
-                </div>
-              </section>
-            `
-          : ''}
-        ${this._featureSlides.length > 0 && this._featuresLayout === 'carousel'
-          ? html`
-              <section class="feature-section main-section" id="features">
-                <div class="section-container text-center">
-                  <sl-carousel
-                    class="feature-carousel"
-                    loop
-                    effect="fade"
-                    @sl-slide-change=${this._handleSlideChange}
-                  >
-                    ${this._featureSlides.map(
-                      (slide, index) => html`
-                        <sl-carousel-item>
-                          <div class="feature-grid-2-col">
-                            <div class="feature-text-content">
-                              <h2>${slide.title}</h2>
-                              <p>${slide.text}</p>
-                              ${!this._showVideo[index] && slide.videoUrl
-                                ? html`
-                                    <sl-button
-                                      variant="primary"
-                                      class="watch-video-btn"
-                                      @click=${() => this._playVideo(index)}
-                                    >
-                                      <sl-icon
-                                        name="play-circle"
-                                        slot="prefix"
-                                      ></sl-icon>
-                                      Watch Video
-                                    </sl-button>
-                                  `
-                                : ''}
-                              <div class="carousel-navigation">
-                                <sl-button
-                                  variant="text"
-                                  class="carousel-nav carousel-nav--prev"
-                                  @click=${() => this._carousel.previous()}
-                                >
-                                  <sl-icon name="chevron-left"></sl-icon>
-                                </sl-button>
-                                <span class="slide-indicator">
-                                  ${this._activeSlideIndex + 1} /
-                                  ${this._featureSlides.length}
-                                </span>
-                                <sl-button
-                                  variant="text"
-                                  class="carousel-nav carousel-nav--next"
-                                  @click=${() => this._carousel.next()}
-                                >
-                                  <sl-icon name="chevron-right"></sl-icon>
-                                </sl-button>
-                              </div>
-                            </div>
-
-                            <div class="feature-video-content">
-                              ${this._showVideo[index] && slide.videoUrl
-                                ? html`
-                                    <div class="video-wrapper">
-                                      <iframe
-                                        width="560"
-                                        height="315"
-                                        src=${`${this._getYouTubeEmbedUrl(slide.videoUrl)}?autoplay=1`}
-                                        title="YouTube video player"
-                                        frameborder="0"
-                                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                                        allowfullscreen
-                                      ></iframe>
-                                    </div>
-                                  `
-                                : html`
-                                    <div
-                                      class="image-placeholder"
-                                      @click=${() =>
-                                        slide.videoUrl
-                                          ? this._playVideo(index)
-                                          : null}
-                                    >
-                                      ${slide.placeholderImg
-                                        ? html`
-                                            <img
-                                              src=${slide.placeholderImg}
-                                              alt=${slide.title}
-                                            />
-                                            ${slide.videoUrl
-                                              ? html`<div
-                                                  class="play-button"
-                                                ></div>`
-                                              : ''}
-                                          `
-                                        : ''}
-                                    </div>
-                                  `}
-                            </div>
-                          </div>
-                        </sl-carousel-item>
-                      `
-                    )}
-                  </sl-carousel>
-                </div>
-              </section>
-            `
-          : this._featureSlides.length > 0
+        ${
+          this._featuredVideo?.enabled
             ? html`
-                <section
-                  class="feature-section main-section"
-                  style="padding-top: 5rem;"
-                >
-                  <div class="section-container">
-                    ${this._featureSlides.map(
-                      (slide, index) => html`
-                        <div
-                          class="feature-stacked-block ${index % 2 !== 0
-                            ? 'reverse'
-                            : ''}"
-                        >
-                          <div class="feature-stacked-text">
-                            <h3
-                              style="font-size: 2.2rem; margin-bottom: 2rem; font-weight: 600; line-height: 1.3;"
-                            >
-                              ${slide.title}
-                            </h3>
-                            <p
-                              style="font-size: 1.15rem; color: rgb(161, 161, 170); line-height: 1.7;"
-                            >
-                              ${slide.text}
-                            </p>
-                            ${!this._showVideo[index] && slide.videoUrl
-                              ? html`
-                                  <a
-                                    href="javascript:void(0)"
-                                    class="watch-video-link mt-3 d-inline-block"
-                                    @click=${() => this._playVideo(index)}
-                                    style="margin-top: 2rem; font-size: 1.1rem; color: var(--sl-color-primary-400); text-decoration: none; font-weight: 500;"
-                                  >
-                                    <sl-icon
-                                      name="play-circle"
-                                      style="vertical-align: text-bottom; margin-right: 0.5rem;"
-                                    ></sl-icon>
-                                    Watch Video
-                                  </a>
-                                `
-                              : ''}
-                          </div>
-
-                          ${slide.placeholderImg
-                            ? html`
-                                <div
-                                  class="feature-stacked-image-wrapper"
-                                  @click=${() =>
-                                    (this._lightboxImage =
-                                      slide.placeholderImg)}
-                                >
-                                  <img
-                                    src="${slide.placeholderImg}"
-                                    class="feature-stacked-image"
-                                    alt="${slide.title} preview"
-                                  />
-                                </div>
-                              `
-                            : html`<div style="flex: 1.5;"></div>`}
-                        </div>
-                      `
-                    )}
+                <section class="featured-video-section main-section">
+                  <div class="section-container text-center">
+                    ${
+                      this._featuredVideo.title
+                        ? html`<h2>${this._featuredVideo.title}</h2>`
+                        : ''
+                    }
+                    <div class="featured-video-wrapper">
+                      <iframe
+                        width="560"
+                        height="315"
+                        src="${this._featuredVideo.youtube_embed}"
+                        title="YouTube video player"
+                        frameborder="0"
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                        referrerpolicy="strict-origin-when-cross-origin"
+                        allowfullscreen
+                      ></iframe>
+                    </div>
                   </div>
                 </section>
               `
-            : ''}
-        ${this._extendedDescription && getBrandConfig().edition === 'saas'
-          ? html`
-              <section
-                class="extended-description-section main-section"
-                style="padding-top: 3rem; padding-bottom: 3rem;"
-              >
-                <div class="section-container">
-                  <sl-carousel
-                    id="svg-carousel"
-                    pagination
-                    @sl-slide-change=${this._handleSvgSlideChange}
-                    style="--aspect-ratio: 16/9; margin: 0 auto; border-radius: 24px; background-color: rgb(33, 38, 50); overflow: hidden;"
+            : ''
+        }
+        ${
+          this._featureSlides.length > 0 && this._featuresLayout === 'carousel'
+            ? html`
+                <section class="feature-section main-section" id="features">
+                  <div class="section-container text-center">
+                    <sl-carousel
+                      class="feature-carousel"
+                      loop
+                      effect="fade"
+                      @sl-slide-change=${this._handleSlideChange}
+                    >
+                      ${this._featureSlides.map(
+                        (slide, index) => html`
+                          <sl-carousel-item>
+                            <div class="feature-grid-2-col">
+                              <div class="feature-text-content">
+                                <h2>${slide.title}</h2>
+                                <p>${slide.text}</p>
+                                ${
+                                  !this._showVideo[index] && slide.videoUrl
+                                    ? html`
+                                        <sl-button
+                                          variant="primary"
+                                          class="watch-video-btn"
+                                          @click=${() => this._playVideo(index)}
+                                        >
+                                          <sl-icon
+                                            name="play-circle"
+                                            slot="prefix"
+                                          ></sl-icon>
+                                          Watch Video
+                                        </sl-button>
+                                      `
+                                    : ''
+                                }
+                                <div class="carousel-navigation">
+                                  <sl-button
+                                    variant="text"
+                                    class="carousel-nav carousel-nav--prev"
+                                    @click=${() => this._carousel.previous()}
+                                  >
+                                    <sl-icon name="chevron-left"></sl-icon>
+                                  </sl-button>
+                                  <span class="slide-indicator">
+                                    ${this._activeSlideIndex + 1} /
+                                    ${this._featureSlides.length}
+                                  </span>
+                                  <sl-button
+                                    variant="text"
+                                    class="carousel-nav carousel-nav--next"
+                                    @click=${() => this._carousel.next()}
+                                  >
+                                    <sl-icon name="chevron-right"></sl-icon>
+                                  </sl-button>
+                                </div>
+                              </div>
+
+                              <div class="feature-video-content">
+                                ${
+                                  this._showVideo[index] && slide.videoUrl
+                                    ? html`
+                                        <div class="video-wrapper">
+                                          <iframe
+                                            width="560"
+                                            height="315"
+                                            src=${`${this._getYouTubeEmbedUrl(slide.videoUrl)}?autoplay=1`}
+                                            title="YouTube video player"
+                                            frameborder="0"
+                                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                                            allowfullscreen
+                                          ></iframe>
+                                        </div>
+                                      `
+                                    : html`
+                                        <div
+                                          class="image-placeholder"
+                                          @click=${() =>
+                                            slide.videoUrl
+                                              ? this._playVideo(index)
+                                              : null}
+                                        >
+                                          ${
+                                            slide.placeholderImg
+                                              ? html`
+                                                  <img
+                                                    src=${slide.placeholderImg}
+                                                    alt=${slide.title}
+                                                  />
+                                                  ${
+                                                    slide.videoUrl
+                                                      ? html`<div
+                                                          class="play-button"
+                                                        ></div>`
+                                                      : ''
+                                                  }
+                                                `
+                                              : ''
+                                          }
+                                        </div>
+                                      `
+                                }
+                              </div>
+                            </div>
+                          </sl-carousel-item>
+                        `
+                      )}
+                    </sl-carousel>
+                  </div>
+                </section>
+              `
+            : this._featureSlides.length > 0
+              ? html`
+                  <section
+                    class="feature-section main-section"
+                    style="padding-top: 5rem;"
                   >
-                    ${[
-                      {
-                        src: '/assets/direct.svg',
-                        alt: 'Direct AI Integration',
-                      },
-                      {
-                        src: '/assets/mcp-firewall2.svg',
-                        alt: 'MCP Firewall Animation',
-                      },
-                      { src: '/assets/gateway.svg', alt: 'AI Agent Gateway' },
-                    ].map(
-                      (item, index) => html`
-                        <sl-carousel-item>
-                          <img
-                            src="${item.src}?t=${this._svgTimestamps[index]}"
-                            alt="${item.alt}"
-                            style="width: 100%; height: 100%; object-fit: contain;"
-                          />
-                        </sl-carousel-item>
-                      `
-                    )}
-                  </sl-carousel>
-                </div>
-              </section>
-            `
-          : ''}
+                    <div class="section-container">
+                      ${this._featureSlides.map(
+                        (slide, index) => html`
+                          <div
+                            class="feature-stacked-block ${
+                              index % 2 !== 0 ? 'reverse' : ''
+                            }"
+                          >
+                            <div class="feature-stacked-text">
+                              <h3
+                                style="font-size: 2.2rem; margin-bottom: 2rem; font-weight: 600; line-height: 1.3;"
+                              >
+                                ${slide.title}
+                              </h3>
+                              <p
+                                style="font-size: 1.15rem; color: rgb(161, 161, 170); line-height: 1.7;"
+                              >
+                                ${slide.text}
+                              </p>
+                              ${
+                                !this._showVideo[index] && slide.videoUrl
+                                  ? html`
+                                      <a
+                                        href="javascript:void(0)"
+                                        class="watch-video-link mt-3 d-inline-block"
+                                        @click=${() => this._playVideo(index)}
+                                        style="margin-top: 2rem; font-size: 1.1rem; color: var(--sl-color-primary-400); text-decoration: none; font-weight: 500;"
+                                      >
+                                        <sl-icon
+                                          name="play-circle"
+                                          style="vertical-align: text-bottom; margin-right: 0.5rem;"
+                                        ></sl-icon>
+                                        Watch Video
+                                      </a>
+                                    `
+                                  : ''
+                              }
+                            </div>
+
+                            ${
+                              slide.placeholderImg
+                                ? html`
+                                    <div
+                                      class="feature-stacked-image-wrapper"
+                                      @click=${() =>
+                                        (this._lightboxImage =
+                                          slide.placeholderImg)}
+                                    >
+                                      <img
+                                        src="${slide.placeholderImg}"
+                                        class="feature-stacked-image"
+                                        alt="${slide.title} preview"
+                                      />
+                                    </div>
+                                  `
+                                : html`<div style="flex: 1.5;"></div>`
+                            }
+                          </div>
+                        `
+                      )}
+                    </div>
+                  </section>
+                `
+              : ''
+        }
+        ${
+          this._extendedDescription && getBrandConfig().edition === 'saas'
+            ? html`
+                <section
+                  class="extended-description-section main-section"
+                  style="padding-top: 3rem; padding-bottom: 3rem;"
+                >
+                  <div class="section-container">
+                    <sl-carousel
+                      id="svg-carousel"
+                      pagination
+                      @sl-slide-change=${this._handleSvgSlideChange}
+                      style="--aspect-ratio: 16/9; margin: 0 auto; border-radius: 24px; background-color: rgb(33, 38, 50); overflow: hidden;"
+                    >
+                      ${[
+                        {
+                          src: '/assets/direct.svg',
+                          alt: 'Direct AI Integration',
+                        },
+                        {
+                          src: '/assets/mcp-firewall2.svg',
+                          alt: 'MCP Firewall Animation',
+                        },
+                        { src: '/assets/gateway.svg', alt: 'AI Agent Gateway' },
+                      ].map(
+                        (item, index) => html`
+                          <sl-carousel-item>
+                            <img
+                              src="${item.src}?t=${this._svgTimestamps[index]}"
+                              alt="${item.alt}"
+                              style="width: 100%; height: 100%; object-fit: contain;"
+                            />
+                          </sl-carousel-item>
+                        `
+                      )}
+                    </sl-carousel>
+                  </div>
+                </section>
+              `
+            : ''
+        }
         ${html`
           <section class="feature-section main-section" id="get-started">
             <div class="section-container">
               <div class="title-container">
                 <h2>
-                  ${this._getStartedTitle ||
-                  'Turbocharge your AI Workflow with MCP'}
+                  ${
+                    this._getStartedTitle ||
+                    'Turbocharge your AI Workflow with MCP'
+                  }
                 </h2>
                 <a
                   class="main-link"
@@ -1252,97 +1382,108 @@ export class LandingView extends LitElement {
                 >
               </div>
 
-              ${this._getStartedFeatures.length > 0
-                ? html`<div class="feature-grid three-col">
-                    ${this._getStartedFeatures.map(
-                      (feature) => html`
-                        <div class="feature-box">
-                          <div class="feature-icon">
-                            <sl-icon name="${feature.icon}"></sl-icon>
+              ${
+                this._getStartedFeatures.length > 0
+                  ? html`<div class="feature-grid three-col">
+                      ${this._getStartedFeatures.map(
+                        (feature) => html`
+                          <div class="feature-box">
+                            <div class="feature-icon">
+                              <sl-icon name="${feature.icon}"></sl-icon>
+                            </div>
+                            <h3>${feature.title}</h3>
+                            <p>${feature.text}</p>
                           </div>
-                          <h3>${feature.title}</h3>
-                          <p>${feature.text}</p>
-                        </div>
-                      `
-                    )}
-                  </div>`
-                : ``}
-              ${this._cliSetup.length > 0
-                ? html`
-                    <div
-                      style="max-width: 65rem; margin: 3rem auto 0; text-align: left;"
-                    >
-                      <ide-setup-tabs
-                        .configs=${[
-                          {
-                            ide: 'cli',
-                            ide_name: 'Preloop CLI',
-                            logo_path: '/assets/preloop-badge.svg',
-                            logo_width: '32',
-                            prerequisites: [],
-                            setup_instructions:
-                              'Install the CLI to onboard existing agents or connect them manually.',
-                            code: 'curl -fsSL https://preloop.ai/install/cli | sh',
-                          },
-                        ]}
-                        defaultTab="cli"
-                        helpText="The Preloop CLI configures your local environment and allows easy agent connecting."
-                      ></ide-setup-tabs>
-                    </div>
-                  `
-                : ''}
+                        `
+                      )}
+                    </div>`
+                  : ``
+              }
+              ${
+                this._cliSetup.length > 0
+                  ? html`
+                      <div
+                        style="max-width: 65rem; margin: 3rem auto 0; text-align: left;"
+                      >
+                        <ide-setup-tabs
+                          .configs=${[
+                            {
+                              ide: 'cli',
+                              ide_name: 'Preloop CLI',
+                              logo_path: '/assets/preloop-badge.svg',
+                              logo_width: '32',
+                              prerequisites: [],
+                              setup_instructions:
+                                'Install the CLI to onboard existing agents or connect them manually.',
+                              code: 'curl -fsSL https://preloop.ai/install/cli | sh',
+                            },
+                          ]}
+                          defaultTab="cli"
+                          helpText="The Preloop CLI configures your local environment and allows easy agent connecting."
+                        ></ide-setup-tabs>
+                      </div>
+                    `
+                  : ''
+              }
             </div>
           </section>
         `}
-        ${this._faqs.length > 0
-          ? html`
-              <section class="faq-section main-section">
-                <div class="section-container">
-                  <h2 class="text-center">Frequently Asked Questions</h2>
-                  <div class="faq-list">
-                    ${this._faqs.map(
-                      (faq) => html`
-                        <details class="faq-item">
-                          <summary
-                            class="faq-question"
-                            @click=${this._handleFaqClick}
-                          >
-                            <span>${faq.q}</span>
-                            <sl-icon name="chevron-down"></sl-icon>
-                          </summary>
-                          <div class="faq-answer">
-                            <div class="faq-answer-content">
-                              ${unsafeHTML(faq.a)}
+        ${
+          this._faqs.length > 0
+            ? html`
+                <section class="faq-section main-section">
+                  <div class="section-container">
+                    <h2 class="text-center">Frequently Asked Questions</h2>
+                    <div class="faq-list">
+                      ${this._faqs.map(
+                        (faq) => html`
+                          <details class="faq-item">
+                            <summary
+                              class="faq-question"
+                              @click=${this._handleFaqClick}
+                            >
+                              <span>${faq.q}</span>
+                              <sl-icon name="chevron-down"></sl-icon>
+                            </summary>
+                            <div class="faq-answer">
+                              <div class="faq-answer-content">
+                                ${unsafeHTML(faq.a)}
+                              </div>
                             </div>
-                          </div>
-                        </details>
-                      `
-                    )}
+                          </details>
+                        `
+                      )}
+                    </div>
                   </div>
-                </div>
-              </section>
-            `
-          : ''}
-        ${this._faqs.length > 0 || this._featureSlides.length > 0
-          ? html`
-              <section class="final-cta main-section special-cta">
-                <div class="section-container">
-                  <h2>Move fast. Stay safe.</h2>
-                  <div class="hero-buttons">
-                    <sl-button
-                      variant="primary"
-                      size="large"
-                      @click=${this._handleSignup}
-                      >Get Started for Free</sl-button
-                    >
-                    <sl-button variant="text" size="large" href="/request-demo"
-                      >Request a Demo</sl-button
-                    >
+                </section>
+              `
+            : ''
+        }
+        ${
+          this._faqs.length > 0 || this._featureSlides.length > 0
+            ? html`
+                <section class="final-cta main-section special-cta">
+                  <div class="section-container">
+                    <h2>Move fast. Stay safe. Stay on budget.</h2>
+                    <div class="hero-buttons">
+                      <sl-button
+                        variant="primary"
+                        size="large"
+                        @click=${this._handleSignup}
+                        >Get Started for Free</sl-button
+                      >
+                      <sl-button
+                        variant="text"
+                        size="large"
+                        href="/request-demo"
+                        >Request a Demo</sl-button
+                      >
+                    </div>
                   </div>
-                </div>
-              </section>
-            `
-          : ''}
+                </section>
+              `
+            : ''
+        }
       </main>
       <app-footer></app-footer>
 
@@ -1357,9 +1498,11 @@ export class LandingView extends LitElement {
         }}
         @sl-hide=${() => (this._lightboxImage = null)}
       >
-        ${this._lightboxImage
-          ? html`<img src="${this._lightboxImage}" class="lightbox-image" />`
-          : ''}
+        ${
+          this._lightboxImage
+            ? html`<img src="${this._lightboxImage}" class="lightbox-image" />`
+            : ''
+        }
       </sl-dialog>
     `;
   }

@@ -75,9 +75,12 @@ def generate_content(
     payload: Dict[str, Any] = Body(...),
     db: Session = Depends(get_db_session),
     auth_context: ModelGatewayAuthContext = Depends(get_gemini_gateway_auth_context),
+    x_preloop_session_id: Optional[str] = Header(None, alias="X-Preloop-Session-Id"),
 ) -> Dict[str, Any]:
     """Generate Gemini-compatible content from the shared gateway."""
-    return GeminiGatewayService(db, auth_context).generate_content(model_name, payload)
+    return GeminiGatewayService(
+        db, auth_context, client_session_id=x_preloop_session_id
+    ).generate_content(model_name, payload)
 
 
 @router.post("/models/{model_name:path}:streamGenerateContent")
@@ -86,11 +89,12 @@ def stream_generate_content(
     payload: Dict[str, Any] = Body(...),
     db: Session = Depends(get_db_session),
     auth_context: ModelGatewayAuthContext = Depends(get_gemini_gateway_auth_context),
+    x_preloop_session_id: Optional[str] = Header(None, alias="X-Preloop-Session-Id"),
 ) -> StreamingResponse:
     """Stream Gemini-compatible content from the shared gateway."""
     return StreamingResponse(
-        GeminiGatewayService(db, auth_context).stream_generate_content(
-            model_name, payload
-        ),
+        GeminiGatewayService(
+            db, auth_context, client_session_id=x_preloop_session_id
+        ).stream_generate_content(model_name, payload),
         media_type="text/event-stream",
     )

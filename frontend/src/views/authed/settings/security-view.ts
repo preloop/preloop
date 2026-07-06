@@ -94,9 +94,11 @@ export class SecurityView extends LitElement {
                 <sl-button variant="primary" type="submit"
                   >Change Password</sl-button
                 >
-                ${this.changePasswordMessage
-                  ? html`<p>${this.changePasswordMessage}</p>`
-                  : ''}
+                ${
+                  this.changePasswordMessage
+                    ? html`<p>${this.changePasswordMessage}</p>`
+                    : ''
+                }
               </form>
             </div>
           </div>

@@ -110,6 +110,10 @@ def log_model_gateway_request(
     error_detail: Optional[str] = None,
     error_type: Optional[str] = None,
     budget: Optional[dict[str, Any]] = None,
+    prompt_tokens: Optional[int] = None,
+    completion_tokens: Optional[int] = None,
+    total_tokens: Optional[int] = None,
+    estimated_cost: Optional[float] = None,
 ) -> None:
     """Log a high-signal model gateway request event to the audit trail."""
     audit_service = _get_audit_service()
@@ -144,6 +148,10 @@ def log_model_gateway_request(
             error_detail=error_detail,
             error_type=error_type,
             budget=budget,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            estimated_cost=estimated_cost,
         )
         _emit_model_gateway_audit_event(
             account_id=account_id,
@@ -207,6 +215,10 @@ def log_model_gateway_request(
             error_detail=error_detail,
             error_type=error_type,
             budget=budget,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            estimated_cost=estimated_cost,
         )
     except Exception:
         logger.debug("Audit log_model_gateway_request failed", exc_info=True)
@@ -236,6 +248,10 @@ def log_model_gateway_request(
             error_detail=error_detail,
             error_type=error_type,
             budget=budget,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            estimated_cost=estimated_cost,
         )
     _emit_model_gateway_audit_event(
         account_id=account_id,
@@ -295,8 +311,47 @@ def _log_model_gateway_request_fallback(
     error_detail: Optional[str] = None,
     error_type: Optional[str] = None,
     budget: Optional[dict[str, Any]] = None,
+    prompt_tokens: Optional[int] = None,
+    completion_tokens: Optional[int] = None,
+    total_tokens: Optional[int] = None,
+    estimated_cost: Optional[float] = None,
 ) -> None:
     """Persist a compatible audit log when the EE audit service is unavailable."""
+    details = {
+        "api_usage_id": api_usage_id,
+        "endpoint": endpoint,
+        "endpoint_kind": endpoint_kind,
+        "status_code": status_code,
+        "requested_model": requested_model,
+        "model_alias": model_alias,
+        "provider_name": provider_name,
+        "gateway_provider": gateway_provider,
+        "auth_subject_type": auth_subject_type,
+        "runtime_session_id": runtime_session_id,
+        "runtime_principal_type": runtime_principal_type,
+        "runtime_principal_id": runtime_principal_id,
+        "runtime_principal_name": runtime_principal_name,
+        "api_key_id": api_key_id,
+        "api_key_name": api_key_name,
+        "flow_id": flow_id,
+        "flow_execution_id": flow_execution_id,
+        "upstream_request_id": upstream_request_id,
+        "request_fingerprint": request_fingerprint,
+        "gateway_attempt": gateway_attempt,
+        "is_retry": is_retry,
+        "retry_of_api_usage_id": retry_of_api_usage_id,
+        "error_detail": error_detail,
+        "error_type": error_type,
+        "budget": budget,
+    }
+    if prompt_tokens is not None:
+        details["prompt_tokens"] = prompt_tokens
+    if completion_tokens is not None:
+        details["completion_tokens"] = completion_tokens
+    if total_tokens is not None:
+        details["total_tokens"] = total_tokens
+    if estimated_cost is not None:
+        details["estimated_cost"] = estimated_cost
     crud_audit_log.log_action(
         db,
         account_id=account_id,
@@ -305,33 +360,7 @@ def _log_model_gateway_request_fallback(
         resource_type="model_gateway",
         resource_id=api_usage_id,
         status=outcome,
-        details={
-            "api_usage_id": api_usage_id,
-            "endpoint": endpoint,
-            "endpoint_kind": endpoint_kind,
-            "status_code": status_code,
-            "requested_model": requested_model,
-            "model_alias": model_alias,
-            "provider_name": provider_name,
-            "gateway_provider": gateway_provider,
-            "auth_subject_type": auth_subject_type,
-            "runtime_session_id": runtime_session_id,
-            "runtime_principal_type": runtime_principal_type,
-            "runtime_principal_id": runtime_principal_id,
-            "runtime_principal_name": runtime_principal_name,
-            "api_key_id": api_key_id,
-            "api_key_name": api_key_name,
-            "flow_id": flow_id,
-            "flow_execution_id": flow_execution_id,
-            "upstream_request_id": upstream_request_id,
-            "request_fingerprint": request_fingerprint,
-            "gateway_attempt": gateway_attempt,
-            "is_retry": is_retry,
-            "retry_of_api_usage_id": retry_of_api_usage_id,
-            "error_detail": error_detail,
-            "error_type": error_type,
-            "budget": budget,
-        },
+        details=details,
     )
 
 

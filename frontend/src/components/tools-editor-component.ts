@@ -5,6 +5,7 @@ import type { Tool, ApprovalWorkflow } from './tool-card';
 import type { AccessRuleSummary } from './governance-rule-set-editor';
 import type { RuleFormData } from './tool-rule-editor';
 import { fetchWithAuth } from '../api';
+import type { GatewayUsageByTool } from '../types';
 import './tool-list-item';
 
 export interface ToolWithRules extends Tool {
@@ -36,6 +37,8 @@ export class ToolsEditorComponent extends LitElement {
   @property({ type: String }) mode: 'global' | 'scoped' = 'global';
   @property({ type: Boolean }) hasDefaultAIModel: boolean = false;
   @property({ type: Boolean }) collapseByDefault: boolean = false;
+  @property({ type: Object }) toolStats: Record<string, GatewayUsageByTool> =
+    {};
 
   @state() private expandedTools: Set<string> = new Set();
   @state() private collapsedGroups: Set<string> = new Set();
@@ -258,133 +261,144 @@ export class ToolsEditorComponent extends LitElement {
             ${enabledCount}/${totalCount} enabled
           </span>
           <div class="section-line"></div>
-          ${group.type === 'mcp' && group.server && this.mode === 'global'
-            ? html`
-                <div
-                  class="section-actions"
-                  @click=${(e: Event) => e.stopPropagation()}
-                >
-                  <sl-tooltip content="Scan for new tools">
-                    <sl-icon-button
-                      name="arrow-clockwise"
-                      @click=${() =>
-                        this.dispatchEvent(
-                          new CustomEvent('scan-server', {
-                            detail: group.server.id,
-                          })
-                        )}
-                    ></sl-icon-button>
-                  </sl-tooltip>
-                  <sl-tooltip
-                    content=${this.hasDefaultAIModel
-                      ? 'Suggest starter policy'
-                      : 'Set a default AI model to suggest a starter policy'}
+          ${
+            group.type === 'mcp' && group.server && this.mode === 'global'
+              ? html`
+                  <div
+                    class="section-actions"
+                    @click=${(e: Event) => e.stopPropagation()}
                   >
-                    <sl-icon-button
-                      name="magic"
-                      @click=${() =>
-                        this.dispatchEvent(
-                          new CustomEvent('suggest-starter-policy', {
-                            detail: group.server.id,
-                          })
-                        )}
-                    ></sl-icon-button>
-                  </sl-tooltip>
-                  <sl-tooltip content="Edit server">
-                    <sl-icon-button
-                      name="pencil"
-                      @click=${() =>
-                        this.dispatchEvent(
-                          new CustomEvent('edit-server', {
-                            detail: group.server,
-                          })
-                        )}
-                    ></sl-icon-button>
-                  </sl-tooltip>
-                  <sl-tooltip content="Delete server">
-                    <sl-icon-button
-                      name="trash"
-                      @click=${() => {
-                        if (
-                          confirm(
-                            `Delete MCP server "${group.name}" and all its tools?`
-                          )
-                        ) {
+                    <sl-tooltip content="Scan for new tools">
+                      <sl-icon-button
+                        name="arrow-clockwise"
+                        @click=${() =>
                           this.dispatchEvent(
-                            new CustomEvent('delete-server', {
+                            new CustomEvent('scan-server', {
                               detail: group.server.id,
                             })
-                          );
-                        }
-                      }}
-                    ></sl-icon-button>
-                  </sl-tooltip>
-                </div>
-              `
-            : ''}
+                          )}
+                      ></sl-icon-button>
+                    </sl-tooltip>
+                    <sl-tooltip
+                      content=${
+                        this.hasDefaultAIModel
+                          ? 'Suggest starter policy'
+                          : 'Set a default AI model to suggest a starter policy'
+                      }
+                    >
+                      <sl-icon-button
+                        name="magic"
+                        @click=${() =>
+                          this.dispatchEvent(
+                            new CustomEvent('suggest-starter-policy', {
+                              detail: group.server.id,
+                            })
+                          )}
+                      ></sl-icon-button>
+                    </sl-tooltip>
+                    <sl-tooltip content="Edit server">
+                      <sl-icon-button
+                        name="pencil"
+                        @click=${() =>
+                          this.dispatchEvent(
+                            new CustomEvent('edit-server', {
+                              detail: group.server,
+                            })
+                          )}
+                      ></sl-icon-button>
+                    </sl-tooltip>
+                    <sl-tooltip content="Delete server">
+                      <sl-icon-button
+                        name="trash"
+                        @click=${() => {
+                          if (
+                            confirm(
+                              `Delete MCP server "${group.name}" and all its tools?`
+                            )
+                          ) {
+                            this.dispatchEvent(
+                              new CustomEvent('delete-server', {
+                                detail: group.server.id,
+                              })
+                            );
+                          }
+                        }}
+                      ></sl-icon-button>
+                    </sl-tooltip>
+                  </div>
+                `
+              : ''
+          }
         </div>
 
-        ${!group.collapsed
-          ? html`
-              <div class="tool-list">
-                ${group.tools.length === 0
-                  ? html`<div
-                      style="padding: var(--sl-spacing-small); color: var(--sl-color-neutral-400); font-size: var(--sl-font-size-small);"
-                    >
-                      No tools${this.filterText ? ' matching filter' : ''}.
-                      ${group.type === 'mcp' && this.mode === 'global'
-                        ? html`<sl-button
-                            size="small"
-                            variant="text"
-                            @click=${() =>
-                              this.dispatchEvent(
-                                new CustomEvent('scan-server', {
-                                  detail: group.id,
-                                })
-                              )}
-                            >Scan for tools</sl-button
-                          >`
-                        : ''}
-                    </div>`
-                  : repeat(
-                      group.tools,
-                      (tool) => this._getToolKey(tool),
-                      (tool) => {
-                        // determine rules
-                        const hasScopedRules =
-                          tool.name in this.scopedToolRules;
-                        const rules =
-                          this.mode === 'scoped' && hasScopedRules
-                            ? this.scopedToolRules[tool.name]
-                            : tool.access_rules || [];
+        ${
+          !group.collapsed
+            ? html`
+                <div class="tool-list">
+                  ${
+                    group.tools.length === 0
+                      ? html`<div
+                          style="padding: var(--sl-spacing-small); color: var(--sl-color-neutral-400); font-size: var(--sl-font-size-small);"
+                        >
+                          No tools${this.filterText ? ' matching filter' : ''}.
+                          ${
+                            group.type === 'mcp' && this.mode === 'global'
+                              ? html`<sl-button
+                                  size="small"
+                                  variant="text"
+                                  @click=${() =>
+                                    this.dispatchEvent(
+                                      new CustomEvent('scan-server', {
+                                        detail: group.id,
+                                      })
+                                    )}
+                                  >Scan for tools</sl-button
+                                >`
+                              : ''
+                          }
+                        </div>`
+                      : repeat(
+                          group.tools,
+                          (tool) => this._getToolKey(tool),
+                          (tool) => {
+                            // determine rules
+                            const hasScopedRules =
+                              tool.name in this.scopedToolRules;
+                            const rules =
+                              this.mode === 'scoped' && hasScopedRules
+                                ? this.scopedToolRules[tool.name]
+                                : tool.access_rules || [];
 
-                        const rulesInherited =
-                          this.mode === 'scoped' && !hasScopedRules;
-                        const toolIsEnabled =
-                          this.mode === 'scoped' &&
-                          tool.name in this.toolEnabledOverrides
-                            ? this.toolEnabledOverrides[tool.name]
-                            : tool.is_enabled;
+                            const rulesInherited =
+                              this.mode === 'scoped' && !hasScopedRules;
+                            const toolIsEnabled =
+                              this.mode === 'scoped' &&
+                              tool.name in this.toolEnabledOverrides
+                                ? this.toolEnabledOverrides[tool.name]
+                                : tool.is_enabled;
 
-                        return html`
-                          <tool-list-item
-                            .mode=${this.mode}
-                            .tool=${{ ...tool, is_enabled: toolIsEnabled }}
-                            .accessRules=${rules}
-                            .rulesInherited=${rulesInherited}
-                            .policies=${this.approvalPolicies}
-                            .features=${this.features}
-                            .expanded=${this.expandedTools.has(
-                              this._getToolKey(tool)
-                            )}
-                            @toggle-expand=${this._handleToggleExpand}
-                          ></tool-list-item>
-                        `;
-                      }
-                    )}
-              </div>
-            `
-          : ''}
+                            return html`
+                              <tool-list-item
+                                .mode=${this.mode}
+                                .tool=${{ ...tool, is_enabled: toolIsEnabled }}
+                                .usageStat=${this.toolStats[tool.name] || null}
+                                .accessRules=${rules}
+                                .rulesInherited=${rulesInherited}
+                                .policies=${this.approvalPolicies}
+                                .features=${this.features}
+                                .expanded=${this.expandedTools.has(
+                                  this._getToolKey(tool)
+                                )}
+                                @toggle-expand=${this._handleToggleExpand}
+                              ></tool-list-item>
+                            `;
+                          }
+                        )
+                  }
+                </div>
+              `
+            : ''
+        }
       </div>
     `;
   }
@@ -393,19 +407,23 @@ export class ToolsEditorComponent extends LitElement {
     const groups = this._getToolGroups();
     return html`
       <div class="tool-groups">
-        ${groups.length === 0
-          ? html`<div
-              style="padding: 2rem; text-align: center; color: var(--sl-color-neutral-400);"
-            >
-              ${this.mode === 'global'
-                ? 'No tools found. Add an MCP server to get started.'
-                : 'No managed tools found for this scope.'}
-            </div>`
-          : repeat(
-              groups,
-              (group) => group.id,
-              (group) => this._renderToolGroup(group)
-            )}
+        ${
+          groups.length === 0
+            ? html`<div
+                style="padding: 2rem; text-align: center; color: var(--sl-color-neutral-400);"
+              >
+                ${
+                  this.mode === 'global'
+                    ? 'No tools found. Add an MCP server to get started.'
+                    : 'No managed tools found for this scope.'
+                }
+              </div>`
+            : repeat(
+                groups,
+                (group) => group.id,
+                (group) => this._renderToolGroup(group)
+              )
+        }
       </div>
     `;
   }

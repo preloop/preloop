@@ -595,22 +595,28 @@ export class ApiKeysView extends LitElement {
                       ${parseUTCDate(key.created_at).toLocaleDateString()}
                     </td>
                     <td>
-                      ${key.last_activity_at || key.last_used_at
-                        ? parseUTCDate(
-                            key.last_activity_at || key.last_used_at || ''
-                          ).toLocaleDateString()
-                        : 'Never'}
+                      ${
+                        key.last_activity_at || key.last_used_at
+                          ? parseUTCDate(
+                              key.last_activity_at || key.last_used_at || ''
+                            ).toLocaleDateString()
+                          : 'Never'
+                      }
                     </td>
                     <td>
-                      ${(key.recent_model_calls ?? 0) +
-                      (key.recent_tool_calls ?? 0)}
+                      ${
+                        (key.recent_model_calls ?? 0) +
+                        (key.recent_tool_calls ?? 0)
+                      }
                       (${key.recent_model_calls ?? 0} model /
                       ${key.recent_tool_calls ?? 0} tool)
                     </td>
                     <td>
-                      ${key.expires_at
-                        ? parseUTCDate(key.expires_at).toLocaleDateString()
-                        : 'Never'}
+                      ${
+                        key.expires_at
+                          ? parseUTCDate(key.expires_at).toLocaleDateString()
+                          : 'Never'
+                      }
                     </td>
                     <td>
                       <sl-button
@@ -647,12 +653,14 @@ export class ApiKeysView extends LitElement {
       </div>
 
       <sl-dialog label="Create API Key" .open=${this.isCreateModalOpen}>
-        ${this.createError
-          ? html`<sl-alert variant="danger" open style="margin-bottom: 1rem;">
-              <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
-              <strong>Error:</strong> ${this.createError}
-            </sl-alert>`
-          : null}
+        ${
+          this.createError
+            ? html`<sl-alert variant="danger" open style="margin-bottom: 1rem;">
+                <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+                <strong>Error:</strong> ${this.createError}
+              </sl-alert>`
+            : null
+        }
         <sl-input
           autofocus
           style="margin-bottom: 1rem;"

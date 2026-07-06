@@ -34,7 +34,7 @@ Preloop is a single open-source platform that covers the five jobs teams otherwi
 | **MCP Firewall** | Govern every tool call an agent makes. Allow, deny, require approval, require justification. YAML + CEL policies. | MintMCP, Lunar.dev MCPX, TrueFoundry MCP Gateway |
 | **AI Model Gateway** | OpenAI- and Anthropic-compatible gateway with per-account/flow budgets, allowed-model lists, token accounting, and runtime attribution. | Portkey, Helicone, LiteLLM, Kong AI |
 | **Cost Analytics & Budgets** | Explain model spend by model, agent, session, API key, flow, and user; enforce budgets and inspect optimization opportunities. | FinOps dashboards, vendor billing exports |
-| **Human Approvals** | Mobile, watch, Slack, Mattermost, email, or webhook notifications with one-tap decisions and full context. Async-safe. | Custom Slack bots, Peta Desk |
+| **Human Approvals** | Mobile, watch, Slack, Mattermost, email, or webhook notifications with one-tap decisions and full context. Approve any onboarded agent's tool calls — including native `Bash`/`Edit` — not just MCP tools. Async-safe. | Custom Slack bots, Peta Desk |
 | **Runtime Observability** | Session-level timeline of tool calls, model calls, policy decisions, approvals, spend, and outcomes across agents. | AgentOps, Langfuse, LangSmith |
 | **Audit & AI Act Evidence** | Durable logs with matched policy, approver, inputs, timestamps, and outcome. Ready for security review and EU AI Act work. | Credo AI, IBM watsonx.governance |
 
@@ -99,7 +99,7 @@ runtime, and let the plugin connect.
 ### Access Policies & Approval Workflows
 Define fine-grained access controls for any AI tool or operation. Tools support multiple ordered access rules that evaluate in priority order. When an AI attempts a protected operation, Preloop pauses and notifies you:
 - **Instant notifications** via mobile app, email, Slack, Mattermost, or custom webhook.
-- **One-tap approvals** from your phone, watch, or desktop.
+- **One-tap approvals** from your phone, watch, or desktop — for any onboarded agent's tool calls, including native `Bash`/`Edit` actions, not just MCP tools.
 - **Async approval mode** lets the agent poll for status instead of blocking network hooks.
 - **Per-tool justification** — require (or optionally request) the agent to explain *why* a tool is being called.
 - **Full Audit Trail** — every action is logged with full context: what was attempted, the matched policy, execution duration, and who approved it.
@@ -179,17 +179,8 @@ Siri and Google Assistant should be treated as invocation and handoff surfaces, 
 
 Choose the path that matches what you want to evaluate:
 
-- **Fast public trial:** deploy the self-contained Railway trial template. This gives you a public Preloop URL without manually provisioning a VM.
 - **Local laptop:** install the OSS stack with the install script.
 - **Kubernetes/prod-like:** use the Helm chart in [`helm/preloop`](helm/preloop).
-
-### Try Preloop OSS in 5 minutes
-
-[![Deploy on Railway](https://railway.com/button.svg)](deploy/railway/README.md)
-
-The Railway trial runs Preloop Console, API/gateway, worker/scheduler, Postgres with pgvector, and NATS in one Railway project. The default template is self-contained and does not depend on external managed databases or queues. It is intended for evaluation, not hardened production.
-
-Until the public Railway template code is published, the button opens the checked-in template guide and service map in [`deploy/railway`](deploy/railway). After publishing, replace the link target with the Railway template URL.
 
 ### Install locally
 

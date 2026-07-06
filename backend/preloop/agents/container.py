@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import shlex
 from typing import Any, Dict, Optional
 
 import aiodocker
@@ -1358,215 +1359,200 @@ class ContainerAgentExecutor(AgentExecutor):
             return " && ".join(commands)
         return ""
 
-    def _prepare_git_clone_command(self, execution_context: Dict[str, Any]) -> str:
-        """
-        Prepare git clone commands for multiple repositories with branch management.
+    def _resolve_git_clone_repositories(
+        self, execution_context: Dict[str, Any], git_config: Dict[str, Any]
+    ) -> list[Dict[str, Any]]:
+        """Resolve repository entries from config or trigger project fallback."""
 
-        Args:
-            execution_context: Execution context
+        repositories = git_config.get("repositories", [])
+        if repositories:
+            return repositories
 
-        Returns:
-            Git clone commands string (multiple commands joined with &&) or empty string
-        """
-        try:
-            git_config = execution_context.get("git_clone_config", {})
-            repositories = git_config.get("repositories", [])
-
-            # If no repositories configured but git clone is enabled,
-            # create a default repository entry using trigger project
-            if not repositories:
-                trigger_project_id = execution_context.get("trigger_project_id")
-                if trigger_project_id:
-                    self.logger.info(
-                        f"No repositories configured, using trigger project: {trigger_project_id}"
-                    )
-                    # Create a virtual repository entry using trigger project
-                    repositories = [
-                        {
-                            "project_id": trigger_project_id,
-                            "clone_path": "/workspace",
-                        }
-                    ]
-                else:
-                    self.logger.warning(
-                        "No repositories configured and no trigger project available for git clone"
-                    )
-                    return ""
-
-            # Get git user configuration (defaults)
-            git_user_name = git_config.get("git_user_name", "Preloop")
-            git_user_email = git_config.get("git_user_email", "git@preloop.ai")
-            source_branch = git_config.get("source_branch") or None
-            target_branch = git_config.get("target_branch") or None
-
-            # Resolve source branch from trigger event for PR/MR flows
-            trigger_data = execution_context.get("trigger_event_data", {})
-            if not source_branch:
-                source_branch = self._extract_source_branch_from_trigger(trigger_data)
-            if not source_branch:
-                source_branch = "main"
-
-            # Auto-generate target branch if not specified
-            if not target_branch:
-                flow_name = execution_context.get("flow_name", "flow")
-                execution_id = execution_context.get("execution_id", "exec")
-                # Create a branch name like "preloop/fix-bug-abc123"
-                safe_flow_name = flow_name.lower().replace(" ", "-")[:30]
-                target_branch = f"preloop/{safe_flow_name}-{execution_id[:8]}"
-
-            # Extract commit SHA from trigger event for checkout and display
-            trigger_data = execution_context.get("trigger_event_data", {})
-            commit_sha = self._extract_commit_sha_from_trigger(trigger_data)
-            if commit_sha:
-                self.logger.info(
-                    f"Extracted commit SHA from trigger event: {commit_sha[:8]}"
-                )
-
-            clone_commands = []
-
-            # Track if we successfully configured any repositories
-            configured_repos_count = 0
-
-            # Configure git user globally (do this once at the start)
-            git_setup_commands = [
-                "mkdir -p /workspace",
-                f'git config --global user.name "{git_user_name}"',
-                f'git config --global user.email "{git_user_email}"',
+        trigger_project_id = execution_context.get("trigger_project_id")
+        if trigger_project_id:
+            self.logger.info(
+                f"No repositories configured, using trigger project: {trigger_project_id}"
+            )
+            return [
+                {
+                    "project_id": trigger_project_id,
+                    "clone_path": "/workspace",
+                }
             ]
 
-            for idx, repo_config in enumerate(repositories):
-                # Get repository URL
-                repo_url = repo_config.get("repository_url")
+        self.logger.warning(
+            "No repositories configured and no trigger project available for git clone"
+        )
+        return []
 
-                # If no URL, try to get from project_id (in repo config) or trigger_project_id
-                if not repo_url:
-                    project_id = repo_config.get("project_id")
+    def _resolve_git_branch_plan(
+        self, execution_context: Dict[str, Any], git_config: Dict[str, Any]
+    ) -> tuple[str, str, Optional[str], str, str]:
+        """Resolve source/target branches, commit SHA, and git identity settings."""
 
-                    # If no project_id in repo config, use trigger_project_id
-                    if not project_id:
-                        project_id = execution_context.get("trigger_project_id")
-                        if project_id:
-                            self.logger.info(
-                                f"Using trigger project {project_id} for repository #{idx + 1}"
-                            )
+        git_user_name = git_config.get("git_user_name", "Preloop")
+        git_user_email = git_config.get("git_user_email", "git@preloop.ai")
+        source_branch = git_config.get("source_branch") or None
+        target_branch = git_config.get("target_branch") or None
+        trigger_data = execution_context.get("trigger_event_data", {})
 
-                    if project_id:
-                        # Fetch project details from database to construct repository URL
-                        repo_url = self._get_repo_url_from_project(
-                            project_id, execution_context.get("account_id")
-                        )
-                        if repo_url:
-                            self.logger.info(
-                                f"Resolved repository URL from project {project_id}"
-                            )
-                        else:
-                            self.logger.warning(
-                                f"Could not construct repository URL from project {project_id}"
-                            )
+        if not source_branch:
+            source_branch = self._extract_source_branch_from_trigger(trigger_data)
+        if not source_branch:
+            source_branch = "main"
 
-                    # Final fallback: try to extract from trigger event data
-                    if not repo_url:
-                        repo_url = self._extract_repo_url_from_trigger(trigger_data)
-                        if repo_url:
-                            self.logger.info(
-                                "Extracted repository URL from trigger event data"
-                            )
+        if not target_branch:
+            flow_name = execution_context.get("flow_name", "flow")
+            execution_id = execution_context.get("execution_id", "exec")
+            safe_flow_name = flow_name.lower().replace(" ", "-")[:30]
+            target_branch = f"preloop/{safe_flow_name}-{execution_id[:8]}"
 
-                if not repo_url:
-                    self.logger.error(
-                        f"No repository URL found for repo #{idx + 1}. "
-                        f"Please add 'repository_url' field to git_clone_config.repositories, "
-                        f"or select a project in the trigger configuration. "
-                        f"Repo config: {repo_config}, "
-                        f"Trigger project ID: {execution_context.get('trigger_project_id')}"
-                    )
-                    continue
+        commit_sha = self._extract_commit_sha_from_trigger(trigger_data)
+        if commit_sha:
+            self.logger.info(
+                f"Extracted commit SHA from trigger event: {commit_sha[:8]}"
+            )
 
-                # For URLs without credentials, inject token
-                if repo_url and "@" not in repo_url:
-                    # URL doesn't have credentials, need to inject
-                    token = None
-                    tracker_type = None
+        return source_branch, target_branch, commit_sha, git_user_name, git_user_email
 
-                    # Try to get credentials from repo config's tracker_id
-                    tracker_id = repo_config.get("tracker_id")
-                    git_credentials_map = execution_context.get(
-                        "git_credentials_map", {}
-                    )
+    def _build_git_global_setup_commands(
+        self, git_user_name: str, git_user_email: str
+    ) -> list[str]:
+        """Build one-time git identity and workspace setup commands."""
 
-                    if tracker_id and tracker_id in git_credentials_map:
-                        tracker_creds = git_credentials_map.get(tracker_id)
-                        token = tracker_creds.get("token")
-                        tracker_type = tracker_creds.get("tracker_type")
-                    else:
-                        # Fallback: try to get token from trigger project's tracker
-                        trigger_project_id = execution_context.get("trigger_project_id")
-                        if trigger_project_id:
-                            token, tracker_type = self._get_token_from_project(
-                                trigger_project_id, execution_context.get("account_id")
-                            )
+        return [
+            "mkdir -p /workspace",
+            f"git config --global user.name {shlex.quote(git_user_name)}",
+            f"git config --global user.email {shlex.quote(git_user_email)}",
+        ]
 
-                    if token:
-                        # Inject token into URL
-                        if "github.com" in repo_url or tracker_type == "github":
-                            repo_url = repo_url.replace("https://", f"https://{token}@")
-                            self.logger.info("Injected GitHub token into URL")
-                        elif "gitlab" in repo_url.lower() or tracker_type == "gitlab":
-                            repo_url = repo_url.replace(
-                                "https://", f"https://gitlab-ci-token:{token}@"
-                            )
-                            self.logger.info("Injected GitLab token into URL")
-                        else:
-                            self.logger.warning(
-                                f"Could not determine tracker type for token injection. "
-                                f"URL: {repo_url[:50]}..., tracker_type: {tracker_type}"
-                            )
-                    else:
-                        self.logger.warning(
-                            "No token available to inject into repository URL. "
-                            "Clone may fail if the repository is private."
-                        )
+    def _resolve_repository_clone_url(
+        self,
+        repo_config: Dict[str, Any],
+        repo_index: int,
+        execution_context: Dict[str, Any],
+        trigger_data: Dict[str, Any],
+    ) -> Optional[str]:
+        """Resolve a clone URL from repo config, project metadata, or trigger data."""
 
-                # Get clone path - if it starts with /, use as-is (absolute), otherwise make it relative to /workspace
-                clone_path = repo_config.get("clone_path", f"/workspace-{idx + 1}")
-                if clone_path.startswith("/"):
-                    # Absolute path
-                    full_path = clone_path
-                else:
-                    # Relative path - prepend /workspace/
-                    full_path = f"/workspace/{clone_path}"
+        repo_url = repo_config.get("repository_url")
+        if repo_url:
+            return repo_url
 
-                # Get branch for clone. When a trigger commit SHA is available, clone the
-                # MR/PR target (or default) branch instead of the source branch — the
-                # source ref may not exist yet (GitLab MR race) or may live on a fork.
-                repo_branch = repo_config.get("branch")
-                if repo_branch:
-                    clone_branch = repo_branch
-                elif commit_sha:
-                    clone_branch = (
-                        self._extract_target_branch_from_trigger(trigger_data) or "main"
-                    )
-                    self.logger.info(
-                        "Commit SHA %s available; cloning branch '%s' "
-                        "instead of source branch '%s'",
-                        commit_sha[:8],
-                        clone_branch,
-                        source_branch,
-                    )
-                else:
-                    clone_branch = source_branch
-                branch_arg = f" -b {clone_branch}" if clone_branch else ""
+        project_id = repo_config.get("project_id")
+        if not project_id:
+            project_id = execution_context.get("trigger_project_id")
+            if project_id:
+                self.logger.info(
+                    f"Using trigger project {project_id} for repository #{repo_index + 1}"
+                )
 
-                # Build repository setup commands with robust error handling
-                # Note: The codex-universal image creates .nvmrc in the working directory,
-                # which causes git clone to fail if cloning to /workspace. We need to:
-                # 1. Pre-check and clean the target directory
-                # 2. Wrap git clone with explicit error handling
-                # 3. Fail immediately if clone doesn't work
+        if project_id:
+            repo_url = self._get_repo_url_from_project(
+                project_id, execution_context.get("account_id")
+            )
+            if repo_url:
+                self.logger.info(f"Resolved repository URL from project {project_id}")
+            else:
+                self.logger.warning(
+                    f"Could not construct repository URL from project {project_id}"
+                )
 
-                # Pre-clone command: ensure target directory is empty or doesn't exist
-                # This handles the codex-universal .nvmrc issue and other edge cases
-                pre_clone_cmd = f"""
+        if not repo_url:
+            repo_url = self._extract_repo_url_from_trigger(trigger_data)
+            if repo_url:
+                self.logger.info("Extracted repository URL from trigger event data")
+
+        return repo_url
+
+    def _inject_git_credentials_into_url(
+        self,
+        repo_url: str,
+        repo_config: Dict[str, Any],
+        execution_context: Dict[str, Any],
+    ) -> str:
+        """Inject tracker credentials into HTTPS clone URLs when needed."""
+
+        if "@" in repo_url:
+            return repo_url
+
+        token: Optional[str] = None
+        tracker_type: Optional[str] = None
+        tracker_id = repo_config.get("tracker_id")
+        git_credentials_map = execution_context.get("git_credentials_map", {})
+
+        if tracker_id and tracker_id in git_credentials_map:
+            tracker_creds = git_credentials_map.get(tracker_id, {})
+            token = tracker_creds.get("token")
+            tracker_type = tracker_creds.get("tracker_type")
+        else:
+            trigger_project_id = execution_context.get("trigger_project_id")
+            if trigger_project_id:
+                token, tracker_type = self._get_token_from_project(
+                    trigger_project_id, execution_context.get("account_id")
+                )
+
+        if not token:
+            self.logger.warning(
+                "No token available to inject into repository URL. "
+                "Clone may fail if the repository is private."
+            )
+            return repo_url
+
+        if "github.com" in repo_url or tracker_type == "github":
+            self.logger.info("Injected GitHub token into URL")
+            return repo_url.replace("https://", f"https://{token}@")
+        if "gitlab" in repo_url.lower() or tracker_type == "gitlab":
+            self.logger.info("Injected GitLab token into URL")
+            return repo_url.replace("https://", f"https://gitlab-ci-token:{token}@")
+
+        self.logger.warning(
+            f"Could not determine tracker type for token injection. "
+            f"URL: {repo_url[:50]}..., tracker_type: {tracker_type}"
+        )
+        return repo_url
+
+    def _resolve_repository_clone_path(
+        self, repo_config: Dict[str, Any], repo_index: int
+    ) -> str:
+        """Resolve absolute clone path for a repository entry."""
+
+        clone_path = repo_config.get("clone_path", f"/workspace-{repo_index + 1}")
+        if clone_path.startswith("/"):
+            return clone_path
+        return f"/workspace/{clone_path}"
+
+    def _resolve_repository_clone_branch(
+        self,
+        repo_config: Dict[str, Any],
+        *,
+        commit_sha: Optional[str],
+        source_branch: str,
+        trigger_data: Dict[str, Any],
+    ) -> str:
+        """Choose the branch passed to ``git clone -b`` for one repository."""
+
+        repo_branch = repo_config.get("branch")
+        if repo_branch:
+            return repo_branch
+        if commit_sha:
+            clone_branch = (
+                self._extract_target_branch_from_trigger(trigger_data) or "main"
+            )
+            self.logger.info(
+                "Commit SHA %s available; cloning branch '%s' "
+                "instead of source branch '%s'",
+                commit_sha[:8],
+                clone_branch,
+                source_branch,
+            )
+            return clone_branch
+        return source_branch
+
+    def _build_git_pre_clone_shell(self, full_path: str) -> str:
+        """Build shell that prepares the clone target directory."""
+
+        return f"""
 echo "Preparing clone directory: {full_path}"
 if [ -d "{full_path}" ]; then
     if [ -d "{full_path}/.git" ]; then
@@ -1583,10 +1569,15 @@ if [ -d "{full_path}" ]; then
 fi
 """.strip()
 
-                # Clone command with explicit error checking
-                clone_cmd = f"""
+    def _build_git_clone_shell(
+        self, repo_url: str, full_path: str, clone_branch: str
+    ) -> str:
+        """Build the guarded ``git clone`` shell command."""
+
+        branch_arg = f" -b {shlex.quote(clone_branch)}" if clone_branch else ""
+        return f"""
 echo "Cloning repository to {full_path}..."
-if ! git clone{branch_arg} {repo_url} {full_path}; then
+if ! git clone{branch_arg} {shlex.quote(repo_url)} {shlex.quote(full_path)}; then
     echo "========================================="
     echo "FATAL ERROR: Git clone failed!"
     echo "Could not clone repository to {full_path}"
@@ -1596,106 +1587,224 @@ if ! git clone{branch_arg} {repo_url} {full_path}; then
 fi
 """.strip()
 
-                mr_fetch_ref = self._extract_merge_request_ref_from_trigger(
-                    trigger_data
-                )
+    def _build_git_branch_setup_shell(
+        self,
+        *,
+        full_path: str,
+        commit_sha: Optional[str],
+        source_branch: str,
+        target_branch: str,
+        trigger_data: Dict[str, Any],
+    ) -> str:
+        """Build post-clone branch and commit checkout commands."""
 
-                # Branch setup: when we have a trigger commit, fetch MR/PR refs first,
-                # then create the agent target branch from the checked-out commit.
-                if commit_sha:
-                    mr_fetch_line = ""
-                    if mr_fetch_ref:
-                        mr_fetch_line = (
-                            f'echo "Fetching merge request ref {mr_fetch_ref}..."\n'
-                            f"git fetch origin {mr_fetch_ref}:preloop-mr-head "
-                            f"2>/dev/null || true"
-                        )
-                    branch_setup_cmd = f"""
-cd {full_path}
+        q_path = shlex.quote(full_path)
+        q_source = shlex.quote(source_branch)
+        q_target = shlex.quote(target_branch)
+
+        if commit_sha:
+            q_commit = shlex.quote(commit_sha)
+            q_commit_short = shlex.quote(commit_sha[:8])
+            mr_fetch_ref = self._extract_merge_request_ref_from_trigger(trigger_data)
+            mr_fetch_line = ""
+            if mr_fetch_ref:
+                q_mr_ref = shlex.quote(mr_fetch_ref)
+                mr_fetch_line = (
+                    f"echo Fetching merge request ref {q_mr_ref}...\n"
+                    f"git fetch origin {q_mr_ref}:preloop-mr-head "
+                    f"2>/dev/null || true"
+                )
+            return f"""
+cd {q_path}
 echo "========================================="
-echo "Checking out specific commit: {commit_sha}"
+echo Checking out specific commit: {q_commit}
 echo "========================================="
-if ! git checkout {commit_sha} 2>/dev/null; then
+if ! git checkout {q_commit} 2>/dev/null; then
     echo "Direct checkout failed, fetching commit..."
-    git fetch origin {commit_sha} 2>/dev/null || true
+    git fetch origin {q_commit} 2>/dev/null || true
 fi
-if ! git checkout {commit_sha} 2>/dev/null; then
-    echo "Commit fetch failed, trying source branch {source_branch}..."
-    git fetch origin {source_branch}:preloop-source-head 2>/dev/null || true
+if ! git checkout {q_commit} 2>/dev/null; then
+    echo "Commit fetch failed, trying source branch {q_source}..."
+    git fetch origin {q_source}:preloop-source-head 2>/dev/null || true
 fi
-if ! git checkout {commit_sha} 2>/dev/null; then
+if ! git checkout {q_commit} 2>/dev/null; then
 {mr_fetch_line}
-    if ! git checkout {commit_sha} 2>/dev/null; then
+    if ! git checkout {q_commit} 2>/dev/null; then
         echo "========================================="
-        echo "FATAL ERROR: Could not checkout commit {commit_sha[:8]}"
+        echo "FATAL ERROR: Could not checkout commit {q_commit_short}"
         echo "Tried direct checkout, commit fetch, source branch, and MR ref."
         echo "========================================="
         exit 1
     fi
 fi
-echo "Creating agent target branch {target_branch} from commit {commit_sha[:8]}"
-if ! git checkout -b {target_branch}; then
+echo Creating agent target branch {q_target} from commit {q_commit_short}
+if ! git checkout -b {q_target}; then
     echo "========================================="
-    echo "FATAL ERROR: Could not create target branch '{target_branch}'"
+    echo "FATAL ERROR: Could not create target branch {q_target}"
     echo "========================================="
     exit 1
 fi
 cd /workspace
 """.strip()
-                    sha_checkout_cmd = ""
-                else:
-                    branch_setup_cmd = f"""
-cd {full_path}
-echo "Setting up branches: source={source_branch}, target={target_branch}"
+
+        return f"""
+cd {q_path}
+echo Setting up branches: source={q_source}, target={q_target}
 # Checkout source branch (create if it doesn't exist remotely)
-if ! git checkout {source_branch} 2>/dev/null; then
-    echo "Source branch '{source_branch}' not found, creating from current HEAD"
-    git checkout -b {source_branch}
+if ! git checkout {q_source} 2>/dev/null; then
+    echo Source branch {q_source} not found, creating from current HEAD
+    git checkout -b {q_source}
 fi
 # Create and checkout target branch for commits
-if ! git checkout -b {target_branch}; then
+if ! git checkout -b {q_target}; then
     echo "========================================="
-    echo "FATAL ERROR: Could not create target branch '{target_branch}'"
+    echo "FATAL ERROR: Could not create target branch {q_target}"
     echo "========================================="
     exit 1
 fi
 cd /workspace
 """.strip()
-                    sha_checkout_cmd = ""
 
-                # Validation command
-                sha_display = ""
-                if commit_sha:
-                    sha_display = f'\necho "  Commit: {commit_sha}"'
+    def _build_git_clone_validation_shell(
+        self,
+        *,
+        full_path: str,
+        source_branch: str,
+        target_branch: str,
+        commit_sha: Optional[str],
+    ) -> str:
+        """Build shell that verifies the clone succeeded."""
 
-                validation_cmd = f"""
-if [ ! -d "{full_path}" ] || [ ! -d "{full_path}/.git" ]; then
+        q_path = shlex.quote(full_path)
+        q_git_dir = shlex.quote(f"{full_path}/.git")
+        q_source = shlex.quote(source_branch)
+        q_target = shlex.quote(target_branch)
+        sha_display = (
+            f'\necho "  Commit: {shlex.quote(commit_sha)}"' if commit_sha else ""
+        )
+        return f"""
+if [ ! -d {q_path} ] || [ ! -d {q_git_dir} ]; then
     echo "========================================="
     echo "FATAL ERROR: Git clone validation failed!"
-    echo "Repository directory '{full_path}' does not exist or is not a git repository."
+    echo "Repository directory {q_path} does not exist or is not a git repository."
     echo "Flow execution cannot continue without repository access."
     echo "========================================="
     exit 1
 fi
 echo "========================================="
-echo "✓ Repository successfully cloned to {full_path}"
-echo "  Branch: {target_branch} (from {source_branch})"{sha_display}
+echo "✓ Repository successfully cloned to {q_path}"
+echo "  Branch: {q_target} (from {q_source})"{sha_display}
 echo "========================================="
 """.strip()
 
-                cmds = [pre_clone_cmd, clone_cmd, branch_setup_cmd]
-                if sha_checkout_cmd:
-                    cmds.append(sha_checkout_cmd)
-                cmds.append(validation_cmd)
-                clone_commands.extend(cmds)
+    def _build_repository_clone_command_block(
+        self,
+        *,
+        repo_config: Dict[str, Any],
+        repo_index: int,
+        execution_context: Dict[str, Any],
+        source_branch: str,
+        target_branch: str,
+        commit_sha: Optional[str],
+        trigger_data: Dict[str, Any],
+    ) -> Optional[list[str]]:
+        """Build shell command blocks for one repository."""
 
+        repo_url = self._resolve_repository_clone_url(
+            repo_config, repo_index, execution_context, trigger_data
+        )
+        if not repo_url:
+            self.logger.error(
+                f"No repository URL found for repo #{repo_index + 1}. "
+                f"Please add 'repository_url' field to git_clone_config.repositories, "
+                f"or select a project in the trigger configuration. "
+                f"Repo config: {repo_config}, "
+                f"Trigger project ID: {execution_context.get('trigger_project_id')}"
+            )
+            return None
+
+        repo_url = self._inject_git_credentials_into_url(
+            repo_url, repo_config, execution_context
+        )
+        full_path = self._resolve_repository_clone_path(repo_config, repo_index)
+        clone_branch = self._resolve_repository_clone_branch(
+            repo_config,
+            commit_sha=commit_sha,
+            source_branch=source_branch,
+            trigger_data=trigger_data,
+        )
+
+        return [
+            self._build_git_pre_clone_shell(full_path),
+            self._build_git_clone_shell(repo_url, full_path, clone_branch),
+            self._build_git_branch_setup_shell(
+                full_path=full_path,
+                commit_sha=commit_sha,
+                source_branch=source_branch,
+                target_branch=target_branch,
+                trigger_data=trigger_data,
+            ),
+            self._build_git_clone_validation_shell(
+                full_path=full_path,
+                source_branch=source_branch,
+                target_branch=target_branch,
+                commit_sha=commit_sha,
+            ),
+        ]
+
+    def _prepare_git_clone_command(self, execution_context: Dict[str, Any]) -> str:
+        """
+        Prepare git clone commands for multiple repositories with branch management.
+
+        Args:
+            execution_context: Execution context
+
+        Returns:
+            Git clone commands string (multiple commands joined with &&) or empty string
+        """
+        try:
+            git_config = execution_context.get("git_clone_config", {})
+            repositories = self._resolve_git_clone_repositories(
+                execution_context, git_config
+            )
+            if not repositories:
+                return ""
+
+            (
+                source_branch,
+                target_branch,
+                commit_sha,
+                git_user_name,
+                git_user_email,
+            ) = self._resolve_git_branch_plan(execution_context, git_config)
+            trigger_data = execution_context.get("trigger_event_data", {})
+            git_setup_commands = self._build_git_global_setup_commands(
+                git_user_name, git_user_email
+            )
+
+            clone_commands: list[str] = []
+            configured_repos_count = 0
+            for idx, repo_config in enumerate(repositories):
+                command_block = self._build_repository_clone_command_block(
+                    repo_config=repo_config,
+                    repo_index=idx,
+                    execution_context=execution_context,
+                    source_branch=source_branch,
+                    target_branch=target_branch,
+                    commit_sha=commit_sha,
+                    trigger_data=trigger_data,
+                )
+                if command_block is None:
+                    continue
+
+                clone_commands.extend(command_block)
                 configured_repos_count += 1
+                full_path = self._resolve_repository_clone_path(repo_config, idx)
                 self.logger.info(
                     f"Prepared git clone for {full_path}: "
                     f"source={source_branch}, target={target_branch}"
                 )
 
-            # Check if any repositories were successfully configured
             if configured_repos_count == 0:
                 error_msg = (
                     f"FATAL: Git clone configured with {len(repositories)} repositories "
@@ -1704,16 +1813,11 @@ echo "========================================="
                     f"or that the flow is triggered by a webhook with repository information."
                 )
                 self.logger.error(error_msg)
-                # Return a command that will fail immediately with clear error
                 return f'echo "{error_msg}" && exit 1'
 
-            # Store for later use in post-execution (only if we have valid repos)
             execution_context["_git_target_branch"] = target_branch
             execution_context["_git_source_branch"] = source_branch
-
-            # Combine setup and clone commands
-            all_commands = git_setup_commands + clone_commands
-            return " && ".join(all_commands)
+            return " && ".join(git_setup_commands + clone_commands)
 
         except Exception as e:
             self.logger.error(f"Error preparing git clone command: {e}", exc_info=True)

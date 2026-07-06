@@ -120,6 +120,90 @@ var agentSpecs = []agentSpec{
 		BootstrapConfigPath: hermesBootstrapConfigPath,
 		Parser:              parseHermesConfig,
 	},
+	{
+		// Google Antigravity (the IDE and the `agy` CLI share one MCP config
+		// tree under ~/.gemini, so a single managed entry governs both
+		// surfaces). The MCP path moved between releases, so we probe the
+		// newer unified location and the IDE-specific one. Model traffic is
+		// locked to Google's backend (no BYOK / base URL), so Antigravity is
+		// MCP-firewall only — see supportsManagedGateway.
+		Name: antigravityAgentName,
+		ConfigPaths: []string{
+			".gemini/config/mcp_config.json",
+			".gemini/antigravity/mcp_config.json",
+		},
+		DetectionPaths: []string{
+			"Library/Application Support/Antigravity",
+			".config/Antigravity",
+			".gemini/antigravity",
+			".local/bin/agy",
+		},
+		BootstrapConfigPath: ".gemini/antigravity/mcp_config.json",
+		Parser:              parseGenericMCP,
+	},
+	{
+		// Devin (Cognition). Local CLI/Desktop config under ~/.config/devin.
+		// Inference always runs in Cognition's cloud, so Devin is MCP-only;
+		// model traffic cannot be redirected through the gateway.
+		Name: devinAgentName,
+		ConfigPaths: []string{
+			".config/devin/config.json",
+			".devin/config.json",
+		},
+		DetectionPaths: []string{
+			".config/devin",
+			".devin",
+			".local/bin/devin",
+		},
+		BootstrapConfigPath: ".config/devin/config.json",
+		Parser:              parseGenericMCP,
+	},
+}
+
+// Display names for the additional MCP-only agent adapters. Kept as
+// constants so the per-agent switch statements stay in sync with the
+// registry above.
+const (
+	antigravityAgentName = "Antigravity"
+	devinAgentName       = "Devin"
+)
+
+// isAntigravityAgent reports whether the agent is the Antigravity surface
+// (covering both the IDE and the `agy` CLI, which share one MCP config).
+func isAntigravityAgent(agent AgentConfig) bool {
+	return strings.EqualFold(strings.TrimSpace(agent.Name), antigravityAgentName)
+}
+
+// isDevinAgent reports whether the agent is Devin.
+func isDevinAgent(agent AgentConfig) bool {
+	return strings.EqualFold(strings.TrimSpace(agent.Name), devinAgentName)
+}
+
+// mcpOnlyAgentModelNote returns a clear, agent-specific note explaining why
+// an agent is onboarded for tool-call governance only and its model traffic
+// is not routed through the Preloop gateway. These agents either expose no
+// programmatic custom-base-URL hook (Cursor) or run inference exclusively on
+// a vendor backend that cannot be redirected (Antigravity, Devin). Returns
+// "" for agents that do support gateway routing.
+func mcpOnlyAgentModelNote(agent AgentConfig) string {
+	switch {
+	case strings.EqualFold(strings.TrimSpace(agent.Name), "cursor"):
+		return "Cursor tool calls are governed through Preloop's MCP firewall. " +
+			"Cursor only accepts a custom model base URL via its in-app Settings → Models " +
+			"(global, chat-only, no config-file hook), so Preloop does not rewrite model " +
+			"traffic automatically. To route model spend through Preloop, set the OpenAI " +
+			"base URL override in Cursor settings to your Preloop gateway URL manually."
+	case isAntigravityAgent(agent):
+		return "Antigravity tool calls are governed through Preloop's MCP firewall. " +
+			"Antigravity is locked to Google-hosted models with no BYO key or custom base " +
+			"URL, so model traffic cannot be routed through the Preloop gateway."
+	case isDevinAgent(agent):
+		return "Devin tool calls are governed through Preloop's MCP firewall. " +
+			"Devin runs all inference in Cognition's cloud and does not support third-party " +
+			"LLM endpoints, so model traffic cannot be routed through the Preloop gateway."
+	default:
+		return ""
+	}
 }
 
 // agentsCmd is the top-level agent management command.
@@ -137,7 +221,8 @@ var agentsDiscoverCmd = &cobra.Command{
 MCP server configurations without mutating local files or your Preloop account.
 
 Supported agents: Claude Code, Cursor, Windsurf, VSCode/Copilot,
-                  Gemini CLI, OpenCode, Codex CLI, OpenClaw, Hermes.
+                  Gemini CLI, OpenCode, Codex CLI, OpenClaw, Hermes,
+                  Antigravity, Devin.
 
 Examples:
   preloop agents discover
@@ -441,6 +526,7 @@ func init() {
 	agentsEnrollCmd.Flags().Bool("live-validate", true, "after onboarding, run a supported live validation prompt through the agent (default: true; pass --skip-live-validate or --live-validate=false to opt out)")
 	agentsEnrollCmd.Flags().Bool("skip-live-validate", false, "do not run a live validation prompt after onboarding (overrides --live-validate)")
 	agentsEnrollCmd.Flags().StringSlice("tags", []string{}, "add key-value tags to the enrolled agent (e.g., --tags ext=true,env=prod)")
+	agentsEnrollCmd.Flags().Bool("approvals", false, "install a native tool-permission hook that routes would-prompt tool calls to Preloop mobile/watch approvals (Claude Code, Codex CLI, Cursor)")
 	agentsListCmd.Flags().Bool("json", false, "output managed agents as JSON")
 	agentsStatusCmd.Flags().Bool("json", false, "output managed status as JSON")
 	agentsValidateCmd.Flags().Bool("live", false, "run a supported live validation prompt in addition to config validation")
@@ -489,7 +575,7 @@ func runAgentsDiscover(cmd *cobra.Command, args []string) error {
 
 	if len(discovered) == 0 {
 		fmt.Println("No AI agents found on this machine.")
-		fmt.Println("Looked for: Claude Code, Cursor, Windsurf, VSCode, Gemini CLI, OpenCode, Codex CLI, OpenClaw")
+		fmt.Println("Looked for: Claude Code, Cursor, Windsurf, VSCode, Gemini CLI, OpenCode, Codex CLI, OpenClaw, Hermes, Antigravity, Devin")
 		return nil
 	}
 
@@ -804,6 +890,7 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 	skipLiveValidate, _ := cmd.Flags().GetBool("skip-live-validate")
 	tagsInput, _ := cmd.Flags().GetStringSlice("tags")
 	runAll, _ := cmd.Flags().GetBool("all")
+	approvals, _ := cmd.Flags().GetBool("approvals")
 
 	tags := make(map[string]string)
 	for _, kv := range tagsInput {
@@ -825,6 +912,7 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 		AutoApprove:      autoApprove,
 		LiveValidate:     liveValidate,
 		SkipLiveValidate: skipLiveValidate,
+		Approvals:        approvals,
 		Tags:             tags,
 		SkipConfirmation: false,
 		Input:            os.Stdin,
@@ -1660,6 +1748,9 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 		if err := removeClaudeCodeManagedMCPServer(agent); err != nil {
 			return err
 		}
+		if err := removeApprovalHooks(agent, nil); err != nil {
+			return err
+		}
 	}
 
 	if detail != nil {
@@ -1717,6 +1808,9 @@ func restoreAgentFromBackup(agent AgentConfig, state *localEnrollmentState) (tim
 		return time.Time{}, err
 	}
 	if err := removeClaudeCodeManagedMCPServer(agent); err != nil {
+		return time.Time{}, err
+	}
+	if err := removeApprovalHooks(agent, nil); err != nil {
 		return time.Time{}, err
 	}
 	now := time.Now().UTC()
@@ -2067,7 +2161,7 @@ func defaultAgentDisplayName(agent AgentConfig) string {
 	typeSlug := slugifyAgentName(agent.Name)
 	baseSlug := slugifyAgentName(configBase)
 	switch {
-	case configBase == "", configBase == ".", strings.EqualFold(configBase, "config"), strings.EqualFold(configBase, "settings"), strings.EqualFold(configBase, "openclaw"):
+	case configBase == "", configBase == ".", strings.EqualFold(configBase, "config"), strings.EqualFold(configBase, "settings"), strings.EqualFold(configBase, "openclaw"), strings.EqualFold(configBase, "mcp_config"), strings.EqualFold(configBase, "mcp"):
 		return strings.TrimSpace(agent.Name)
 	case strings.Contains(typeSlug, baseSlug), strings.Contains(baseSlug, typeSlug):
 		return strings.TrimSpace(agent.Name)
@@ -3336,6 +3430,18 @@ func ensureLegacyCodexMCPServer(agent AgentConfig, doc map[string]interface{}, b
 		entry["bearer_token_env_var"] = "PRELOOP_TOKEN"
 	}
 	servers["preloop"] = entry
+
+	// Codex ignores the [mcp] table, so drop any empty [mcp.servers]/[mcp]
+	// tables left behind by earlier onboarding runs. This keeps config.toml to
+	// a single [mcp_servers.preloop] block and avoids orphaned [mcp] tables.
+	if mcp, ok := asObjectMap(doc["mcp"]); ok {
+		if inner, ok := asObjectMap(mcp["servers"]); ok && len(inner) == 0 {
+			delete(mcp, "servers")
+		}
+		if len(mcp) == 0 {
+			delete(doc, "mcp")
+		}
+	}
 }
 
 func ensureDiscoveredRemoteServers(client *api.Client, agent AgentConfig, publicURL string) (*remoteServerSyncResult, error) {
@@ -3782,16 +3888,23 @@ func (a genericManagedMCPAdapter) Key() string {
 }
 
 func (a genericManagedMCPAdapter) EnsureServerContainer(doc map[string]interface{}) (map[string]interface{}, error) {
+	if strings.EqualFold(strings.TrimSpace(a.agent.Name), "codex cli") {
+		// Codex reads MCP servers from the top-level [mcp_servers] table.
+		// It ignores an [mcp] table entirely (verified on Codex 0.142.5), so
+		// target/create mcp_servers and never write the nested [mcp.servers]
+		// shape.
+		if servers, ok := asObjectMap(doc["mcp_servers"]); ok {
+			return servers, nil
+		}
+		created := make(map[string]interface{})
+		doc["mcp_servers"] = created
+		return created, nil
+	}
 	if servers, ok := asObjectMap(doc["mcpServers"]); ok {
 		return servers, nil
 	}
 	if servers, ok := asObjectMap(doc["servers"]); ok {
 		return servers, nil
-	}
-	if strings.EqualFold(strings.TrimSpace(a.agent.Name), "codex cli") {
-		if servers, ok := asObjectMap(doc["mcp_servers"]); ok {
-			return servers, nil
-		}
 	}
 	if mcp, ok := asObjectMap(doc["mcp"]); ok {
 		if servers, ok := asObjectMap(mcp["servers"]); ok {
@@ -3810,10 +3923,6 @@ func (a genericManagedMCPAdapter) EnsureServerContainer(doc map[string]interface
 		created := make(map[string]interface{})
 		doc["servers"] = created
 		return created, nil
-	case "codex cli":
-		created := make(map[string]interface{})
-		doc["mcp"] = map[string]interface{}{"servers": created}
-		return created, nil
 	case "opencode":
 		created := make(map[string]interface{})
 		doc["mcp"] = created
@@ -3829,14 +3938,18 @@ func (a genericManagedMCPAdapter) BuildManagedServer(baseURL, token string) map[
 	url := strings.TrimRight(baseURL, "/") + "/mcp/v1"
 	switch strings.ToLower(strings.TrimSpace(a.agent.Name)) {
 	case "codex cli":
-		return map[string]interface{}{
-			"url":       url,
-			"transport": "http",
-			"auth": map[string]interface{}{
-				"type":  "bearer",
-				"token": token,
-			},
+		// Codex reads the [mcp_servers.preloop] table with `url` +
+		// [mcp_servers.preloop.http_headers]. This mirrors
+		// ensureLegacyCodexMCPServer, the authoritative writer for this entry.
+		entry := map[string]interface{}{"url": url}
+		if strings.TrimSpace(token) != "" {
+			entry["http_headers"] = map[string]interface{}{
+				"Authorization": "Bearer " + token,
+			}
+		} else {
+			entry["bearer_token_env_var"] = "PRELOOP_TOKEN"
 		}
+		return entry
 	case "gemini cli":
 		return map[string]interface{}{
 			"url":  url,
@@ -3850,6 +3963,25 @@ func (a genericManagedMCPAdapter) BuildManagedServer(baseURL, token string) map[
 			"type":    "remote",
 			"url":     url,
 			"enabled": true,
+			"headers": map[string]interface{}{
+				"Authorization": "Bearer " + token,
+			},
+		}
+	case strings.ToLower(antigravityAgentName):
+		// Antigravity's MCP schema uses `serverUrl` (not `url`) for remote
+		// HTTP servers, and its env/${VAR} interpolation is unreliable — so
+		// the bearer token is written literally into the headers.
+		return map[string]interface{}{
+			"serverUrl": url,
+			"headers": map[string]interface{}{
+				"Authorization": "Bearer " + token,
+			},
+		}
+	case strings.ToLower(devinAgentName):
+		// Devin uses `url` + headers with Streamable HTTP as the default
+		// transport; it does not take a `transport` field, so we omit it.
+		return map[string]interface{}{
+			"url": url,
 			"headers": map[string]interface{}{
 				"Authorization": "Bearer " + token,
 			},
@@ -3890,6 +4022,17 @@ func (a genericManagedMCPAdapter) ValidateManagedConfig(doc map[string]interface
 
 	result["preloop_url_ok"] = preloop["url"] == expectedURL
 	result["transport_ok"] = preloop["transport"] != nil
+	if isAntigravityAgent(a.agent) {
+		// Antigravity stores the endpoint under `serverUrl` and carries no
+		// transport field; a present serverUrl + auth header is a valid
+		// remote HTTP entry.
+		result["preloop_url_ok"] = preloop["serverUrl"] == expectedURL
+		result["transport_ok"] = true
+	}
+	if isDevinAgent(a.agent) {
+		// Devin defaults to Streamable HTTP and takes no transport field.
+		result["transport_ok"] = true
+	}
 	if strings.EqualFold(strings.TrimSpace(a.agent.Name), "gemini cli") {
 		if transport, _ := preloop["transport"].(string); strings.EqualFold(strings.TrimSpace(transport), "http-streaming") {
 			result["transport_ok"] = true

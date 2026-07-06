@@ -21,6 +21,8 @@ import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/divider/divider.js';
 import './add-ai-model-modal';
+import './notify-recipients-field.ts';
+import type { NotifyRecipientsValue } from './notify-recipients-field.ts';
 
 export interface ApprovalWorkflow {
   id: string;
@@ -472,39 +474,17 @@ export class ApprovalWorkflowDialog extends LitElement {
           Human Approval Settings
         </div>
 
-        <div class="form-field">
-          <label class="form-label required">Approvers</label>
-          <sl-select
-            placeholder="Select users or teams..."
-            multiple
-            clearable
-            hoist
-            .value=${[
-              ...this._approverUserIds.map((id) => `user:${id}`),
-              ...this._approverTeamIds.map((id) => `team:${id}`),
-            ]}
-            @sl-change=${(e: any) => this._handleApproverChange(e)}
-          >
-            ${this._users.map(
-              (user) => html`
-                <sl-option value=${`user:${user.id}`}>
-                  ${user.username} (${user.email})
-                </sl-option>
-              `
-            )}
-            ${this._users.length > 0 && this._teams.length > 0
-              ? html`<sl-divider></sl-divider>`
-              : null}
-            ${this._teams.map(
-              (team) => html`
-                <sl-option value=${`team:${team.id}`}>${team.name}</sl-option>
-              `
-            )}
-          </sl-select>
-          <small style="color: var(--sl-color-neutral-500);">
-            Select one or more users or teams who can approve requests.
-          </small>
-        </div>
+        <notify-recipients-field
+          label="Approvers"
+          .required=${true}
+          .showCustomEmails=${false}
+          .users=${this._users}
+          .teams=${this._teams}
+          .userIds=${this._approverUserIds}
+          .teamIds=${this._approverTeamIds}
+          helpText="Select one or more users or teams who can approve requests."
+          @notify-recipients-change=${this._handleApproverRecipientsChange}
+        ></notify-recipients-field>
 
         <div class="form-field">
           <label class="form-label">Approvals Required</label>
@@ -523,14 +503,11 @@ export class ApprovalWorkflowDialog extends LitElement {
     `;
   }
 
-  private _handleApproverChange(e: any) {
-    const values: string[] = e.target.value || [];
-    this._approverUserIds = values
-      .filter((v: string) => v.startsWith('user:'))
-      .map((v: string) => v.replace('user:', ''));
-    this._approverTeamIds = values
-      .filter((v: string) => v.startsWith('team:'))
-      .map((v: string) => v.replace('team:', ''));
+  private _handleApproverRecipientsChange(
+    event: CustomEvent<NotifyRecipientsValue>
+  ) {
+    this._approverUserIds = event.detail.userIds;
+    this._approverTeamIds = event.detail.teamIds;
   }
 
   private _renderAIDrivenFields() {
@@ -549,9 +526,11 @@ export class ApprovalWorkflowDialog extends LitElement {
           <label class="form-label required">AI Model</label>
           <sl-select
             hoist
-            placeholder=${this._loadingModels
-              ? 'Loading models...'
-              : 'Select an AI model...'}
+            placeholder=${
+              this._loadingModels
+                ? 'Loading models...'
+                : 'Select an AI model...'
+            }
             .value=${this._aiModel}
             @sl-change=${(e: any) => (this._aiModel = e.target.value)}
             ?disabled=${this._loadingModels}
@@ -564,19 +543,21 @@ export class ApprovalWorkflowDialog extends LitElement {
               `
             )}
           </sl-select>
-          ${this._aiModels.length === 0 && !this._loadingModels
-            ? html`
-                <div class="add-model-link" @click=${this._handleAddModel}>
-                  <sl-icon name="plus-circle"></sl-icon>
-                  Configure an AI model first
-                </div>
-              `
-            : html`
-                <div class="add-model-link" @click=${this._handleAddModel}>
-                  <sl-icon name="plus-circle"></sl-icon>
-                  Add new model
-                </div>
-              `}
+          ${
+            this._aiModels.length === 0 && !this._loadingModels
+              ? html`
+                  <div class="add-model-link" @click=${this._handleAddModel}>
+                    <sl-icon name="plus-circle"></sl-icon>
+                    Configure an AI model first
+                  </div>
+                `
+              : html`
+                  <div class="add-model-link" @click=${this._handleAddModel}>
+                    <sl-icon name="plus-circle"></sl-icon>
+                    Add new model
+                  </div>
+                `
+          }
         </div>
 
         <div class="form-field">
@@ -631,31 +612,33 @@ DENY if:
           </sl-radio-group>
         </div>
 
-        ${this._aiFallbackBehavior === 'escalate'
-          ? html`
-              <div class="form-field">
-                <label class="form-label">Escalation Workflow</label>
-                <sl-select
-                  hoist
-                  .value=${this._escalationWorkflowId}
-                  @sl-change=${(e: any) =>
-                    (this._escalationWorkflowId = e.target.value)}
-                  placeholder="Select a workflow for escalation..."
-                  clearable
-                >
-                  ${standardPolicies.map(
-                    (p) => html`
-                      <sl-option value=${p.id}>${p.name}</sl-option>
-                    `
-                  )}
-                </sl-select>
-                <small style="color: var(--sl-color-neutral-500);">
-                  The approval workflow to use when AI confidence is below
-                  threshold.
-                </small>
-              </div>
-            `
-          : ''}
+        ${
+          this._aiFallbackBehavior === 'escalate'
+            ? html`
+                <div class="form-field">
+                  <label class="form-label">Escalation Workflow</label>
+                  <sl-select
+                    hoist
+                    .value=${this._escalationWorkflowId}
+                    @sl-change=${(e: any) =>
+                      (this._escalationWorkflowId = e.target.value)}
+                    placeholder="Select a workflow for escalation..."
+                    clearable
+                  >
+                    ${standardPolicies.map(
+                      (p) => html`
+                        <sl-option value=${p.id}>${p.name}</sl-option>
+                      `
+                    )}
+                  </sl-select>
+                  <small style="color: var(--sl-color-neutral-500);">
+                    The approval workflow to use when AI confidence is below
+                    threshold.
+                  </small>
+                </div>
+              `
+            : ''
+        }
       </div>
     `;
   }
@@ -676,9 +659,11 @@ DENY if:
             type="url"
             .value=${this._webhookUrl}
             @sl-input=${(e: any) => (this._webhookUrl = e.target.value)}
-            placeholder=${this._approvalType === 'slack'
-              ? 'https://hooks.slack.com/services/...'
-              : 'https://your-mattermost.com/hooks/...'}
+            placeholder=${
+              this._approvalType === 'slack'
+                ? 'https://hooks.slack.com/services/...'
+                : 'https://your-mattermost.com/hooks/...'
+            }
           ></sl-input>
           <small style="color: var(--sl-color-neutral-500);">
             Approval requests will be posted to this ${typeName} incoming
@@ -729,19 +714,21 @@ DENY if:
   render() {
     return html`
       <sl-dialog
-        label=${this.policy
-          ? 'Edit Approval Workflow'
-          : 'Create Approval Workflow'}
+        label=${
+          this.policy ? 'Edit Approval Workflow' : 'Create Approval Workflow'
+        }
         ?open=${this.open}
         @sl-request-close=${this._handleClose}
       >
-        ${this._error
-          ? html`
-              <sl-alert variant="danger" open closable>
-                ${this._error}
-              </sl-alert>
-            `
-          : ''}
+        ${
+          this._error
+            ? html`
+                <sl-alert variant="danger" open closable>
+                  ${this._error}
+                </sl-alert>
+              `
+            : ''
+        }
 
         <div class="form-field">
           <label class="form-label required">Name</label>
@@ -774,11 +761,15 @@ DENY if:
               <sl-option value="slack">Slack</sl-option>
               <sl-option value="mattermost">Mattermost</sl-option>
               <sl-option value="webhook">Webhook</sl-option>
-              ${this._hasAdvancedApprovals()
-                ? html`
-                    <sl-option value="ai_driven">AI-Driven Approval</sl-option>
-                  `
-                : ''}
+              ${
+                this._hasAdvancedApprovals()
+                  ? html`
+                      <sl-option value="ai_driven"
+                        >AI-Driven Approval</sl-option
+                      >
+                    `
+                  : ''
+              }
             </sl-select>
           </div>
 

@@ -60,6 +60,12 @@ class ApprovalRequestResponse(ApprovalRequestBase):
     approver_comment: Optional[str]
     webhook_posted_at: Optional[datetime]
     webhook_error: Optional[str]
+    # Managed-agent linkage (populated for onboarded-agent tool approvals).
+    # Operator surfaces (mobile/watch) show managed_agent_name to identify
+    # WHICH agent is asking.
+    managed_agent_id: Optional[UUID] = None
+    runtime_session_id: Optional[UUID] = None
+    managed_agent_name: Optional[str] = None
     # AI decision tracking fields
     decided_by_ai: bool = False
     ai_model: Optional[str] = None

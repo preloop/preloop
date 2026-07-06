@@ -121,6 +121,12 @@ SYSTEM_PERMISSIONS: Dict[str, List[Dict[str, str]]] = {
             "description": "Create and manage issue dependencies",
         },
     ],
+    "agents": [
+        {
+            "name": "control_managed_agent",
+            "description": "Send commands and prompts to managed agents",
+        },
+    ],
 }
 
 # Define system roles with their permissions
@@ -166,6 +172,7 @@ SYSTEM_ROLES: Dict[str, Dict[str, any]] = {
             "run_compliance",
             "detect_duplicates",
             "manage_dependencies",
+            "control_managed_agent",
         ],
     },
     "admin": {
@@ -206,6 +213,7 @@ SYSTEM_ROLES: Dict[str, Dict[str, any]] = {
             "run_compliance",
             "detect_duplicates",
             "manage_dependencies",
+            "control_managed_agent",
         ],
     },
     "editor": {
@@ -238,6 +246,7 @@ SYSTEM_ROLES: Dict[str, Dict[str, any]] = {
             "run_compliance",
             "detect_duplicates",
             "manage_dependencies",
+            "control_managed_agent",
         ],
     },
     "executor": {
@@ -252,6 +261,7 @@ SYSTEM_ROLES: Dict[str, Dict[str, any]] = {
             "view_issues",
             "create_issues",
             "comment_issues",
+            "control_managed_agent",
         ],
     },
     "tracker_manager": {

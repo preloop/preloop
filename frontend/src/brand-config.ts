@@ -48,6 +48,11 @@ export interface BrandHero {
   install_command?: string;
   // Optional caption shown under the install command box.
   install_caption?: string;
+  // Optional short credibility tags shown under the hero CTAs.
+  trust_tags?: string[];
+  // Optional static product shot filling the right half of the hero.
+  image?: string;
+  image_alt?: string;
 }
 
 export interface BrandFeature {

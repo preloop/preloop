@@ -16,6 +16,7 @@ import '@shoelace-style/shoelace/dist/components/radio/radio.js';
 import './governance-rule-set-editor';
 import type { Tool, ApprovalWorkflow } from './tool-card';
 import type { AccessRuleSummary } from './governance-rule-set-editor';
+import type { GatewayUsageByTool } from '../types';
 
 @customElement('tool-list-item')
 export class ToolListItem extends LitElement {
@@ -27,6 +28,7 @@ export class ToolListItem extends LitElement {
   @property({ type: Boolean }) expanded = false;
   @property({ type: String }) mode: 'global' | 'scoped' = 'global';
   @property({ type: Boolean }) rulesInherited = false;
+  @property({ type: Object }) usageStat: GatewayUsageByTool | null = null;
 
   @state() private _showJustificationDialog = false;
   @state() private _justificationMode: string = 'disabled';
@@ -98,6 +100,13 @@ export class ToolListItem extends LitElement {
       display: flex;
       align-items: center;
       gap: var(--sl-spacing-2x-small);
+      flex-shrink: 0;
+    }
+
+    .usage-stat {
+      color: var(--sl-color-neutral-500);
+      font-size: var(--sl-font-size-x-small);
+      white-space: nowrap;
       flex-shrink: 0;
     }
 
@@ -248,30 +257,39 @@ export class ToolListItem extends LitElement {
     }
 
     return html`
-      ${summary.deny > 0
-        ? html`<span class="rule-count deny"
-            ><sl-icon name="x-octagon-fill" style="font-size: 0.8em;"></sl-icon>
-            ${summary.deny} deny</span
-          >`
-        : ''}
-      ${summary.approval > 0
-        ? html`<span class="rule-count approval"
-            ><sl-icon
-              name="shield-lock-fill"
-              style="font-size: 0.8em;"
-            ></sl-icon>
-            ${summary.approval} approval</span
-          >`
-        : ''}
-      ${summary.allow > 0
-        ? html`<span class="rule-count allow"
-            ><sl-icon
-              name="check-circle-fill"
-              style="font-size: 0.8em;"
-            ></sl-icon>
-            ${summary.allow} allow</span
-          >`
-        : ''}
+      ${
+        summary.deny > 0
+          ? html`<span class="rule-count deny"
+              ><sl-icon
+                name="x-octagon-fill"
+                style="font-size: 0.8em;"
+              ></sl-icon>
+              ${summary.deny} deny</span
+            >`
+          : ''
+      }
+      ${
+        summary.approval > 0
+          ? html`<span class="rule-count approval"
+              ><sl-icon
+                name="shield-lock-fill"
+                style="font-size: 0.8em;"
+              ></sl-icon>
+              ${summary.approval} approval</span
+            >`
+          : ''
+      }
+      ${
+        summary.allow > 0
+          ? html`<span class="rule-count allow"
+              ><sl-icon
+                name="check-circle-fill"
+                style="font-size: 0.8em;"
+              ></sl-icon>
+              ${summary.allow} allow</span
+            >`
+          : ''
+      }
     `;
   }
 
@@ -316,44 +334,48 @@ export class ToolListItem extends LitElement {
   private _renderExpandedContent() {
     return html`
       <div class="tool-content">
-        ${this.mode === 'scoped'
-          ? this.rulesInherited
-            ? html`
-                <sl-alert
-                  variant="primary"
-                  open
-                  style="margin-bottom: var(--sl-spacing-medium);"
-                >
-                  <sl-icon slot="icon" name="info-circle"></sl-icon>
-                  <strong>Inherited Configuration</strong><br />
-                  These rules are inherited from the global API Catalog. Saving
-                  any changes or toggling this tool will create an override
-                  specific to this agent.
-                </sl-alert>
-              `
-            : html`
-                <sl-button
-                  variant="warning"
-                  outline
-                  size="small"
-                  @click=${this._revertToGlobal}
-                  style="margin-bottom: var(--sl-spacing-medium);"
-                >
-                  <sl-icon
-                    slot="prefix"
-                    name="arrow-counterclockwise"
-                  ></sl-icon>
-                  Restore global settings
-                </sl-button>
-              `
-          : ''}
-        ${this.tool.description
-          ? html`<div
-              style="font-size: var(--sl-font-size-x-small); color: var(--sl-color-neutral-600); margin-bottom: var(--sl-spacing-small);"
-            >
-              ${this.tool.description}
-            </div>`
-          : ''}
+        ${
+          this.mode === 'scoped'
+            ? this.rulesInherited
+              ? html`
+                  <sl-alert
+                    variant="primary"
+                    open
+                    style="margin-bottom: var(--sl-spacing-medium);"
+                  >
+                    <sl-icon slot="icon" name="info-circle"></sl-icon>
+                    <strong>Inherited Configuration</strong><br />
+                    These rules are inherited from the global API Catalog.
+                    Saving any changes or toggling this tool will create an
+                    override specific to this agent.
+                  </sl-alert>
+                `
+              : html`
+                  <sl-button
+                    variant="warning"
+                    outline
+                    size="small"
+                    @click=${this._revertToGlobal}
+                    style="margin-bottom: var(--sl-spacing-medium);"
+                  >
+                    <sl-icon
+                      slot="prefix"
+                      name="arrow-counterclockwise"
+                    ></sl-icon>
+                    Restore global settings
+                  </sl-button>
+                `
+            : ''
+        }
+        ${
+          this.tool.description
+            ? html`<div
+                style="font-size: var(--sl-font-size-x-small); color: var(--sl-color-neutral-600); margin-bottom: var(--sl-spacing-small);"
+              >
+                ${this.tool.description}
+              </div>`
+            : ''
+        }
 
         <governance-rule-set-editor
           .toolName=${this.tool.name}
@@ -389,10 +411,9 @@ export class ToolListItem extends LitElement {
 
     return html`
       <div
-        class="tool-row ${this.expanded ? 'expanded' : ''} ${!this.tool
-          .is_enabled
-          ? 'disabled'
-          : ''}"
+        class="tool-row ${this.expanded ? 'expanded' : ''} ${
+          !this.tool.is_enabled ? 'disabled' : ''
+        }"
       >
         <div class="tool-header" @click=${this._toggleExpanded}>
           <sl-icon
@@ -403,26 +424,46 @@ export class ToolListItem extends LitElement {
           <span class="tool-name">${this.tool.name}</span>
 
           <div class="tool-badges">
-            ${isUnsupported
-              ? html`<sl-tooltip
-                  content=${this.tool.unsupported_reason ||
-                  'This tool is currently unavailable'}
-                >
-                  <sl-badge variant="neutral" pill>Unavailable</sl-badge>
-                </sl-tooltip>`
-              : ''}
+            ${
+              this.usageStat &&
+              (this.usageStat.invocation_count > 0 ||
+                this.usageStat.estimated_schema_cost > 0)
+                ? html`<sl-tooltip
+                    content=${`${this.usageStat.invocation_count} invocations · ${this.usageStat.estimated_schema_cost.toFixed(4)} schema cost (30d)`}
+                  >
+                    <span class="usage-stat"
+                      >${this.usageStat.invocation_count} calls ·
+                      $${this.usageStat.estimated_schema_cost >= 0.01 ? this.usageStat.estimated_schema_cost.toFixed(2) : this.usageStat.estimated_schema_cost.toFixed(4)}</span
+                    >
+                  </sl-tooltip>`
+                : ''
+            }
+            ${
+              isUnsupported
+                ? html`<sl-tooltip
+                    content=${
+                      this.tool.unsupported_reason ||
+                      'This tool is currently unavailable'
+                    }
+                  >
+                    <sl-badge variant="neutral" pill>Unavailable</sl-badge>
+                  </sl-tooltip>`
+                : ''
+            }
           </div>
 
           <span class="tool-description">${this.tool.description}</span>
 
           <div class="rule-summary">
-            ${this.rulesInherited
-              ? html`<sl-badge
-                  variant="neutral"
-                  style="font-size: 0.7em; margin-right: 4px;"
-                  >Inherited</sl-badge
-                >`
-              : ''}
+            ${
+              this.rulesInherited
+                ? html`<sl-badge
+                    variant="neutral"
+                    style="font-size: 0.7em; margin-right: 4px;"
+                    >Inherited</sl-badge
+                  >`
+                : ''
+            }
             ${this._renderRuleSummaryBadges()}
           </div>
 

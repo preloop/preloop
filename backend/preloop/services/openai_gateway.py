@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
 import time
 from contextlib import contextmanager
@@ -35,11 +36,23 @@ from preloop.services.account_realtime import (
     build_account_event,
     emit_account_event,
 )
+from preloop.services.account_governance_cache import get_cached_account_meta_data
+from preloop.services.context_optimization import (
+    ContextOptimizationStats,
+    estimate_tokens,
+    optimize_messages,
+    resolve_context_optimization_settings,
+    sanitize_tool_choice,
+    strip_disabled_tools,
+    subject_governance_affects_gateway_context,
+    tool_definition_name,
+)
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.model_gateway_budget import (
     BudgetCheckResult,
     ModelGatewayBudgetService,
 )
+from preloop.services.subject_governance import build_subject_context_from_api_key
 from preloop.services.model_gateway_events import ModelGatewayEventEmitter
 from preloop.services.model_gateway_errors import (
     GatewayProvider,
@@ -166,6 +179,35 @@ def get_model_gateway_backend(
     )
 
 
+# Per-run session id (X-Preloop-Session-Id) validation. The header maps to a
+# LangGraph ``thread_id`` / wizard-emitted run id. We accept a conservative,
+# URL/identifier-safe charset and cap the length; anything else is ignored so a
+# malformed header never errors and simply falls back to source keying.
+_CLIENT_SESSION_ID_MAX_LEN = 200
+_CLIENT_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_.:\-]+$")
+
+
+def _normalize_client_session_id(raw: Optional[str]) -> Optional[str]:
+    """Validate and normalize the client-supplied per-run session id.
+
+    Args:
+        raw: Raw ``X-Preloop-Session-Id`` header value (may be ``None``).
+
+    Returns:
+        The trimmed id when it is non-empty, within the length cap, and uses
+        only the safe charset; otherwise ``None`` (caller falls back to the
+        existing source-keyed behavior).
+    """
+    if not isinstance(raw, str):
+        return None
+    candidate = raw.strip()
+    if not candidate or len(candidate) > _CLIENT_SESSION_ID_MAX_LEN:
+        return None
+    if not _CLIENT_SESSION_ID_RE.match(candidate):
+        return None
+    return candidate
+
+
 class OpenAIGatewayService:
     """Service for Preloop's OpenAI-compatible gateway."""
 
@@ -175,13 +217,28 @@ class OpenAIGatewayService:
         auth_context: ModelGatewayAuthContext,
         upstream_backend: Optional[ModelGatewayBackend] = None,
         budget_enforcer: Optional[Any] = None,
+        client_session_id: Optional[str] = None,
+        skip_runtime_session_resolution: bool = False,
     ) -> None:
         self.db = db
         self.auth_context = auth_context
         self.upstream_backend = upstream_backend or get_model_gateway_backend()
         self.budget_enforcer = budget_enforcer
+        # Per-run session id supplied by the client (X-Preloop-Session-Id).
+        # Validated/normalized once; invalid values fall back to source keying.
+        self._client_session_id = _normalize_client_session_id(client_session_id)
         self._resolved_runtime_session_id: Optional[str] = None
-        self._resolved_runtime_session_attempted = False
+        self._resolved_runtime_session_attempted = skip_runtime_session_resolution
+        self._last_context_optimization: Optional[ContextOptimizationStats] = None
+        self._last_tools_meta: Optional[List[Dict[str, Any]]] = None
+        # Upstream credential type ("oauth" | "api_key" | "ambient") of the
+        # credential used to call the provider on THIS request, captured at
+        # resolution time and read into the usage row at log time. Powers
+        # subscription-vs-API-key savings denomination. None when never
+        # resolved (error paths, unknown provider) -> non-dollar fallback,
+        # never a false dollar claim. Set at both credential-resolution
+        # choke points; reset there per request to avoid stale carryover.
+        self._last_upstream_credential_type: Optional[str] = None
 
     def _resolve_runtime_session(self) -> Optional[str]:
         if self._resolved_runtime_session_attempted:
@@ -200,7 +257,44 @@ class OpenAIGatewayService:
         if not runtime_session_id and runtime_principal:
             session_source_type = runtime_principal.get("type")
             session_source_id = runtime_principal.get("id")
-            if session_source_type and session_source_id:
+            # A static custom-agent credential reuses one source id for every
+            # request, collapsing per-run ROI into one eternal session. When the
+            # client supplies a per-run id via X-Preloop-Session-Id, fold it into
+            # the source id so each distinct run gets its own session row. Absent
+            # or malformed headers leave the source id untouched (no regression).
+            if session_source_type and session_source_id and self._client_session_id:
+                session_source_id = f"{session_source_id}:{self._client_session_id}"
+            elif session_source_type and session_source_id:
+                # Plugin agents (Hermes, OpenClaw, Claude Code, ...) send gateway
+                # traffic on a durable credential that carries no per-run id, so
+                # plain source keying piles every run onto one base session and
+                # the per-run sessions the runtime lifecycle creates (session
+                # token mint) stay empty. Attribute usage to the principal's
+                # current run session instead, so per-run ROI is real. We only
+                # adopt a *suffixed* (per-run) session, never the base row, and
+                # only while it is open; otherwise we fall through to source
+                # keying below (unchanged behavior, e.g. custom agents that have
+                # not minted a per-run session). Custom agents that pass
+                # X-Preloop-Session-Id took the branch above and skip this.
+                try:
+                    latest_run = crud_runtime_session.get_latest_by_principal(
+                        self.db,
+                        account_id=str(self.auth_context.user.account_id),
+                        principal_type=session_source_type,
+                        principal_id=session_source_id,
+                    )
+                    if (
+                        latest_run is not None
+                        and latest_run.ended_at is None
+                        and latest_run.session_source_id != session_source_id
+                    ):
+                        runtime_session_id = str(latest_run.id)
+                except Exception:
+                    logger.debug(
+                        "Failed to resolve latest run session for principal",
+                        exc_info=True,
+                    )
+            if not runtime_session_id and session_source_type and session_source_id:
                 try:
                     from datetime import datetime, timezone
 
@@ -330,7 +424,11 @@ class OpenAIGatewayService:
                 }
             )
 
-        return {"object": "list", "data": data}
+        # `data` is the OpenAI-standard field. Codex CLI's model-manager
+        # deserializes this endpoint into a struct with a top-level `models`
+        # array and errors ("missing field `models`") without it, so we mirror
+        # the list under `models` too. Additive — standard clients read `data`.
+        return {"object": "list", "data": data, "models": data}
 
     def create_chat_completion(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Handle OpenAI-compatible chat completions."""
@@ -350,7 +448,7 @@ class OpenAIGatewayService:
                 message="messages must be a non-empty list",
             )
         started_at = time.perf_counter()
-        budget_result = self._check_budget(model, payload)
+        budget_result = self._check_budget(model, payload, gateway_provider="openai")
         if budget_result and budget_result.hard_limit_exceeded:
             detail = self._budget_denial_detail(budget_result)
             self._record_gateway_request(
@@ -381,6 +479,9 @@ class OpenAIGatewayService:
                 endpoint_kind="chat_completions",
             )
             if self._is_openai_codex_model(model):
+                # Codex bypasses _call_litellm, so capture tools_meta here too
+                # (T11 finding). Codex tools are not governance-stripped.
+                self._capture_tools_meta(payload.get("tools"))
                 raw_codex_response = self._create_openai_codex_response(
                     model,
                     self._build_openai_codex_payload_from_chat_completion(
@@ -471,7 +572,7 @@ class OpenAIGatewayService:
         model = self._resolve_requested_model(payload.get("model"), provider="openai")
         messages = self._normalize_responses_input(payload)
         started_at = time.perf_counter()
-        budget_result = self._check_budget(model, payload)
+        budget_result = self._check_budget(model, payload, gateway_provider="openai")
         if budget_result and budget_result.hard_limit_exceeded:
             detail = self._budget_denial_detail(budget_result)
             self._record_gateway_request(
@@ -501,6 +602,8 @@ class OpenAIGatewayService:
                 endpoint_kind="responses",
             )
             if self._is_openai_codex_model(model):
+                # Codex bypasses _call_litellm (T11 finding); attribute here.
+                self._capture_tools_meta(payload.get("tools"))
                 response_dict = self._create_openai_codex_response(model, payload)
             else:
                 response = self._call_litellm(
@@ -563,7 +666,9 @@ class OpenAIGatewayService:
         )
         messages = self._normalize_anthropic_messages_input(payload)
         started_at = time.perf_counter()
-        budget_result = self._check_budget(model, {**payload, "messages": messages})
+        budget_result = self._check_budget(
+            model, {**payload, "messages": messages}, gateway_provider="anthropic"
+        )
         if budget_result and budget_result.hard_limit_exceeded:
             detail = self._budget_denial_detail(budget_result)
             self._record_gateway_request(
@@ -656,7 +761,9 @@ class OpenAIGatewayService:
         messages = self._normalize_anthropic_messages_input(payload)
         budget_payload = {**payload, "messages": messages}
         started_at = time.perf_counter()
-        budget_result = self._check_budget(model, budget_payload)
+        budget_result = self._check_budget(
+            model, budget_payload, gateway_provider="anthropic"
+        )
         if budget_result and budget_result.hard_limit_exceeded:
             detail = self._budget_denial_detail(budget_result)
             self._record_gateway_request(
@@ -1000,7 +1107,7 @@ class OpenAIGatewayService:
             )
 
         started_at = time.perf_counter()
-        budget_result = self._check_budget(model, payload)
+        budget_result = self._check_budget(model, payload, gateway_provider="openai")
         if budget_result and budget_result.hard_limit_exceeded:
             detail = self._budget_denial_detail(budget_result)
             self._record_gateway_request(
@@ -1031,6 +1138,8 @@ class OpenAIGatewayService:
                 endpoint_kind="chat_completions_stream",
             )
             if self._is_openai_codex_model(model):
+                # Codex bypasses _call_litellm (T11 finding); attribute here.
+                self._capture_tools_meta(payload.get("tools"))
                 return self._stream_openai_codex_chat_completion(
                     ai_model=model,
                     payload=payload,
@@ -1199,7 +1308,7 @@ class OpenAIGatewayService:
         model = self._resolve_requested_model(payload.get("model"), provider="openai")
         messages = self._normalize_responses_input(payload)
         started_at = time.perf_counter()
-        budget_result = self._check_budget(model, payload)
+        budget_result = self._check_budget(model, payload, gateway_provider="openai")
         if budget_result and budget_result.hard_limit_exceeded:
             detail = self._budget_denial_detail(budget_result)
             self._record_gateway_request(
@@ -1230,6 +1339,8 @@ class OpenAIGatewayService:
                 endpoint_kind="responses_stream",
             )
             if self._is_openai_codex_model(model):
+                # Codex bypasses _call_litellm (T11 finding); attribute here.
+                self._capture_tools_meta(payload.get("tools"))
                 return self._stream_openai_codex_response(
                     ai_model=model,
                     payload=payload,
@@ -1542,6 +1653,9 @@ class OpenAIGatewayService:
     def _resolve_openai_codex_credentials(
         self, ai_model: AIModel
     ) -> ResolvedModelCredentials:
+        # Reset per request (mirrors _build_completion_kwargs) so an errored
+        # resolution never leaves a stale value on the usage row.
+        self._last_upstream_credential_type = None
         resolved = get_secret_service().resolve_ai_model_credentials(
             ai_model,
             db=self.db,
@@ -1556,6 +1670,9 @@ class OpenAIGatewayService:
                 status_code=400,
                 message="OpenAI Codex OAuth credentials are not configured",
             )
+        # Codex always authenticates upstream via subscription OAuth: no
+        # marginal dollar cost, so savings denominate as rate-limit window.
+        self._last_upstream_credential_type = "oauth"
         payload = resolved.payload or {}
         if not resolved.value or not payload.get("account_id"):
             raise ModelGatewayAPIError(
@@ -2555,6 +2672,9 @@ class OpenAIGatewayService:
         stream: bool,
         provider: GatewayProvider,
     ) -> Dict[str, Any]:
+        # Reset per request so a prior request's value never leaks if
+        # resolution below raises before the credential type is determined.
+        self._last_upstream_credential_type = None
         try:
             resolved_credentials = get_secret_service().resolve_ai_model_credentials(
                 ai_model,
@@ -2593,6 +2713,15 @@ class OpenAIGatewayService:
                 status_code=400,
                 message="Model credentials are not configured",
             )
+        # Record the upstream credential type for savings denomination. oauth
+        # (e.g. Claude Code subscription) has no marginal dollar cost, so its
+        # savings are shown as a share of the rate-limit window, not dollars.
+        if supports_oauth:
+            self._last_upstream_credential_type = "oauth"
+        elif supports_api_key:
+            self._last_upstream_credential_type = "api_key"
+        elif supports_ambient:
+            self._last_upstream_credential_type = "ambient"
 
         kwargs: Dict[str, Any] = {
             "model": self._to_litellm_model(ai_model),
@@ -2646,6 +2775,27 @@ class OpenAIGatewayService:
 
         return kwargs
 
+    # ------------------------------------------------------------------
+    # T11 entry-path audit (gateway choke points)
+    #
+    # Every gateway entry path resolves the runtime session (T2) and logs
+    # usage via ``_record_gateway_request`` -> ``_resolve_runtime_session``,
+    # so T2 per-run sessions cover ALL paths uniformly. Verified paths:
+    #   - OpenAI chat/completions      (create_chat_completion / stream_*)
+    #   - OpenAI responses             (create_response / stream_response)
+    #   - Anthropic messages + stream  (create_message / stream_message,
+    #     served by this same OpenAIGatewayService)
+    #   - Gemini generateContent + stream (GeminiGatewayService delegates to
+    #     super().create_response / super().stream_response)
+    #
+    # Tool attribution (T1) is captured in ``_capture_tools_meta``. Most paths
+    # reach it via ``_call_litellm``. EXCEPTION: the OpenAI-Codex provider
+    # (provider_name == "openai-codex") bypasses ``_call_litellm`` and calls
+    # ``_create_openai_codex_response`` / ``_stream_openai_codex_*`` directly.
+    # Those four codex branches now call ``_capture_tools_meta`` themselves so
+    # attribution is not lost. Codex requests are not governance-stripped, so
+    # every codex tool reports ``stripped=False`` (correct).
+    # ------------------------------------------------------------------
     def _call_litellm(
         self,
         ai_model: AIModel,
@@ -2655,6 +2805,18 @@ class OpenAIGatewayService:
         stream: bool = False,
         provider: GatewayProvider,
     ):
+        # Capture the ORIGINAL tools before optimization strips any of them so
+        # per-tool attribution covers the request as the client sent it.
+        original_tools = payload.get("tools")
+        messages, payload = self._optimize_request_context(
+            messages=messages, payload=payload
+        )
+        # Per locked decision D14: compute tools_meta in its own guarded block
+        # at the single choke point, outside _optimize_request_context's broad
+        # fail-open, and independent of whether an api_key is present (OAuth
+        # MCP-token traffic must still get attribution). Failures fail-open but
+        # are logged so attribution holes stay visible.
+        self._capture_tools_meta(original_tools)
         kwargs = self._build_completion_kwargs(
             ai_model,
             messages=messages,
@@ -2667,6 +2829,133 @@ class OpenAIGatewayService:
             return self.upstream_backend.completion(**kwargs)
         except Exception as exc:
             raise self._normalize_upstream_error(provider, exc) from exc
+
+    def _capture_tools_meta(self, original_tools: Any) -> None:
+        """Stash per-tool cost attribution for the usage row.
+
+        Builds ``self._last_tools_meta``: one entry per tool in the original
+        (pre-strip) request, recording the tool name, a token estimate of its
+        serialized schema, whether governance stripped it, and a heuristic
+        ``source`` label. Read into ``meta_data["tools_meta"]`` at log time.
+
+        Args:
+            original_tools: The request ``tools`` value before optimization.
+        """
+        self._last_tools_meta = None
+        if not isinstance(original_tools, list) or not original_tools:
+            return
+        try:
+            stripped_names: set[str] = set()
+            if self._last_context_optimization is not None:
+                stripped_names = set(self._last_context_optimization.stripped_tools)
+            tools_meta: List[Dict[str, Any]] = []
+            for definition in original_tools:
+                name = tool_definition_name(definition)
+                if not name:
+                    # Malformed tool (no resolvable name): skip it but keep
+                    # going so the rest of the request is still attributed.
+                    continue
+                try:
+                    schema_json = json.dumps(definition, default=str, sort_keys=True)
+                except (TypeError, ValueError):
+                    schema_json = ""
+                tools_meta.append(
+                    {
+                        "name": name,
+                        # Heuristic: the request payload carries only tool
+                        # names/schemas, never MCP server identity, so we cannot
+                        # reliably distinguish mcp-served from inline tools here.
+                        # Default to "payload"; true mcp/payload classification
+                        # requires the MCP-serving-layer join (deferred).
+                        "source": "payload",
+                        "schema_tokens_estimate": estimate_tokens(schema_json),
+                        "stripped": name in stripped_names,
+                    }
+                )
+            self._last_tools_meta = tools_meta or None
+        except Exception:
+            self._last_tools_meta = None
+            logger.warning(
+                "Failed to compute tools_meta attribution; forwarding without it",
+                exc_info=True,
+            )
+
+    def _optimize_request_context(
+        self,
+        *,
+        messages: List[Dict[str, Any]],
+        payload: Dict[str, Any],
+    ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        """Apply governance-driven context optimization before the upstream call.
+
+        Strips tools disabled via subject governance and runs the configured
+        deterministic transforms (dedupe, noise stripping, tool-result cap)
+        on tool messages. Measured savings are stashed for usage logging.
+
+        Args:
+            messages: Normalized chat messages for the upstream call.
+            payload: Original request payload (read for ``tools``).
+
+        Returns:
+            Tuple of (messages, payload), replaced with optimized copies only
+            when a transform changed something.
+        """
+        self._last_context_optimization = None
+        if not self.auth_context.api_key:
+            return messages, payload
+        try:
+            meta_data = get_cached_account_meta_data(
+                self.db, str(self.auth_context.user.account_id)
+            )
+            if meta_data is None:
+                return messages, payload
+            subject_context = build_subject_context_from_api_key(
+                self.auth_context.api_key
+            )
+            raw_tools = payload.get("tools")
+            has_tools = isinstance(raw_tools, list) and bool(raw_tools)
+            if not subject_governance_affects_gateway_context(
+                meta_data,
+                subject_context=subject_context,
+                has_tools=has_tools,
+            ):
+                return messages, payload
+            settings_resolved = resolve_context_optimization_settings(
+                meta_data, subject_context=subject_context
+            )
+            optimized_messages, stats = optimize_messages(messages, settings_resolved)
+            optimized_payload = payload
+            if has_tools:
+                kept_tools, removed_names = strip_disabled_tools(
+                    raw_tools,
+                    meta_data=meta_data,
+                    subject_context=subject_context,
+                )
+                if removed_names:
+                    stats.stripped_tools = removed_names
+                    optimized_payload = {**payload, "tools": kept_tools}
+                    if not kept_tools:
+                        optimized_payload.pop("tools", None)
+                        optimized_payload.pop("tool_choice", None)
+                    elif "tool_choice" in optimized_payload:
+                        # Partial strip: if tool_choice names a removed tool it
+                        # would dangle and the upstream rejects the request with
+                        # HTTP 400. Fall back to "auto" in that case only.
+                        sanitized_choice, choice_changed = sanitize_tool_choice(
+                            optimized_payload["tool_choice"],
+                            removed_tool_names=set(removed_names),
+                        )
+                        if choice_changed:
+                            optimized_payload["tool_choice"] = sanitized_choice
+            if stats.changed:
+                self._last_context_optimization = stats
+            return optimized_messages, optimized_payload
+        except Exception:
+            logger.warning(
+                "Context optimization pass failed; forwarding request unchanged",
+                exc_info=True,
+            )
+            return messages, payload
 
     def _normalize_responses_input(
         self, payload: Dict[str, Any]
@@ -3047,6 +3336,31 @@ class OpenAIGatewayService:
                     "arguments": function_payload.get("arguments", ""),
                 }
             )
+        if output_items:
+            return output_items
+
+        # No chat-completions `choices` were present. Some upstreams (notably
+        # the Codex ChatGPT-OAuth backend) speak the Responses API natively and
+        # return their reply under `output`/`output_text` instead. Pass those
+        # `output` items through so clients that read the `output` array (Codex
+        # reads `output`, NOT `output_text`) actually see the assistant reply.
+        upstream_output = response_dict.get("output")
+        if isinstance(upstream_output, list) and upstream_output:
+            return upstream_output
+
+        # Last resort: synthesize a single assistant message from `output_text`
+        # so the `output` array is never empty when there IS assistant text.
+        fallback_text = str(response_dict.get("output_text") or "").strip()
+        if fallback_text:
+            output_items.append(
+                {
+                    "id": response_dict.get("id", f"msg_{int(time.time())}"),
+                    "type": "message",
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": fallback_text}],
+                }
+            )
         return output_items
 
     @staticmethod
@@ -3204,7 +3518,7 @@ class OpenAIGatewayService:
         prompt_key: str,
         completion_key: str,
         output_names: tuple[str, ...] = ("completion_tokens",),
-    ) -> Dict[str, int]:
+    ) -> Dict[str, Any]:
         usage = usage or {}
         prompt_tokens = int(usage.get(prompt_key, usage.get("input_tokens", 0)) or 0)
         completion_tokens = 0
@@ -3215,11 +3529,26 @@ class OpenAIGatewayService:
         total_tokens = int(
             usage.get("total_tokens", prompt_tokens + completion_tokens) or 0
         )
-        return {
+        normalized: Dict[str, Any] = {
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": total_tokens,
         }
+        # Preserve the provider cache-token breakdown so cost stays cache-aware
+        # when recomputed from stored usage and so the cached split can be shown
+        # in the UI. OpenAI nests cached input under
+        # ``prompt_tokens_details.cached_tokens``; Anthropic reports
+        # ``cache_read_input_tokens`` / ``cache_creation_input_tokens`` at the
+        # top level. ``estimate_ai_model_usage_cost`` already reads these.
+        details = usage.get("prompt_tokens_details")
+        if isinstance(details, dict):
+            kept = {k: v for k, v in details.items() if v is not None}
+            if kept:
+                normalized["prompt_tokens_details"] = kept
+        for cache_key in ("cache_read_input_tokens", "cache_creation_input_tokens"):
+            if usage.get(cache_key) is not None:
+                normalized[cache_key] = int(usage.get(cache_key) or 0)
+        return normalized
 
     def _pricing_override_for_request(
         self, *, ai_model: AIModel, model_alias: Optional[str]
@@ -3333,6 +3662,7 @@ class OpenAIGatewayService:
             flow_id=runtime_context.get("flow_id"),
             flow_execution_id=runtime_context.get("flow_execution_id"),
             runtime_session_id=runtime_session_id,
+            managed_agent_id=self._resolve_managed_agent_id(),
             model_alias=model_alias,
             provider_name=ai_model.provider_name,
             upstream_request_id=(
@@ -3369,6 +3699,16 @@ class OpenAIGatewayService:
                 "gateway_attempt": gateway_attempt,
                 "is_retry": is_retry,
                 "retry_of_api_usage_id": retry_of_api_usage_id,
+                "context_optimization": (
+                    self._last_context_optimization.to_meta()
+                    if self._last_context_optimization
+                    else None
+                ),
+                "tools_meta": self._last_tools_meta,
+                "upstream_credential_type": self._last_upstream_credential_type,
+                "purpose": ((request_payload or {}).get("metadata") or {}).get(
+                    "purpose"
+                ),
             },
         )
         observed_at = usage_row.timestamp
@@ -3423,6 +3763,10 @@ class OpenAIGatewayService:
                 else None
             ),
             budget=self._budget_meta_data(budget_result),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            estimated_cost=float(usage_row.estimated_cost or 0.0),
         )
         ModelGatewayEventEmitter(self.db).emit_for_usage(
             usage=usage_row,
@@ -3768,17 +4112,48 @@ class OpenAIGatewayService:
         return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
     def _check_budget(
-        self, ai_model: AIModel, payload: Dict[str, Any]
+        self,
+        ai_model: AIModel,
+        payload: Dict[str, Any],
+        *,
+        gateway_provider: GatewayProvider = "openai",
     ) -> Optional[BudgetCheckResult]:
         """Check configured gateway budgets before the upstream call."""
         # Execute plugin budget enforcement (HTTP 403 on limit exceeded)
         if hasattr(self.budget_enforcer, "enforce_or_raise"):
-            self.budget_enforcer.enforce_or_raise(
-                self.db, self.auth_context, ai_model, payload
-            )
+            try:
+                self.budget_enforcer.enforce_or_raise(
+                    self.db, self.auth_context, ai_model, payload
+                )
+            except ModelGatewayAPIError as exc:
+                raise self._normalize_budget_gateway_error(
+                    exc, gateway_provider=gateway_provider
+                ) from exc
 
         return ModelGatewayBudgetService(self.db, self.auth_context).preflight_check(
             ai_model, payload
+        )
+
+    @staticmethod
+    def _normalize_budget_gateway_error(
+        exc: ModelGatewayAPIError,
+        *,
+        gateway_provider: GatewayProvider,
+    ) -> ModelGatewayAPIError:
+        """Render budget denials in the client format for the active gateway."""
+        message = exc.message
+        is_budget_denial = (
+            exc.code == "budget_limit_exceeded"
+            or "model gateway budget exceeded" in message.lower()
+            or "budget hard limit exceeded" in message.lower()
+        )
+        if not is_budget_denial:
+            return exc
+        return ModelGatewayAPIError(
+            provider=gateway_provider,
+            status_code=exc.status_code,
+            message=message,
+            code="budget_limit_exceeded" if gateway_provider == "openai" else exc.code,
         )
 
     @staticmethod

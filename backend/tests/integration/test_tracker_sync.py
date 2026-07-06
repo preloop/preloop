@@ -74,6 +74,8 @@ from urllib.parse import quote
 import httpx
 import pytest
 
+from tests.integration.http_client import create_integration_sync_client
+
 # Test configuration
 PRELOOP_URL = os.getenv("PRELOOP_TEST_URL", "").rstrip("/")
 PRELOOP_API_KEY = os.getenv("PRELOOP_TEST_API_KEY", "")
@@ -120,7 +122,10 @@ def preloop_client():
         "Authorization": f"Bearer {PRELOOP_API_KEY}",
         "Content-Type": "application/json",
     }
-    with httpx.Client(base_url=PRELOOP_URL, headers=headers, timeout=30.0) as client:
+    with create_integration_sync_client(
+        base_url=PRELOOP_URL,
+        headers=headers,
+    ) as client:
         yield client
 
 

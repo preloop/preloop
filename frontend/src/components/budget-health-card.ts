@@ -133,8 +133,25 @@ export class BudgetHealthCard extends LitElement {
       background: var(--sl-color-success-600);
     }
 
+    .title.exceeded {
+      color: var(--sl-color-danger-700);
+    }
+
+    .row-value.exceeded {
+      color: var(--sl-color-danger-700);
+    }
+
+    .row-footer .limit-status {
+      color: var(--sl-color-danger-700);
+      font-weight: var(--sl-font-weight-semibold);
+    }
+
     .budget-track-fill.warning {
       background: var(--sl-color-warning-600);
+    }
+
+    .budget-track-fill.danger {
+      background: var(--sl-color-danger-600);
     }
 
     .budget-soft-marker {
@@ -311,6 +328,56 @@ export class BudgetHealthCard extends LitElement {
     );
   }
 
+  private isHardLimitExceeded(spend: number, hardLimit: number): boolean {
+    return hardLimit > 0 && spend >= hardLimit;
+  }
+
+  private isSoftOnlyLimitExceeded(
+    spend: number,
+    softLimit: number,
+    hardLimit: number
+  ): boolean {
+    return softLimit > 0 && hardLimit <= 0 && spend >= softLimit;
+  }
+
+  private isLimitExceeded(
+    spend: number,
+    softLimit: number,
+    hardLimit: number
+  ): boolean {
+    return (
+      this.isHardLimitExceeded(spend, hardLimit) ||
+      this.isSoftOnlyLimitExceeded(spend, softLimit, hardLimit)
+    );
+  }
+
+  private isSoftLimitWarning(
+    spend: number,
+    softLimit: number,
+    hardLimit: number
+  ): boolean {
+    return (
+      softLimit > 0 && hardLimit > 0 && spend >= softLimit && spend < hardLimit
+    );
+  }
+
+  private limitStatusLabel(
+    spend: number,
+    softLimit: number,
+    hardLimit: number
+  ): string | null {
+    if (this.isHardLimitExceeded(spend, hardLimit)) {
+      return spend > hardLimit ? 'Hard limit exceeded' : 'Hard limit reached';
+    }
+    if (this.isSoftOnlyLimitExceeded(spend, softLimit, hardLimit)) {
+      return spend > softLimit ? 'Soft limit exceeded' : 'Soft limit reached';
+    }
+    if (this.isSoftLimitWarning(spend, softLimit, hardLimit)) {
+      return 'Soft limit reached';
+    }
+    return null;
+  }
+
   private renderBudgetLimitRow(
     label: string,
     icon: string,
@@ -325,12 +392,21 @@ export class BudgetHealthCard extends LitElement {
       softLimit > 0 && maxLimit > 0
         ? Math.min(100, (softLimit / maxLimit) * 100)
         : 0;
-    const successFillPercent =
-      softLimit > 0 ? Math.min(fillPercent, softPercent) : fillPercent;
+    const limitExceeded = this.isLimitExceeded(spend, softLimit, hardLimit);
+    const softLimitWarning = this.isSoftLimitWarning(
+      spend,
+      softLimit,
+      hardLimit
+    );
+    const statusLabel = this.limitStatusLabel(spend, softLimit, hardLimit);
+    const successFillPercent = limitExceeded
+      ? 0
+      : softLimit > 0
+        ? Math.min(fillPercent, softPercent)
+        : fillPercent;
     const warningFillPercent =
-      softLimit > 0 && fillPercent > softPercent
-        ? fillPercent - softPercent
-        : 0;
+      !limitExceeded && softLimitWarning ? fillPercent - softPercent : 0;
+    const dangerFillPercent = limitExceeded ? fillPercent : 0;
 
     const ariaLabel = `${label} budget usage`;
 
@@ -341,63 +417,91 @@ export class BudgetHealthCard extends LitElement {
             <sl-icon name=${icon} aria-hidden="true"></sl-icon>
             ${label}
           </span>
-          <span class="row-value">
+          <span class="row-value${limitExceeded ? ' exceeded' : ''}">
             ${this.formatCurrency(spend)}
-            ${maxLimit > 0
-              ? html` / ${this.formatCurrency(maxLimit)}`
-              : html`<span style="color: var(--sl-color-neutral-500);">
-                  spent</span
-                >`}
+            ${
+              maxLimit > 0
+                ? html` / ${this.formatCurrency(maxLimit)}`
+                : html`<span style="color: var(--sl-color-neutral-500);">
+                    spent</span
+                  >`
+            }
           </span>
         </div>
-        ${maxLimit > 0
-          ? html`
-              <div
-                class="budget-track"
-                role="progressbar"
-                aria-label=${ariaLabel}
-                aria-valuemin="0"
-                aria-valuemax="100"
-                aria-valuenow=${Math.round(fillPercent)}
-              >
+        ${
+          maxLimit > 0
+            ? html`
                 <div
-                  class="budget-track-fill"
-                  style="--budget-fill-width: ${successFillPercent}%;"
-                ></div>
-                ${warningFillPercent > 0
-                  ? html`<div
-                      class="budget-track-fill warning"
-                      style="--budget-fill-left: ${softPercent}%; --budget-fill-width: ${warningFillPercent}%;"
-                    ></div>`
-                  : nothing}
-                ${softLimit > 0 && hardLimit > 0 && softLimit < hardLimit
-                  ? html`<div
-                      class="budget-soft-marker"
-                      title=${`Soft limit ${this.formatCurrency(softLimit)}`}
-                      style="--budget-soft-position: ${softPercent}%;"
-                    ></div>`
-                  : nothing}
-                ${hardLimit > 0
-                  ? html`<div
-                      class="budget-hard-marker"
-                      title=${`Hard limit ${this.formatCurrency(hardLimit)}`}
-                    ></div>`
-                  : nothing}
-              </div>
-              <div class="row-footer">
-                <span>
-                  ${softLimit > 0
-                    ? html`Soft ${this.formatCurrency(softLimit)}`
-                    : nothing}
-                </span>
-                <span>
-                  ${hardLimit > 0
-                    ? html`Hard ${this.formatCurrency(hardLimit)}`
-                    : nothing}
-                </span>
-              </div>
-            `
-          : nothing}
+                  class="budget-track"
+                  role="progressbar"
+                  aria-label=${ariaLabel}
+                  aria-valuemin="0"
+                  aria-valuemax="100"
+                  aria-valuenow=${Math.round(fillPercent)}
+                >
+                  ${
+                    successFillPercent > 0
+                      ? html`<div
+                          class="budget-track-fill"
+                          style="--budget-fill-width: ${successFillPercent}%;"
+                        ></div>`
+                      : nothing
+                  }
+                  ${
+                    warningFillPercent > 0
+                      ? html`<div
+                          class="budget-track-fill warning"
+                          style="--budget-fill-left: ${softPercent}%; --budget-fill-width: ${warningFillPercent}%;"
+                        ></div>`
+                      : nothing
+                  }
+                  ${
+                    dangerFillPercent > 0
+                      ? html`<div
+                          class="budget-track-fill danger"
+                          style="--budget-fill-width: ${dangerFillPercent}%;"
+                        ></div>`
+                      : nothing
+                  }
+                  ${
+                    softLimit > 0 && hardLimit > 0 && softLimit < hardLimit
+                      ? html`<div
+                          class="budget-soft-marker"
+                          title=${`Soft limit ${this.formatCurrency(softLimit)}`}
+                          style="--budget-soft-position: ${softPercent}%;"
+                        ></div>`
+                      : nothing
+                  }
+                  ${
+                    hardLimit > 0
+                      ? html`<div
+                          class="budget-hard-marker"
+                          title=${`Hard limit ${this.formatCurrency(hardLimit)}`}
+                        ></div>`
+                      : nothing
+                  }
+                </div>
+                <div class="row-footer">
+                  <span>
+                    ${
+                      statusLabel
+                        ? html`<span class="limit-status">${statusLabel}</span>`
+                        : softLimit > 0
+                          ? html`Soft ${this.formatCurrency(softLimit)}`
+                          : nothing
+                    }
+                  </span>
+                  <span>
+                    ${
+                      hardLimit > 0
+                        ? html`Hard ${this.formatCurrency(hardLimit)}`
+                        : nothing
+                    }
+                  </span>
+                </div>
+              `
+            : nothing
+        }
       </div>
     `;
   }
@@ -429,30 +533,51 @@ export class BudgetHealthCard extends LitElement {
       : policyUsages;
     const selectedPeriod = this.periodForTimeRange();
     const globalSpend = this.summary?.budget?.current_spend_usd || 0;
+    const globalSoftLimit =
+      selectedGlobalUsage?.softLimit ||
+      this.summary?.budget?.soft_limit_usd ||
+      0;
+    const globalHardLimit =
+      selectedGlobalUsage?.hardLimit ||
+      this.summary?.budget?.monthly_limit_usd ||
+      0;
+    const anyLimitExceeded =
+      this.summary?.budget?.hard_limit_exceeded ||
+      this.isLimitExceeded(globalSpend, globalSoftLimit, globalHardLimit) ||
+      additionalUsages.some((usage) =>
+        this.isLimitExceeded(usage.spend, usage.softLimit, usage.hardLimit)
+      );
 
     return html`
       <sl-card class="content-card">
         <div slot="header" class="header">
-          <div class="title" id="budget-health-title">
+          <div
+            class="title${anyLimitExceeded ? ' exceeded' : ''}"
+            id="budget-health-title"
+          >
             Budget health
-            ${this.loading
-              ? html`<sl-spinner style="font-size: 1rem;"></sl-spinner>`
-              : nothing}
+            ${
+              this.loading
+                ? html`<sl-spinner style="font-size: 1rem;"></sl-spinner>`
+                : nothing
+            }
           </div>
-          ${this.showRangeSelector
-            ? html`
-                <select
-                  aria-label="Budget time range"
-                  .value=${this.timeRange}
-                  @change=${this.handleRangeChange}
-                >
-                  <option value="day">24h</option>
-                  <option value="week">7d</option>
-                  <option value="month">30d</option>
-                  <option value="year">1y</option>
-                </select>
-              `
-            : nothing}
+          ${
+            this.showRangeSelector
+              ? html`
+                  <select
+                    aria-label="Budget time range"
+                    .value=${this.timeRange}
+                    @change=${this.handleRangeChange}
+                  >
+                    <option value="day">24h</option>
+                    <option value="week">7d</option>
+                    <option value="month">30d</option>
+                    <option value="year">1y</option>
+                  </select>
+                `
+              : nothing
+          }
         </div>
         <div
           class="content"
@@ -464,42 +589,42 @@ export class BudgetHealthCard extends LitElement {
               `Global spend · ${this.formatBudgetPeriod(selectedPeriod)}`,
               'globe',
               globalSpend,
-              selectedGlobalUsage?.softLimit ||
-                this.summary?.budget?.soft_limit_usd ||
-                0,
-              selectedGlobalUsage?.hardLimit ||
-                this.summary?.budget?.monthly_limit_usd ||
-                0
+              globalSoftLimit,
+              globalHardLimit
             )}
-            ${additionalUsages.length
-              ? additionalUsages.map((usage) =>
-                  this.renderBudgetLimitRow(
-                    this.policyDisplayName(usage.policy),
-                    this.policyIcon(usage.policy),
-                    usage.spend,
-                    usage.softLimit,
-                    usage.hardLimit
+            ${
+              additionalUsages.length
+                ? additionalUsages.map((usage) =>
+                    this.renderBudgetLimitRow(
+                      this.policyDisplayName(usage.policy),
+                      this.policyIcon(usage.policy),
+                      usage.spend,
+                      usage.softLimit,
+                      usage.hardLimit
+                    )
                   )
-                )
-              : html`<div class="empty">No additional budget policies.</div>`}
+                : html`<div class="empty">No additional budget policies.</div>`
+            }
           </div>
-          ${this.configurable
-            ? html`
-                <sl-button
-                  size="small"
-                  variant="default"
-                  aria-label="Configure budget limits"
-                  @click=${this.handleConfigure}
-                >
-                  <sl-icon
-                    slot="prefix"
-                    name="gear"
-                    aria-hidden="true"
-                  ></sl-icon>
-                  Configure Limits
-                </sl-button>
-              `
-            : nothing}
+          ${
+            this.configurable
+              ? html`
+                  <sl-button
+                    size="small"
+                    variant="default"
+                    aria-label="Configure budget limits"
+                    @click=${this.handleConfigure}
+                  >
+                    <sl-icon
+                      slot="prefix"
+                      name="gear"
+                      aria-hidden="true"
+                    ></sl-icon>
+                    Configure Limits
+                  </sl-button>
+                `
+              : nothing
+          }
         </div>
       </sl-card>
     `;

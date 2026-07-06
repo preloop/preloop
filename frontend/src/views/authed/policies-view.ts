@@ -1144,21 +1144,23 @@ export class PoliciesView extends LitElement {
 
     return html`
       <div class="access-rules-list">
-        ${sortedRules.length === 0
-          ? html`
-              <div class="empty-state">
-                <sl-icon name="tools"></sl-icon>
-                <p>No tools configured. Add an MCP server to get started.</p>
-                <sl-button href="/console/tools" variant="primary">
-                  Go to Tools
-                </sl-button>
-              </div>
-            `
-          : repeat(
-              sortedRules,
-              (rule) => this.getToolKey(rule),
-              (rule) => this.renderAccessRuleCard(rule)
-            )}
+        ${
+          sortedRules.length === 0
+            ? html`
+                <div class="empty-state">
+                  <sl-icon name="tools"></sl-icon>
+                  <p>No tools configured. Add an MCP server to get started.</p>
+                  <sl-button href="/console/tools" variant="primary">
+                    Go to Tools
+                  </sl-button>
+                </div>
+              `
+            : repeat(
+                sortedRules,
+                (rule) => this.getToolKey(rule),
+                (rule) => this.renderAccessRuleCard(rule)
+              )
+        }
       </div>
     `;
   }
@@ -1190,17 +1192,21 @@ export class PoliciesView extends LitElement {
             @click=${(e: Event) => e.stopPropagation()}
           >
             <sl-badge
-              variant=${rule.action === 'allow'
-                ? 'success'
-                : rule.action === 'deny'
-                  ? 'danger'
-                  : 'warning'}
+              variant=${
+                rule.action === 'allow'
+                  ? 'success'
+                  : rule.action === 'deny'
+                    ? 'danger'
+                    : 'warning'
+              }
             >
-              ${rule.action === 'allow'
-                ? 'Allowed'
-                : rule.action === 'deny'
-                  ? 'Denied'
-                  : 'Approval Required'}
+              ${
+                rule.action === 'allow'
+                  ? 'Allowed'
+                  : rule.action === 'deny'
+                    ? 'Denied'
+                    : 'Approval Required'
+              }
             </sl-badge>
             <sl-select
               size="small"
@@ -1215,48 +1221,56 @@ export class PoliciesView extends LitElement {
             </sl-select>
           </div>
         </div>
-        ${isExpanded
-          ? html`
-              <div class="access-rule-details">
-                <div class="rule-row">
-                  <span class="rule-label">Source:</span>
-                  <span class="rule-value">
-                    <sl-badge variant="neutral" size="small">
-                      ${rule.source}
-                    </sl-badge>
-                  </span>
+        ${
+          isExpanded
+            ? html`
+                <div class="access-rule-details">
+                  <div class="rule-row">
+                    <span class="rule-label">Source:</span>
+                    <span class="rule-value">
+                      <sl-badge variant="neutral" size="small">
+                        ${rule.source}
+                      </sl-badge>
+                    </span>
+                  </div>
+                  <div class="rule-row">
+                    <span class="rule-label">Enabled:</span>
+                    <span class="rule-value">
+                      ${rule.isEnabled ? 'Yes' : 'No'}
+                    </span>
+                  </div>
+                  ${
+                    rule.action === 'require_approval'
+                      ? html`
+                          <div class="rule-row">
+                            <span class="rule-label">Policy:</span>
+                            <span class="rule-value">
+                              ${
+                                assignedPolicy
+                                  ? assignedPolicy.name
+                                  : 'Default Policy'
+                              }
+                            </span>
+                          </div>
+                          ${
+                            rule.condition
+                              ? html`
+                                  <div class="rule-row">
+                                    <span class="rule-label">Condition:</span>
+                                    <span class="rule-value">
+                                      <code>${rule.condition}</code>
+                                    </span>
+                                  </div>
+                                `
+                              : ''
+                          }
+                        `
+                      : ''
+                  }
                 </div>
-                <div class="rule-row">
-                  <span class="rule-label">Enabled:</span>
-                  <span class="rule-value">
-                    ${rule.isEnabled ? 'Yes' : 'No'}
-                  </span>
-                </div>
-                ${rule.action === 'require_approval'
-                  ? html`
-                      <div class="rule-row">
-                        <span class="rule-label">Policy:</span>
-                        <span class="rule-value">
-                          ${assignedPolicy
-                            ? assignedPolicy.name
-                            : 'Default Policy'}
-                        </span>
-                      </div>
-                      ${rule.condition
-                        ? html`
-                            <div class="rule-row">
-                              <span class="rule-label">Condition:</span>
-                              <span class="rule-value">
-                                <code>${rule.condition}</code>
-                              </span>
-                            </div>
-                          `
-                        : ''}
-                    `
-                  : ''}
-              </div>
-            `
-          : ''}
+              `
+            : ''
+        }
       </div>
     `;
   }
@@ -1270,28 +1284,30 @@ export class PoliciesView extends LitElement {
         </sl-button>
       </div>
 
-      ${this._approvalPolicies.length === 0
-        ? html`
-            <div class="empty-state">
-              <sl-icon name="shield-check"></sl-icon>
-              <p>No approval workflows configured yet.</p>
-              <p
-                style="font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-500);"
-              >
-                Create an approval workflow to define how tool executions are
-                approved (human, AI, Slack, etc.).
-              </p>
-            </div>
-          `
-        : html`
-            <div class="policies-grid">
-              ${repeat(
-                this._approvalPolicies,
-                (policy) => policy.id,
-                (policy) => this.renderPolicyCard(policy)
-              )}
-            </div>
-          `}
+      ${
+        this._approvalPolicies.length === 0
+          ? html`
+              <div class="empty-state">
+                <sl-icon name="shield-check"></sl-icon>
+                <p>No approval workflows configured yet.</p>
+                <p
+                  style="font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-500);"
+                >
+                  Create an approval workflow to define how tool executions are
+                  approved (human, AI, Slack, etc.).
+                </p>
+              </div>
+            `
+          : html`
+              <div class="policies-grid">
+                ${repeat(
+                  this._approvalPolicies,
+                  (policy) => policy.id,
+                  (policy) => this.renderPolicyCard(policy)
+                )}
+              </div>
+            `
+      }
 
       <approval-workflow-dialog
         ?open=${this._showPolicyDialog}
@@ -1322,61 +1338,72 @@ export class PoliciesView extends LitElement {
           <div class="policy-card-header">
             <h3 class="policy-name">${policy.name}</h3>
             <div style="display: flex; gap: var(--sl-spacing-x-small);">
-              ${isAiDriven
-                ? html`<sl-badge variant="warning">
-                    <sl-icon name="robot" style="margin-right: 4px;"></sl-icon>
-                    AI-Driven
-                  </sl-badge>`
-                : ''}
-              ${policy.is_default
-                ? html`<sl-badge variant="primary">Default</sl-badge>`
-                : ''}
+              ${
+                isAiDriven
+                  ? html`<sl-badge variant="warning">
+                      <sl-icon
+                        name="robot"
+                        style="margin-right: 4px;"
+                      ></sl-icon>
+                      AI-Driven
+                    </sl-badge>`
+                  : ''
+              }
+              ${
+                policy.is_default
+                  ? html`<sl-badge variant="primary">Default</sl-badge>`
+                  : ''
+              }
             </div>
           </div>
           <p class="policy-description">
             ${policy.description || 'No description'}
           </p>
           <div class="policy-meta">
-            ${isAiDriven
-              ? html`
-                  <div class="policy-meta-item">
-                    <sl-icon name="cpu"></sl-icon>
-                    <span>${policy.ai_model || 'No model set'}</span>
-                  </div>
-                  <div class="policy-meta-item">
-                    <sl-icon name="speedometer2"></sl-icon>
-                    <span>
-                      ${Math.round(
-                        (policy.ai_confidence_threshold || 0.8) * 100
-                      )}%
-                      threshold
-                    </span>
-                  </div>
-                  <div class="policy-meta-item">
-                    <sl-badge variant="neutral" size="small">
-                      ${policy.ai_fallback_behavior === 'escalate'
-                        ? 'Escalates when uncertain'
-                        : policy.ai_fallback_behavior === 'approve'
-                          ? 'Auto-approves when uncertain'
-                          : 'Auto-denies when uncertain'}
-                    </sl-badge>
-                  </div>
-                `
-              : html`
-                  <div class="policy-meta-item">
-                    <sl-icon name="clock"></sl-icon>
-                    <span>${policy.timeout_seconds || 300}s timeout</span>
-                  </div>
-                  <div class="policy-meta-item">
-                    <sl-icon name="people"></sl-icon>
-                    <span>${policy.approvals_required || 1} approval(s)</span>
-                  </div>
-                  <div class="policy-meta-item">
-                    <sl-badge variant="neutral" size="small">
-                      ${policy.approval_type}
-                    </sl-badge>
-                  </div>
-                `}
+            ${
+              isAiDriven
+                ? html`
+                    <div class="policy-meta-item">
+                      <sl-icon name="cpu"></sl-icon>
+                      <span>${policy.ai_model || 'No model set'}</span>
+                    </div>
+                    <div class="policy-meta-item">
+                      <sl-icon name="speedometer2"></sl-icon>
+                      <span>
+                        ${Math.round(
+                          (policy.ai_confidence_threshold || 0.8) * 100
+                        )}%
+                        threshold
+                      </span>
+                    </div>
+                    <div class="policy-meta-item">
+                      <sl-badge variant="neutral" size="small">
+                        ${
+                          policy.ai_fallback_behavior === 'escalate'
+                            ? 'Escalates when uncertain'
+                            : policy.ai_fallback_behavior === 'approve'
+                              ? 'Auto-approves when uncertain'
+                              : 'Auto-denies when uncertain'
+                        }
+                      </sl-badge>
+                    </div>
+                  `
+                : html`
+                    <div class="policy-meta-item">
+                      <sl-icon name="clock"></sl-icon>
+                      <span>${policy.timeout_seconds || 300}s timeout</span>
+                    </div>
+                    <div class="policy-meta-item">
+                      <sl-icon name="people"></sl-icon>
+                      <span>${policy.approvals_required || 1} approval(s)</span>
+                    </div>
+                    <div class="policy-meta-item">
+                      <sl-badge variant="neutral" size="small">
+                        ${policy.approval_type}
+                      </sl-badge>
+                    </div>
+                  `
+            }
           </div>
         </div>
         <div slot="footer">
@@ -1474,42 +1501,48 @@ defaults:
           </sl-details>
         </sl-card>
 
-        ${this._policyFileHistory.length > 0
-          ? html`
-              <sl-card>
-                <div slot="header">Import History</div>
-                <div class="history-list">
-                  ${repeat(
-                    this._policyFileHistory,
-                    (item) => item.id,
-                    (item) => html`
-                      <div
-                        class="history-item ${item.status === 'failed'
-                          ? 'failed'
-                          : ''}"
-                      >
-                        <div class="history-info">
-                          <span class="history-filename">${item.filename}</span>
-                          <span class="history-meta">
-                            ${item.appliedAt} - ${item.summary}
-                          </span>
-                        </div>
-                        <sl-badge
-                          variant=${item.status === 'applied'
-                            ? 'success'
-                            : item.status === 'failed'
-                              ? 'danger'
-                              : 'neutral'}
+        ${
+          this._policyFileHistory.length > 0
+            ? html`
+                <sl-card>
+                  <div slot="header">Import History</div>
+                  <div class="history-list">
+                    ${repeat(
+                      this._policyFileHistory,
+                      (item) => item.id,
+                      (item) => html`
+                        <div
+                          class="history-item ${
+                            item.status === 'failed' ? 'failed' : ''
+                          }"
                         >
-                          ${item.status}
-                        </sl-badge>
-                      </div>
-                    `
-                  )}
-                </div>
-              </sl-card>
-            `
-          : ''}
+                          <div class="history-info">
+                            <span class="history-filename"
+                              >${item.filename}</span
+                            >
+                            <span class="history-meta">
+                              ${item.appliedAt} - ${item.summary}
+                            </span>
+                          </div>
+                          <sl-badge
+                            variant=${
+                              item.status === 'applied'
+                                ? 'success'
+                                : item.status === 'failed'
+                                  ? 'danger'
+                                  : 'neutral'
+                            }
+                          >
+                            ${item.status}
+                          </sl-badge>
+                        </div>
+                      `
+                    )}
+                  </div>
+                </sl-card>
+              `
+            : ''
+        }
 
         <!-- Version Management Section -->
         ${this.renderVersionsSection()}
@@ -1554,35 +1587,37 @@ defaults:
           </div>
         </div>
 
-        ${this._loadingVersions
-          ? html`
-              <div class="loading-container">
-                <sl-spinner></sl-spinner>
-              </div>
-            `
-          : this._versions.length === 0
+        ${
+          this._loadingVersions
             ? html`
-                <div class="empty-versions">
-                  <sl-icon
-                    name="clock-history"
-                    style="font-size: 3rem; margin-bottom: var(--sl-spacing-medium);"
-                  ></sl-icon>
-                  <p>No versions saved yet.</p>
-                  <p style="font-size: var(--sl-font-size-small);">
-                    Save a version to create a snapshot of your current policy
-                    configuration.
-                  </p>
+                <div class="loading-container">
+                  <sl-spinner></sl-spinner>
                 </div>
               `
-            : html`
-                <div class="version-list">
-                  ${repeat(
-                    this._versions,
-                    (v) => v.id,
-                    (version) => this.renderVersionItem(version)
-                  )}
-                </div>
-              `}
+            : this._versions.length === 0
+              ? html`
+                  <div class="empty-versions">
+                    <sl-icon
+                      name="clock-history"
+                      style="font-size: 3rem; margin-bottom: var(--sl-spacing-medium);"
+                    ></sl-icon>
+                    <p>No versions saved yet.</p>
+                    <p style="font-size: var(--sl-font-size-small);">
+                      Save a version to create a snapshot of your current policy
+                      configuration.
+                    </p>
+                  </div>
+                `
+              : html`
+                  <div class="version-list">
+                    ${repeat(
+                      this._versions,
+                      (v) => v.id,
+                      (version) => this.renderVersionItem(version)
+                    )}
+                  </div>
+                `
+        }
       </div>
     `;
   }
@@ -1607,19 +1642,25 @@ defaults:
               </span>
               <span class="version-date">
                 ${this.formatVersionDate(version.created_at)}
-                ${version.created_by_username
-                  ? ` by ${version.created_by_username}`
-                  : ''}
+                ${
+                  version.created_by_username
+                    ? ` by ${version.created_by_username}`
+                    : ''
+                }
               </span>
             </div>
           </div>
           <div class="version-badges">
-            ${version.is_active
-              ? html`<sl-badge variant="success">Active</sl-badge>`
-              : ''}
-            ${version.tag
-              ? html`<sl-badge variant="primary">${version.tag}</sl-badge>`
-              : ''}
+            ${
+              version.is_active
+                ? html`<sl-badge variant="success">Active</sl-badge>`
+                : ''
+            }
+            ${
+              version.tag
+                ? html`<sl-badge variant="primary">${version.tag}</sl-badge>`
+                : ''
+            }
           </div>
           <div
             class="version-actions"
@@ -1654,30 +1695,33 @@ defaults:
             </sl-tooltip>
           </div>
         </div>
-        ${isExpanded
-          ? html`
-              <div class="version-details">
-                <div class="version-stats">
-                  <div class="version-stat">
-                    <sl-icon name="hdd-network"></sl-icon>
-                    <span>
-                      ${version.snapshot_summary.mcp_servers_count} MCP servers
-                    </span>
-                  </div>
-                  <div class="version-stat">
-                    <sl-icon name="tools"></sl-icon>
-                    <span>${version.snapshot_summary.tools_count} tools</span>
-                  </div>
-                  <div class="version-stat">
-                    <sl-icon name="shield-check"></sl-icon>
-                    <span>
-                      ${version.snapshot_summary.policies_count} policies
-                    </span>
+        ${
+          isExpanded
+            ? html`
+                <div class="version-details">
+                  <div class="version-stats">
+                    <div class="version-stat">
+                      <sl-icon name="hdd-network"></sl-icon>
+                      <span>
+                        ${version.snapshot_summary.mcp_servers_count} MCP
+                        servers
+                      </span>
+                    </div>
+                    <div class="version-stat">
+                      <sl-icon name="tools"></sl-icon>
+                      <span>${version.snapshot_summary.tools_count} tools</span>
+                    </div>
+                    <div class="version-stat">
+                      <sl-icon name="shield-check"></sl-icon>
+                      <span>
+                        ${version.snapshot_summary.policies_count} policies
+                      </span>
+                    </div>
                   </div>
                 </div>
-              </div>
-            `
-          : ''}
+              `
+            : ''
+        }
       </div>
     `;
   }
@@ -1827,43 +1871,49 @@ defaults:
           this._versionToTag = null;
         }}
       >
-        ${this._versionToTag
-          ? html`
-              <p style="margin-top: 0;">
-                Update the tag for version ${this._versionToTag.version_number}.
-                Leave empty to remove the tag.
-              </p>
+        ${
+          this._versionToTag
+            ? html`
+                <p style="margin-top: 0;">
+                  Update the tag for version
+                  ${this._versionToTag.version_number}. Leave empty to remove
+                  the tag.
+                </p>
 
-              <div class="form-field">
-                <label class="form-label">Tag</label>
-                <sl-input
-                  placeholder="e.g., production-v1, stable"
-                  .value=${this._tagForm.tag}
-                  @sl-input=${(e: any) =>
-                    (this._tagForm = { tag: e.target.value })}
-                ></sl-input>
-              </div>
+                <div class="form-field">
+                  <label class="form-label">Tag</label>
+                  <sl-input
+                    placeholder="e.g., production-v1, stable"
+                    .value=${this._tagForm.tag}
+                    @sl-input=${(e: any) =>
+                      (this._tagForm = { tag: e.target.value })}
+                  ></sl-input>
+                </div>
 
-              <div slot="footer" class="dialog-footer">
-                <sl-button
-                  @click=${() => {
-                    this._showTagDialog = false;
-                    this._versionToTag = null;
-                  }}
-                >
-                  Cancel
-                </sl-button>
-                <sl-button
-                  variant="primary"
-                  @click=${() =>
-                    this.tagVersion(this._versionToTag!.id, this._tagForm.tag)}
-                  ?loading=${this._taggingVersion}
-                >
-                  Save Tag
-                </sl-button>
-              </div>
-            `
-          : ''}
+                <div slot="footer" class="dialog-footer">
+                  <sl-button
+                    @click=${() => {
+                      this._showTagDialog = false;
+                      this._versionToTag = null;
+                    }}
+                  >
+                    Cancel
+                  </sl-button>
+                  <sl-button
+                    variant="primary"
+                    @click=${() =>
+                      this.tagVersion(
+                        this._versionToTag!.id,
+                        this._tagForm.tag
+                      )}
+                    ?loading=${this._taggingVersion}
+                  >
+                    Save Tag
+                  </sl-button>
+                </div>
+              `
+            : ''
+        }
       </sl-dialog>
     `;
   }
@@ -1880,133 +1930,162 @@ defaults:
         }}
         style="--width: 700px;"
       >
-        ${this._versionToRollback
-          ? html`
-              <div class="rollback-warning">
-                <sl-icon name="exclamation-triangle"></sl-icon>
-                <div>
-                  <strong>Warning:</strong> Rolling back will replace your
-                  current policy configuration with the snapshot from version
-                  ${this._versionToRollback.version_number}. This action cannot
-                  be automatically undone.
+        ${
+          this._versionToRollback
+            ? html`
+                <div class="rollback-warning">
+                  <sl-icon name="exclamation-triangle"></sl-icon>
+                  <div>
+                    <strong>Warning:</strong> Rolling back will replace your
+                    current policy configuration with the snapshot from version
+                    ${this._versionToRollback.version_number}. This action
+                    cannot be automatically undone.
+                  </div>
                 </div>
-              </div>
 
-              ${this._rollbackPreview
-                ? html`
-                    <p style="margin-top: 0;">
-                      ${this._rollbackPreview.changes?.has_changes
-                        ? 'The following changes will be made:'
-                        : 'No changes would be made by this rollback.'}
-                    </p>
+                ${
+                  this._rollbackPreview
+                    ? html`
+                        <p style="margin-top: 0;">
+                          ${
+                            this._rollbackPreview.changes?.has_changes
+                              ? 'The following changes will be made:'
+                              : 'No changes would be made by this rollback.'
+                          }
+                        </p>
 
-                    ${this._rollbackPreview.changes?.has_changes
-                      ? html`
-                          <div class="diff-container">
-                            ${this._rollbackPreview.changes.changes.added
-                              .length > 0
-                              ? html`
-                                  <div class="diff-section">
-                                    <div class="diff-section-title">
-                                      <sl-icon
-                                        name="plus-circle-fill"
-                                        style="color: var(--sl-color-success-600);"
-                                      ></sl-icon>
-                                      Added
-                                      (${this._rollbackPreview.changes.changes
-                                        .added.length})
-                                    </div>
-                                    ${this._rollbackPreview.changes.changes.added.map(
-                                      (change) => html`
-                                        <div class="diff-item added">
-                                          <strong>${change.category}:</strong>
-                                          ${change.name}
-                                        </div>
-                                      `
-                                    )}
-                                  </div>
-                                `
-                              : ''}
-                            ${this._rollbackPreview.changes.changes.modified
-                              .length > 0
-                              ? html`
-                                  <div class="diff-section">
-                                    <div class="diff-section-title">
-                                      <sl-icon
-                                        name="pencil-fill"
-                                        style="color: var(--sl-color-warning-600);"
-                                      ></sl-icon>
-                                      Modified
-                                      (${this._rollbackPreview.changes.changes
-                                        .modified.length})
-                                    </div>
-                                    ${this._rollbackPreview.changes.changes.modified.map(
-                                      (change) => html`
-                                        <div class="diff-item modified">
-                                          <strong>${change.category}:</strong>
-                                          ${change.name}
-                                        </div>
-                                      `
-                                    )}
-                                  </div>
-                                `
-                              : ''}
-                            ${this._rollbackPreview.changes.changes.removed
-                              .length > 0
-                              ? html`
-                                  <div class="diff-section">
-                                    <div class="diff-section-title">
-                                      <sl-icon
-                                        name="dash-circle-fill"
-                                        style="color: var(--sl-color-danger-600);"
-                                      ></sl-icon>
-                                      Removed
-                                      (${this._rollbackPreview.changes.changes
-                                        .removed.length})
-                                    </div>
-                                    ${this._rollbackPreview.changes.changes.removed.map(
-                                      (change) => html`
-                                        <div class="diff-item removed">
-                                          <strong>${change.category}:</strong>
-                                          ${change.name}
-                                        </div>
-                                      `
-                                    )}
-                                  </div>
-                                `
-                              : ''}
-                          </div>
-                        `
-                      : ''}
-                  `
-                : html`
-                    <div class="loading-container">
-                      <sl-spinner></sl-spinner>
-                    </div>
-                  `}
+                        ${
+                          this._rollbackPreview.changes?.has_changes
+                            ? html`
+                                <div class="diff-container">
+                                  ${
+                                    this._rollbackPreview.changes.changes.added
+                                      .length > 0
+                                      ? html`
+                                          <div class="diff-section">
+                                            <div class="diff-section-title">
+                                              <sl-icon
+                                                name="plus-circle-fill"
+                                                style="color: var(--sl-color-success-600);"
+                                              ></sl-icon>
+                                              Added
+                                              (${
+                                                this._rollbackPreview.changes
+                                                  .changes.added.length
+                                              })
+                                            </div>
+                                            ${this._rollbackPreview.changes.changes.added.map(
+                                              (change) => html`
+                                                <div class="diff-item added">
+                                                  <strong
+                                                    >${change.category}:</strong
+                                                  >
+                                                  ${change.name}
+                                                </div>
+                                              `
+                                            )}
+                                          </div>
+                                        `
+                                      : ''
+                                  }
+                                  ${
+                                    this._rollbackPreview.changes.changes
+                                      .modified.length > 0
+                                      ? html`
+                                          <div class="diff-section">
+                                            <div class="diff-section-title">
+                                              <sl-icon
+                                                name="pencil-fill"
+                                                style="color: var(--sl-color-warning-600);"
+                                              ></sl-icon>
+                                              Modified
+                                              (${
+                                                this._rollbackPreview.changes
+                                                  .changes.modified.length
+                                              })
+                                            </div>
+                                            ${this._rollbackPreview.changes.changes.modified.map(
+                                              (change) => html`
+                                                <div class="diff-item modified">
+                                                  <strong
+                                                    >${change.category}:</strong
+                                                  >
+                                                  ${change.name}
+                                                </div>
+                                              `
+                                            )}
+                                          </div>
+                                        `
+                                      : ''
+                                  }
+                                  ${
+                                    this._rollbackPreview.changes.changes
+                                      .removed.length > 0
+                                      ? html`
+                                          <div class="diff-section">
+                                            <div class="diff-section-title">
+                                              <sl-icon
+                                                name="dash-circle-fill"
+                                                style="color: var(--sl-color-danger-600);"
+                                              ></sl-icon>
+                                              Removed
+                                              (${
+                                                this._rollbackPreview.changes
+                                                  .changes.removed.length
+                                              })
+                                            </div>
+                                            ${this._rollbackPreview.changes.changes.removed.map(
+                                              (change) => html`
+                                                <div class="diff-item removed">
+                                                  <strong
+                                                    >${change.category}:</strong
+                                                  >
+                                                  ${change.name}
+                                                </div>
+                                              `
+                                            )}
+                                          </div>
+                                        `
+                                      : ''
+                                  }
+                                </div>
+                              `
+                            : ''
+                        }
+                      `
+                    : html`
+                        <div class="loading-container">
+                          <sl-spinner></sl-spinner>
+                        </div>
+                      `
+                }
 
-              <div slot="footer" class="dialog-footer">
-                <sl-button
-                  @click=${() => {
-                    this._showRollbackDialog = false;
-                    this._rollbackPreview = null;
-                    this._versionToRollback = null;
-                  }}
-                >
-                  Cancel
-                </sl-button>
-                <sl-button
-                  variant="danger"
-                  @click=${() =>
-                    this.rollbackToVersion(this._versionToRollback!.id, false)}
-                  ?loading=${this._rollingBack}
-                  ?disabled=${!this._rollbackPreview?.changes?.has_changes}
-                >
-                  Confirm Rollback
-                </sl-button>
-              </div>
-            `
-          : ''}
+                <div slot="footer" class="dialog-footer">
+                  <sl-button
+                    @click=${() => {
+                      this._showRollbackDialog = false;
+                      this._rollbackPreview = null;
+                      this._versionToRollback = null;
+                    }}
+                  >
+                    Cancel
+                  </sl-button>
+                  <sl-button
+                    variant="danger"
+                    @click=${() =>
+                      this.rollbackToVersion(
+                        this._versionToRollback!.id,
+                        false
+                      )}
+                    ?loading=${this._rollingBack}
+                    ?disabled=${!this._rollbackPreview?.changes?.has_changes}
+                  >
+                    Confirm Rollback
+                  </sl-button>
+                </div>
+              `
+            : ''
+        }
       </sl-dialog>
     `;
   }
@@ -2023,101 +2102,118 @@ defaults:
         }}
         style="--width: 700px;"
       >
-        ${this._diffResult
-          ? html`
-              <p style="margin-top: 0;">
-                ${this._diffResult.summary ||
-                (this._diffResult.has_changes
-                  ? 'The following changes will be applied:'
-                  : 'No changes detected.')}
-              </p>
-              ${this._diffResult.has_changes
-                ? html`
-                    <div class="diff-container">
-                      ${this._diffResult.changes.added.length > 0
-                        ? html`
-                            <div class="diff-section">
-                              <div class="diff-section-title">
-                                <sl-icon
-                                  name="plus-circle-fill"
-                                  style="color: var(--sl-color-success-600);"
-                                ></sl-icon>
-                                Added (${this._diffResult.changes.added.length})
-                              </div>
-                              ${this._diffResult.changes.added.map(
-                                (change) => html`
-                                  <div class="diff-item added">
-                                    <strong>${change.category}:</strong>
-                                    ${change.name}
-                                    ${change.details
-                                      ? html`<br /><small
-                                            >${change.details}</small
-                                          >`
-                                      : ''}
+        ${
+          this._diffResult
+            ? html`
+                <p style="margin-top: 0;">
+                  ${
+                    this._diffResult.summary ||
+                    (this._diffResult.has_changes
+                      ? 'The following changes will be applied:'
+                      : 'No changes detected.')
+                  }
+                </p>
+                ${
+                  this._diffResult.has_changes
+                    ? html`
+                        <div class="diff-container">
+                          ${
+                            this._diffResult.changes.added.length > 0
+                              ? html`
+                                  <div class="diff-section">
+                                    <div class="diff-section-title">
+                                      <sl-icon
+                                        name="plus-circle-fill"
+                                        style="color: var(--sl-color-success-600);"
+                                      ></sl-icon>
+                                      Added
+                                      (${this._diffResult.changes.added.length})
+                                    </div>
+                                    ${this._diffResult.changes.added.map(
+                                      (change) => html`
+                                        <div class="diff-item added">
+                                          <strong>${change.category}:</strong>
+                                          ${change.name}
+                                          ${
+                                            change.details
+                                              ? html`<br /><small
+                                                    >${change.details}</small
+                                                  >`
+                                              : ''
+                                          }
+                                        </div>
+                                      `
+                                    )}
                                   </div>
                                 `
-                              )}
-                            </div>
-                          `
-                        : ''}
-                      ${this._diffResult.changes.modified.length > 0
-                        ? html`
-                            <div class="diff-section">
-                              <div class="diff-section-title">
-                                <sl-icon
-                                  name="pencil-fill"
-                                  style="color: var(--sl-color-warning-600);"
-                                ></sl-icon>
-                                Modified
-                                (${this._diffResult.changes.modified.length})
-                              </div>
-                              ${this._diffResult.changes.modified.map(
-                                (change) => html`
-                                  <div class="diff-item modified">
-                                    <strong>${change.category}:</strong>
-                                    ${change.name}
-                                    ${change.details
-                                      ? html`<br /><small
-                                            >${change.details}</small
-                                          >`
-                                      : ''}
+                              : ''
+                          }
+                          ${
+                            this._diffResult.changes.modified.length > 0
+                              ? html`
+                                  <div class="diff-section">
+                                    <div class="diff-section-title">
+                                      <sl-icon
+                                        name="pencil-fill"
+                                        style="color: var(--sl-color-warning-600);"
+                                      ></sl-icon>
+                                      Modified
+                                      (${this._diffResult.changes.modified.length})
+                                    </div>
+                                    ${this._diffResult.changes.modified.map(
+                                      (change) => html`
+                                        <div class="diff-item modified">
+                                          <strong>${change.category}:</strong>
+                                          ${change.name}
+                                          ${
+                                            change.details
+                                              ? html`<br /><small
+                                                    >${change.details}</small
+                                                  >`
+                                              : ''
+                                          }
+                                        </div>
+                                      `
+                                    )}
                                   </div>
                                 `
-                              )}
-                            </div>
-                          `
-                        : ''}
-                      ${this._diffResult.changes.removed.length > 0
-                        ? html`
-                            <div class="diff-section">
-                              <div class="diff-section-title">
-                                <sl-icon
-                                  name="dash-circle-fill"
-                                  style="color: var(--sl-color-danger-600);"
-                                ></sl-icon>
-                                Removed
-                                (${this._diffResult.changes.removed.length})
-                              </div>
-                              ${this._diffResult.changes.removed.map(
-                                (change) => html`
-                                  <div class="diff-item removed">
-                                    <strong>${change.category}:</strong>
-                                    ${change.name}
+                              : ''
+                          }
+                          ${
+                            this._diffResult.changes.removed.length > 0
+                              ? html`
+                                  <div class="diff-section">
+                                    <div class="diff-section-title">
+                                      <sl-icon
+                                        name="dash-circle-fill"
+                                        style="color: var(--sl-color-danger-600);"
+                                      ></sl-icon>
+                                      Removed
+                                      (${this._diffResult.changes.removed.length})
+                                    </div>
+                                    ${this._diffResult.changes.removed.map(
+                                      (change) => html`
+                                        <div class="diff-item removed">
+                                          <strong>${change.category}:</strong>
+                                          ${change.name}
+                                        </div>
+                                      `
+                                    )}
                                   </div>
                                 `
-                              )}
-                            </div>
-                          `
-                        : ''}
-                    </div>
-                  `
-                : ''}
-            `
-          : html`
-              <div class="loading-container">
-                <sl-spinner></sl-spinner>
-              </div>
-            `}
+                              : ''
+                          }
+                        </div>
+                      `
+                    : ''
+                }
+              `
+            : html`
+                <div class="loading-container">
+                  <sl-spinner></sl-spinner>
+                </div>
+              `
+        }
 
         <div slot="footer" class="dialog-footer">
           <sl-button
@@ -2148,69 +2244,73 @@ defaults:
 
       <div class="column-layout extra-wide">
         <div class="main-column">
-          ${this._error
-            ? html`
-                <sl-alert variant="danger" open closable>
-                  <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
-                  <strong>Error:</strong> ${this._error}
-                </sl-alert>
-              `
-            : ''}
-          ${this._loading
-            ? html`
-                <div class="loading-container">
-                  <sl-spinner style="font-size: 2rem;"></sl-spinner>
-                </div>
-              `
-            : html`
-                <sl-tab-group
-                  @sl-tab-show=${(e: any) => (this._activeTab = e.detail.name)}
-                >
-                  <sl-tab
-                    slot="nav"
-                    panel="access"
-                    ?active=${this._activeTab === 'access'}
+          ${
+            this._error
+              ? html`
+                  <sl-alert variant="danger" open closable>
+                    <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+                    <strong>Error:</strong> ${this._error}
+                  </sl-alert>
+                `
+              : ''
+          }
+          ${
+            this._loading
+              ? html`
+                  <div class="loading-container">
+                    <sl-spinner style="font-size: 2rem;"></sl-spinner>
+                  </div>
+                `
+              : html`
+                  <sl-tab-group
+                    @sl-tab-show=${(e: any) => (this._activeTab = e.detail.name)}
                   >
-                    <sl-icon
-                      name="shield-lock"
-                      style="margin-right: var(--sl-spacing-x-small);"
-                    ></sl-icon>
-                    Access Rules
-                  </sl-tab>
-                  <sl-tab
-                    slot="nav"
-                    panel="approval"
-                    ?active=${this._activeTab === 'approval'}
-                  >
-                    <sl-icon
-                      name="person-check"
-                      style="margin-right: var(--sl-spacing-x-small);"
-                    ></sl-icon>
-                    Approval Workflows
-                  </sl-tab>
-                  <sl-tab
-                    slot="nav"
-                    panel="files"
-                    ?active=${this._activeTab === 'files'}
-                  >
-                    <sl-icon
-                      name="file-earmark-code"
-                      style="margin-right: var(--sl-spacing-x-small);"
-                    ></sl-icon>
-                    Import / Export
-                  </sl-tab>
+                    <sl-tab
+                      slot="nav"
+                      panel="access"
+                      ?active=${this._activeTab === 'access'}
+                    >
+                      <sl-icon
+                        name="shield-lock"
+                        style="margin-right: var(--sl-spacing-x-small);"
+                      ></sl-icon>
+                      Access Rules
+                    </sl-tab>
+                    <sl-tab
+                      slot="nav"
+                      panel="approval"
+                      ?active=${this._activeTab === 'approval'}
+                    >
+                      <sl-icon
+                        name="person-check"
+                        style="margin-right: var(--sl-spacing-x-small);"
+                      ></sl-icon>
+                      Approval Workflows
+                    </sl-tab>
+                    <sl-tab
+                      slot="nav"
+                      panel="files"
+                      ?active=${this._activeTab === 'files'}
+                    >
+                      <sl-icon
+                        name="file-earmark-code"
+                        style="margin-right: var(--sl-spacing-x-small);"
+                      ></sl-icon>
+                      Import / Export
+                    </sl-tab>
 
-                  <sl-tab-panel name="access">
-                    ${this.renderAccessPoliciesTab()}
-                  </sl-tab-panel>
-                  <sl-tab-panel name="approval">
-                    ${this.renderApprovalPoliciesTab()}
-                  </sl-tab-panel>
-                  <sl-tab-panel name="files">
-                    ${this.renderPolicyFilesTab()}
-                  </sl-tab-panel>
-                </sl-tab-group>
-              `}
+                    <sl-tab-panel name="access">
+                      ${this.renderAccessPoliciesTab()}
+                    </sl-tab-panel>
+                    <sl-tab-panel name="approval">
+                      ${this.renderApprovalPoliciesTab()}
+                    </sl-tab-panel>
+                    <sl-tab-panel name="files">
+                      ${this.renderPolicyFilesTab()}
+                    </sl-tab-panel>
+                  </sl-tab-group>
+                `
+          }
         </div>
         <div class="side-column"></div>
       </div>

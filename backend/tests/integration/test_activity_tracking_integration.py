@@ -74,6 +74,7 @@ async def test_page_view_activity_creates_event(
         websocket=None,  # We won't actually use the WebSocket
         user_id=test_user.id,
         account_id=test_account.id,
+        username=test_user.username,
         fingerprint="test_fingerprint",
         ip_address="127.0.0.1",
         user_agent="TestBrowser/1.0",
@@ -108,7 +109,7 @@ async def test_page_view_activity_creates_event(
         )
 
         # Handle the activity
-        await handle_activity(activity_data, session, db)
+        await handle_activity(activity_data, session)
 
         # Count events after
         count_after = (
@@ -168,6 +169,7 @@ async def test_anonymous_page_view_activity(db: Session, test_account: Account):
         websocket=None,
         user_id=None,  # Anonymous user
         account_id=test_account.id,
+        username=None,
         fingerprint="anonymous_fingerprint_123",
         ip_address="192.168.1.100",
         user_agent="AnonymousBrowser/1.0",
@@ -188,7 +190,7 @@ async def test_anonymous_page_view_activity(db: Session, test_account: Account):
         }
 
         # Handle the activity
-        await handle_activity(activity_data, session, db)
+        await handle_activity(activity_data, session)
 
         # Verify the event was created
         event = (
@@ -227,6 +229,7 @@ async def test_action_activity_creates_event(
         websocket=None,
         user_id=test_user.id,
         account_id=test_account.id,
+        username=test_user.username,
         fingerprint="test_fingerprint",
         ip_address="127.0.0.1",
         user_agent="TestBrowser/1.0",
@@ -248,7 +251,7 @@ async def test_action_activity_creates_event(
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-        await handle_activity(activity_data, session, db)
+        await handle_activity(activity_data, session)
 
         event = (
             db.query(Event)
@@ -285,6 +288,7 @@ async def test_conversion_activity_creates_event(
         websocket=None,
         user_id=test_user.id,
         account_id=test_account.id,
+        username=test_user.username,
         fingerprint="test_fingerprint",
         ip_address="127.0.0.1",
         user_agent="TestBrowser/1.0",
@@ -303,7 +307,7 @@ async def test_conversion_activity_creates_event(
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-        await handle_activity(activity_data, session, db)
+        await handle_activity(activity_data, session)
 
         event = (
             db.query(Event)
@@ -340,6 +344,7 @@ async def test_multiple_page_views_in_sequence(
         websocket=None,
         user_id=test_user.id,
         account_id=test_account.id,
+        username=test_user.username,
         fingerprint="test_fingerprint",
         ip_address="127.0.0.1",
         user_agent="TestBrowser/1.0",
@@ -367,7 +372,7 @@ async def test_multiple_page_views_in_sequence(
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
 
-            await handle_activity(activity_data, session, db)
+            await handle_activity(activity_data, session)
             await asyncio.sleep(0.1)  # Small delay between page views
 
         # Count all page views for this session

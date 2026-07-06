@@ -204,6 +204,53 @@ def test_resolve_ai_model_credentials_refreshes_openai_codex_oauth(
     assert stored["account_id"] == "acct-new"
 
 
+def test_refresh_anthropic_claude_code_token_uses_claude_code_request_shape():
+    """The refresh request must look like the real Claude Code client.
+
+    platform.claude.com is behind Cloudflare, which 403/1010-blocks a bare
+    form-POST with no User-Agent before the OAuth handler runs. Regression
+    guard: assert a JSON body + a Claude Code User-Agent are sent.
+    """
+    captured = {}
+
+    class _FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "access_token": "new-access",
+                    "refresh_token": "new-refresh",
+                    "expires_in": 28800,
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(req, timeout=0):
+        captured["url"] = req.full_url
+        captured["headers"] = {k.lower(): v for k, v in req.headers.items()}
+        captured["body"] = req.data.decode("utf-8")
+        return _FakeResp()
+
+    original = secret_service_module.urllib_request.urlopen
+    secret_service_module.urllib_request.urlopen = fake_urlopen
+    try:
+        result = SecretService()._refresh_anthropic_claude_code_token("refresh-token")
+    finally:
+        secret_service_module.urllib_request.urlopen = original
+
+    assert captured["headers"].get("content-type") == "application/json"
+    assert captured["headers"].get("user-agent")  # non-empty UA defeats CF 1010
+    parsed = json.loads(captured["body"])
+    assert parsed["grant_type"] == "refresh_token"
+    assert parsed["refresh_token"] == "refresh-token"
+    assert result["access"] == "new-access"
+    assert result["refresh"] == "new-refresh"
+
+
 def test_resolve_ai_model_credentials_marks_anthropic_oauth_refresh_failure(
     db_session: Session,
 ):

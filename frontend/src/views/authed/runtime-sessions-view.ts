@@ -1076,9 +1076,9 @@ export class RuntimeSessionsView extends LitElement {
         ${this.sessions.items.map(
           (session) => html`
             <button
-              class="session-item ${session.id === this.selectedSessionId
-                ? 'selected'
-                : ''}"
+              class="session-item ${
+                session.id === this.selectedSessionId ? 'selected' : ''
+              }"
               @click=${() => this.selectSession(session.id)}
             >
               <div
@@ -1180,9 +1180,11 @@ export class RuntimeSessionsView extends LitElement {
         <div class="empty-state">
           <sl-icon name="search"></sl-icon>
           <div>
-            ${query
-              ? `No captured interactions matched "${query}".`
-              : 'No captured interactions matched this session filter.'}
+            ${
+              query
+                ? `No captured interactions matched "${query}".`
+                : 'No captured interactions matched this session filter.'
+            }
           </div>
         </div>
       `;
@@ -1192,9 +1194,9 @@ export class RuntimeSessionsView extends LitElement {
       <div class="interaction-list">
         <div class="search-summary">
           Showing ${items.length} captured
-          interaction${items.length === 1 ? '' : 's'}${query
-            ? ` for "${query}"`
-            : ''}.
+          interaction${items.length === 1 ? '' : 's'}${
+            query ? ` for "${query}"` : ''
+          }.
         </div>
         ${items.map(
           (item) => html`
@@ -1220,9 +1222,11 @@ export class RuntimeSessionsView extends LitElement {
               <div class="interaction-meta">
                 ${this.formatNumber(item.token_usage.total_tokens)} tokens ·
                 ${this.formatCost(item.estimated_cost)}
-                ${this.formatAuthAttribution(item)
-                  ? html` · ${this.formatAuthAttribution(item)}`
-                  : ''}
+                ${
+                  this.formatAuthAttribution(item)
+                    ? html` · ${this.formatAuthAttribution(item)}`
+                    : ''
+                }
               </div>
             </div>
           `
@@ -1263,69 +1267,89 @@ export class RuntimeSessionsView extends LitElement {
                 <div>
                   <div class="interaction-title">${item.title}</div>
                   <div class="interaction-meta">
-                    ${item.activity_type === 'tool_call'
-                      ? html`
-                          Tool call
-                          ${item.server_name ? html`· ${item.server_name}` : ''}
-                        `
-                      : item.activity_type === 'session_started'
-                        ? html`Session lifecycle`
-                        : item.activity_type === 'session_ended'
+                    ${
+                      item.activity_type === 'tool_call'
+                        ? html`
+                            Tool call
+                            ${item.server_name ? html`· ${item.server_name}` : ''}
+                          `
+                        : item.activity_type === 'session_started'
                           ? html`Session lifecycle`
-                          : html`Model interaction`}
+                          : item.activity_type === 'session_ended'
+                            ? html`Session lifecycle`
+                            : html`Model interaction`
+                    }
                     · ${this.formatDateTime(item.timestamp)}
                   </div>
                 </div>
-                ${item.status
-                  ? html`
-                      <sl-badge
-                        variant=${this.getActivityBadgeVariant(item.status)}
-                      >
-                        ${item.status}
-                      </sl-badge>
-                    `
-                  : ''}
+                ${
+                  item.status
+                    ? html`
+                        <sl-badge
+                          variant=${this.getActivityBadgeVariant(item.status)}
+                        >
+                          ${item.status}
+                        </sl-badge>
+                      `
+                    : ''
+                }
               </div>
-              ${item.summary
-                ? html`<div class="interaction-excerpt">${item.summary}</div>`
-                : ''}
+              ${
+                item.summary
+                  ? html`<div class="interaction-excerpt">${item.summary}</div>`
+                  : ''
+              }
               <div class="interaction-meta">
-                ${item.total_tokens !== null && item.total_tokens !== undefined
-                  ? html`${this.formatNumber(item.total_tokens)} tokens`
-                  : ''}
-                ${item.total_tokens !== null &&
-                item.total_tokens !== undefined &&
-                item.estimated_cost !== null &&
-                item.estimated_cost !== undefined
-                  ? html` · `
-                  : ''}
-                ${item.estimated_cost !== null &&
-                item.estimated_cost !== undefined
-                  ? html`${this.formatCost(item.estimated_cost)}`
-                  : ''}
-                ${this.formatAuthAttribution(item)
-                  ? html`
-                      ${(item.total_tokens !== null &&
-                        item.total_tokens !== undefined) ||
-                      (item.estimated_cost !== null &&
-                        item.estimated_cost !== undefined)
-                        ? html` · `
-                        : ''}
-                      ${this.formatAuthAttribution(item)}
-                    `
-                  : ''}
-                ${item.is_retry || (item.gateway_attempt || 1) > 1
-                  ? html`
-                      ${(item.total_tokens !== null &&
-                        item.total_tokens !== undefined) ||
-                      (item.estimated_cost !== null &&
-                        item.estimated_cost !== undefined) ||
-                      this.formatAuthAttribution(item)
-                        ? html` · `
-                        : ''}
-                      retry #${item.gateway_attempt || 2}
-                    `
-                  : ''}
+                ${
+                  item.total_tokens !== null && item.total_tokens !== undefined
+                    ? html`${this.formatNumber(item.total_tokens)} tokens`
+                    : ''
+                }
+                ${
+                  item.total_tokens !== null &&
+                  item.total_tokens !== undefined &&
+                  item.estimated_cost !== null &&
+                  item.estimated_cost !== undefined
+                    ? html` · `
+                    : ''
+                }
+                ${
+                  item.estimated_cost !== null &&
+                  item.estimated_cost !== undefined
+                    ? html`${this.formatCost(item.estimated_cost)}`
+                    : ''
+                }
+                ${
+                  this.formatAuthAttribution(item)
+                    ? html`
+                        ${
+                          (item.total_tokens !== null &&
+                            item.total_tokens !== undefined) ||
+                          (item.estimated_cost !== null &&
+                            item.estimated_cost !== undefined)
+                            ? html` · `
+                            : ''
+                        }
+                        ${this.formatAuthAttribution(item)}
+                      `
+                    : ''
+                }
+                ${
+                  item.is_retry || (item.gateway_attempt || 1) > 1
+                    ? html`
+                        ${
+                          (item.total_tokens !== null &&
+                            item.total_tokens !== undefined) ||
+                          (item.estimated_cost !== null &&
+                            item.estimated_cost !== undefined) ||
+                          this.formatAuthAttribution(item)
+                            ? html` · `
+                            : ''
+                        }
+                        retry #${item.gateway_attempt || 2}
+                      `
+                    : ''
+                }
               </div>
             </div>
           `
@@ -1409,29 +1433,37 @@ export class RuntimeSessionsView extends LitElement {
             ${this.formatGatewayLabel(message.role)}
           </div>
           <div class="gateway-badges">
-            ${message.redacted
-              ? html`<sl-badge pill variant="warning">Redacted</sl-badge>`
-              : ''}
-            ${message.truncated
-              ? html`<sl-badge pill variant="warning">Truncated</sl-badge>`
-              : ''}
-            ${typeof message.original_length === 'number'
-              ? html`
-                  <sl-badge pill variant="neutral">
-                    ${message.original_length.toLocaleString()} chars
-                  </sl-badge>
-                `
-              : ''}
+            ${
+              message.redacted
+                ? html`<sl-badge pill variant="warning">Redacted</sl-badge>`
+                : ''
+            }
+            ${
+              message.truncated
+                ? html`<sl-badge pill variant="warning">Truncated</sl-badge>`
+                : ''
+            }
+            ${
+              typeof message.original_length === 'number'
+                ? html`
+                    <sl-badge pill variant="neutral">
+                      ${message.original_length.toLocaleString()} chars
+                    </sl-badge>
+                  `
+                : ''
+            }
           </div>
         </div>
         <pre class="conversation-preview-text">${previewText}</pre>
-        ${message.truncated
-          ? html`
-              <div class="search-summary">
-                This stored preview was truncated before display.
-              </div>
-            `
-          : ''}
+        ${
+          message.truncated
+            ? html`
+                <div class="search-summary">
+                  This stored preview was truncated before display.
+                </div>
+              `
+            : ''
+        }
       </div>
     `;
   }
@@ -1455,16 +1487,20 @@ export class RuntimeSessionsView extends LitElement {
         style="margin-bottom: var(--sl-spacing-small);"
       >
         <sl-badge pill>${messages.length} messages</sl-badge>
-        ${metadata?.has_redacted_content
-          ? html`<sl-badge pill variant="warning"
-              >Contains redactions</sl-badge
-            >`
-          : ''}
-        ${metadata?.has_truncated_content
-          ? html`<sl-badge pill variant="warning"
-              >Contains truncation</sl-badge
-            >`
-          : ''}
+        ${
+          metadata?.has_redacted_content
+            ? html`<sl-badge pill variant="warning"
+                >Contains redactions</sl-badge
+              >`
+            : ''
+        }
+        ${
+          metadata?.has_truncated_content
+            ? html`<sl-badge pill variant="warning"
+                >Contains truncation</sl-badge
+              >`
+            : ''
+        }
       </div>
       <div class="conversation-preview-list">
         ${messages.map((message) => this.renderGatewayPreviewMessage(message))}
@@ -1533,18 +1569,20 @@ export class RuntimeSessionsView extends LitElement {
           )}
         </div>
 
-        ${payload.error_detail
-          ? html`
-              <sl-alert
-                variant="danger"
-                open
-                style="margin-bottom: var(--sl-spacing-medium);"
-              >
-                <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
-                ${payload.error_detail}
-              </sl-alert>
-            `
-          : ''}
+        ${
+          payload.error_detail
+            ? html`
+                <sl-alert
+                  variant="danger"
+                  open
+                  style="margin-bottom: var(--sl-spacing-medium);"
+                >
+                  <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+                  ${payload.error_detail}
+                </sl-alert>
+              `
+            : ''
+        }
         ${this.renderGatewayConversationPreview(payload)}
         <div class="payload-section-title">Event Payload</div>
         <div class="payload-block">
@@ -1571,9 +1609,11 @@ export class RuntimeSessionsView extends LitElement {
         >
           <span>Session Content</span>
           <sl-badge pill>
-            ${query
-              ? `${filteredEvents.length}/${this.gatewayEvents.length}`
-              : this.gatewayEvents.length}
+            ${
+              query
+                ? `${filteredEvents.length}/${this.gatewayEvents.length}`
+                : this.gatewayEvents.length
+            }
           </sl-badge>
         </div>
         <div class="gateway-events-panel">
@@ -1590,42 +1630,52 @@ export class RuntimeSessionsView extends LitElement {
             ></sl-input>
           </div>
           <div class="search-summary">
-            ${query
-              ? `Showing ${filteredEvents.length} matching event${filteredEvents.length === 1 ? '' : 's'} for "${query}".`
-              : `Showing all ${this.gatewayEvents.length} captured event${this.gatewayEvents.length === 1 ? '' : 's'}.`}
+            ${
+              query
+                ? `Showing ${filteredEvents.length} matching event${filteredEvents.length === 1 ? '' : 's'} for "${query}".`
+                : `Showing all ${this.gatewayEvents.length} captured event${this.gatewayEvents.length === 1 ? '' : 's'}.`
+            }
           </div>
-          ${this.gatewayEventsError
-            ? html`
-                <sl-alert variant="warning" open>
-                  <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
-                  ${this.gatewayEventsError}
-                </sl-alert>
-              `
-            : ''}
-          ${this.gatewayEventsLoading && this.gatewayEvents.length === 0
-            ? html`
-                <div class="loading-state">
-                  <sl-spinner></sl-spinner>
-                  <div>Loading captured session content...</div>
-                </div>
-              `
-            : this.gatewayEvents.length === 0
+          ${
+            this.gatewayEventsError
               ? html`
-                  <div class="empty-state">
-                    <sl-icon name="diagram-3"></sl-icon>
-                    <div>
-                      No flow gateway events were recorded for this session.
-                    </div>
+                  <sl-alert variant="warning" open>
+                    <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+                    ${this.gatewayEventsError}
+                  </sl-alert>
+                `
+              : ''
+          }
+          ${
+            this.gatewayEventsLoading && this.gatewayEvents.length === 0
+              ? html`
+                  <div class="loading-state">
+                    <sl-spinner></sl-spinner>
+                    <div>Loading captured session content...</div>
                   </div>
                 `
-              : filteredEvents.length === 0
+              : this.gatewayEvents.length === 0
                 ? html`
                     <div class="empty-state">
-                      <sl-icon name="search"></sl-icon>
-                      <div>No captured session content matched "${query}".</div>
+                      <sl-icon name="diagram-3"></sl-icon>
+                      <div>
+                        No flow gateway events were recorded for this session.
+                      </div>
                     </div>
                   `
-                : filteredEvents.map((event) => this.renderGatewayEvent(event))}
+                : filteredEvents.length === 0
+                  ? html`
+                      <div class="empty-state">
+                        <sl-icon name="search"></sl-icon>
+                        <div>
+                          No captured session content matched "${query}".
+                        </div>
+                      </div>
+                    `
+                  : filteredEvents.map((event) =>
+                      this.renderGatewayEvent(event)
+                    )
+          }
         </div>
       </sl-card>
     `;
@@ -1673,24 +1723,28 @@ export class RuntimeSessionsView extends LitElement {
             ${this.getSourceLabel(session.session_source_type)} · Source ID
             <code>${session.session_source_id}</code>
           </div>
-          ${session.session_reference
-            ? html`
-                <div class="detail-meta">
-                  Session reference <code>${session.session_reference}</code>
-                </div>
-              `
-            : ''}
-          ${session.flow_execution_id
-            ? html`
-                <div class="detail-meta">
-                  Flow execution
-                  <a
-                    href=${`/console/flows/executions/${session.flow_execution_id}`}
-                    >${session.flow_execution_id}</a
-                  >
-                </div>
-              `
-            : ''}
+          ${
+            session.session_reference
+              ? html`
+                  <div class="detail-meta">
+                    Session reference <code>${session.session_reference}</code>
+                  </div>
+                `
+              : ''
+          }
+          ${
+            session.flow_execution_id
+              ? html`
+                  <div class="detail-meta">
+                    Flow execution
+                    <a
+                      href=${`/console/flows/executions/${session.flow_execution_id}`}
+                      >${session.flow_execution_id}</a
+                    >
+                  </div>
+                `
+              : ''
+          }
           <div
             style="display: flex; justify-content: flex-end; margin-top: var(--sl-spacing-medium);"
           >
@@ -1830,48 +1884,55 @@ export class RuntimeSessionsView extends LitElement {
               </div>
             </sl-card>
 
-            ${this.error
-              ? html`
-                  <sl-alert variant="danger" open>
-                    <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
-                    ${this.error}
-                  </sl-alert>
-                `
-              : ''}
-            ${this.loading
-              ? html`
-                  <sl-card>
-                    <div class="loading-state">
-                      <sl-spinner></sl-spinner>
-                      <div>Loading sessions...</div>
-                    </div>
-                  </sl-card>
-                `
-              : html`
-                  <sl-card>
-                    <div slot="header" class="session-item-title">
-                      Session Observer
-                    </div>
-                    <preloop-session-observer
-                      scope="account"
-                      .sessions=${this.sessions?.items || []}
-                      .selectedSessionId=${this.selectedSessionId}
-                      layout="full"
-                      defaultReplayMode="timeline"
-                      .features=${{
-                        summaries: true,
-                        optimization:
-                          this.featureFlags.session_optimization === true,
-                        auditLinks: true,
-                        liveFollow: true,
-                        endSession: true,
-                      }}
-                      @session-selected=${(event: CustomEvent) => {
-                        this.selectSession(event.detail.sessionId);
-                      }}
-                    ></preloop-session-observer>
-                  </sl-card>
-                `}
+            ${
+              this.error
+                ? html`
+                    <sl-alert variant="danger" open>
+                      <sl-icon
+                        slot="icon"
+                        name="exclamation-triangle"
+                      ></sl-icon>
+                      ${this.error}
+                    </sl-alert>
+                  `
+                : ''
+            }
+            ${
+              this.loading
+                ? html`
+                    <sl-card>
+                      <div class="loading-state">
+                        <sl-spinner></sl-spinner>
+                        <div>Loading sessions...</div>
+                      </div>
+                    </sl-card>
+                  `
+                : html`
+                    <sl-card>
+                      <div slot="header" class="session-item-title">
+                        Session Observer
+                      </div>
+                      <preloop-session-observer
+                        scope="account"
+                        .sessions=${this.sessions?.items || []}
+                        .selectedSessionId=${this.selectedSessionId}
+                        layout="full"
+                        defaultReplayMode="timeline"
+                        .features=${{
+                          summaries: true,
+                          optimization:
+                            this.featureFlags.session_optimization === true,
+                          auditLinks: true,
+                          liveFollow: true,
+                          endSession: true,
+                        }}
+                        @session-selected=${(event: CustomEvent) => {
+                          this.selectSession(event.detail.sessionId);
+                        }}
+                      ></preloop-session-observer>
+                    </sl-card>
+                  `
+            }
           </div>
         </div>
       </div>

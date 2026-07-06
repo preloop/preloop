@@ -60,9 +60,15 @@ def create_message(
     db: Session = Depends(get_db_session),
     auth_context: ModelGatewayAuthContext = Depends(get_anthropic_gateway_auth_context),
     budget_enforcer: Any = Depends(get_budget_enforcer),
+    x_preloop_session_id: Optional[str] = Header(None, alias="X-Preloop-Session-Id"),
 ) -> Any:
     """Create an Anthropic-compatible message."""
-    service = OpenAIGatewayService(db, auth_context, budget_enforcer=budget_enforcer)
+    service = OpenAIGatewayService(
+        db,
+        auth_context,
+        budget_enforcer=budget_enforcer,
+        client_session_id=x_preloop_session_id,
+    )
     if payload.get("stream"):
         return StreamingResponse(
             service.stream_message(payload),

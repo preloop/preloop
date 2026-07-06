@@ -38,6 +38,7 @@ async def test_authenticate_user_updates_last_login(mock_user, mock_db_session):
     with (
         patch("preloop.api.auth.router.get_db_session") as mock_get_db,
         patch("preloop.api.auth.router.crud_user") as mock_crud_user,
+        patch("preloop.api.auth.router.crud_audit_log"),
         patch("preloop.api.auth.router.verify_password") as mock_verify_password,
     ):
         # Setup mocks
@@ -65,6 +66,36 @@ async def test_authenticate_user_updates_last_login(mock_user, mock_db_session):
         # Verify database was committed
         mock_db_session.commit.assert_called_once()
         mock_db_session.refresh.assert_called_once_with(mock_user)
+
+
+@pytest.mark.asyncio
+async def test_authenticate_user_writes_login_audit_event(mock_user, mock_db_session):
+    """Test that a successful login writes a 'user.login' audit event.
+
+    This audit row is what makes the 7-day-return launch metric queryable,
+    since last_login is overwritten in place and keeps no history.
+    """
+    with (
+        patch("preloop.api.auth.router.get_db_session") as mock_get_db,
+        patch("preloop.api.auth.router.crud_user") as mock_crud_user,
+        patch("preloop.api.auth.router.crud_audit_log") as mock_crud_audit_log,
+        patch("preloop.api.auth.router.verify_password") as mock_verify_password,
+    ):
+        mock_get_db.return_value = iter([mock_db_session])
+        mock_crud_user.get_by_username.return_value = mock_user
+        mock_verify_password.return_value = True
+
+        result = await authenticate_user("testuser", "password123", db=mock_db_session)
+
+        assert result == mock_user
+
+        # The login audit event was written via the shared audit CRUD helper.
+        mock_crud_audit_log.log_action.assert_called_once()
+        _, kwargs = mock_crud_audit_log.log_action.call_args
+        assert kwargs["action"] == "user.login"
+        assert kwargs["status"] == "success"
+        assert kwargs["user_id"] == mock_user.id
+        assert kwargs["account_id"] == mock_user.account_id
 
 
 @pytest.mark.asyncio
@@ -142,6 +173,7 @@ async def test_authenticate_user_updates_last_login_on_subsequent_logins(
     with (
         patch("preloop.api.auth.router.get_db_session") as mock_get_db,
         patch("preloop.api.auth.router.crud_user") as mock_crud_user,
+        patch("preloop.api.auth.router.crud_audit_log"),
         patch("preloop.api.auth.router.verify_password") as mock_verify_password,
     ):
         # Setup mocks

@@ -43,12 +43,14 @@ describe('ApprovalWorkflowDialog', () => {
       html`<approval-workflow-dialog
         .open=${true}
         .features=${{}}
-        .policy=${{
-          id: 'wf-legacy',
-          name: 'Default Approval Workflow',
-          approval_type: 'manual',
-          is_default: true,
-        } as any}
+        .policy=${
+          {
+            id: 'wf-legacy',
+            name: 'Default Approval Workflow',
+            approval_type: 'manual',
+            is_default: true,
+          } as any
+        }
       ></approval-workflow-dialog>`
     )) as ApprovalWorkflowDialog;
     await el.updateComplete;
@@ -60,7 +62,7 @@ describe('ApprovalWorkflowDialog', () => {
     expect((el as any)._approvalType).to.equal('standard');
   });
 
-  it('binds the approver multiselect value to prefixed user/team ids', async () => {
+  it('binds the approver notify field to user and team ids', async () => {
     const el = (await fixture(
       html`<approval-workflow-dialog
         .open=${true}
@@ -80,25 +82,23 @@ describe('ApprovalWorkflowDialog', () => {
     (el as any).requestUpdate();
     await el.updateComplete;
 
-    // The controlled <sl-select> value must use the same `user:` / `team:`
-    // prefixes as the <sl-option> values — otherwise Shoelace renders
-    // nothing as selected and clicks on options appear to do nothing
-    // because the controlled value never matches any option after the
-    // round-trip.
-    const select = el.shadowRoot!.querySelector(
-      'sl-select[placeholder="Select users or teams..."]'
-    ) as HTMLElement & { value: string | string[] };
-    expect(Array.from(select.value as string[])).to.deep.equal([
-      'user:user-1',
-      'team:team-1',
-    ]);
+    const notifyField = el.shadowRoot!.querySelector(
+      'notify-recipients-field'
+    ) as HTMLElement & { userIds: string[]; teamIds: string[] };
+    expect(notifyField.userIds).to.deep.equal(['user-1']);
+    expect(notifyField.teamIds).to.deep.equal(['team-1']);
 
-    // Simulate the user selecting alice and the platform team via the
-    // multiselect. The change handler must strip the prefixes back into
-    // the raw id arrays the API expects.
-    (el as any)._handleApproverChange({
-      target: { value: ['user:user-2', 'team:team-1'] },
-    });
+    notifyField.dispatchEvent(
+      new CustomEvent('notify-recipients-change', {
+        bubbles: true,
+        composed: true,
+        detail: {
+          userIds: ['user-2'],
+          teamIds: ['team-1'],
+          customEmails: [],
+        },
+      })
+    );
     expect((el as any)._approverUserIds).to.deep.equal(['user-2']);
     expect((el as any)._approverTeamIds).to.deep.equal(['team-1']);
   });

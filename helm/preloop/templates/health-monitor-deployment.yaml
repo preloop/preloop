@@ -1,0 +1,80 @@
+{{- if .Values.healthMonitor.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "preloop.fullname" . }}-health-monitor
+  labels:
+    {{- include "preloop.labels" . | nindent 4 }}
+    app.kubernetes.io/component: health-monitor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "preloop.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: health-monitor
+  template:
+    metadata:
+      labels:
+        {{- include "preloop.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: health-monitor
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "preloop.serviceAccountName" . }}
+      containers:
+        - name: health-monitor
+          image: {{ .Values.healthMonitor.image | quote }}
+          imagePullPolicy: {{ .Values.healthMonitor.pullPolicy }}
+          env:
+            - name: HEALTH_URL
+              value: {{ .Values.healthMonitor.url | default (printf "http://%s-api:80/api/v1/health" (include "preloop.fullname" .)) | quote }}
+            - name: INTERVAL_SECONDS
+              value: {{ .Values.healthMonitor.intervalSeconds | quote }}
+            - name: TIMEOUT_SECONDS
+              value: {{ .Values.healthMonitor.timeoutSeconds | quote }}
+            - name: FAILURES_BEFORE_ALERT
+              value: {{ .Values.healthMonitor.failuresBeforeAlert | quote }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              set -eu
+              consecutive_failures=0
+              while true; do
+                start_ms=$(date +%s%3N)
+                if response=$(curl -fsS --max-time "${TIMEOUT_SECONDS}" "${HEALTH_URL}"); then
+                  elapsed_ms=$(( $(date +%s%3N) - start_ms ))
+                  db_status=$(printf '%s' "$response" | sed -n 's/.*"database"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+                  if [ "$db_status" = "connected" ]; then
+                    consecutive_failures=0
+                    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) OK database=${db_status} latency_ms=${elapsed_ms}"
+                  else
+                    consecutive_failures=$((consecutive_failures + 1))
+                    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) UNHEALTHY database=${db_status:-unknown} latency_ms=${elapsed_ms} failures=${consecutive_failures}" >&2
+                  fi
+                else
+                  consecutive_failures=$((consecutive_failures + 1))
+                  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) ERROR request_failed failures=${consecutive_failures}" >&2
+                fi
+                if [ "${consecutive_failures}" -ge "${FAILURES_BEFORE_ALERT}" ]; then
+                  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) ALERT sustained_health_failure count=${consecutive_failures}" >&2
+                fi
+                sleep "${INTERVAL_SECONDS}"
+              done
+          resources:
+            {{- toYaml .Values.healthMonitor.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

@@ -29,6 +29,7 @@ from preloop.api.auth import auth_router, get_current_active_user
 from preloop.api.endpoints import (
     account,
     agent_control,
+    agent_permission,
     anthropic_gateway,
     audio,
     approval_requests,
@@ -203,28 +204,25 @@ class ApiUsageMiddleware(BaseHTTPMiddleware):
         if user_id and status_code < 500:  # Only log successful API calls
 
             def log_usage_sync() -> None:
+                session_factory = get_session_factory()
+                session = session_factory()
                 try:
-                    session_factory = get_session_factory()
-                    session = session_factory()
-                    try:
-                        usage_entry = ApiUsage(
-                            user_id=user_id,
-                            endpoint=path,
-                            method=method,
-                            status_code=status_code,
-                            duration=duration,
-                            action_type=action_type,
-                            timestamp=start_time,
-                        )
-                        session.add(usage_entry)
-                        session.commit()
-                    except Exception:
-                        session.rollback()
-                        raise
-                    finally:
-                        session.close()
+                    usage_entry = ApiUsage(
+                        user_id=user_id,
+                        endpoint=path,
+                        method=method,
+                        status_code=status_code,
+                        duration=duration,
+                        action_type=action_type,
+                        timestamp=start_time,
+                    )
+                    session.add(usage_entry)
+                    session.commit()
                 except Exception as e:
+                    session.rollback()
                     logger.error(f"Error logging API usage: {str(e)}")
+                finally:
+                    session.close()
 
             _api_usage_executor.submit(log_usage_sync)
 
@@ -945,6 +943,11 @@ def create_app() -> FastAPI:
             agent_control.router,
             prefix="/api/v1",
             tags=["Agent Control"],
+        )
+        app.include_router(
+            agent_permission.router,
+            prefix="/api/v1",
+            tags=["Agent Permissions"],
         )
 
         # Impersonation router - Enterprise feature (loaded via admin plugin)

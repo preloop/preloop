@@ -47,7 +47,9 @@ def test_lit_app_successful_login(page: Page):
     # Pre-set localStorage to dismiss the welcome card onboarding flow,
     # ensuring the main dashboard view is rendered immediately.
     page.add_init_script(
-        "window.localStorage.setItem('dashboard_welcome_dismissed', 'true')"
+        "window.localStorage.setItem('dashboard_welcome_dismissed', 'true');"
+        "window.localStorage.removeItem('accessToken');"
+        "window.localStorage.removeItem('refreshToken');"
     )
 
     # 1. Navigate directly to the login page to avoid any landing page routing issues

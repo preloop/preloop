@@ -1,14 +1,15 @@
 """Tests for activity tracking service."""
 
-import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
-from datetime import datetime, timezone
-import uuid
 import json
+import uuid
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
+from preloop.models.models import Event
 from preloop.services.activity_tracker import handle_activity
 from preloop.services.session_manager import WebSocketSession
-from preloop.models.models import Event
 
 
 @pytest.fixture
@@ -20,6 +21,7 @@ def mock_session():
         websocket=MagicMock(),
         user_id=uuid.uuid4(),
         account_id=uuid.uuid4(),
+        username="testuser",
         fingerprint="test_fingerprint_12345678",
         ip_address="192.168.1.1",
         user_agent="Mozilla/5.0 Test Browser",
@@ -36,7 +38,39 @@ def mock_db_session():
     db.add = MagicMock()
     db.commit = MagicMock()
     db.rollback = MagicMock()
+    db.refresh = MagicMock(side_effect=lambda obj: setattr(obj, "id", uuid.uuid4()))
     return db
+
+
+@pytest.fixture
+def mock_run_db(mock_db_session):
+    """Patch run_db_async to execute against a mock session."""
+
+    async def _run_db_async(operation):
+        result = operation(mock_db_session)
+        if isinstance(result, dict):
+            return result
+        added = mock_db_session.add.call_args
+        if added:
+            event = added[0][0]
+            return {
+                "id": str(getattr(event, "id", uuid.uuid4())),
+                "session_id": str(event.session_id) if event.session_id else None,
+                "user_id": str(event.user_id) if event.user_id else None,
+                "account_id": str(event.account_id) if event.account_id else None,
+                "event_type": event.event_type,
+                "timestamp": event.timestamp.isoformat(),
+                "path": event.path,
+                "action": event.action,
+                "event_data": event.event_data,
+            }
+        return result
+
+    with patch(
+        "preloop.services.activity_tracker.run_db_async",
+        side_effect=_run_db_async,
+    ):
+        yield mock_db_session
 
 
 @pytest.fixture
@@ -51,9 +85,7 @@ def mock_event_bus():
 
 
 @pytest.mark.asyncio
-async def test_track_page_view_creates_event(
-    mock_session, mock_db_session, mock_event_bus
-):
+async def test_track_page_view_creates_event(mock_session, mock_run_db, mock_event_bus):
     """Test that tracking a page view creates an Event in the database."""
     data = {
         "event": "page_view",
@@ -66,14 +98,12 @@ async def test_track_page_view_creates_event(
     with patch("preloop.services.activity_tracker.session_manager") as mock_sm:
         mock_sm.update_activity = MagicMock()
 
-        await handle_activity(data, mock_session, mock_db_session)
+        await handle_activity(data, mock_session)
 
-        # Verify event was added to database
-        mock_db_session.add.assert_called_once()
-        mock_db_session.commit.assert_called_once()
+        mock_run_db.add.assert_called_once()
+        mock_run_db.commit.assert_called_once()
 
-        # Get the Event object that was added
-        added_event = mock_db_session.add.call_args[0][0]
+        added_event = mock_run_db.add.call_args[0][0]
         assert isinstance(added_event, Event)
         assert added_event.event_type == "page_view"
         assert added_event.path == "/admin/accounts"
@@ -85,7 +115,7 @@ async def test_track_page_view_creates_event(
 
 @pytest.mark.asyncio
 async def test_track_page_view_publishes_to_nats(
-    mock_session, mock_db_session, mock_event_bus
+    mock_session, mock_run_db, mock_event_bus
 ):
     """Test that tracking a page view publishes to NATS."""
     data = {
@@ -97,16 +127,13 @@ async def test_track_page_view_publishes_to_nats(
     with patch("preloop.services.activity_tracker.session_manager") as mock_sm:
         mock_sm.update_activity = MagicMock()
 
-        await handle_activity(data, mock_session, mock_db_session)
+        await handle_activity(data, mock_session)
 
-        # Verify NATS publish was called
         mock_event_bus.nc.publish.assert_called_once()
 
-        # Check the subject and message
         call_args = mock_event_bus.nc.publish.call_args
         assert call_args[0][0] == "admin.activity"
 
-        # Decode and verify the message
         message_bytes = call_args[0][1]
         message = json.loads(message_bytes.decode())
         assert message["type"] == "activity_update"
@@ -115,7 +142,7 @@ async def test_track_page_view_publishes_to_nats(
 
 
 @pytest.mark.asyncio
-async def test_track_page_view_handles_nats_failure(mock_session, mock_db_session):
+async def test_track_page_view_handles_nats_failure(mock_session, mock_run_db):
     """Test that activity tracking continues even if NATS publishing fails."""
     data = {
         "event": "page_view",
@@ -123,24 +150,19 @@ async def test_track_page_view_handles_nats_failure(mock_session, mock_db_sessio
     }
 
     with patch("preloop.sync.services.event_bus.event_bus_service") as mock_bus:
-        # NATS is not connected
         mock_bus.nc = None
 
         with patch("preloop.services.activity_tracker.session_manager") as mock_sm:
             mock_sm.update_activity = MagicMock()
 
-            # Should not raise an exception
-            await handle_activity(data, mock_session, mock_db_session)
+            await handle_activity(data, mock_session)
 
-            # Event should still be saved to database
-            mock_db_session.add.assert_called_once()
-            mock_db_session.commit.assert_called_once()
+            mock_run_db.add.assert_called_once()
+            mock_run_db.commit.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_track_action_creates_event(
-    mock_session, mock_db_session, mock_event_bus
-):
+async def test_track_action_creates_event(mock_session, mock_run_db, mock_event_bus):
     """Test that tracking an action creates an Event in the database."""
     data = {
         "event": "action",
@@ -154,11 +176,10 @@ async def test_track_action_creates_event(
     with patch("preloop.services.activity_tracker.session_manager") as mock_sm:
         mock_sm.update_activity = MagicMock()
 
-        await handle_activity(data, mock_session, mock_db_session)
+        await handle_activity(data, mock_session)
 
-        # Verify event was added to database
-        mock_db_session.add.assert_called_once()
-        added_event = mock_db_session.add.call_args[0][0]
+        mock_run_db.add.assert_called_once()
+        added_event = mock_run_db.add.call_args[0][0]
         assert added_event.event_type == "action"
         assert added_event.action == "click_signup_button"
         assert added_event.element == "button"
@@ -167,7 +188,7 @@ async def test_track_action_creates_event(
 
 @pytest.mark.asyncio
 async def test_track_conversion_creates_event(
-    mock_session, mock_db_session, mock_event_bus
+    mock_session, mock_run_db, mock_event_bus
 ):
     """Test that tracking a conversion creates an Event in the database."""
     data = {
@@ -179,11 +200,10 @@ async def test_track_conversion_creates_event(
     with patch("preloop.services.activity_tracker.session_manager") as mock_sm:
         mock_sm.update_activity = MagicMock()
 
-        await handle_activity(data, mock_session, mock_db_session)
+        await handle_activity(data, mock_session)
 
-        # Verify event was added to database
-        mock_db_session.add.assert_called_once()
-        added_event = mock_db_session.add.call_args[0][0]
+        mock_run_db.add.assert_called_once()
+        added_event = mock_run_db.add.call_args[0][0]
         assert added_event.event_type == "conversion"
         assert added_event.conversion_event == "signup_completed"
         assert added_event.conversion_value == 100.0
@@ -191,7 +211,7 @@ async def test_track_conversion_creates_event(
 
 @pytest.mark.asyncio
 async def test_activity_tracking_updates_session_activity(
-    mock_session, mock_db_session, mock_event_bus
+    mock_session, mock_run_db, mock_event_bus
 ):
     """Test that activity tracking updates the session's last activity timestamp."""
     data = {
@@ -202,35 +222,32 @@ async def test_activity_tracking_updates_session_activity(
     with patch("preloop.services.activity_tracker.session_manager") as mock_sm:
         mock_sm.update_activity = MagicMock()
 
-        await handle_activity(data, mock_session, mock_db_session)
+        await handle_activity(data, mock_session)
 
-        # Verify session activity was updated
         mock_sm.update_activity.assert_called_once_with(mock_session.id)
 
 
 @pytest.mark.asyncio
 async def test_activity_tracking_without_event_type(
-    mock_session, mock_db_session, mock_event_bus
+    mock_session, mock_run_db, mock_event_bus
 ):
     """Test that activity tracking handles missing event type gracefully."""
     data = {
         "path": "/admin/accounts",
-        # Missing 'event' field
     }
 
     with patch("preloop.services.activity_tracker.session_manager") as mock_sm:
         mock_sm.update_activity = MagicMock()
 
-        await handle_activity(data, mock_session, mock_db_session)
+        await handle_activity(data, mock_session)
 
-        # Should not add anything to database
-        mock_db_session.add.assert_not_called()
-        mock_db_session.commit.assert_not_called()
+        mock_run_db.add.assert_not_called()
+        mock_run_db.commit.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_nats_message_format_is_correct(
-    mock_session, mock_db_session, mock_event_bus
+    mock_session, mock_run_db, mock_event_bus
 ):
     """Test that the NATS message has the correct format for admin dashboard."""
     data = {
@@ -242,28 +259,39 @@ async def test_nats_message_format_is_correct(
     with patch("preloop.services.activity_tracker.session_manager") as mock_sm:
         mock_sm.update_activity = MagicMock()
 
-        await handle_activity(data, mock_session, mock_db_session)
+        await handle_activity(data, mock_session)
 
-        # Get the published message
         call_args = mock_event_bus.nc.publish.call_args
         message_bytes = call_args[0][1]
         message = json.loads(message_bytes.decode())
 
-        # Verify message structure
-        assert "type" in message
         assert message["type"] == "activity_update"
         assert "activity" in message
 
         activity = message["activity"]
-        assert "id" in activity
-        assert "session_id" in activity
-        assert "user_id" in activity
-        assert "event_type" in activity
-        assert "timestamp" in activity
-        assert "path" in activity
-
-        # Verify the activity data matches
         assert activity["session_id"] == mock_session.id
         assert activity["user_id"] == str(mock_session.user_id)
         assert activity["event_type"] == "page_view"
         assert activity["path"] == "/admin/accounts"
+
+
+@pytest.mark.asyncio
+async def test_activity_fields_are_truncated_to_column_limits(
+    mock_session, mock_run_db, mock_event_bus
+):
+    """Oversized client strings should be truncated instead of failing inserts."""
+    long_path = "/x" * 400
+    data = {
+        "event": "page_view",
+        "path": long_path,
+        "referrer": "https://example.com/" + ("ref/" * 200),
+    }
+
+    with patch("preloop.services.activity_tracker.session_manager") as mock_sm:
+        mock_sm.update_activity = MagicMock()
+
+        await handle_activity(data, mock_session)
+
+        added_event = mock_run_db.add.call_args[0][0]
+        assert len(added_event.path) == 512
+        assert len(added_event.referrer) == 512

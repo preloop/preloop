@@ -85,7 +85,46 @@ export class SessionListPanel extends LitElement {
       padding: var(--sl-spacing-large);
       text-align: center;
     }
+
+    .waste-row {
+      align-items: center;
+      display: flex;
+      gap: var(--sl-spacing-x-small);
+      margin-top: var(--sl-spacing-2x-small);
+    }
+
+    .waste-savings {
+      color: var(--sl-color-success-700);
+      font-size: var(--sl-font-size-x-small);
+      font-weight: 600;
+    }
   `;
+
+  private getWasteVariant(score: number) {
+    if (score >= 40) return 'danger';
+    if (score >= 15) return 'warning';
+    return 'neutral';
+  }
+
+  private renderWasteBadge(session: ObservedSession) {
+    const score = session.optimizationWasteScore;
+    if (score === null || score === undefined) return '';
+    const savings = session.optimizationPotentialSavingsUsd;
+    return html`
+      <div class="waste-row">
+        <sl-badge variant=${this.getWasteVariant(score)} pill>
+          Waste ${score}%
+        </sl-badge>
+        ${
+          savings && savings > 0
+            ? html`<span class="waste-savings">
+                save up to ${formatCost(savings)}
+              </span>`
+            : ''
+        }
+      </div>
+    `;
+  }
 
   private getVariant(session: ObservedSession) {
     if (session.status === 'active_now') return 'success';
@@ -132,9 +171,9 @@ export class SessionListPanel extends LitElement {
           (session) => session.id,
           (session) => html`
             <button
-              class="session-card ${this.activeSessionId === session.id
-                ? 'active'
-                : ''}"
+              class="session-card ${
+                this.activeSessionId === session.id ? 'active' : ''
+              }"
               @click=${() => this.selectSession(session)}
             >
               <div class="title-row">
@@ -143,9 +182,11 @@ export class SessionListPanel extends LitElement {
                   ${this.getLabel(session)}
                 </sl-badge>
               </div>
-              ${session.subtitle
-                ? html`<div class="meta">${session.subtitle}</div>`
-                : ''}
+              ${
+                session.subtitle
+                  ? html`<div class="meta">${session.subtitle}</div>`
+                  : ''
+              }
               <div class="meta">
                 Last activity ${this.formatDate(session.lastActivityAt)}
               </div>
@@ -158,6 +199,7 @@ export class SessionListPanel extends LitElement {
                   ${formatCost(session.estimatedCost)}
                 </div>
               </div>
+              ${this.renderWasteBadge(session)}
             </button>
           `
         )}

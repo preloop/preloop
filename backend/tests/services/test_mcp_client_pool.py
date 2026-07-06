@@ -353,6 +353,50 @@ class TestMCPClientCallTool:
         assert isinstance(result[0], types.TextContent)
         assert result[0].text == "Result text"
 
+    async def test_call_tool_unwraps_exception_group_to_leaf(self):
+        """A TaskGroup ExceptionGroup must surface its meaningful leaf cause.
+
+        Regression: an upstream outage (e.g. 502 → ``Session terminated``) is
+        raised by the MCP SDK wrapped in one/more ``ExceptionGroup`` layers.
+        call_tool must raise the leaf (actionable) rather than the opaque
+        "unhandled errors in a TaskGroup" wrapper.
+        """
+        from preloop.services.mcp_client_pool import _unwrap_exception_group
+
+        leaf = RuntimeError("Session terminated")
+        nested = ExceptionGroup(
+            "unhandled errors in a TaskGroup",
+            [ExceptionGroup("inner", [leaf])],
+        )
+        assert _unwrap_exception_group(nested) is leaf
+
+        client = MCPClient(url="http://localhost:8001/mcp")
+        client._connected = True
+
+        mock_streams = AsyncMock()
+        mock_streams.__aenter__ = AsyncMock(
+            return_value=(MagicMock(), MagicMock(), None)
+        )
+        mock_streams.__aexit__ = AsyncMock(return_value=None)
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+        mock_session.initialize = AsyncMock()
+        mock_session.call_tool = AsyncMock(side_effect=nested)
+
+        with (
+            patch(
+                "preloop.services.mcp_client_pool.streamablehttp_client",
+                return_value=mock_streams,
+            ),
+            patch(
+                "preloop.services.mcp_client_pool.ClientSession",
+                return_value=mock_session,
+            ),
+        ):
+            with pytest.raises(RuntimeError, match="Session terminated"):
+                await client.call_tool("pay", {"amount": 500})
+
     async def test_call_tool_success_image_content(self):
         """Test successful tool call with image content."""
         client = MCPClient(url="http://localhost:8001/mcp")

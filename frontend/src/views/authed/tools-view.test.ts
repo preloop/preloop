@@ -539,8 +539,7 @@ describe('ToolsView – starter policy suggestions', () => {
     const applyButton = Array.from(
       el.shadowRoot!.querySelectorAll('sl-dialog sl-button')
     ).find((button) => button.textContent?.trim().includes('Apply')) as
-      | HTMLElement
-      | undefined;
+      HTMLElement | undefined;
     expect(applyButton).to.exist;
     expect((applyButton as any).disabled).to.equal(true);
 
@@ -605,8 +604,7 @@ describe('ToolsView – starter policy suggestions', () => {
     const applyButton = Array.from(
       el.shadowRoot!.querySelectorAll('sl-dialog sl-button')
     ).find((button) => button.textContent?.trim().includes('Apply')) as
-      | HTMLElement
-      | undefined;
+      HTMLElement | undefined;
     expect(applyButton).to.exist;
     expect((applyButton as any).disabled).to.equal(true);
     expect(

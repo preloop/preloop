@@ -369,42 +369,50 @@ export class UserManagementView extends LitElement {
                       ${user.is_active ? 'Active' : 'Inactive'}
                     </sl-badge>
                     <sl-badge variant="neutral">${user.user_source}</sl-badge>
-                    ${user.email_verified
-                      ? html`<sl-badge variant="success">Verified</sl-badge>`
-                      : html`<sl-badge variant="warning">Unverified</sl-badge>`}
+                    ${
+                      user.email_verified
+                        ? html`<sl-badge variant="success">Verified</sl-badge>`
+                        : html`<sl-badge variant="warning"
+                            >Unverified</sl-badge
+                          >`
+                    }
                   </div>
-                  ${(user as any).roles && (user as any).roles.length > 0
-                    ? html`
-                        <div class="user-roles">
-                          <strong>Direct Roles:</strong>
-                          ${(user as any).roles.map(
-                            (role: any) =>
-                              html`<sl-badge variant="primary"
-                                >${role.name}</sl-badge
-                              >`
-                          )}
-                        </div>
-                      `
-                    : ''}
-                  ${(user as any).inherited_roles &&
-                  (user as any).inherited_roles.length > 0
-                    ? html`
-                        <div class="user-roles">
-                          <strong>Inherited Roles:</strong>
-                          ${(user as any).inherited_roles.map(
-                            (role: any) =>
-                              html`<sl-badge
-                                variant="neutral"
-                                title="From team: ${role.team_name}"
-                                >${role.name}
-                                <span style="font-size: 0.7em;"
-                                  >(${role.team_name})</span
-                                ></sl-badge
-                              >`
-                          )}
-                        </div>
-                      `
-                    : ''}
+                  ${
+                    (user as any).roles && (user as any).roles.length > 0
+                      ? html`
+                          <div class="user-roles">
+                            <strong>Direct Roles:</strong>
+                            ${(user as any).roles.map(
+                              (role: any) =>
+                                html`<sl-badge variant="primary"
+                                  >${role.name}</sl-badge
+                                >`
+                            )}
+                          </div>
+                        `
+                      : ''
+                  }
+                  ${
+                    (user as any).inherited_roles &&
+                    (user as any).inherited_roles.length > 0
+                      ? html`
+                          <div class="user-roles">
+                            <strong>Inherited Roles:</strong>
+                            ${(user as any).inherited_roles.map(
+                              (role: any) =>
+                                html`<sl-badge
+                                  variant="neutral"
+                                  title="From team: ${role.team_name}"
+                                  >${role.name}
+                                  <span style="font-size: 0.7em;"
+                                    >(${role.team_name})</span
+                                  ></sl-badge
+                                >`
+                            )}
+                          </div>
+                        `
+                      : ''
+                  }
                 </div>
                 <div class="user-actions">
                   <sl-button
@@ -544,13 +552,15 @@ export class UserManagementView extends LitElement {
                 >
                   ${role.name}
                 </sl-checkbox>
-                ${role.description
-                  ? html`<span
-                      style="font-size: 0.875rem; color: var(--sl-color-neutral-600);"
-                    >
-                      ${role.description}
-                    </span>`
-                  : ''}
+                ${
+                  role.description
+                    ? html`<span
+                        style="font-size: 0.875rem; color: var(--sl-color-neutral-600);"
+                      >
+                        ${role.description}
+                      </span>`
+                    : ''
+                }
               </div>
             `;
           })}

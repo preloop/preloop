@@ -983,6 +983,97 @@ def test_account_agent_detail_includes_credentials_and_enrollments(
     assert credentials_response.json()[0]["status"] == "revoked"
 
 
+def test_register_custom_managed_agent_happy_path(client, db_session, test_user):
+    """Registering a custom agent returns 201 with an active custom summary."""
+    response = client.post(
+        "/api/v1/agents",
+        json={
+            "display_name": "Customer LangGraph Agent",
+            "description": "A LangGraph agent the discovery CLI cannot find",
+        },
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["id"]
+    assert body["display_name"] == "Customer LangGraph Agent"
+    assert body["session_source_type"] == "custom"
+    assert body["lifecycle_state"] == "active"
+    assert body["session_source_id"].startswith("custom_")
+
+    agent = crud_managed_agent.get_for_account(
+        db_session, account_id=str(test_user.account_id), agent_id=body["id"]
+    )
+    assert agent is not None
+    assert agent.session_source_type == "custom"
+    assert agent.lifecycle_state == "active"
+    assert agent.session_source_id.startswith("custom_")
+    assert agent.enrolled_via == "operator_registration"
+    assert agent.tags.get("description") == (
+        "A LangGraph agent the discovery CLI cannot find"
+    )
+
+
+def test_register_custom_managed_agent_allows_duplicate_display_name(
+    client, db_session
+):
+    """Two custom agents may share a display name with distinct source ids."""
+    first = client.post("/api/v1/agents", json={"display_name": "Dup Agent"})
+    second = client.post("/api/v1/agents", json={"display_name": "Dup Agent"})
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert first.json()["id"] != second.json()["id"]
+    assert first.json()["session_source_id"] != second.json()["session_source_id"]
+
+
+def test_register_custom_managed_agent_is_credential_eligible(client, db_session):
+    """A freshly registered custom agent can immediately mint a credential."""
+    register_response = client.post(
+        "/api/v1/agents",
+        json={"display_name": "Credentialable Agent"},
+    )
+    assert register_response.status_code == 201
+    agent_id = register_response.json()["id"]
+    assert register_response.json()["lifecycle_state"] == "active"
+
+    credential_response = client.post(
+        f"/api/v1/agents/{agent_id}/credentials",
+        json={
+            "name": "Custom Agent Credential",
+            "scopes": ["mcp:read", "mcp:write"],
+        },
+    )
+    assert credential_response.status_code == 201
+    credential_body = credential_response.json()
+    assert credential_body["token"].startswith("agt_")
+    assert credential_body["credential"]["name"] == "Custom Agent Credential"
+
+
+def test_register_custom_managed_agent_requires_authorized_account(app, test_user):
+    """A caller without a resolvable account is rejected before any write."""
+    from fastapi import HTTPException, status
+
+    from preloop.api.common import get_account_for_user
+
+    def _deny_account():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User account not found",
+        )
+
+    app.dependency_overrides[get_account_for_user] = _deny_account
+    try:
+        from fastapi.testclient import TestClient
+
+        with TestClient(app) as unauthorized_client:
+            response = unauthorized_client.post(
+                "/api/v1/agents",
+                json={"display_name": "Should Not Persist"},
+            )
+        assert response.status_code == 401
+    finally:
+        app.dependency_overrides.pop(get_account_for_user, None)
+
+
 def test_account_agent_delete_removes_registry_record(client, db_session, test_user):
     token_response = client.post(
         "/api/v1/auth/runtime-sessions/token",

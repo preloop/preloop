@@ -872,6 +872,77 @@ class TestExtractBranchFromTrigger:
         assert "FATAL ERROR: Could not checkout commit" in command
 
 
+class TestGitShellQuoting:
+    """Tests for safe shell quoting in git setup commands."""
+
+    def test_git_global_setup_quotes_user_identity(self, container_executor):
+        malicious_name = 'evil"; rm -rf / #'
+        commands = container_executor._build_git_global_setup_commands(
+            malicious_name, 'also"; evil #@example.com'
+        )
+        assert "git config --global user.name 'evil\"; rm -rf / #'" in commands
+        assert "git config --global user.email 'also\"; evil #@example.com'" in commands
+
+    def test_git_clone_shell_quotes_repo_url_and_branch(self, container_executor):
+        import shlex
+
+        repo_url = "https://example.com/repo.git; echo pwned"
+        full_path = "/workspace/repo"
+        clone_branch = "main; echo pwned"
+        shell = container_executor._build_git_clone_shell(
+            repo_url, full_path, clone_branch
+        )
+        assert (
+            f"git clone -b {shlex.quote(clone_branch)} "
+            f"{shlex.quote(repo_url)} {shlex.quote(full_path)}"
+        ) in shell
+
+    def test_git_branch_setup_shell_quotes_trigger_derived_values(
+        self, container_executor
+    ):
+        import shlex
+
+        malicious_branch = "main; echo pwned #"
+        malicious_sha = "deadbeef; echo pwned #"
+        malicious_path = "/workspace/repo; echo pwned"
+        shell = container_executor._build_git_branch_setup_shell(
+            full_path=malicious_path,
+            commit_sha=malicious_sha,
+            source_branch=malicious_branch,
+            target_branch=malicious_branch,
+            trigger_data={
+                "payload": {
+                    "object_attributes": {"iid": 2},
+                }
+            },
+        )
+        q_branch = shlex.quote(malicious_branch)
+        q_sha = shlex.quote(malicious_sha)
+        q_path = shlex.quote(malicious_path)
+        assert f"cd {q_path}" in shell
+        assert f"git checkout {q_sha}" in shell
+        assert f"git fetch origin {q_branch}:preloop-source-head" in shell
+        assert "git fetch origin refs/merge-requests/2/head:preloop-mr-head" in shell
+        assert f"git checkout -b {q_branch}" in shell
+
+    def test_git_clone_validation_shell_quotes_trigger_derived_values(
+        self, container_executor
+    ):
+        import shlex
+
+        malicious_branch = "main; echo pwned #"
+        malicious_path = "/workspace/repo; echo pwned"
+        shell = container_executor._build_git_clone_validation_shell(
+            full_path=malicious_path,
+            source_branch=malicious_branch,
+            target_branch=malicious_branch,
+            commit_sha="abc123",
+        )
+        assert f"[ ! -d {shlex.quote(malicious_path)} ]" in shell
+        assert f"[ ! -d {shlex.quote(malicious_path + '/.git')} ]" in shell
+        assert f"Branch: {shlex.quote(malicious_branch)}" in shell
+
+
 class TestExtractRepoUrlFromTrigger:
     """Tests for _extract_repo_url_from_trigger method."""
 

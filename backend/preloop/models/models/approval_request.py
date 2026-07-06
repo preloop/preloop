@@ -68,6 +68,31 @@ class ApprovalRequest(Base):
         comment="Flow execution ID (if applicable)",
     )
 
+    # Managed-agent / runtime-session linkage. Populated when an approval is
+    # raised for an onboarded agent's tool call (e.g. a Claude Code PreToolUse
+    # hook routed through /api/v1/agents/permission-check) so operator surfaces
+    # (mobile/watch) can show WHICH agent is asking. Nullable + un-constrained
+    # to stay backward compatible with flow/MCP-originated approvals.
+    managed_agent_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
+        index=True,
+        comment="Managed agent that requested approval (if applicable)",
+    )
+
+    runtime_session_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
+        index=True,
+        comment="Runtime session the approval was raised in (if applicable)",
+    )
+
+    managed_agent_name: Mapped[Optional[str]] = mapped_column(
+        String(255),
+        nullable=True,
+        comment="Denormalized managed-agent display name for operator surfaces",
+    )
+
     tool_name: Mapped[str] = mapped_column(
         String(255),
         nullable=False,

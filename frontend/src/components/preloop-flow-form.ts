@@ -775,8 +775,7 @@ export class PreloopFlowForm extends LitElement {
           value=${this.creationMode}
           @sl-change=${(event: CustomEvent) => {
             this.creationMode = (event.target as HTMLInputElement).value as
-              | 'scratch'
-              | 'preset';
+              'scratch' | 'preset';
             this.requestUpdate();
           }}
         >
@@ -873,12 +872,14 @@ export class PreloopFlowForm extends LitElement {
     const mcpTools = this.availableTools.filter((t) => t.source === 'mcp');
 
     return html`
-      ${this.isAddingTracker
-        ? html`<add-tracker-modal
-            @tracker-added=${this.handleTrackerAdded}
-            @close-modal=${this.closeAddTrackerDialog}
-          ></add-tracker-modal>`
-        : ''}
+      ${
+        this.isAddingTracker
+          ? html`<add-tracker-modal
+              @tracker-added=${this.handleTrackerAdded}
+              @close-modal=${this.closeAddTrackerDialog}
+            ></add-tracker-modal>`
+          : ''
+      }
       <add-ai-model-modal
         ?open=${this.isAddingAIModel}
         @model-created=${this.handleAIModelCreated}
@@ -929,107 +930,111 @@ export class PreloopFlowForm extends LitElement {
             </sl-radio-group>
           </div>
 
-          ${this.triggerType === 'webhook'
-            ? html`
-                <div>
-                  <p
-                    style="color: var(--sl-color-neutral-600); margin-bottom: var(--sl-spacing-medium);"
-                  >
-                    This flow will be triggered by an external POST HTTP webhook
-                    call. Webhook endpoint URLs will be generated after
-                    creation.
-                  </p>
-                </div>
-              `
-            : html`
-                <div class="form-grid">
-                  <div
-                    style="display: flex; flex-direction: column; gap: var(--sl-spacing-2x-small);"
-                  >
-                    <sl-select
-                      label="Tracker"
-                      placeholder="Select tracking source"
-                      .value=${this.flow.trigger_event_source || ''}
-                      @sl-change=${this.handleTrackerChange}
-                      style="margin-bottom: 0;"
+          ${
+            this.triggerType === 'webhook'
+              ? html`
+                  <div>
+                    <p
+                      style="color: var(--sl-color-neutral-600); margin-bottom: var(--sl-spacing-medium);"
                     >
-                      ${this.trackers.map(
-                        (t) =>
-                          html`<sl-option .value=${t.id}
-                            >${t.name} (${t.tracker_type})</sl-option
+                      This flow will be triggered by an external POST HTTP
+                      webhook call. Webhook endpoint URLs will be generated
+                      after creation.
+                    </p>
+                  </div>
+                `
+              : html`
+                  <div class="form-grid">
+                    <div
+                      style="display: flex; flex-direction: column; gap: var(--sl-spacing-2x-small);"
+                    >
+                      <sl-select
+                        label="Tracker"
+                        placeholder="Select tracking source"
+                        .value=${this.flow.trigger_event_source || ''}
+                        @sl-change=${this.handleTrackerChange}
+                        style="margin-bottom: 0;"
+                      >
+                        ${this.trackers.map(
+                          (t) =>
+                            html`<sl-option .value=${t.id}
+                              >${t.name} (${t.tracker_type})</sl-option
+                            >`
+                        )}
+                      </sl-select>
+                      <sl-button
+                        size="small"
+                        variant="text"
+                        @click=${this.openAddTrackerDialog}
+                        style="align-self: flex-start; margin-top: -0.25rem; height: auto; padding: 0;"
+                      >
+                        <sl-icon slot="prefix" name="plus-lg"></sl-icon> Add New
+                        Tracker
+                      </sl-button>
+                    </div>
+
+                    <sl-select
+                      label="Organization"
+                      placeholder="Select organization"
+                      .value=${this.flow.trigger_organization_id || ''}
+                      @sl-change=${this.handleOrganizationChange}
+                      ?disabled=${
+                        this.isPollingOrganizations ||
+                        !this.flow.trigger_event_source
+                      }
+                    >
+                      ${this.organizations.map(
+                        (org) =>
+                          html`<sl-option .value=${org.id}
+                            >${org.name}</sl-option
                           >`
                       )}
                     </sl-select>
-                    <sl-button
-                      size="small"
-                      variant="text"
-                      @click=${this.openAddTrackerDialog}
-                      style="align-self: flex-start; margin-top: -0.25rem; height: auto; padding: 0;"
+
+                    <sl-select
+                      label="Projects (Optional)"
+                      placeholder="All projects"
+                      multiple
+                      clearable
+                      .value=${this.flow.trigger_project_ids || []}
+                      @sl-change=${(e: any) => {
+                        this.flow.trigger_project_ids = e.target.value;
+                      }}
+                      ?disabled=${!this.flow.trigger_organization_id}
                     >
-                      <sl-icon slot="prefix" name="plus-lg"></sl-icon> Add New
-                      Tracker
-                    </sl-button>
-                  </div>
+                      ${this.projects
+                        .filter(
+                          (p) =>
+                            p.organization_id ===
+                            this.flow.trigger_organization_id
+                        )
+                        .map(
+                          (p) =>
+                            html`<sl-option .value=${p.id}
+                              >${p.name || p.identifier || p.key}</sl-option
+                            >`
+                        )}
+                    </sl-select>
 
-                  <sl-select
-                    label="Organization"
-                    placeholder="Select organization"
-                    .value=${this.flow.trigger_organization_id || ''}
-                    @sl-change=${this.handleOrganizationChange}
-                    ?disabled=${this.isPollingOrganizations ||
-                    !this.flow.trigger_event_source}
-                  >
-                    ${this.organizations.map(
-                      (org) =>
-                        html`<sl-option .value=${org.id}
-                          >${org.name}</sl-option
-                        >`
-                    )}
-                  </sl-select>
-
-                  <sl-select
-                    label="Projects (Optional)"
-                    placeholder="All projects"
-                    multiple
-                    clearable
-                    .value=${this.flow.trigger_project_ids || []}
-                    @sl-change=${(e: any) => {
-                      this.flow.trigger_project_ids = e.target.value;
-                    }}
-                    ?disabled=${!this.flow.trigger_organization_id}
-                  >
-                    ${this.projects
-                      .filter(
-                        (p) =>
-                          p.organization_id ===
-                          this.flow.trigger_organization_id
-                      )
-                      .map(
-                        (p) =>
-                          html`<sl-option .value=${p.id}
-                            >${p.name || p.identifier || p.key}</sl-option
+                    <sl-select
+                      label="Events"
+                      placeholder="Select trigger event kinds"
+                      multiple
+                      .value=${this.flow.trigger_event_types || []}
+                      @sl-change=${(e: any) => {
+                        this.flow.trigger_event_types = e.target.value;
+                      }}
+                    >
+                      ${this.getEventOptions().map(
+                        (ev) =>
+                          html`<sl-option .value=${ev.value}
+                            >${ev.name}</sl-option
                           >`
                       )}
-                  </sl-select>
-
-                  <sl-select
-                    label="Events"
-                    placeholder="Select trigger event kinds"
-                    multiple
-                    .value=${this.flow.trigger_event_types || []}
-                    @sl-change=${(e: any) => {
-                      this.flow.trigger_event_types = e.target.value;
-                    }}
-                  >
-                    ${this.getEventOptions().map(
-                      (ev) =>
-                        html`<sl-option .value=${ev.value}
-                          >${ev.name}</sl-option
-                        >`
-                    )}
-                  </sl-select>
-                </div>
-              `}
+                    </sl-select>
+                  </div>
+                `
+          }
         </sl-card>
 
         <sl-card>
@@ -1037,87 +1042,90 @@ export class PreloopFlowForm extends LitElement {
             <sl-icon name="robot"></sl-icon> AI Agent & Model Configuration
           </div>
 
-          ${this.longRunningAgents.length > 0
-            ? html`
-                <div style="margin-bottom: var(--sl-spacing-large);">
-                  <label
-                    style="display: block; margin-bottom: 0.5rem; font-weight: 500;"
-                  >
-                    Execution Mode
-                  </label>
-                  <sl-radio-group
-                    value=${this.flowExecutionPath}
-                    @sl-change=${(e: any) => {
-                      this.flowExecutionPath = e.target.value as
-                        | 'ephemeral'
-                        | 'persistent';
-                      if (this.flowExecutionPath === 'persistent') {
-                        if (
-                          !this.targetAgentId &&
-                          this.longRunningAgents.length > 0
-                        ) {
-                          const enabledAgents = this.longRunningAgents.filter(
-                            (a) => getAgentControlState(a).enabled
-                          );
-                          if (enabledAgents.length > 0) {
-                            this.targetAgentId = enabledAgents[0].id;
+          ${
+            this.longRunningAgents.length > 0
+              ? html`
+                  <div style="margin-bottom: var(--sl-spacing-large);">
+                    <label
+                      style="display: block; margin-bottom: 0.5rem; font-weight: 500;"
+                    >
+                      Execution Mode
+                    </label>
+                    <sl-radio-group
+                      value=${this.flowExecutionPath}
+                      @sl-change=${(e: any) => {
+                        this.flowExecutionPath = e.target.value as
+                          'ephemeral' | 'persistent';
+                        if (this.flowExecutionPath === 'persistent') {
+                          if (
+                            !this.targetAgentId &&
+                            this.longRunningAgents.length > 0
+                          ) {
+                            const enabledAgents = this.longRunningAgents.filter(
+                              (a) => getAgentControlState(a).enabled
+                            );
+                            if (enabledAgents.length > 0) {
+                              this.targetAgentId = enabledAgents[0].id;
+                            }
                           }
+                          this.updateModelSelectionForAgent();
                         }
-                        this.updateModelSelectionForAgent();
-                      }
+                        this.requestUpdate();
+                      }}
+                      style="display: flex; gap: var(--sl-spacing-large);"
+                    >
+                      <sl-radio value="ephemeral"
+                        >Ephemeral (Provision on-demand short-lived
+                        agent)</sl-radio
+                      >
+                      <sl-radio value="persistent"
+                        >Persistent (Govern persistent agent node)</sl-radio
+                      >
+                    </sl-radio-group>
+                  </div>
+                `
+              : nothing
+          }
+          ${
+            this.flowExecutionPath === 'persistent' &&
+            this.longRunningAgents.length > 0
+              ? html`
+                  <sl-select
+                    label="Target Long-Running Agent"
+                    .value=${this.targetAgentId}
+                    @sl-change=${(e: any) => {
+                      this.targetAgentId = e.target.value;
+                      this.updateModelSelectionForAgent();
                       this.requestUpdate();
                     }}
-                    style="display: flex; gap: var(--sl-spacing-large);"
+                    required
                   >
-                    <sl-radio value="ephemeral"
-                      >Ephemeral (Provision on-demand short-lived
-                      agent)</sl-radio
-                    >
-                    <sl-radio value="persistent"
-                      >Persistent (Govern persistent agent node)</sl-radio
-                    >
-                  </sl-radio-group>
-                </div>
-              `
-            : nothing}
-          ${this.flowExecutionPath === 'persistent' &&
-          this.longRunningAgents.length > 0
-            ? html`
-                <sl-select
-                  label="Target Long-Running Agent"
-                  .value=${this.targetAgentId}
-                  @sl-change=${(e: any) => {
-                    this.targetAgentId = e.target.value;
-                    this.updateModelSelectionForAgent();
-                    this.requestUpdate();
-                  }}
-                  required
-                >
-                  ${this.longRunningAgents
-                    .filter((a) => getAgentControlState(a).enabled)
-                    .map(
-                      (a) =>
-                        html`<sl-option .value=${a.id}
-                          >${a.display_name}
-                          (${a.agent_kind || 'ssh'})</sl-option
-                        >`
-                    )}
-                </sl-select>
-              `
-            : html`
-                <sl-select
-                  label="AI Agent Runtime Type"
-                  .value=${this.flow.agent_type || 'codex'}
-                  @sl-change=${(e: any) => {
-                    this.flow.agent_type = e.target.value;
-                    this.requestUpdate();
-                  }}
-                >
-                  <sl-option value="codex">Codex CLI</sl-option>
-                  <sl-option value="gemini">Gemini CLI</sl-option>
-                  <sl-option value="opencode">OpenCode</sl-option>
-                </sl-select>
-              `}
+                    ${this.longRunningAgents
+                      .filter((a) => getAgentControlState(a).enabled)
+                      .map(
+                        (a) =>
+                          html`<sl-option .value=${a.id}
+                            >${a.display_name}
+                            (${a.agent_kind || 'ssh'})</sl-option
+                          >`
+                      )}
+                  </sl-select>
+                `
+              : html`
+                  <sl-select
+                    label="AI Agent Runtime Type"
+                    .value=${this.flow.agent_type || 'codex'}
+                    @sl-change=${(e: any) => {
+                      this.flow.agent_type = e.target.value;
+                      this.requestUpdate();
+                    }}
+                  >
+                    <sl-option value="codex">Codex CLI</sl-option>
+                    <sl-option value="gemini">Gemini CLI</sl-option>
+                    <sl-option value="opencode">OpenCode</sl-option>
+                  </sl-select>
+                `
+          }
 
           <div
             style="display: flex; flex-direction: column; gap: var(--sl-spacing-2x-small); margin-bottom: var(--sl-spacing-medium);"
@@ -1164,77 +1172,81 @@ export class PreloopFlowForm extends LitElement {
           <div
             style="display: flex; flex-direction: column; gap: var(--sl-spacing-medium);"
           >
-            ${builtinTools.length > 0
-              ? html`
-                  <div>
-                    <h5
-                      style="font-weight: 600; color: var(--sl-color-neutral-600); text-transform: uppercase; font-size: 0.8rem; margin: 0 0 0.5rem 0;"
-                    >
-                      Built-in Tools
-                    </h5>
-                    <div
-                      style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: var(--sl-spacing-medium);"
-                    >
-                      ${builtinTools.map(
-                        (t) => html`
-                          <sl-checkbox
-                            .checked=${this.isToolSelected(
-                              'preloop-mcp',
-                              t.name
-                            )}
-                            @sl-change=${(e: any) =>
-                              this.handleToolToggle(
+            ${
+              builtinTools.length > 0
+                ? html`
+                    <div>
+                      <h5
+                        style="font-weight: 600; color: var(--sl-color-neutral-600); text-transform: uppercase; font-size: 0.8rem; margin: 0 0 0.5rem 0;"
+                      >
+                        Built-in Tools
+                      </h5>
+                      <div
+                        style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: var(--sl-spacing-medium);"
+                      >
+                        ${builtinTools.map(
+                          (t) => html`
+                            <sl-checkbox
+                              .checked=${this.isToolSelected(
                                 'preloop-mcp',
-                                t.name,
-                                e.target.checked
+                                t.name
                               )}
-                            ?disabled=${t.is_supported === false}
-                          >
-                            ${t.name}
-                          </sl-checkbox>
-                        `
-                      )}
-                    </div>
-                  </div>
-                `
-              : nothing}
-            ${mcpTools.length > 0
-              ? html`
-                  <div style="margin-top: var(--sl-spacing-medium);">
-                    <h5
-                      style="font-weight: 600; color: var(--sl-color-neutral-600); text-transform: uppercase; font-size: 0.8rem; margin: 0 0 0.5rem 0;"
-                    >
-                      MCP Server Tools
-                    </h5>
-                    <div
-                      style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: var(--sl-spacing-medium);"
-                    >
-                      ${mcpTools.map(
-                        (t) => html`
-                          <sl-checkbox
-                            .checked=${this.isToolSelected(
-                              'preloop-mcp',
-                              t.name
-                            )}
-                            @sl-change=${(e: any) =>
-                              this.handleToolToggle(
-                                'preloop-mcp',
-                                t.name,
-                                e.target.checked
-                              )}
-                            ?disabled=${t.is_supported === false}
-                          >
-                            ${t.name}
-                            <sl-badge variant="neutral" size="small"
-                              >${t.source_name || 'external'}</sl-badge
+                              @sl-change=${(e: any) =>
+                                this.handleToolToggle(
+                                  'preloop-mcp',
+                                  t.name,
+                                  e.target.checked
+                                )}
+                              ?disabled=${t.is_supported === false}
                             >
-                          </sl-checkbox>
-                        `
-                      )}
+                              ${t.name}
+                            </sl-checkbox>
+                          `
+                        )}
+                      </div>
                     </div>
-                  </div>
-                `
-              : nothing}
+                  `
+                : nothing
+            }
+            ${
+              mcpTools.length > 0
+                ? html`
+                    <div style="margin-top: var(--sl-spacing-medium);">
+                      <h5
+                        style="font-weight: 600; color: var(--sl-color-neutral-600); text-transform: uppercase; font-size: 0.8rem; margin: 0 0 0.5rem 0;"
+                      >
+                        MCP Server Tools
+                      </h5>
+                      <div
+                        style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: var(--sl-spacing-medium);"
+                      >
+                        ${mcpTools.map(
+                          (t) => html`
+                            <sl-checkbox
+                              .checked=${this.isToolSelected(
+                                'preloop-mcp',
+                                t.name
+                              )}
+                              @sl-change=${(e: any) =>
+                                this.handleToolToggle(
+                                  'preloop-mcp',
+                                  t.name,
+                                  e.target.checked
+                                )}
+                              ?disabled=${t.is_supported === false}
+                            >
+                              ${t.name}
+                              <sl-badge variant="neutral" size="small"
+                                >${t.source_name || 'external'}</sl-badge
+                              >
+                            </sl-checkbox>
+                          `
+                        )}
+                      </div>
+                    </div>
+                  `
+                : nothing
+            }
           </div>
         </sl-card>
 
@@ -1251,64 +1263,71 @@ export class PreloopFlowForm extends LitElement {
             Enable Git Workspace Cloning
           </sl-checkbox>
 
-          ${this.flow.git_clone_config?.enabled
-            ? html`
-                <div
-                  class="form-grid"
-                  style="margin-top: var(--sl-spacing-medium);"
-                >
-                  <sl-input
-                    label="Git Author Name"
-                    .value=${this.flow.git_clone_config?.git_user_name ||
-                    'Preloop'}
-                    @sl-input=${(e: any) => {
-                      this.flow.git_clone_config = {
-                        ...this.flow.git_clone_config,
-                        git_user_name: e.target.value,
-                      };
-                    }}
-                  ></sl-input>
-
-                  <sl-input
-                    label="Git Author Email"
-                    .value=${this.flow.git_clone_config?.git_user_email ||
-                    'git@preloop.ai'}
-                    @sl-input=${(e: any) => {
-                      this.flow.git_clone_config = {
-                        ...this.flow.git_clone_config,
-                        git_user_email: e.target.value,
-                      };
-                    }}
-                  ></sl-input>
-
-                  <sl-input
-                    label="Source Branch"
-                    .value=${this.flow.git_clone_config?.source_branch ||
-                    'main'}
-                    @sl-input=${(e: any) => {
-                      this.flow.git_clone_config = {
-                        ...this.flow.git_clone_config,
-                        source_branch: e.target.value,
-                      };
-                    }}
-                  ></sl-input>
-
-                  <sl-checkbox
-                    .checked=${this.flow.git_clone_config
-                      ?.create_pull_request || false}
-                    @sl-change=${(e: any) => {
-                      this.flow.git_clone_config = {
-                        ...this.flow.git_clone_config,
-                        create_pull_request: e.target.checked,
-                      };
-                    }}
-                    style="align-self: center;"
+          ${
+            this.flow.git_clone_config?.enabled
+              ? html`
+                  <div
+                    class="form-grid"
+                    style="margin-top: var(--sl-spacing-medium);"
                   >
-                    Create Pull/Merge Request on Commit
-                  </sl-checkbox>
-                </div>
-              `
-            : nothing}
+                    <sl-input
+                      label="Git Author Name"
+                      .value=${
+                        this.flow.git_clone_config?.git_user_name || 'Preloop'
+                      }
+                      @sl-input=${(e: any) => {
+                        this.flow.git_clone_config = {
+                          ...this.flow.git_clone_config,
+                          git_user_name: e.target.value,
+                        };
+                      }}
+                    ></sl-input>
+
+                    <sl-input
+                      label="Git Author Email"
+                      .value=${
+                        this.flow.git_clone_config?.git_user_email ||
+                        'git@preloop.ai'
+                      }
+                      @sl-input=${(e: any) => {
+                        this.flow.git_clone_config = {
+                          ...this.flow.git_clone_config,
+                          git_user_email: e.target.value,
+                        };
+                      }}
+                    ></sl-input>
+
+                    <sl-input
+                      label="Source Branch"
+                      .value=${
+                        this.flow.git_clone_config?.source_branch || 'main'
+                      }
+                      @sl-input=${(e: any) => {
+                        this.flow.git_clone_config = {
+                          ...this.flow.git_clone_config,
+                          source_branch: e.target.value,
+                        };
+                      }}
+                    ></sl-input>
+
+                    <sl-checkbox
+                      .checked=${
+                        this.flow.git_clone_config?.create_pull_request || false
+                      }
+                      @sl-change=${(e: any) => {
+                        this.flow.git_clone_config = {
+                          ...this.flow.git_clone_config,
+                          create_pull_request: e.target.checked,
+                        };
+                      }}
+                      style="align-self: center;"
+                    >
+                      Create Pull/Merge Request on Commit
+                    </sl-checkbox>
+                  </div>
+                `
+              : nothing
+          }
         </sl-card>
 
         <sl-card>
@@ -1334,14 +1353,16 @@ export class PreloopFlowForm extends LitElement {
           </div>
         </sl-card>
 
-        ${this.formError
-          ? html`
-              <sl-alert variant="danger" open>
-                <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
-                <strong>Error:</strong> ${this.formError}
-              </sl-alert>
-            `
-          : nothing}
+        ${
+          this.formError
+            ? html`
+                <sl-alert variant="danger" open>
+                  <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+                  <strong>Error:</strong> ${this.formError}
+                </sl-alert>
+              `
+            : nothing
+        }
 
         <div
           style="display: flex; gap: var(--sl-spacing-medium); justify-content: flex-end; margin-bottom: var(--sl-spacing-2x-large);"

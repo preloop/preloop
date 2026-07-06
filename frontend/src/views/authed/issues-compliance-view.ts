@@ -534,17 +534,19 @@ export class IssuesComplianceView extends LitElement {
             </sl-tag>
           `
         )}
-        ${this._selectedStatus !== 'opened'
-          ? html`
-              <sl-tag
-                size="medium"
-                removable
-                @sl-remove=${() => this._clearStatusFilter()}
-              >
-                ${this._selectedStatus === 'closed' ? 'Closed' : 'All'}
-              </sl-tag>
-            `
-          : ''}
+        ${
+          this._selectedStatus !== 'opened'
+            ? html`
+                <sl-tag
+                  size="medium"
+                  removable
+                  @sl-remove=${() => this._clearStatusFilter()}
+                >
+                  ${this._selectedStatus === 'closed' ? 'Closed' : 'All'}
+                </sl-tag>
+              `
+            : ''
+        }
         <sl-button size="small" pill @click=${this._clearAllFilters}
           >Clear all</sl-button
         >
@@ -724,17 +726,21 @@ export class IssuesComplianceView extends LitElement {
                             e.stopPropagation();
                             this._openImproveComplianceModal(issue);
                           }}
-                          ?disabled=${!complianceResult ||
-                          complianceResult.compliance_factor === 0 ||
-                          complianceResult.compliance_factor === 1}
+                          ?disabled=${
+                            !complianceResult ||
+                            complianceResult.compliance_factor === 0 ||
+                            complianceResult.compliance_factor === 1
+                          }
                         >
                           Improve
                         </sl-button>
                         <sl-dropdown
                           @click=${(e: Event) => e.stopPropagation()}
-                          ?disabled=${!complianceResult ||
-                          complianceResult.compliance_factor === 0 ||
-                          complianceResult.compliance_factor === 1}
+                          ?disabled=${
+                            !complianceResult ||
+                            complianceResult.compliance_factor === 0 ||
+                            complianceResult.compliance_factor === 1
+                          }
                         >
                           <sl-button
                             slot="trigger"
@@ -759,24 +765,26 @@ export class IssuesComplianceView extends LitElement {
                       </sl-button-group>
                     </td>
                   </tr>
-                  ${isExpanded
-                    ? html`
-                        <tr class="inline-detail-row">
-                          <td colspan="6">
-                            <div class="detail-view-card">
-                              <single-issue-detail-view .issue=${issue}>
-                                <div slot="additional-info">
-                                  ${this._renderComplianceDetails(
-                                    issue,
-                                    complianceResult
-                                  )}
-                                </div>
-                              </single-issue-detail-view>
-                            </div>
-                          </td>
-                        </tr>
-                      `
-                    : ''}
+                  ${
+                    isExpanded
+                      ? html`
+                          <tr class="inline-detail-row">
+                            <td colspan="6">
+                              <div class="detail-view-card">
+                                <single-issue-detail-view .issue=${issue}>
+                                  <div slot="additional-info">
+                                    ${this._renderComplianceDetails(
+                                      issue,
+                                      complianceResult
+                                    )}
+                                  </div>
+                                </single-issue-detail-view>
+                              </div>
+                            </td>
+                          </tr>
+                        `
+                      : ''
+                  }
                 `;
               })}
             </tbody>
@@ -980,9 +988,11 @@ export class IssuesComplianceView extends LitElement {
               <sl-button
                 size="small"
                 @click=${() => this._openImproveComplianceModal(issue)}
-                ?disabled=${!complianceResult ||
-                complianceResult.compliance_factor === 0 ||
-                complianceResult.compliance_factor === 1}
+                ?disabled=${
+                  !complianceResult ||
+                  complianceResult.compliance_factor === 0 ||
+                  complianceResult.compliance_factor === 1
+                }
               >
                 Improve
               </sl-button>

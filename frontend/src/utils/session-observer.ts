@@ -15,7 +15,7 @@ export type SessionObserverScope =
   | 'ai_model'
   | 'audit';
 
-export type SessionReplayMode = 'timeline' | 'chat' | 'debug';
+export type SessionReplayMode = 'timeline' | 'chat' | 'replay' | 'optimize';
 
 export interface ObservedSession {
   id: string;
@@ -39,6 +39,9 @@ export interface ObservedSession {
   latestModelAlias: string | null;
   latestProviderName: string | null;
   canLoadEvents: boolean;
+  optimizationWasteScore: number | null;
+  optimizationPotentialSavingsTokens: number | null;
+  optimizationPotentialSavingsUsd: number | null;
   raw: unknown;
 }
 
@@ -71,6 +74,11 @@ export interface SessionOptimizationSuggestion {
   confidence: 'low' | 'medium' | 'high';
   actionLabel: string;
   evidence: string[];
+  evidenceEventIds?: string[];
+  action?: {
+    type: string;
+    params: Record<string, unknown>;
+  } | null;
 }
 
 const EMPTY_TOKEN_USAGE: GatewayTokenUsage = {
@@ -124,26 +132,70 @@ function getStatus(row: Record<string, unknown>): string {
   return 'idle';
 }
 
+export function looksLikeFilePath(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (trimmed.startsWith('/') || trimmed.startsWith('~')) {
+    return true;
+  }
+  if (/^[A-Za-z]:[\\/]/.test(trimmed)) {
+    return true;
+  }
+  return (
+    (trimmed.includes('/') || trimmed.includes('\\')) &&
+    /\.(json|ya?ml|toml|config|ini|env)$/i.test(trimmed)
+  );
+}
+
+export function formatSessionIdLabel(id: string | null | undefined): string {
+  if (!id) {
+    return 'Session';
+  }
+  return id.length > 8 ? id.substring(0, 8) : id;
+}
+
+function getMeaningfulSessionReference(value: unknown): string | null {
+  const reference = asString(value);
+  if (!reference || looksLikeFilePath(reference)) {
+    return null;
+  }
+  return reference;
+}
+
+function buildSessionTitleFallback(row: Record<string, unknown>): string {
+  const sourceType = asString(row.session_source_type);
+  const sourceLabel = formatSessionSourceLabel(sourceType);
+  const sessionId = asString(row.id) || asString(row.runtime_session_id);
+  const sourceId = asString(row.session_source_id);
+  if (sessionId) {
+    return `${sourceLabel} ${formatSessionIdLabel(sessionId)}`.trim();
+  }
+  if (sourceId) {
+    return `${sourceLabel} ${sourceId}`.trim();
+  }
+  return 'Standalone API calls';
+}
+
 function buildTitle(row: Record<string, unknown>): string {
   return (
+    asString(row.title) ||
+    asString(row.summary) ||
+    asString(row.session_summary) ||
     asString(row.session_alias) ||
     asString(row.runtime_session_name) ||
     asString(row.runtime_principal_name) ||
     asString(row.flow_name) ||
-    asString(row.session_reference) ||
+    getMeaningfulSessionReference(row.session_reference) ||
     asString(row.model_alias) ||
-    `${formatSessionSourceLabel(asString(row.session_source_type))} ${
-      asString(row.session_source_id) || asString(row.runtime_session_id) || ''
-    }`.trim() ||
-    'Standalone API calls'
+    buildSessionTitleFallback(row)
   );
 }
 
 export function normalizeObservedSession(
   session:
-    | RuntimeSessionSummary
-    | GatewayUsageBySession
-    | Record<string, unknown>
+    RuntimeSessionSummary | GatewayUsageBySession | Record<string, unknown>
 ): ObservedSession {
   const row = asRecord(session);
   const runtimeSessionId =
@@ -187,6 +239,18 @@ export function normalizeObservedSession(
     latestModelAlias: model,
     latestProviderName: provider,
     canLoadEvents: Boolean(runtimeSessionId),
+    optimizationWasteScore:
+      typeof row.optimization_waste_score === 'number'
+        ? row.optimization_waste_score
+        : null,
+    optimizationPotentialSavingsTokens:
+      typeof row.optimization_potential_savings_tokens === 'number'
+        ? row.optimization_potential_savings_tokens
+        : null,
+    optimizationPotentialSavingsUsd:
+      typeof row.optimization_potential_savings_usd === 'number'
+        ? row.optimization_potential_savings_usd
+        : null,
     raw: session,
   };
 }
@@ -323,86 +387,39 @@ export function summarizeSessionLocally(
   };
 }
 
+/**
+ * Minimal offline fallback used only when no backend-generated
+ * suggestions are available. The backend response (grounded in the
+ * session context profile) is the source of truth; this fallback makes
+ * no savings claims of its own.
+ */
 export function suggestSessionOptimizations(
-  session: ObservedSession,
-  events: FlowGatewayEvent[],
-  activity: RuntimeSessionActivityItem[] = []
+  session: ObservedSession
 ): SessionOptimizationSuggestion[] {
-  const suggestions: SessionOptimizationSuggestion[] = [];
   const promptTokens = session.tokenUsage.prompt_tokens;
   const totalTokens = session.tokenUsage.total_tokens;
-  const toolNames = new Set(
-    activity.map((item) => item.tool_name).filter(Boolean) as string[]
-  );
-  const capturedMessages = events.flatMap(getGatewayEventPreviewMessages);
-  const systemMessages = capturedMessages.filter(
-    (message) => message.role === 'system' || message.source === 'system'
-  );
-  const truncatedMessages = capturedMessages.filter(
-    (message) => message.truncated
-  );
 
   if (promptTokens > 0 && promptTokens / Math.max(totalTokens, 1) > 0.75) {
-    suggestions.push({
-      id: 'trim-context',
-      title: 'Trim prompt context',
-      description:
-        'Most tokens are prompt tokens. Review system prompt, skills, tools, and retrieved context before the next run.',
-      expectedSavingsTokens: Math.round(promptTokens * 0.25),
-      expectedSavingsUsd: session.estimatedCost * 0.2,
-      confidence: 'medium',
-      actionLabel: 'Review context segments',
-      evidence: [
-        `${formatNumber(promptTokens)} prompt tokens`,
-        `${Math.round((promptTokens / Math.max(totalTokens, 1)) * 100)}% of session tokens were prompt-side`,
-      ],
-    });
+    return [
+      {
+        id: 'trim-context',
+        title: 'Trim prompt context',
+        description:
+          'Most tokens are prompt tokens. Generate suggestions for a measured breakdown of where they went.',
+        expectedSavingsTokens: 0,
+        expectedSavingsUsd: 0,
+        confidence: 'medium',
+        actionLabel: 'Review context segments',
+        evidence: [
+          `${formatNumber(promptTokens)} prompt tokens`,
+          `${Math.round((promptTokens / Math.max(totalTokens, 1)) * 100)}% of session tokens were prompt-side`,
+        ],
+      },
+    ];
   }
 
-  if (toolNames.size > 8) {
-    suggestions.push({
-      id: 'scope-tools',
-      title: 'Narrow available tools',
-      description:
-        'The session touched many tool names. Agent-scoped tool governance can reduce tool schemas in future context windows.',
-      expectedSavingsTokens: Math.round(totalTokens * 0.1),
-      expectedSavingsUsd: session.estimatedCost * 0.08,
-      confidence: 'low',
-      actionLabel: 'Suggest scoped tool policy',
-      evidence: [`${toolNames.size} distinct tool names observed`],
-    });
-  }
-
-  if (systemMessages.length > 1) {
-    suggestions.push({
-      id: 'dedupe-instructions',
-      title: 'Deduplicate repeated instructions',
-      description:
-        'Multiple system-level messages were captured. Consolidating repeated instructions can lower prompt cost and make replay easier to read.',
-      expectedSavingsTokens: Math.round(totalTokens * 0.08),
-      expectedSavingsUsd: session.estimatedCost * 0.05,
-      confidence: 'medium',
-      actionLabel: 'Inspect system messages',
-      evidence: [`${systemMessages.length} system-level messages captured`],
-    });
-  }
-
-  if (truncatedMessages.length > 0) {
-    suggestions.push({
-      id: 'inspect-truncation',
-      title: 'Inspect truncated content',
-      description:
-        'Captured previews were truncated. The full event payload may reveal oversized context or large tool outputs.',
-      expectedSavingsTokens: Math.round(totalTokens * 0.05),
-      expectedSavingsUsd: session.estimatedCost * 0.03,
-      confidence: 'low',
-      actionLabel: 'Open raw event payloads',
-      evidence: [`${truncatedMessages.length} truncated preview messages`],
-    });
-  }
-
-  if (suggestions.length === 0) {
-    suggestions.push({
+  return [
+    {
       id: 'budget-guardrail',
       title: 'Add a scoped budget guardrail',
       description:
@@ -412,8 +429,6 @@ export function suggestSessionOptimizations(
       confidence: 'medium',
       actionLabel: 'Review budget policy',
       evidence: [`Current spend: ${formatCost(session.estimatedCost)}`],
-    });
-  }
-
-  return suggestions;
+    },
+  ];
 }

@@ -94,9 +94,15 @@ type managedEnrollmentOptions struct {
 	// for ``preloop agents onboard --all``: every agent gets onboarded in
 	// the per-agent loop, then all the live checks fan out in parallel.
 	DeferLiveValidate bool
-	Tags              map[string]string
-	Input             io.Reader
-	Output            io.Writer
+	// Approvals opts the agent into local-hook tool-permission routing: at
+	// apply time we install a native pre-tool hook (Claude Code PreToolUse,
+	// Codex PermissionRequest, Cursor before*Execution) that escalates
+	// would-prompt tool calls to Preloop's mobile/watch approval flow. Off by
+	// default; enabled via `preloop agents onboard --approvals`.
+	Approvals bool
+	Tags      map[string]string
+	Input     io.Reader
+	Output    io.Writer
 }
 
 type managedLiveValidationOutcome struct {
@@ -318,6 +324,10 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		}
 	}
 
+	if note := mcpOnlyAgentModelNote(agent); note != "" {
+		plan.Notes = append(plan.Notes, note)
+	}
+
 	printEnrollmentPlan(plan, opts.DryRun)
 	if opts.DryRun {
 		fmt.Println("Dry run only: no local files or Preloop account state were changed.")
@@ -505,7 +515,13 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	if err := syncManagedAgentRuntimeArtifacts(agent, baseURL, credentialResp.Token); err != nil {
 		return err
 	}
+	if opts.Approvals && isApprovalHookSupportedAgent(agent) {
+		if err := installApprovalHooks(agent, baseURL, credentialResp.Token, output); err != nil {
+			return err
+		}
+	}
 	pluginInstallResult := installAgentControlRuntimePlugin(agent, output)
+	gatewayRestartResult := restartHermesGatewayAfterReconfig(agent, output)
 	if err := saveLocalEnrollmentState(backupState); err != nil {
 		return err
 	}
@@ -519,6 +535,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		baseURL,
 	)
 	validationResult = mergeStringMaps(validationResult, pluginInstallResult)
+	validationResult = mergeStringMaps(validationResult, gatewayRestartResult)
 	validationResult = mergeStringMaps(
 		validationResult,
 		defaultManagedLiveValidationResult(agent),
@@ -1577,6 +1594,26 @@ func parseClaudeManagedGatewayUpstream(agent AgentConfig) (*managedGatewayUpstre
 		modelID = modelRef
 		providerID = "anthropic"
 	}
+	// Defensive guard: never persist a bare family selector
+	// (haiku/sonnet/opus) as a concrete model identifier. If resolution
+	// above could not upgrade it (e.g. the Anthropic models API was
+	// unreachable at onboard time), fall back to the built-in default so
+	// the gateway sees a real model id instead of 404ing on "haiku".
+	if fallbackID := claudeSelectionFallbackModelID(modelID); fallbackID != "" {
+		modelID = fallbackID
+		if strings.TrimSpace(providerID) == "" {
+			providerID = "anthropic"
+		}
+		modelRef = providerID + "/" + modelID
+		notes = append(
+			notes,
+			fmt.Sprintf(
+				"Could not reach the Anthropic models API; defaulted Claude Code selector to %s/%s.",
+				providerID,
+				modelID,
+			),
+		)
+	}
 	managedAlias := strings.TrimSpace(modelRef)
 	if !strings.Contains(managedAlias, "/") {
 		managedAlias = "anthropic/" + modelID
@@ -1610,6 +1647,15 @@ func claudeCodeAPIBillingRequiredNote() string {
 
 func isClaudeCodeOAuthAccessToken(token string) bool {
 	return strings.HasPrefix(strings.TrimSpace(token), "sk-ant-oat")
+}
+
+// isOAuthCredentialType reports whether a managed-model credential type is a
+// provider OAuth bundle (e.g. "oauth_anthropic_claude_code",
+// "oauth_openai_codex"). These tokens rotate and expire, so re-onboarding
+// must always re-seed them rather than treating an existing same-type
+// credential as still valid.
+func isOAuthCredentialType(credentialType string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(credentialType)), "oauth_")
 }
 
 func parseCodexManagedGatewayUpstream(agent AgentConfig) (*managedGatewayUpstream, error) {
@@ -4409,7 +4455,18 @@ func syncManagedGatewayAIModel(
 		if upstream.APIKey != "" && !target.HasAPIKey {
 			update["api_key"] = upstream.APIKey
 		}
-		if len(upstream.CredentialPayload) > 0 && (!target.HasAPIKey || strings.TrimSpace(target.CredentialType) != strings.TrimSpace(upstream.CredentialType)) {
+		// Re-seed the stored credential on re-onboard when the upstream
+		// carries a fresh payload AND either the target has no credential,
+		// the credential type changed, OR the credential is an OAuth bundle.
+		// OAuth subscription tokens (Anthropic/Codex) rotate and expire, so
+		// a re-onboard whose whole purpose is to recover a working token
+		// MUST overwrite the stale stored copy — otherwise the gateway keeps
+		// trying to refresh a dead/expired token and 401s with
+		// "Model credentials could not be refreshed".
+		if len(upstream.CredentialPayload) > 0 &&
+			(!target.HasAPIKey ||
+				strings.TrimSpace(target.CredentialType) != strings.TrimSpace(upstream.CredentialType) ||
+				isOAuthCredentialType(upstream.CredentialType)) {
 			update["credential_type"] = upstream.CredentialType
 			update["credential_payload"] = upstream.CredentialPayload
 		}

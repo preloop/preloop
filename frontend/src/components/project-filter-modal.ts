@@ -38,9 +38,7 @@ export class ProjectFilterModal extends LitElement {
   @property({ type: String }) selectedStatus: 'opened' | 'closed' | 'all' =
     'opened';
   @property({ type: String }) selectedResolution:
-    | 'resolved'
-    | 'unresolved'
-    | 'all' = 'all';
+    'resolved' | 'unresolved' | 'all' = 'all';
 
   @state() private draftSelectedProjectIds: string[] = [];
   @state() private draftSelectedStatus: 'opened' | 'closed' | 'all' = 'opened';

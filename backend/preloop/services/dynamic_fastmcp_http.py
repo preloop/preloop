@@ -4,11 +4,13 @@ This module sets up FastMCP's StreamableHTTP transport with middleware that inje
 authenticated user context for per-request tool filtering.
 """
 
+import inspect
 import json
 import logging
 import os
 from contextvars import ContextVar
 from typing import Optional
+from urllib.parse import urlparse
 
 from starlette.middleware.authentication import AuthenticationMiddleware
 from starlette.responses import Response
@@ -94,6 +96,45 @@ class UserContextMiddleware:
             _current_user_context.reset(token)
 
 
+def mcp_http_allowed_hosts(preloop_url: str | None = None) -> list[str]:
+    """Return Host header patterns trusted by FastMCP's request guard.
+
+    FastMCP 3.4+ enables host/origin protection by default and only allows
+    loopback hosts plus the ASGI server host. External requests proxied through
+    nginx with ``Host: $host`` must be explicitly allowlisted.
+
+    Args:
+        preloop_url: Public Preloop base URL. Defaults to ``PRELOOP_URL`` env.
+
+    Returns:
+        Host patterns passed to ``http_app(allowed_hosts=...)``.
+    """
+    url = (
+        preloop_url if preloop_url is not None else os.getenv("PRELOOP_URL", "")
+    ).strip()
+    if not url:
+        return []
+
+    hostname = urlparse(url).hostname
+    if not hostname:
+        return []
+
+    hosts = [hostname]
+    if hostname.endswith(".test.preloop.ai"):
+        hosts.append("*.test.preloop.ai")
+    return hosts
+
+
+def mcp_http_allowed_origins(preloop_url: str | None = None) -> list[str]:
+    """Return browser Origin values trusted by FastMCP's request guard."""
+    url = (
+        preloop_url if preloop_url is not None else os.getenv("PRELOOP_URL", "")
+    ).strip()
+    if not url:
+        return []
+    return [url.rstrip("/")]
+
+
 def get_current_user_context() -> Optional[UserContext]:
     """Get the current user context from the context variable.
 
@@ -131,13 +172,25 @@ def setup_dynamic_mcp_http(mcp: DynamicFastMCP):
     # So mounting at /mcp makes it available at /mcp/v1
     # NOTE: json_response must be None (not True) to allow SSE streaming for progress
     # NOTE: stateless_http=True prevents session state issues on server restart
-    base_app = mcp.http_app(
-        path="/v1",
-        transport="streamable-http",
-        json_response=None,  # Allow SSE streaming for progress notifications
-        stateless_http=True,  # Don't maintain session state (allows clean reconnections)
+    http_app_kwargs: dict[str, object] = {
+        "path": "/v1",
+        "transport": "streamable-http",
+        "json_response": None,  # Allow SSE streaming for progress notifications
+        "stateless_http": True,  # Don't maintain session state (allows clean reconnections)
+    }
+    http_app_params = inspect.signature(mcp.http_app).parameters
+    allowed_hosts = mcp_http_allowed_hosts()
+    if "allowed_hosts" in http_app_params and allowed_hosts:
+        http_app_kwargs["allowed_hosts"] = allowed_hosts
+    allowed_origins = mcp_http_allowed_origins()
+    if "allowed_origins" in http_app_params and allowed_origins:
+        http_app_kwargs["allowed_origins"] = allowed_origins
+
+    base_app = mcp.http_app(**http_app_kwargs)
+    logger.info(
+        "Got FastMCP's http_app with streamable-http transport for path /v1 "
+        f"(allowed_hosts={allowed_hosts or 'default'})"
     )
-    logger.info("Got FastMCP's http_app with streamable-http transport for path /v1")
 
     # Wrap with our middleware layers
     # Layer 1: User context middleware (extracts and stores user context)

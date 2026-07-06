@@ -2183,7 +2183,7 @@ func TestBuildManagedMCPEnrollmentPlan_OpenClawUsesStreamableHTTPServer(t *testi
 	}
 }
 
-func TestBuildManagedMCPEnrollmentPlan_CodexCLIUsesNestedTOMLShape(t *testing.T) {
+func TestBuildManagedMCPEnrollmentPlan_CodexCLIWritesSingleMCPServersBlock(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.toml")
 	if err := os.WriteFile(configPath, []byte(`
@@ -2201,15 +2201,36 @@ trust_level = "trusted"
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	mcp := plan.ManagedDocument["mcp"].(map[string]interface{})
-	servers := mcp["servers"].(map[string]interface{})
-	preloop := servers["preloop"].(map[string]interface{})
-	auth := preloop["auth"].(map[string]interface{})
+	// Codex 0.142.5 only reads the top-level [mcp_servers] table, so onboarding
+	// must produce exactly one preloop MCP block there and never write a bogus
+	// [mcp.servers] table.
+	if _, ok := plan.ManagedDocument["mcp"]; ok {
+		t.Fatalf("expected no [mcp] table for Codex, got %#v", plan.ManagedDocument["mcp"])
+	}
+
+	servers, ok := plan.ManagedDocument["mcp_servers"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected [mcp_servers] table for Codex, got %#v", plan.ManagedDocument)
+	}
+	preloop, ok := servers["preloop"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected [mcp_servers.preloop] entry for Codex, got %#v", servers)
+	}
 	if preloop["url"] != "https://preloop.example/mcp/v1" {
 		t.Fatalf("unexpected Codex managed URL: %+v", preloop)
 	}
-	if auth["type"] != "bearer" || auth["token"] != "codex-durable-token" {
-		t.Fatalf("unexpected Codex auth config: %+v", auth)
+	if _, hasTransport := preloop["transport"]; hasTransport {
+		t.Fatalf("Codex entry must not carry a transport field, got %+v", preloop)
+	}
+	if _, hasAuth := preloop["auth"]; hasAuth {
+		t.Fatalf("Codex entry must not carry an [auth] sub-table, got %+v", preloop)
+	}
+	headers, ok := preloop["http_headers"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected Codex http_headers, got %+v", preloop)
+	}
+	if headers["Authorization"] != "Bearer codex-durable-token" {
+		t.Fatalf("unexpected Codex Authorization header: %+v", headers)
 	}
 }
 
@@ -2541,6 +2562,97 @@ func TestApplyCodexManagedGatewayConfiguresCustomProvider(t *testing.T) {
 	legacyHeaders := legacyPreloop["http_headers"].(map[string]interface{})
 	if legacyHeaders["Authorization"] != "Bearer codex-durable-token" {
 		t.Fatalf("unexpected Codex legacy Authorization header: %#v", legacyPreloop)
+	}
+}
+
+// TestManagedServerSchemaAntigravity asserts the Antigravity MCP entry uses
+// the `serverUrl` key (not `url`) with a literal bearer header, and that a
+// freshly built entry round-trips through ValidateManagedConfig.
+func TestManagedServerSchemaAntigravity(t *testing.T) {
+	name := antigravityAgentName
+	adapter := managedMCPAdapterForAgent(AgentConfig{Name: name})
+	entry := adapter.BuildManagedServer("https://preloop.example", "durable-token")
+	if entry["serverUrl"] != "https://preloop.example/mcp/v1" {
+		t.Fatalf("%s: expected serverUrl key, got %#v", name, entry)
+	}
+	if _, hasURL := entry["url"]; hasURL {
+		t.Fatalf("%s: Antigravity must not use the `url` key, got %#v", name, entry)
+	}
+	headers, _ := entry["headers"].(map[string]interface{})
+	if headers["Authorization"] != "Bearer durable-token" {
+		t.Fatalf("%s: expected literal bearer header, got %#v", name, headers)
+	}
+	result := adapter.ValidateManagedConfig(map[string]interface{}{
+		"mcpServers": map[string]interface{}{"preloop": entry},
+	}, "https://preloop.example")
+	if result["validation_passed"] != true {
+		t.Fatalf("%s: expected antigravity validation to pass, got %+v", name, result)
+	}
+}
+
+// TestManagedServerSchemaDevin asserts the Devin MCP entry uses `url` +
+// headers with no transport field, and round-trips through validation.
+func TestManagedServerSchemaDevin(t *testing.T) {
+	adapter := managedMCPAdapterForAgent(AgentConfig{Name: devinAgentName})
+	entry := adapter.BuildManagedServer("https://preloop.example", "durable-token")
+	if entry["url"] != "https://preloop.example/mcp/v1" {
+		t.Fatalf("expected url key for Devin, got %#v", entry)
+	}
+	if _, hasTransport := entry["transport"]; hasTransport {
+		t.Fatalf("Devin entry must not carry a transport field, got %#v", entry)
+	}
+	headers, _ := entry["headers"].(map[string]interface{})
+	if headers["Authorization"] != "Bearer durable-token" {
+		t.Fatalf("expected literal bearer header, got %#v", headers)
+	}
+	result := adapter.ValidateManagedConfig(map[string]interface{}{
+		"mcpServers": map[string]interface{}{"preloop": entry},
+	}, "https://preloop.example")
+	if result["validation_passed"] != true {
+		t.Fatalf("expected devin validation to pass, got %+v", result)
+	}
+}
+
+// TestManagedServerSchemaCodex asserts the Codex MCP entry uses `url` +
+// http_headers (the format Codex actually reads) with no transport field and
+// no [auth] sub-table, and that no-token enrollment falls back to
+// bearer_token_env_var.
+func TestManagedServerSchemaCodex(t *testing.T) {
+	adapter := managedMCPAdapterForAgent(AgentConfig{Name: "Codex CLI"})
+	entry := adapter.BuildManagedServer("https://preloop.example", "durable-token")
+	if entry["url"] != "https://preloop.example/mcp/v1" {
+		t.Fatalf("expected url key for Codex, got %#v", entry)
+	}
+	if _, hasTransport := entry["transport"]; hasTransport {
+		t.Fatalf("Codex entry must not carry a transport field, got %#v", entry)
+	}
+	if _, hasAuth := entry["auth"]; hasAuth {
+		t.Fatalf("Codex entry must not carry an [auth] sub-table, got %#v", entry)
+	}
+	headers, _ := entry["http_headers"].(map[string]interface{})
+	if headers["Authorization"] != "Bearer durable-token" {
+		t.Fatalf("expected literal bearer header, got %#v", entry)
+	}
+
+	tokenless := adapter.BuildManagedServer("https://preloop.example", "")
+	if _, hasHeaders := tokenless["http_headers"]; hasHeaders {
+		t.Fatalf("expected no http_headers without a token, got %#v", tokenless)
+	}
+	if tokenless["bearer_token_env_var"] != "PRELOOP_TOKEN" {
+		t.Fatalf("expected bearer_token_env_var fallback, got %#v", tokenless)
+	}
+}
+
+// TestMCPOnlyAgentModelNote verifies each model-incapable agent surfaces a
+// clear, distinct explanation and that gateway-capable agents get none.
+func TestMCPOnlyAgentModelNote(t *testing.T) {
+	for _, name := range []string{"Cursor", antigravityAgentName, devinAgentName} {
+		if note := mcpOnlyAgentModelNote(AgentConfig{Name: name}); note == "" {
+			t.Fatalf("expected an MCP-only model note for %s", name)
+		}
+	}
+	if note := mcpOnlyAgentModelNote(AgentConfig{Name: "Claude Code"}); note != "" {
+		t.Fatalf("expected no MCP-only note for a gateway-capable agent, got %q", note)
 	}
 }
 

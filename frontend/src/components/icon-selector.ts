@@ -44,9 +44,9 @@ export class IconSelector extends LitElement {
         ${this.icons.map(
           (icon) => html`
             <div
-              class="icon-wrapper ${this.selectedIcon === icon
-                ? 'selected'
-                : ''}"
+              class="icon-wrapper ${
+                this.selectedIcon === icon ? 'selected' : ''
+              }"
               @click=${() => this.selectIcon(icon)}
             >
               <sl-icon name=${icon} style="font-size: 24px;"></sl-icon>

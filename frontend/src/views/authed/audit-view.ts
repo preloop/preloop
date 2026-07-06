@@ -112,6 +112,8 @@ export class AuditView extends AuthedElement {
   @state() private _toolNameFilter = '';
   @state() private _startDate = '';
   @state() private _endDate = '';
+  @state() private _minCost = '';
+  @state() private _maxCost = '';
 
   // Expanded groups (correlation_id or primary event id -> expanded)
   @state() private _expandedGroups = new Set<string>();
@@ -142,6 +144,14 @@ export class AuditView extends AuthedElement {
     const outcome = params.get('outcome');
     if (outcome) {
       this._outcomeFilters = [outcome];
+    }
+    const minCost = params.get('min_cost');
+    if (minCost) {
+      this._minCost = minCost;
+    }
+    const maxCost = params.get('max_cost');
+    if (maxCost) {
+      this._maxCost = maxCost;
     }
 
     this._loadUsers();
@@ -233,6 +243,8 @@ export class AuditView extends AuthedElement {
         params.set('start_date', new Date(this._startDate).toISOString());
       if (this._endDate)
         params.set('end_date', new Date(this._endDate).toISOString());
+      if (this._minCost) params.set('min_cost', this._minCost);
+      if (this._maxCost) params.set('max_cost', this._maxCost);
 
       const res = await fetchWithAuth(`/api/v1/audit-logs/grouped?${params}`);
       if (res.ok) {
@@ -258,6 +270,8 @@ export class AuditView extends AuthedElement {
     this._toolNameFilter = '';
     this._startDate = '';
     this._endDate = '';
+    this._minCost = '';
+    this._maxCost = '';
     this._page = 0;
     this._loadTimeline();
   }
@@ -313,6 +327,48 @@ export class AuditView extends AuthedElement {
         : `${actor} via ${apiKeyName}`;
     }
     return actor;
+  }
+
+  private _formatCurrency(value?: number | null): string {
+    const amount = Number(value || 0);
+    if (amount === 0) return '$0.00';
+    return amount >= 0.01 ? `$${amount.toFixed(2)}` : `$${amount.toFixed(4)}`;
+  }
+
+  private _getEventCost(details: Record<string, any> | null): number | null {
+    if (!details || details.estimated_cost == null) return null;
+    const value = Number(details.estimated_cost);
+    return Number.isFinite(value) ? value : null;
+  }
+
+  private _getEventTokens(details: Record<string, any> | null): number | null {
+    if (!details) return null;
+    if (details.total_tokens != null) {
+      const value = Number(details.total_tokens);
+      return Number.isFinite(value) ? value : null;
+    }
+    const prompt = Number(details.prompt_tokens || 0);
+    const completion = Number(details.completion_tokens || 0);
+    const total = prompt + completion;
+    return total > 0 ? total : null;
+  }
+
+  private _renderEventCostTokens(details: Record<string, any> | null) {
+    const tokens = this._getEventTokens(details);
+    const cost = this._getEventCost(details);
+    if (tokens == null && cost == null) return nothing;
+    return html`
+      ${
+        tokens != null
+          ? html`<span class="event-cost">${tokens.toLocaleString()} tok</span>`
+          : nothing
+      }
+      ${
+        cost != null
+          ? html`<span class="event-cost">${this._formatCurrency(cost)}</span>`
+          : nothing
+      }
+    `;
   }
 
   private _hasExpandableDetails(details: Record<string, any> | null): boolean {
@@ -406,6 +462,10 @@ export class AuditView extends AuthedElement {
       'is_retry',
       'retry_of_api_usage_id',
       'request_fingerprint',
+      'prompt_tokens',
+      'completion_tokens',
+      'total_tokens',
+      'estimated_cost',
       'error_type',
       'error_detail',
       'approval_workflow_id',
@@ -471,11 +531,13 @@ export class AuditView extends AuthedElement {
                       >
                     `
                   )}
-                ${details.recipient_user_ids.length > 12
-                  ? html`<sl-tag size="small" variant="neutral"
-                      >+${details.recipient_user_ids.length - 12} more</sl-tag
-                    >`
-                  : nothing}
+                ${
+                  details.recipient_user_ids.length > 12
+                    ? html`<sl-tag size="small" variant="neutral"
+                        >+${details.recipient_user_ids.length - 12} more</sl-tag
+                      >`
+                    : nothing
+                }
               </div>
             </div>
           `
@@ -483,21 +545,23 @@ export class AuditView extends AuthedElement {
 
     return html`
       <div class="event-details">
-        ${details.runtime_session_id
-          ? html`
-              <div class="detail-block">
-                <span class="detail-label">Session observer</span>
-                <a
-                  class="detail-value"
-                  href=${`/console/runtime-sessions?sessionId=${encodeURIComponent(
-                    details.runtime_session_id
-                  )}`}
-                >
-                  Open replay, costs, and optimization suggestions
-                </a>
-              </div>
-            `
-          : nothing}
+        ${
+          details.runtime_session_id
+            ? html`
+                <div class="detail-block">
+                  <span class="detail-label">Session observer</span>
+                  <a
+                    class="detail-value"
+                    href=${`/console/runtime-sessions?sessionId=${encodeURIComponent(
+                      details.runtime_session_id
+                    )}`}
+                  >
+                    Open replay, costs, and optimization suggestions
+                  </a>
+                </div>
+              `
+            : nothing
+        }
         ${preferredItems} ${remainingItems} ${recipientChips}
         ${this._renderJsonDetail('Arguments', details.tool_args)}
         ${this._renderJsonDetail('Result preview', details.result_preview)}
@@ -798,20 +862,22 @@ export class AuditView extends AuthedElement {
       <div class="column-layout wide">
         <div class="main-column audit-view" style="padding-top: 0;">
           ${this._renderFilterBar()}
-          ${this._loading
-            ? html`<div class="loading">
-                <sl-spinner style="font-size: 2rem;"></sl-spinner>
-              </div>`
-            : this._groups.length === 0
-              ? html`<div class="empty-state">
-                  No audit events found matching your filters.
+          ${
+            this._loading
+              ? html`<div class="loading">
+                  <sl-spinner style="font-size: 2rem;"></sl-spinner>
                 </div>`
-              : html`
-                  <div class="timeline">
-                    ${this._groups.map((g) => this._renderGroup(g))}
-                  </div>
-                  ${this._renderPagination()}
-                `}
+              : this._groups.length === 0
+                ? html`<div class="empty-state">
+                    No audit events found matching your filters.
+                  </div>`
+                : html`
+                    <div class="timeline">
+                      ${this._groups.map((g) => this._renderGroup(g))}
+                    </div>
+                    ${this._renderPagination()}
+                  `
+          }
         </div>
       </div>
     `;
@@ -909,18 +975,52 @@ export class AuditView extends AuthedElement {
           }}
         ></sl-input>
 
-        ${this._eventTypeFilters.length ||
-        this._outcomeFilters.length ||
-        this._toolNameFilter ||
-        this._startDate ||
-        this._endDate
-          ? html`<sl-button
-              size="small"
-              variant="text"
-              @click=${this._clearFilters}
-              >Clear</sl-button
-            >`
-          : nothing}
+        <sl-input
+          type="number"
+          size="small"
+          placeholder="Min $"
+          min="0"
+          step="0.0001"
+          .value=${this._minCost}
+          @sl-input=${(e: Event) => {
+            this._minCost = (e.target as HTMLInputElement).value;
+          }}
+          @keydown=${(e: KeyboardEvent) => {
+            if (e.key === 'Enter') this._applyFilters();
+          }}
+        ></sl-input>
+
+        <sl-input
+          type="number"
+          size="small"
+          placeholder="Max $"
+          min="0"
+          step="0.0001"
+          .value=${this._maxCost}
+          @sl-input=${(e: Event) => {
+            this._maxCost = (e.target as HTMLInputElement).value;
+          }}
+          @keydown=${(e: KeyboardEvent) => {
+            if (e.key === 'Enter') this._applyFilters();
+          }}
+        ></sl-input>
+
+        ${
+          this._eventTypeFilters.length ||
+          this._outcomeFilters.length ||
+          this._toolNameFilter ||
+          this._startDate ||
+          this._endDate ||
+          this._minCost ||
+          this._maxCost
+            ? html`<sl-button
+                size="small"
+                variant="text"
+                @click=${this._clearFilters}
+                >Clear</sl-button
+              >`
+            : nothing
+        }
       </div>
     `;
   }
@@ -953,14 +1053,19 @@ export class AuditView extends AuthedElement {
               class="action-icon"
             ></sl-icon>
             <span class="primary-label">${this._getPrimaryLabel(event)}</span>
-            ${argsSummary
-              ? html`<span class="args-summary">${argsSummary}</span>`
-              : nothing}
+            ${
+              argsSummary
+                ? html`<span class="args-summary">${argsSummary}</span>`
+                : nothing
+            }
           </div>
           <div class="row-right">
-            ${execTime != null
-              ? html`<span class="exec-time">${execTime}ms</span>`
-              : nothing}
+            ${this._renderEventCostTokens(event.details)}
+            ${
+              execTime != null
+                ? html`<span class="exec-time">${execTime}ms</span>`
+                : nothing
+            }
             <sl-badge variant=${badge.variant} pill>${badge.label}</sl-badge>
             <span class="user-name">${this._formatActorLabel(event)}</span>
             <sl-tooltip content=${this._formatFullTimestamp(event.timestamp)}>
@@ -968,32 +1073,40 @@ export class AuditView extends AuthedElement {
                 >${this._formatTimestamp(event.timestamp)}</span
               >
             </sl-tooltip>
-            ${canExpand
-              ? html`<sl-icon
-                  name=${expanded ? 'chevron-up' : 'chevron-down'}
-                  class="expand-icon"
-                ></sl-icon>`
-              : html`<span class="expand-spacer"></span>`}
+            ${
+              canExpand
+                ? html`<sl-icon
+                    name=${expanded ? 'chevron-up' : 'chevron-down'}
+                    class="expand-icon"
+                  ></sl-icon>`
+                : html`<span class="expand-spacer"></span>`
+            }
           </div>
         </div>
 
-        ${expanded
-          ? html`
-              ${hasSubs && isToolCall
-                ? this._renderStorySummary(group)
-                : nothing}
-              ${this._renderEventDetails(event.details)}
-              ${hasSubs
-                ? html`
-                    <div class="sub-events">
-                      ${group.sub_events.map((sub) =>
-                        this._renderSubEvent(sub)
-                      )}
-                    </div>
-                  `
-                : nothing}
-            `
-          : nothing}
+        ${
+          expanded
+            ? html`
+                ${
+                  hasSubs && isToolCall
+                    ? this._renderStorySummary(group)
+                    : nothing
+                }
+                ${this._renderEventDetails(event.details)}
+                ${
+                  hasSubs
+                    ? html`
+                        <div class="sub-events">
+                          ${group.sub_events.map((sub) =>
+                            this._renderSubEvent(sub)
+                          )}
+                        </div>
+                      `
+                    : nothing
+                }
+              `
+            : nothing
+        }
       </div>
     `;
   }
@@ -1162,12 +1275,15 @@ export class AuditView extends AuthedElement {
         <div class="sub-content">
           <div class="sub-main-row">
             <span class="sub-label">${this._getSubEventLabel(sub)}</span>
-            ${sub.details?.condition_matched
-              ? html`<code class="condition-code"
-                  >${sub.details.condition_matched}</code
-                >`
-              : nothing}
+            ${
+              sub.details?.condition_matched
+                ? html`<code class="condition-code"
+                    >${sub.details.condition_matched}</code
+                  >`
+                : nothing
+            }
             <span class="sub-spacer"></span>
+            ${this._renderEventCostTokens(sub.details)}
             <sl-badge variant=${badge.variant} pill size="small"
               >${badge.label}</sl-badge
             >
@@ -1412,6 +1528,12 @@ export class AuditView extends AuthedElement {
         font-size: 0.7rem;
         color: var(--sl-color-neutral-400);
         font-family: var(--sl-font-mono);
+      }
+      .event-cost {
+        font-size: 0.7rem;
+        color: var(--sl-color-neutral-500);
+        font-family: var(--sl-font-mono);
+        white-space: nowrap;
       }
       .user-name {
         font-size: 0.75rem;
