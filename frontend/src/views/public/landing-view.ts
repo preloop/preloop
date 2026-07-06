@@ -904,7 +904,7 @@ export class LandingView extends LitElement {
                                 >Want a guided tour first?</span
                               >
                               <sl-button
-                                variant="text"
+                                variant="default"
                                 size="large"
                                 href=${this._ctaSecondaryUrl}
                                 target=${

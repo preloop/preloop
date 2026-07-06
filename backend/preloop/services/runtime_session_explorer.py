@@ -573,6 +573,11 @@ class RuntimeSessionExplorerService:
         )
 
     @staticmethod
+    def extract_request_messages(payload: dict[str, Any]) -> list[dict[str, str]]:
+        """Return normalized request messages from a gateway payload."""
+        return RuntimeSessionExplorerService._extract_request_messages(payload)
+
+    @staticmethod
     def _extract_request_messages(payload: dict[str, Any]) -> list[dict[str, str]]:
         request = payload.get("request")
         raw_messages = (

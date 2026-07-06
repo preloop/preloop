@@ -1048,10 +1048,15 @@ summary.faq-question:hover sl-icon {
 }
 
 @media (max-width: 1150px) {
+  .hero {
+    padding: 3rem 0;
+  }
+
   .hero-inner {
     display: flex;
     flex-direction: column;
     text-align: center;
+    gap: 1rem;
   }
 
   .hero-content {
@@ -1060,17 +1065,28 @@ summary.faq-question:hover sl-icon {
 
   .product-hunt-badge {
     order: 0;
+    margin-bottom: 0.5rem;
+    width: 100%;
   }
 
   .hero-content h1 {
     order: 1;
     width: 100%;
+    font-size: 2.5rem;
+    margin-top: 0.25rem;
+    margin-bottom: 0.25rem;
+    text-align: center;
   }
 
   .hero-content .lead {
     order: 2;
     width: 100%;
-    margin-bottom: 2rem;
+    font-size: 1rem;
+    margin-bottom: 1rem;
+    line-height: 1.4;
+    text-align: center;
+    margin-left: auto;
+    margin-right: auto;
   }
 
   .hero-visual {
@@ -1078,7 +1094,7 @@ summary.faq-question:hover sl-icon {
     display: block;
     width: 100%;
     margin-top: 0;
-    margin-bottom: 3rem;
+    margin-bottom: 1rem;
   }
 
   .hero-buttons {
@@ -1086,6 +1102,8 @@ summary.faq-question:hover sl-icon {
     justify-content: center;
     flex-wrap: wrap;
     width: 100%;
+    margin-bottom: 0.75rem;
+    gap: 0.75rem;
   }
 
   .hero-install {
@@ -1094,13 +1112,38 @@ summary.faq-question:hover sl-icon {
     margin-right: auto;
     text-align: center;
     width: 100%;
-    margin-top: 2rem;
+    margin-top: 0;
+    margin-bottom: 0.75rem;
+    gap: 0.25rem;
   }
 
-  .hero-trust-tags {
+  .hero-install-row {
+    padding: 0.5rem 0.65rem;
+  }
+
+  .hero-install-caption {
+    margin-top: 0.25rem;
+    font-size: 0.8rem;
+  }
+
+  .hero-secondary-cta {
     order: 6;
     justify-content: center;
     width: 100%;
+    margin-top: 0;
+    margin-bottom: 1rem;
+    gap: 0.3rem;
+  }
+
+  .hero-secondary-text {
+    font-size: 0.9rem;
+  }
+
+  .hero-trust-tags {
+    order: 7;
+    justify-content: center;
+    width: 100%;
+    margin-top: 0.5rem;
   }
 }
 
