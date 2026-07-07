@@ -92,6 +92,11 @@ The plugin-only path uses the same contract: install `@preloop/openclaw-plugin`
 or `preloop-hermes-plugin`, provide a valid `preloop.control` block, start the
 runtime, and let the plugin connect.
 
+Don't have the runtime installed yet? `preloop agents install-runtime <hermes|openclaw>`
+installs it locally and onboards it through Preloop in one step. To route an
+agent's **native** tool calls (e.g. Claude Code `Bash`/`Edit`) through Preloop
+approvals, onboard with `preloop agents onboard <agent> --approvals`.
+
 <p align="center">
   <img alt="Preloop dashboard with live agent and gateway usage" src="frontend/public/assets/screenshots/quickstart/dark/dashboard.png" style="width: 100%; max-width: 1135px; border-radius: 12px;" />
 </p>
@@ -144,7 +149,7 @@ Preloop safely routes model traffic on behalf of managed runtimes instead of han
 - **Secret custody** — provider API keys stay with Preloop; runtimes receive short-lived gateway tokens instead of raw credentials.
 
 ### Cost Analytics & Budgets
-Preloop should make model spend explainable, not just counted. The Console should have a dedicated **Cost** area with subviews that help operators answer:
+Preloop makes model spend explainable, not just counted. The Console has a dedicated **Cost** area with subviews that help operators answer:
 
 - **How much have we spent?** Spend, token volume, and request counts over time by model, provider, account, flow, managed agent, runtime session, API key, and user.
 - **Who or what spent it?** Attribution from `ApiUsage`, runtime principals, subject-scoped governance, and session timelines.
@@ -152,7 +157,7 @@ Preloop should make model spend explainable, not just counted. The Console shoul
 - **Was the outcome worth it?** Enterprise analysis can use the account's default AI model to summarize sessions, compare spend against observed outcome, and flag low-value or failed runs.
 - **How could it be optimized?** Enterprise recommendations can suggest cheaper models, prompt reductions, caching, batching, retry suppression, budget policy changes, or approval gates for expensive workflows.
 
-The open-source edition should include a practical Cost Overview, usage drill-downs, and budget-health alerts from gateway account/flow limits. Enterprise Edition adds budget policy configuration and enforcement, negotiated provider pricing overrides, session optimization recommendations, FinOps workflows, AI-generated session value reviews, anomaly detection, chargeback/showback, credits and promotions, forecasting, approval escalations, and export/reporting features through backend plugins. The frontend remains shared and should expose advanced panels through feature flags.
+The open-source edition includes a practical Cost Overview with Agents/Tools/Sessions/Users drill-downs, per-tool usage stats, budget-health alerts from gateway account/flow limits, MCP tool output filters that strip wasteful fields from tool results, and gateway context optimization on the hot path. Enterprise Edition adds budget policy configuration and enforcement, negotiated provider pricing overrides, session optimization recommendations with applied-action tracking, FinOps workflows, AI-generated session value reviews and titles, anomaly detection, chargeback/showback, credits and promotions, forecasting, approval escalations, and export/reporting features through backend plugins. The frontend remains shared and exposes advanced panels through feature flags.
 
 ### Runtime Session Observability
 A durable `RuntimeSession` layer gives you one timeline per managed runtime — flow executions today, and any onboarded CLI/desktop agent session going forward. Operator-scoped endpoints expose recent sessions plus captured gateway interactions so the console can drill from aggregate usage into a single session timeline. Operators can end a session explicitly; doing so updates runtime state, emits audit events, and refreshes managed-agent summaries.
@@ -192,9 +197,11 @@ curl -fsSL https://preloop.ai/install/cli | sh
 curl -fsSL https://preloop.ai/install/oss | sh
 ```
 
-### Release smoke test for hosted trials
+### Release smoke test
 
-Before promoting a hosted trial template, verify that the public URL loads the console, `/api/v1/health` responds, first-user sign-in or sign-up works, `preloop agents discover` can target the public URL, one gateway model call appears in the UI, and one MCP policy event appears in the audit timeline.
+Every tagged release is verified automatically before it is published: the `verify-oss-install` job in the release workflow runs [`scripts/release_smoke_test.sh`](scripts/release_smoke_test.sh), which boots `docker-compose.release.yaml` with the tagged images, checks API/gateway/console health, exercises first-user sign-up and login, and fails if any service restart-loops. You can run the same script locally with `PRELOOP_VERSION=<version> ./scripts/release_smoke_test.sh`.
+
+For hosted trials, additionally verify that the public URL loads the console, `/api/v1/health` responds, first-user sign-in or sign-up works, `preloop agents discover` can target the public URL, one gateway model call appears in the UI, and one MCP policy event appears in the audit timeline.
 
 For extended details detailing comprehensive Docker builds, Kubernetes Helm topologies, GraphQL configuration, WebSocket streaming channels, and deep `.env` definitions, refer to the [Preloop Documentation Hub](https://docs.preloop.ai).
 

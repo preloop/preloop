@@ -25,13 +25,16 @@ from .base import CRUDBase
 
 _summary_columns_cache: dict[int, bool] = {}
 
-# Preloop-internal model-gateway calls (session summarization/optimization and
-# session-title generation) are logged against the runtime session they operate
-# on, tagged via ``ApiUsage.meta_data->>'purpose'``. Real agent traffic has no
+# Preloop-internal model-gateway calls (session summarization/optimization,
+# session-title generation, and replay-validation re-executions) are logged
+# tagged via ``ApiUsage.meta_data->>'purpose'``. Real agent traffic has no
 # ``purpose`` (NULL meta_data or a NULL ``purpose`` key). These internal calls
 # must be excluded from a session's aggregated token/cost/request metrics so the
 # session reflects only the agent's own traffic, not Preloop's overhead.
-INTERNAL_USAGE_PURPOSES = ("session_optimization", "session_title")
+# ``replay_validation`` runs additionally suppress session attribution at the
+# gateway; its presence here is defense in depth so a mis-attributed replay row
+# can never inflate the session it was validating.
+INTERNAL_USAGE_PURPOSES = ("session_optimization", "session_title", "replay_validation")
 
 
 def _exclude_internal_usage_condition():
