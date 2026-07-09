@@ -83,6 +83,18 @@ describe('ConsoleShell', () => {
           { status: 200, headers: { 'Content-Type': 'application/json' } }
         );
       }
+      if (url === '/api/v1/auth/users/me') {
+        // permissions: null => RBAC inactive, so nav stays unrestricted in tests
+        return new Response(
+          JSON.stringify({
+            username: 'test',
+            email: 'test@example.com',
+            email_verified: true,
+            permissions: null,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
       if (url === '/api/v1/trackers') {
         return new Response(JSON.stringify([]), {
           status: 200,

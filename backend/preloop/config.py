@@ -288,6 +288,14 @@ class Settings(BaseSettings):
         1.0,
         description="Customer-facing fallback price for each additional USD of hosted-model usage",
     )
+    billing_enforce_entitlements: bool = Field(
+        True,
+        description=(
+            "Gate premium (LLM-spend) features behind an entitled subscription. "
+            "Disable on self-hosted EE deployments that run the billing plugin "
+            "without a SaaS paywall."
+        ),
+    )
 
     # Notification webhooks for admin alerts
     slack_webhook_url: str = Field(
@@ -454,6 +462,10 @@ class Settings(BaseSettings):
             billing_default_extra_credit_price_per_usd=float(
                 os.getenv("BILLING_DEFAULT_EXTRA_CREDIT_PRICE_PER_USD", "1.0")
             ),
+            billing_enforce_entitlements=os.getenv(
+                "BILLING_ENFORCE_ENTITLEMENTS", "true"
+            ).lower()
+            in ("true", "1", "t", "yes"),
             installer_audit_account_id=os.getenv("INSTALLER_AUDIT_ACCOUNT_ID", ""),
         )
 

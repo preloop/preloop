@@ -213,6 +213,43 @@ describe('api', () => {
       document.body.removeChild(el);
     });
 
+    it('rethrows PermissionError on 403 so views can show a denied state', async () => {
+      const { PermissionError } = await import('./permissions');
+      fetchStub.resolves(
+        new Response(
+          JSON.stringify({
+            detail: 'Insufficient permissions. Required: view_cost',
+          }),
+          {
+            status: 403,
+            headers: { 'Content-Type': 'application/json' },
+          }
+        )
+      );
+
+      const el = document.createElement(
+        'test-authed-element'
+      ) as TestAuthedElement;
+      document.body.appendChild(el);
+      await el.updateComplete;
+
+      let thrown: unknown;
+      try {
+        await el.fetchDataForTest('/api/v1/test');
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).to.be.instanceOf(PermissionError);
+      expect((thrown as InstanceType<typeof PermissionError>).status).to.equal(
+        403
+      );
+      expect(
+        (thrown as InstanceType<typeof PermissionError>).requiredPermission
+      ).to.equal('view_cost');
+      document.body.removeChild(el);
+    });
+
     it('returns null when fetchWithAuth throws (e.g. auth failure)', async () => {
       localStorage.removeItem('accessToken');
       localStorage.removeItem('refreshToken');

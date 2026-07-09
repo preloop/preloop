@@ -13,12 +13,25 @@ import functools
 import inspect
 import threading
 
+from fastapi import HTTPException, status
+
 try:
     from preloop.plugins.proprietary.rbac.permissions import (
         require_permission as _plugin_require_permission,
     )
 except ModuleNotFoundError:
     _plugin_require_permission = None
+
+_MISSING_DEPS_DETAIL = "Permission check requires current_user and db dependencies"
+
+
+def _ensure_permission_dependencies(**kwargs: object) -> None:
+    """Fail closed when the decorated endpoint lacks auth dependencies."""
+    if "current_user" not in kwargs or "db" not in kwargs:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=_MISSING_DEPS_DETAIL,
+        )
 
 
 def _run_awaitable_sync(awaitable):
@@ -58,16 +71,14 @@ def require_permission(permission_name: str):
 
             @functools.wraps(func)
             async def async_wrapper(*args, **kwargs):
-                if "current_user" not in kwargs or "db" not in kwargs:
-                    return await func(*args, **kwargs)
+                _ensure_permission_dependencies(**kwargs)
                 return await plugin_wrapped(*args, **kwargs)
 
             return async_wrapper
 
         @functools.wraps(func)
         def sync_wrapper(*args, **kwargs):
-            if "current_user" not in kwargs or "db" not in kwargs:
-                return func(*args, **kwargs)
+            _ensure_permission_dependencies(**kwargs)
             result = plugin_wrapped(*args, **kwargs)
             if inspect.isawaitable(result):
                 return _run_awaitable_sync(result)
