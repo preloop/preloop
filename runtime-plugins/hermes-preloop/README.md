@@ -5,7 +5,13 @@ CLI to be present at runtime.
 
 The plugin reads the `preloop.control` block from `~/.hermes/config.yaml`,
 connects Hermes to Preloop over the Agent Control WebSocket, advertises runtime
-capabilities, and routes operator prompts or voice transcripts into Hermes.
+capabilities, routes operator prompts or voice transcripts into Hermes, and
+gates native tool calls through Preloop mobile/watch approvals via the
+`pre_tool_call` hook (fail-closed by default).
+
+Set `preloop.control.tool_approval.enabled: false` to disable the gate, or
+`preloop.control.tool_approval.fail_open: true` / `PRELOOP_TOOL_APPROVAL_FAIL_OPEN=1`
+to allow tools when Preloop is unreachable.
 
 ## Install
 

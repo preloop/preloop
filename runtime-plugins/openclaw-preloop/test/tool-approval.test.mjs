@@ -4,7 +4,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { PreloopOpenClawPlugin } from "../dist/index.js";
+import {
+  PreloopOpenClawPlugin,
+  resolveOpenClawClientDecision,
+} from "../dist/index.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 const baseConfig = {
   runtime: "openclaw",
@@ -122,4 +128,88 @@ test("disabled approval short-circuits to allow", async () => {
   );
   assert.equal(result, undefined);
   assert.equal(called, false);
+});
+
+test("deny decision request includes client_decision ask by default", async () => {
+  let captured;
+  const plugin = makePlugin((url, init) => {
+    captured = { url, init };
+    return jsonResponse(200, { decision: "allow" });
+  });
+  await plugin.checkToolPermission(
+    { toolName: "Read", params: { path: "/tmp/x" } },
+    { sessionId: "sess-ask" },
+  );
+  const body = JSON.parse(captured.init.body);
+  assert.equal(body.client_decision, "ask");
+});
+
+test("resolveOpenClawClientDecision honors exec-approvals security deny", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "preloop-oc-"));
+  const prevHome = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    fs.mkdirSync(path.join(home, ".openclaw"), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, ".openclaw", "exec-approvals.json"),
+      JSON.stringify({ version: 1, defaults: { security: "deny", ask: "off" } }),
+    );
+    assert.equal(
+      resolveOpenClawClientDecision("exec", { command: "ls" }),
+      "deny",
+    );
+  } finally {
+    process.env.HOME = prevHome;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("resolveOpenClawClientDecision allows when ask is off and security full", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "preloop-oc-"));
+  const prevHome = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    fs.mkdirSync(path.join(home, ".openclaw"), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, ".openclaw", "exec-approvals.json"),
+      JSON.stringify({ version: 1, defaults: { security: "full", ask: "off" } }),
+    );
+    assert.equal(
+      resolveOpenClawClientDecision("exec", { command: "ls" }),
+      "allow",
+    );
+  } finally {
+    process.env.HOME = prevHome;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("local auto-deny skips the permission-check HTTP call", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "preloop-oc-"));
+  const prevHome = process.env.HOME;
+  process.env.HOME = home;
+  let called = false;
+  try {
+    fs.mkdirSync(path.join(home, ".openclaw"), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, ".openclaw", "exec-approvals.json"),
+      JSON.stringify({ version: 1, defaults: { security: "deny", ask: "off" } }),
+    );
+    const plugin = makePlugin(() => {
+      called = true;
+      return jsonResponse(200, { decision: "allow" });
+    });
+    const result = await plugin.checkToolPermission(
+      { toolName: "exec", params: { command: "rm -rf /" } },
+      {},
+    );
+    assert.deepEqual(result, {
+      block: true,
+      blockReason: "Denied by OpenClaw exec-approvals policy.",
+    });
+    assert.equal(called, false);
+  } finally {
+    process.env.HOME = prevHome;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 });

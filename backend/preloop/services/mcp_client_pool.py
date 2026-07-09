@@ -50,6 +50,10 @@ def is_mcp_unavailable_error(exc: BaseException) -> bool:
 
     Used to surface a friendly "server temporarily unavailable, please retry"
     message to agents instead of a raw exception string.
+
+    Prefer typed exceptions over message matching. Message markers are kept
+    narrow (multi-word / transport-specific phrases) so tool-level errors that
+    merely mention "connection" or "unavailable" are not misclassified.
     """
     exc = _unwrap_exception_group(exc)
     if isinstance(exc, (ConnectionError, TimeoutError, asyncio.TimeoutError)):
@@ -60,20 +64,30 @@ def is_mcp_unavailable_error(exc: BaseException) -> bool:
         response = getattr(exc, "response", None)
         return getattr(response, "status_code", 0) in (429, 500, 502, 503, 504)
     message = str(exc).lower()
+    # Avoid bare tokens like "connection" / "unavailable" — those appear in
+    # legitimate tool error text and would false-positive as transport failures.
     markers = (
         "session terminated",
         "bad gateway",
         "service unavailable",
         "gateway timeout",
-        "connection",
-        "unavailable",
+        "connection refused",
+        "connection reset",
+        "connection aborted",
+        "connection error",
+        "temporarily unavailable",
+        "server unavailable",
         "timed out",
-        "502",
-        "503",
-        "504",
+        "timeout waiting",
         "econnrefused",
         "connect call failed",
         "all connection attempts failed",
+        "status code 502",
+        "status code 503",
+        "status code 504",
+        "http 502",
+        "http 503",
+        "http 504",
     )
     return any(marker in message for marker in markers)
 

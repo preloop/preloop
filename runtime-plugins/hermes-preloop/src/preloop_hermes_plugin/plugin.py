@@ -30,20 +30,18 @@ logger = logging.getLogger(__name__)
 # Hermes fires this lifecycle hook after the model selects a tool but before the
 # tool runs. Returning a block envelope vetoes the call.
 #
-# Pinned against the documented Hermes hook API (no local runtime install on
-# this machine to introspect):
+# Pinned against the Hermes hook API (docs + PR #9377 / issue #9388):
 #   - Event payload (shell-hook form): {"hook_event_name": "pre_tool_call",
 #     "tool_name": ..., "tool_input": {...}, "session_id": ..., "cwd": ...,
 #     "extra": {...}} -- https://hermes-agent.nousresearch.com/docs/user-guide/features/hooks
 #   - Python plugin form registers via ctx.register_hook("pre_tool_call", cb)
 #     with callback (tool_name, args, task_id, **kwargs)
 #     -- https://hermes-agent.nousresearch.com/docs/guides/build-a-hermes-plugin
-#   - Canonical BLOCK return: {"decision": "block", "reason": ...}
-#     (Claude-Code form {"action": "block", "message": ...} is also accepted by
-#     Hermes); any other / empty return allows the call.
-# The handler below accepts both calling conventions defensively. TODO: confirm
-# the exact registration entry point (`register` vs `setup`) and whether Hermes
-# awaits the callback against a pinned hermes_cli build.
+#   - Canonical BLOCK return (upstream): {"action": "block", "message": ...}
+#     Extra keys are ignored by Hermes' strict validator. We also include the
+#     plan-era aliases ``decision``/``reason`` for older docs/tests.
+#   - Any other / empty return allows the call.
+# The handler below accepts both calling conventions defensively.
 HOOK_EVENT_PRE_TOOL_CALL = "pre_tool_call"
 PERMISSION_CHECK_PATH = "/api/v1/agents/permission-check"
 # Backend blocks up to ~300s waiting for a mobile/watch decision; give it slack.
@@ -72,6 +70,7 @@ class HermesPreloopPlugin:
             supports_text=True,
             supports_voice=True,
             supports_interrupt=True,
+            supports_tool_approval=True,
         )
 
     async def start(self, hermes_runtime: Any | None = None) -> AgentControlClient:
@@ -118,6 +117,7 @@ class HermesPreloopPlugin:
             interrupt_session=interrupt_session,
             supports_interrupt=caps.supports_interrupt,
             supports_voice=caps.supports_voice,
+            supports_tool_approval=caps.supports_tool_approval,
         )
         await self.client.run_forever()
         return self.client
@@ -152,12 +152,18 @@ class HermesPreloopPlugin:
             **kwargs: Event fields when Hermes passes them as keywords.
 
         Returns:
-            ``{"decision": "block", "reason": ...}`` to veto the tool call, or
-            ``None`` to allow it.
+            Upstream block envelope ``{"action": "block", "message": ...}``
+            (plus plan-era ``decision``/``reason`` aliases) to veto the tool
+            call, or ``None`` to allow it.
         """
         event: dict[str, Any] = {}
         if isinstance(payload, dict):
             event.update(payload)
+        # Python plugin form: register_hook("pre_tool_call", cb) calls
+        # cb(tool_name=..., args=..., task_id=...). A bare string first arg is
+        # treated as tool_name when kwargs omit it.
+        if isinstance(payload, str) and "tool_name" not in kwargs:
+            event["tool_name"] = payload
         if kwargs:
             event.update(kwargs)
 
@@ -181,12 +187,16 @@ class HermesPreloopPlugin:
             or extra.get("agent_reasoning")
             or extra.get("reasoning")
         )
+        # Hermes has no Claude-style allow/deny/ask lists for native tools; the
+        # pre_tool_call hook fires on every call, so escalate as "ask" unless
+        # the operator disabled the gate.
         return await self._check_permission(
             tool_name=tool_name,
             tool_input=tool_input,
             session_id=session_id,
             cwd=cwd,
             agent_reasoning=agent_reasoning,
+            client_decision="ask",
         )
 
     async def _check_permission(
@@ -197,6 +207,7 @@ class HermesPreloopPlugin:
         session_id: str | None,
         cwd: str | None,
         agent_reasoning: str | None,
+        client_decision: str | None = "ask",
     ) -> dict[str, Any] | None:
         """Call the Preloop permission-check endpoint and map the decision."""
         config, approval = self._load_control_settings()
@@ -204,7 +215,7 @@ class HermesPreloopPlugin:
             return None
         fail_open = _resolve_fail_open(approval)
         url = _permission_check_url(config.control_ws_url)
-        body = {
+        body: dict[str, Any] = {
             "source": "hermes",
             "tool_name": tool_name,
             "tool_input": tool_input,
@@ -212,6 +223,8 @@ class HermesPreloopPlugin:
             "cwd": cwd,
             "agent_reasoning": agent_reasoning,
         }
+        if client_decision:
+            body["client_decision"] = client_decision
         headers = {
             "Authorization": f"Bearer {config.bearer_token}",
             "Content-Type": "application/json",
@@ -399,8 +412,19 @@ def _permission_check_url(control_ws_url: str) -> str:
 
 
 def _block(reason: str) -> dict[str, Any]:
-    """Build the Hermes-canonical block envelope vetoing a tool call."""
-    return {"decision": "block", "reason": reason}
+    """Build the Hermes block envelope vetoing a tool call.
+
+    Upstream Hermes (``get_pre_tool_call_block_message``) requires
+    ``{"action": "block", "message": <non-empty str>}``. The plan-era
+    ``decision``/``reason`` aliases are included for compatibility with older
+    docs and tests; Hermes ignores unknown keys.
+    """
+    return {
+        "action": "block",
+        "message": reason,
+        "decision": "block",
+        "reason": reason,
+    }
 
 
 def _resolve_fail_open(approval: dict[str, Any]) -> bool:

@@ -119,6 +119,20 @@ mv "${TMP_DIR}/preloop${EXT}" "${BIN_DIR}/preloop${EXT}"
 
 PRELOOP_BIN="${BIN_DIR}/preloop${EXT}"
 
+# Seed the install identifier the CLI reports during its daily version check
+# (distinguishes installed clients in adoption telemetry; a random UUID, no
+# user data). The CLI generates one on first run if this seeding is skipped.
+CLIENT_ID_FILE="${HOME}/.preloop/client_id"
+if [ ! -f "$CLIENT_ID_FILE" ]; then
+  mkdir -p "${HOME}/.preloop" && chmod 700 "${HOME}/.preloop" || true
+  if command -v uuidgen >/dev/null 2>&1; then
+    uuidgen | tr '[:upper:]' '[:lower:]' > "$CLIENT_ID_FILE" 2>/dev/null || true
+  elif [ -r /proc/sys/kernel/random/uuid ]; then
+    cat /proc/sys/kernel/random/uuid > "$CLIENT_ID_FILE" 2>/dev/null || true
+  fi
+  [ -f "$CLIENT_ID_FILE" ] && chmod 600 "$CLIENT_ID_FILE" || true
+fi
+
 echo "Installed preloop ${VERSION} to ${PRELOOP_BIN}"
 case ":$PATH:" in
   *":${BIN_DIR}:"*) ;;

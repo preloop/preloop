@@ -4,8 +4,14 @@
 Preloop CLI to be present at runtime.
 
 The plugin reads its OpenClaw plugin entry config, keeps the Agent Control
-WebSocket connected, advertises capabilities, and routes operator prompts or
-voice transcripts into OpenClaw sessions.
+WebSocket connected, advertises capabilities, routes operator prompts or
+voice transcripts into OpenClaw sessions, and gates native tool calls through
+Preloop mobile/watch approvals via the `before_tool_call` hook (fail-closed by
+default). OpenClaw's own `~/.openclaw/exec-approvals.json` policy is honored
+locally for auto-allow / auto-deny; only would-prompt cases escalate.
+
+Set `tool_approval_enabled: false` on the plugin config to disable the gate, or
+`tool_approval_fail_open: true` to allow tools when Preloop is unreachable.
 
 ## Install
 

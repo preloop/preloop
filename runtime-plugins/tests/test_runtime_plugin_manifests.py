@@ -23,13 +23,18 @@ def test_runtime_plugin_manifests_are_standalone() -> None:
         assert "preloop" in manifest["name"]
         assert "agent-control" in manifest["keywords"]
         assert "network:wss" in manifest["permissions"]
+        assert "agent:tool_approval" in manifest["permissions"]
         assert manifest["verification"]["command"]
         if manifest["runtime"] == "openclaw":
             assert manifest["configSchema"]["path"] == (
                 "plugins.entries.openclaw-plugin.config"
             )
+            assert manifest.get("capabilities", {}).get("tool_approval") is True
+            assert "before_tool_call" in manifest.get("hooks", [])
         else:
             assert manifest["configSchema"]["path"] == "preloop.control"
+            assert manifest.get("capabilities", {}).get("tool_approval") is True
+            assert "pre_tool_call" in manifest.get("hooks", [])
         assert set(manifest["configSchema"]["required"]) == {
             "control_ws_url",
             "bearer_token",

@@ -698,7 +698,11 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
         account_id: Union[UUID, str],
         days: int = 30,
     ) -> Dict[str, Any]:
-        """Get aggregated stats for CLI check-ins (``cli_activity`` events)."""
+        """Get aggregated stats for CLI check-ins (``cli_activity`` events).
+
+        Relies on ``ix_audit_log_account_action_status_ts_ip`` for the
+        ``COUNT(DISTINCT ip_address)`` aggregations as the audit log grows.
+        """
         start_date = datetime.now(timezone.utc) - timedelta(days=days)
         day_ago = datetime.now(timezone.utc) - timedelta(days=1)
         account_id_str = str(account_id) if isinstance(account_id, UUID) else account_id

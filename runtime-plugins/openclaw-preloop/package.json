@@ -21,6 +21,7 @@
     "openclaw",
     "agent-control",
     "voice",
+    "tool-approval",
     "autonomous-agents"
   ],
   "bin": {

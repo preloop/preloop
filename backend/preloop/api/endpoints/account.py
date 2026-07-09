@@ -859,8 +859,10 @@ async def update_account_details(
     "/account/gateway-usage/summary",
     response_model=AccountGatewayUsageSummaryResponse,
 )
+@require_permission("view_cost")
 def get_account_gateway_usage_summary(
     account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
     start_date: Optional[datetime] = Query(None),
     end_date: Optional[datetime] = Query(None),
@@ -881,8 +883,10 @@ def get_account_gateway_usage_summary(
     "/account/gateway-usage/search",
     response_model=AccountGatewayUsageSearchResponse,
 )
+@require_permission("view_cost")
 def search_account_gateway_usage(
     account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
     query: Optional[str] = Query(None, min_length=1),
     start_date: Optional[datetime] = Query(None),

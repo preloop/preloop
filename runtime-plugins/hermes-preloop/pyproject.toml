@@ -15,7 +15,7 @@ dependencies = [
   "PyYAML>=6.0",
   "preloop>=0.9.3",
 ]
-keywords = ["preloop", "hermes", "agent-control", "autonomous-agents"]
+keywords = ["preloop", "hermes", "agent-control", "tool-approval", "autonomous-agents"]
 
 [project.urls]
 Homepage = "https://preloop.ai"
