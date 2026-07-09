@@ -734,10 +734,25 @@ async def {internal_name}({params_str}) -> str:
             db.close()
 
     except Exception as e:
-        logger.error(
-            f"Error executing proxied tool {{tool_name}}: {{e}}", exc_info=True
+        from preloop.services.mcp_client_pool import (
+            _unwrap_exception_group,
+            is_mcp_unavailable_error,
         )
-        return f"Error executing tool: {{str(e)}}"
+
+        cause = _unwrap_exception_group(e)
+        server_obj = locals().get("mcp_server")
+        server_label = getattr(server_obj, "name", None) or "the MCP server"
+        logger.error(
+            f"Error executing proxied tool {{tool_name}} via {{server_label}}: {{cause}}",
+            exc_info=True,
+        )
+        if is_mcp_unavailable_error(cause):
+            return (
+                f"The '{{server_label}}' MCP server is temporarily unavailable, so the "
+                f"'{{tool_name}}' tool could not run. Please retry in a moment; if it "
+                f"keeps happening the server may be down."
+            )
+        return f"Error executing tool '{{tool_name}}': {{cause}}"
 """
 
         # Create local namespace with required variables

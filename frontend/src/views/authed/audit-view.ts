@@ -8,7 +8,8 @@
 
 import { html, css, unsafeCSS, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
-import { AuthedElement, fetchWithAuth } from '../../api';
+import { AuthedElement, fetchWithAuth, PermissionError } from '../../api';
+import { permissionErrorFromResponse } from '../../permissions';
 import { parseUTCDate } from '../../utils/date';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
@@ -24,6 +25,7 @@ import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import '@shoelace-style/shoelace/dist/components/divider/divider.js';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import '../../components/view-header.ts';
+import '../../components/permission-denied';
 
 // Types
 interface AuditLog {
@@ -102,6 +104,7 @@ export class AuditView extends AuthedElement {
   // Timeline data
   @state() private _groups: AuditGroup[] = [];
   @state() private _loading = false;
+  @state() private _permissionError: PermissionError | null = null;
   @state() private _total = 0;
   @state() private _page = 0;
   @state() private _pageSize = 50;
@@ -228,6 +231,7 @@ export class AuditView extends AuthedElement {
 
   private async _loadTimeline() {
     this._loading = true;
+    this._permissionError = null;
     try {
       const params = new URLSearchParams();
       params.set('skip', String(this._page * this._pageSize));
@@ -247,6 +251,12 @@ export class AuditView extends AuthedElement {
       if (this._maxCost) params.set('max_cost', this._maxCost);
 
       const res = await fetchWithAuth(`/api/v1/audit-logs/grouped?${params}`);
+      if (res.status === 403) {
+        this._permissionError = await permissionErrorFromResponse(res);
+        this._groups = [];
+        this._total = 0;
+        return;
+      }
       if (res.ok) {
         const data: GroupedResponse = await res.json();
         this._groups = data.groups;
@@ -861,22 +871,34 @@ export class AuditView extends AuthedElement {
       </view-header>
       <div class="column-layout wide">
         <div class="main-column audit-view" style="padding-top: 0;">
-          ${this._renderFilterBar()}
           ${
-            this._loading
-              ? html`<div class="loading">
-                  <sl-spinner style="font-size: 2rem;"></sl-spinner>
-                </div>`
-              : this._groups.length === 0
-                ? html`<div class="empty-state">
-                    No audit events found matching your filters.
-                  </div>`
-                : html`
-                    <div class="timeline">
-                      ${this._groups.map((g) => this._renderGroup(g))}
-                    </div>
-                    ${this._renderPagination()}
-                  `
+            this._permissionError
+              ? html`<permission-denied
+                  required-permission=${
+                    this._permissionError.requiredPermission ||
+                    'view_audit_logs'
+                  }
+                  message=${this._permissionError.message}
+                ></permission-denied>`
+              : html`
+                  ${this._renderFilterBar()}
+                  ${
+                    this._loading
+                      ? html`<div class="loading">
+                          <sl-spinner style="font-size: 2rem;"></sl-spinner>
+                        </div>`
+                      : this._groups.length === 0
+                        ? html`<div class="empty-state">
+                            No audit events found matching your filters.
+                          </div>`
+                        : html`
+                            <div class="timeline">
+                              ${this._groups.map((g) => this._renderGroup(g))}
+                            </div>
+                            ${this._renderPagination()}
+                          `
+                  }
+                `
           }
         </div>
       </div>

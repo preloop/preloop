@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, Header, Request
@@ -8,7 +9,9 @@ from preloop.config import (
     SERVER_VERSION,
     MIN_CLIENT_VERSION,
     MAX_CLIENT_VERSION,
+    settings,
 )  # Import constants directly
+from preloop.models.crud import crud_audit_log
 from preloop.api.auth import get_current_user  # Remove oauth2_scheme import
 from preloop.schemas.version import VersionInfo
 from preloop.utils import get_client_ip
@@ -20,6 +23,49 @@ from fastapi import HTTPException  # To catch auth errors
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Matches the CLI's User-Agent, e.g. "preloop-cli/0.10.0 (darwin; arm64)".
+CLI_USER_AGENT_RE = re.compile(r"^preloop-cli/(?P<version>[0-9A-Za-z.+-]+)")
+
+
+def _log_cli_activity(
+    db: Session,
+    *,
+    request: Request,
+    client_ip: Optional[str],
+    client_version_header: Optional[str],
+) -> None:
+    """Record a CLI check-in in the audit log for adoption analytics.
+
+    The CLI hits ``GET /api/v1/version`` at most once per day per machine
+    (client-side throttle), so one audit row per check-in stays cheap. Only
+    active when ``INSTALLER_AUDIT_ACCOUNT_ID`` is configured — the same
+    opt-in used for installer download analytics.
+    """
+    if not settings.installer_audit_account_id:
+        return
+
+    match = CLI_USER_AGENT_RE.match(request.headers.get("user-agent", ""))
+    if not match:
+        return
+
+    try:
+        crud_audit_log.log_action(
+            db,
+            account_id=settings.installer_audit_account_id,
+            action="cli_activity",
+            resource_type="cli",
+            resource_id="version_check",
+            status="success",
+            ip_address=client_ip,
+            user_agent=request.headers.get("user-agent"),
+            details={
+                "cli_version": client_version_header or match.group("version"),
+            },
+        )
+    except Exception:
+        db.rollback()
+        logger.exception("Failed to record CLI activity audit log")
 
 
 @router.get("/version", response_model=VersionInfo)
@@ -86,8 +132,18 @@ async def get_version_info(
         logger.error(f"Failed to log client version: {e}", exc_info=True)
         # Continue even if logging fails, returning version info is primary goal
 
+    _log_cli_activity(
+        db,
+        request=request,
+        client_ip=client_ip,
+        client_version_header=x_client_version,
+    )
+
     return VersionInfo(
         server_version=SERVER_VERSION,
         min_client_version=MIN_CLIENT_VERSION,
         max_client_version=MAX_CLIENT_VERSION,
+        latest_version=SERVER_VERSION,
+        min_version=MIN_CLIENT_VERSION,
+        download_url="https://preloop.ai/install/cli",
     )

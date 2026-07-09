@@ -6,8 +6,9 @@ import { ideSetupStyles } from '../styles/ide-setup-styles';
 export interface IdeConfig {
   ide: string;
   ide_name: string;
-  logo_path: string;
-  logo_width: string;
+  /** Tab logo image. When empty, the tab renders `ide_name` as a text label. */
+  logo_path?: string;
+  logo_width?: string;
   prerequisites: string[];
   setup_instructions: string;
   code: string;
@@ -19,6 +20,18 @@ export class IdeSetupTabs extends LitElement {
     css`
       :host {
         --gradient-brand: linear-gradient(225deg, #d35400, #6c3483, #1f618d);
+      }
+
+      .tab-text-label {
+        font-weight: 600;
+        font-size: 0.95rem;
+        opacity: 0.8;
+        text-align: center;
+        transition: opacity 0.2s ease;
+      }
+
+      .ide-logo-container.active .tab-text-label {
+        opacity: 1;
       }
     `,
     ideSetupStyles,
@@ -129,11 +142,17 @@ export class IdeSetupTabs extends LitElement {
                     }
                   }}
                 >
-                  <img
-                    src="${config.logo_path}"
-                    alt="${config.ide_name}"
-                    width="${config.logo_width}"
-                  />
+                  ${
+                    config.logo_path
+                      ? html`<img
+                          src="${config.logo_path}"
+                          alt="${config.ide_name}"
+                          width="${config.logo_width || ''}"
+                        />`
+                      : html`<span class="tab-text-label"
+                          >${config.ide_name}</span
+                        >`
+                  }
                 </div>
               `
             )}

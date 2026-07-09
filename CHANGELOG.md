@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **CLI installer instance selection**: `install-cli.sh` now explains that the CLI connects to a control plane (Preloop Cloud at `https://preloop.ai` by default, or a self-hosted instance), honors a pre-set `PRELOOP_URL`, and interactively prompts for the instance URL before sign-in. Login, signup, and agent onboarding launched by the installer all target the chosen instance.
+- **Landing page self-host path**: The get-started setup card gains a "Self-host (Open Source)" tab with the OSS stack install command and the CLI connect steps (`preloop login --url …`), alongside the default Preloop CLI tab (design decision D10.b).
+- **CLI identification**: The CLI now sends `User-Agent: preloop-cli/<version> (<os>; <arch>)` and `X-Client-Version` on requests to Preloop servers, enabling adoption metrics and better support diagnostics. No data beyond version and platform is transmitted.
+- **CLI activity analytics**: When `INSTALLER_AUDIT_ACCOUNT_ID` is configured (hosted instances), daily CLI update-check pings are recorded as `cli_activity` audit events, and `GET /api/v1/admin/installer-downloads/stats` now reports active CLIs (24h/window), total check-ins, last-seen, and top CLI versions.
+- **Updated default RBAC roles**: System roles now cover agents, runtime sessions, policies, approvals, cost/budgets, AI models, and audit. `GET /api/v1/auth/users/me` returns the caller's permission allow-list when RBAC is active; the Console hides inaccessible nav items and shows a permission-denied empty state instead of blank pages.
+
+### Changed
+
+- **Edition naming**: User-facing copy now consistently uses **Preloop** (the open-source edition), **Preloop Cloud** (the hosted service at preloop.ai; Teams is a Preloop Cloud plan), and **Preloop Enterprise** (the self-hosted commercial edition) across the README, architecture docs, landing/pricing pages, and the documentation guide.
+- **README quickstart**: Restructured around the two-part model — control plane (Preloop Cloud or self-hosted OSS) plus CLI — with explicit Cloud and self-host paths, including how to point the CLI at your own instance (`preloop login --url` / `PRELOOP_URL`).
+- **OSS installer next steps**: `install-oss.sh` now prints how to create the first user, install the CLI, connect it to the local instance, and onboard agents.
+- **RBAC permission vocabulary**: Endpoint checks and seeded roles now share one `verb_resource` vocabulary (`create_projects`, `view_cost`, `decide_approvals`, …). Re-run `python scripts/init_system_roles.py` after upgrade to reconcile existing deployments.
+
+### Fixed
+
+- **CLI update notifications**: `GET /api/v1/version` now returns the `latest_version`/`min_version`/`download_url` keys the CLI update check parses. The CLI compared against a field the server never sent, so update prompts never fired.
+- **Replay usage isolation**: `get_gateway_usage_for_execution` now applies the same `exclude_replay_usage_condition()` filter as the other gateway aggregations.
+
 ## [0.10.0-rc.0] - 2026-07-07
 
 ### Added

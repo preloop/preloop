@@ -44,6 +44,7 @@ from preloop.services.policy import (
     load_policy_from_string,
 )
 from preloop.services.policy_version_service import PolicyVersionService
+from preloop.utils.permissions import require_permission
 
 
 # Pydantic models for version management endpoints
@@ -134,6 +135,7 @@ router = APIRouter()
     summary="Validate a policy file",
     description="Validate a YAML/JSON policy file without applying any changes.",
 )
+@require_permission("view_policies")
 async def validate_policy(
     file: UploadFile = File(..., description="YAML or JSON policy file to validate"),
     check_server_references: bool = Form(
@@ -144,6 +146,7 @@ async def validate_policy(
         ),
     ),
     account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
 ) -> PolicyValidationResult:
     """Validate a policy file without applying changes.
@@ -283,6 +286,7 @@ async def validate_policy(
     summary="Upload and apply a policy file",
     description="Upload a YAML/JSON policy file and apply it to your account.",
 )
+@require_permission("manage_policies")
 async def upload_policy(
     file: UploadFile = File(..., description="YAML or JSON policy file to apply"),
     dry_run: bool = Form(
@@ -299,6 +303,7 @@ async def upload_policy(
         ),
     ),
     account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
 ) -> PolicyImportResult:
     """Upload and apply a policy file.
@@ -410,12 +415,14 @@ async def upload_policy(
         "configurations as a YAML or JSON policy file."
     ),
 )
+@require_permission("view_policies")
 async def export_policy(
     format: Literal["yaml", "json"] = "yaml",
     policy_name: str = "Exported Policy",
     include_mcp_servers: bool = True,
     include_credentials: bool = False,  # Ignored for security, always False
     account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
 ) -> Response:
     """Export current configuration as a policy file.
@@ -482,9 +489,11 @@ async def export_policy(
         "to see what would change."
     ),
 )
+@require_permission("view_policies")
 async def diff_policy(
     file: UploadFile = File(..., description="YAML or JSON policy file to compare"),
     account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
 ) -> PolicyDiffResult:
     """Compare uploaded policy with current configuration.
@@ -636,6 +645,7 @@ def _snapshot_to_full(snapshot) -> PolicyVersionFull:
     summary="List policy versions",
     description="List all policy versions for the account with optional pagination.",
 )
+@require_permission("view_policies")
 def list_policy_versions(
     limit: int = Query(
         100, ge=1, le=1000, description="Maximum number of versions to return"
@@ -643,6 +653,7 @@ def list_policy_versions(
     offset: int = Query(0, ge=0, description="Number of versions to skip"),
     include_snapshots: bool = Query(False, description="Include full snapshot data"),
     account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
 ) -> PolicyVersionListResponse:
     """List all policy versions for the account.
@@ -680,9 +691,11 @@ def list_policy_versions(
     summary="Get a specific policy version",
     description="Get a specific policy version with full snapshot data.",
 )
+@require_permission("view_policies")
 def get_policy_version(
     version_id: UUID,
     account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
 ) -> PolicyVersionFull:
     """Get a specific policy version with full snapshot data.
@@ -717,10 +730,11 @@ def get_policy_version(
     summary="Create a new policy version",
     description="Create a snapshot of the current policy state.",
 )
+@require_permission("manage_policies")
 async def create_policy_version(
     request: CreateVersionRequest,
     account: Account = Depends(get_account_for_user),
-    user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
 ) -> PolicyVersionFull:
     """Create a new policy version snapshot.
@@ -741,7 +755,7 @@ async def create_policy_version(
     snapshot = service.create_snapshot(
         description=request.description,
         tag=request.tag,
-        user_id=user.id,
+        user_id=current_user.id,
         set_active=True,
     )
 
@@ -760,10 +774,12 @@ async def create_policy_version(
     summary="Add or update tag on a version",
     description="Add or update the tag on a policy version.",
 )
+@require_permission("manage_policies")
 async def update_version_tag(
     version_id: UUID,
     request: UpdateTagRequest,
     account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
 ) -> PolicyVersionMetadata:
     """Add or update the tag on a policy version.
@@ -807,9 +823,11 @@ async def update_version_tag(
     summary="Remove tag from a version",
     description="Remove the tag from a policy version.",
 )
+@require_permission("manage_policies")
 async def remove_version_tag(
     version_id: UUID,
     account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
 ) -> PolicyVersionMetadata:
     """Remove the tag from a policy version.
@@ -847,10 +865,12 @@ async def remove_version_tag(
     summary="Rollback to a previous version",
     description="Apply a previous policy version to restore that configuration.",
 )
+@require_permission("manage_policies")
 async def rollback_to_version(
     version_id: UUID,
     request: RollbackRequest,
     account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
 ) -> RollbackResponse:
     """Rollback to a previous policy version.
@@ -897,9 +917,11 @@ async def rollback_to_version(
     summary="Delete a policy version",
     description="Delete a policy version. Cannot delete the active version.",
 )
+@require_permission("manage_policies")
 async def delete_policy_version(
     version_id: UUID,
     account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
 ) -> None:
     """Delete a policy version.
@@ -940,9 +962,11 @@ async def delete_policy_version(
     summary="Prune old policy versions",
     description="Delete old unused policy versions based on age and count criteria.",
 )
+@require_permission("manage_policies")
 async def prune_policy_versions(
     request: PruneRequest,
     account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
 ) -> PruneResponse:
     """Delete old unused policy versions.
@@ -1032,9 +1056,11 @@ class GeneratePolicyResponse(BaseModel):
         "configured on the account."
     ),
 )
+@require_permission("view_policies")
 async def generate_policy(
     request: GeneratePolicyRequest,
     account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
 ) -> GeneratePolicyResponse:
     """Generate a policy YAML from a natural-language description.
@@ -1105,9 +1131,11 @@ async def generate_policy(
         "outliers. Requires at least one AI model configured on the account."
     ),
 )
+@require_permission("view_policies")
 async def generate_policy_from_audit(
     request: GeneratePolicyFromAuditRequest,
     account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
 ) -> GeneratePolicyResponse:
     """Generate a policy from audit-log tool-call patterns.

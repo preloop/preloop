@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/preloop/preloop/cli/internal/config"
@@ -23,6 +24,14 @@ var (
 	// BuildDate is the build timestamp.
 	BuildDate = "unknown"
 )
+
+// UserAgent returns the User-Agent value that identifies this CLI build to
+// Preloop servers, e.g. "preloop-cli/0.10.0 (darwin; arm64)". It carries no
+// user data beyond version and platform; servers use it for adoption metrics
+// and support diagnostics.
+func UserAgent() string {
+	return fmt.Sprintf("preloop-cli/%s (%s; %s)", Version, runtime.GOOS, runtime.GOARCH)
+}
 
 const (
 	// VersionCheckURL is the endpoint to check for new versions.
@@ -118,7 +127,14 @@ func fetchVersionInfo() (*VersionInfo, error) {
 		Timeout: 5 * time.Second,
 	}
 
-	resp, err := client.Get(VersionCheckURL)
+	req, err := http.NewRequest(http.MethodGet, VersionCheckURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build version check request: %w", err)
+	}
+	req.Header.Set("User-Agent", UserAgent())
+	req.Header.Set("X-Client-Version", Version)
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check for updates: %w", err)
 	}

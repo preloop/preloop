@@ -144,13 +144,43 @@ else
   echo "(Continuing - agent discovery is optional.)"
 fi
 
-# Step 2: offer to authenticate. If we found local agents we tell the user
+# Step 2: choose the Preloop instance to connect to. The CLI talks to
+# Preloop Cloud (https://preloop.ai) by default, but works identically
+# against a self-hosted open-source instance. Honors a pre-set PRELOOP_URL,
+# otherwise offers the choice interactively. The chosen URL is exported so
+# `preloop login` / `preloop signup` / `preloop agents discover` below all
+# target the same instance (and persist it to ~/.preloop/config.yaml).
+PRELOOP_CLOUD_URL="https://preloop.ai"
+target_url="${PRELOOP_URL:-$PRELOOP_CLOUD_URL}"
+echo ""
+if [ -n "${PRELOOP_URL:-}" ]; then
+  echo "Preloop instance: ${target_url} (from PRELOOP_URL)"
+elif preloop_confirm_set; then
+  echo "Preloop instance: ${target_url} (Preloop Cloud)"
+else
+  echo "The CLI connects your agents to a Preloop control plane:"
+  echo "  - Preloop Cloud: ${PRELOOP_CLOUD_URL} (default, requires an account)"
+  echo "  - Self-hosted:   your own open-source instance, e.g. http://localhost:8000"
+  echo "    (install it with: curl -fsSL https://preloop.ai/install/oss | sh)"
+  printf 'Preloop instance URL [%s]: ' "$target_url"
+  if read -r custom_url < /dev/tty 2>/dev/null; then
+    custom_url="$(printf '%s' "$custom_url" | tr -d '[:space:]')"
+    if [ -n "$custom_url" ]; then
+      target_url="$custom_url"
+    fi
+  fi
+  echo "Preloop instance: ${target_url}"
+fi
+PRELOOP_URL="$target_url"
+export PRELOOP_URL
+
+# Step 3: offer to authenticate. If we found local agents we tell the user
 # explicitly that logging in lets us onboard them.
 echo ""
 if [ "$discovered_agents" = "1" ]; then
-  prompt="Sign in (or sign up) to Preloop now to onboard the agents above? [Y/s/n]"
+  prompt="Sign in (or sign up) to ${target_url} now to onboard the agents above? [Y/s/n]"
 else
-  prompt="Sign in (or sign up) to Preloop now? [Y/s/n]"
+  prompt="Sign in (or sign up) to ${target_url} now? [Y/s/n]"
 fi
 
 if preloop_confirm_set; then
@@ -192,5 +222,10 @@ if [ -n "$auth_command" ]; then
     echo "Authentication encountered an error or was aborted."
   fi
 else
-  echo "Skipped authentication. Run 'preloop login' or 'preloop signup' when you're ready."
+  if [ "$target_url" = "$PRELOOP_CLOUD_URL" ]; then
+    echo "Skipped authentication. Run 'preloop login' or 'preloop signup' when you're ready."
+  else
+    echo "Skipped authentication. When you're ready, run:"
+    echo "  preloop login --url ${target_url}"
+  fi
 fi

@@ -1,6 +1,7 @@
 import { LitElement } from 'lit';
 import { Router } from '@vaadin/router';
 import { DEFAULT_SIMILARITY_THRESHOLD } from './config';
+import { PermissionError, permissionErrorFromResponse } from './permissions';
 import type {
   FetchIssuesListParams,
   SearchIssuesParams,
@@ -250,6 +251,15 @@ export async function fetchWithAuth(
 
   return response;
 }
+
+export type { UserPermissions } from './permissions';
+export {
+  PermissionError,
+  hasPermission,
+  hasAnyPermission,
+  isRbacActive,
+  permissionErrorFromResponse,
+} from './permissions';
 export async function fetchPublic(
   url: string,
   options: RequestInit = {}
@@ -263,12 +273,20 @@ export class AuthedElement extends LitElement {
   protected async fetchData(url: string, options: RequestInit = {}) {
     try {
       const response = await fetchWithAuth(url, options);
+      if (response.status === 403) {
+        throw await permissionErrorFromResponse(response);
+      }
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
       return await response.json();
     } catch (error) {
       console.error('Failed to fetch data:', error);
+      // Re-throw permission errors so views can render a dedicated empty state
+      // instead of silently collapsing into a blank page.
+      if (error instanceof PermissionError) {
+        throw error;
+      }
       // The fetchWithAuth function handles redirection on auth failure
       return null;
     }
@@ -1594,8 +1612,18 @@ export async function commitIssueDependencies(
   return response.json();
 }
 
+export interface UserProfile {
+  username: string;
+  email: string;
+  full_name?: string | null;
+  email_verified: boolean;
+  is_superuser?: boolean;
+  /** null/undefined = RBAC inactive (OSS); array = allow-list */
+  permissions?: string[] | null;
+}
+
 // Account
-export async function getUserProfile() {
+export async function getUserProfile(): Promise<UserProfile> {
   const response = await fetchWithAuth('/api/v1/auth/users/me');
   if (!response.ok) {
     throw new Error('Failed to fetch user profile');

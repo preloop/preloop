@@ -5,6 +5,7 @@ import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy.orm import Session
 
 from preloop.api.auth import get_current_active_user
 from preloop.services.approval_service import ApprovalService
@@ -16,6 +17,7 @@ from preloop.models.schemas.approval_request import (
     ApprovalRequestResponse,
     ApprovalDecision,
 )
+from preloop.utils.permissions import require_permission
 
 router = APIRouter(
     prefix="/approval-requests",
@@ -24,10 +26,11 @@ router = APIRouter(
 
 
 @router.get("/{request_id}", response_model=ApprovalRequestResponse)
+@require_permission("view_approvals")
 def get_approval_request(
     request_id: uuid.UUID,
     current_user: User = Depends(get_current_active_user),
-    db=Depends(get_db_session),
+    db: Session = Depends(get_db_session),
 ) -> ApprovalRequest:
     """Get an approval request by ID.
 
@@ -54,13 +57,14 @@ def get_approval_request(
 
 
 @router.get("", response_model=list[ApprovalRequestResponse])
+@require_permission("view_approvals")
 def list_approval_requests(
     status: Optional[str] = Query(None, description="Filter by status"),
     execution_id: Optional[str] = Query(None, description="Filter by execution ID"),
     limit: int = Query(50, le=100, description="Maximum number of results"),
     skip: int = Query(0, description="Number of results to skip"),
     current_user: User = Depends(get_current_active_user),
-    db=Depends(get_db_session),
+    db: Session = Depends(get_db_session),
 ) -> list[ApprovalRequest]:
     """List approval requests for the current account.
 
@@ -86,11 +90,13 @@ def list_approval_requests(
 
 
 @router.post("/{request_id}/approve", response_model=ApprovalRequestResponse)
+@require_permission("decide_approvals")
 async def approve_request(
     request_id: uuid.UUID,
     decision: ApprovalDecision,
     request: Request,
     current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
 ) -> ApprovalRequestResponse:
     """Approve an approval request.
 
@@ -109,8 +115,8 @@ async def approve_request(
     # Get base URL from request
     base_url = os.getenv("PRELOOP_URL", str(request.base_url).rstrip("/"))
 
-    async with get_async_db_session() as db:
-        approval_service = ApprovalService(db, base_url)
+    async with get_async_db_session() as async_db:
+        approval_service = ApprovalService(async_db, base_url)
 
         # Get approval request
         approval_request = await approval_service.get_approval_request(request_id)
@@ -143,11 +149,13 @@ async def approve_request(
 
 
 @router.post("/{request_id}/decline", response_model=ApprovalRequestResponse)
+@require_permission("decide_approvals")
 async def decline_request(
     request_id: uuid.UUID,
     decision: ApprovalDecision,
     request: Request,
     current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
 ) -> ApprovalRequestResponse:
     """Decline an approval request.
 
@@ -166,8 +174,8 @@ async def decline_request(
     # Get base URL from request
     base_url = os.getenv("PRELOOP_URL", str(request.base_url).rstrip("/"))
 
-    async with get_async_db_session() as db:
-        approval_service = ApprovalService(db, base_url)
+    async with get_async_db_session() as async_db:
+        approval_service = ApprovalService(async_db, base_url)
 
         # Get approval request
         approval_request = await approval_service.get_approval_request(request_id)
@@ -200,11 +208,13 @@ async def decline_request(
 
 
 @router.post("/{request_id}/decide", response_model=ApprovalRequestResponse)
+@require_permission("decide_approvals")
 async def decide_request(
     request_id: uuid.UUID,
     decision: ApprovalDecision,
     request: Request,
     current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
 ) -> ApprovalRequestResponse:
     """Approve or decline an approval request based on decision.approved.
 
@@ -226,8 +236,8 @@ async def decide_request(
     # Get base URL from request
     base_url = os.getenv("PRELOOP_URL", str(request.base_url).rstrip("/"))
 
-    async with get_async_db_session() as db:
-        approval_service = ApprovalService(db, base_url)
+    async with get_async_db_session() as async_db:
+        approval_service = ApprovalService(async_db, base_url)
 
         # Get approval request
         approval_request = await approval_service.get_approval_request(request_id)

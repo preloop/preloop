@@ -43,6 +43,41 @@ def _unwrap_exception_group(exc: BaseException) -> BaseException:
     return exc
 
 
+def is_mcp_unavailable_error(exc: BaseException) -> bool:
+    """Heuristic: does ``exc`` indicate the upstream MCP server is unreachable/
+    unavailable (connection refused, 5xx/502, ``Session terminated``, timeout)
+    rather than a genuine tool-level error?
+
+    Used to surface a friendly "server temporarily unavailable, please retry"
+    message to agents instead of a raw exception string.
+    """
+    exc = _unwrap_exception_group(exc)
+    if isinstance(exc, (ConnectionError, TimeoutError, asyncio.TimeoutError)):
+        return True
+    if isinstance(exc, (httpx.TransportError, httpx.TimeoutException)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        response = getattr(exc, "response", None)
+        return getattr(response, "status_code", 0) in (429, 500, 502, 503, 504)
+    message = str(exc).lower()
+    markers = (
+        "session terminated",
+        "bad gateway",
+        "service unavailable",
+        "gateway timeout",
+        "connection",
+        "unavailable",
+        "timed out",
+        "502",
+        "503",
+        "504",
+        "econnrefused",
+        "connect call failed",
+        "all connection attempts failed",
+    )
+    return any(marker in message for marker in markers)
+
+
 class MCPClient:
     """Client for communicating with an external MCP server over HTTP streaming."""
 

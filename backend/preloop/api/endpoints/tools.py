@@ -456,11 +456,12 @@ class ToolUsageStatsResponse(BaseModel):
 
 
 @router.get("/tools/stats", response_model=ToolUsageStatsResponse)
-@require_permission("view_ai_models")
+@require_permission("view_cost")
 def get_tool_usage_stats(
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> ToolUsageStatsResponse:
     """Return account-wide tool invocation counts and schema-injection cost."""
@@ -480,8 +481,10 @@ def get_tool_usage_stats(
 
 
 @router.get("/tools", response_model=List[Dict])
+@require_permission("view_tools")
 def list_all_tools(
     account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> List[Dict]:
     """List all available tools (builtin + external) with their configuration status.
@@ -638,9 +641,11 @@ def list_all_tools(
 
 
 @router.post("/tool-configurations", status_code=status.HTTP_201_CREATED)
+@require_permission("manage_tools")
 async def create_tool_configuration(
     config_data: ToolConfigurationCreate,
     account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> ToolConfigurationResponse:
     """Create a new tool configuration.
@@ -739,9 +744,11 @@ async def create_tool_configuration(
 @router.get(
     "/tool-configurations/{config_id}", response_model=ToolConfigurationResponse
 )
+@require_permission("view_tools")
 async def get_tool_configuration(
     config_id: UUID,
     account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> ToolConfigurationResponse:
     """Get a specific tool configuration.
@@ -773,6 +780,7 @@ async def get_tool_configuration(
 @router.put(
     "/tool-configurations/{config_id}", response_model=ToolConfigurationResponse
 )
+@require_permission("manage_tools")
 async def update_tool_configuration(
     config_id: UUID,
     config_update: ToolConfigurationUpdate,
@@ -848,10 +856,12 @@ async def update_tool_configuration(
     "/tool-configurations/{config_id}/condition",
     response_model=ToolConfigurationResponse,
 )
+@require_permission("manage_tools")
 async def update_tool_approval_condition(
     config_id: UUID,
     condition_data: Dict[str, Any],
     account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> ToolConfigurationResponse:
     """Update or create approval condition for a tool configuration.
@@ -945,9 +955,11 @@ async def update_tool_approval_condition(
 
 
 @router.delete("/tool-configurations/{config_id}", status_code=status.HTTP_200_OK)
+@require_permission("manage_tools")
 async def delete_tool_configuration(
     config_id: UUID,
     account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> Dict[str, str]:
     """Delete a tool configuration.
@@ -997,8 +1009,10 @@ async def delete_tool_configuration(
 
 
 @router.get("/approval-workflows", response_model=List[ApprovalWorkflowResponse])
+@require_permission("view_approvals")
 async def list_approval_workflows(
     account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> List[ApprovalWorkflowResponse]:
     """List all approval workflows for the current user's account.
@@ -1020,6 +1034,7 @@ async def list_approval_workflows(
 
 
 @router.post("/approval-workflows", status_code=status.HTTP_201_CREATED)
+@require_permission("manage_approval_workflows")
 async def create_approval_workflow(
     workflow_data: ApprovalWorkflowCreate,
     account: Account = Depends(get_account_for_user),
@@ -1082,9 +1097,11 @@ async def create_approval_workflow(
 @router.get(
     "/approval-workflows/{workflow_id}", response_model=ApprovalWorkflowResponse
 )
+@require_permission("view_approvals")
 async def get_approval_workflow(
     workflow_id: UUID,
     account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> ApprovalWorkflowResponse:
     """Get an approval workflow by ID.
@@ -1116,6 +1133,7 @@ async def get_approval_workflow(
 @router.put(
     "/approval-workflows/{workflow_id}", response_model=ApprovalWorkflowResponse
 )
+@require_permission("manage_approval_workflows")
 async def update_approval_workflow(
     workflow_id: UUID,
     workflow_update: ApprovalWorkflowUpdate,
@@ -1197,6 +1215,7 @@ async def update_approval_workflow(
 
 
 @router.delete("/approval-workflows/{workflow_id}", status_code=status.HTTP_200_OK)
+@require_permission("manage_approval_workflows")
 async def delete_approval_workflow(
     workflow_id: UUID,
     account: Account = Depends(get_account_for_user),
@@ -1284,9 +1303,11 @@ async def delete_approval_workflow(
     "/tool-configurations/{config_id}/approval-condition",
     response_model=ToolApprovalConditionResponse,
 )
+@require_permission("view_tools")
 async def get_tool_approval_condition(
     config_id: UUID,
     account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> ToolApprovalConditionResponse:
     """Get the access rule (approval condition) for a tool configuration.
@@ -1347,10 +1368,12 @@ async def get_tool_approval_condition(
     "/tool-configurations/{config_id}/approval-condition",
     response_model=ToolApprovalConditionResponse,
 )
+@require_permission("manage_tools")
 async def create_or_update_tool_approval_condition(
     config_id: UUID,
     condition_in: ToolApprovalConditionCreate,
     account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> ToolApprovalConditionResponse:
     """Create or update the access rule for a tool configuration.
@@ -1462,9 +1485,11 @@ async def create_or_update_tool_approval_condition(
     "/tool-configurations/{config_id}/approval-condition",
     status_code=status.HTTP_200_OK,
 )
+@require_permission("manage_tools")
 async def delete_tool_approval_condition(
     config_id: UUID,
     account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> Dict[str, str]:
     """Delete the access rules for a tool configuration.
@@ -1534,10 +1559,12 @@ async def delete_tool_approval_condition(
     "/tool-configurations/{config_id}/approval-condition/test",
     response_model=ConditionTestResponse,
 )
+@require_permission("manage_tools")
 async def test_approval_condition(
     config_id: UUID,
     test_request: ConditionTestRequest,
     account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> ConditionTestResponse:
     """Test a CEL expression against sample arguments.
@@ -1655,9 +1682,11 @@ class AccessRuleResponse(BaseModel):
     "/tool-configurations/{config_id}/access-rules",
     response_model=List[AccessRuleResponse],
 )
+@require_permission("view_tools")
 async def list_access_rules(
     config_id: UUID,
     account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> List[AccessRuleResponse]:
     """List all access rules for a tool configuration."""
@@ -1698,6 +1727,7 @@ async def list_access_rules(
     response_model=AccessRuleResponse,
     status_code=status.HTTP_201_CREATED,
 )
+@require_permission("manage_tools")
 async def create_access_rule(
     config_id: UUID,
     rule_in: AccessRuleCreate,
@@ -1782,6 +1812,7 @@ async def create_access_rule(
     "/access-rules/{rule_id}",
     response_model=AccessRuleResponse,
 )
+@require_permission("manage_tools")
 async def update_access_rule(
     rule_id: UUID,
     rule_in: AccessRuleUpdate,
@@ -1860,6 +1891,7 @@ async def update_access_rule(
     "/access-rules/{rule_id}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
+@require_permission("manage_tools")
 async def delete_access_rule(
     rule_id: UUID,
     account: Account = Depends(get_account_for_user),

@@ -691,6 +691,75 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
             ],
         }
 
+    def get_cli_activity_stats(
+        self,
+        db: Session,
+        *,
+        account_id: Union[UUID, str],
+        days: int = 30,
+    ) -> Dict[str, Any]:
+        """Get aggregated stats for CLI check-ins (``cli_activity`` events)."""
+        start_date = datetime.now(timezone.utc) - timedelta(days=days)
+        day_ago = datetime.now(timezone.utc) - timedelta(days=1)
+        account_id_str = str(account_id) if isinstance(account_id, UUID) else account_id
+
+        base_query = db.query(AuditLog).filter(
+            AuditLog.account_id == account_id_str,
+            AuditLog.action == "cli_activity",
+            AuditLog.timestamp >= start_date,
+            AuditLog.status == "success",
+        )
+
+        checkins_total = base_query.count()
+        if not checkins_total:
+            return {
+                "cli_checkins_total": 0,
+                "cli_active_unique_ips": 0,
+                "cli_active_last_24h": 0,
+                "cli_last_seen_at": None,
+                "top_cli_versions": [],
+            }
+
+        unique_ips = (
+            base_query.with_entities(
+                func.count(func.distinct(AuditLog.ip_address))
+            ).scalar()
+            or 0
+        )
+        active_last_24h = (
+            base_query.filter(AuditLog.timestamp >= day_ago)
+            .with_entities(func.count(func.distinct(AuditLog.ip_address)))
+            .scalar()
+            or 0
+        )
+        last_seen_at = base_query.with_entities(func.max(AuditLog.timestamp)).scalar()
+
+        version_expression = func.coalesce(
+            AuditLog.details["cli_version"].astext, "unknown"
+        )
+        version_rows = (
+            base_query.with_entities(
+                version_expression.label("version"),
+                func.count().label("count"),
+            )
+            .group_by(version_expression)
+            .order_by(func.count().desc(), version_expression.asc())
+            .limit(5)
+            .all()
+        )
+
+        return {
+            "cli_checkins_total": checkins_total,
+            "cli_active_unique_ips": unique_ips,
+            "cli_active_last_24h": active_last_24h,
+            "cli_last_seen_at": last_seen_at,
+            "top_cli_versions": [
+                {"version": row.version, "count": row.count}
+                for row in version_rows
+                if row.version is not None
+            ],
+        }
+
 
 # Global instance
 crud_audit_log = CRUDAuditLog(AuditLog)

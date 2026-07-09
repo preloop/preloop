@@ -502,7 +502,7 @@ graph TD
 - `POST /approval/{id}/decide` - Public endpoint for approval responses (token-based)
 - `POST /api/v1/agents/permission-check` - Lets an onboarded agent raise an approval for one of its **native/built-in** tool calls (not just MCP tools), authenticated with the agent's managed-runtime credential. It reuses `ApprovalService.create_and_notify` → `wait_for_approval` and blocks until decided, returning `{"decision":"allow"|"deny","reason","request_id"}` (deny is the safe default).
 
-**Managed-agent linkage:** `ApprovalRequest` carries optional `managed_agent_id`, `runtime_session_id`, and `managed_agent_name` fields, populated from the runtime token context so approval surfaces can show which agent is asking. The endpoint and these identity columns are part of the open-source core. The per-agent native-tool interception adapters (Claude Code, Codex CLI, Cursor, OpenClaw, Hermes) and any future central per-agent/global policy UI live in the Enterprise Edition / CLI.
+**Managed-agent linkage:** `ApprovalRequest` carries optional `managed_agent_id`, `runtime_session_id`, and `managed_agent_name` fields, populated from the runtime token context so approval surfaces can show which agent is asking. The endpoint and these identity columns are part of the open-source core. The per-agent native-tool interception adapters (Claude Code, Codex CLI, Cursor, OpenClaw, Hermes) and any future central per-agent/global policy UI live in Preloop Enterprise / the CLI.
 
 #### Access Rules System
 
@@ -564,7 +564,7 @@ Preloop implements authentication and multi-tenancy:
 - Plugin discovery via module paths or file system paths
 - Lifecycle hooks: `on_startup()` and `on_shutdown()`
 
-> **Enterprise Features**: Preloop Enterprise Edition adds RBAC with 7 system roles, 32 fine-grained permissions, team management, and comprehensive audit logging. Contact sales@preloop.ai for more information.
+> **Enterprise Features**: Preloop Cloud and Preloop Enterprise add RBAC with 7 system roles, fine-grained permissions, team management, and comprehensive audit logging. Contact sales@preloop.ai for more information.
 
 ### Deployment
 The system is designed to be containerized using Docker, enabling easy deployment in various environments including Kubernetes clusters. Stateless components enable horizontal scaling under load.
@@ -588,7 +588,7 @@ The system is designed to be containerized using Docker, enabling easy deploymen
 - [ ] Session management and token revocation
 - [ ] Regular security audits and dependency updates
 
-> **Enterprise Security**: Preloop Enterprise Edition adds RBAC, comprehensive audit logging, and impersonation tracking for compliance requirements. Contact sales@preloop.ai for more information.
+> **Enterprise Security**: Preloop Cloud and Preloop Enterprise add RBAC, comprehensive audit logging, and advanced session optimization capabilities. Contact sales@preloop.ai for more information.
 
 ### Redaction Policy
 
@@ -628,7 +628,7 @@ Single WebSocket connection per client with pub/sub message routing:
 - Easy to add new message types/topics
 - Clear separation of concerns
 
-> **Enterprise Features**: Preloop Enterprise Edition adds session management, activity tracking, user impersonation with audit logging, and billing integration. Contact sales@preloop.ai for more information.
+> **Enterprise Features**: Preloop Cloud and Preloop Enterprise add RBAC, advanced session optimization capabilities and approval workflows with quorum, escalations and AI gates. Contact sales@preloop.ai for more information.
 
 ## Event-Driven Agentic Flows
 

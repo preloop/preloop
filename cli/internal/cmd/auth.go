@@ -21,6 +21,7 @@ import (
 
 	"github.com/preloop/preloop/cli/internal/api"
 	"github.com/preloop/preloop/cli/internal/config"
+	"github.com/preloop/preloop/cli/internal/version"
 )
 
 const (
@@ -644,7 +645,16 @@ func exchangeCodeForTokens(baseURL, code, redirectURI string) (*TokenResponse, e
 	data.Set("code", code)
 	data.Set("redirect_uri", redirectURI)
 
-	resp, err := http.PostForm(tokenURL, data)
+	tokenReq, err := http.NewRequest(
+		http.MethodPost, tokenURL, strings.NewReader(data.Encode()),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build token request: %w", err)
+	}
+	tokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	tokenReq.Header.Set("User-Agent", version.UserAgent())
+
+	resp, err := http.DefaultClient.Do(tokenReq)
 	if err != nil {
 		return nil, fmt.Errorf("token request failed: %w", err)
 	}

@@ -1414,12 +1414,28 @@ export class LandingView extends LitElement {
                               logo_width: '32',
                               prerequisites: [],
                               setup_instructions:
-                                'Install the CLI to onboard existing agents or connect them manually.',
+                                'Install the CLI to onboard existing agents or connect them manually. It connects to Preloop Cloud by default — switch to the Self-host tab to run the stack yourself.',
                               code: 'curl -fsSL https://preloop.ai/install/cli | sh',
+                            },
+                            {
+                              ide: 'oss',
+                              ide_name: 'Self-host (Open Source)',
+                              logo_path: '',
+                              logo_width: '',
+                              prerequisites: ['Docker with the Compose plugin'],
+                              setup_instructions:
+                                'Run the full open-source control plane on your own machine — Apache-2.0, your data never leaves your infrastructure. Then point the CLI at your instance instead of Preloop Cloud.',
+                              code: `# Install and start the OSS stack
+curl -fsSL https://preloop.ai/install/oss | sh
+
+# Install the CLI and connect it to YOUR instance
+curl -fsSL https://preloop.ai/install/cli | sh
+preloop login --url http://localhost:8000
+preloop agents discover`,
                             },
                           ]}
                           defaultTab="cli"
-                          helpText="The Preloop CLI configures your local environment and allows easy agent connecting."
+                          helpText="The Preloop CLI configures your local environment and allows easy agent connecting. Both paths use the same CLI, console, and governance features."
                         ></ide-setup-tabs>
                       </div>
                     `

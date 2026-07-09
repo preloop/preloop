@@ -9019,6 +9019,13 @@ components:
           type: boolean
           title: Is Superuser
           default: false
+        permissions:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Permissions
       type: object
       required:
       - username

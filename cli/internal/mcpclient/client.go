@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/preloop/preloop/cli/internal/version"
 )
 
 const (
@@ -175,6 +177,7 @@ func (c *Client) doRequest(ctx context.Context, request jsonRPCRequest, expectRe
 
 	httpRequest.Header.Set("Content-Type", jsonContentType)
 	httpRequest.Header.Set("Accept", jsonContentType+", "+sseContentType)
+	httpRequest.Header.Set("User-Agent", version.UserAgent())
 	if c.token != "" {
 		httpRequest.Header.Set("Authorization", "Bearer "+c.token)
 	}

@@ -162,6 +162,21 @@ data:
             try_files $uri =404;
         }
 
+        # Competitor comparison pages (/vs/<slug>): serve the build-time
+        # prerendered HTML so crawlers and direct loads get the real page
+        # (correct <title>, canonical, data-ssr-route) instead of the home
+        # index.html. Falls back to the SPA for unregistered slugs. Without
+        # this, /vs/<slug> hit the SPA catch-all and rendered the landing
+        # page nested inside static-view.
+        location ~ ^/vs/([a-z0-9][a-z0-9-]*)/?$ {
+            try_files /vs/$1.html /index.html;
+        }
+
+        # Long-form resource pages (/resources/<slug>): same prerender-first serving.
+        location ~ ^/resources/([a-z0-9][a-z0-9-]*)/?$ {
+            try_files /resources/$1.html /index.html;
+        }
+
         # SPA routing - serve index.html for all non-API routes
         location / {
             try_files $uri $uri/ /index.html;

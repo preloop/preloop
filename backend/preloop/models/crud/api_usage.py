@@ -916,6 +916,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             .filter(
                 ApiUsage.action_type == "model_gateway",
                 ApiUsage.flow_execution_id == execution_id,
+                exclude_replay_usage_condition(),
             )
             .first()
         )

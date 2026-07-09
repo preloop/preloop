@@ -4,22 +4,112 @@ Replay re-executions are Preloop-driven measurement traffic tagged with
 ``meta_data.purpose == "replay_validation"``. These tests pin the exclusion
 contract across the consumers a replay run could contaminate:
 
-  1. Dashboard usage aggregations (``get_gateway_usage_summary``).
-  2. Generic spend reads (``get_gateway_spend`` with no purpose filter).
-  3. Budget-bucket accumulation (``log_gateway_request`` -> budget spend).
-  4. Session-level metrics (``INTERNAL_USAGE_PURPOSES`` in runtime_session).
+  1. Execution-level usage aggregations.
+  2. Dashboard usage aggregations (``get_gateway_usage_summary``).
+  3. Generic spend reads (``get_gateway_spend`` with no purpose filter).
+  4. Budget-bucket accumulation (``log_gateway_request`` -> budget spend).
+  5. Session-level metrics (``INTERNAL_USAGE_PURPOSES`` in runtime_session).
 
 The spend stays auditable: a purpose-TARGETED read still sees replay rows.
 """
 
 from datetime import UTC, datetime, timedelta
+import uuid
 
 from sqlalchemy import func
 
-from preloop.models.crud import crud_api_usage
-from preloop.models.crud.api_usage import REPLAY_VALIDATION_PURPOSE
+from preloop.models.crud import crud_ai_model, crud_flow, crud_flow_execution
+from preloop.models.crud.api_usage import REPLAY_VALIDATION_PURPOSE, crud_api_usage
 from preloop.models.crud.budget import crud_budget_spend
 from preloop.models.crud.runtime_session import INTERNAL_USAGE_PURPOSES
+from preloop.models.schemas.flow import FlowCreate
+from preloop.models.schemas.flow_execution import FlowExecutionCreate
+
+
+def test_get_gateway_usage_for_execution_excludes_replay_rows(
+    db_session, create_account, create_user
+):
+    """Execution totals should count real traffic, not replay validation spend."""
+    account = create_account()
+    user = create_user(account=account)
+    ai_model = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": f"Replay Exclusion Model {uuid.uuid4()}",
+            "provider_name": "openai",
+            "model_identifier": "gpt-5.4",
+            "api_key": "provider-secret",
+        },
+        account_id=account.id,
+    )
+    flow = crud_flow.create(
+        db=db_session,
+        flow_in=FlowCreate(
+            name=f"Replay Exclusion Flow {uuid.uuid4()}",
+            prompt_template="Test",
+            trigger_event_source="manual",
+            trigger_event_types=["test"],
+            ai_model_id=ai_model.id,
+            agent_type="codex",
+            agent_config={},
+            allowed_mcp_servers=[],
+            allowed_mcp_tools=[],
+            account_id=account.id,
+        ),
+        account_id=account.id,
+    )
+    execution = crud_flow_execution.create(
+        db_session,
+        FlowExecutionCreate(flow_id=flow.id, status="RUNNING"),
+    )
+    execution_id = str(execution.id)
+
+    crud_api_usage.log_gateway_request(
+        db_session,
+        endpoint="/openai/v1/responses",
+        method="POST",
+        status_code=200,
+        duration=0.1,
+        user_id=str(user.id),
+        account_id=str(account.id),
+        flow_id=str(flow.id),
+        flow_execution_id=execution_id,
+        model_alias="openai/gpt-5.4",
+        provider_name="openai",
+        prompt_tokens=100,
+        completion_tokens=50,
+        total_tokens=150,
+        estimated_cost=0.25,
+    )
+    crud_api_usage.log_gateway_request(
+        db_session,
+        endpoint="/openai/v1/responses",
+        method="POST",
+        status_code=200,
+        duration=0.1,
+        user_id=str(user.id),
+        account_id=str(account.id),
+        flow_id=str(flow.id),
+        flow_execution_id=execution_id,
+        model_alias="openai/gpt-5.4",
+        provider_name="openai",
+        prompt_tokens=1000,
+        completion_tokens=500,
+        total_tokens=1500,
+        estimated_cost=2.5,
+        meta_data={"purpose": REPLAY_VALIDATION_PURPOSE},
+    )
+
+    usage = crud_api_usage.get_gateway_usage_for_execution(db_session, execution_id)
+
+    assert usage["api_requests"] == 1
+    assert usage["token_usage"] == {
+        "total_tokens": 150,
+        "input_tokens": 100,
+        "output_tokens": 50,
+    }
+    assert usage["estimated_cost"] == 0.25
+    assert usage["has_pricing"] is True
 
 
 def _log_gateway_row(

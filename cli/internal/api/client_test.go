@@ -6,9 +6,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/preloop/preloop/cli/internal/config"
+	"github.com/preloop/preloop/cli/internal/version"
 )
 
 func TestNewClientWithToken(t *testing.T) {
@@ -447,5 +449,27 @@ func TestGet_NoAuth(t *testing.T) {
 	err := client.Get("/public", &result)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDo_SetsPreloopCLIUserAgent(t *testing.T) {
+	var gotUserAgent string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUserAgent = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"}) //nolint:errcheck
+	}))
+	defer server.Close()
+
+	client := NewClientWithToken(server.URL, "test-token")
+	var result map[string]string
+	if err := client.Get("/api/v1/test", &result); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotUserAgent != version.UserAgent() {
+		t.Errorf("expected User-Agent %q, got %q", version.UserAgent(), gotUserAgent)
+	}
+	if !strings.HasPrefix(gotUserAgent, "preloop-cli/") {
+		t.Errorf("expected User-Agent to start with 'preloop-cli/', got %q", gotUserAgent)
 	}
 }

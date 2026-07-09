@@ -18,7 +18,31 @@ import '../../components/logo-component';
 import '../../components/global-notice';
 import '../../components/console-header';
 import consoleStyles from '../../styles/console-styles.css?inline';
-import { getFeatures, type FeaturesResponse } from '../../api';
+import {
+  getFeatures,
+  getUserProfile,
+  hasAnyPermission,
+  type FeaturesResponse,
+  type UserPermissions,
+} from '../../api';
+import '../../components/permission-denied';
+
+/** Nav items that require at least one of the listed permissions when RBAC is on. */
+const NAV_PERMISSIONS: Record<string, string[]> = {
+  '/console/agents': ['view_agents'],
+  '/console/flows': ['view_flows'],
+  '/console/tools': ['view_tools', 'view_policies'],
+  '/console/trackers': ['view_trackers'],
+  '/console/ai-models': ['view_ai_models'],
+  '/console/runtime-sessions': ['view_runtime_sessions'],
+  '/console/cost': ['view_cost'],
+  '/console/approvals': ['view_approvals'],
+  '/console/audit': ['view_audit_logs'],
+  '/console/settings/users': ['view_users'],
+  '/console/settings/teams': ['view_teams'],
+  '/console/settings/invitations': ['invite_users', 'view_users'],
+  '/console/settings/account': ['manage_account', 'view_billing'],
+};
 
 const SIDEBAR_BREAKPOINT = 768;
 
@@ -37,6 +61,12 @@ export class ConsoleShell extends LitElement {
 
   @state()
   private _featuresLoaded = false;
+
+  @state()
+  private _permissions: UserPermissions = undefined;
+
+  @state()
+  private _permissionsLoaded = false;
 
   @state()
   private _sidebarOpen = false;
@@ -286,17 +316,50 @@ export class ConsoleShell extends LitElement {
     window.addEventListener('popstate', this._handleLocationChanged);
     this._currentPath = window.location.pathname;
 
-    // Fetch enabled features
+    // Fetch enabled features and current-user permissions in parallel
     try {
-      const response = await getFeatures();
-      this.features = response.features;
+      const [featuresResponse, profile] = await Promise.all([
+        getFeatures(),
+        getUserProfile().catch((error) => {
+          console.error('Failed to fetch user profile for permissions:', error);
+          return null;
+        }),
+      ]);
+      this.features = featuresResponse.features;
+      this._permissions = profile?.permissions ?? null;
     } catch (error) {
       console.error('Failed to fetch features:', error);
       // Default to empty features if fetch fails
       this.features = {};
+      this._permissions = null;
     } finally {
       this._featuresLoaded = true;
+      this._permissionsLoaded = true;
     }
+  }
+
+  private _canAccess(href: string): boolean {
+    const required = NAV_PERMISSIONS[href];
+    if (!required) {
+      return true;
+    }
+    return hasAnyPermission(this._permissions, required);
+  }
+
+  private _deniedPermissionForPath(path: string): string | null {
+    const normalized = this._normalizePath(path);
+    for (const [href, required] of Object.entries(NAV_PERMISSIONS)) {
+      if (
+        normalized === href ||
+        normalized.startsWith(`${href}/`) ||
+        (href !== '/console' && normalized === href)
+      ) {
+        if (!hasAnyPermission(this._permissions, required)) {
+          return required[0];
+        }
+      }
+    }
+    return null;
   }
 
   private _handleSidebarToggle = () => {
@@ -346,7 +409,10 @@ export class ConsoleShell extends LitElement {
     href: string,
     content: TemplateResult,
     exact = false
-  ): TemplateResult {
+  ): TemplateResult | typeof nothing {
+    if (!this._canAccess(href)) {
+      return nothing;
+    }
     const active = this._isNavActive(href, exact);
     return html`
       <a
@@ -572,7 +638,16 @@ export class ConsoleShell extends LitElement {
             @request-full-bleed=${(e: CustomEvent) =>
               (this._fullBleed = !!e.detail)}
           >
-            <slot></slot>
+            ${(() => {
+              const denied = this._permissionsLoaded
+                ? this._deniedPermissionForPath(this._currentPath)
+                : null;
+              return denied
+                ? html`<permission-denied
+                    required-permission=${denied}
+                  ></permission-denied>`
+                : html`<slot></slot>`;
+            })()}
           </div>
         </div>
       </div>
