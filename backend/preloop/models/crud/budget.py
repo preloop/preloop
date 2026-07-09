@@ -24,7 +24,13 @@ class CRUDBudgetPolicy(CRUDBase[BudgetPolicy]):
         subject_type: str,
         subject_id: Optional[uuid.UUID] = None,
     ) -> Sequence[BudgetPolicy]:
-        """Get all budget policies configured for a specific subject."""
+        """Get all budget policies configured for a specific subject.
+
+        Account-level lookups (``subject_type`` in
+        :data:`ACCOUNT_LEVEL_SUBJECT_TYPES` with ``subject_id=None``) return
+        both ``account`` and ``global`` policies — they share the same spend
+        bucket and either alias is sufficient; a second call is not required.
+        """
         if subject_type in ACCOUNT_LEVEL_SUBJECT_TYPES and subject_id is None:
             query = select(self.model).where(
                 self.model.account_id == account_id,

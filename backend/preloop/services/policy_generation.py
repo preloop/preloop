@@ -200,15 +200,19 @@ class PolicyGenerationService:
 
             header_lines = [
                 "\n\n--- CURRENT ACCOUNT CONFIGURATION ---",
-                f"The account currently has {n_servers} MCP server(s), "
-                f"{n_policies} approval workflow/ies, and {n_tools} tool "
-                f"configuration(s) with their access rules.",
+                (
+                    f"The account currently has {n_servers} MCP server(s), "
+                    f"{n_policies} approval workflow/ies, and {n_tools} tool "
+                    f"configuration(s) with their access rules."
+                ),
                 "",
-                "IMPORTANT: You MUST keep the items below unless the "
-                "user's prompt explicitly contradicts them. Reference "
-                "existing approval_workflows by name instead of creating "
-                "duplicates. Carry forward existing tool conditions/rules "
-                "that are compatible with the user's request.",
+                (
+                    "IMPORTANT: You MUST keep the items below unless the "
+                    "user's prompt explicitly contradicts them. Reference "
+                    "existing approval_workflows by name instead of creating "
+                    "duplicates. Carry forward existing tool conditions/rules "
+                    "that are compatible with the user's request."
+                ),
                 "",
             ]
 

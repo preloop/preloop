@@ -22,6 +22,7 @@ import {
   getFeatures,
   getUserProfile,
   hasAnyPermission,
+  startCheckout,
   type FeaturesResponse,
   type UserPermissions,
 } from '../../api';
@@ -51,10 +52,23 @@ const SIDEBAR_BREAKPOINT = 768;
 
 //     `];
 
+// Human-readable names for gated features (402 upgrade contract).
+const PREMIUM_FEATURE_LABELS: Record<string, string> = {
+  session_optimization: 'AI session optimization',
+  replay_verification: 'replay verification',
+  session_titles: 'AI session titles',
+};
+
 @customElement('console-shell')
 export class ConsoleShell extends LitElement {
   @query('#upgrade-modal')
   private _upgradeModal!: HTMLElement;
+
+  @state()
+  private _upgradeFeature = '';
+
+  @state()
+  private _upgradeStarting = false;
 
   @state()
   private features: FeaturesResponse['features'] = {};
@@ -284,17 +298,38 @@ export class ConsoleShell extends LitElement {
         padding-left: 1em;
       }
 
-      sl-details.settings-section[open]::part(summary) {
+      sl-details.nav-section[open]::part(summary) {
         font-weight: var(--sl-font-weight-bold);
       }
     `,
   ];
 
+  private _handleShowUpgradeModal = (event: Event) => {
+    const detail = (event as CustomEvent).detail;
+    this._upgradeFeature =
+      detail?.code === 'upgrade_required' ? String(detail.feature || '') : '';
+    (this._upgradeModal as any).show();
+  };
+
+  private async _startUpgradeCheckout() {
+    this._upgradeStarting = true;
+    try {
+      // Land back exactly where the gate was hit once checkout-success
+      // reconciles the new subscription (webhook-independent).
+      await startCheckout(
+        'teams',
+        'month',
+        window.location.pathname + window.location.search
+      );
+    } catch (error) {
+      console.error('Failed to start upgrade checkout', error);
+      this._upgradeStarting = false;
+    }
+  }
+
   async connectedCallback() {
     super.connectedCallback();
-    window.addEventListener('show-upgrade-modal', () => {
-      (this._upgradeModal as any).show();
-    });
+    window.addEventListener('show-upgrade-modal', this._handleShowUpgradeModal);
     window.addEventListener(
       'vaadin-router-location-changed',
       this._handleLocationChanged
@@ -405,6 +440,31 @@ export class ConsoleShell extends LitElement {
     return this._isNavActive('/console/settings');
   }
 
+  /** True when any Audit child is visible for this user/edition. */
+  private _hasAuditSection(): boolean {
+    return (
+      this._canShowAuditEvents() ||
+      this._canAccess('/console/runtime-sessions') ||
+      this._canAccess('/console/approvals')
+    );
+  }
+
+  private _canShowAuditEvents(): boolean {
+    return (
+      this._featuresLoaded &&
+      !!this.features['audit_logs'] &&
+      this._canAccess('/console/audit')
+    );
+  }
+
+  private _isAuditActive(): boolean {
+    return (
+      this._isNavActive('/console/audit') ||
+      this._isNavActive('/console/runtime-sessions') ||
+      this._isNavActive('/console/approvals')
+    );
+  }
+
   private _renderNavLink(
     href: string,
     content: TemplateResult,
@@ -439,9 +499,10 @@ export class ConsoleShell extends LitElement {
 
   disconnectedCallback() {
     document.body.style.overflow = '';
-    window.removeEventListener('show-upgrade-modal', () => {
-      (this._upgradeModal as any).show();
-    });
+    window.removeEventListener(
+      'show-upgrade-modal',
+      this._handleShowUpgradeModal
+    );
     window.removeEventListener(
       'vaadin-router-location-changed',
       this._handleLocationChanged
@@ -454,10 +515,27 @@ export class ConsoleShell extends LitElement {
   render() {
     return html`
       <sl-dialog id="upgrade-modal" label="Upgrade Your Plan">
-        You have exceeded the usage limits of your current plan. Please upgrade
-        to continue using this feature.
+        ${
+          this._upgradeFeature
+            ? html`${
+                PREMIUM_FEATURE_LABELS[this._upgradeFeature] ||
+                this._upgradeFeature
+              }
+              is a Teams feature. Upgrade to unlock it — you'll come right back
+              here, already unlocked.`
+            : html`You have exceeded the usage limits of your current plan.
+              Please upgrade to continue using this feature.`
+        }
         <sl-button slot="footer" href="/console/pricing">
           View Plans
+        </sl-button>
+        <sl-button
+          slot="footer"
+          variant="primary"
+          ?loading=${this._upgradeStarting}
+          @click=${this._startUpgradeCheckout}
+        >
+          Upgrade now
         </sl-button>
       </sl-dialog>
 
@@ -537,15 +615,6 @@ export class ConsoleShell extends LitElement {
                 `
               )}
               ${this._renderNavLink(
-                '/console/runtime-sessions',
-                html`
-                  <sl-menu-item>
-                    <sl-icon name="collection" slot="prefix"></sl-icon>
-                    <span class="sidebar-label">Sessions</span>
-                  </sl-menu-item>
-                `
-              )}
-              ${this._renderNavLink(
                 '/console/cost',
                 html`
                   <sl-menu-item>
@@ -554,32 +623,43 @@ export class ConsoleShell extends LitElement {
                   </sl-menu-item>
                 `
               )}
-              ${this._renderNavLink(
-                '/console/approvals',
-                html`
-                  <sl-menu-item>
-                    <sl-icon name="shield-check" slot="prefix"></sl-icon>
-                    <span class="sidebar-label">Approvals</span>
-                  </sl-menu-item>
-                `
-              )}
               ${
-                this._featuresLoaded && this.features['audit_logs']
-                  ? this._renderNavLink(
-                      '/console/audit',
-                      html`
-                        <sl-menu-item>
-                          <sl-icon name="journal-text" slot="prefix"></sl-icon>
+                this._hasAuditSection()
+                  ? html`
+                      <sl-details
+                        class="nav-section"
+                        ?open=${this._isAuditActive()}
+                      >
+                        <span slot="summary">
+                          <sl-icon
+                            name="journal-text"
+                            style="padding-right: 6px;"
+                          ></sl-icon>
                           <span class="sidebar-label">Audit</span>
-                        </sl-menu-item>
-                      `
-                    )
-                  : ''
+                        </span>
+                        <sl-menu>
+                          ${
+                            this._canShowAuditEvents()
+                              ? this._renderNavLink(
+                                  '/console/audit',
+                                  html`<sl-menu-item>All events</sl-menu-item>`
+                                )
+                              : nothing
+                          }
+                          ${this._renderNavLink(
+                            '/console/runtime-sessions',
+                            html`<sl-menu-item>Sessions</sl-menu-item>`
+                          )}
+                          ${this._renderNavLink(
+                            '/console/approvals',
+                            html`<sl-menu-item>Approvals</sl-menu-item>`
+                          )}
+                        </sl-menu>
+                      </sl-details>
+                    `
+                  : nothing
               }
-              <sl-details
-                class="settings-section"
-                ?open=${this._isSettingsActive()}
-              >
+              <sl-details class="nav-section" ?open=${this._isSettingsActive()}>
                 <span slot="summary">
                   <sl-icon name="gear" style="padding-right: 6px;"></sl-icon>
                   <span class="sidebar-label">Settings</span>

@@ -33,6 +33,17 @@ func UserAgent() string {
 	return fmt.Sprintf("preloop-cli/%s (%s; %s)", Version, runtime.GOOS, runtime.GOARCH)
 }
 
+// ClientVersionHeader is the HTTP header that carries the bare CLI version
+// string (e.g. "0.10.0") alongside User-Agent.
+const ClientVersionHeader = "X-Client-Version"
+
+// SetClientIdentityHeaders sets User-Agent and X-Client-Version on every
+// outbound Preloop request so servers can attribute traffic by CLI build.
+func SetClientIdentityHeaders(header http.Header) {
+	header.Set("User-Agent", UserAgent())
+	header.Set(ClientVersionHeader, Version)
+}
+
 const (
 	// VersionCheckURL is the endpoint to check for new versions.
 	VersionCheckURL = "https://preloop.ai/api/v1/version"
@@ -131,8 +142,7 @@ func fetchVersionInfo() (*VersionInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to build version check request: %w", err)
 	}
-	req.Header.Set("User-Agent", UserAgent())
-	req.Header.Set("X-Client-Version", Version)
+	SetClientIdentityHeaders(req.Header)
 
 	resp, err := client.Do(req)
 	if err != nil {

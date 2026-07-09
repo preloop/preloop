@@ -71,7 +71,6 @@ const CANVAS_LAYOUT_VERSION = 'polygon-rings-v1';
 const CANVAS_CARD_HALF_WIDTH = 160;
 const CANVAS_CARD_HALF_HEIGHT = 118;
 const CANVAS_CARD_GAP = 48;
-const CANVAS_RING_MAX_SLOTS = 8;
 
 @customElement('agents-view')
 export class AgentsView extends LitElement {
@@ -902,6 +901,7 @@ export class AgentsView extends LitElement {
         getFeatures().catch(() => ({ features: {} })),
         this.fetchUsers().catch(() => []),
       ]);
+      this.aiModels = modelsData;
 
       // Handle custom local empty case for dummy filter
       if (params.agentKind === '__none__') {
@@ -1068,14 +1068,10 @@ export class AgentsView extends LitElement {
 
     const compactStaleLayout = false;
     const lopsidedCompactLayout = false;
-    if (compactStaleLayout || lopsidedCompactLayout) {
-      newPositions = {};
-      this.nodePositions = {};
-      localStorage.setItem(
-        'preloop.agents.canvas_positions',
-        JSON.stringify({})
-      );
-    }
+    // Compact-layout resets are currently disabled; keep the flags for a
+    // future opt-in path without leaving a permanently-false branch.
+    void compactStaleLayout;
+    void lopsidedCompactLayout;
 
     const unpositionedAgents = items.filter((a) => !newPositions[a.id]);
 
@@ -1469,8 +1465,6 @@ export class AgentsView extends LitElement {
     const MIN_ITEMS_TO_FIT = Math.min(sortedIds.length, 6);
 
     let targetScale = 0.5;
-    let finalMinX = 0;
-    let finalMaxX = 0;
     let finalMinY = 0;
     let finalMaxY = 0;
 
@@ -1510,8 +1504,6 @@ export class AgentsView extends LitElement {
 
       if (currentScale >= MIN_READABLE_SCALE || k === MIN_ITEMS_TO_FIT) {
         targetScale = currentScale;
-        finalMinX = paddedMinX;
-        finalMaxX = paddedMaxX;
         finalMinY = paddedMinY;
         finalMaxY = paddedMaxY;
         break;

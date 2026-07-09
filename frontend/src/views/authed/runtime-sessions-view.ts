@@ -17,6 +17,7 @@ import '../../components/preloop-session-observer.ts';
 import {
   getAccountRuntimeSessionDetail,
   getAccountRuntimeSessions,
+  getEntitlements,
   getFeatures,
   getFlowExecutionGatewayEvents,
   getRuntimeSessionGatewayEvents,
@@ -160,6 +161,27 @@ export class RuntimeSessionsView extends LitElement {
         display: flex;
         flex-direction: column;
         gap: var(--sl-spacing-small);
+      }
+
+      .titles-upsell-hint {
+        display: flex;
+        align-items: center;
+        gap: var(--sl-spacing-x-small);
+        width: 100%;
+        margin-bottom: var(--sl-spacing-small);
+        padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
+        border: 1px dashed var(--sl-color-neutral-300);
+        border-radius: var(--sl-border-radius-medium);
+        background: transparent;
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-x-small);
+        text-align: left;
+        cursor: pointer;
+      }
+
+      .titles-upsell-hint:hover {
+        border-color: var(--sl-color-primary-400);
+        color: var(--sl-color-primary-600);
       }
 
       .session-item {
@@ -659,7 +681,15 @@ export class RuntimeSessionsView extends LitElement {
     } catch {
       this.featureFlags = {};
     }
+    try {
+      // Passive premium hint only (title upsell); 402s remain the real gate.
+      this.isPremium = (await getEntitlements()).premium;
+    } catch {
+      this.isPremium = true;
+    }
   }
+
+  @state() private isPremium = true;
 
   private async loadSessions(isSoftRefresh = false) {
     if (!isSoftRefresh) {
@@ -1072,6 +1102,30 @@ export class RuntimeSessionsView extends LitElement {
     }
 
     return html`
+      ${
+        !this.isPremium
+          ? html`
+              <button
+                class="titles-upsell-hint"
+                @click=${() =>
+                  window.dispatchEvent(
+                    new CustomEvent('show-upgrade-modal', {
+                      detail: {
+                        code: 'upgrade_required',
+                        feature: 'session_titles',
+                      },
+                      bubbles: true,
+                      composed: true,
+                    })
+                  )}
+              >
+                <sl-icon name="stars"></sl-icon>
+                Sessions are shown with fallback names — AI titles are a Teams
+                feature. Upgrade to enable.
+              </button>
+            `
+          : ''
+      }
       <div class="session-list">
         ${this.sessions.items.map(
           (session) => html`

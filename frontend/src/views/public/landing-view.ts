@@ -12,7 +12,6 @@ import '@shoelace-style/shoelace/dist/components/carousel-item/carousel-item.js'
 import type SlCarousel from '@shoelace-style/shoelace/dist/components/carousel/carousel.js';
 import type SlCarouselItem from '@shoelace-style/shoelace/dist/components/carousel-item/carousel-item.js';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
-import { getFeatures } from '../../api';
 
 interface FeatureSlide {
   title: string;
@@ -57,8 +56,6 @@ export class LandingView extends LitElement {
   @state() private _cliSetup: Array<{ step: string; command: string }> = [];
   @state() private _extendedDescription = '';
   @state() private _featuresLayout: 'carousel' | 'grid' = 'grid';
-  @state() private _billingEnabled = false;
-  @state() private _oauthSigninEnabled = false;
   @state() private _productHunt: {
     enabled: boolean;
     post_id: string;
@@ -209,7 +206,6 @@ export class LandingView extends LitElement {
 
   async firstUpdated() {
     await this._loadContent();
-    await this._checkBillingEnabled();
   }
 
   connectedCallback() {
@@ -230,59 +226,11 @@ export class LandingView extends LitElement {
     }
   }
 
-  private async _checkBillingEnabled() {
-    try {
-      const features = await getFeatures();
-      this._billingEnabled = features.features['billing'] === true;
-      this._oauthSigninEnabled = features.features['oauth_signin'] === true;
-    } catch (error) {
-      console.error('Failed to check billing feature:', error);
-      this._billingEnabled = false;
-      this._oauthSigninEnabled = false;
-    }
-  }
-
-  private async _handleSignup(e: Event) {
+  private _handleSignup(e: Event) {
     e.preventDefault();
-
-    // If OAuth is available, go to register page where users choose OAuth or email
-    if (this._oauthSigninEnabled) {
-      window.location.href = '/register';
-      return;
-    }
-
-    if (!this._billingEnabled) {
-      // No billing and no OAuth — regular registration (OSS)
-      window.location.href = '/register';
-      return;
-    }
-
-    // Billing enabled - redirect to Stripe checkout
-    try {
-      const response = await fetch('/api/v1/billing/create-checkout-session', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          plan_id: 'teams',
-          interval: 'month',
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to create checkout session');
-      }
-
-      const result = await response.json();
-
-      if (result.action === 'redirect' && result.url) {
-        window.location.href = result.url;
-      } else {
-        window.location.href = '/register';
-      }
-    } catch (error) {
-      console.error('Checkout error:', error);
-      window.location.href = '/register';
-    }
+    // Signup is card-free (T2 paywall move): every signup door leads to
+    // /register. Pricing keeps checkout as the deliberate upgrade path.
+    window.location.href = '/register';
   }
 
   private async _loadContent() {

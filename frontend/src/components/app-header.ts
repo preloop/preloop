@@ -29,12 +29,6 @@ export class AppHeader extends LitElement {
   private isMenuOpen = false;
 
   @state()
-  private billingEnabled = false;
-
-  @state()
-  private oauthSigninEnabled = false;
-
-  @state()
   private registrationEnabled = true;
 
   static styles = css`
@@ -121,60 +115,20 @@ export class AppHeader extends LitElement {
   async checkBillingEnabled() {
     try {
       const features = await getFeatures();
-      this.billingEnabled = features.features['billing'] === true;
-      this.oauthSigninEnabled = features.features['oauth_signin'] === true;
       // Registration is enabled by default, unless explicitly disabled
       this.registrationEnabled = features.features['registration'] !== false;
     } catch (error) {
-      console.error('Failed to check billing feature:', error);
-      this.billingEnabled = false;
-      this.oauthSigninEnabled = false;
+      console.error('Failed to check registration feature:', error);
       this.registrationEnabled = true;
     }
   }
 
-  async handleSignup(e: Event) {
+  handleSignup(e: Event) {
     e.preventDefault();
     this.isMenuOpen = false; // Close mobile menu
-
-    // If OAuth is available, go to register page where users choose OAuth or email
-    if (this.oauthSigninEnabled) {
-      Router.go('/register');
-      return;
-    }
-
-    if (!this.billingEnabled) {
-      // No billing and no OAuth — regular registration (OSS)
-      Router.go('/register');
-      return;
-    }
-
-    // Billing enabled (no OAuth) — redirect to Stripe checkout
-    try {
-      const response = await fetch('/api/v1/billing/create-checkout-session', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          plan_id: 'teams',
-          interval: 'month',
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to create checkout session');
-      }
-
-      const result = await response.json();
-
-      if (result.action === 'redirect' && result.url) {
-        window.location.href = result.url;
-      } else {
-        Router.go('/register');
-      }
-    } catch (error) {
-      console.error('Checkout error:', error);
-      Router.go('/register');
-    }
+    // Signup is card-free (T2 paywall move): every signup door leads to
+    // /register. Pricing keeps checkout as the deliberate upgrade path.
+    Router.go('/register');
   }
 
   disconnectedCallback() {

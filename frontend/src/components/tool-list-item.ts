@@ -304,7 +304,7 @@ export class ToolListItem extends LitElement {
         await import('../api');
       let configId = this.tool.config_id;
       if (!configId) {
-        const config = await createToolConfiguration({
+        await createToolConfiguration({
           tool_name: this.tool.name,
           tool_source: this.tool.source || 'builtin',
           is_enabled: this.tool.is_enabled !== false,
@@ -313,7 +313,6 @@ export class ToolListItem extends LitElement {
               ? null
               : this._justificationMode,
         });
-        configId = config.id;
       } else {
         await updateToolConfiguration(configId, {
           justification_mode:

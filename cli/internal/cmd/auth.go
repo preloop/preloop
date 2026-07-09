@@ -652,7 +652,7 @@ func exchangeCodeForTokens(baseURL, code, redirectURI string) (*TokenResponse, e
 		return nil, fmt.Errorf("failed to build token request: %w", err)
 	}
 	tokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	tokenReq.Header.Set("User-Agent", version.UserAgent())
+	version.SetClientIdentityHeaders(tokenReq.Header)
 
 	resp, err := http.DefaultClient.Do(tokenReq)
 	if err != nil {

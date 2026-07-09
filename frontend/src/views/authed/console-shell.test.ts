@@ -223,6 +223,108 @@ describe('ConsoleShell', () => {
     expect(toolsLink).to.exist;
   });
 
+  it('nests Sessions and Approvals under Audit without All events when audit_logs is off', async () => {
+    const el = (await fixture(
+      html`<console-shell></console-shell>`
+    )) as ConsoleShell;
+
+    await waitUntil(
+      () =>
+        el.shadowRoot?.querySelector('a[href="/console/runtime-sessions"]') !==
+        null,
+      'Sessions link did not render'
+    );
+
+    const auditSections = Array.from(
+      el.shadowRoot?.querySelectorAll('sl-details.nav-section') ?? []
+    );
+    const auditSection = auditSections.find((section) =>
+      section.textContent?.includes('Audit')
+    );
+    expect(auditSection).to.exist;
+
+    expect(el.shadowRoot?.querySelector('a[href="/console/runtime-sessions"]'))
+      .to.exist;
+    expect(el.shadowRoot?.querySelector('a[href="/console/approvals"]')).to
+      .exist;
+    expect(el.shadowRoot?.querySelector('a[href="/console/audit"]')).to.not
+      .exist;
+    expect(el.shadowRoot?.querySelector('a[href="/console/cost"]')).to.exist;
+  });
+
+  it('shows All events under Audit when audit_logs is enabled', async () => {
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/v1/features') {
+        return new Response(
+          JSON.stringify({
+            plugins: [],
+            features: { audit_logs: true },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url === '/api/v1/auth/users/me') {
+        return new Response(
+          JSON.stringify({
+            username: 'test',
+            email: 'test@example.com',
+            email_verified: true,
+            permissions: null,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    const el = (await fixture(
+      html`<console-shell></console-shell>`
+    )) as ConsoleShell;
+
+    await waitUntil(
+      () => el.shadowRoot?.querySelector('a[href="/console/audit"]') !== null,
+      'All events link did not render'
+    );
+
+    const auditLink = el.shadowRoot?.querySelector('a[href="/console/audit"]');
+    expect(auditLink?.textContent).to.contain('All events');
+    expect(el.shadowRoot?.querySelector('a[href="/console/runtime-sessions"]'))
+      .to.exist;
+    expect(el.shadowRoot?.querySelector('a[href="/console/approvals"]')).to
+      .exist;
+  });
+
+  it('opens the Audit section when a nested route is active', async () => {
+    const originalPath = window.location.pathname;
+    window.history.replaceState({}, '', '/console/approvals');
+
+    const el = (await fixture(
+      html`<console-shell></console-shell>`
+    )) as ConsoleShell;
+
+    await waitUntil(
+      () =>
+        el.shadowRoot?.querySelector(
+          'a.sidebar-link.active[href="/console/approvals"]'
+        ) !== null,
+      'Active approvals link did not render'
+    );
+
+    const auditSections = Array.from(
+      el.shadowRoot?.querySelectorAll('sl-details.nav-section') ?? []
+    );
+    const auditSection = auditSections.find((section) =>
+      section.textContent?.includes('Audit')
+    ) as HTMLElement | undefined;
+    expect(auditSection?.hasAttribute('open')).to.be.true;
+
+    window.history.replaceState({}, '', originalPath);
+  });
+
   describe('responsive sidebar', () => {
     it('shows sidebar as open on desktop by default', async () => {
       const el = (await fixture(

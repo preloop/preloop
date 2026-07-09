@@ -1,7 +1,7 @@
 import { LitElement, html, css, unsafeCSS } from 'lit';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { customElement, state } from 'lit/decorators.js';
-import { fetchWithAuth, fetchPublic, getFeatures } from '../../api';
+import { fetchWithAuth, fetchPublic, startCheckout } from '../../api';
 import landingStyles from '../../styles/landing.css?inline';
 import pricingStyles from '../../styles/pricing-styles.css?inline';
 import '../../components/billing-toggle';
@@ -29,8 +29,6 @@ interface PricingFaq {
 @customElement('public-pricing-view')
 export class PublicPricingView extends LitElement {
   @state() private _interval: 'month' | 'year' = 'year';
-  @state() private _billingEnabled = false;
-  @state() private _oauthSigninEnabled = false;
 
   @state() private _plans: Plan[] = [];
   @state() private _faqs: PricingFaq[] = [];
@@ -42,7 +40,6 @@ export class PublicPricingView extends LitElement {
   async connectedCallback() {
     super.connectedCallback();
     await this._loadContent();
-    await this._checkBillingEnabled();
   }
 
   private async _loadContent() {
@@ -155,16 +152,9 @@ export class PublicPricingView extends LitElement {
     }
   }
 
-  private async _checkBillingEnabled() {
-    try {
-      const features = await getFeatures();
-      this._billingEnabled = features.features['billing'] === true;
-      this._oauthSigninEnabled = features.features['oauth_signin'] === true;
-    } catch (error) {
-      console.error('Failed to check billing feature:', error);
-      this._billingEnabled = false;
-      this._oauthSigninEnabled = false;
-    }
+  /** Seam for tests: window.location is not stubbable in the runner. */
+  private _navigate(url: string) {
+    window.location.href = url;
   }
 
   private _handleSignUpRequest(e: CustomEvent) {
@@ -183,57 +173,30 @@ export class PublicPricingView extends LitElement {
       if (/^https?:\/\//.test(url)) {
         window.open(url, '_blank');
       } else {
-        window.location.href = url;
+        this._navigate(url);
       }
       return;
     }
 
     if (planId === 'enterprise') {
-      window.location.href = plan?.cta_url || '/request-demo';
+      this._navigate(plan?.cta_url || '/request-demo');
       return;
     }
 
     if (planId === 'teams') {
-      // If OAuth is available, go to register page where users choose OAuth or email
-      if (this._oauthSigninEnabled) {
-        window.location.href = '/register';
+      // Signup is card-free (T2 paywall move): logged-out visitors register
+      // first and upgrade in-product. Logged-in users on /pricing are here to
+      // upgrade — the shared checkout helper is the one deliberate paid door.
+      const authed = !!localStorage.getItem('accessToken');
+      if (!authed) {
+        this._navigate('/register');
         return;
       }
-
-      if (!this._billingEnabled) {
-        // No billing and no OAuth — regular registration (OSS)
-        window.location.href = '/register';
-        return;
-      }
-
-      // Billing enabled - redirect to Stripe checkout
       try {
-        const response = await fetch(
-          '/api/v1/billing/create-checkout-session',
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              plan_id: 'teams',
-              interval: this._interval,
-            }),
-          }
-        );
-
-        if (!response.ok) {
-          throw new Error('Failed to create checkout session');
-        }
-
-        const result = await response.json();
-
-        if (result.action === 'redirect' && result.url) {
-          window.location.href = result.url;
-        } else {
-          window.location.href = '/register';
-        }
+        await startCheckout('teams', this._interval, '/console');
       } catch (error) {
         console.error('Checkout error:', error);
-        window.location.href = '/register';
+        this._navigate('/register');
       }
     }
   }

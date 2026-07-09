@@ -394,29 +394,10 @@ export class LitApp extends LitElement {
               })
             );
 
-            // Redirect to Stripe checkout if billing is pending for new OAuth users
-            if (params.get('checkout_pending')) {
-              fetch('/api/v1/billing/create-checkout-session', {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  Authorization: `Bearer ${accessToken}`,
-                },
-                body: JSON.stringify({
-                  plan_id: 'teams',
-                  interval: 'month',
-                }),
-              })
-                .then((res) => res.json())
-                .then((data) => {
-                  if (data.url && data.action === 'redirect') {
-                    window.location.href = data.url;
-                  }
-                })
-                .catch((err) => {
-                  console.error('Failed to create checkout session:', err);
-                });
-            } else if (params.get('setup_tracker') === 'github') {
+            // Signup is card-free (T2 paywall move): new OAuth users go
+            // straight into the console; premium features request the card
+            // in-product via the upgrade modal.
+            if (params.get('setup_tracker') === 'github') {
               // No billing — go straight to GitHub App installation
               this._autoStartGitHubAppInstall(accessToken);
             } else {

@@ -256,7 +256,7 @@ func (c *Client) executeRequest(
 		req.Header.Set("Content-Type", contentType)
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", version.UserAgent())
+	version.SetClientIdentityHeaders(req.Header)
 
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)

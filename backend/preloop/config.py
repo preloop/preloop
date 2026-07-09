@@ -296,6 +296,13 @@ class Settings(BaseSettings):
             "without a SaaS paywall."
         ),
     )
+    billing_free_hosted_model_hard_cap_usd: float = Field(
+        1.0,
+        description=(
+            "Maximum built-in hosted model spend per calendar month for "
+            "accounts with no subscription (card-free free tier)"
+        ),
+    )
 
     # Notification webhooks for admin alerts
     slack_webhook_url: str = Field(
@@ -466,6 +473,9 @@ class Settings(BaseSettings):
                 "BILLING_ENFORCE_ENTITLEMENTS", "true"
             ).lower()
             in ("true", "1", "t", "yes"),
+            billing_free_hosted_model_hard_cap_usd=float(
+                os.getenv("BILLING_FREE_HOSTED_MODEL_HARD_CAP_USD", "1.0")
+            ),
             installer_audit_account_id=os.getenv("INSTALLER_AUDIT_ACCOUNT_ID", ""),
         )
 

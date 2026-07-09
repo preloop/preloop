@@ -452,10 +452,11 @@ func TestGet_NoAuth(t *testing.T) {
 	}
 }
 
-func TestDo_SetsPreloopCLIUserAgent(t *testing.T) {
-	var gotUserAgent string
+func TestDo_SetsPreloopCLIIdentityHeaders(t *testing.T) {
+	var gotUserAgent, gotClientVersion string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotUserAgent = r.Header.Get("User-Agent")
+		gotClientVersion = r.Header.Get(version.ClientVersionHeader)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"}) //nolint:errcheck
 	}))
@@ -471,5 +472,13 @@ func TestDo_SetsPreloopCLIUserAgent(t *testing.T) {
 	}
 	if !strings.HasPrefix(gotUserAgent, "preloop-cli/") {
 		t.Errorf("expected User-Agent to start with 'preloop-cli/', got %q", gotUserAgent)
+	}
+	if gotClientVersion != version.Version {
+		t.Errorf(
+			"expected %s %q, got %q",
+			version.ClientVersionHeader,
+			version.Version,
+			gotClientVersion,
+		)
 	}
 }

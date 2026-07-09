@@ -119,7 +119,6 @@ class ContainerAgentExecutor(AgentExecutor):
         Returns:
             Container ID or K8s pod name as session reference
         """
-        flow_id = execution_context["flow_id"]
         execution_id = execution_context["execution_id"]
 
         self.logger.info(

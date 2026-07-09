@@ -131,8 +131,12 @@ def async_retry(
                     await asyncio.sleep(current_delay)
                     current_delay *= backoff_factor
 
-            # This should never be reached, but just in case
-            raise last_exception
+            # Unreachable if max_attempts >= 1; keep mypy/CodeQL happy.
+            if last_exception is not None:
+                raise last_exception
+            raise RuntimeError(
+                f"retry_async exhausted without an exception for {func.__name__}"
+            )
 
         return wrapper
 

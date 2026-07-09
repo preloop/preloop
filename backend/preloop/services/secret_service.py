@@ -226,8 +226,6 @@ class VaultKVV2SecretBackend:
                 timeout=settings.vault_kv_v2.timeout_seconds,
                 context=ssl_context,
             ) as response:
-                import json
-
                 return json.loads(response.read().decode("utf-8"))
         except urllib_error.HTTPError as exc:
             raise ValueError(

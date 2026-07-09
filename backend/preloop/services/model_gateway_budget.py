@@ -151,6 +151,41 @@ class ModelGatewayBudgetService:
             ):
                 hard_limit_exceeded = True
                 enforcement_reason = "trial_hosted_model_budget_exceeded"
+        elif (
+            subscription is None
+            and settings.billing_enforce_entitlements
+            and self._is_built_in_hosted_model(ai_model)
+        ):
+            # 3. Free-tier hosted-model cap (T2 paywall move). Card-free
+            # accounts have no subscription at all, so the trial branch above
+            # never fires for them — without this branch, built-in hosted
+            # models are founder-paid and unmetered. No billing period exists
+            # either, so spend is windowed to the current calendar month.
+            trial_hosted_model_limit_usd = max(
+                float(settings.billing_free_hosted_model_hard_cap_usd), 0.0
+            )
+            now = datetime.now(timezone.utc)
+            month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            trial_hosted_model_current_spend_usd = self._get_trial_hosted_model_spend(
+                account_id=str(self.auth_context.user.account_id),
+                start=month_start,
+                end=now,
+            )
+            trial_hosted_model_estimated_total_usd = (
+                trial_hosted_model_current_spend_usd + estimated_request_cost
+                if estimated_request_cost is not None
+                else None
+            )
+            if not pricing_available:
+                hard_limit_exceeded = True
+                enforcement_reason = "pricing_required_for_budget_enforcement"
+            elif (
+                trial_hosted_model_estimated_total_usd is not None
+                and trial_hosted_model_estimated_total_usd
+                > trial_hosted_model_limit_usd
+            ):
+                hard_limit_exceeded = True
+                enforcement_reason = "free_hosted_model_budget_exceeded"
 
         return BudgetCheckResult(
             account_limit_usd=None,
@@ -193,6 +228,12 @@ class ModelGatewayBudgetService:
                 detail = "Model gateway budget exceeded: pricing unavailable for requested model"
             elif result.enforcement_reason == "trial_hosted_model_budget_exceeded":
                 detail = "Preloop trial limit for hosted model reached. Please configure your own OpenAI/Anthropic API key."
+            elif result.enforcement_reason == "free_hosted_model_budget_exceeded":
+                detail = (
+                    "Preloop free-tier limit for hosted models reached. "
+                    "Configure your own OpenAI/Anthropic API key or upgrade "
+                    "your plan."
+                )
 
             if result.reset_at:
                 detail += f", try again at {result.reset_at.isoformat()}"

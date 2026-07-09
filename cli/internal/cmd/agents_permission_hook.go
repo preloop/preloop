@@ -308,7 +308,7 @@ func callPermissionCheck(baseURL, token string, req permissionCheckRequest) (per
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
-	httpReq.Header.Set("User-Agent", version.UserAgent())
+	version.SetClientIdentityHeaders(httpReq.Header)
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 
 	client := &http.Client{Timeout: permissionCheckTimeout}

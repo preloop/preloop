@@ -543,7 +543,7 @@ class GitLabTracker(BaseTracker):
 
         # Try to get as merge request first, fall back to issue
         resource = None
-        resource_type = "issue"
+        resource_type: str
         try:
             resource = await self._make_request(project.mergerequests.get, iid)
             resource_type = "merge_request"

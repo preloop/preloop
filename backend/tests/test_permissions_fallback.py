@@ -121,19 +121,19 @@ class TestRequirePermissionMissingDependencies:
     """Fail closed when current_user/db are absent from kwargs."""
 
     def test_ensure_permission_dependencies_raises_without_kwargs(self):
-        from preloop.utils.permissions import _ensure_permission_dependencies
+        import preloop.utils.permissions as perms
 
         with pytest.raises(HTTPException) as exc_info:
-            _ensure_permission_dependencies()
+            perms._ensure_permission_dependencies()
 
         assert exc_info.value.status_code == 500
         assert "current_user and db" in exc_info.value.detail
 
     def test_ensure_permission_dependencies_raises_when_partial(self):
-        from preloop.utils.permissions import _ensure_permission_dependencies
+        import preloop.utils.permissions as perms
 
         with pytest.raises(HTTPException) as exc_info:
-            _ensure_permission_dependencies(current_user=MagicMock())
+            perms._ensure_permission_dependencies(current_user=MagicMock())
 
         assert exc_info.value.status_code == 500
 
