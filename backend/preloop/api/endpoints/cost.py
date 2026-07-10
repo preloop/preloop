@@ -27,7 +27,7 @@ def _get_account_or_404(db: Session, current_user: User) -> Any:
 
 
 @router.get("/summary", response_model=CostAnalyticsSummaryResponse)
-@require_permission("view_ai_models")
+@require_permission("view_cost")
 def get_cost_summary(
     start_date: Optional[datetime] = Query(None),
     end_date: Optional[datetime] = Query(None),

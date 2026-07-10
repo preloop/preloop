@@ -1,7 +1,17 @@
 # scripts/generate_openapi.py
-import yaml
+import os
 import sys
 from pathlib import Path
+
+import yaml
+
+# The generated spec documents the OPEN SOURCE edition. Proprietary (EE)
+# plugins register extra routes when the plugins/proprietary symlink is
+# present, which would leak EE endpoints into openapi.yaml depending on the
+# state of the developer's checkout. Pin the outcome instead of depending on
+# the filesystem: skip proprietary plugin loading unconditionally here
+# (honored by preloop.plugins.base at discovery time).
+os.environ["DISABLE_PROPRIETARY_PLUGINS"] = "true"
 
 # Ensure the project root is in the Python path
 # This allows importing preloop modules when running the script directly

@@ -36,6 +36,7 @@ class AgentControlCapabilities:
     supports_text: bool = True
     supports_voice: bool = False
     supports_interrupt: bool = False
+    supports_tool_approval: bool = False
 
     def to_payload(self) -> dict[str, bool]:
         """Return the wire payload for capability advertisement."""
@@ -46,6 +47,7 @@ class AgentControlCapabilities:
             "text": self.supports_text,
             "voice": self.supports_voice,
             "interrupt": self.supports_interrupt,
+            "tool_approval": self.supports_tool_approval,
         }
 
 

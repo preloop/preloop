@@ -128,7 +128,9 @@ export class PreloopOpenClawPlugin {
     const resolvedPath = this.configPath ?? defaultConfigPath();
     const raw = JSON.parse(fs.readFileSync(resolvedPath, "utf8"));
     const config =
+      raw.plugins?.entries?.["preloop-plugin"]?.config ??
       raw.plugins?.entries?.["openclaw-plugin"]?.config ??
+      raw.plugins?.entries?.["@preloop-ai/openclaw-plugin"]?.config ??
       raw.plugins?.entries?.["@preloop/openclaw-plugin"]?.config ??
       raw.preloop?.control ??
       raw.control ??
@@ -254,6 +256,10 @@ export class PreloopOpenClawPlugin {
    * Returns a `before_tool_call` hook result: `{ block: true, blockReason }`
    * when the operator denies (or the check fails while failing closed), or
    * `undefined` to allow execution.
+   *
+   * Per plan §4, honor OpenClaw's own exec-approvals policy when present:
+   * auto-allow / auto-deny locally via `client_decision`, and only escalate
+   * would-prompt cases to Preloop.
    */
   async checkToolPermission(
     event: BeforeToolCallEvent,
@@ -268,13 +274,37 @@ export class PreloopOpenClawPlugin {
       typeof params["cwd"] === "string" ? (params["cwd"] as string) : process.cwd();
     const sessionId =
       ctx.sessionId ?? ctx.sessionKey ?? config.session_reference ?? undefined;
-    const requestBody = {
+    const clientDecision = resolveOpenClawClientDecision(
+      event.toolName,
+      params,
+      ctx.agentId,
+    );
+    // Honor local auto-allow/deny without round-tripping to Preloop.
+    if (clientDecision === "allow") {
+      return undefined;
+    }
+    if (clientDecision === "deny") {
+      return {
+        block: true,
+        blockReason: "Denied by OpenClaw exec-approvals policy.",
+      };
+    }
+    const requestBody: Record<string, unknown> = {
       source: "openclaw",
       tool_name: event.toolName,
       tool_input: params,
       session_id: sessionId,
       cwd,
+      client_decision: clientDecision,
     };
+    const reasoning = firstString(
+      params["description"],
+      params["reason"],
+      params["prompt"],
+    );
+    if (reasoning) {
+      requestBody.agent_reasoning = reasoning;
+    }
 
     const doFetch = this.fetchImpl ?? (fetch as unknown as FetchLike);
     const controller = new AbortController();
@@ -410,9 +440,9 @@ export class PreloopOpenClawPlugin {
 export const plugin = new PreloopOpenClawPlugin();
 
 export const definition = {
-  id: "openclaw-plugin",
+  id: "preloop-plugin",
   name: "Preloop",
-  version: "0.1.0",
+  version: "0.1.1",
   description: "Expose OpenClaw to Preloop Agent Control.",
 };
 
@@ -492,6 +522,130 @@ function defaultConfigPath(): string {
   return path.join(process.env.HOME ?? ".", ".openclaw", "openclaw.json");
 }
 
+function firstString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim() !== "") {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
+type ExecAsk = "off" | "on-miss" | "always";
+type ExecSecurity = "deny" | "allowlist" | "full";
+
+type ExecApprovalsFile = {
+  defaults?: { security?: string; ask?: string };
+  agents?: Record<string, { security?: string; ask?: string; allowlist?: unknown[] }>;
+};
+
+/**
+ * Map OpenClaw's `~/.openclaw/exec-approvals.json` policy onto the shared
+ * `client_decision` field. Defaults to `"ask"` (escalate) when the file is
+ * missing or the tool is not an exec-style call — matching plan §4's safe
+ * choice for hooks that fire on every tool call.
+ *
+ * Heuristic (mirrors OpenClaw's `requiresExecApproval` defaults):
+ * - `security: deny` → deny
+ * - `ask: off` (or security full with ask off) → allow
+ * - `ask: always` → ask
+ * - `ask: on-miss` + allowlist security → ask (we cannot fully evaluate the
+ *   allowlist without OpenClaw's command analyzer; escalate is safe)
+ */
+export function resolveOpenClawClientDecision(
+  toolName: string,
+  params: Record<string, unknown>,
+  agentId?: string,
+): "allow" | "deny" | "ask" {
+  const isExecTool = isOpenClawExecTool(toolName, params);
+  if (!isExecTool) {
+    // Non-exec tools are not covered by exec-approvals; escalate so Preloop
+    // can still gate them when the plugin is loaded.
+    return "ask";
+  }
+  const policy = loadOpenClawExecApprovals(agentId);
+  if (!policy) {
+    return "ask";
+  }
+  if (policy.security === "deny") {
+    return "deny";
+  }
+  if (policy.ask === "always") {
+    return "ask";
+  }
+  if (policy.ask === "off") {
+    // ask=off means OpenClaw would not prompt; honor that as allow unless
+    // security is deny (already handled) or allowlist-miss (escalate).
+    if (policy.security === "allowlist") {
+      return "ask";
+    }
+    return "allow";
+  }
+  // ask=on-miss (default for allowlist) → escalate.
+  return "ask";
+}
+
+function isOpenClawExecTool(
+  toolName: string,
+  params: Record<string, unknown>,
+): boolean {
+  const name = toolName.trim().toLowerCase();
+  if (
+    name === "exec" ||
+    name === "bash" ||
+    name === "shell" ||
+    name === "system.run" ||
+    name === "system_run"
+  ) {
+    return true;
+  }
+  return (
+    typeof params["command"] === "string" ||
+    typeof params["cmd"] === "string" ||
+    Array.isArray(params["argv"])
+  );
+}
+
+function loadOpenClawExecApprovals(
+  agentId?: string,
+): { security: ExecSecurity; ask: ExecAsk } | null {
+  const filePath = path.join(
+    process.env.HOME ?? ".",
+    ".openclaw",
+    "exec-approvals.json",
+  );
+  try {
+    if (!fs.existsSync(filePath)) {
+      return null;
+    }
+    const raw = JSON.parse(fs.readFileSync(filePath, "utf8")) as ExecApprovalsFile;
+    const defaults = raw.defaults ?? {};
+    const agentKey = agentId?.trim() || "main";
+    const agent = raw.agents?.[agentKey] ?? raw.agents?.["*"] ?? {};
+    const security = normalizeExecSecurity(agent.security ?? defaults.security);
+    const ask = normalizeExecAsk(agent.ask ?? defaults.ask);
+    return { security, ask };
+  } catch {
+    return null;
+  }
+}
+
+function normalizeExecSecurity(value: unknown): ExecSecurity {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (normalized === "deny" || normalized === "allowlist" || normalized === "full") {
+    return normalized;
+  }
+  return "full";
+}
+
+function normalizeExecAsk(value: unknown): ExecAsk {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (normalized === "off" || normalized === "on-miss" || normalized === "always") {
+    return normalized;
+  }
+  return "off";
+}
+
 function parseArgs(): {
   command: string;
   configPath?: string;
@@ -509,7 +663,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const instance = new PreloopOpenClawPlugin(args.configPath);
   if (args.command === "verify") {
     instance.verify();
-    console.log("@preloop/openclaw-plugin verified");
+    console.log("@preloop-ai/openclaw-plugin verified");
   } else if (args.command === "run") {
     void instance.start();
   } else {

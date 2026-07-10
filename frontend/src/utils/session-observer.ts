@@ -81,12 +81,6 @@ export interface SessionOptimizationSuggestion {
   } | null;
 }
 
-const EMPTY_TOKEN_USAGE: GatewayTokenUsage = {
-  prompt_tokens: 0,
-  completion_tokens: 0,
-  total_tokens: 0,
-};
-
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object'
     ? (value as Record<string, unknown>)
@@ -202,13 +196,12 @@ export function normalizeObservedSession(
     asString(row.id) || asString(row.runtime_session_id) || null;
   const sourceType = asString(row.session_source_type);
   const sourceId = asString(row.session_source_id);
-  const isStandalone = !runtimeSessionId;
   const id =
     runtimeSessionId ||
     `standalone:${sourceType || 'unknown'}:${sourceId || 'api'}`;
   const requestCount =
     asNumber(row.total_requests) || asNumber(row.request_count);
-  const tokenUsage = getTokenUsage(row.token_usage) || EMPTY_TOKEN_USAGE;
+  const tokenUsage = getTokenUsage(row.token_usage);
   const title = buildTitle(row);
   const sourceLabel = formatSessionSourceLabel(sourceType);
   const model = asString(row.latest_model_alias) || asString(row.model_alias);

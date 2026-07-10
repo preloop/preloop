@@ -1,11 +1,16 @@
 """Tests for OSS permissions fallback behavior.
 
 Ensures that the no-op require_permission decorator in OSS builds
-preserves FastAPI's sync/async dispatch behavior.
+preserves FastAPI's sync/async dispatch behavior, and that the EE
+wrapper fails closed when auth dependencies are missing.
 """
 
 import asyncio
 import inspect
+from unittest.mock import MagicMock
+
+import pytest
+from fastapi import HTTPException
 
 
 def _create_fallback_decorator():
@@ -106,7 +111,86 @@ class TestRequirePermissionFallback:
 
         # Verify the fallback returns the function unchanged
         assert "return func" in content, "Fallback should return func unchanged"
-        # Verify no async wrapper is created
+        # Verify OSS path does not create a bare `async def wrapper`
         assert "async def wrapper" not in content, (
             "Fallback should not create async wrapper"
         )
+
+
+class TestRequirePermissionMissingDependencies:
+    """Fail closed when current_user/db are absent from kwargs."""
+
+    def test_ensure_permission_dependencies_raises_without_kwargs(self):
+        import preloop.utils.permissions as perms
+
+        with pytest.raises(HTTPException) as exc_info:
+            perms._ensure_permission_dependencies()
+
+        assert exc_info.value.status_code == 500
+        assert "current_user and db" in exc_info.value.detail
+
+    def test_ensure_permission_dependencies_raises_when_partial(self):
+        import preloop.utils.permissions as perms
+
+        with pytest.raises(HTTPException) as exc_info:
+            perms._ensure_permission_dependencies(current_user=MagicMock())
+
+        assert exc_info.value.status_code == 500
+
+    def test_sync_wrapper_does_not_bypass_without_deps(self, monkeypatch):
+        import preloop.utils.permissions as perms
+
+        called = {"plugin": False, "raw": False}
+
+        def fake_plugin_require(permission_name: str):
+            def decorator(func):
+                async def plugin_wrapped(*args, **kwargs):
+                    called["plugin"] = True
+                    return await func(*args, **kwargs)
+
+                return plugin_wrapped
+
+            return decorator
+
+        monkeypatch.setattr(perms, "_plugin_require_permission", fake_plugin_require)
+
+        @perms.require_permission("view_issues")
+        def sync_handler():
+            called["raw"] = True
+            return "ok"
+
+        with pytest.raises(HTTPException) as exc_info:
+            sync_handler()
+
+        assert exc_info.value.status_code == 500
+        assert called["plugin"] is False
+        assert called["raw"] is False
+
+    def test_async_wrapper_does_not_bypass_without_deps(self, monkeypatch):
+        import preloop.utils.permissions as perms
+
+        called = {"plugin": False, "raw": False}
+
+        def fake_plugin_require(permission_name: str):
+            def decorator(func):
+                async def plugin_wrapped(*args, **kwargs):
+                    called["plugin"] = True
+                    return await func(*args, **kwargs)
+
+                return plugin_wrapped
+
+            return decorator
+
+        monkeypatch.setattr(perms, "_plugin_require_permission", fake_plugin_require)
+
+        @perms.require_permission("view_issues")
+        async def async_handler():
+            called["raw"] = True
+            return "ok"
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(async_handler())
+
+        assert exc_info.value.status_code == 500
+        assert called["plugin"] is False
+        assert called["raw"] is False

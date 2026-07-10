@@ -6,7 +6,6 @@ of issue tracking systems.
 
 import logging
 import os
-import json
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -170,7 +169,6 @@ class ApiUsageMiddleware(BaseHTTPMiddleware):
         # Extract tracking information
         method = request.method
         status_code = response.status_code
-        user = None
         action_type = None
 
         # Determine the action type based on the path and method
@@ -569,13 +567,6 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=500, content={"detail": "Internal server error"}
         )
-
-    # Override the default JSON encoder to handle datetime objects
-    class CustomJSONEncoder(json.JSONEncoder):
-        def default(self, obj: Any) -> Any:
-            if isinstance(obj, datetime):
-                return obj.isoformat()
-            return super().default(obj)
 
     # Replace the default jsonable_encoder function with our custom one
     def custom_jsonable_encoder(obj: Any, *args: Any, **kwargs: Any) -> Any:

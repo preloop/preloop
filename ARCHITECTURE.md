@@ -140,13 +140,13 @@ The Tools page has been redesigned from a card-based layout to a tree-style list
 
 #### Cost Analytics Area (`src/views/authed/cost-*`)
 
-The Console should expose a dedicated Cost section rather than scattering spend data across gateway, sessions, and settings pages. The shared frontend can render both OSS and Enterprise panels, gated by feature flags returned by the API.
+The Console exposes a dedicated Cost section (`cost-view.ts`, sidebar "Cost") rather than scattering spend data across gateway, sessions, and settings pages. The shared frontend renders both OSS and Enterprise panels, gated by feature flags returned by the API (`billing`, `model_price_overrides`, `session_optimization`).
 
 Core open-source subviews:
 
-*   **Overview:** Daily spend, token volume, request count, budget utilization, top models, and top spenders.
-*   **Breakdown:** Groupable tables and charts by model, provider, managed agent, runtime session, flow, API key, and user.
-*   **Budgets:** OSS surfaces account/flow gateway limits and burn-rate health. Enterprise billing plugin owns scoped budget policy CRUD, enforcement, and notification workflows.
+*   **Overview:** Date-range spend, token volume, request count, budget utilization, and budget-health cards, with sortable Agents / Tools / Sessions / Users tabs.
+*   **Breakdown:** Groupable tables and charts by model, provider, managed agent, runtime session, flow, API key, and user, backed by `/api/v1/cost/*` and `GET /api/v1/tools/stats` (per-tool call counts, schema-injection token estimates, and spend attribution).
+*   **Budgets:** OSS surfaces account/flow gateway limits and burn-rate health; budget policies support notification recipients (`notification_user_ids`, `notification_team_ids`). Enterprise billing plugin owns scoped budget policy CRUD, enforcement, and notification workflows.
 
 Enterprise feature-flagged subviews (via `plugins/billing/`):
 
@@ -175,7 +175,8 @@ Enterprise feature-flagged subviews (via `plugins/billing/`):
 *   **Accounting:** Persists token usage and estimated cost in `ApiUsage`.
 *   **Budget Enforcement:** Applies account-level, flow-level, and subject-scoped allowed-model checks before upstream dispatch.
 *   **Pricing:** Estimates cost using provider defaults unless an account-scoped model price override is active. Overrides should support different prices per token type, fixed request fees, currency, and effective-date ranges so self-hosted deployments and negotiated enterprise contracts can report realistic spend.
-*   **Observability:** Emits normalized model-call events with redaction-aware request/response payload capture, provider-neutral conversation previews, and optional indexing into a gateway search corpus.
+*   **Context Optimization:** Subject-scoped request-context optimization on the hot path (`services/context_optimization.py`) — repeated-prefix dedupe, noise stripping, and tool-result caps applied before upstream dispatch, with evidence-grounded savings attribution.
+*   **Observability:** Emits normalized model-call events with redaction-aware request/response payload capture, provider-neutral conversation previews (up to `MODEL_GATEWAY_MAX_PREVIEW_CHARS`, default 32768), prompt-cache token breakdowns, and optional indexing into a gateway search corpus.
 *   **Debug Surface:** Flow execution-scoped gateway events can already be queried via the flows API, runtime-session explorers can query recent session activity directly, and the operator dashboard can aggregate active sessions, recent tool calls, and daily model spend.
 *   **Managed Agent Onboarding:** External agents such as OpenClaw can be enrolled so local model traffic is rewritten onto this gateway while local MCP configuration is narrowed to Preloop-managed proxy access.
 
@@ -189,7 +190,8 @@ Enterprise feature-flagged subviews (via `plugins/billing/`):
 ### Runtime Session Identity
 *   **Purpose:** Provide a shared identity layer for browsing, auditing, and searching managed runtime sessions across both flows and onboarded external agents.
 *   **Current Implementation:** A new additive `RuntimeSession` layer now uses flows as the first session source, bridged through `runtime_session_id`, `flow_execution_id`, runtime-principal metadata, and optional `agent_session_reference`.
-*   **Current Explorer Surface:** Account-scoped runtime session list/detail endpoints now expose recent managed sessions plus their captured gateway interactions so the console can drill from aggregate usage into one session timeline.
+*   **Current Explorer Surface:** Account-scoped runtime session list/detail endpoints now expose recent managed sessions plus their captured gateway interactions so the console can drill from aggregate usage into one session timeline. `GET /account/runtime-sessions/{id}/requests` reads per-request `ApiUsage` rows (tokens, cost, status, tool-schema attribution) to power a unified session replay with turn/delta deduplication, sortable chat view, cache-token visibility, and inline operator activity turns (`session-replay-panel`, `preloop-session-observer` in the Console).
+*   **Summaries & Titles:** Opt-in LLM-generated session summaries (`POST /account/runtime-sessions/{id}/summaries`) and background session titles are scheduled through the plugin service registry; Enterprise billing provides the generators, each bounded by a per-account daily spend cap (`billing_session_optimization_daily_cap_usd`, `billing_session_title_daily_cap_usd`).
 *   **Operator Actions:** Operators can end a session explicitly, which updates runtime state, emits audit and runtime-session events, and refreshes managed-agent summaries derived from the same principal.
 *   **Target Direction:** Introduce a runtime-wide session abstraction that can represent flow executions, independent CLI/desktop agent sessions, and later enrolled workforce entities without making `flow_execution` the universal long-term session model.
 
@@ -208,7 +210,7 @@ Enterprise feature-flagged subviews (via `plugins/billing/`):
 *   **Implemented Today:** Backend Agent Control exposes `WS /api/v1/agents/control/ws` for runtime-credential agent connections and `POST /api/v1/agents/{agent_id}/control/commands` for authenticated operator text commands. It authenticates the runtime principal, binds presence to the managed agent and runtime session, publishes command envelopes through NATS when available, falls back to local delivery, emits account-scoped realtime events, and accepts heartbeat/status/presence/event envelopes from agents.
 *   **Related Implemented Surfaces:** Browser, mobile, and console clients can use account-scoped realtime topics over WebSocket. Runtime sessions, managed-agent records, model-gateway usage, approval events, and operator lifecycle actions already share account-scoped event routing.
 *   **Scaffolded Today:** `account_realtime` defines normalized topics such as `runtime_sessions`, `managed_agents`, `gateway_activity`, `budget_health`, and `audit`; the WebSocket manager can filter broadcasts by account and topic; frontend runtime-session and managed-agent views subscribe to those topics. Mobile/watch clients have native voice UI scaffolds that can create operator text turns, but the end-to-end user experience still depends on runtime adapters and production hardening.
-*   **Runtime-Plugin Dependent:** OpenClaw and Hermes must ship and load native Preloop Agent Control runtime plugins that read `preloop.control.control_ws_url`, connect with the durable runtime bearer token, own reconnect/backoff behavior, keep the WebSocket open, send heartbeat/status events, advertise capabilities, receive `send_message` command envelopes, acknowledge delivery, and map operator messages into their own interactive runtime. Existing enrollment can rewrite MCP and model traffic even when the runtime plugin is absent, but Agent Control is not enabled until that plugin is running inside the agent process.
+*   **Runtime Plugins (shipping):** Standalone open-source runtime plugins live in `runtime-plugins/` — `@preloop-ai/openclaw-plugin` (npm, TypeScript) and `preloop-hermes-plugin` (PyPI, Python) — and implement the `preloop.agent_control.v1` protocol: they read `preloop.control.control_ws_url`, connect with the durable runtime bearer token, own reconnect/backoff behavior, keep the WebSocket open, send heartbeat/status events, advertise capabilities, receive `send_message` command envelopes, acknowledge delivery, map operator messages into their own interactive runtime, and gate native tool calls through Preloop approvals (fail-closed by default). `preloop agents install-plugin <agent>` delegates installation to the runtime marketplace; `PUBLISHING.md` covers lockstep versioning. Existing enrollment can rewrite MCP and model traffic even when the runtime plugin is absent, but Agent Control is not enabled until that plugin is running inside the agent process.
 *   **Target Protocol:** A managed agent opens a durable WebSocket using its runtime credential, sends runtime principal/session metadata, subscribes to account and agent-specific command topics, publishes heartbeat/status updates, and acknowledges command delivery. Server-side commands should be persisted and audited before delivery so reconnecting agents can recover missed instructions.
 *   **Session Prompt Semantics:** Operator text sent through Agent Control is an auditable user/operator turn for the selected runtime session. It is not a hidden system prompt, policy override, or privileged tool instruction. Runtime adapters should inject it as the next user-facing instruction in the agent's normal conversation model, preserve the current session context when possible, record the originating surface in metadata, and continue routing any resulting tool calls or model calls through the MCP firewall, model gateway, and approval policies.
 *   **Security Boundary:** The channel uses the same runtime principal, subject-scoped governance, and API-key revocation model as MCP and gateway traffic. Commands that trigger tool use, model calls, or local side effects still flow through the MCP firewall, model gateway, or explicit approval policy rather than bypassing enforcement.
@@ -500,7 +502,7 @@ graph TD
 - `POST /approval/{id}/decide` - Public endpoint for approval responses (token-based)
 - `POST /api/v1/agents/permission-check` - Lets an onboarded agent raise an approval for one of its **native/built-in** tool calls (not just MCP tools), authenticated with the agent's managed-runtime credential. It reuses `ApprovalService.create_and_notify` → `wait_for_approval` and blocks until decided, returning `{"decision":"allow"|"deny","reason","request_id"}` (deny is the safe default).
 
-**Managed-agent linkage:** `ApprovalRequest` carries optional `managed_agent_id`, `runtime_session_id`, and `managed_agent_name` fields, populated from the runtime token context so approval surfaces can show which agent is asking. The endpoint and these identity columns are part of the open-source core. The per-agent native-tool interception adapters (Claude Code, Codex CLI, Cursor, OpenClaw, Hermes) and any future central per-agent/global policy UI live in the Enterprise Edition / CLI.
+**Managed-agent linkage:** `ApprovalRequest` carries optional `managed_agent_id`, `runtime_session_id`, and `managed_agent_name` fields, populated from the runtime token context so approval surfaces can show which agent is asking. The endpoint and these identity columns are part of the open-source core. The per-agent native-tool interception adapters (Claude Code, Codex CLI, Cursor, OpenClaw, Hermes) and any future central per-agent/global policy UI live in Preloop Enterprise / the CLI.
 
 #### Access Rules System
 
@@ -524,6 +526,10 @@ The tool configuration system has been expanded with a **ToolAccessRule** model 
 - `POST /api/v1/tool-configurations/{config_id}/access-rules` - Create access rule
 - `PUT /api/v1/access-rules/{rule_id}` - Update access rule
 - `DELETE /api/v1/access-rules/{rule_id}` - Delete access rule
+
+#### Tool Output Filters
+
+Account-scoped `ToolOutputFilter` rules strip named top-level fields from MCP tool JSON results on the proxy hot path before results reach the calling agent, trimming wasted context tokens. The model, CRUD layer, and proxy application live in the OSS core; the Enterprise billing plugin exposes `/api/v1/billing/cost/output-filters` CRUD and the Console tools editor provides a filter dialog (also reachable from session-optimization suggestions). Persistent per-tool cost findings are tracked as `ToolCostFlag` rows and surfaced in the agent detail view.
 
 ### Language and Framework
 Python is chosen as the primary language due to its strong ecosystem for machine learning and data processing, which is essential for similarity search and embedding generation. FastAPI is used for the REST API due to its performance, type safety, and automatic OpenAPI documentation generation.
@@ -558,10 +564,15 @@ Preloop implements authentication and multi-tenancy:
 - Plugin discovery via module paths or file system paths
 - Lifecycle hooks: `on_startup()` and `on_shutdown()`
 
-> **Enterprise Features**: Preloop Enterprise Edition adds RBAC with 7 system roles, 32 fine-grained permissions, team management, and comprehensive audit logging. Contact sales@preloop.ai for more information.
+> **Enterprise Features**: Preloop Cloud and Preloop Enterprise add RBAC with 7 system roles, fine-grained permissions, team management, and comprehensive audit logging. Contact sales@preloop.ai for more information.
 
 ### Deployment
 The system is designed to be containerized using Docker, enabling easy deployment in various environments including Kubernetes clusters. Stateless components enable horizontal scaling under load.
+
+*   **Service roles:** `PRELOOP_SERVICE_ROLE` (`all` | `api` | `gateway`, default `all`) gates which subsystems boot in a given container — API-only deployments skip gateway-only surfaces and gateway-only deployments skip the MCP server, NATS WS consumer, execution monitor, plugins, and approval-repair passes. The release compose file runs separate `api` and `gateway` services from the same image.
+*   **Migrations:** `docker-compose.release.yaml` runs schema initialization in a dedicated one-shot `migrate` service that app services wait on (`service_completed_successfully`); Helm deployments run Alembic via their own lifecycle.
+*   **Health monitoring:** The Helm chart ships an optional in-cluster health-monitor deployment (`healthMonitor.*`, enabled by default) that polls `/api/v1/health` and logs alert lines after consecutive failures.
+*   **Release verification:** `scripts/release_smoke_test.sh` boots the release compose file with tagged images and verifies HTTP health, first-user sign-up/login, and restart-loop-free stability; the release workflow runs it as the `verify-oss-install` gate before publishing a GitHub release.
 
 ## Security Considerations
 
@@ -577,7 +588,7 @@ The system is designed to be containerized using Docker, enabling easy deploymen
 - [ ] Session management and token revocation
 - [ ] Regular security audits and dependency updates
 
-> **Enterprise Security**: Preloop Enterprise Edition adds RBAC, comprehensive audit logging, and impersonation tracking for compliance requirements. Contact sales@preloop.ai for more information.
+> **Enterprise Security**: Preloop Cloud and Preloop Enterprise add RBAC, comprehensive audit logging, and advanced session optimization capabilities. Contact sales@preloop.ai for more information.
 
 ### Redaction Policy
 
@@ -617,7 +628,7 @@ Single WebSocket connection per client with pub/sub message routing:
 - Easy to add new message types/topics
 - Clear separation of concerns
 
-> **Enterprise Features**: Preloop Enterprise Edition adds session management, activity tracking, user impersonation with audit logging, and billing integration. Contact sales@preloop.ai for more information.
+> **Enterprise Features**: Preloop Cloud and Preloop Enterprise add RBAC, advanced session optimization capabilities and approval workflows with quorum, escalations and AI gates. Contact sales@preloop.ai for more information.
 
 ## Event-Driven Agentic Flows
 

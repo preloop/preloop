@@ -65,8 +65,6 @@ class UserPasswordUpdate(BaseModel):
 class AdminUserResponse(BaseModel):
     """Response schema for user data."""
 
-    model_config = {"title": "AdminUserResponse"}
-
     id: UUID
     account_id: UUID
     username: str
@@ -87,7 +85,7 @@ class AdminUserResponse(BaseModel):
         """Serialize UUID to string for JSON response."""
         return str(value)
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, title="AdminUserResponse")
 
 
 class UserSummary(BaseModel):

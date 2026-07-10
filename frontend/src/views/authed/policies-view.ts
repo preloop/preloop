@@ -146,6 +146,10 @@ export class PoliciesView extends LitElement {
   // Version management state
   @state() private _versions: PolicyVersion[] = [];
   @state() private _loadingVersions = false;
+  // Tracks whether a version fetch has completed at least once. Distinct from
+  // `_versions.length` so an account with zero saved versions does not retrigger
+  // loadVersions() on every render (which caused an infinite fetch/render loop).
+  @state() private _versionsLoaded = false;
   @state() private _selectedVersion: PolicyVersion | null = null;
   @state() private _expandedVersions: Set<string> = new Set();
   @state() private _showSaveVersionDialog = false;
@@ -917,6 +921,7 @@ export class PoliciesView extends LitElement {
       this._error = err.message || 'Failed to load versions';
     } finally {
       this._loadingVersions = false;
+      this._versionsLoaded = true;
     }
   }
 
@@ -1426,8 +1431,10 @@ export class PoliciesView extends LitElement {
   }
 
   private renderPolicyFilesTab() {
-    // Load versions when tab is shown if not already loaded
-    if (this._versions.length === 0 && !this._loadingVersions) {
+    // Load versions once when the tab is first shown. Guard on `_versionsLoaded`
+    // (not `_versions.length`) so an empty result does not retrigger the fetch
+    // on every render.
+    if (!this._versionsLoaded && !this._loadingVersions) {
       this.loadVersions();
     }
 

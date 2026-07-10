@@ -20,6 +20,31 @@ GATEWAY_USAGE_PURPOSES = frozenset(
     {"session_title", "session_optimization", "replay_validation"}
 )
 
+# Replay-validation re-executions are Preloop-driven measurement traffic: real
+# spend, but not the account's agent traffic. They are excluded from the
+# user-facing usage aggregations below and from budget-bucket accumulation
+# (the replay path carries its own hard spend cap; budget POLICIES are still
+# checked per request at the gateway, so an account already at its limit
+# cannot replay).
+REPLAY_VALIDATION_PURPOSE = "replay_validation"
+
+
+def exclude_replay_usage_condition():
+    """Return a NULL-safe filter excluding replay-validation usage rows.
+
+    Rows are INCLUDED when ``meta_data`` is NULL or its ``purpose`` key is
+    NULL; only rows explicitly tagged ``replay_validation`` are excluded.
+    Mirrors ``crud/runtime_session.py``'s internal-usage exclusion style.
+
+    Returns:
+        A SQLAlchemy boolean expression suitable for a WHERE clause.
+    """
+    purpose_expr = ApiUsage.meta_data["purpose"].astext
+    return or_(
+        purpose_expr.is_(None),
+        purpose_expr != REPLAY_VALIDATION_PURPOSE,
+    )
+
 
 class CRUDApiUsage(CRUDBase[ApiUsage]):
     """CRUD operations for API usage tracking."""
@@ -145,8 +170,14 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         db.add(db_obj)
         db.flush()  # assign an ID
 
-        # Atomically record spend if estimated_cost is present and > 0
-        if estimated_cost and account_id:
+        # Atomically record spend if estimated_cost is present and > 0.
+        # Replay-validation runs are excluded: their spend is bounded by the
+        # replay path's own hard cap, and letting them consume budget-bucket
+        # headroom would abort the user's REAL agent traffic (budget policies
+        # are still checked per request at the gateway, so an account already
+        # at its limit cannot replay either).
+        usage_purpose = (meta_data or {}).get("purpose")
+        if estimated_cost and account_id and usage_purpose != REPLAY_VALIDATION_PURPOSE:
             from .budget import record_spend_for_request
 
             try:
@@ -376,6 +407,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         ).filter(
             ApiUsage.action_type == "model_gateway",
             ApiUsage.account_id == account_id,
+            exclude_replay_usage_condition(),
             ApiUsage.timestamp >= start_date,
             ApiUsage.timestamp < end_date,
         )
@@ -433,6 +465,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         ).filter(
             ApiUsage.action_type == "model_gateway",
             ApiUsage.account_id == account_id,
+            exclude_replay_usage_condition(),
         )
         if start_date:
             query = query.filter(ApiUsage.timestamp >= start_date)
@@ -514,6 +547,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             .filter(
                 ApiUsage.action_type == "model_gateway",
                 ApiUsage.account_id == account_id,
+                exclude_replay_usage_condition(),
             )
         )
         if start_date:
@@ -574,6 +608,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             .filter(
                 ApiUsage.action_type == "model_gateway",
                 ApiUsage.account_id == account_id,
+                exclude_replay_usage_condition(),
                 ApiUsage.flow_id == flow_id,
                 ApiUsage.timestamp >= start_date,
                 ApiUsage.timestamp < end_date,
@@ -675,6 +710,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             .filter(
                 ApiUsage.action_type == "model_gateway",
                 ApiUsage.account_id == account_id,
+                exclude_replay_usage_condition(),
                 or_(
                     ApiUsage.runtime_session_id.isnot(None),
                     ApiUsage.flow_execution_id.isnot(None),
@@ -832,6 +868,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         ).filter(
             ApiUsage.action_type == "model_gateway",
             ApiUsage.account_id == account_id,
+            exclude_replay_usage_condition(),
             ApiUsage.timestamp >= start_date,
             ApiUsage.timestamp < end_date,
         )
@@ -879,6 +916,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             .filter(
                 ApiUsage.action_type == "model_gateway",
                 ApiUsage.flow_execution_id == execution_id,
+                exclude_replay_usage_condition(),
             )
             .first()
         )
@@ -999,6 +1037,12 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             query = query.filter(self.model.model_alias == model_alias)
         if purpose:
             query = query.filter(self.model.meta_data["purpose"].astext == purpose)
+        else:
+            # Generic (untargeted) spend reads reflect the account's real
+            # agent traffic; replay-validation runs are excluded like in the
+            # usage aggregations above. Purpose-targeted reads (e.g. the
+            # optimizer's daily cap) are unaffected.
+            query = query.filter(exclude_replay_usage_condition())
         return float(query.scalar() or 0.0)
 
     def list_gateway_rows_in_window(
@@ -1153,6 +1197,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         ).filter(
             ApiUsage.action_type == "model_gateway",
             ApiUsage.account_id == account_id,
+            exclude_replay_usage_condition(),
             ApiUsage.runtime_principal_id == runtime_principal_id,
             ApiUsage.timestamp >= start,
         )

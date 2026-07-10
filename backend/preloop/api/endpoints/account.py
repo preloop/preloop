@@ -81,6 +81,7 @@ from preloop.services.subject_governance import (
     get_subject_governance,
     set_subject_governance,
 )
+from preloop.utils.permissions import require_permission
 
 logger = logging.getLogger(__name__)
 
@@ -526,7 +527,12 @@ def _managed_agent_control_config_from_managed_config(managed_config: dict) -> d
         else {}
     )
     entries = plugins.get("entries") if isinstance(plugins.get("entries"), dict) else {}
-    for plugin_id in ("openclaw-plugin", "@preloop/openclaw-plugin"):
+    for plugin_id in (
+        "preloop-plugin",
+        "openclaw-plugin",
+        "@preloop-ai/openclaw-plugin",
+        "@preloop/openclaw-plugin",
+    ):
         entry = (
             entries.get(plugin_id) if isinstance(entries.get(plugin_id), dict) else {}
         )
@@ -858,8 +864,10 @@ async def update_account_details(
     "/account/gateway-usage/summary",
     response_model=AccountGatewayUsageSummaryResponse,
 )
+@require_permission("view_cost")
 def get_account_gateway_usage_summary(
     account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
     start_date: Optional[datetime] = Query(None),
     end_date: Optional[datetime] = Query(None),
@@ -880,8 +888,10 @@ def get_account_gateway_usage_summary(
     "/account/gateway-usage/search",
     response_model=AccountGatewayUsageSearchResponse,
 )
+@require_permission("view_cost")
 def search_account_gateway_usage(
     account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
     query: Optional[str] = Query(None, min_length=1),
     start_date: Optional[datetime] = Query(None),
@@ -915,8 +925,10 @@ def search_account_gateway_usage(
 
 
 @router.get("/agents", response_model=AccountManagedAgentListResponse)
+@require_permission("view_agents")
 def list_account_managed_agents(
     account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
     query: Optional[str] = Query(None, min_length=1),
     agent_kind: Optional[str] = Query(None),
@@ -968,8 +980,10 @@ def list_account_managed_agents(
 
 
 @router.get("/agents/control", response_model=AccountManagedAgentListResponse)
+@require_permission("view_agents")
 def list_account_controllable_agents(
     account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
     online_only: bool = Query(False),
     limit: int = Query(100, ge=1, le=100),
@@ -1019,9 +1033,11 @@ class AgentNameExtractionResponse(BaseModel):
 
 
 @router.post("/agents/extract-name", response_model=AgentNameExtractionResponse)
+@require_permission("manage_agents")
 async def extract_agent_name(
     request: AgentNameExtractionRequest,
     account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ):
     """Extract agent name from IDENTITY.md content using LLM.
@@ -1082,10 +1098,12 @@ async def extract_agent_name(
 
 
 @router.get("/agents/{agent_id}", response_model=ManagedAgentDetailResponse)
+@require_permission("view_agents")
 def get_account_managed_agent(
     agent_id: str,
     account: Annotated[Account, Depends(get_account_for_user)],
     background_tasks: BackgroundTasks,
+    current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
     start_date: Optional[datetime] = Query(None),
     end_date: Optional[datetime] = Query(None),
@@ -1110,9 +1128,11 @@ def get_account_managed_agent(
     "/agents/{agent_id}/model-bindings",
     response_model=list[ManagedAgentModelBindingSummary],
 )
+@require_permission("view_agents")
 async def list_account_managed_agent_model_bindings(
     agent_id: str,
     account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ):
     """List explicit AI model bindings for one managed agent."""
@@ -1135,10 +1155,12 @@ async def list_account_managed_agent_model_bindings(
     "/agents/{agent_id}/model-bindings",
     response_model=list[ManagedAgentModelBindingSummary],
 )
+@require_permission("manage_agents")
 async def replace_account_managed_agent_model_bindings(
     agent_id: str,
     payload: ManagedAgentModelBindingSyncRequest,
     account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ):
     """Replace explicit AI model bindings for one managed agent."""
@@ -1172,9 +1194,11 @@ async def replace_account_managed_agent_model_bindings(
     "/agents/{agent_id}/governance",
     response_model=SubjectGovernanceResponse,
 )
+@require_permission("view_agents")
 async def get_account_managed_agent_governance(
     agent_id: str,
     account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ):
     agent = crud_managed_agent.get_for_account(
@@ -1201,10 +1225,12 @@ async def get_account_managed_agent_governance(
     "/agents/{agent_id}/governance",
     response_model=SubjectGovernanceResponse,
 )
+@require_permission("manage_agents")
 async def update_account_managed_agent_governance(
     agent_id: str,
     payload: SubjectGovernanceConfig,
     account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ):
     agent = crud_managed_agent.get_for_account(
@@ -1242,6 +1268,7 @@ async def update_account_managed_agent_governance(
     response_model=ManagedAgentSummary,
     status_code=status.HTTP_201_CREATED,
 )
+@require_permission("manage_agents")
 async def create_account_managed_agent(
     payload: ManagedAgentRegisterRequest,
     account: Annotated[Account, Depends(get_account_for_user)],
@@ -1309,9 +1336,11 @@ async def create_account_managed_agent(
     "/agents/{agent_id}/credentials",
     response_model=list[ManagedAgentCredentialSummary],
 )
+@require_permission("view_agents")
 async def list_account_managed_agent_credentials(
     agent_id: str,
     account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ):
     """List durable credentials for one managed agent."""
@@ -1335,6 +1364,7 @@ async def list_account_managed_agent_credentials(
     response_model=ManagedAgentCredentialCreateResponse,
     status_code=status.HTTP_201_CREATED,
 )
+@require_permission("manage_agents")
 async def create_account_managed_agent_credential(
     agent_id: str,
     payload: ManagedAgentCredentialCreateRequest,
@@ -1436,10 +1466,12 @@ async def create_account_managed_agent_credential(
     "/agents/{agent_id}/credentials/{credential_id}",
     response_model=ManagedAgentCredentialSummary,
 )
+@require_permission("manage_agents")
 async def revoke_account_managed_agent_credential(
     agent_id: str,
     credential_id: str,
     account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ):
     """Revoke one durable credential for a managed agent."""
@@ -1477,9 +1509,11 @@ async def revoke_account_managed_agent_credential(
     "/agents/{agent_id}/enrollments",
     response_model=list[ManagedAgentEnrollmentSummary],
 )
+@require_permission("view_agents")
 async def list_account_managed_agent_enrollments(
     agent_id: str,
     account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ):
     """List durable enrollment records for one managed agent."""
@@ -1503,6 +1537,7 @@ async def list_account_managed_agent_enrollments(
     response_model=ManagedAgentEnrollmentSummary,
     status_code=status.HTTP_201_CREATED,
 )
+@require_permission("manage_agents")
 async def create_account_managed_agent_enrollment(
     agent_id: str,
     payload: ManagedAgentEnrollmentCreateRequest,
@@ -1563,11 +1598,13 @@ async def create_account_managed_agent_enrollment(
     "/agents/{agent_id}/enrollments/{enrollment_id}/validate",
     response_model=ManagedAgentEnrollmentSummary,
 )
+@require_permission("manage_agents")
 async def validate_account_managed_agent_enrollment(
     agent_id: str,
     enrollment_id: str,
     payload: ManagedAgentEnrollmentValidateRequest,
     account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ):
     """Persist validation state for one managed-agent enrollment."""
@@ -1607,11 +1644,13 @@ async def validate_account_managed_agent_enrollment(
     "/agents/{agent_id}/enrollments/{enrollment_id}/restore",
     response_model=ManagedAgentEnrollmentSummary,
 )
+@require_permission("manage_agents")
 async def restore_account_managed_agent_enrollment(
     agent_id: str,
     enrollment_id: str,
     payload: ManagedAgentEnrollmentRestoreRequest,
     account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ):
     """Persist restore state for one managed-agent enrollment."""
@@ -1649,10 +1688,12 @@ async def restore_account_managed_agent_enrollment(
 
 
 @router.patch("/agents/{agent_id}", response_model=ManagedAgentSummary)
+@require_permission("manage_agents")
 async def update_account_managed_agent(
     agent_id: str,
     update: ManagedAgentUpdateRequest,
     account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ):
     """Update managed-agent ownership or lifecycle controls."""
@@ -1779,9 +1820,11 @@ async def update_account_managed_agent(
 
 
 @router.delete("/agents/{agent_id}", status_code=status.HTTP_200_OK)
+@require_permission("manage_agents")
 async def delete_account_managed_agent(
     agent_id: str,
     account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ):
     """Remove one managed-agent registry entry without touching the actual agent."""
@@ -1825,9 +1868,11 @@ async def delete_account_managed_agent(
 
 
 @router.get("/runtime-sessions", response_model=AccountRuntimeSessionListResponse)
+@require_permission("view_runtime_sessions")
 async def list_account_runtime_sessions(
     account: Annotated[Account, Depends(get_account_for_user)],
     background_tasks: BackgroundTasks,
+    current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
     query: Optional[str] = Query(None, min_length=1),
     session_source_type: Optional[str] = Query(None),
@@ -1855,9 +1900,11 @@ async def list_account_runtime_sessions(
     "/runtime-sessions/{runtime_session_id}",
     response_model=AccountRuntimeSessionDetailResponse,
 )
+@require_permission("view_runtime_sessions")
 async def get_account_runtime_session_detail(
     runtime_session_id: str,
     account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
     start_date: Optional[datetime] = Query(None),
     end_date: Optional[datetime] = Query(None),
@@ -1875,9 +1922,11 @@ async def get_account_runtime_session_detail(
     "/runtime-sessions/{runtime_session_id}/interactions",
     response_model=AccountGatewayUsageSearchResponse,
 )
+@require_permission("view_runtime_sessions")
 async def get_account_session_interactions(
     runtime_session_id: str,
     account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
     interaction_query: Optional[str] = Query(None, min_length=1),
     start_date: Optional[datetime] = Query(None),
@@ -1901,9 +1950,11 @@ async def get_account_session_interactions(
     "/runtime-sessions/{runtime_session_id}/activity",
     response_model=RuntimeSessionActivityListResponse,
 )
+@require_permission("view_runtime_sessions")
 async def get_account_session_activity_timeline(
     runtime_session_id: str,
     account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ):
     """Activity timeline overview for this session."""
@@ -1965,9 +2016,11 @@ def _request_row_to_item(row: Any) -> RuntimeSessionRequestItem:
     "/runtime-sessions/{runtime_session_id}/requests",
     response_model=RuntimeSessionRequestListResponse,
 )
+@require_permission("view_runtime_sessions")
 async def list_account_runtime_session_requests(
     runtime_session_id: str,
     account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
@@ -2030,9 +2083,11 @@ async def list_account_runtime_session_requests(
     "/runtime-sessions/{runtime_session_id}/summaries",
     response_model=RuntimeSessionSummaryInsight,
 )
+@require_permission("view_runtime_sessions")
 async def summarize_account_runtime_session(
     runtime_session_id: str,
     account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ):
     """Summarize one runtime session without hidden inspection spend."""
@@ -2045,9 +2100,11 @@ async def summarize_account_runtime_session(
 @router.get(
     "/runtime-sessions/{runtime_session_id}/gateway-events",
 )
+@require_permission("view_runtime_sessions")
 async def get_account_runtime_session_gateway_events(
     runtime_session_id: str,
     account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
     tail: int | None = Query(None),
     limit: int = Query(25, ge=1, le=5000),
@@ -2109,10 +2166,12 @@ async def get_account_runtime_session_gateway_events(
 @router.get(
     "/runtime-sessions/{runtime_session_id}/gateway-events/{activity_id}",
 )
+@require_permission("view_runtime_sessions")
 async def get_account_runtime_session_gateway_event_detail(
     runtime_session_id: str,
     activity_id: str,
     account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> dict[str, Any]:
     """Return the raw, massive stored gateway event JSON detail for one runtime session activity."""
@@ -2153,10 +2212,12 @@ async def get_account_runtime_session_gateway_event_detail(
     "/runtime-sessions/{runtime_session_id}/gateway-events/{activity_id}/summary",
     response_model=RuntimeSessionInteractionSummary,
 )
+@require_permission("view_runtime_sessions")
 async def summarize_account_runtime_session_gateway_event(
     runtime_session_id: str,
     activity_id: str,
     account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ):
     """Summarize one gateway interaction on demand using the account default model."""
@@ -2173,10 +2234,12 @@ async def summarize_account_runtime_session_gateway_event(
     "/runtime-sessions/{runtime_session_id}",
     response_model=RuntimeSessionSummary,
 )
+@require_permission("manage_runtime_sessions")
 async def update_account_runtime_session(
     runtime_session_id: str,
     update: RuntimeSessionUpdateRequest,
     account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ):
     """Update runtime-session lifecycle controls for the current account."""

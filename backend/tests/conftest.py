@@ -56,6 +56,11 @@ def pytest_configure(config):
     # This ensures tests work consistently regardless of whether the EE RBAC
     # plugin is available (which wraps endpoints in async wrappers)
     os.environ["DISABLE_RBAC"] = "true"
+    # Settings is a singleton loaded at import time (often before this hook),
+    # so also update the in-memory flag used by auth/plugin code paths.
+    from preloop.config import settings
+
+    settings.disable_rbac = True
 
     # Construct the path to the .env file relative to the conftest.py file
     # Assuming .env is in the project root, and conftest.py is in tests/

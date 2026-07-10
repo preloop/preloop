@@ -68,7 +68,9 @@ class AuditLog(Base):
         String(20), nullable=False, index=True
     )  # success, denied, failure
 
-    # Request context
+    # Request context. Composite index
+    # ``ix_audit_log_account_action_status_ts_ip`` covers CLI activity
+    # aggregations (``get_cli_activity_stats`` COUNT DISTINCT ip_address).
     ip_address: Mapped[Optional[str]] = mapped_column(String(45), nullable=True)
     user_agent: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 

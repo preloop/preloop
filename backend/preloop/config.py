@@ -188,6 +188,13 @@ class Settings(BaseSettings):
         True,
         description="Enable self-registration. Set to False to require admin invitation.",
     )
+    disable_rbac: bool = Field(
+        False,
+        description=(
+            "Disable proprietary RBAC permission checks and plugin loading. "
+            "Set via DISABLE_RBAC=true for OSS / unrestricted access."
+        ),
+    )
 
     database: DatabaseSettings
     security: SecuritySettings
@@ -288,6 +295,21 @@ class Settings(BaseSettings):
         1.0,
         description="Customer-facing fallback price for each additional USD of hosted-model usage",
     )
+    billing_enforce_entitlements: bool = Field(
+        True,
+        description=(
+            "Gate premium (LLM-spend) features behind an entitled subscription. "
+            "Disable on self-hosted EE deployments that run the billing plugin "
+            "without a SaaS paywall."
+        ),
+    )
+    billing_free_hosted_model_hard_cap_usd: float = Field(
+        1.0,
+        description=(
+            "Maximum built-in hosted model spend per calendar month for "
+            "accounts with no subscription (card-free free tier)"
+        ),
+    )
 
     # Notification webhooks for admin alerts
     slack_webhook_url: str = Field(
@@ -365,6 +387,12 @@ class Settings(BaseSettings):
             "t",
             "yes",
         )
+        disable_rbac = os.getenv("DISABLE_RBAC", "false").lower() in (
+            "true",
+            "1",
+            "t",
+            "yes",
+        )
 
         # GitHub App OAuth settings (SaaS only)
         github_app = GitHubAppSettings(
@@ -410,6 +438,7 @@ class Settings(BaseSettings):
             nats_url=os.getenv("NATS_URL", "nats://localhost:4222"),
             PROMPTS_FILE=prompts_file,
             registration_enabled=registration_enabled,
+            disable_rbac=disable_rbac,
             database=database,
             security=security,
             server=server,
@@ -453,6 +482,13 @@ class Settings(BaseSettings):
             ),
             billing_default_extra_credit_price_per_usd=float(
                 os.getenv("BILLING_DEFAULT_EXTRA_CREDIT_PRICE_PER_USD", "1.0")
+            ),
+            billing_enforce_entitlements=os.getenv(
+                "BILLING_ENFORCE_ENTITLEMENTS", "true"
+            ).lower()
+            in ("true", "1", "t", "yes"),
+            billing_free_hosted_model_hard_cap_usd=float(
+                os.getenv("BILLING_FREE_HOSTED_MODEL_HARD_CAP_USD", "1.0")
             ),
             installer_audit_account_id=os.getenv("INSTALLER_AUDIT_ACCOUNT_ID", ""),
         )

@@ -773,3 +773,33 @@ class TestGetMCPClientPool:
 
         assert pool1 is pool2
         assert isinstance(pool1, MCPClientPool)
+
+
+class TestIsMcpUnavailableError:
+    """Transport-failure classification for friendly agent retries."""
+
+    def test_typed_connection_and_timeout_errors(self):
+        from preloop.services.mcp_client_pool import is_mcp_unavailable_error
+
+        assert is_mcp_unavailable_error(ConnectionError("boom"))
+        assert is_mcp_unavailable_error(TimeoutError("boom"))
+
+    def test_transport_message_markers(self):
+        from preloop.services.mcp_client_pool import is_mcp_unavailable_error
+
+        assert is_mcp_unavailable_error(RuntimeError("Session terminated"))
+        assert is_mcp_unavailable_error(RuntimeError("Connection refused"))
+        assert is_mcp_unavailable_error(RuntimeError("All connection attempts failed"))
+
+    def test_tool_level_messages_are_not_false_positives(self):
+        from preloop.services.mcp_client_pool import is_mcp_unavailable_error
+
+        # Bare "connection" / "unavailable" used to match; tool errors that
+        # merely mention those words must stay classified as tool failures.
+        assert not is_mcp_unavailable_error(
+            RuntimeError("Database connection pool exhausted for query")
+        )
+        assert not is_mcp_unavailable_error(
+            RuntimeError("Feature unavailable for this plan")
+        )
+        assert not is_mcp_unavailable_error(RuntimeError("invalid amount: 502"))

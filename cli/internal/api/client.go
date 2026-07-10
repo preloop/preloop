@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/preloop/preloop/cli/internal/config"
+	"github.com/preloop/preloop/cli/internal/version"
 )
 
 const (
@@ -255,6 +256,7 @@ func (c *Client) executeRequest(
 		req.Header.Set("Content-Type", contentType)
 	}
 	req.Header.Set("Accept", "application/json")
+	version.SetClientIdentityHeaders(req.Header)
 
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)

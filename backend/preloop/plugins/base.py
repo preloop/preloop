@@ -447,19 +447,20 @@ def get_plugin_manager() -> PluginManager:
     """Get global plugin manager (singleton)."""
     import os
 
+    from preloop.config import settings
+
     global _plugin_manager
     if _plugin_manager is None:
         _plugin_manager = PluginManager()
         _plugin_manager.discover_plugins("preloop.plugins.builtin")
 
         # Only load proprietary plugins if not explicitly disabled
-        # Check both DISABLE_RBAC (for permission checks) and DISABLE_PROPRIETARY_PLUGINS (for plugin loading)
-        disable_rbac = os.getenv("DISABLE_RBAC", "false").lower() == "true"
+        # Check both disable_rbac (for permission checks) and DISABLE_PROPRIETARY_PLUGINS (for plugin loading)
         disable_proprietary = (
             os.getenv("DISABLE_PROPRIETARY_PLUGINS", "false").lower() == "true"
         )
 
-        if disable_rbac:
+        if settings.disable_rbac:
             logger.info("DISABLE_RBAC is set - skipping proprietary plugins")
         elif disable_proprietary:
             logger.info(

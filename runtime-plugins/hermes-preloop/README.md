@@ -5,9 +5,21 @@ CLI to be present at runtime.
 
 The plugin reads the `preloop.control` block from `~/.hermes/config.yaml`,
 connects Hermes to Preloop over the Agent Control WebSocket, advertises runtime
-capabilities, and routes operator prompts or voice transcripts into Hermes.
+capabilities, routes operator prompts or voice transcripts into Hermes, and
+gates native tool calls through Preloop mobile/watch approvals via the
+`pre_tool_call` hook (fail-closed by default).
+
+Set `preloop.control.tool_approval.enabled: false` to disable the gate, or
+`preloop.control.tool_approval.fail_open: true` / `PRELOOP_TOOL_APPROVAL_FAIL_OPEN=1`
+to allow tools when Preloop is unreachable.
 
 ## Install
+
+```bash
+pip install preloop-hermes-plugin
+```
+
+If your Hermes build wraps PyPI installs:
 
 ```bash
 hermes plugins install preloop-hermes-plugin
@@ -57,7 +69,7 @@ preloop:
 ## Manual Test Without Preloop CLI
 
 ```bash
-hermes plugins install preloop-hermes-plugin
+pip install preloop-hermes-plugin
 preloop-hermes-plugin login --config ~/.hermes/config.yaml
 preloop-hermes-plugin verify --config ~/.hermes/config.yaml
 preloop-hermes-plugin run --config ~/.hermes/config.yaml
@@ -81,7 +93,7 @@ preloop-hermes-plugin verify --config ~/.hermes/config.yaml
 
 ## Publishing status
 
-The package is intended for the Hermes plugin marketplace and PyPI as
+The package is published to PyPI as
 `preloop-hermes-plugin`. Before publishing, run:
 
 ```bash
@@ -89,4 +101,4 @@ python -m build
 python -m twine check dist/*
 ```
 
-See `../PUBLISHING.md` for the full PyPI/Hermes marketplace release checklist.
+See `../PUBLISHING.md` for the full PyPI release checklist. Hermes discovers plugins via the `hermes_agent.plugins` entry point after install.

@@ -76,15 +76,23 @@ describe('PublicPricingView', () => {
     expect(el.shadowRoot?.textContent).to.contain('Is there a trial?');
   });
 
-  it('reflects the billing feature flag from the features endpoint', async () => {
+  it('sends logged-out visitors to /register for the teams plan (card-free signup)', async () => {
     fetchStub = stubFetch({ billing: true, oauth_signin: true });
+    localStorage.removeItem('accessToken');
     const el = (await fixture(
       html`<public-pricing-view></public-pricing-view>`
     )) as PublicPricingView;
     await tick();
     await el.updateComplete;
-    expect((el as any)._billingEnabled).to.be.true;
-    expect((el as any)._oauthSigninEnabled).to.be.true;
+    const navStub = sinon.stub(el as any, '_navigate');
+    // The teams CTA never creates a checkout session for anonymous visitors:
+    // signup is card-free; checkout is the in-product upgrade door.
+    await (el as any)._handleSignUp('teams');
+    const checkoutCalls = fetchStub
+      .getCalls()
+      .filter((c) => String(c.args[0]).includes('create-checkout-session'));
+    expect(checkoutCalls.length).to.equal(0);
+    expect(navStub.calledOnceWith('/register')).to.be.true;
   });
 
   it('falls back gracefully when content fails to load (no plans)', async () => {

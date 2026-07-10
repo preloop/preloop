@@ -17,6 +17,28 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Prevent duplicate approval workflow names within one account."""
+    # Deduplicate existing names first so the unique index can be created on
+    # upgraded deployments: the oldest workflow keeps its name, later
+    # duplicates get a stable short-id suffix (e.g. "Deploy approval [3f9a1c2b]").
+    # Truncate to 240 chars before the 12-char suffix so the result fits
+    # approval_workflow.name (String(255) in models/tool_configuration.py).
+    op.execute(
+        """
+        WITH ranked AS (
+            SELECT id,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY account_id, name
+                       ORDER BY created_at, id
+                   ) AS rn
+            FROM approval_workflow
+        )
+        UPDATE approval_workflow aw
+        SET name = left(aw.name, 240) || ' [' || left(aw.id::text, 8) || ']'
+        FROM ranked r
+        WHERE aw.id = r.id
+          AND r.rn > 1
+        """
+    )
     op.create_index(
         "uq_approval_workflow_account_name",
         "approval_workflow",

@@ -45,11 +45,13 @@ p.lead {
 .hero {
   position: relative;
   overflow: hidden;
-  background: linear-gradient(135deg,
-      hsl(25, 70%, 28%) 0%,
-      hsl(280, 50%, 25%) 33%,
-      hsl(200, 55%, 28%) 66%,
-      hsl(260, 60%, 30%) 100%);
+  background: linear-gradient(
+    135deg,
+    hsl(25, 70%, 28%) 0%,
+    hsl(280, 50%, 25%) 33%,
+    hsl(200, 55%, 28%) 66%,
+    hsl(260, 60%, 30%) 100%
+  );
   background-size: 400% 400%;
   animation: moveGradient 30s ease infinite;
   padding: 8rem 0;
@@ -192,6 +194,47 @@ p.lead {
   color: rgba(161, 161, 170, 0.95);
 }
 
+/* Tabbed variant of the install widget label row ("Install the CLI" /
+   "Install the full stack"). Tabs reuse the label typography; the active
+   tab is brightened and underlined. */
+.hero-install-tabs {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.25rem;
+}
+
+.hero-install-tab {
+  appearance: none;
+  background: none;
+  border: none;
+  padding: 0 0 0.3rem;
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: rgba(161, 161, 170, 0.75);
+  border-bottom: 2px solid transparent;
+  transition:
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.hero-install-tab:hover {
+  color: rgba(230, 237, 243, 0.9);
+}
+
+.hero-install-tab.active {
+  color: #e6edf3;
+  border-bottom-color: rgba(230, 237, 243, 0.85);
+}
+
+.hero-install-tab:focus-visible {
+  outline: 2px solid var(--sl-color-primary-500, #7c3aed);
+  outline-offset: 2px;
+}
+
 .hero-install-row {
   display: flex;
   align-items: center;
@@ -264,18 +307,23 @@ p.lead {
   line-height: 1.4;
 }
 
-/* Secondary CTA ("Book a Demo") rendered under the install command. */
+/* Secondary CTA ("Book a Demo") rendered under the install command.
+   Mirrors the install widget: same small uppercase label typography with
+   the action button directly underneath. */
 .hero-secondary-cta {
-  margin-top: 1.1rem;
+  margin-top: 1.75rem;
   display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  flex-wrap: wrap;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
 }
 
 .hero-secondary-text {
-  color: rgba(161, 161, 170, 0.85);
-  font-size: 0.95rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: rgba(161, 161, 170, 0.95);
 }
 
 .hero-secondary-cta sl-button::part(base) {
@@ -305,27 +353,35 @@ p.lead {
 }
 
 .gradient-faster {
-  background-image: linear-gradient(45deg,
-      hsl(211, 100%, 50%),
-      hsl(195, 100%, 50%));
+  background-image: linear-gradient(
+    45deg,
+    hsl(211, 100%, 50%),
+    hsl(195, 100%, 50%)
+  );
 }
 
 .gradient-safer {
-  background-image: linear-gradient(45deg,
-      hsl(220, 80%, 60%),
-      hsl(260, 80%, 70%));
+  background-image: linear-gradient(
+    45deg,
+    hsl(220, 80%, 60%),
+    hsl(260, 80%, 70%)
+  );
 }
 
 .gradient-product {
-  background-image: linear-gradient(45deg,
-      hsl(190, 80%, 55%),
-      hsl(140, 70%, 50%));
+  background-image: linear-gradient(
+    45deg,
+    hsl(190, 80%, 55%),
+    hsl(140, 70%, 50%)
+  );
 }
 
 .gradient-ai {
-  background-image: linear-gradient(45deg,
-      hsl(260, 90%, 70%),
-      hsl(320, 85%, 65%));
+  background-image: linear-gradient(
+    45deg,
+    hsl(260, 90%, 70%),
+    hsl(320, 85%, 65%)
+  );
 }
 
 /* Feature Section */
@@ -911,7 +967,7 @@ summary.faq-question:hover {
   color: #58a6ff;
 }
 
-summary.faq-question>span {
+summary.faq-question > span {
   flex: 1;
 }
 
@@ -990,7 +1046,7 @@ summary.faq-question:hover sl-icon {
   padding-left: 1.5em;
 }
 
-.faq-answer-content li+li {
+.faq-answer-content li + li {
   margin-top: 0.35em;
 }
 
@@ -1128,15 +1184,11 @@ summary.faq-question:hover sl-icon {
 
   .hero-secondary-cta {
     order: 6;
-    justify-content: center;
+    align-items: center;
     width: 100%;
     margin-top: 0;
     margin-bottom: 1rem;
     gap: 0.3rem;
-  }
-
-  .hero-secondary-text {
-    font-size: 0.9rem;
   }
 
   .hero-trust-tags {
@@ -1148,7 +1200,6 @@ summary.faq-question:hover sl-icon {
 }
 
 @media (max-width: 768px) {
-
   .hero-content h1 {
     font-size: 2.8rem;
     word-wrap: break-word;
@@ -1158,8 +1209,6 @@ summary.faq-question:hover sl-icon {
   .hero-content .lead {
     font-size: 1.1rem;
   }
-
-
 
   .hero-install-row {
     font-size: 0.85rem;

@@ -58,7 +58,7 @@ def test_managed_agent_control_flags_read_openclaw_plugin_config():
             "managed_config": {
                 "plugins": {
                     "entries": {
-                        "openclaw-plugin": {
+                        "preloop-plugin": {
                             "config": {
                                 "enabled": True,
                                 "control_ws_url": (
@@ -91,7 +91,7 @@ def test_managed_agent_control_fields_merge_runtime_plugin_evidence():
             "managed_config": {
                 "plugins": {
                     "entries": {
-                        "openclaw-plugin": {
+                        "preloop-plugin": {
                             "config": {
                                 "enabled": True,
                                 "control_ws_url": (

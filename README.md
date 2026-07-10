@@ -16,9 +16,18 @@ Build automations with templates like the [Pull Request Reviewer](./backend/pres
 
 > **Official documentation:** Full guides and tutorials at [docs.preloop.ai](https://docs.preloop.ai).
 
+Preloop has two parts: the **control plane** (API, console, MCP firewall, and model gateway — use [Preloop Cloud](https://preloop.ai) or self-host the open-source stack) and the **CLI**, which discovers your local agents and onboards them to whichever control plane you connect it to.
+
 ```bash
-# Install the standalone CLI
+# 1. Install the CLI
 curl -fsSL https://preloop.ai/install/cli | sh
+
+# 2. Connect it to a control plane:
+preloop signup                                # Preloop Cloud (fastest), or
+preloop login --url http://localhost:8000    # your self-hosted instance (see Getting Started)
+
+# 3. Bring your local agents under governance
+preloop agents discover
 ```
 
 <p align="center">
@@ -88,9 +97,14 @@ preloop agents validate hermes
 After installing the plugin, restart the agent runtime. When the plugin connects
 to `WS /api/v1/agents/control/ws` and advertises capabilities, Preloop marks the
 Agent Control channel verified and the web/mobile Talk controls become available.
-The plugin-only path uses the same contract: install `@preloop/openclaw-plugin`
+The plugin-only path uses the same contract: install `@preloop-ai/openclaw-plugin`
 or `preloop-hermes-plugin`, provide a valid `preloop.control` block, start the
 runtime, and let the plugin connect.
+
+Don't have the runtime installed yet? `preloop agents install-runtime <hermes|openclaw>`
+installs it locally and onboards it through Preloop in one step. To route an
+agent's **native** tool calls (e.g. Claude Code `Bash`/`Edit`) through Preloop
+approvals, onboard with `preloop agents onboard <agent> --approvals`.
 
 <p align="center">
   <img alt="Preloop dashboard with live agent and gateway usage" src="frontend/public/assets/screenshots/quickstart/dark/dashboard.png" style="width: 100%; max-width: 1135px; border-radius: 12px;" />
@@ -144,7 +158,7 @@ Preloop safely routes model traffic on behalf of managed runtimes instead of han
 - **Secret custody** — provider API keys stay with Preloop; runtimes receive short-lived gateway tokens instead of raw credentials.
 
 ### Cost Analytics & Budgets
-Preloop should make model spend explainable, not just counted. The Console should have a dedicated **Cost** area with subviews that help operators answer:
+Preloop makes model spend explainable, not just counted. The Console has a dedicated **Cost** area with subviews that help operators answer:
 
 - **How much have we spent?** Spend, token volume, and request counts over time by model, provider, account, flow, managed agent, runtime session, API key, and user.
 - **Who or what spent it?** Attribution from `ApiUsage`, runtime principals, subject-scoped governance, and session timelines.
@@ -152,7 +166,7 @@ Preloop should make model spend explainable, not just counted. The Console shoul
 - **Was the outcome worth it?** Enterprise analysis can use the account's default AI model to summarize sessions, compare spend against observed outcome, and flag low-value or failed runs.
 - **How could it be optimized?** Enterprise recommendations can suggest cheaper models, prompt reductions, caching, batching, retry suppression, budget policy changes, or approval gates for expensive workflows.
 
-The open-source edition should include a practical Cost Overview, usage drill-downs, and budget-health alerts from gateway account/flow limits. Enterprise Edition adds budget policy configuration and enforcement, negotiated provider pricing overrides, session optimization recommendations, FinOps workflows, AI-generated session value reviews, anomaly detection, chargeback/showback, credits and promotions, forecasting, approval escalations, and export/reporting features through backend plugins. The frontend remains shared and should expose advanced panels through feature flags.
+The open-source edition includes a practical Cost Overview with Agents/Tools/Sessions/Users drill-downs, per-tool usage stats, budget-health alerts from gateway account/flow limits, MCP tool output filters that strip wasteful fields from tool results, and gateway context optimization on the hot path. Preloop Cloud and Preloop Enterprise add budget policy configuration and enforcement, negotiated provider pricing overrides, session optimization recommendations with applied-action tracking, FinOps workflows, AI-generated session value reviews and titles, anomaly detection, chargeback/showback, credits and promotions, forecasting, approval escalations, and export/reporting features through backend plugins. The frontend remains shared and exposes advanced panels through feature flags.
 
 ### Runtime Session Observability
 A durable `RuntimeSession` layer gives you one timeline per managed runtime — flow executions today, and any onboarded CLI/desktop agent session going forward. Operator-scoped endpoints expose recent sessions plus captured gateway interactions so the console can drill from aggregate usage into a single session timeline. Operators can end a session explicitly; doing so updates runtime state, emits audit events, and refreshes managed-agent summaries.
@@ -177,24 +191,41 @@ Siri and Google Assistant should be treated as invocation and handoff surfaces, 
 
 ## Getting Started
 
-Choose the path that matches what you want to evaluate:
+The CLI is a client: it needs a Preloop control plane to talk to. Pick one of two paths — both use the exact same CLI, console, and features.
 
-- **Local laptop:** install the OSS stack with the install script.
-- **Kubernetes/prod-like:** use the Helm chart in [`helm/preloop`](helm/preloop).
+### Option A: Preloop Cloud (fastest)
 
-### Install locally
+Use the hosted control plane at [preloop.ai](https://preloop.ai) — nothing to run yourself:
 
 ```bash
-# Install the standalone CLI
 curl -fsSL https://preloop.ai/install/cli | sh
-
-# Install the OSS platform stack
-curl -fsSL https://preloop.ai/install/oss | sh
+preloop signup          # opens the browser to create your account and authenticates the CLI
+preloop agents discover
 ```
 
-### Release smoke test for hosted trials
+### Option B: Self-host the open-source stack
 
-Before promoting a hosted trial template, verify that the public URL loads the console, `/api/v1/health` responds, first-user sign-in or sign-up works, `preloop agents discover` can target the public URL, one gateway model call appears in the UI, and one MCP policy event appears in the audit timeline.
+Run the full control plane on your own machine or infrastructure, then point the CLI at it:
+
+```bash
+# Install and start the OSS stack (Docker Compose, data stays on your machine)
+curl -fsSL https://preloop.ai/install/oss | sh
+
+# Install the CLI and connect it to YOUR instance instead of preloop.ai
+curl -fsSL https://preloop.ai/install/cli | sh
+preloop login --url http://localhost:8000
+preloop agents discover
+```
+
+The console is at `http://localhost:3000` — create the first user there or let `preloop login` walk you through it. You can also set the instance URL via the environment (`PRELOOP_URL=http://localhost:8000 preloop login`); the CLI stores it in `~/.preloop/config.yaml`, so every later command targets your instance. Without `--url` or `PRELOOP_URL`, the CLI defaults to `https://preloop.ai`.
+
+For Kubernetes/prod-like deployments, use the Helm chart in [`helm/preloop`](helm/preloop) and connect the CLI with `preloop login --url https://your-preloop.example.com`.
+
+### Release smoke test
+
+Every tagged release is verified automatically before it is published: the `verify-oss-install` job in the release workflow runs [`scripts/release_smoke_test.sh`](scripts/release_smoke_test.sh), which boots `docker-compose.release.yaml` with the tagged images, checks API/gateway/console health, exercises first-user sign-up and login, and fails if any service restart-loops. You can run the same script locally with `PRELOOP_VERSION=0.10.0 ./scripts/release_smoke_test.sh`.
+
+For hosted trials, additionally verify that the public URL loads the console, `/api/v1/health` responds, first-user sign-in or sign-up works, `preloop agents discover` can target the public URL, one gateway model call appears in the UI, and one MCP policy event appears in the audit timeline.
 
 For extended details detailing comprehensive Docker builds, Kubernetes Helm topologies, GraphQL configuration, WebSocket streaming channels, and deep `.env` definitions, refer to the [Preloop Documentation Hub](https://docs.preloop.ai).
 
@@ -226,9 +257,15 @@ Preloop covers the same core jobs as AWS Bedrock AgentCore (runtime, gateway, id
 | **AI runtime security** | Lakera, Lasso, Zenity, Noma | Preloop is developer-facing, MCP-native, and self-hostable. Complementary to semantic content-safety firewalls. |
 | **AI governance suites** | Credo AI, IBM watsonx, OneTrust | Preloop focuses on runtime controls agents actually hit, not just top-down inventory and risk artifacts. |
 
-## Enterprise Features
+## Editions
 
-Preloop Enterprise Edition extends the core open-source components with centralized RBAC capabilities:
+Preloop ships in three editions built on the same core:
+
+- **Preloop** — the open-source edition (Apache 2.0, this repository), self-hosted.
+- **Preloop Cloud** — the hosted service at [preloop.ai](https://preloop.ai); nothing to run yourself.
+- **Preloop Enterprise** — the commercial edition for self-hosting on your own infrastructure (on-prem or private VPC).
+
+Preloop Cloud and Preloop Enterprise extend the core open-source components with centralized RBAC and advanced governance capabilities:
 
 | Feature | Open Source | Enterprise |
 |---------|:-----------:|:----------:|
@@ -247,7 +284,7 @@ Preloop Enterprise Edition extends the core open-source components with centrali
 | **AI session value reviews & spend optimization recommendations** | ❌ | ✅ |
 | **Credits, promotions, chargeback/showback & forecasting** | ❌ | ✅ |
 
-Contact sales@preloop.ai for Enterprise Edition licensing requests.
+Contact sales@preloop.ai for Preloop Enterprise licensing requests.
 
 ## Contributing
 

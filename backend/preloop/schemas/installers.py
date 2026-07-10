@@ -13,7 +13,7 @@ class InstallerVersionStat(BaseModel):
 
 
 class InstallerDownloadStats(BaseModel):
-    """Summary statistics for installer script downloads."""
+    """Summary statistics for installer script downloads and CLI activity."""
 
     audit_enabled: bool
     days: int
@@ -26,3 +26,10 @@ class InstallerDownloadStats(BaseModel):
     latest_version_downloads: int
     last_download_at: datetime | None = None
     top_versions: list[InstallerVersionStat] = Field(default_factory=list)
+    # CLI activity (daily check-ins from installed CLIs, deduplicated
+    # client-side to at most one per machine per day)
+    cli_checkins_total: int = 0
+    cli_active_unique_ips: int = 0
+    cli_active_last_24h: int = 0
+    cli_last_seen_at: datetime | None = None
+    top_cli_versions: list[InstallerVersionStat] = Field(default_factory=list)

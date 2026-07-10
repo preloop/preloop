@@ -5,12 +5,12 @@ It should be run during application startup or database initialization.
 
 System Roles:
 - owner: Full access including billing, user management, account closure
-- admin: Full access except billing and account closure
-- editor: Create/edit flows, tools, trackers, projects
-- executor: Execute flows, trigger tools
-- tracker_manager: Add/edit trackers, sync data
-- analyst: Read-only + compliance/dependency/duplicate detection
-- viewer: Read-only access
+- admin: Full access except billing management and account closure
+- editor: Configure the control plane (agents, tools, policies, models, flows)
+- executor: Operate agents, approve requests, execute flows (no config changes)
+- tracker_manager: Manage tracker integrations and synced project data
+- analyst: Read-only plus compliance, cost, audit, and analysis
+- viewer: Read-only access to core resources
 """
 
 import logging
@@ -25,7 +25,10 @@ from preloop.models.models.permission import Permission, Role, RolePermission
 logger = logging.getLogger(__name__)
 dotenv.load_dotenv()
 
-# Define all system permissions by category
+# Define all system permissions by category.
+# Naming convention: verb_resource (underscores). Granular CRUD names are used
+# where endpoints enforce create/edit/delete separately; manage_* covers broader
+# admin operations on that resource.
 SYSTEM_PERMISSIONS: Dict[str, List[Dict[str, str]]] = {
     "account": [
         {
@@ -55,9 +58,12 @@ SYSTEM_PERMISSIONS: Dict[str, List[Dict[str, str]]] = {
     ],
     "teams": [
         {"name": "view_teams", "description": "View teams in the account"},
+        {"name": "create_teams", "description": "Create new teams"},
+        {"name": "edit_teams", "description": "Edit existing teams"},
+        {"name": "delete_teams", "description": "Delete teams"},
         {
             "name": "manage_teams",
-            "description": "Create, edit, and delete teams and manage team memberships",
+            "description": "Manage team memberships and team role assignments",
         },
     ],
     "flows": [
@@ -69,8 +75,35 @@ SYSTEM_PERMISSIONS: Dict[str, List[Dict[str, str]]] = {
     ],
     "tools": [
         {"name": "view_tools", "description": "View tools and tool configurations"},
-        {"name": "manage_tools", "description": "Add, configure, and remove tools"},
+        {
+            "name": "manage_tools",
+            "description": "Add, configure, and remove tools and access rules",
+        },
         {"name": "execute_tools", "description": "Execute/use tools"},
+    ],
+    "policies": [
+        {
+            "name": "view_policies",
+            "description": "View policy-as-code versions and diffs",
+        },
+        {
+            "name": "manage_policies",
+            "description": "Upload, save, rollback, and prune policy versions",
+        },
+    ],
+    "approvals": [
+        {
+            "name": "view_approvals",
+            "description": "View approval requests and history",
+        },
+        {
+            "name": "decide_approvals",
+            "description": "Approve or decline pending approval requests",
+        },
+        {
+            "name": "manage_approval_workflows",
+            "description": "Create and configure approval workflows",
+        },
     ],
     "mcp_servers": [
         {"name": "view_mcp_servers", "description": "View MCP servers"},
@@ -84,15 +117,26 @@ SYSTEM_PERMISSIONS: Dict[str, List[Dict[str, str]]] = {
     ],
     "trackers": [
         {"name": "view_trackers", "description": "View tracker configurations"},
+        {"name": "create_trackers", "description": "Create new trackers"},
+        {"name": "edit_trackers", "description": "Edit existing trackers"},
+        {"name": "delete_trackers", "description": "Delete trackers"},
         {
             "name": "manage_trackers",
-            "description": "Add, configure, and remove trackers",
+            "description": "Advanced tracker management operations",
         },
         {"name": "sync_trackers", "description": "Trigger tracker synchronization"},
     ],
     "projects": [
         {"name": "view_projects", "description": "View projects"},
-        {"name": "manage_projects", "description": "Create, edit, and delete projects"},
+        {"name": "create_projects", "description": "Create new projects"},
+        {"name": "edit_projects", "description": "Edit existing projects"},
+        {"name": "delete_projects", "description": "Delete projects"},
+    ],
+    "organizations": [
+        {"name": "view_organizations", "description": "View organizations"},
+        {"name": "create_organizations", "description": "Create organizations"},
+        {"name": "edit_organizations", "description": "Edit organizations"},
+        {"name": "delete_organizations", "description": "Delete organizations"},
     ],
     "issues": [
         {"name": "view_issues", "description": "View issues"},
@@ -121,157 +165,198 @@ SYSTEM_PERMISSIONS: Dict[str, List[Dict[str, str]]] = {
             "description": "Create and manage issue dependencies",
         },
     ],
+    "ai_models": [
+        {"name": "view_ai_models", "description": "View AI model configurations"},
+        {"name": "create_ai_models", "description": "Create AI model configurations"},
+        {"name": "edit_ai_models", "description": "Edit AI model configurations"},
+        {"name": "delete_ai_models", "description": "Delete AI model configurations"},
+    ],
+    "cost": [
+        {
+            "name": "view_cost",
+            "description": "View cost analytics, spend breakdowns, and budgets",
+        },
+        {
+            "name": "manage_budgets",
+            "description": "Create and manage budget policies and limits",
+        },
+    ],
     "agents": [
+        {
+            "name": "view_agents",
+            "description": "View managed agents and their status",
+        },
+        {
+            "name": "manage_agents",
+            "description": "Create, configure, enroll, and remove managed agents",
+        },
         {
             "name": "control_managed_agent",
             "description": "Send commands and prompts to managed agents",
         },
     ],
+    "sessions": [
+        {
+            "name": "view_runtime_sessions",
+            "description": "View runtime sessions and activity timelines",
+        },
+        {
+            "name": "manage_runtime_sessions",
+            "description": "End, pause, or otherwise control runtime sessions",
+        },
+    ],
+    "audit": [
+        {
+            "name": "view_audit_logs",
+            "description": "View security and compliance audit logs",
+        },
+    ],
+    "admin": [
+        {
+            "name": "view_admin_dashboard",
+            "description": "View instance admin dashboard and telemetry",
+        },
+    ],
 }
+
+# Convenience bundles used when composing role permission lists.
+_READ_CORE = [
+    "view_users",
+    "view_teams",
+    "view_flows",
+    "view_tools",
+    "view_policies",
+    "view_approvals",
+    "view_mcp_servers",
+    "view_trackers",
+    "view_projects",
+    "view_organizations",
+    "view_issues",
+    "view_compliance",
+    "view_ai_models",
+    "view_agents",
+    "view_runtime_sessions",
+]
+
+_CONFIGURE_CONTROL_PLANE = [
+    "create_flows",
+    "edit_flows",
+    "delete_flows",
+    "execute_flows",
+    "manage_tools",
+    "execute_tools",
+    "manage_policies",
+    "decide_approvals",
+    "manage_approval_workflows",
+    "create_mcp_servers",
+    "edit_mcp_servers",
+    "delete_mcp_servers",
+    "manage_mcp_servers",
+    "create_trackers",
+    "edit_trackers",
+    "delete_trackers",
+    "manage_trackers",
+    "sync_trackers",
+    "create_projects",
+    "edit_projects",
+    "delete_projects",
+    "create_organizations",
+    "edit_organizations",
+    "delete_organizations",
+    "create_issues",
+    "edit_issues",
+    "delete_issues",
+    "comment_issues",
+    "run_compliance",
+    "detect_duplicates",
+    "manage_dependencies",
+    "create_ai_models",
+    "edit_ai_models",
+    "delete_ai_models",
+    "view_cost",
+    "manage_agents",
+    "control_managed_agent",
+    "manage_runtime_sessions",
+]
+
+_ALL_PERMISSION_NAMES = [
+    perm["name"] for perms in SYSTEM_PERMISSIONS.values() for perm in perms
+]
 
 # Define system roles with their permissions
 SYSTEM_ROLES: Dict[str, Dict[str, any]] = {
     "owner": {
-        "description": "Account owner with full access to all features including billing and account management",
-        "permissions": [
-            # All permissions
-            "manage_account",
-            "close_account",
-            "view_billing",
-            "manage_billing",
-            "view_users",
-            "invite_users",
-            "manage_users",
-            "assign_roles",
-            "view_teams",
-            "manage_teams",
-            "view_flows",
-            "create_flows",
-            "edit_flows",
-            "delete_flows",
-            "execute_flows",
-            "view_tools",
-            "manage_tools",
-            "execute_tools",
-            "view_mcp_servers",
-            "create_mcp_servers",
-            "edit_mcp_servers",
-            "delete_mcp_servers",
-            "manage_mcp_servers",
-            "view_trackers",
-            "manage_trackers",
-            "sync_trackers",
-            "view_projects",
-            "manage_projects",
-            "view_issues",
-            "create_issues",
-            "edit_issues",
-            "delete_issues",
-            "comment_issues",
-            "view_compliance",
-            "run_compliance",
-            "detect_duplicates",
-            "manage_dependencies",
-            "control_managed_agent",
-        ],
+        "description": (
+            "Account owner with full access to all features including billing "
+            "and account management"
+        ),
+        "permissions": list(_ALL_PERMISSION_NAMES),
     },
     "admin": {
-        "description": "Administrator with full access except billing and account closure",
+        "description": (
+            "Administrator with full control-plane access except billing "
+            "management and account closure"
+        ),
         "permissions": [
-            "manage_account",
-            "view_billing",
-            "view_users",
-            "invite_users",
-            "manage_users",
-            "assign_roles",
-            "view_teams",
-            "manage_teams",
-            "view_flows",
-            "create_flows",
-            "edit_flows",
-            "delete_flows",
-            "execute_flows",
-            "view_tools",
-            "manage_tools",
-            "execute_tools",
-            "view_mcp_servers",
-            "create_mcp_servers",
-            "edit_mcp_servers",
-            "delete_mcp_servers",
-            "manage_mcp_servers",
-            "view_trackers",
-            "manage_trackers",
-            "sync_trackers",
-            "view_projects",
-            "manage_projects",
-            "view_issues",
-            "create_issues",
-            "edit_issues",
-            "delete_issues",
-            "comment_issues",
-            "view_compliance",
-            "run_compliance",
-            "detect_duplicates",
-            "manage_dependencies",
-            "control_managed_agent",
+            name
+            for name in _ALL_PERMISSION_NAMES
+            if name not in {"close_account", "manage_billing"}
         ],
     },
     "editor": {
-        "description": "Can create and edit flows, tools, trackers, and projects",
-        "permissions": [
-            "view_users",
-            "view_teams",
-            "view_flows",
-            "create_flows",
-            "edit_flows",
-            "execute_flows",
-            "view_tools",
-            "manage_tools",
-            "execute_tools",
-            "view_mcp_servers",
-            "create_mcp_servers",
-            "edit_mcp_servers",
-            "delete_mcp_servers",
-            "manage_mcp_servers",
-            "view_trackers",
-            "manage_trackers",
-            "sync_trackers",
-            "view_projects",
-            "manage_projects",
-            "view_issues",
-            "create_issues",
-            "edit_issues",
-            "comment_issues",
-            "view_compliance",
-            "run_compliance",
-            "detect_duplicates",
-            "manage_dependencies",
-            "control_managed_agent",
-        ],
+        "description": (
+            "Configure agents, tools, policies, models, flows, and trackers; "
+            "can approve requests and control managed agents"
+        ),
+        "permissions": sorted(set(_READ_CORE + _CONFIGURE_CONTROL_PLANE)),
     },
     "executor": {
-        "description": "Can execute flows and use tools, but not modify them",
+        "description": (
+            "Operate the control plane day-to-day: execute flows, decide "
+            "approvals, view sessions/cost, and control managed agents"
+        ),
         "permissions": [
             "view_flows",
             "execute_flows",
             "view_tools",
             "execute_tools",
+            "view_policies",
+            "view_approvals",
+            "decide_approvals",
+            "view_mcp_servers",
             "view_trackers",
             "view_projects",
+            "view_organizations",
             "view_issues",
             "create_issues",
             "comment_issues",
+            "view_ai_models",
+            "view_cost",
+            "view_agents",
             "control_managed_agent",
+            "view_runtime_sessions",
         ],
     },
     "tracker_manager": {
-        "description": "Specialized role for managing tracker integrations and syncing data",
+        "description": (
+            "Specialized role for managing tracker integrations and synced "
+            "project/issue data"
+        ),
         "permissions": [
             "view_trackers",
+            "create_trackers",
+            "edit_trackers",
+            "delete_trackers",
             "manage_trackers",
             "sync_trackers",
             "view_projects",
-            "manage_projects",
+            "create_projects",
+            "edit_projects",
+            "delete_projects",
+            "view_organizations",
+            "create_organizations",
+            "edit_organizations",
+            "delete_organizations",
             "view_issues",
             "create_issues",
             "edit_issues",
@@ -279,32 +364,34 @@ SYSTEM_ROLES: Dict[str, Dict[str, any]] = {
         ],
     },
     "analyst": {
-        "description": "Read-only access plus ability to run compliance checks and duplicate detection",
+        "description": (
+            "Read-only access plus compliance, cost analytics, audit logs, "
+            "and issue analysis"
+        ),
         "permissions": [
-            "view_users",
-            "view_teams",
-            "view_flows",
-            "view_tools",
-            "view_trackers",
-            "view_projects",
-            "view_issues",
-            "view_compliance",
+            *_READ_CORE,
+            "view_cost",
+            "view_audit_logs",
             "run_compliance",
             "detect_duplicates",
             "manage_dependencies",
         ],
     },
     "viewer": {
-        "description": "Read-only access to all resources",
+        "description": "Read-only access to core control-plane resources",
         "permissions": [
-            "view_users",
-            "view_teams",
             "view_flows",
             "view_tools",
+            "view_policies",
+            "view_mcp_servers",
             "view_trackers",
             "view_projects",
+            "view_organizations",
             "view_issues",
             "view_compliance",
+            "view_ai_models",
+            "view_agents",
+            "view_runtime_sessions",
         ],
     },
 }
@@ -331,6 +418,11 @@ def create_permissions(db: Session) -> Dict[str, Permission]:
             )
 
             if existing:
+                # Keep description/category current for system permissions
+                if existing.description != perm_data["description"]:
+                    existing.description = perm_data["description"]
+                if existing.category != category:
+                    existing.category = category
                 logger.info(f"Permission '{perm_data['name']}' already exists")
                 permissions[perm_data["name"]] = existing
             else:
@@ -435,7 +527,8 @@ def create_system_roles(
                     )
 
             logger.info(
-                f"Created system role: {role_name} with {len(role_data['permissions'])} permissions"
+                f"Created system role: {role_name} with "
+                f"{len(role_data['permissions'])} permissions"
             )
 
         roles[role_name] = role

@@ -77,6 +77,7 @@ class AuthUserResponse(BaseModel):
     full_name: Optional[str] = None
     email_verified: bool
     is_superuser: bool = False
+    permissions: Optional[List[str]] = None
 
 
 class LoginRequest(BaseModel):

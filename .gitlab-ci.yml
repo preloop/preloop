@@ -401,6 +401,22 @@ test:unit:preloop-integration-gateway-e2e:
   variables:
     TEST_PATHS: "backend/tests/integration/test_gateway_e2e.py"
 
+# Previously-unenumerated endpoint suites (gateways, agents, audio, sessions).
+# Bundled into one job to keep pipeline sprawl down while still exercising them.
+test:unit:preloop-endpoints-extra:
+  extends: .test:unit:template
+  variables:
+    TEST_PATHS: >-
+      backend/tests/endpoints/test_account_agents.py
+      backend/tests/endpoints/test_account_agents_filtering.py
+      backend/tests/endpoints/test_agent_control.py
+      backend/tests/endpoints/test_anthropic_gateway.py
+      backend/tests/endpoints/test_openai_gateway.py
+      backend/tests/endpoints/test_gemini_gateway.py
+      backend/tests/endpoints/test_gateway_usage_summary.py
+      backend/tests/endpoints/test_audio.py
+      backend/tests/endpoints/test_runtime_session_requests.py
+
 test:unit:cli:
   stage: test
   needs: []
@@ -416,6 +432,36 @@ test:unit:cli:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   variables:
     CGO_ENABLED: "1"
+
+# Standalone runtime plugins (Hermes Python + OpenClaw npm). Lightweight —
+# no postgres / backend image required.
+test:unit:runtime-plugins:
+  stage: test
+  needs: []
+  image: python:3.11-slim
+  before_script:
+    - pip install -U pip pytest pytest-asyncio
+    - pip install -e .
+  script:
+    - pytest -v runtime-plugins/tests runtime-plugins/hermes-preloop/tests
+  rules:
+    - changes:
+        - runtime-plugins/**/*
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+test:unit:openclaw-preloop:
+  stage: test
+  needs: []
+  image: node:22-alpine
+  before_script:
+    - cd runtime-plugins/openclaw-preloop && npm ci
+  script:
+    - npm test
+  rules:
+    - changes:
+        - runtime-plugins/openclaw-preloop/**/*
+        - runtime-plugins/tests/**/*
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
 test:coverage:
   stage: test
@@ -466,6 +512,7 @@ test:coverage:
     - test:unit:preloop-endpoints-impersonation
     - test:unit:preloop-endpoints-websocket-db
     - test:unit:preloop-integration-gateway-e2e
+    - test:unit:preloop-endpoints-extra
   image: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
   before_script:
     - pip install coverage junitparser

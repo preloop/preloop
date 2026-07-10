@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/preloop/preloop/cli/internal/config"
+	"github.com/preloop/preloop/cli/internal/version"
 )
 
 // Permission sources understood by the shared hook subcommand. These map onto
@@ -307,6 +308,7 @@ func callPermissionCheck(baseURL, token string, req permissionCheckRequest) (per
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
+	version.SetClientIdentityHeaders(httpReq.Header)
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 
 	client := &http.Client{Timeout: permissionCheckTimeout}

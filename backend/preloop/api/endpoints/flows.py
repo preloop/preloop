@@ -425,7 +425,6 @@ async def get_flow_execution_logs(
                 f"Failed to fetch container logs for execution {execution_id}: {e}"
             )
             # Fall back to database logs if container logs fail
-            pass
         finally:
             # Always cleanup agent resources to avoid leaking connections
             if agent is not None:

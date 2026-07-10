@@ -20,6 +20,7 @@ describe('PoliciesView', () => {
       tools?: unknown[];
       workflows?: unknown[];
       toolsFail?: boolean;
+      emptyVersions?: boolean;
     } = {}
   ) {
     return sinon
@@ -44,10 +45,9 @@ describe('PoliciesView', () => {
         }
 
         if (url.includes('/api/v1/policies/versions')) {
-          // NOTE: returning a NON-empty list on purpose. policies-view.ts
-          // renderPolicyFilesTab() (always rendered as a tab-panel) calls
-          // loadVersions() whenever _versions is empty, so an empty response
-          // triggers an infinite fetch/render loop. See production bug report.
+          if (opts.emptyVersions) {
+            return json([]);
+          }
           return json([
             {
               id: 'ver-1',
@@ -125,6 +125,30 @@ describe('PoliciesView', () => {
     await element.updateComplete;
 
     expect(element.shadowRoot?.textContent).to.contain('No tools configured');
+  });
+
+  it('does not loop fetching versions when the list is empty', async () => {
+    // Regression: renderPolicyFilesTab() used to call loadVersions() whenever
+    // _versions was empty, so an empty response retriggered the fetch on every
+    // render (infinite loop). It must now fetch versions at most once.
+    fetchStub = createFetchStub({ emptyVersions: true });
+    const element = (await fixture(
+      html`<policies-view></policies-view>`
+    )) as PoliciesView;
+
+    await waitUntil(() => !(element as any)._loading, 'still loading');
+    // Force a few extra render cycles; an unfixed component would refetch here.
+    for (let i = 0; i < 3; i++) {
+      (element as any).requestUpdate();
+      await element.updateComplete;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const versionCalls = fetchStub
+      .getCalls()
+      .filter((c) => String(c.args[0]).includes('/api/v1/policies/versions'));
+    expect(versionCalls.length).to.be.lessThan(2);
+    expect((element as any)._versionsLoaded).to.be.true;
   });
 
   it('builds access rules from loaded tools', async () => {

@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-07-10
+
+### Overview
+
+Version 0.10.0 evolves Preloop from an approval-and-gateway layer into a full **AI agent control plane**. It rolls up everything shipped in 0.10.0-rc.0 and 0.10.0-rc.1; the highlights across the release cycle:
+
+- **Agent Control.** Talk to your live agents. A durable WebSocket control channel (`WS /api/v1/agents/control/ws`), operator command/prompt/voice endpoints, web console Talk composer with browser-native and server STT/TTS, and mobile/watch voice scaffolds turn managed agents into contactable, audited teammates. New standalone runtime plugins — `@preloop-ai/openclaw-plugin` (npm) and `preloop-hermes-plugin` (PyPI) — keep OpenClaw and Hermes connected from inside the agent process.
+- **Native agent tool approvals.** Approval governance now reaches beyond MCP tools: `POST /api/v1/agents/permission-check` plus `preloop agents onboard --approvals` route Claude Code `Bash`/`Edit`, Codex CLI, and Cursor native tool calls to your phone, watch, or Slack before they run — with the requesting agent's identity on every approval card.
+- **Cost analytics and session optimization.** A dedicated Console **Cost** area with Agents/Tools/Sessions/Users drill-downs and budget-health alerts in the open-source core; runtime session replay with a per-request timeline; and (Preloop Cloud / Preloop Enterprise) evidence-grounded session optimization with one-click applied actions, replay-measured savings, AI session titles, per-user budgets, and budget notification recipients.
+- **A leaner context for every agent.** MCP tool output filters strip wasteful fields on the proxy hot path, gateway context optimization deduplicates repeated prompt prefixes and caps tool results before upstream dispatch, and per-tool usage stats expose which tool schemas are burning tokens.
+- **Simpler ways in.** The landing page and README now offer two clear paths — Preloop Cloud or the self-hosted open-source stack — with a tabbed install widget, an installer that asks which instance to connect to (`PRELOOP_URL` supported throughout), a new self-hosting installation guide, and Antigravity and Devin onboarding adapters alongside the existing agents.
+- **A release you can trust.** The OSS install crash loop from issue #53 (a NATS healthcheck that lame-ducked the server every 10 seconds) is fixed, and every release is now gated by an automated smoke test that boots the release compose stack, signs up a user, and fails on any restart loop before anything is published. CLI update notifications also work for the first time.
+
+**Upgrade notes:** run `alembic upgrade head` (the approval-workflow name-uniqueness migration deduplicates existing rows automatically); review the raised `DATABASE_POOL_SIZE`/`DATABASE_MAX_OVERFLOW` defaults (20/40) if your PostgreSQL `max_connections` is small; `MODEL_GATEWAY_MAX_PREVIEW_CHARS` now defaults to 32768; and `PRELOOP_SERVICE_ROLE` (`all`/`api`/`gateway`) lets you split API and gateway deployments — the default remains combined.
+
+## [0.10.0-rc.1] - 2026-07-10
+
+### Added
+
+- **CLI installer instance selection**: `install-cli.sh` now explains that the CLI connects to a control plane (Preloop Cloud at `https://preloop.ai` by default, or a self-hosted instance), honors a pre-set `PRELOOP_URL`, and interactively prompts for the instance URL before sign-in. Login, signup, and agent onboarding launched by the installer all target the chosen instance.
+- **Landing page self-host path**: The hero install widget is now tabbed — "Install the CLI" (default) and "Install the full stack" (the OSS Docker Compose one-liner) — with the caption swapping per tab. The get-started card stays focused on agent onboarding: CLI-only, and on non-preloop.ai hosts its snippet targets the current instance via `PRELOOP_URL=<origin>`.
+- **CLI identification**: The CLI now sends `User-Agent: preloop-cli/<version> (<os>; <arch>)` and `X-Client-Version` on requests to Preloop servers via `SetClientIdentityHeaders`, covering the API client, MCP client, auth token exchange, agent permission-check hooks, and version-check pings. Enables adoption metrics and better support diagnostics; no data beyond version and platform is transmitted.
+- **CLI activity analytics**: When `INSTALLER_AUDIT_ACCOUNT_ID` is configured (hosted instances), daily CLI update-check pings are recorded as `cli_activity` audit events, and `GET /api/v1/admin/installer-downloads/stats` now reports active CLIs (24h/window), total check-ins, last-seen, and top CLI versions.
+- **Updated default RBAC roles**: System roles now cover agents, runtime sessions, policies, approvals, cost/budgets, AI models, and audit. `GET /api/v1/auth/users/me` returns the caller's permission allow-list when RBAC is active; the Console hides inaccessible nav items and shows a permission-denied empty state instead of blank pages.
+- **Free-tier hosted-model cap**: Card-free accounts with no subscription are subject to a calendar-month hard cap on built-in hosted model spend (`BILLING_FREE_HOSTED_MODEL_HARD_CAP_USD`, default `$1`) when entitlement enforcement is on, with a clear BYOK/upgrade denial message.
+- **In-product upgrade UX**: Console `fetchWithAuth` surfaces HTTP 402 `upgrade_required` responses in an upgrade modal (feature-aware copy + checkout CTA). Shared `startCheckout` helper and Sessions title upsell hint support the card-free signup → upgrade-in-product flow when billing is present.
+
+### Changed
+
+- **Edition naming**: User-facing copy now consistently uses **Preloop** (the open-source edition), **Preloop Cloud** (the hosted service at preloop.ai; Teams is a Preloop Cloud plan), and **Preloop Enterprise** (the self-hosted commercial edition) across the README, architecture docs, landing/pricing pages, and the documentation guide.
+- **README quickstart**: Restructured around the two-part model — control plane (Preloop Cloud or self-hosted OSS) plus CLI — with explicit Cloud and self-host paths, including how to point the CLI at your own instance (`preloop login --url` / `PRELOOP_URL`).
+- **OSS installer next steps**: `install-oss.sh` now prints how to create the first user, install the CLI, connect it to the local instance, and onboard agents.
+- **RBAC permission vocabulary**: Endpoint checks and seeded roles now share one `verb_resource` vocabulary (`create_projects`, `view_cost`, `decide_approvals`, …). Re-run `python scripts/init_system_roles.py` after upgrade to reconcile existing deployments.
+- **Console Audit navigation**: Sessions and Approvals nest under an **Audit** sidebar section (All events / Sessions / Approvals). Cost stays top-level. The Audit section appears when any child is allowed for the user/edition; All events still requires the `audit_logs` feature flag.
+- **Card-free signup path**: Landing, pricing, register, and header CTAs no longer force Stripe checkout at signup. New accounts register first; Teams upgrades happen in-product (logged-in pricing checkout or the upgrade modal).
+
+### Fixed
+
+- **CLI update notifications**: `GET /api/v1/version` now returns the `latest_version`/`min_version`/`download_url` keys the CLI update check parses. The CLI compared against a field the server never sent, so update prompts never fired.
+- **Replay usage isolation**: `get_gateway_usage_for_execution` now applies the same `exclude_replay_usage_condition()` filter as the other gateway aggregations.
+- **Permission decorator fail-closed**: `require_permission` now returns HTTP 500 when `current_user` or `db` is missing from the endpoint kwargs instead of silently skipping the RBAC check.
+- **Code quality hardening**: Removed the unused `push_notifications.py` stub; tightened `retry_async` exhaustion handling; cleaned schema `__all__` / `model_config` merge; and fixed related dead assigns and string-concat style in policy generation and tracker helpers.
+
+## [0.10.0-rc.0] - 2026-07-07
+
 ### Added
 
 - **Native agent tool approvals**: Onboarded agents can route built-in tool calls (e.g. Claude Code `Bash`/`Edit`, Codex CLI, Cursor) through Preloop human approvals via `POST /api/v1/agents/permission-check`, authenticated with the agent's managed-runtime credential. The endpoint reuses the existing approval pipeline (create → notify mobile/watch → wait → allow/deny) and records `managed_agent_id`, `runtime_session_id`, and `managed_agent_name` on each request so operator surfaces show which agent is asking.
@@ -14,14 +59,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **MCP tool output filters**: Account-scoped rules strip named top-level fields from MCP tool JSON results on the proxy hot path before they reach the calling agent, trimming wasted context tokens. Core model, CRUD, and proxy application live in OSS; Enterprise billing exposes `/api/v1/billing/cost/output-filters` CRUD and the Console tools editor includes a filter dialog.
 - **Budget notification recipients**: Budget policies accept optional `notification_user_ids` and `notification_team_ids` so threshold alerts can target specific users and teams instead of only the policy owner.
 - **Tool usage stats**: `GET /api/v1/tools/stats` aggregates per-tool call counts, schema-injection token estimates, and spend attribution across managed agents for the Console tools view.
-- **Agent Control backend**: WebSocket control channel, operator command endpoint, runtime adapter scaffolding, audio transcription endpoint, and mobile/web Talk UI foundations for audited operator messages to managed agents.
+- **Agent Control backend**: WebSocket control channel (`WS /api/v1/agents/control/ws`), operator command/prompt/voice-transcript endpoints, runtime adapter scaffolding, and mobile/web Talk UI foundations for audited operator messages to managed agents.
+- **Audio endpoints**: `POST /api/v1/audio/transcriptions` (speech-to-text) and `POST /api/v1/audio/speech` (text-to-speech) backed by speech-capable `AIModel` rows, used as the server fallback for web/mobile Talk surfaces.
+- **Manual tracker sync**: `POST /api/v1/trackers/{tracker_id}/sync` triggers an on-demand tracker scan without waiting for the scheduler.
 - **Cost analytics (OSS)**: Dedicated Console Cost view with spend overview, grouped usage drill-downs, and budget-health alerts backed by `/api/v1/cost/*` endpoints. Enterprise billing plugin owns budget policy CRUD and enforcement.
 - **Runtime session observer**: Shared session replay, timeline/chat views, gateway event inspection, and opt-in session summaries in the Console.
 - **Runtime session request timeline**: `GET /account/runtime-sessions/{id}/requests` reads per-request `ApiUsage` rows (tokens, cost, status, tool schema attribution) to power a unified replay with turn/delta deduplication, sortable chat, cache-token visibility, and inline operator activity turns.
 - **Runtime session titles**: Session list scheduling for background LLM-generated titles via the plugin service registry, with Enterprise billing providing the generator and a configurable daily spend cap (`billing_session_title_daily_cap_usd`).
 - **Session optimization actions**: Core schemas, CRUD, and gateway averages for applied optimization actions; Enterprise billing exposes apply/list endpoints for scope_tools, set_budget, enable_compression, and cap_tool_results with measured outcomes.
 - **Gateway context optimization**: Subject-scoped dedupe, noise stripping, and tool-result caps on the gateway hot path before upstream dispatch.
+- **Standalone Agent Control runtime plugins**: New open-source runtime plugins under `runtime-plugins/` — `@preloop-ai/openclaw-plugin` (npm) and `preloop-hermes-plugin` (PyPI) — keep the Agent Control WebSocket connected from inside the agent process, advertise capabilities and presence, deliver operator/voice messages into the active session, and gate native tool calls through Preloop approvals (fail-closed by default). `PUBLISHING.md` documents lockstep versioning and marketplace submission.
+- **CLI runtime installers**: `preloop agents install-plugin <agent>` delegates runtime-plugin installation to the agent's own marketplace installer, and `preloop agents install-runtime <hermes|openclaw>` installs the runtime locally and onboards it through Preloop in one step. `preloop agents validate --live` runs a live gateway probe on demand.
 - **CLI agent adapters**: Antigravity (Google Gemini MCP tree) and Devin (Cognition) MCP-only onboarding adapters alongside existing managed runtimes.
+- **Release compose migrate job**: `docker-compose.release.yaml` now runs schema migrations in a dedicated one-shot `migrate` service (`init_db.py --force`) that app services wait on, instead of migrating inside the API container's start script.
+- **Helm health monitor**: Optional in-cluster health-monitor deployment (`healthMonitor.*`, enabled by default) polls `/api/v1/health` and logs alert lines after consecutive failures. New `computeBackend` values (KubeVirt/AWS/GCP) and CNPG lifecycle tuning values were added alongside it.
+- **Automated release verification**: `scripts/release_smoke_test.sh` boots the release compose file with the tagged images, checks API/gateway/console health, exercises first-user sign-up and login, and fails on any container restart loop. The release workflow runs it as a `verify-oss-install` gate before the GitHub release and PyPI publish are created.
 - **Deploy wizard**: Expanded console deploy wizard for guided agent onboarding.
 - **Test coverage expansion**: Substantial backend endpoint, service, integration (gateway e2e), and frontend component test suites across the OSS core and Enterprise plugins.
 
@@ -34,9 +86,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **README**: Restructured hero, quick-start, and capability messaging for the control-plane positioning.
 - **Gateway runtime attribution**: Plugin-agent gateway traffic now attributes to the principal's latest open per-run session when available, improving per-run ROI for Hermes, OpenClaw, and similar runtimes without changing custom-agent `X-Preloop-Session-Id` behavior.
 - **Gateway usage accounting**: Preserves prompt-cache token breakdown (`cached_tokens`, `cache_read_input_tokens`) for cache-aware cost estimates and session replay UI.
+- **Database pool defaults**: `DATABASE_POOL_SIZE` default raised from 5 to 20 and `DATABASE_MAX_OVERFLOW` from 10 to 40 (up to 60 connections per worker). Deployments with many workers or a small PostgreSQL `max_connections` should set these explicitly.
+- **Gateway preview size**: `MODEL_GATEWAY_MAX_PREVIEW_CHARS` default raised from 4096 to 32768 so session replay and optimization analysis see fuller conversation previews (increases stored payload size).
+- **Approval workflow names**: Workflow names are now unique per account. The migration renames pre-existing duplicates in place (the oldest keeps its name; later duplicates get a short-id suffix) before creating the unique index.
 
 ### Fixed
 
+- **OSS install NATS crash loop** ([#53](https://github.com/preloop/preloop/issues/53)): The release compose file's NATS healthcheck ran `nats-server --signal ldm`, which sent the lame-duck shutdown signal (SIGUSR2) to the server on every probe — gracefully stopping NATS every 10 seconds and leaving the stack in a restart loop after `curl … /install/oss | sh`. The healthcheck now probes the NATS monitoring endpoint (`wget --spider http://127.0.0.1:8222/healthz`) instead of signalling the process.
+- **CNPG redeploy hangs**: Helm upgrades of multi-instance CloudNativePG clusters now use `switchover` for primary updates and only enable the PodDisruptionBudget when `instances > 1`, fixing redeploys that hung waiting on a primary restart.
 - **OSS install failure reporting**: The OSS installer now exits non-zero when `docker compose up` fails and prints the log-inspection command instead of reporting success.
 - **Gateway governance lookup performance**: Short-lived negative cache skips per-request account DB fetches when subject governance is unconfigured.
 

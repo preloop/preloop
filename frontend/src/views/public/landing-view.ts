@@ -12,7 +12,6 @@ import '@shoelace-style/shoelace/dist/components/carousel-item/carousel-item.js'
 import type SlCarousel from '@shoelace-style/shoelace/dist/components/carousel/carousel.js';
 import type SlCarouselItem from '@shoelace-style/shoelace/dist/components/carousel-item/carousel-item.js';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
-import { getFeatures } from '../../api';
 
 interface FeatureSlide {
   title: string;
@@ -42,6 +41,12 @@ export class LandingView extends LitElement {
   @state() private _heroInstall = '';
   @state() private _heroInstallCaption = '';
   @state() private _heroInstallCopied = false;
+  @state() private _heroInstallTabs: Array<{
+    label: string;
+    command: string;
+    caption?: string;
+  }> = [];
+  @state() private _heroInstallActiveTab = 0;
   @state() private _heroTrustTags: string[] = [];
   @state() private _heroImage = '';
   @state() private _heroImageAlt = '';
@@ -57,8 +62,6 @@ export class LandingView extends LitElement {
   @state() private _cliSetup: Array<{ step: string; command: string }> = [];
   @state() private _extendedDescription = '';
   @state() private _featuresLayout: 'carousel' | 'grid' = 'grid';
-  @state() private _billingEnabled = false;
-  @state() private _oauthSigninEnabled = false;
   @state() private _productHunt: {
     enabled: boolean;
     post_id: string;
@@ -209,7 +212,6 @@ export class LandingView extends LitElement {
 
   async firstUpdated() {
     await this._loadContent();
-    await this._checkBillingEnabled();
   }
 
   connectedCallback() {
@@ -230,59 +232,11 @@ export class LandingView extends LitElement {
     }
   }
 
-  private async _checkBillingEnabled() {
-    try {
-      const features = await getFeatures();
-      this._billingEnabled = features.features['billing'] === true;
-      this._oauthSigninEnabled = features.features['oauth_signin'] === true;
-    } catch (error) {
-      console.error('Failed to check billing feature:', error);
-      this._billingEnabled = false;
-      this._oauthSigninEnabled = false;
-    }
-  }
-
-  private async _handleSignup(e: Event) {
+  private _handleSignup(e: Event) {
     e.preventDefault();
-
-    // If OAuth is available, go to register page where users choose OAuth or email
-    if (this._oauthSigninEnabled) {
-      window.location.href = '/register';
-      return;
-    }
-
-    if (!this._billingEnabled) {
-      // No billing and no OAuth — regular registration (OSS)
-      window.location.href = '/register';
-      return;
-    }
-
-    // Billing enabled - redirect to Stripe checkout
-    try {
-      const response = await fetch('/api/v1/billing/create-checkout-session', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          plan_id: 'teams',
-          interval: 'month',
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to create checkout session');
-      }
-
-      const result = await response.json();
-
-      if (result.action === 'redirect' && result.url) {
-        window.location.href = result.url;
-      } else {
-        window.location.href = '/register';
-      }
-    } catch (error) {
-      console.error('Checkout error:', error);
-      window.location.href = '/register';
-    }
+    // Signup is card-free (T2 paywall move): every signup door leads to
+    // /register. Pricing keeps checkout as the deliberate upgrade path.
+    window.location.href = '/register';
   }
 
   private async _loadContent() {
@@ -347,6 +301,33 @@ export class LandingView extends LitElement {
     ) as HTMLElement | undefined;
     if (ctaInstallCaption)
       this._heroInstallCaption = (ctaInstallCaption.textContent || '').trim();
+
+    const ctaInstallTabs = children.find(
+      (el) => el.getAttribute('slot') === 'cta-install-tabs'
+    ) as HTMLElement | undefined;
+    if (ctaInstallTabs) {
+      try {
+        const tabs = JSON.parse(ctaInstallTabs.textContent || '[]');
+        const tabArray = (Array.isArray(tabs) ? tabs : []) as Array<{
+          label?: string;
+          command?: string;
+          caption?: string;
+        }>;
+        this._heroInstallTabs = tabArray.filter((tab) =>
+          Boolean(tab && tab.label && tab.command)
+        ) as Array<{ label: string; command: string; caption?: string }>;
+        if (this._heroInstallTabs.length > 0) {
+          this._heroInstallActiveTab = 0;
+          this._heroInstall = this._heroInstallTabs[0].command.trim();
+          if (this._heroInstallTabs[0].caption) {
+            this._heroInstallCaption = this._heroInstallTabs[0].caption.trim();
+          }
+        }
+      } catch {
+        // Malformed slot JSON - keep the single-command widget.
+        this._heroInstallTabs = [];
+      }
+    }
 
     const ctaInstallTags = children.find(
       (el) => el.getAttribute('slot') === 'cta-install-tags'
@@ -577,8 +558,24 @@ export class LandingView extends LitElement {
     this._ctaPrimaryUrl = (hero.cta_primary_url || '').trim();
     this._ctaSecondary = hero.cta_secondary || '';
     this._ctaSecondaryUrl = hero.cta_secondary_url || '';
-    this._heroInstall = (hero.install_command || '').trim();
-    this._heroInstallCaption = (hero.install_caption || '').trim();
+    this._heroInstallTabs = Array.isArray(hero.install_tabs)
+      ? hero.install_tabs.filter(
+          (tab: { label?: string; command?: string }) =>
+            tab && tab.label && tab.command
+        )
+      : [];
+    if (this._heroInstallTabs.length > 0) {
+      this._heroInstallActiveTab = 0;
+      this._heroInstall = this._heroInstallTabs[0].command.trim();
+      this._heroInstallCaption = (
+        this._heroInstallTabs[0].caption ||
+        hero.install_caption ||
+        ''
+      ).trim();
+    } else {
+      this._heroInstall = (hero.install_command || '').trim();
+      this._heroInstallCaption = (hero.install_caption || '').trim();
+    }
     this._heroTrustTags = Array.isArray(hero.trust_tags)
       ? hero.trust_tags.filter(Boolean)
       : [];
@@ -682,6 +679,15 @@ export class LandingView extends LitElement {
     }
 
     return url;
+  }
+
+  private _selectHeroInstallTab(index: number) {
+    const tab = this._heroInstallTabs[index];
+    if (!tab) return;
+    this._heroInstallActiveTab = index;
+    this._heroInstall = tab.command.trim();
+    this._heroInstallCaption = (tab.caption || '').trim();
+    this._heroInstallCopied = false;
   }
 
   private async _handleCopyHeroInstall() {
@@ -830,9 +836,40 @@ export class LandingView extends LitElement {
                       <div
                         class="hero-install"
                         role="group"
-                        aria-label="Install the Preloop CLI"
+                        aria-label="Install Preloop"
                       >
-                        <span class="hero-install-label">Install the CLI</span>
+                        ${
+                          this._heroInstallTabs.length > 1
+                            ? html`<div
+                                class="hero-install-tabs"
+                                role="tablist"
+                                aria-label="Choose what to install"
+                              >
+                                ${this._heroInstallTabs.map(
+                                  (tab, index) => html`
+                                    <button
+                                      type="button"
+                                      class="hero-install-tab ${
+                                        index === this._heroInstallActiveTab
+                                          ? 'active'
+                                          : ''
+                                      }"
+                                      role="tab"
+                                      aria-selected="${
+                                        index === this._heroInstallActiveTab
+                                      }"
+                                      @click=${() =>
+                                        this._selectHeroInstallTab(index)}
+                                    >
+                                      ${tab.label}
+                                    </button>
+                                  `
+                                )}
+                              </div>`
+                            : html`<span class="hero-install-label"
+                                >Install the CLI</span
+                              >`
+                        }
                         <div class="hero-install-row">
                           <span class="hero-install-prompt" aria-hidden="true"
                             >$</span
@@ -1415,7 +1452,10 @@ export class LandingView extends LitElement {
                               prerequisites: [],
                               setup_instructions:
                                 'Install the CLI to onboard existing agents or connect them manually.',
-                              code: 'curl -fsSL https://preloop.ai/install/cli | sh',
+                              code:
+                                window.location.hostname === 'preloop.ai'
+                                  ? 'curl -fsSL https://preloop.ai/install/cli | sh\n\npreloop login\n\npreloop agents discover'
+                                  : `curl -fsSL https://preloop.ai/install/cli | sh\n\nexport PRELOOP_URL=${window.location.origin}\npreloop login\n\npreloop agents discover`,
                             },
                           ]}
                           defaultTab="cli"

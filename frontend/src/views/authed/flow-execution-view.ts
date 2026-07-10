@@ -2127,36 +2127,6 @@ ${this.execution.resolved_input_prompt}</pre>
                           : ''
                       }
                     </div>
-
-                    ${
-                      false && isRunning
-                        ? html`
-                            <div class="terminal-input">
-                              <sl-input
-                                placeholder="Enter command (e.g., 'pause', 'message: Hello')"
-                                .value=${this.commandInput}
-                                @input=${(e: any) =>
-                                  (this.commandInput = e.target.value)}
-                                @keydown=${this.handleInputKeydown}
-                                style="flex: 1;"
-                              >
-                                <sl-icon
-                                  name="terminal"
-                                  slot="prefix"
-                                ></sl-icon>
-                              </sl-input>
-                              <sl-button
-                                variant="primary"
-                                ?loading=${this.isSendingCommand}
-                                @click=${this.sendCommand}
-                              >
-                                <sl-icon name="send"></sl-icon>
-                                Send
-                              </sl-button>
-                            </div>
-                          `
-                        : ''
-                    }
                   </sl-card>
                 </div>
               </div>

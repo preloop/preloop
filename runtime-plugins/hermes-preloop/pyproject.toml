@@ -15,15 +15,15 @@ dependencies = [
   "PyYAML>=6.0",
   "preloop>=0.9.3",
 ]
-keywords = ["preloop", "hermes", "agent-control", "autonomous-agents"]
+keywords = ["preloop", "hermes", "agent-control", "tool-approval", "autonomous-agents"]
 
 [project.urls]
 Homepage = "https://preloop.ai"
 Repository = "https://github.com/spacecode-ai/preloop"
 Documentation = "https://docs.preloop.ai"
 
-[project.entry-points."hermes.plugins"]
-preloop = "preloop_hermes_plugin:plugin"
+[project.entry-points."hermes_agent.plugins"]
+preloop = "preloop_hermes_plugin.plugin"
 
 [project.scripts]
 preloop-hermes-plugin = "preloop_hermes_plugin.plugin:main"

@@ -1,16 +1,24 @@
 # Preloop OpenClaw Plugin
 
-`@preloop/openclaw-plugin` exposes OpenClaw to Preloop without requiring the
+`@preloop-ai/openclaw-plugin` exposes OpenClaw to Preloop without requiring the
 Preloop CLI to be present at runtime.
 
 The plugin reads its OpenClaw plugin entry config, keeps the Agent Control
-WebSocket connected, advertises capabilities, and routes operator prompts or
-voice transcripts into OpenClaw sessions.
+WebSocket connected, advertises capabilities, routes operator prompts or
+voice transcripts into OpenClaw sessions, and gates native tool calls through
+Preloop mobile/watch approvals via the `before_tool_call` hook (fail-closed by
+default). OpenClaw's own `~/.openclaw/exec-approvals.json` policy is honored
+locally for auto-allow / auto-deny; only would-prompt cases escalate.
+
+Set `tool_approval_enabled: false` on the plugin config to disable the gate, or
+`tool_approval_fail_open: true` to allow tools when Preloop is unreachable.
 
 ## Install
 
 ```bash
-openclaw plugins install @preloop/openclaw-plugin
+openclaw plugins install @preloop-ai/openclaw-plugin
+# or from ClawHub:
+# openclaw plugins install clawhub:@preloop-ai/openclaw-plugin
 ```
 
 OpenClaw runs the plugin installer inside its own Node runtime. If OpenClaw
@@ -28,7 +36,7 @@ npm run build
 ## Configure
 
 The plugin does not require the Preloop CLI at runtime. Existing Preloop users
-can still let the CLI provision `plugins.entries.openclaw-plugin.config`:
+can still let the CLI provision `plugins.entries.preloop-plugin.config`:
 
 ```bash
 preloop agents onboard openclaw
@@ -53,7 +61,7 @@ The generated OpenClaw config contains:
 {
   "plugins": {
     "entries": {
-      "openclaw-plugin": {
+      "preloop-plugin": {
         "config": {
           "enabled": true,
           "protocol": "preloop.agent_control.v1",
@@ -91,7 +99,7 @@ The standalone CLI verifier also accepts a direct control document:
 ## Manual Test Without Preloop CLI
 
 ```bash
-openclaw plugins install @preloop/openclaw-plugin
+openclaw plugins install @preloop-ai/openclaw-plugin
 preloop-openclaw-plugin verify --config ~/.openclaw/openclaw.json
 preloop-openclaw-plugin run --config ~/.openclaw/openclaw.json
 ```
@@ -114,8 +122,8 @@ preloop-openclaw-plugin verify --config ~/.openclaw/openclaw.json
 
 ## Publishing status
 
-The package is intended for the OpenClaw plugin marketplace and npm as
-`@preloop/openclaw-plugin`. Before publishing, run:
+The package is published to npm and ClawHub as
+`@preloop-ai/openclaw-plugin`. Before publishing, run:
 
 ```bash
 npm install
@@ -123,4 +131,4 @@ npm run build
 npm pack --dry-run
 ```
 
-See `../PUBLISHING.md` for the full npm/OpenClaw marketplace release checklist.
+See `../PUBLISHING.md` for the full npm + ClawHub release checklist.

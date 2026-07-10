@@ -1,6 +1,7 @@
 import { LitElement } from 'lit';
 import { Router } from '@vaadin/router';
 import { DEFAULT_SIMILARITY_THRESHOLD } from './config';
+import { PermissionError, permissionErrorFromResponse } from './permissions';
 import type {
   FetchIssuesListParams,
   SearchIssuesParams,
@@ -248,8 +249,96 @@ export async function fetchWithAuth(
     );
   }
 
+  if (response.status === 402) {
+    // Premium gate (T2): the endpoint answered with the upgrade contract.
+    // Read the feature from a clone so callers can still consume the body.
+    let feature = '';
+    try {
+      const body = await response.clone().json();
+      if (body?.detail?.code === 'upgrade_required') {
+        feature = String(body.detail.feature || '');
+      }
+    } catch {
+      // Non-JSON 402 — still show the generic upgrade modal.
+    }
+    window.dispatchEvent(
+      new CustomEvent('show-upgrade-modal', {
+        detail: { feature, code: 'upgrade_required' },
+        bubbles: true,
+        composed: true,
+      })
+    );
+  }
+
   return response;
 }
+
+/**
+ * Start a Stripe checkout from inside the console (upgrade-modal flow).
+ *
+ * ``returnTo`` must be a same-origin path; checkout-success reconciles the
+ * subscription by session_id (webhook-independent) and redirects back there.
+ * Single shared helper — the modal, pricing page, and any future upgrade
+ * button all call this, so plan/interval/return handling never drifts.
+ */
+let _checkoutInFlight = false;
+export async function startCheckout(
+  planId: string,
+  interval: 'month' | 'year',
+  returnTo?: string
+): Promise<void> {
+  if (_checkoutInFlight) return; // double-click guard: one Stripe tab
+  _checkoutInFlight = true;
+  try {
+    const response = await fetchWithAuth(
+      '/api/v1/billing/create-checkout-session',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          plan_id: planId,
+          interval,
+          return_to: returnTo ?? null,
+        }),
+      }
+    );
+    if (!response.ok) {
+      throw new Error('Failed to create checkout session');
+    }
+    const result = await response.json();
+    if (result.action === 'redirect' && result.url) {
+      window.location.href = result.url;
+      return;
+    }
+    throw new Error('Unexpected checkout response');
+  } finally {
+    _checkoutInFlight = false;
+  }
+}
+
+export interface Entitlements {
+  premium: boolean;
+  reason: string;
+}
+
+/** Authed boot-time entitlement state (passive UI only; 402s are the gate). */
+export async function getEntitlements(): Promise<Entitlements> {
+  const response = await fetchWithAuth('/api/v1/billing/entitlements');
+  if (!response.ok) {
+    // Fail-open for UI purposes: never degrade the console over a hint.
+    return { premium: true, reason: 'unavailable' };
+  }
+  return response.json();
+}
+
+export type { UserPermissions } from './permissions';
+export {
+  PermissionError,
+  hasPermission,
+  hasAnyPermission,
+  isRbacActive,
+  permissionErrorFromResponse,
+} from './permissions';
 export async function fetchPublic(
   url: string,
   options: RequestInit = {}
@@ -263,12 +352,20 @@ export class AuthedElement extends LitElement {
   protected async fetchData(url: string, options: RequestInit = {}) {
     try {
       const response = await fetchWithAuth(url, options);
+      if (response.status === 403) {
+        throw await permissionErrorFromResponse(response);
+      }
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
       return await response.json();
     } catch (error) {
       console.error('Failed to fetch data:', error);
+      // Re-throw permission errors so views can render a dedicated empty state
+      // instead of silently collapsing into a blank page.
+      if (error instanceof PermissionError) {
+        throw error;
+      }
       // The fetchWithAuth function handles redirection on auth failure
       return null;
     }
@@ -1594,8 +1691,18 @@ export async function commitIssueDependencies(
   return response.json();
 }
 
+export interface UserProfile {
+  username: string;
+  email: string;
+  full_name?: string | null;
+  email_verified: boolean;
+  is_superuser?: boolean;
+  /** null/undefined = RBAC inactive (OSS); array = allow-list */
+  permissions?: string[] | null;
+}
+
 // Account
-export async function getUserProfile() {
+export async function getUserProfile(): Promise<UserProfile> {
   const response = await fetchWithAuth('/api/v1/auth/users/me');
   if (!response.ok) {
     throw new Error('Failed to fetch user profile');

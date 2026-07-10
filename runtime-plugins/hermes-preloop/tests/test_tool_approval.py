@@ -15,6 +15,7 @@ if str(SRC) not in sys.path:
 
 from preloop_hermes_plugin.plugin import (  # noqa: E402
     HermesPreloopPlugin,
+    _block,
     _permission_check_url,
     _resolve_fail_open,
 )
@@ -42,6 +43,21 @@ def test_permission_check_url_derives_https_base() -> None:
     assert url == "https://staging.preloop.ai/api/v1/agents/permission-check"
     insecure = _permission_check_url("ws://localhost:8000/api/v1/agents/control/ws")
     assert insecure == "http://localhost:8000/api/v1/agents/permission-check"
+
+
+def test_block_envelope_matches_upstream_hermes_shape() -> None:
+    envelope = _block("nope")
+    assert envelope["action"] == "block"
+    assert envelope["message"] == "nope"
+    # Plan-era aliases kept for docs/tests compatibility.
+    assert envelope["decision"] == "block"
+    assert envelope["reason"] == "nope"
+
+
+def test_capabilities_advertise_tool_approval() -> None:
+    caps = HermesPreloopPlugin().capabilities()
+    assert caps.supports_tool_approval is True
+    assert caps.to_payload()["tool_approval"] is True
 
 
 @pytest.mark.asyncio
@@ -75,6 +91,7 @@ async def test_allow_decision_returns_none() -> None:
     assert captured["body"]["tool_name"] == "terminal"
     assert captured["body"]["tool_input"] == {"command": "ls"}
     assert captured["body"]["session_id"] == "sess_1"
+    assert captured["body"]["client_decision"] == "ask"
     assert captured["headers"]["Authorization"] == "Bearer agt_test"
 
 
@@ -93,7 +110,36 @@ async def test_deny_decision_blocks_with_reason() -> None:
         task_id="sess_2",
     )
 
-    assert result == {"decision": "block", "reason": "Operator rejected rm -rf"}
+    assert result == {
+        "action": "block",
+        "message": "Operator rejected rm -rf",
+        "decision": "block",
+        "reason": "Operator rejected rm -rf",
+    }
+
+
+@pytest.mark.asyncio
+async def test_positional_tool_name_python_plugin_form() -> None:
+    instance = _plugin()
+    captured: dict[str, Any] = {}
+
+    async def fake_request(
+        url: str, body: dict[str, Any], headers: dict[str, str]
+    ) -> dict[str, Any]:
+        captured["body"] = body
+        return {"decision": "allow"}
+
+    instance._request_decision = fake_request  # type: ignore[assignment]
+
+    result = await instance.pre_tool_call(
+        "terminal",
+        args={"command": "pwd"},
+        task_id="sess_3",
+    )
+    assert result is None
+    assert captured["body"]["tool_name"] == "terminal"
+    assert captured["body"]["tool_input"] == {"command": "pwd"}
+    assert captured["body"]["session_id"] == "sess_3"
 
 
 @pytest.mark.asyncio
@@ -122,7 +168,9 @@ async def test_network_error_fails_closed_by_default() -> None:
     )
 
     assert result is not None
+    assert result["action"] == "block"
     assert result["decision"] == "block"
+    assert "unavailable" in result["message"]
     assert "unavailable" in result["reason"]
 
 

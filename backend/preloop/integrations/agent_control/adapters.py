@@ -43,6 +43,7 @@ class HookedAgentControlAdapter:
         supports_new_session: bool = True,
         supports_existing_session: bool = True,
         supports_interrupt: bool | None = None,
+        supports_tool_approval: bool = False,
     ) -> "HookedAgentControlAdapter":
         """Create a generic adapter from native runtime hook functions."""
 
@@ -59,6 +60,7 @@ class HookedAgentControlAdapter:
                     if supports_interrupt is None
                     else supports_interrupt
                 ),
+                supports_tool_approval=supports_tool_approval,
             ),
         )
 
@@ -86,6 +88,7 @@ class OpenClawAgentControlAdapter(HookedAgentControlAdapter):
         interrupt_session: InterruptHook | None = None,
         supports_interrupt: bool = False,
         supports_voice: bool = False,
+        supports_tool_approval: bool = False,
     ) -> "OpenClawAgentControlAdapter":
         """Create an OpenClaw adapter from native runtime hook functions."""
 
@@ -98,6 +101,7 @@ class OpenClawAgentControlAdapter(HookedAgentControlAdapter):
                 supports_text=True,
                 supports_voice=supports_voice,
                 supports_interrupt=supports_interrupt,
+                supports_tool_approval=supports_tool_approval,
             ),
         )
 
@@ -113,6 +117,7 @@ class HermesAgentControlAdapter(HookedAgentControlAdapter):
         interrupt_session: InterruptHook | None = None,
         supports_interrupt: bool = False,
         supports_voice: bool = False,
+        supports_tool_approval: bool = False,
     ) -> "HermesAgentControlAdapter":
         """Create a Hermes adapter from native runtime hook functions."""
 
@@ -125,6 +130,7 @@ class HermesAgentControlAdapter(HookedAgentControlAdapter):
                 supports_text=True,
                 supports_voice=supports_voice,
                 supports_interrupt=supports_interrupt,
+                supports_tool_approval=supports_tool_approval,
             ),
         )
 
@@ -169,6 +175,7 @@ def create_openclaw_agent_control_client(
     interrupt_session: InterruptHook | None = None,
     supports_interrupt: bool = False,
     supports_voice: bool = False,
+    supports_tool_approval: bool = False,
 ) -> AgentControlClient:
     """Create an always-open OpenClaw Agent Control client."""
 
@@ -179,6 +186,7 @@ def create_openclaw_agent_control_client(
             interrupt_session=interrupt_session,
             supports_interrupt=supports_interrupt,
             supports_voice=supports_voice,
+            supports_tool_approval=supports_tool_approval,
         ),
     )
 
@@ -190,6 +198,7 @@ def create_hermes_agent_control_client(
     interrupt_session: InterruptHook | None = None,
     supports_interrupt: bool = False,
     supports_voice: bool = False,
+    supports_tool_approval: bool = False,
 ) -> AgentControlClient:
     """Create an always-open Hermes Agent Control client."""
 
@@ -200,5 +209,6 @@ def create_hermes_agent_control_client(
             interrupt_session=interrupt_session,
             supports_interrupt=supports_interrupt,
             supports_voice=supports_voice,
+            supports_tool_approval=supports_tool_approval,
         ),
     )

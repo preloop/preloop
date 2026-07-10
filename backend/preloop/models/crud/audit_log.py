@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple, Union
 from uuid import UUID
 
-from sqlalchemy import func, or_
+from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session
 
 from ..models.audit_log import AuditLog
@@ -685,6 +685,86 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
             "latest_version_downloads": version_counts.get("latest", 0),
             "last_download_at": last_download_at,
             "top_versions": [
+                {"version": row.version, "count": row.count}
+                for row in version_rows
+                if row.version is not None
+            ],
+        }
+
+    def get_cli_activity_stats(
+        self,
+        db: Session,
+        *,
+        account_id: Union[UUID, str],
+        days: int = 30,
+    ) -> Dict[str, Any]:
+        """Get aggregated stats for CLI check-ins (``cli_activity`` events).
+
+        Relies on ``ix_audit_log_account_action_status_ts_ip`` for the
+        ``COUNT(DISTINCT ip_address)`` aggregations as the audit log grows.
+
+        Uses one scalar aggregation query plus one grouped versions query
+        instead of separate round-trips per metric.
+        """
+        start_date = datetime.now(timezone.utc) - timedelta(days=days)
+        day_ago = datetime.now(timezone.utc) - timedelta(days=1)
+        account_id_str = str(account_id) if isinstance(account_id, UUID) else account_id
+
+        base_filters = (
+            AuditLog.account_id == account_id_str,
+            AuditLog.action == "cli_activity",
+            AuditLog.timestamp >= start_date,
+            AuditLog.status == "success",
+        )
+
+        # COUNT(DISTINCT CASE WHEN ts >= day_ago THEN ip END) ignores NULLs
+        # from rows outside the 24h window, matching a filtered distinct count.
+        aggregates = (
+            db.query(
+                func.count().label("checkins_total"),
+                func.count(func.distinct(AuditLog.ip_address)).label("unique_ips"),
+                func.count(
+                    func.distinct(
+                        case((AuditLog.timestamp >= day_ago, AuditLog.ip_address))
+                    )
+                ).label("active_last_24h"),
+                func.max(AuditLog.timestamp).label("last_seen_at"),
+            )
+            .filter(*base_filters)
+            .one()
+        )
+
+        checkins_total = aggregates.checkins_total or 0
+        if not checkins_total:
+            return {
+                "cli_checkins_total": 0,
+                "cli_active_unique_ips": 0,
+                "cli_active_last_24h": 0,
+                "cli_last_seen_at": None,
+                "top_cli_versions": [],
+            }
+
+        version_expression = func.coalesce(
+            AuditLog.details["cli_version"].astext, "unknown"
+        )
+        version_rows = (
+            db.query(
+                version_expression.label("version"),
+                func.count().label("count"),
+            )
+            .filter(*base_filters)
+            .group_by(version_expression)
+            .order_by(func.count().desc(), version_expression.asc())
+            .limit(5)
+            .all()
+        )
+
+        return {
+            "cli_checkins_total": checkins_total,
+            "cli_active_unique_ips": aggregates.unique_ips or 0,
+            "cli_active_last_24h": aggregates.active_last_24h or 0,
+            "cli_last_seen_at": aggregates.last_seen_at,
+            "top_cli_versions": [
                 {"version": row.version, "count": row.count}
                 for row in version_rows
                 if row.version is not None

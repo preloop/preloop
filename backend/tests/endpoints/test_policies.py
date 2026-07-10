@@ -741,7 +741,7 @@ class TestCreatePolicyVersion:
         result = await policies.create_policy_version(
             request=request,
             account=mock_account,
-            user=mock_user,
+            current_user=mock_user,
             db=mock_db,
         )
 
@@ -773,7 +773,7 @@ class TestCreatePolicyVersion:
         result = await policies.create_policy_version(
             request=request,
             account=mock_account,
-            user=mock_user,
+            current_user=mock_user,
             db=mock_db,
         )
 

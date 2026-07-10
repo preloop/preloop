@@ -87,6 +87,7 @@ from .user_invitation import CRUDUserInvitation, crud_user_invitation
 from .registration_token import CRUDRegistrationToken, crud_registration_token
 from .issue_duplicate import CRUDIssueDuplicate, crud_issue_duplicate
 from .instance import CRUDInstance, crud_instance
+from .cli_client import CRUDCliClient, crud_cli_client
 from .oauth_app_installation import (
     CRUDOAuthAppInstallation,
     crud_oauth_app_installation,
@@ -250,7 +251,9 @@ __all__ = [
     "crud_registration_token",
     "crud_issue_duplicate",
     "CRUDInstance",
+    "CRUDCliClient",
     "crud_instance",
+    "crud_cli_client",
     "CRUDOAuthAppInstallation",
     "crud_oauth_app_installation",
     "CRUDOAuthToken",

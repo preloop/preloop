@@ -43,7 +43,6 @@ from preloop.schemas.auth import (
     RuntimeSessionTokenCreate,
     RuntimeSessionTokenResponse,
     Token,
-    User,
     AuthUserCreate,
     AuthUserResponse,
     AuthUserUpdate,
@@ -144,6 +143,29 @@ def _normalize_runtime_session_scopes(requested_scopes: List[str]) -> List[str]:
         )
 
     return normalized_scopes or list(RUNTIME_SESSION_ALLOWED_SCOPES)
+
+
+def _resolve_user_permissions(user: UserModel, db: Session) -> Optional[List[str]]:
+    """Return RBAC permissions, or None when RBAC is disabled/unavailable.
+
+    Soft-fails on missing proprietary RBAC deps or DB errors so ``/users/me``
+    still returns the core profile when optional permissions cannot be loaded.
+    """
+    if settings.disable_rbac:
+        return None
+
+    try:
+        from preloop.plugins.proprietary.rbac.permissions import get_user_permissions
+    except ImportError:
+        # Covers ModuleNotFoundError and broken/partial RBAC dependency imports.
+        return None
+
+    try:
+        return get_user_permissions(user, db)
+    except Exception:
+        # RBAC is optional on this path; never 500 /users/me for permission lookup.
+        logger.exception("Failed to resolve user permissions; returning None")
+        return None
 
 
 def _api_key_activity_status(
@@ -827,7 +849,10 @@ async def refresh_token(
 
 
 @router.get("/users/me", response_model=AuthUserResponse)
-def read_users_me(current_user: User = Depends(get_current_active_user)) -> User:
+def read_users_me(
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> AuthUserResponse:
     """Get the current user.
 
     Args:
@@ -836,7 +861,14 @@ def read_users_me(current_user: User = Depends(get_current_active_user)) -> User
     Returns:
         The current user.
     """
-    return current_user
+    return AuthUserResponse(
+        username=current_user.username,
+        email=current_user.email,
+        full_name=current_user.full_name,
+        email_verified=current_user.email_verified,
+        is_superuser=bool(current_user.is_superuser),
+        permissions=_resolve_user_permissions(current_user, db),
+    )
 
 
 @router.put("/users/me", response_model=AuthUserResponse)

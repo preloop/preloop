@@ -42,6 +42,7 @@ from .permission import Permission, Role, RolePermission, UserRole, TeamRole
 from .user_invitation import UserInvitation, UserInvitationStatus
 from .event import Event
 from .instance import Instance
+from .cli_client import CliClient
 from .github_app_installation import OAuthAppInstallation, GitHubAppInstallation
 from .github_oauth_token import OAuthToken, GitHubOAuthToken
 from .policy_snapshot import PolicySnapshot
@@ -118,6 +119,7 @@ __all__ = [
     "UserInvitationStatus",
     "Event",
     "Instance",
+    "CliClient",
     "OAuthAppInstallation",
     "GitHubAppInstallation",  # Backward compatibility alias
     "OAuthToken",
