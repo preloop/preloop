@@ -26,7 +26,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from preloop.api.auth.jwt import get_current_user
+from preloop.api.auth.jwt import get_current_active_user
 from preloop.api.common import get_account_for_user
 from preloop.models.db.session import get_db_session
 from preloop.models.models.account import Account
@@ -146,7 +146,7 @@ async def validate_policy(
         ),
     ),
     account: Account = Depends(get_account_for_user),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> PolicyValidationResult:
     """Validate a policy file without applying changes.
@@ -303,7 +303,7 @@ async def upload_policy(
         ),
     ),
     account: Account = Depends(get_account_for_user),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> PolicyImportResult:
     """Upload and apply a policy file.
@@ -422,7 +422,7 @@ async def export_policy(
     include_mcp_servers: bool = True,
     include_credentials: bool = False,  # Ignored for security, always False
     account: Account = Depends(get_account_for_user),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> Response:
     """Export current configuration as a policy file.
@@ -493,7 +493,7 @@ async def export_policy(
 async def diff_policy(
     file: UploadFile = File(..., description="YAML or JSON policy file to compare"),
     account: Account = Depends(get_account_for_user),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> PolicyDiffResult:
     """Compare uploaded policy with current configuration.
@@ -653,7 +653,7 @@ def list_policy_versions(
     offset: int = Query(0, ge=0, description="Number of versions to skip"),
     include_snapshots: bool = Query(False, description="Include full snapshot data"),
     account: Account = Depends(get_account_for_user),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> PolicyVersionListResponse:
     """List all policy versions for the account.
@@ -695,7 +695,7 @@ def list_policy_versions(
 def get_policy_version(
     version_id: UUID,
     account: Account = Depends(get_account_for_user),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> PolicyVersionFull:
     """Get a specific policy version with full snapshot data.
@@ -734,7 +734,7 @@ def get_policy_version(
 async def create_policy_version(
     request: CreateVersionRequest,
     account: Account = Depends(get_account_for_user),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> PolicyVersionFull:
     """Create a new policy version snapshot.
@@ -779,7 +779,7 @@ async def update_version_tag(
     version_id: UUID,
     request: UpdateTagRequest,
     account: Account = Depends(get_account_for_user),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> PolicyVersionMetadata:
     """Add or update the tag on a policy version.
@@ -827,7 +827,7 @@ async def update_version_tag(
 async def remove_version_tag(
     version_id: UUID,
     account: Account = Depends(get_account_for_user),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> PolicyVersionMetadata:
     """Remove the tag from a policy version.
@@ -870,7 +870,7 @@ async def rollback_to_version(
     version_id: UUID,
     request: RollbackRequest,
     account: Account = Depends(get_account_for_user),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> RollbackResponse:
     """Rollback to a previous policy version.
@@ -921,7 +921,7 @@ async def rollback_to_version(
 async def delete_policy_version(
     version_id: UUID,
     account: Account = Depends(get_account_for_user),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> None:
     """Delete a policy version.
@@ -966,7 +966,7 @@ async def delete_policy_version(
 async def prune_policy_versions(
     request: PruneRequest,
     account: Account = Depends(get_account_for_user),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> PruneResponse:
     """Delete old unused policy versions.
@@ -1060,7 +1060,7 @@ class GeneratePolicyResponse(BaseModel):
 async def generate_policy(
     request: GeneratePolicyRequest,
     account: Account = Depends(get_account_for_user),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> GeneratePolicyResponse:
     """Generate a policy YAML from a natural-language description.
@@ -1135,7 +1135,7 @@ async def generate_policy(
 async def generate_policy_from_audit(
     request: GeneratePolicyFromAuditRequest,
     account: Account = Depends(get_account_for_user),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> GeneratePolicyResponse:
     """Generate a policy from audit-log tool-call patterns.

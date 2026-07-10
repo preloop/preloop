@@ -97,7 +97,7 @@ preloop agents validate hermes
 After installing the plugin, restart the agent runtime. When the plugin connects
 to `WS /api/v1/agents/control/ws` and advertises capabilities, Preloop marks the
 Agent Control channel verified and the web/mobile Talk controls become available.
-The plugin-only path uses the same contract: install `@preloop/openclaw-plugin`
+The plugin-only path uses the same contract: install `@preloop-ai/openclaw-plugin`
 or `preloop-hermes-plugin`, provide a valid `preloop.control` block, start the
 runtime, and let the plugin connect.
 
@@ -223,7 +223,7 @@ For Kubernetes/prod-like deployments, use the Helm chart in [`helm/preloop`](hel
 
 ### Release smoke test
 
-Every tagged release is verified automatically before it is published: the `verify-oss-install` job in the release workflow runs [`scripts/release_smoke_test.sh`](scripts/release_smoke_test.sh), which boots `docker-compose.release.yaml` with the tagged images, checks API/gateway/console health, exercises first-user sign-up and login, and fails if any service restart-loops. You can run the same script locally with `PRELOOP_VERSION=0.10.0-rc.1 ./scripts/release_smoke_test.sh`.
+Every tagged release is verified automatically before it is published: the `verify-oss-install` job in the release workflow runs [`scripts/release_smoke_test.sh`](scripts/release_smoke_test.sh), which boots `docker-compose.release.yaml` with the tagged images, checks API/gateway/console health, exercises first-user sign-up and login, and fails if any service restart-loops. You can run the same script locally with `PRELOOP_VERSION=0.10.0 ./scripts/release_smoke_test.sh`.
 
 For hosted trials, additionally verify that the public URL loads the console, `/api/v1/health` responds, first-user sign-in or sign-up works, `preloop agents discover` can target the public URL, one gateway model call appears in the UI, and one MCP policy event appears in the audit timeline.
 

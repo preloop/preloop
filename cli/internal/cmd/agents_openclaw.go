@@ -20,7 +20,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	json5 "github.com/yosuke-furukawa/json5/encoding/json5"
@@ -35,7 +34,7 @@ import (
 const (
 	openClawManagedProviderID = "preloop"
 	openClawGatewayPath       = "/openai/v1"
-	openClawPreloopPluginID   = "openclaw-plugin"
+	openClawPreloopPluginID   = "preloop-plugin"
 )
 
 var openClawEnvPattern = regexp.MustCompile(`^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$`)
@@ -3284,11 +3283,21 @@ func agentControlConfigFromDocument(
 		if !ok {
 			return nil, false
 		}
-		entry, ok := asObjectMap(entries[openClawPreloopPluginID])
-		if !ok {
-			return nil, false
+		for _, pluginID := range []string{
+			openClawPreloopPluginID,
+			"openclaw-plugin",
+			"@preloop-ai/openclaw-plugin",
+			"@preloop/openclaw-plugin",
+		} {
+			entry, ok := asObjectMap(entries[pluginID])
+			if !ok {
+				continue
+			}
+			if config, ok := asObjectMap(entry["config"]); ok {
+				return config, true
+			}
 		}
-		return asObjectMap(entry["config"])
+		return nil, false
 	}
 	preloop, ok := asObjectMap(doc["preloop"])
 	if !ok {
@@ -3303,7 +3312,7 @@ func agentControlPluginPackageName(agent AgentConfig) string {
 	case hermesSourceType:
 		return "preloop-hermes-plugin"
 	case "openclaw":
-		return "@preloop/openclaw-plugin"
+		return "@preloop-ai/openclaw-plugin"
 	default:
 		return ""
 	}
@@ -3919,7 +3928,7 @@ func waitForManagedAgentControlSidecarsToExit(pids []int) {
 	for time.Now().Before(deadline) {
 		alive := false
 		for _, pid := range pids {
-			if syscall.Kill(pid, 0) == nil {
+			if isProcessAlive(pid) {
 				alive = true
 				break
 			}
@@ -3950,7 +3959,9 @@ def load_config(runtime: str) -> dict[str, Any]:
         raise SystemExit(f"unsupported runtime {runtime}")
     if runtime == "openclaw":
         control = (
-            (((data.get("plugins") or {}).get("entries") or {}).get("openclaw-plugin") or {}).get("config")
+            (((data.get("plugins") or {}).get("entries") or {}).get("preloop-plugin") or {}).get("config")
+            or (((data.get("plugins") or {}).get("entries") or {}).get("openclaw-plugin") or {}).get("config")
+            or (((data.get("plugins") or {}).get("entries") or {}).get("@preloop-ai/openclaw-plugin") or {}).get("config")
             or (((data.get("plugins") or {}).get("entries") or {}).get("@preloop/openclaw-plugin") or {}).get("config")
             or ((data.get("preloop") or {}).get("control") or {})
         )

@@ -1,17 +1,24 @@
 {
-  "id": "openclaw-plugin",
-  "name": "@preloop/openclaw-plugin",
+  "id": "preloop-plugin",
+  "name": "@preloop-ai/openclaw-plugin",
   "displayName": "Preloop",
   "description": "Expose OpenClaw to Preloop for discovery, status, Agent Control, voice-transcript delivery, and native tool-call approval on mobile/watch.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "runtime": "openclaw",
   "license": "Apache-2.0",
   "homepage": "https://preloop.ai",
-  "repository": "https://github.com/spacecode-ai/preloop/tree/main/runtime-plugins/openclaw-preloop",
-  "keywords": ["preloop", "agent-control", "openclaw", "voice", "observability", "tool-approval"],
+  "repository": "https://github.com/preloop/preloop/tree/main/runtime-plugins/openclaw-preloop",
+  "keywords": [
+    "preloop",
+    "agent-control",
+    "openclaw",
+    "voice",
+    "observability",
+    "tool-approval"
+  ],
   "entrypoint": "dist/index.js",
   "permissions": [
-    "read_config:plugins.entries.openclaw-plugin.config",
+    "read_config:plugins.entries.preloop-plugin.config",
     "network:wss",
     "network:https",
     "agent:send_message",
@@ -21,10 +28,16 @@
   "capabilities": {
     "tool_approval": true
   },
-  "hooks": ["before_tool_call"],
+  "hooks": [
+    "before_tool_call"
+  ],
   "configSchema": {
-    "path": "plugins.entries.openclaw-plugin.config",
-    "required": ["control_ws_url", "bearer_token", "runtime_principal_id"]
+    "path": "plugins.entries.preloop-plugin.config",
+    "required": [
+      "control_ws_url",
+      "bearer_token",
+      "runtime_principal_id"
+    ]
   },
   "verification": {
     "command": "preloop-openclaw-plugin verify --config ~/.openclaw/openclaw.json"

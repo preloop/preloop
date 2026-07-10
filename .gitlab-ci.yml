@@ -433,6 +433,36 @@ test:unit:cli:
   variables:
     CGO_ENABLED: "1"
 
+# Standalone runtime plugins (Hermes Python + OpenClaw npm). Lightweight —
+# no postgres / backend image required.
+test:unit:runtime-plugins:
+  stage: test
+  needs: []
+  image: python:3.11-slim
+  before_script:
+    - pip install -U pip pytest pytest-asyncio
+    - pip install -e .
+  script:
+    - pytest -v runtime-plugins/tests runtime-plugins/hermes-preloop/tests
+  rules:
+    - changes:
+        - runtime-plugins/**/*
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+test:unit:openclaw-preloop:
+  stage: test
+  needs: []
+  image: node:22-alpine
+  before_script:
+    - cd runtime-plugins/openclaw-preloop && npm ci
+  script:
+    - npm test
+  rules:
+    - changes:
+        - runtime-plugins/openclaw-preloop/**/*
+        - runtime-plugins/tests/**/*
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
 test:coverage:
   stage: test
   needs:

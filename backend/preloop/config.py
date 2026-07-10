@@ -188,6 +188,13 @@ class Settings(BaseSettings):
         True,
         description="Enable self-registration. Set to False to require admin invitation.",
     )
+    disable_rbac: bool = Field(
+        False,
+        description=(
+            "Disable proprietary RBAC permission checks and plugin loading. "
+            "Set via DISABLE_RBAC=true for OSS / unrestricted access."
+        ),
+    )
 
     database: DatabaseSettings
     security: SecuritySettings
@@ -380,6 +387,12 @@ class Settings(BaseSettings):
             "t",
             "yes",
         )
+        disable_rbac = os.getenv("DISABLE_RBAC", "false").lower() in (
+            "true",
+            "1",
+            "t",
+            "yes",
+        )
 
         # GitHub App OAuth settings (SaaS only)
         github_app = GitHubAppSettings(
@@ -425,6 +438,7 @@ class Settings(BaseSettings):
             nats_url=os.getenv("NATS_URL", "nats://localhost:4222"),
             PROMPTS_FILE=prompts_file,
             registration_enabled=registration_enabled,
+            disable_rbac=disable_rbac,
             database=database,
             security=security,
             server=server,

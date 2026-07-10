@@ -634,7 +634,7 @@ func TestBuildOpenClawManagedMCPEnrollmentPlanRewritesGateway(t *testing.T) {
 	if control["bearer_token"] != "managed-token" {
 		t.Fatalf("unexpected OpenClaw control bearer token: %#v", control)
 	}
-	if control["adapter_package"] != "@preloop/openclaw-plugin" ||
+	if control["adapter_package"] != "@preloop-ai/openclaw-plugin" ||
 		control["runtime"] != "openclaw" {
 		t.Fatalf("unexpected OpenClaw control adapter metadata: %#v", control)
 	}
@@ -866,7 +866,7 @@ func TestAgentControlPluginInstallCommandFallsBackToMarketplacePackage(t *testin
 	if len(args) != 3 ||
 		args[0] != "plugins" ||
 		args[1] != "install" ||
-		args[2] != "@preloop/openclaw-plugin" {
+		args[2] != "@preloop-ai/openclaw-plugin" {
 		t.Fatalf("unexpected marketplace install args: %#v", args)
 	}
 }

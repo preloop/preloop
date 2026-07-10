@@ -16,9 +16,11 @@ and persists in its config directory at install/first-run time.
                   /admin/cli-clients (list) + /admin/map (map)
 
 Privacy: the CLI never sends its bearer token here — only a SHA-256 prefix
-fingerprint (non-reversible), the server URL it is configured against, and
-its version/platform. ``account_id`` is resolved server-side only when the
-client is authenticated against THIS server and presented a valid token.
+fingerprint (non-reversible), its version/platform, and (for Preloop Cloud
+hosts only) the configured server URL. Self-hosted instance URLs are omitted
+from check-ins to preloop.ai; the CLI may send ``self_hosted=true`` instead.
+``account_id`` is resolved server-side only when the client is authenticated
+against THIS server and presented a valid token.
 """
 
 import uuid

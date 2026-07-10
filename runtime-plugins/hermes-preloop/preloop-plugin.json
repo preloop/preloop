@@ -15,7 +15,7 @@
     "observability",
     "tool-approval"
   ],
-  "entrypoint": "preloop_hermes_plugin:plugin",
+  "entrypoint": "preloop_hermes_plugin.plugin",
   "permissions": [
     "read_config:preloop.control",
     "network:wss",

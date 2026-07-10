@@ -396,3 +396,55 @@ class TestAuditLogCRUD:
         logs2 = crud_audit_log.get_by_account(db_session, account_id=account2.id)
         assert len(logs2) == 1
         assert logs2[0].action == "account2_action"
+
+    def test_get_cli_activity_stats_empty(self, db_session: Session, test_account):
+        """Empty window returns zeroed stats without version rows."""
+        stats = crud_audit_log.get_cli_activity_stats(
+            db_session, account_id=test_account.id, days=30
+        )
+        assert stats == {
+            "cli_checkins_total": 0,
+            "cli_active_unique_ips": 0,
+            "cli_active_last_24h": 0,
+            "cli_last_seen_at": None,
+            "top_cli_versions": [],
+        }
+
+    def test_get_cli_activity_stats_aggregates(
+        self, db_session: Session, test_account, test_user_for_audit
+    ):
+        """Scalar + version aggregations preserve prior return shape/semantics."""
+        now = datetime.now(timezone.utc)
+        recent = now - timedelta(hours=1)
+        older = now - timedelta(days=2)
+
+        for ip, version, ts in (
+            ("1.1.1.1", "0.10.0", recent),
+            ("1.1.1.1", "0.10.0", recent),
+            ("2.2.2.2", "0.9.0", older),
+            ("3.3.3.3", "0.10.0", older),
+        ):
+            log = crud_audit_log.log_action(
+                db_session,
+                account_id=test_account.id,
+                user_id=test_user_for_audit.id,
+                action="cli_activity",
+                resource_type="cli",
+                resource_id="version_check",
+                status="success",
+                ip_address=ip,
+                details={"cli_version": version},
+            )
+            log.timestamp = ts.replace(tzinfo=None)
+        db_session.commit()
+
+        stats = crud_audit_log.get_cli_activity_stats(
+            db_session, account_id=test_account.id, days=30
+        )
+
+        assert stats["cli_checkins_total"] == 4
+        assert stats["cli_active_unique_ips"] == 3
+        assert stats["cli_active_last_24h"] == 1
+        assert stats["cli_last_seen_at"] is not None
+        assert stats["top_cli_versions"][0] == {"version": "0.10.0", "count": 3}
+        assert {"version": "0.9.0", "count": 1} in stats["top_cli_versions"]

@@ -13,9 +13,13 @@ os.environ["DISABLE_RBAC"] = "true"
 os.environ["DEV_MODE"] = "true"
 
 from preloop.api.app import create_app
+from preloop.config import settings
 from preloop.models.db.session import get_db_session
 from preloop.api.auth.jwt import get_current_active_user
 from preloop.models.models.user import User
+
+# Settings may already be imported via parent conftest; keep the in-memory flag in sync.
+settings.disable_rbac = True
 
 
 @pytest.fixture(scope="function")

@@ -3,6 +3,7 @@ import re
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, Header, Request
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session  # Import synchronous Session
 
 from preloop.config import (
@@ -15,7 +16,10 @@ from preloop.models.crud import crud_audit_log
 from preloop.api.auth import get_current_user  # Remove oauth2_scheme import
 from preloop.schemas.version import VersionInfo
 from preloop.utils import get_client_ip
-from preloop.models.db.session import get_db_session  # Correct function name
+from preloop.models.db.session import (
+    get_db_session,
+    get_session_factory,
+)  # Correct function name
 
 # Account model is returned by get_current_user
 from preloop.models.models.client_version_log import ClientVersionLog
@@ -29,7 +33,6 @@ CLI_USER_AGENT_RE = re.compile(r"^preloop-cli/(?P<version>[0-9A-Za-z.+-]+)")
 
 
 def _log_cli_activity(
-    db: Session,
     *,
     request: Request,
     client_ip: Optional[str],
@@ -41,6 +44,9 @@ def _log_cli_activity(
     (client-side throttle), so one audit row per check-in stays cheap. Only
     active when ``INSTALLER_AUDIT_ACCOUNT_ID`` is configured — the same
     opt-in used for installer download analytics.
+
+    Uses a short-lived session so ``log_action``'s commit cannot flush or
+    commit unrelated pending work on the request-scoped session.
     """
     if not settings.installer_audit_account_id:
         return
@@ -49,9 +55,10 @@ def _log_cli_activity(
     if not match:
         return
 
+    audit_db = get_session_factory()()
     try:
         crud_audit_log.log_action(
-            db,
+            audit_db,
             account_id=settings.installer_audit_account_id,
             action="cli_activity",
             resource_type="cli",
@@ -63,9 +70,19 @@ def _log_cli_activity(
                 "cli_version": client_version_header or match.group("version"),
             },
         )
-    except Exception:
-        db.rollback()
+    except SQLAlchemyError:
+        # Fire-and-forget: never fail the version response for audit errors.
+        # Do not catch broader Exception — programming errors should surface.
+        try:
+            audit_db.rollback()
+        except SQLAlchemyError:
+            logger.debug(
+                "Failed to roll back CLI activity audit session",
+                exc_info=True,
+            )
         logger.exception("Failed to record CLI activity audit log")
+    finally:
+        audit_db.close()
 
 
 @router.get("/version", response_model=VersionInfo)
@@ -132,8 +149,8 @@ async def get_version_info(
         logger.error(f"Failed to log client version: {e}", exc_info=True)
         # Continue even if logging fails, returning version info is primary goal
 
+    # Best-effort audit; uses its own session (sync, matching other audit paths).
     _log_cli_activity(
-        db,
         request=request,
         client_ip=client_ip,
         client_version_header=x_client_version,

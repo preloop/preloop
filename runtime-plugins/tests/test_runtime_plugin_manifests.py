@@ -26,8 +26,9 @@ def test_runtime_plugin_manifests_are_standalone() -> None:
         assert "agent:tool_approval" in manifest["permissions"]
         assert manifest["verification"]["command"]
         if manifest["runtime"] == "openclaw":
+            assert manifest["id"] == "preloop-plugin"
             assert manifest["configSchema"]["path"] == (
-                "plugins.entries.openclaw-plugin.config"
+                "plugins.entries.preloop-plugin.config"
             )
             assert manifest.get("capabilities", {}).get("tool_approval") is True
             assert "before_tool_call" in manifest.get("hooks", [])
@@ -54,13 +55,15 @@ def test_openclaw_package_metadata_matches_manifest() -> None:
         (ROOT / "openclaw-preloop" / "openclaw.plugin.json").read_text()
     )
 
-    assert package["name"] == "@preloop/openclaw-plugin"
+    assert package["name"] == "@preloop-ai/openclaw-plugin"
     assert manifest["name"] == package["name"]
     assert manifest["version"] == package["version"]
     assert package["bin"]["preloop-openclaw-plugin"] == "dist/index.js"
     assert package["scripts"]["build"]
     assert package["scripts"]["verify"] == "node dist/index.js verify"
     assert package["openclaw"]["extensions"] == ["./dist/index.js"]
+    assert package["openclaw"]["compat"]["pluginApi"]
+    assert package["openclaw"]["build"]["openclawVersion"]
     assert "openclaw.plugin.json" in package["files"]
     assert "openclaw" not in package.get("dependencies", {})
     assert "openclaw" not in package.get("peerDependencies", {})
@@ -77,20 +80,24 @@ def test_hermes_package_metadata_matches_manifest() -> None:
     assert project["scripts"]["preloop-hermes-plugin"] == (
         "preloop_hermes_plugin.plugin:main"
     )
-    assert pyproject["project"]["entry-points"]["hermes.plugins"]["preloop"] == (
-        "preloop_hermes_plugin:plugin"
+    assert pyproject["project"]["entry-points"]["hermes_agent.plugins"]["preloop"] == (
+        "preloop_hermes_plugin.plugin"
     )
+    assert manifest["entrypoint"] == "preloop_hermes_plugin.plugin"
 
 
 def test_publishing_guide_covers_both_marketplaces() -> None:
     guide = (ROOT / "PUBLISHING.md").read_text()
 
-    assert "@preloop/openclaw-plugin" in guide
+    assert "@preloop-ai/openclaw-plugin" in guide
     assert "npm publish --access public" in guide
     assert "openclaw.plugin.json" in guide
+    assert "clawhub package publish" in guide
+    assert "--source-repo" in guide
+    assert "--source-commit" in guide
     assert "preloop-hermes-plugin" in guide
     assert "twine upload" in guide
-    assert "preloop-plugin.json" in guide
+    assert "hermes_agent.plugins" in guide
     assert "without the Preloop CLI" in guide
 
 
@@ -98,13 +105,13 @@ def test_readmes_include_cli_free_manual_tests() -> None:
     expectations = {
         ROOT / "openclaw-preloop" / "README.md": [
             "Manual Test Without Preloop CLI",
-            "openclaw plugins install @preloop/openclaw-plugin",
+            "openclaw plugins install @preloop-ai/openclaw-plugin",
             "preloop-openclaw-plugin verify",
             "preloop-openclaw-plugin run",
         ],
         ROOT / "hermes-preloop" / "README.md": [
             "Manual Test Without Preloop CLI",
-            "hermes plugins install preloop-hermes-plugin",
+            "pip install preloop-hermes-plugin",
             "preloop-hermes-plugin verify",
             "preloop-hermes-plugin run",
         ],

@@ -146,18 +146,26 @@ def _normalize_runtime_session_scopes(requested_scopes: List[str]) -> List[str]:
 
 
 def _resolve_user_permissions(user: UserModel, db: Session) -> Optional[List[str]]:
-    """Return RBAC permissions, or None when RBAC is disabled/unavailable."""
-    import os
+    """Return RBAC permissions, or None when RBAC is disabled/unavailable.
 
-    if os.getenv("DISABLE_RBAC", "false").lower() == "true":
+    Soft-fails on missing proprietary RBAC deps or DB errors so ``/users/me``
+    still returns the core profile when optional permissions cannot be loaded.
+    """
+    if settings.disable_rbac:
         return None
 
     try:
         from preloop.plugins.proprietary.rbac.permissions import get_user_permissions
-    except ModuleNotFoundError:
+    except ImportError:
+        # Covers ModuleNotFoundError and broken/partial RBAC dependency imports.
         return None
 
-    return get_user_permissions(user, db)
+    try:
+        return get_user_permissions(user, db)
+    except Exception:
+        # RBAC is optional on this path; never 500 /users/me for permission lookup.
+        logger.exception("Failed to resolve user permissions; returning None")
+        return None
 
 
 def _api_key_activity_status(

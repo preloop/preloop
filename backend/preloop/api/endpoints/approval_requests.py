@@ -96,6 +96,8 @@ async def approve_request(
     decision: ApprovalDecision,
     request: Request,
     current_user: User = Depends(get_current_active_user),
+    # Required by @require_permission (fail-closed checks kwargs["db"]).
+    # Handler body uses get_async_db_session() for ApprovalService work.
     db: Session = Depends(get_db_session),
 ) -> ApprovalRequestResponse:
     """Approve an approval request.
@@ -112,6 +114,7 @@ async def approve_request(
     Raises:
         HTTPException: If request not found or unauthorized
     """
+    _ = db  # Injected for @require_permission; not used by handler body.
     # Get base URL from request
     base_url = os.getenv("PRELOOP_URL", str(request.base_url).rstrip("/"))
 
@@ -155,6 +158,8 @@ async def decline_request(
     decision: ApprovalDecision,
     request: Request,
     current_user: User = Depends(get_current_active_user),
+    # Required by @require_permission (fail-closed checks kwargs["db"]).
+    # Handler body uses get_async_db_session() for ApprovalService work.
     db: Session = Depends(get_db_session),
 ) -> ApprovalRequestResponse:
     """Decline an approval request.
@@ -171,6 +176,7 @@ async def decline_request(
     Raises:
         HTTPException: If request not found or unauthorized
     """
+    _ = db  # Injected for @require_permission; not used by handler body.
     # Get base URL from request
     base_url = os.getenv("PRELOOP_URL", str(request.base_url).rstrip("/"))
 
@@ -214,6 +220,8 @@ async def decide_request(
     decision: ApprovalDecision,
     request: Request,
     current_user: User = Depends(get_current_active_user),
+    # Required by @require_permission (fail-closed checks kwargs["db"]).
+    # Handler body uses get_async_db_session() for ApprovalService work.
     db: Session = Depends(get_db_session),
 ) -> ApprovalRequestResponse:
     """Approve or decline an approval request based on decision.approved.
@@ -233,6 +241,7 @@ async def decide_request(
     Raises:
         HTTPException: If request not found or unauthorized
     """
+    _ = db  # Injected for @require_permission; not used by handler body.
     # Get base URL from request
     base_url = os.getenv("PRELOOP_URL", str(request.base_url).rstrip("/"))
 

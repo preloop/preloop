@@ -1,0 +1,203 @@
+{
+  "generatedAt": "deterministic",
+  "targetOpenClaw": {
+    "configuredPath": null,
+    "status": "disabled",
+    "compatRecords": [],
+    "compatRecordStatuses": {},
+    "hookNames": [],
+    "apiRegistrars": [],
+    "capturedRegistrars": [],
+    "sdkExports": [],
+    "reservedSdkExports": [],
+    "supportedFacadeSdkExports": [],
+    "publicPluginOwnedSdkExports": [],
+    "manifestFields": [],
+    "manifestContractFields": []
+  },
+  "status": "pass",
+  "summary": {
+    "breakageCount": 0,
+    "warningCount": 0,
+    "deprecationWarningCount": 0,
+    "issueCount": 0
+  },
+  "fixtures": [
+    {
+      "id": "openclaw-plugin",
+      "name": "@preloop-ai/openclaw-plugin",
+      "priority": "high",
+      "seams": [
+        "plugin-runtime"
+      ],
+      "why": "local OpenClaw plugin root",
+      "status": "ok",
+      "hooks": [],
+      "hookDetails": [],
+      "registrations": [],
+      "registrationDetails": [],
+      "manifestContracts": [],
+      "manifestFiles": [
+        "openclaw.plugin.json"
+      ],
+      "sourceFiles": [
+        "dist/index.js",
+        "src/index.ts"
+      ],
+      "pluginManifests": [
+        {
+          "path": "openclaw.plugin.json",
+          "id": "preloop-plugin",
+          "name": "@preloop-ai/openclaw-plugin",
+          "version": "0.1.1",
+          "keys": [
+            "capabilities",
+            "configSchema",
+            "description",
+            "displayName",
+            "entrypoint",
+            "homepage",
+            "hooks",
+            "id",
+            "keywords",
+            "license",
+            "name",
+            "permissions",
+            "repository",
+            "runtime",
+            "verification",
+            "version"
+          ],
+          "contracts": [],
+          "providerAuthEnvVars": {},
+          "channelEnvVars": {},
+          "activation": null
+        }
+      ],
+      "securityManifests": [],
+      "package": {
+        "path": "package.json",
+        "name": "@preloop-ai/openclaw-plugin",
+        "version": "0.1.1",
+        "type": "module",
+        "main": "dist/index.js",
+        "npmPack": {
+          "advertised": false,
+          "private": false,
+          "filesMode": "allowlist",
+          "files": [
+            "dist",
+            "openclaw.plugin.json",
+            "README.md"
+          ],
+          "invalidFileSpecs": []
+        },
+        "dependencies": [],
+        "peerDependencies": [],
+        "optionalDependencies": [],
+        "openclaw": {
+          "extensions": [
+            "./dist/index.js"
+          ],
+          "runtimeExtensions": [],
+          "setupEntry": null,
+          "compatPluginApi": ">=2026.3.24-beta.2",
+          "buildOpenClawVersion": "2026.6.11",
+          "buildPluginSdkVersion": "2026.6.11",
+          "install": null,
+          "release": null,
+          "unsupportedMetadata": [],
+          "entrypoints": [
+            {
+              "kind": "extension",
+              "specifier": "./dist/index.js",
+              "relativePath": "dist/index.js",
+              "exists": true,
+              "requiresBuild": true
+            }
+          ]
+        }
+      },
+      "packages": [
+        {
+          "path": "package.json",
+          "name": "@preloop-ai/openclaw-plugin",
+          "version": "0.1.1",
+          "type": "module",
+          "main": "dist/index.js",
+          "npmPack": {
+            "advertised": false,
+            "private": false,
+            "filesMode": "allowlist",
+            "files": [
+              "dist",
+              "openclaw.plugin.json",
+              "README.md"
+            ],
+            "invalidFileSpecs": []
+          },
+          "dependencies": [],
+          "peerDependencies": [],
+          "optionalDependencies": [],
+          "openclaw": {
+            "extensions": [
+              "./dist/index.js"
+            ],
+            "runtimeExtensions": [],
+            "setupEntry": null,
+            "compatPluginApi": ">=2026.3.24-beta.2",
+            "buildOpenClawVersion": "2026.6.11",
+            "buildPluginSdkVersion": "2026.6.11",
+            "install": null,
+            "release": null,
+            "unsupportedMetadata": [],
+            "entrypoints": [
+              {
+                "kind": "extension",
+                "specifier": "./dist/index.js",
+                "relativePath": "dist/index.js",
+                "exists": true,
+                "requiresBuild": true
+              }
+            ]
+          }
+        }
+      ],
+      "sdkImports": [],
+      "sdkImportDetails": [],
+      "sdkDeprecations": []
+    }
+  ],
+  "issues": [],
+  "contractProbes": [],
+  "logs": [
+    {
+      "fixture": "openclaw-plugin",
+      "code": "seam-inventory",
+      "level": "log",
+      "message": "observed 0 hooks, 0 registrations, and 0 manifest contracts",
+      "evidence": []
+    },
+    {
+      "fixture": "openclaw-plugin",
+      "code": "package-metadata",
+      "level": "log",
+      "message": "selected package metadata for plugin contract checks",
+      "evidence": [
+        "package.json",
+        "@preloop-ai/openclaw-plugin",
+        "version:0.1.1"
+      ]
+    },
+    {
+      "fixture": "openclaw",
+      "code": "target-openclaw-unavailable",
+      "level": "log",
+      "message": "target OpenClaw checkout was not available, so compat record coverage was not checked",
+      "evidence": [
+        "not configured"
+      ]
+    }
+  ],
+  "decisions": []
+}

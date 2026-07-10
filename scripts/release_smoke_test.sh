@@ -135,7 +135,8 @@ fi
 # ---------------------------------------------------------------------------
 
 SMOKE_USER="smoke$(date +%s)"
-SMOKE_EMAIL="${SMOKE_USER}@smoke.preloop.test"
+# Use example.com — EmailStr (email-validator) rejects reserved TLDs like .test
+SMOKE_EMAIL="${SMOKE_USER}@example.com"
 SMOKE_PASSWORD="$(generate_secret)"
 
 register_status="$(curl -sS -o "$WORK_DIR/register.json" -w '%{http_code}' \

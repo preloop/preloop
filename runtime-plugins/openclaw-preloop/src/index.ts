@@ -128,7 +128,9 @@ export class PreloopOpenClawPlugin {
     const resolvedPath = this.configPath ?? defaultConfigPath();
     const raw = JSON.parse(fs.readFileSync(resolvedPath, "utf8"));
     const config =
+      raw.plugins?.entries?.["preloop-plugin"]?.config ??
       raw.plugins?.entries?.["openclaw-plugin"]?.config ??
+      raw.plugins?.entries?.["@preloop-ai/openclaw-plugin"]?.config ??
       raw.plugins?.entries?.["@preloop/openclaw-plugin"]?.config ??
       raw.preloop?.control ??
       raw.control ??
@@ -438,9 +440,9 @@ export class PreloopOpenClawPlugin {
 export const plugin = new PreloopOpenClawPlugin();
 
 export const definition = {
-  id: "openclaw-plugin",
+  id: "preloop-plugin",
   name: "Preloop",
-  version: "0.1.0",
+  version: "0.1.1",
   description: "Expose OpenClaw to Preloop Agent Control.",
 };
 
@@ -661,7 +663,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const instance = new PreloopOpenClawPlugin(args.configPath);
   if (args.command === "verify") {
     instance.verify();
-    console.log("@preloop/openclaw-plugin verified");
+    console.log("@preloop-ai/openclaw-plugin verified");
   } else if (args.command === "run") {
     void instance.start();
   } else {

@@ -246,3 +246,14 @@ def test_untagged_and_other_purpose_rows_unaffected(db_session, test_user):
 def test_replay_purpose_registered_as_internal_session_usage():
     """Session-level metrics exclude replay rows via INTERNAL_USAGE_PURPOSES."""
     assert REPLAY_VALIDATION_PURPOSE in INTERNAL_USAGE_PURPOSES
+
+
+def test_exclude_replay_usage_condition_expression():
+    """Unit-level pin: filter uses REPLAY_VALIDATION_PURPOSE and is NULL-safe."""
+    from preloop.models.crud.api_usage import exclude_replay_usage_condition
+
+    condition = exclude_replay_usage_condition()
+    compiled = str(condition.compile(compile_kwargs={"literal_binds": True}))
+    assert REPLAY_VALIDATION_PURPOSE in compiled
+    # OR of IS NULL / != purpose — NULL-safe inclusion of untagged rows.
+    assert "IS NULL" in compiled.upper() or "is null" in compiled.lower()

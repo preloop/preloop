@@ -527,7 +527,12 @@ def _managed_agent_control_config_from_managed_config(managed_config: dict) -> d
         else {}
     )
     entries = plugins.get("entries") if isinstance(plugins.get("entries"), dict) else {}
-    for plugin_id in ("openclaw-plugin", "@preloop/openclaw-plugin"):
+    for plugin_id in (
+        "preloop-plugin",
+        "openclaw-plugin",
+        "@preloop-ai/openclaw-plugin",
+        "@preloop/openclaw-plugin",
+    ):
         entry = (
             entries.get(plugin_id) if isinstance(entries.get(plugin_id), dict) else {}
         )

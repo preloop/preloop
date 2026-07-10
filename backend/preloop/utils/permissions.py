@@ -19,7 +19,8 @@ try:
     from preloop.plugins.proprietary.rbac.permissions import (
         require_permission as _plugin_require_permission,
     )
-except ModuleNotFoundError:
+except ImportError:
+    # Covers ModuleNotFoundError and broken/partial RBAC dependency imports.
     _plugin_require_permission = None
 
 _MISSING_DEPS_DETAIL = "Permission check requires current_user and db dependencies"

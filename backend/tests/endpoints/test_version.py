@@ -1,5 +1,7 @@
 """Tests for version API endpoint."""
 
+from unittest.mock import MagicMock
+
 from fastapi.testclient import TestClient
 
 
@@ -96,18 +98,24 @@ class TestVersionEndpoint:
         self, client: TestClient, test_user, monkeypatch
     ):
         """A preloop-cli User-Agent records a cli_activity audit event."""
+        from preloop.api.endpoints import version as version_module
         from preloop.config import settings
         from preloop.models.crud import crud_audit_log
 
         recorded = {}
+        audit_session = MagicMock(name="audit_session")
 
         def fake_log_action(db, **kwargs):
+            recorded["db"] = db
             recorded.update(kwargs)
 
         monkeypatch.setattr(
             settings, "installer_audit_account_id", str(test_user.account_id)
         )
         monkeypatch.setattr(crud_audit_log, "log_action", fake_log_action)
+        monkeypatch.setattr(
+            version_module, "get_session_factory", lambda: (lambda: audit_session)
+        )
 
         response = client.get(
             "/api/v1/version",
@@ -116,6 +124,8 @@ class TestVersionEndpoint:
         assert response.status_code == 200
         assert recorded["action"] == "cli_activity"
         assert recorded["details"]["cli_version"] == "0.10.0"
+        assert recorded["db"] is audit_session
+        audit_session.close.assert_called_once()
 
     def test_non_cli_user_agent_does_not_log_cli_activity(
         self, client: TestClient, test_user, monkeypatch
