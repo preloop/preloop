@@ -44,8 +44,8 @@ brands:
 
       get_started:
         title: "Onboard or connect your AI agent in minutes"
-        link_text: "See AI Act readiness guidance"
-        link_url: "/ai-act-readiness"
+        link_text: "Read the docs"
+        link_url: "https://docs.preloop.ai"
 
         mcp_setup_title: "Start with a simple CLI setup, or connect Preloop manually"
         cli_setup:

@@ -701,6 +701,7 @@ async function generateSlottedContentForRoute(
     <span slot="cta-secondary-url">${hero.cta_secondary_url || ''}</span>
     ${(hero as any).install_command ? `<code slot="cta-install">${(hero as any).install_command}</code>` : ''}
     ${(hero as any).install_caption ? `<span slot="cta-install-caption">${(hero as any).install_caption}</span>` : ''}
+    ${Array.isArray((hero as any).install_tabs) && (hero as any).install_tabs.length ? `<script type="application/json" slot="cta-install-tabs">${JSON.stringify((hero as any).install_tabs).replace(/</g, '\\u003c')}</script>` : ''}
     ${(hero.trust_tags || []).length ? `<span slot="cta-install-tags">${escapeHtml((hero.trust_tags || []).join('|'))}</span>` : ''}
     ${hero.image ? `<div slot="hero-image" data-src="${escapeAttr(hero.image)}" data-alt="${escapeAttr(hero.image_alt || '')}"></div>` : ''}
 

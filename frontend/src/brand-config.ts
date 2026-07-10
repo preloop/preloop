@@ -48,6 +48,11 @@ export interface BrandHero {
   install_command?: string;
   // Optional caption shown under the install command box.
   install_caption?: string;
+  // Optional tabs for the hero install widget. With two or more entries the
+  // widget renders a tab per option and swaps the command/caption on click
+  // (e.g. "Install the CLI" vs "Install the full stack"). The first entry is
+  // the default. Takes precedence over install_command/install_caption.
+  install_tabs?: Array<{ label: string; command: string; caption?: string }>;
   // Optional short credibility tags shown under the hero CTAs.
   trust_tags?: string[];
   // Optional static product shot filling the right half of the hero.

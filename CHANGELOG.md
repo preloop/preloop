@@ -7,12 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Overview
+
+Version 0.10.0 evolves Preloop from an approval-and-gateway layer into a full **AI agent control plane**. It rolls up everything shipped in 0.10.0-rc.0 and 0.10.0-rc.1; the highlights across the release cycle:
+
+- **Agent Control.** Talk to your live agents. A durable WebSocket control channel (`WS /api/v1/agents/control/ws`), operator command/prompt/voice endpoints, web console Talk composer with browser-native and server STT/TTS, and mobile/watch voice scaffolds turn managed agents into contactable, audited teammates. New standalone runtime plugins — `@preloop/openclaw-plugin` (npm) and `preloop-hermes-plugin` (PyPI) — keep OpenClaw and Hermes connected from inside the agent process.
+- **Native agent tool approvals.** Approval governance now reaches beyond MCP tools: `POST /api/v1/agents/permission-check` plus `preloop agents onboard --approvals` route Claude Code `Bash`/`Edit`, Codex CLI, and Cursor native tool calls to your phone, watch, or Slack before they run — with the requesting agent's identity on every approval card.
+- **Cost analytics and session optimization.** A dedicated Console **Cost** area with Agents/Tools/Sessions/Users drill-downs and budget-health alerts in the open-source core; runtime session replay with a per-request timeline; and (Preloop Cloud / Preloop Enterprise) evidence-grounded session optimization with one-click applied actions, replay-measured savings, AI session titles, per-user budgets, and budget notification recipients.
+- **A leaner context for every agent.** MCP tool output filters strip wasteful fields on the proxy hot path, gateway context optimization deduplicates repeated prompt prefixes and caps tool results before upstream dispatch, and per-tool usage stats expose which tool schemas are burning tokens.
+- **Simpler ways in.** The landing page and README now offer two clear paths — Preloop Cloud or the self-hosted open-source stack — with a tabbed install widget, an installer that asks which instance to connect to (`PRELOOP_URL` supported throughout), a new self-hosting installation guide, and Antigravity and Devin onboarding adapters alongside the existing agents.
+- **A release you can trust.** The OSS install crash loop from issue #53 (a NATS healthcheck that lame-ducked the server every 10 seconds) is fixed, and every release is now gated by an automated smoke test that boots the release compose stack, signs up a user, and fails on any restart loop before anything is published. CLI update notifications also work for the first time.
+
+**Upgrade notes:** run `alembic upgrade head` (the approval-workflow name-uniqueness migration deduplicates existing rows automatically); review the raised `DATABASE_POOL_SIZE`/`DATABASE_MAX_OVERFLOW` defaults (20/40) if your PostgreSQL `max_connections` is small; `MODEL_GATEWAY_MAX_PREVIEW_CHARS` now defaults to 32768; and `PRELOOP_SERVICE_ROLE` (`all`/`api`/`gateway`) lets you split API and gateway deployments — the default remains combined.
+
 ## [0.10.0-rc.1] - 2026-07-10
 
 ### Added
 
 - **CLI installer instance selection**: `install-cli.sh` now explains that the CLI connects to a control plane (Preloop Cloud at `https://preloop.ai` by default, or a self-hosted instance), honors a pre-set `PRELOOP_URL`, and interactively prompts for the instance URL before sign-in. Login, signup, and agent onboarding launched by the installer all target the chosen instance.
-- **Landing page self-host path**: The get-started setup card gains a "Self-host (Open Source)" tab with the OSS stack install command and the CLI connect steps (`preloop login --url …`), alongside the default Preloop CLI tab (design decision D10.b).
+- **Landing page self-host path**: The hero install widget is now tabbed — "Install the CLI" (default) and "Install the full stack" (the OSS Docker Compose one-liner) — with the caption swapping per tab. The get-started card stays focused on agent onboarding: CLI-only, and on non-preloop.ai hosts its snippet targets the current instance via `PRELOOP_URL=<origin>`.
 - **CLI identification**: The CLI now sends `User-Agent: preloop-cli/<version> (<os>; <arch>)` and `X-Client-Version` on requests to Preloop servers via `SetClientIdentityHeaders`, covering the API client, MCP client, auth token exchange, agent permission-check hooks, and version-check pings. Enables adoption metrics and better support diagnostics; no data beyond version and platform is transmitted.
 - **CLI activity analytics**: When `INSTALLER_AUDIT_ACCOUNT_ID` is configured (hosted instances), daily CLI update-check pings are recorded as `cli_activity` audit events, and `GET /api/v1/admin/installer-downloads/stats` now reports active CLIs (24h/window), total check-ins, last-seen, and top CLI versions.
 - **Updated default RBAC roles**: System roles now cover agents, runtime sessions, policies, approvals, cost/budgets, AI models, and audit. `GET /api/v1/auth/users/me` returns the caller's permission allow-list when RBAC is active; the Console hides inaccessible nav items and shows a permission-denied empty state instead of blank pages.
