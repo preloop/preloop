@@ -1,5 +1,6 @@
 """CRUD operations for ApprovalRequest model."""
 
+from datetime import datetime
 from typing import Optional
 from uuid import UUID
 from sqlalchemy.orm import Session, selectinload
@@ -11,6 +12,37 @@ from .base import CRUDBase
 
 class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
     """CRUD operations for ApprovalRequest model."""
+
+    def expire_stale_pending(
+        self,
+        db: Session,
+        *,
+        account_id: Optional[str] = None,
+        execution_id: Optional[str] = None,
+        now: Optional[datetime] = None,
+        commit: bool = True,
+    ) -> int:
+        """Mark pending approval requests past their expiry as expired."""
+        now = now or datetime.utcnow()
+        query = db.query(self.model).filter(
+            self.model.status == "pending",
+            self.model.expires_at.isnot(None),
+            self.model.expires_at <= now,
+        )
+
+        if account_id:
+            query = query.filter(self.model.account_id == account_id)
+
+        if execution_id:
+            query = query.filter(self.model.execution_id == execution_id)
+
+        expired = query.update(
+            {"status": "expired", "resolved_at": now},
+            synchronize_session="fetch",
+        )
+        if commit:
+            db.commit()
+        return int(expired)
 
     def get_by_token(
         self,
@@ -84,6 +116,13 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
         limit: int = 100,
     ) -> list[ApprovalRequest]:
         """Get approval requests for an account with optional filters."""
+        if status in (None, "pending"):
+            self.expire_stale_pending(
+                db,
+                account_id=account_id,
+                execution_id=execution_id,
+            )
+
         query = db.query(self.model).filter(self.model.account_id == account_id)
 
         if execution_id:

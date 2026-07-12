@@ -2,6 +2,7 @@ import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
 import '../../../components/view-header.ts';
+import { invalidateApiCaches } from '../../../api';
 import './account-view';
 import type { AccountView } from './account-view';
 
@@ -107,6 +108,7 @@ describe('AccountView', () => {
   }
 
   beforeEach(() => {
+    invalidateApiCaches();
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
   });
@@ -114,6 +116,7 @@ describe('AccountView', () => {
   afterEach(() => {
     fetchStub?.restore();
     localStorage.clear();
+    invalidateApiCaches();
   });
 
   it('renders organization details after load (non-billing edition)', async () => {

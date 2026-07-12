@@ -87,12 +87,17 @@ async def resume_existing_execution(
     finally:
         close_client = getattr(agent_executor, "aclose", None)
         if callable(close_client):
-            await close_client()
+            try:
+                await close_client()
+            except Exception as close_error:  # noqa: BLE001 - best-effort close
+                logger.warning(
+                    "Error during agent aclose after resume: %s", close_error
+                )
         cleanup = getattr(agent_executor, "cleanup", None)
         if callable(cleanup):
             try:
                 await cleanup()
-            except Exception as cleanup_error:
+            except Exception as cleanup_error:  # noqa: BLE001 - best-effort cleanup
                 logger.warning(
                     "Error during agent cleanup after resume: %s", cleanup_error
                 )

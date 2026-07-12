@@ -1,6 +1,7 @@
 import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
+import { invalidateApiCaches } from '../../../api';
 import './user-management-view';
 import type { UserManagementView } from './user-management-view';
 
@@ -70,6 +71,7 @@ describe('UserManagementView', () => {
   };
 
   beforeEach(() => {
+    invalidateApiCaches();
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
   });
@@ -77,6 +79,7 @@ describe('UserManagementView', () => {
   afterEach(() => {
     fetchStub?.restore();
     localStorage.clear();
+    invalidateApiCaches();
   });
 
   it('shows the not-available message when feature is disabled', async () => {

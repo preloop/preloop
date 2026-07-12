@@ -13,6 +13,11 @@ import './theme-switcher.ts';
 import * as api from '../api';
 import { Router } from '@vaadin/router';
 import { unifiedWebSocketManager } from '../services/unified-websocket-manager';
+import {
+  formatFutureRelativeTime,
+  formatRelativeTime,
+  parseUTCDate,
+} from '../utils/date';
 
 interface UserDetails {
   username: string;
@@ -299,16 +304,20 @@ export class ConsoleHeader extends LitElement {
   private async loadPendingApprovals() {
     try {
       const approvals = await api.listApprovalRequests({ status: 'pending' });
-      this._pendingApprovals = approvals.map((approval: any) => ({
-        id: approval.id,
-        tool_name: approval.tool_name,
-        tool_args: approval.tool_args || {},
-        status: approval.status,
-        requested_at: approval.requested_at,
-        expires_at: approval.expires_at,
-        execution_id: approval.execution_id,
-        agent_reasoning: approval.agent_reasoning,
-      }));
+      this._pendingApprovals = approvals
+        .map((approval: any) => ({
+          id: approval.id,
+          tool_name: approval.tool_name,
+          tool_args: approval.tool_args || {},
+          status: approval.status,
+          requested_at: approval.requested_at,
+          expires_at: approval.expires_at,
+          execution_id: approval.execution_id,
+          agent_reasoning: approval.agent_reasoning,
+        }))
+        .filter((approval: ApprovalRequest) =>
+          this.isUnexpiredPendingApproval(approval)
+        );
     } catch (error) {
       console.error('Failed to load pending approvals:', error);
     }
@@ -474,7 +483,7 @@ export class ConsoleHeader extends LitElement {
           const exists = this._pendingApprovals.some(
             (approval) => approval.id === newApproval.id
           );
-          if (!exists) {
+          if (!exists && this.isUnexpiredPendingApproval(newApproval)) {
             this._pendingApprovals = [newApproval, ...this._pendingApprovals];
             // Show desktop notification for new approval request
             this.showApprovalNotification(newApproval);
@@ -772,20 +781,14 @@ export class ConsoleHeader extends LitElement {
     });
   }
 
-  private formatRelativeTime(dateString: string): string {
-    const date = new Date(dateString);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffMinutes = Math.floor(diffMs / 60000);
-
-    if (diffMinutes < 1) return 'just now';
-    if (diffMinutes < 60) return `${diffMinutes}m ago`;
-
-    const diffHours = Math.floor(diffMinutes / 60);
-    if (diffHours < 24) return `${diffHours}h ago`;
-
-    const diffDays = Math.floor(diffHours / 24);
-    return `${diffDays}d ago`;
+  private isUnexpiredPendingApproval(approval: ApprovalRequest): boolean {
+    if (approval.status !== 'pending') {
+      return false;
+    }
+    if (!approval.expires_at) {
+      return true;
+    }
+    return parseUTCDate(approval.expires_at).getTime() > Date.now();
   }
 
   private navigateToExecution(executionId: string) {
@@ -823,7 +826,7 @@ export class ConsoleHeader extends LitElement {
                 </div>
                 <div class="execution-time">
                   <sl-badge variant="warning">${exec.status}</sl-badge>
-                  • ${this.formatRelativeTime(exec.start_time)}
+                  • ${formatRelativeTime(exec.start_time)}
                 </div>
               </div>
             `
@@ -861,11 +864,11 @@ export class ConsoleHeader extends LitElement {
               >
                 <div class="approval-name">${approval.tool_name}</div>
                 <div class="approval-time">
-                  ${this.formatRelativeTime(approval.requested_at)}
+                  ${formatRelativeTime(approval.requested_at)}
                   ${
                     approval.expires_at
                       ? html` • Expires
-                        ${this.formatRelativeTime(approval.expires_at)}`
+                        ${formatFutureRelativeTime(approval.expires_at)}`
                       : ''
                   }
                 </div>
@@ -933,7 +936,7 @@ export class ConsoleHeader extends LitElement {
                 </div>
                 <div class="notification-time">
                   ${notification.message} ${notification.message ? ' • ' : ''}
-                  ${this.formatRelativeTime(notification.created_at)}
+                  ${formatRelativeTime(notification.created_at)}
                 </div>
               </div>
             `

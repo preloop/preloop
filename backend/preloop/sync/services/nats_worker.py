@@ -203,8 +203,12 @@ class PreloopSyncNatsWorker:
                 if not self._accepting and task_name in FLOW_ORCHESTRATION_TASKS:
                     try:
                         await msg.nak()
-                    except Exception:
-                        pass
+                    except Exception:  # noqa: BLE001 - drain nak is best-effort
+                        logger.warning(
+                            "Failed to nak %s while draining; continuing drain",
+                            task_name,
+                            exc_info=True,
+                        )
                     logger.info(
                         "Draining: nacked %s so another worker can adopt it",
                         task_name,
@@ -245,8 +249,11 @@ class PreloopSyncNatsWorker:
                 if not acked:
                     try:
                         await msg.nak()
-                    except Exception:
-                        pass
+                    except Exception:  # noqa: BLE001 - cancel-path nak is best-effort
+                        logger.warning(
+                            "Failed to nak cancelled task before re-raise",
+                            exc_info=True,
+                        )
                 raise
             except json.JSONDecodeError as e:
                 logger.error(f"Failed to decode JSON payload: {data}. Error: {e}")
@@ -286,9 +293,15 @@ class PreloopSyncNatsWorker:
                     if not self._accepting:
                         try:
                             await msg.nak()
-                        except Exception:
-                            pass
+                        except Exception:  # noqa: BLE001 - shutdown nak is best-effort
+                            logger.debug(
+                                "Failed to nak message during fetch shutdown",
+                                exc_info=True,
+                            )
                         return
+                    # Track the handler for SIGTERM drain, but await it so we
+                    # process one message at a time (fetch batch=1). Concurrency
+                    # stays capped at 1 per pull subscription.
                     task = asyncio.create_task(handler(msg))
                     self._inflight.add(task)
 
@@ -369,7 +382,8 @@ class PreloopSyncNatsWorker:
             try:
                 await self._reclaim_task
             except asyncio.CancelledError:
-                pass
+                # Expected: reclaim loop was cancelled as part of drain.
+                logger.debug("Stale-claim reaper cancelled during drain")
 
         # Cancel in-flight handlers so claim_and_run finally releases+redispatches.
         inflight = list(self._inflight)
@@ -500,7 +514,7 @@ async def main(tasks_allowlist: Optional[List[str]] = None):
     drain_wait = asyncio.create_task(drain_requested.wait())
 
     try:
-        done, pending = await asyncio.wait(
+        await asyncio.wait(
             {listen_task, drain_wait},
             return_when=asyncio.FIRST_COMPLETED,
         )
@@ -511,7 +525,8 @@ async def main(tasks_allowlist: Optional[List[str]] = None):
                 try:
                     await listen_task
                 except asyncio.CancelledError:
-                    pass
+                    # Expected after begin_drain cancels the listen loop.
+                    logger.debug("Listen task cancelled during drain")
         else:
             # listen_task finished on its own
             await listen_task

@@ -121,6 +121,12 @@ class ApprovalRequest(Base):
         comment="Agent's reasoning for the tool call",
     )
 
+    summary: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+        comment="User-facing plain-language ask for this approval",
+    )
+
     tool_result: Mapped[Optional[dict]] = mapped_column(
         JSONB,
         nullable=True,

@@ -758,6 +758,18 @@ def _enrich_managed_agent_summaries(
                     configured_model_alias=summary["configured_model_alias"],
                 )
             )
+            # Enrichment subset may miss models that are neither agent-tagged
+            # nor alias-matched in meta_data; fall back to the full account
+            # catalog so configured_model_id resolution stays correct.
+            if summary["configured_model_id"] is None and summary.get(
+                "configured_model_alias"
+            ):
+                summary["configured_model_id"] = _managed_agent_configured_model_id(
+                    db,
+                    account_id=account_id,
+                    agent_id=agent_id,
+                    configured_model_alias=summary["configured_model_alias"],
+                )
         else:
             summary["configured_model_id"] = None
         summary.update(

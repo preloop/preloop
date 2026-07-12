@@ -109,6 +109,7 @@ interface ApprovalRequest {
   status: string;
   requested_at: string;
   resolved_at?: string | null;
+  expires_at?: string | null;
 }
 
 interface UsageSessionSubject {
@@ -1467,7 +1468,9 @@ export class DashboardView extends AuthedElement {
       this.recentFlowExecutions = sortedFlowExecutions.slice(0, 5);
       this.fetchingRecentExecutions = false;
 
-      this.pendingApprovals = pendingApprovals;
+      this.pendingApprovals = pendingApprovals.filter((approval) =>
+        this.isUnexpiredPendingApproval(approval)
+      );
       this.calculateApprovalStats(allApprovalRequests);
       this.fetchingApprovals = false;
 
@@ -1665,6 +1668,16 @@ export class DashboardView extends AuthedElement {
       throw new Error('Failed to fetch approval requests');
     }
     return response.json();
+  }
+
+  private isUnexpiredPendingApproval(approval: ApprovalRequest): boolean {
+    if (approval.status !== 'pending') {
+      return false;
+    }
+    if (!approval.expires_at) {
+      return true;
+    }
+    return parseUTCDate(approval.expires_at).getTime() > Date.now();
   }
 
   private calculateApprovalStats(requests: ApprovalRequest[]): void {

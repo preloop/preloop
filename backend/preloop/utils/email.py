@@ -404,6 +404,7 @@ async def send_approval_request_email(
     tool_args: Dict[str, Any],
     approval_url: str,
     agent_reasoning: Optional[str] = None,
+    summary: Optional[str] = None,
 ) -> None:
     """Send an approval request email to an approver.
 
@@ -413,11 +414,13 @@ async def send_approval_request_email(
         tool_args: The arguments passed to the tool.
         approval_url: The URL to approve or decline the request.
         agent_reasoning: Optional reasoning from the agent for why it wants to use the tool.
+        summary: Optional plain-language ask shown first in the email.
 
     Raises:
         EmailError: If email sending fails.
     """
-    subject = f"Tool Approval Required: {tool_name}"
+    ask_text = (summary or "").strip() or None
+    subject = ask_text[:80] if ask_text else f"Tool Approval Required: {tool_name}"
 
     # Format tool arguments for display (redact sensitive fields)
     import json
@@ -431,10 +434,23 @@ async def send_approval_request_email(
     text_parts = [
         "Hi,",
         "",
-        "An AI agent is requesting approval to execute the following tool:",
-        "",
-        f"Tool: {tool_name}",
     ]
+    if ask_text:
+        text_parts.extend(
+            [
+                ask_text,
+                "",
+                f"Tool: {tool_name}",
+            ]
+        )
+    else:
+        text_parts.extend(
+            [
+                "An AI agent is requesting approval to execute the following tool:",
+                "",
+                f"Tool: {tool_name}",
+            ]
+        )
 
     if agent_reasoning:
         text_parts.append("")
@@ -460,6 +476,7 @@ async def send_approval_request_email(
     body_text = "\n".join(text_parts)
 
     # HTML version
+    header_title = "Approval Required" if ask_text else "Tool Approval Required"
     html_parts = [
         "<!DOCTYPE html>",
         "<html>",
@@ -472,6 +489,7 @@ async def send_approval_request_email(
         "    .header { background-color: #4CAF50; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0; }",
         "    .content { background-color: #f9f9f9; padding: 20px; border: 1px solid #ddd; border-top: none; border-radius: 0 0 5px 5px; }",
         "    .tool-name { font-weight: bold; color: #2196F3; font-size: 1.1em; }",
+        "    .summary { background-color: #e8f5e9; padding: 15px; border-left: 4px solid #4CAF50; margin: 15px 0; font-size: 1.05em; }",
         "    .reasoning { background-color: #fff3cd; padding: 15px; border-left: 4px solid #ffc107; margin: 15px 0; }",
         "    .arguments { background-color: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 5px; overflow-x: auto; font-family: 'Courier New', monospace; font-size: 13px; }",
         "    .button { display: inline-block; background-color: #4CAF50; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; margin: 10px 5px; }",
@@ -483,13 +501,28 @@ async def send_approval_request_email(
         "<body>",
         '  <div class="container">',
         '    <div class="header">',
-        "      <h2>Tool Approval Required</h2>",
+        f"      <h2>{header_title}</h2>",
         "    </div>",
         '    <div class="content">',
         "      <p>Hi,</p>",
-        "      <p>An AI agent is requesting approval to execute the following tool:</p>",
-        f'      <p class="tool-name">Tool: {tool_name}</p>',
     ]
+
+    if ask_text:
+        html_parts.extend(
+            [
+                '      <div class="summary">',
+                f"        <p><strong>{ask_text}</strong></p>",
+                "      </div>",
+                f'      <p class="tool-name">Tool: {tool_name}</p>',
+            ]
+        )
+    else:
+        html_parts.extend(
+            [
+                "      <p>An AI agent is requesting approval to execute the following tool:</p>",
+                f'      <p class="tool-name">Tool: {tool_name}</p>',
+            ]
+        )
 
     if agent_reasoning:
         html_parts.extend(

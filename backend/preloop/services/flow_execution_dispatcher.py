@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 import os
 import socket
 import uuid
-from typing import Any, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional, cast
 
 from preloop.config import settings
 from preloop.sync.services.event_bus import event_bus_service
@@ -74,6 +75,12 @@ async def dispatch_resume(
     )
 
 
+async def _run_local_fallback(local_fallback: Callable[[], Any]) -> None:
+    result = local_fallback()
+    if inspect.isawaitable(result):
+        await cast(Awaitable[Any], result)
+
+
 async def _dispatch(
     task_name: str,
     execution_id: uuid.UUID | str,
@@ -96,16 +103,14 @@ async def _dispatch(
             task_name,
             execution_id_str,
         )
-        result = local_fallback()
-        if hasattr(result, "__await__"):
-            await result
+        await _run_local_fallback(local_fallback)
         return True
 
     try:
         ack = await event_bus_service.publish_task(
             task_name, execution_id=execution_id_str
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - publish is best-effort; recovery retries
         logger.error(
             "Failed to publish %s for execution %s: %s",
             task_name,
@@ -125,13 +130,8 @@ async def _dispatch(
         )
         return True
 
-    if local_fallback is not None and not flow_execution_worker_enabled():
-        # Unreachable when flag on; kept for clarity.
-        result = local_fallback()
-        if hasattr(result, "__await__"):
-            await result
-        return True
-
+    # Workers enabled but publish failed: leave PENDING for recovery re-dispatch.
+    # Local fallback only runs when the feature flag is off (handled above).
     logger.error(
         "Could not dispatch %s for execution %s; leaving PENDING for recovery",
         task_name,

@@ -8401,6 +8401,12 @@ components:
           - type: 'null'
           title: Agent Reasoning
           description: Agent's reasoning for the tool call
+        summary:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Summary
+          description: User-facing plain-language ask (LLM or ask_user question)
         execution_id:
           anyOf:
           - type: string

@@ -253,6 +253,7 @@ class ApprovalService:
                 "approval_workflow_id": str(approval_request.approval_workflow_id),
                 "execution_id": approval_request.execution_id,
                 "tool_name": approval_request.tool_name,
+                "summary": approval_request.summary,
                 "tool_args": redact_dict(approval_request.tool_args or {}),
                 "agent_reasoning": approval_request.agent_reasoning,
                 "status": approval_request.status,
@@ -1090,11 +1091,18 @@ class ApprovalService:
 
         tool_args_redacted = redact_dict(approval_request.tool_args or {})
         tool_args_formatted = json.dumps(tool_args_redacted, indent=2)
+        ask_text = (approval_request.summary or "").strip() or None
+        headline = ask_text or f"Approval Required: {approval_request.tool_name}"
 
         # Create message based on approval type
         if approval_workflow.approval_type in ["slack", "mattermost"]:
-            # Build message text with all details
-            message_text = f"⚠️ **Approval Required: {approval_request.tool_name}**\n\n"
+            # Build message text with all details — summary first when present
+            if ask_text:
+                message_text = f"⚠️ **{ask_text}**\n\n"
+            else:
+                message_text = (
+                    f"⚠️ **Approval Required: {approval_request.tool_name}**\n\n"
+                )
             message_text += f"**Tool:** `{approval_request.tool_name}`\n"
             message_text += f"**Status:** {approval_request.status.upper()}\n\n"
 
@@ -1115,8 +1123,8 @@ class ApprovalService:
                 "attachments": [
                     {
                         "color": "#f2c744",
-                        "fallback": f"Approval Required: {approval_request.tool_name}",
-                        "title": f"⚠️ Approval Required: {approval_request.tool_name}",
+                        "fallback": headline,
+                        "title": f"⚠️ {headline}",
                         "title_link": view_url,
                         "fields": [
                             {
@@ -1170,6 +1178,7 @@ class ApprovalService:
                 "type": "approval_request",
                 "request_id": str(approval_request.id),
                 "tool_name": approval_request.tool_name,
+                "summary": ask_text,
                 "tool_args": tool_args_redacted,
                 "agent_reasoning": approval_request.agent_reasoning,
                 "status": approval_request.status,
@@ -1259,6 +1268,36 @@ class ApprovalService:
             runtime_session_id=runtime_session_id,
             managed_agent_name=managed_agent_name,
         )
+
+        # Generate user-facing summary before any notifications fire.
+        try:
+            from preloop.models.db.session import get_db_session
+            from preloop.services.approval_summary import generate_approval_summary
+
+            sync_db = next(get_db_session())
+            try:
+                summary = await generate_approval_summary(
+                    sync_db,
+                    account_id=account_id,
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                    agent_reasoning=agent_reasoning,
+                    managed_agent_name=managed_agent_name,
+                )
+            finally:
+                sync_db.close()
+            if summary:
+                approval_request = await self.update_approval_request(
+                    approval_request.id,
+                    ApprovalRequestUpdate(summary=summary),
+                )
+        except Exception as summary_error:
+            logger.warning(
+                "Failed to attach approval summary for %s: %s",
+                approval_request.id,
+                summary_error,
+                exc_info=True,
+            )
 
         # Check if this is an AI-driven approval workflow
         if approval_workflow.approval_mode == "ai_driven":
@@ -1679,6 +1718,7 @@ class ApprovalService:
                     tool_args=redact_dict(approval_request.tool_args or {}),
                     approval_url=approval_url,
                     agent_reasoning=approval_request.agent_reasoning,
+                    summary=approval_request.summary,
                 )
 
                 sent_count += 1
@@ -1839,6 +1879,7 @@ class ApprovalService:
             expires_at=approval_request.expires_at,
             agent_reasoning=approval_request.agent_reasoning,
             tool_args=redact_dict(approval_request.tool_args or {}),
+            summary=approval_request.summary,
         )
 
         apns_priority = 10 if priority_str in ["urgent", "high"] else 5
@@ -2266,6 +2307,7 @@ class ApprovalService:
             expires_at=approval_request.expires_at,
             agent_reasoning=f"ESCALATED: {approval_request.agent_reasoning or 'Original approvers did not respond'}",
             tool_args=redact_dict(approval_request.tool_args or {}),
+            summary=approval_request.summary,
         )
 
         sent_count = 0

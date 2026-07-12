@@ -8,6 +8,13 @@ Supports account-scoped api_usage aggregations (action_type / principal +
 timestamp), runtime_session last-activity listing, and approval_request
 status queues. Uses IF NOT EXISTS so re-runs on partially migrated DBs
 are safe.
+
+Production note: ``CREATE INDEX`` (used by ``op.create_index``) takes an
+ACCESS EXCLUSIVE lock for the build duration. On large tables, prefer
+creating these indexes out-of-band with ``CREATE INDEX CONCURRENTLY``
+(autocommit, outside Alembic's transactional migration) before or after
+this revision, then keep this migration as a no-op / IF NOT EXISTS safety
+net for fresh environments.
 """
 
 from typing import Sequence, Union

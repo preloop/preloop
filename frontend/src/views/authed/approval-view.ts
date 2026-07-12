@@ -18,6 +18,7 @@ interface ApprovalRequest {
   approval_workflow_id: string;
   execution_id: string | null;
   tool_name: string;
+  summary: string | null;
   tool_args: Record<string, any>;
   agent_reasoning: string | null;
   status: 'pending' | 'approved' | 'declined' | 'expired' | 'cancelled';
@@ -477,6 +478,18 @@ export class ApprovalView extends AuthedElement {
       }
 
       <sl-card>
+        ${
+          this.approvalRequest.summary
+            ? html`
+                <div class="content-section">
+                  <h2>Request</h2>
+                  <div class="reasoning-text">
+                    ${this.approvalRequest.summary}
+                  </div>
+                </div>
+              `
+            : ''
+        }
         <div class="content-section">
           <h2>Tool Information</h2>
           <div class="info-grid">
