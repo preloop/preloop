@@ -3,23 +3,31 @@ import { customElement, state } from 'lit/decorators.js';
 import {
   AuthedElement,
   createModelPriceOverride,
+  createProviderBillingConnection,
   getAccountAgents,
   getAIModels,
   getBudgetPolicies,
   getCostAnalyticsSummary,
+  getCostReconciliation,
   getFeatures,
+  getProviderBillingConnections,
   getUsers,
   getModelPriceOverrides,
   getToolCostFlags,
+  repriceCost,
+  syncProviderBillingConnection,
   type BudgetPolicy,
 } from '../../api';
 import type {
   AIModel,
   CostAnalyticsSummaryResponse,
+  CostReconciliationResponse,
+  CostReconciliationRow,
   GatewayUsageBySession,
   GatewayUsageByTool,
   ModelPriceOverride,
   ModelPriceOverrideCreate,
+  ProviderBillingConnection,
 } from '../../types';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import '../../components/view-header.ts';
@@ -130,6 +138,19 @@ export class CostView extends AuthedElement {
   @state() private prepaidTokens = '';
   @state() private prepaidCredit = '';
   @state() private priceCurrency = 'USD';
+  @state() private priceFxRate = '';
+  // Reprice action (billing flag): re-derives cost for unpriced rows in the
+  // selected window from stored tokens and current prices.
+  @state() private repricing = false;
+  @state() private repriceNotice: string | null = null;
+  // Reconciliation tab (provider_billing_reconciliation flag).
+  @state() private reconciliation: CostReconciliationResponse | null = null;
+  @state() private reconciliationError: string | null = null;
+  @state() private reconciliationLoading = false;
+  @state() private providerConnections: ProviderBillingConnection[] = [];
+  @state() private connectionProvider = 'openai';
+  @state() private connectionAdminKey = '';
+  @state() private connectionSaving = false;
   // Owner attribution for the Users tab: agent_id -> owner username. Populated
   // from the account's managed agents; empty when the lookup fails.
   @state() private agentOwnerMap = new Map<string, string>();
@@ -165,6 +186,10 @@ export class CostView extends AuthedElement {
 
   private get billingEnabled(): boolean {
     return this.featureFlags.billing === true;
+  }
+
+  private get reconciliationEnabled(): boolean {
+    return this.featureFlags.provider_billing_reconciliation === true;
   }
 
   static styles = [
@@ -639,6 +664,84 @@ export class CostView extends AuthedElement {
       await this.loadAgentOwners();
     } else if (tab === 'tools') {
       await this.loadToolFlagCount();
+    } else if (tab === 'reconciliation') {
+      await this.loadReconciliation();
+    }
+  }
+
+  // Fetches provider connections and the estimated-vs-actual comparison for
+  // the current date range. Only called when the Reconciliation tab is shown.
+  private async loadReconciliation() {
+    this.reconciliationLoading = true;
+    this.reconciliationError = null;
+    try {
+      const range = this.getDateParams();
+      const [connections, reconciliation] = await Promise.all([
+        getProviderBillingConnections().catch(() => []),
+        getCostReconciliation({
+          startDate: range.startDate,
+          endDate: range.endDate,
+        }),
+      ]);
+      this.providerConnections = connections;
+      this.reconciliation = reconciliation;
+    } catch (error) {
+      this.reconciliationError =
+        error instanceof Error
+          ? error.message
+          : 'Failed to load reconciliation data';
+    } finally {
+      this.reconciliationLoading = false;
+    }
+  }
+
+  private async saveProviderConnection() {
+    if (!this.connectionAdminKey.trim()) {
+      this.reconciliationError = 'Enter the provider admin API key.';
+      return;
+    }
+    this.connectionSaving = true;
+    this.reconciliationError = null;
+    try {
+      const connection = await createProviderBillingConnection({
+        provider: this.connectionProvider,
+        admin_api_key: this.connectionAdminKey.trim(),
+      });
+      this.connectionAdminKey = '';
+      // Trigger the first backfill immediately so the table populates.
+      await syncProviderBillingConnection(connection.id).catch(() => undefined);
+      await this.loadReconciliation();
+    } catch (error) {
+      this.reconciliationError =
+        error instanceof Error ? error.message : 'Failed to save connection';
+    } finally {
+      this.connectionSaving = false;
+    }
+  }
+
+  // Re-price unpriced usage rows in the current window from stored tokens and
+  // the current price catalog/overrides, then reload the summary.
+  private async handleReprice() {
+    this.repricing = true;
+    this.repriceNotice = null;
+    try {
+      const range = this.getDateParams();
+      const result = await repriceCost({
+        start_date: range.startDate,
+        end_date: range.endDate,
+        only_unpriced: true,
+      });
+      this.repriceNotice = result.submitted_async
+        ? 'Repricing scheduled in the background; refresh in a few minutes.'
+        : `Repriced ${result.rows_updated} of ${result.rows_examined} rows.`;
+      if (!result.submitted_async) {
+        await this.load();
+      }
+    } catch (error) {
+      this.error =
+        error instanceof Error ? error.message : 'Failed to reprice usage';
+    } finally {
+      this.repricing = false;
     }
   }
 
@@ -794,6 +897,13 @@ export class CostView extends AuthedElement {
       this.error = 'Enter at least one pricing, discount, or prepaid value.';
       return;
     }
+    const currency = (this.priceCurrency || 'USD').toUpperCase();
+    const fxRate = this.priceFxRate !== '' ? Number(this.priceFxRate) : null;
+    if (currency !== 'USD' && (!fxRate || fxRate <= 0)) {
+      this.error =
+        'Non-USD overrides need an FX rate to USD so costs can be recorded in USD.';
+      return;
+    }
     this.saving = true;
     this.error = null;
     try {
@@ -801,7 +911,8 @@ export class CostView extends AuthedElement {
         ai_model_id: null,
         provider_name: this.priceProvider || null,
         model_alias: this.priceModelAlias,
-        currency: this.priceCurrency || 'USD',
+        currency,
+        fx_rate_to_usd: currency !== 'USD' ? fxRate : null,
         input_price_per_1k: input,
         output_price_per_1k: output,
         cache_read_input_price_per_1k: null,
@@ -890,6 +1001,64 @@ export class CostView extends AuthedElement {
               `
             : nothing
         }
+      </div>
+    `;
+  }
+
+  // Warning banner when usage rows carry tokens but no cost (model missing
+  // from the price catalog at request time). Repricing re-derives their cost
+  // from stored tokens against current prices/overrides (billing flag).
+  private renderUnpricedNotice() {
+    const unpricedRequests = this.summary?.unpriced_requests ?? 0;
+    if (!unpricedRequests) {
+      return this.repriceNotice
+        ? html`<sl-alert
+            variant="success"
+            open
+            closable
+            role="status"
+            @sl-after-hide=${() => (this.repriceNotice = null)}
+            >${this.repriceNotice}</sl-alert
+          >`
+        : nothing;
+    }
+    return html`
+      <sl-alert variant="warning" open role="alert">
+        <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+        ${this.formatNumber(unpricedRequests)}
+        request${unpricedRequests === 1 ? '' : 's'}
+        (${this.formatNumber(this.summary?.unpriced_tokens)} tokens) in this
+        window have no cost estimate — their model was missing from the price
+        catalog when recorded, so total spend is understated.
+        ${
+          this.billingEnabled
+            ? html`<sl-button
+                size="small"
+                variant="warning"
+                .loading=${this.repricing}
+                @click=${() => void this.handleReprice()}
+                >Reprice now</sl-button
+              >`
+            : nothing
+        }
+        ${this.repriceNotice ? html`<div>${this.repriceNotice}</div>` : nothing}
+      </sl-alert>
+    `;
+  }
+
+  // One quiet provenance line: which price snapshot produced the estimates.
+  private renderCatalogInfo() {
+    const catalog = this.summary?.price_catalog;
+    if (!catalog?.fetched_at) return nothing;
+    const fetched = new Date(catalog.fetched_at);
+    const ageDays = Math.floor(
+      (Date.now() - fetched.getTime()) / (24 * 60 * 60 * 1000)
+    );
+    return html`
+      <div class="metric-detail">
+        Prices as of ${fetched.toLocaleDateString()}
+        (${catalog.model_count ?? '?'}
+        models${ageDays > 45 ? ', update recommended' : ''})
       </div>
     `;
   }
@@ -1037,14 +1206,208 @@ export class CostView extends AuthedElement {
           <sl-tab slot="nav" panel="tools">Tools</sl-tab>
           <sl-tab slot="nav" panel="sessions">Sessions</sl-tab>
           <sl-tab slot="nav" panel="users">Users</sl-tab>
+          ${
+            this.reconciliationEnabled
+              ? html`<sl-tab slot="nav" panel="reconciliation"
+                  >Reconciliation</sl-tab
+                >`
+              : nothing
+          }
           <sl-tab-panel name="agents">${this.renderAgentsTab()}</sl-tab-panel>
           <sl-tab-panel name="tools">${this.renderToolsTab()}</sl-tab-panel>
           <sl-tab-panel name="sessions"
             >${this.renderSessionsTab()}</sl-tab-panel
           >
           <sl-tab-panel name="users">${this.renderUsersTab()}</sl-tab-panel>
+          ${
+            this.reconciliationEnabled
+              ? html`<sl-tab-panel name="reconciliation"
+                  >${this.renderReconciliationTab()}</sl-tab-panel
+                >`
+              : nothing
+          }
         </sl-tab-group>
       </sl-card>
+    `;
+  }
+
+  // Drift badge: green when |drift| < 5% of provider cost, amber < 15%, red
+  // beyond — matching the product's semantic state colors.
+  private renderDriftBadge(row: CostReconciliationRow) {
+    if (row.drift_pct === null) {
+      return html`<sl-badge variant="neutral">n/a</sl-badge>`;
+    }
+    const magnitude = Math.abs(row.drift_pct);
+    const variant =
+      magnitude < 5 ? 'success' : magnitude < 15 ? 'warning' : 'danger';
+    return html`<sl-badge variant=${variant}
+      >${row.drift_pct > 0 ? '+' : ''}${row.drift_pct.toFixed(1)}%</sl-badge
+    >`;
+  }
+
+  private renderConnectionSetup() {
+    return html`
+      <div class="tab-panel-body">
+        <sl-alert variant="neutral" open role="status">
+          <sl-icon slot="icon" name="link-45deg"></sl-icon>
+          Connect a provider's billing API to compare Preloop's estimated spend
+          against the amounts the provider actually reports. Requires an
+          organization <strong>admin</strong> API key (not an inference key);
+          the key is stored encrypted and never shown again.
+        </sl-alert>
+        <div class="form-grid" style="margin-top: var(--sl-spacing-medium);">
+          <sl-select
+            label="Provider"
+            .value=${this.connectionProvider}
+            @sl-change=${(event: Event) =>
+              (this.connectionProvider = (
+                event.target as HTMLSelectElement
+              ).value)}
+          >
+            <sl-option value="openai">OpenAI</sl-option>
+            <sl-option value="anthropic">Anthropic</sl-option>
+          </sl-select>
+          <sl-input
+            label="Admin API key"
+            type="password"
+            password-toggle
+            .value=${this.connectionAdminKey}
+            @sl-input=${(event: Event) =>
+              (this.connectionAdminKey = (
+                event.target as HTMLInputElement
+              ).value)}
+          ></sl-input>
+          <sl-button
+            variant="primary"
+            .loading=${this.connectionSaving}
+            @click=${() => void this.saveProviderConnection()}
+          >
+            <sl-icon slot="prefix" name="plus"></sl-icon>
+            Connect provider
+          </sl-button>
+        </div>
+      </div>
+    `;
+  }
+
+  private renderReconciliationTab() {
+    if (this.reconciliationLoading) {
+      return html`<div class="loading-state" role="status" aria-busy="true">
+        <sl-spinner></sl-spinner>
+        <span>Loading reconciliation...</span>
+      </div>`;
+    }
+    const errorAlert = this.reconciliationError
+      ? html`<sl-alert variant="danger" open role="alert"
+          >${this.reconciliationError}</sl-alert
+        >`
+      : nothing;
+    if (!this.providerConnections.length) {
+      return html`${errorAlert}${this.renderConnectionSetup()}`;
+    }
+    const rows = this.reconciliation?.rows ?? [];
+    const totals = this.reconciliation;
+    return html`
+      <div class="tab-panel-body">
+        ${errorAlert}
+        <div class="policy-summary-row">
+          <span class="policy-summary-label">Connected providers</span>
+          <span class="policy-summary-value">
+            ${this.providerConnections
+              .map(
+                (connection) =>
+                  `${connection.provider}${
+                    connection.last_error ? ' (sync error)' : ''
+                  }`
+              )
+              .join(', ')}
+          </span>
+          <sl-button
+            size="small"
+            @click=${async () => {
+              for (const connection of this.providerConnections) {
+                await syncProviderBillingConnection(connection.id).catch(
+                  () => undefined
+                );
+              }
+              await this.loadReconciliation();
+            }}
+          >
+            <sl-icon slot="prefix" name="arrow-repeat"></sl-icon>
+            Sync now
+          </sl-button>
+        </div>
+        ${
+          rows.length
+            ? html`
+                <div class="analytics-table-wrap">
+                  <table
+                    class="styled-table"
+                    aria-label="Estimated vs provider-reported spend"
+                  >
+                    <thead>
+                      <tr>
+                        <th scope="col">Date</th>
+                        <th scope="col">Provider</th>
+                        <th scope="col">Preloop estimate</th>
+                        <th scope="col">Provider actual</th>
+                        <th scope="col">Drift</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${rows.map(
+                        (row) => html`
+                          <tr>
+                            <td>${new Date(row.date).toLocaleDateString()}</td>
+                            <td>${row.provider}</td>
+                            <td>${this.formatCurrency(row.preloop_cost)}</td>
+                            <td>${this.formatCurrency(row.provider_cost)}</td>
+                            <td>${this.renderDriftBadge(row)}</td>
+                          </tr>
+                        `
+                      )}
+                    </tbody>
+                    ${
+                      totals
+                        ? html`<tfoot>
+                            <tr>
+                              <th scope="row" colspan="2">Total</th>
+                              <td>
+                                ${this.formatCurrency(
+                                  totals.total_preloop_cost
+                                )}
+                              </td>
+                              <td>
+                                ${this.formatCurrency(
+                                  totals.total_provider_cost
+                                )}
+                              </td>
+                              <td>
+                                ${
+                                  totals.total_drift_pct !== null
+                                    ? `${totals.total_drift_pct > 0 ? '+' : ''}${totals.total_drift_pct.toFixed(1)}%`
+                                    : 'n/a'
+                                }
+                              </td>
+                            </tr>
+                          </tfoot>`
+                        : nothing
+                    }
+                  </table>
+                </div>
+                <div class="metric-detail">
+                  Positive drift means the provider reported more spend than
+                  Preloop estimated (e.g. traffic outside the gateway or
+                  unpriced models). Provider buckets can settle up to 24h late.
+                </div>
+              `
+            : html`<div class="empty">
+                No provider billing data in this window yet — run "Sync now" or
+                wait for the daily ingestion.
+              </div>`
+        }
+        ${this.renderConnectionSetup()}
+      </div>
     `;
   }
 
@@ -1670,10 +2033,33 @@ export class CostView extends AuthedElement {
           <sl-input
             label="Currency"
             maxlength="3"
+            help-text=${
+              this.priceCurrency.toUpperCase() !== 'USD'
+                ? 'Non-USD prices are converted to USD when recorded.'
+                : ''
+            }
             .value=${this.priceCurrency}
             @sl-input=${(event: Event) =>
               (this.priceCurrency = (event.target as HTMLInputElement).value)}
           ></sl-input>
+          ${
+            this.priceCurrency.toUpperCase() !== 'USD'
+              ? html`
+                  <sl-input
+                    label="FX rate to USD"
+                    help-text="How many USD one ${this.priceCurrency.toUpperCase()} is worth (contract rate). Required for non-USD overrides."
+                    type="number"
+                    min="0"
+                    step="0.0001"
+                    .value=${this.priceFxRate}
+                    @sl-input=${(event: Event) =>
+                      (this.priceFxRate = (
+                        event.target as HTMLInputElement
+                      ).value)}
+                  ></sl-input>
+                `
+              : nothing
+          }
         </div>
         <div slot="footer">
           <sl-button @click=${() => (this.priceDialogOpen = false)}>
@@ -1787,7 +2173,8 @@ export class CostView extends AuthedElement {
                 </div>
               </sl-card>`
             : html`
-                ${this.renderMetrics()}
+                ${this.renderMetrics()} ${this.renderCatalogInfo()}
+                ${this.renderUnpricedNotice()}
                 <div class="column-layout dashboard extra-wide">
                   <div class="main-column">${this.renderBreakdown()}</div>
                   <div class="side-column">${this.renderControls()}</div>

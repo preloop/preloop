@@ -212,6 +212,78 @@ def test_get_mcp_server_not_found(client: TestClient, db_session, test_user):
     assert response.status_code == 404
 
 
+def _oauth_server(db_session, test_user):
+    server = MCPServer(
+        name="OAuth Server",
+        url="https://ext.example/mcp",
+        transport="http-streaming",
+        auth_type="oauth",
+        account_id=test_user.account_id,
+        status="active",
+    )
+    db_session.add(server)
+    db_session.commit()
+    db_session.refresh(server)
+    return server
+
+
+def test_oauth_authorize_token_is_short_lived_and_scoped(
+    client: TestClient, db_session, test_user
+):
+    """The mint endpoint returns a purpose- and server-scoped token."""
+    from jose import jwt as jose_jwt
+    from preloop.api.auth.jwt import ALGORITHM, SECRET_KEY
+
+    server = _oauth_server(db_session, test_user)
+    resp = client.post(f"/api/v1/mcp-servers/{server.id}/oauth/authorize-token")
+    assert resp.status_code == 200
+    token = resp.json()["authorize_token"]
+
+    payload = jose_jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    assert payload["purpose"] == "mcp_oauth_authorize"
+    assert payload["server_id"] == str(server.id)
+    assert payload["sub"] == str(test_user.id)
+
+
+def test_oauth_authorize_rejects_plain_access_token(
+    client: TestClient, db_session, test_user
+):
+    """A reusable access token must NOT be accepted at the authorize endpoint."""
+    from preloop.api.auth.jwt import create_access_token
+
+    server = _oauth_server(db_session, test_user)
+    # A normal access token (no purpose claim) — the old vulnerable form.
+    plain = create_access_token({"sub": str(test_user.id), "scopes": []})
+    resp = client.get(
+        f"/api/v1/mcp-servers/{server.id}/oauth/authorize?code={plain}",
+        follow_redirects=False,
+    )
+    assert resp.status_code == 401
+
+
+def test_oauth_authorize_rejects_token_for_other_server(
+    client: TestClient, db_session, test_user
+):
+    """An authorize token minted for one server can't be used for another."""
+    from datetime import timedelta
+    from preloop.api.auth.jwt import create_access_token
+
+    server = _oauth_server(db_session, test_user)
+    other_token = create_access_token(
+        {
+            "sub": str(test_user.id),
+            "purpose": "mcp_oauth_authorize",
+            "server_id": str(uuid.uuid4()),
+        },
+        expires_delta=timedelta(seconds=120),
+    )
+    resp = client.get(
+        f"/api/v1/mcp-servers/{server.id}/oauth/authorize?code={other_token}",
+        follow_redirects=False,
+    )
+    assert resp.status_code == 401
+
+
 def test_update_mcp_server_success(client: TestClient, db_session, test_user):
     """Test updating an MCP server."""
     server = MCPServer(

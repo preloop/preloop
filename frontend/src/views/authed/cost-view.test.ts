@@ -110,7 +110,11 @@ describe('CostView', () => {
 
   it('renders accessible cost metrics and tables after load', async () => {
     const element = (await fixture(html`<cost-view></cost-view>`)) as CostView;
-    await waitUntil(() => element.loading === false);
+    // `loading` is a private reactive state field; the cast keeps tsc happy
+    // without widening the component's public API.
+    await waitUntil(
+      () => (element as unknown as { loading: boolean }).loading === false
+    );
 
     const metrics = element.shadowRoot?.querySelector(
       '[aria-label="Cost summary metrics"]'

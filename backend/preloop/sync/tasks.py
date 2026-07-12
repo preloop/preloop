@@ -2,35 +2,47 @@ from preloop.sync.config import logger
 from preloop.models.db.session import get_db_session
 from preloop.models.crud import crud_tracker
 from preloop.sync.scanner.core import scan_tracker
+from datetime import datetime
+from typing import Any, Optional, Union
 
 
-def scan_tracker_task(tracker_id: int, since=None, force_update=False):
-    return poll_tracker(tracker_id, since, force_update)
+async def scan_tracker_task(
+    tracker_id: Union[int, str],
+    since: Optional[datetime] = None,
+    force_update: bool = False,
+) -> Optional[dict[str, Any]]:
+    return await poll_tracker(tracker_id, since, force_update)
 
 
-async def poll_tracker(tracker_id: int, since=None, force_update=False):
-    logger.info(f"Starting scan for tracker {tracker_id}")
+async def poll_tracker(
+    tracker_id: Union[int, str],
+    since: Optional[datetime] = None,
+    force_update: bool = False,
+) -> Optional[dict[str, Any]]:
+    logger.info("Starting scan for tracker %s", tracker_id)
     db = next(get_db_session())
     try:
         tracker = crud_tracker.get(db, id=tracker_id)
         if not tracker:
-            logger.error(f"Tracker {tracker_id} not found")
+            logger.error("Tracker %s not found", tracker_id)
             return None
 
         # Await the async scan_tracker directly
         stats = await scan_tracker(db, tracker, since=since, force_update=force_update)
         crud_tracker.validate(db, id=tracker_id, is_valid=True)
-        logger.info(f"Scan for tracker {tracker_id} completed. Stats: {stats}")
+        logger.info("Scan for tracker %s completed. Stats: %s", tracker_id, stats)
         return stats
     except Exception as e:
-        logger.error(f"Error scanning tracker {tracker_id}: {e}", exc_info=True)
+        logger.error("Error scanning tracker %s: %s", tracker_id, e, exc_info=True)
         crud_tracker.validate(db, id=tracker_id, is_valid=False, message=str(e))
         return None
     finally:
         db.close()
 
 
-def notify_admins(subject: str, message: str, message_html: str = None):
+def notify_admins(
+    subject: str, message: str, message_html: Optional[str] = None
+) -> None:
     """Send admin notifications via email, Slack, and Mattermost.
 
     Skips all notifications during testing (when TESTING=true environment variable is set).
@@ -96,7 +108,7 @@ def notify_admins(subject: str, message: str, message_html: str = None):
             logger.error(f"Failed to send Mattermost notification: {e}")
 
 
-def serialize_uuids(obj):
+def serialize_uuids(obj: Any) -> Any:
     """
     Recursively convert UUID objects to strings in a dictionary or list.
     This ensures UUIDs can be serialized to JSON for JSONB fields.
@@ -116,8 +128,11 @@ def serialize_uuids(obj):
 
 
 async def process_webhook_event(
-    tracker_id: int, event_type: str, payload: dict, **kwargs
-):
+    tracker_id: int,
+    event_type: str,
+    payload: dict[str, Any],
+    **kwargs: Any,
+) -> None:
     """
     This task is triggered when a webhook event is received from a tracker.
     It uses the FlowTriggerService to check if any flows should be initiated.
@@ -175,7 +190,103 @@ async def process_webhook_event(
         db.close()
 
 
-async def cleanup_tracker_webhooks(tracker_id: str):
+def reprice_gateway_usage_task(
+    account_id: str,
+    start: str,
+    end: str,
+    only_unpriced: bool = True,
+    dry_run: bool = False,
+) -> dict[str, object] | None:
+    """Re-price gateway usage rows for one account in a time window.
+
+    Dispatched over NATS (function name in the task payload). ``start`` and
+    ``end`` are ISO-8601 timestamps.
+    """
+    from datetime import datetime
+
+    from preloop.services.model_price_catalog import load_catalog
+    from preloop.services.usage_repricing import reprice_gateway_usage
+
+    load_catalog()
+    db = next(get_db_session())
+    try:
+        result = reprice_gateway_usage(
+            db,
+            account_id=account_id,
+            start=datetime.fromisoformat(start),
+            end=datetime.fromisoformat(end),
+            only_unpriced=only_unpriced,
+            dry_run=dry_run,
+        )
+        return {
+            "rows_examined": result.rows_examined,
+            "rows_updated": result.rows_updated,
+            "rows_skipped": result.rows_skipped,
+            "cost_before": result.cost_before,
+            "cost_after": result.cost_after,
+            "dry_run": result.dry_run,
+        }
+    except Exception as e:
+        logger.error(
+            "Error repricing usage for account %s: %s",
+            account_id,
+            e,
+            exc_info=True,
+        )
+        return None
+    finally:
+        db.close()
+
+
+def ingest_provider_billing(account_id: str | None = None) -> object | None:
+    """Fetch provider billing/usage actuals for reconciliation.
+
+    The implementation lives in the Enterprise billing plugin; this OSS shim
+    resolves it through the plugin service registry and no-ops (with a debug
+    log) when the plugin is not installed.
+    """
+    from preloop.plugins.base import get_plugin_manager
+
+    service = get_plugin_manager().get_service("provider_billing_ingestion")
+    if service is None:
+        logger.debug(
+            "provider_billing_ingestion service not available; skipping ingest"
+        )
+        return None
+    db = next(get_db_session())
+    try:
+        return service.ingest(db, account_id=account_id)
+    except Exception as e:
+        logger.error("Provider billing ingestion failed: %s", e, exc_info=True)
+        return None
+    finally:
+        db.close()
+
+
+def send_optimization_digest(account_id: str | None = None) -> object | None:
+    """Build and email the weekly cost optimization & savings digest.
+
+    The implementation lives in the Enterprise billing plugin; this OSS shim
+    resolves it through the plugin service registry and no-ops (with a debug
+    log) when the plugin is not installed.
+    """
+    from preloop.plugins.base import get_plugin_manager
+
+    service = get_plugin_manager().get_service("optimization_digest")
+    if service is None:
+        logger.debug("optimization_digest service not available; skipping digest")
+        return None
+    db = next(get_db_session())
+    try:
+        return service(db, account_id=account_id)
+    except Exception as e:
+        logger.error("Optimization digest failed: %s", e, exc_info=True)
+        return None
+    finally:
+        db.close()
+
+
+async def cleanup_tracker_webhooks(tracker_id: str) -> None:
     """
     Clean up webhooks when a tracker is deleted.
 
@@ -269,7 +380,7 @@ async def cleanup_tracker_webhooks(tracker_id: str):
                 client = await create_tracker_client(
                     tracker_type=tracker.tracker_type,
                     tracker_id=tracker_id,
-                    api_key=tracker.api_key,
+                    api_key=tracker.resolved_api_key,
                     connection_details={
                         "url": tracker.url,
                         **(tracker.connection_details or {}),

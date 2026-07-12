@@ -244,7 +244,7 @@ async def get_tracker_client(
         tracker_client = await create_tracker_client(
             tracker_type=tracker_type,
             tracker_id=str(tracker.id),
-            api_key=tracker.api_key or "",  # May be empty for OAuth
+            api_key=tracker.resolved_api_key,  # May be empty for OAuth
             connection_details=full_config,
         )
         if not tracker_client:

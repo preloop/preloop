@@ -8,8 +8,6 @@ import math
 from typing import Any, Dict, Optional
 
 from fastapi import HTTPException
-from sqlalchemy import inspect
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from preloop.config import settings
@@ -18,7 +16,6 @@ from preloop.models.crud import (
     crud_ai_model,
     crud_api_usage,
     crud_flow,
-    crud_model_price_override,
 )
 from preloop.models.crud.plan import subscription as crud_subscription
 from preloop.models.models.ai_model import AIModel
@@ -32,6 +29,15 @@ from preloop.services.subject_governance import (
 )
 
 
+def _default_estimated_output_tokens() -> int:
+    return max(1, int(settings.billing_budget_default_estimated_output_tokens))
+
+
+def _chars_per_token() -> float:
+    return max(1.0, float(settings.billing_budget_chars_per_token))
+
+
+# Back-compat alias for tests/imports that still reference the constant.
 DEFAULT_ESTIMATED_OUTPUT_TOKENS = 1024
 
 
@@ -349,14 +355,18 @@ class ModelGatewayBudgetService:
         payload: Dict[str, Any],
         pricing_override: Optional[Dict[str, Any]] = None,
     ) -> Optional[float]:
-        estimated_input_tokens = ModelGatewayBudgetService._estimate_input_tokens(
-            payload
+        if pricing_override is None and self._is_subscription_credentialed(ai_model):
+            # Subscription-covered upstream (OAuth): no marginal API charge,
+            # matching the $0 the recording path will persist.
+            return 0.0
+        estimated_input_tokens = ModelGatewayBudgetService._count_input_tokens(
+            ai_model, payload
         )
         estimated_output_tokens = int(
             payload.get("max_completion_tokens")
             or payload.get("max_output_tokens")
             or payload.get("max_tokens")
-            or DEFAULT_ESTIMATED_OUTPUT_TOKENS
+            or _default_estimated_output_tokens()
         )
         return estimate_ai_model_usage_cost(
             ai_model,
@@ -366,37 +376,59 @@ class ModelGatewayBudgetService:
             pricing_override=pricing_override,
         )
 
+    @staticmethod
+    def _is_subscription_credentialed(ai_model: AIModel) -> bool:
+        """True when the model bills against an OAuth subscription."""
+        from preloop.services.secret_service import (
+            ANTHROPIC_CLAUDE_CODE_OAUTH_CREDENTIAL_TYPE,
+            OPENAI_CODEX_OAUTH_CREDENTIAL_TYPE,
+        )
+
+        return ai_model.credential_type in {
+            ANTHROPIC_CLAUDE_CODE_OAUTH_CREDENTIAL_TYPE,
+            OPENAI_CODEX_OAUTH_CREDENTIAL_TYPE,
+        }
+
     def _pricing_override_for_request(
         self, ai_model: AIModel, payload: Dict[str, Any]
     ) -> Optional[Dict[str, Any]]:
         """Return account pricing override for preflight cost estimates."""
-        meta_data = ai_model.meta_data if isinstance(ai_model.meta_data, dict) else {}
-        gateway_config = (
-            meta_data.get("gateway")
-            if isinstance(meta_data.get("gateway"), dict)
-            else {}
+        from preloop.services.pricing_overrides import resolve_pricing_override
+
+        raw_model = payload.get("model")
+        requested_alias = None
+        if isinstance(raw_model, str):
+            # Bound and sanitize client-supplied model names before lookup /
+            # logging paths touch them.
+            cleaned = raw_model.strip()[:128]
+            if cleaned and all(ord(ch) >= 32 for ch in cleaned):
+                requested_alias = cleaned
+
+        return resolve_pricing_override(
+            self.db,
+            account_id=self.auth_context.user.account_id,
+            ai_model=ai_model,
+            requested_alias=requested_alias,
         )
-        model_alias = (
-            payload.get("model")
-            or gateway_config.get("model_alias")
-            or ai_model.model_identifier
-        )
-        try:
-            bind = self.db.get_bind()
-            if bind is not None and not inspect(bind).has_table(
-                "model_price_overrides"
-            ):
-                return None
-            override = crud_model_price_override.get_active_for_model(
-                self.db,
-                account_id=self.auth_context.user.account_id,
-                ai_model_id=ai_model.id,
-                model_alias=str(model_alias).strip() if model_alias else None,
-                provider_name=ai_model.provider_name,
-            )
-        except SQLAlchemyError:
-            return None
-        return override.to_pricing_dict() if override is not None else None
+
+    @staticmethod
+    def _count_input_tokens(ai_model: AIModel, payload: Dict[str, Any]) -> int:
+        """Estimate preflight input tokens for budget checks.
+
+        Uses the cheap chars/4 heuristic rather than ``litellm.token_counter``
+        so every gateway request does not pay tokenizer overhead on the hot
+        path. Post-response recording still uses accurate provider usage.
+
+        Args:
+            ai_model: Model the request targets (unused; kept for call-site
+                compatibility with earlier tokenizer-based estimation).
+            payload: The gateway request body.
+
+        Returns:
+            Estimated input token count (0 when the payload has no text).
+        """
+        del ai_model  # reserved for future tokenizer selection
+        return ModelGatewayBudgetService._estimate_input_tokens(payload)
 
     @staticmethod
     def _estimate_input_tokens(payload: Dict[str, Any]) -> int:
@@ -423,7 +455,8 @@ class ModelGatewayBudgetService:
                         )
                     )
         total_chars = sum(len(part) for part in text_parts if part)
-        return max(1, math.ceil(total_chars / 4)) if total_chars else 0
+        chars_per_token = _chars_per_token()
+        return max(1, math.ceil(total_chars / chars_per_token)) if total_chars else 0
 
     @staticmethod
     def _content_to_text(content: Any) -> str:

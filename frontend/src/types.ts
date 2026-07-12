@@ -723,12 +723,21 @@ export interface AccountGatewayUsageSummaryResponse {
   failed_requests: number;
   token_usage: GatewayTokenUsage;
   estimated_cost: number;
+  unpriced_requests?: number;
+  unpriced_tokens?: number;
+  price_catalog?: PriceCatalogInfo | null;
   budget: GatewayBudgetSummary;
   requests_by_day: GatewayUsageByDay[];
   usage_by_model: GatewayUsageByModel[];
   usage_by_flow: GatewayUsageByFlow[];
   usage_by_session: GatewayUsageBySession[];
   usage_by_tool?: GatewayUsageByTool[];
+}
+
+export interface PriceCatalogInfo {
+  source_url?: string | null;
+  fetched_at?: string | null;
+  model_count?: number | null;
 }
 
 export interface ModelPriceOverride {
@@ -738,6 +747,7 @@ export interface ModelPriceOverride {
   provider_name: string | null;
   model_alias: string;
   currency: string;
+  fx_rate_to_usd?: number | null;
   input_price_per_1k: number | null;
   output_price_per_1k: number | null;
   cache_read_input_price_per_1k: number | null;
@@ -763,6 +773,44 @@ export type ModelPriceOverrideCreate = Omit<
 export type ModelPriceOverrideUpdate = Partial<ModelPriceOverrideCreate>;
 
 export interface CostAnalyticsSummaryResponse extends AccountGatewayUsageSummaryResponse {}
+
+export interface ProviderBillingConnection {
+  id: string;
+  provider: string;
+  is_active: boolean;
+  last_synced_at: string | null;
+  last_error: string | null;
+  created_at: string;
+}
+
+export interface CostReconciliationRow {
+  provider: string;
+  date: string;
+  preloop_cost: number;
+  provider_cost: number;
+  drift_abs: number;
+  drift_pct: number | null;
+  preloop_tokens: number;
+  provider_tokens: number;
+}
+
+export interface CostReconciliationResponse {
+  rows: CostReconciliationRow[];
+  total_preloop_cost: number;
+  total_provider_cost: number;
+  total_drift_abs: number;
+  total_drift_pct: number | null;
+}
+
+export interface RepriceResponse {
+  submitted_async: boolean;
+  rows_examined: number;
+  rows_updated: number;
+  rows_skipped: number;
+  cost_before: number;
+  cost_after: number;
+  dry_run: boolean;
+}
 
 export interface FlowGatewayUsageSummaryResponse {
   flow_id: string;

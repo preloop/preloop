@@ -1476,6 +1476,26 @@ func runAgentsInstallPlugin(cmd *cobra.Command, args []string) error {
 		if message == "" {
 			message = err.Error()
 		}
+		agent := AgentConfig{Name: agentName}
+		if runtimeSessionSourceTypeForAgent(agent.Name) == hermesSourceType {
+			// Hermes' `plugins install` only accepts Git URLs or owner/repo
+			// shorthands; the Preloop plugin ships on PyPI, so fall back to a
+			// pip install into Hermes' Python environment.
+			if installed, pipError := installHermesPluginViaPip(
+				agentControlPluginInstallTarget(agent),
+				cmd.ErrOrStderr(),
+			); installed {
+				fmt.Fprintf(
+					cmd.OutOrStdout(),
+					"\nInstalled %s via pip. Run `preloop agents validate %s` to verify plugin load and control readiness.\n",
+					agentControlPluginPackageName(agent),
+					agentName,
+				)
+				return nil
+			} else if pipError != "" {
+				message = fmt.Sprintf("%s (pip fallback also failed: %s)", message, pipError)
+			}
+		}
 		_, remediation := classifyRuntimePluginInstallFailure(installCommand, message)
 		if remediation != "" {
 			return fmt.Errorf(
@@ -1783,6 +1803,9 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 
 	fmt.Printf("✓ Offboarded %s\n", resolveAgentDisplayName(agent))
 	fmt.Printf("  Restored config: %s\n", agent.ConfigPath)
+	if isClaudeCodeAgent(agent) {
+		printClaudeCodeOAuthOffboardNote(os.Stdout)
+	}
 	if detail != nil {
 		fmt.Printf("  Removed managed agent: %s\n", detail.Agent.ID)
 		candidates, err := collectOffboardCleanupCandidates(client, detail.Agent)

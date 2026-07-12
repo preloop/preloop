@@ -732,6 +732,87 @@ func extractHermesCredentialPoolAuthBlob(
 	return nil
 }
 
+// hermesPipPythonCandidates returns Python interpreters that live inside
+// Hermes' own environment, most specific first. Hermes loads plugins from its
+// Python environment via the `hermes_agent.plugins` entry point, so pip
+// installs must target that interpreter rather than an arbitrary system one.
+func hermesPipPythonCandidates() []string {
+	candidates := []string{}
+	if hermesPath, err := resolveRuntimeExecutable("hermes"); err == nil {
+		binDir := filepath.Dir(hermesPath)
+		candidates = append(
+			candidates,
+			filepath.Join(binDir, "python3"),
+			filepath.Join(binDir, "python"),
+		)
+	}
+	if homeDir, err := os.UserHomeDir(); err == nil {
+		venvBin := filepath.Join(homeDir, ".hermes", "hermes-agent", "venv", "bin")
+		candidates = append(
+			candidates,
+			filepath.Join(venvBin, "python3"),
+			filepath.Join(venvBin, "python"),
+		)
+	}
+	return candidates
+}
+
+// resolveHermesPipPython picks the interpreter used for pip-installing the
+// Preloop Hermes plugin: a python bundled with the Hermes install when
+// available, otherwise python3/python from PATH.
+func resolveHermesPipPython() (string, error) {
+	for _, candidate := range hermesPipPythonCandidates() {
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() &&
+			info.Mode().Perm()&0111 != 0 {
+			return candidate, nil
+		}
+	}
+	for _, name := range []string{"python3", "python"} {
+		if path, err := exec.LookPath(name); err == nil {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf(
+		"no Python interpreter found for installing the Hermes Preloop plugin " +
+			"(looked next to the hermes executable, in ~/.hermes/hermes-agent/venv/bin, and on PATH)",
+	)
+}
+
+// installHermesPluginViaPip installs the Preloop Hermes plugin with pip.
+// Hermes has no central plugin marketplace — `hermes plugins install` accepts
+// only Git URLs or owner/repo shorthands — so the canonical distribution
+// channel is PyPI (`preloop-hermes-plugin`) plus the `hermes_agent.plugins`
+// entry point (see runtime-plugins/PUBLISHING.md). installTarget is either
+// the PyPI package name or a local plugin source directory; pip accepts both.
+// Returns (true, "") on success, otherwise (false, failure message).
+func installHermesPluginViaPip(installTarget string, writer io.Writer) (bool, string) {
+	pythonPath, err := resolveHermesPipPython()
+	if err != nil {
+		return false, err.Error()
+	}
+	if writer != nil {
+		fmt.Fprintf(
+			writer,
+			"  Installing %s into Hermes' Python environment with pip (%s)...\n",
+			installTarget,
+			pythonPath,
+		) //nolint:errcheck
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(
+		ctx, pythonPath, "-m", "pip", "install", "--upgrade", installTarget,
+	).CombinedOutput()
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		return false, message
+	}
+	return true, ""
+}
+
 // restartHermesGatewayAfterReconfig reloads the Hermes messaging gateway so MCP
 // server changes written during onboarding take effect before config validation
 // and live checks run.

@@ -29,6 +29,9 @@ VAULT_KV_V2_BACKEND = "vault_kv_v2"
 OPENBAO_KV_V2_BACKEND = "openbao_kv_v2"
 AI_MODEL_API_KEY_SECRET_KIND = "ai_model_api_key"
 AI_MODEL_CREDENTIALS_SECRET_KIND = "ai_model_credentials"
+# Provider ORGANIZATION admin keys (OpenAI Admin key / Anthropic Admin key)
+# used to fetch billing/usage actuals — distinct from inference credentials.
+PROVIDER_ADMIN_CREDENTIALS_SECRET_KIND = "provider_admin_credentials"
 OPENAI_CODEX_OAUTH_CREDENTIAL_TYPE = "oauth_openai_codex"
 ANTHROPIC_CLAUDE_CODE_OAUTH_CREDENTIAL_TYPE = "oauth_anthropic_claude_code"
 OPENAI_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
@@ -82,6 +85,12 @@ class CredentialRefreshError(ValueError):
         self.provider = provider
         self.status_code = status_code
         self.code = code
+
+    def safe_summary(self) -> str:
+        """Return a DB-safe summary that never embeds provider response bodies."""
+        status = self.status_code if self.status_code is not None else "?"
+        code = self.code or "unknown"
+        return f"{self.provider} refresh failed (status={status}, code={code})"
 
 
 class SecretBackend(Protocol):
@@ -532,7 +541,31 @@ class SecretService:
         if not refresh_token:
             return payload
 
-        refreshed = self._refresh_openai_codex_token(refresh_token)
+        try:
+            refreshed = self._refresh_openai_codex_token(refresh_token)
+        except CredentialRefreshError as exc:
+            if (
+                db is not None
+                and ai_model.credentials_secret is not None
+                and ai_model.credentials_secret.backend_type == LOCAL_ENCRYPTED_BACKEND
+            ):
+                ai_model.credentials_secret.status = "error"
+                ai_model.credentials_secret.meta_data = {
+                    **(
+                        ai_model.credentials_secret.meta_data
+                        if isinstance(ai_model.credentials_secret.meta_data, dict)
+                        else {}
+                    ),
+                    "credential_type": OPENAI_CODEX_OAUTH_CREDENTIAL_TYPE,
+                    "last_refresh_error": exc.safe_summary(),
+                    "last_refresh_status_code": exc.status_code,
+                    "last_refresh_code": exc.code,
+                    "last_refresh_failed_at": datetime.now(timezone.utc).isoformat(),
+                }
+                db.add(ai_model.credentials_secret)
+                db.commit()
+            raise
+
         account_id = refreshed.get("account_id") or payload.get("account_id")
         next_payload = {
             "type": OPENAI_CODEX_OAUTH_CREDENTIAL_TYPE,
@@ -593,7 +626,7 @@ class SecretService:
                         else {}
                     ),
                     "credential_type": ANTHROPIC_CLAUDE_CODE_OAUTH_CREDENTIAL_TYPE,
-                    "last_refresh_error": str(exc),
+                    "last_refresh_error": exc.safe_summary(),
                     "last_refresh_status_code": exc.status_code,
                     "last_refresh_code": exc.code,
                     "last_refresh_failed_at": datetime.now(timezone.utc).isoformat(),
@@ -663,12 +696,18 @@ class SecretService:
                 payload = json.loads(response.read().decode("utf-8"))
         except urllib_error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "ignore")
+            code = self._extract_oauth_error_code(detail)
+            logger.warning(
+                "Anthropic Claude Code OAuth refresh HTTP %s (code=%s)",
+                exc.code,
+                code,
+            )
             raise CredentialRefreshError(
-                "Anthropic Claude Code OAuth token refresh failed with status "
-                f"{exc.code}: {detail}",
+                f"Anthropic Claude Code OAuth token refresh failed with status "
+                f"{exc.code}",
                 provider="anthropic",
                 status_code=exc.code,
-                code=self._extract_oauth_error_code(detail),
+                code=code,
             ) from exc
         except urllib_error.URLError as exc:
             raise CredentialRefreshError(
@@ -698,6 +737,11 @@ class SecretService:
         except (TypeError, ValueError, json.JSONDecodeError):
             payload = None
         if isinstance(payload, dict):
+            # OpenAI nests the machine-readable code inside an ``error``
+            # object (e.g. {"error": {"code": "refresh_token_reused", ...}}).
+            nested = payload.get("error")
+            if isinstance(nested, dict):
+                payload = nested
             for key in ("code", "error_code", "error"):
                 value = payload.get(key)
                 if value is not None:
@@ -723,19 +767,32 @@ class SecretService:
                 payload = json.loads(response.read().decode("utf-8"))
         except urllib_error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "ignore")
-            raise ValueError(
-                f"OpenAI Codex token refresh failed with status {exc.code}: {detail}"
+            code = self._extract_oauth_error_code(detail)
+            logger.warning(
+                "OpenAI Codex OAuth refresh HTTP %s (code=%s)",
+                exc.code,
+                code,
+            )
+            raise CredentialRefreshError(
+                f"OpenAI Codex token refresh failed with status {exc.code}",
+                provider="openai",
+                status_code=exc.code,
+                code=code,
             ) from exc
         except urllib_error.URLError as exc:
-            raise ValueError(
-                f"OpenAI Codex token refresh failed: {exc.reason}"
+            raise CredentialRefreshError(
+                f"OpenAI Codex token refresh failed: {exc.reason}",
+                provider="openai",
             ) from exc
 
         access = str(payload.get("access_token") or "").strip()
         refresh = str(payload.get("refresh_token") or "").strip()
         expires_in = payload.get("expires_in")
         if not access or not refresh or not isinstance(expires_in, (int, float)):
-            raise ValueError("OpenAI Codex token refresh response missing fields")
+            raise CredentialRefreshError(
+                "OpenAI Codex token refresh response missing fields",
+                provider="openai",
+            )
         return {
             "access": access,
             "refresh": refresh,

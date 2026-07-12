@@ -55,6 +55,9 @@ import type {
   AIModel,
   DashboardTelemetryResponse,
   CostAnalyticsSummaryResponse,
+  CostReconciliationResponse,
+  ProviderBillingConnection,
+  RepriceResponse,
   ToolUsageStatsResponse,
   ModelPriceOverride,
   ModelPriceOverrideCreate,
@@ -649,6 +652,107 @@ export async function deleteModelPriceOverride(id: string): Promise<void> {
   if (!response.ok) {
     throw new Error('Failed to delete model price override');
   }
+}
+
+export async function repriceCost(data: {
+  start_date: string;
+  end_date: string;
+  only_unpriced?: boolean;
+  dry_run?: boolean;
+}): Promise<RepriceResponse> {
+  const response = await fetchWithAuth('/api/v1/billing/cost/reprice', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(extractErrorMessage(errorData, 'Failed to reprice usage'));
+  }
+  return response.json();
+}
+
+export async function getProviderBillingConnections(): Promise<
+  ProviderBillingConnection[]
+> {
+  const response = await fetchWithAuth(
+    '/api/v1/billing/provider-billing/connections'
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch provider billing connections');
+  }
+  return response.json();
+}
+
+export async function createProviderBillingConnection(data: {
+  provider: string;
+  admin_api_key: string;
+}): Promise<ProviderBillingConnection> {
+  const response = await fetchWithAuth(
+    '/api/v1/billing/provider-billing/connections',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(
+        errorData,
+        'Failed to create provider billing connection'
+      )
+    );
+  }
+  return response.json();
+}
+
+export async function deleteProviderBillingConnection(
+  id: string
+): Promise<void> {
+  const response = await fetchWithAuth(
+    `/api/v1/billing/provider-billing/connections/${id}`,
+    { method: 'DELETE' }
+  );
+  if (!response.ok) {
+    throw new Error('Failed to delete provider billing connection');
+  }
+}
+
+export async function syncProviderBillingConnection(
+  id: string
+): Promise<unknown> {
+  const response = await fetchWithAuth(
+    `/api/v1/billing/provider-billing/connections/${id}/sync`,
+    { method: 'POST' }
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to sync provider billing')
+    );
+  }
+  return response.json();
+}
+
+export async function getCostReconciliation(params: {
+  startDate?: string;
+  endDate?: string;
+  provider?: string;
+}): Promise<CostReconciliationResponse> {
+  const query = new URLSearchParams();
+  if (params.startDate) query.set('start_date', params.startDate);
+  if (params.endDate) query.set('end_date', params.endDate);
+  if (params.provider) query.set('provider', params.provider);
+  const suffix = query.toString();
+  const response = await fetchWithAuth(
+    `/api/v1/billing/provider-billing/reconciliation${suffix ? `?${suffix}` : ''}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch cost reconciliation');
+  }
+  return response.json();
 }
 
 /**
@@ -3549,6 +3653,12 @@ export interface BudgetPolicy {
   notification_user_ids: string[] | null;
   notification_team_ids: string[] | null;
   notification_emails: string[] | null;
+  // Spend within the policy's CURRENT period window (today for daily, this
+  // month for monthly, ...), computed server-side from the period-aligned
+  // budget spend buckets. Optional for backward compatibility.
+  current_spend_usd?: number | null;
+  period_start?: string | null;
+  period_end?: string | null;
 }
 
 export interface BudgetPolicyCreate {

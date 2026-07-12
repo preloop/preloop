@@ -65,18 +65,6 @@ class TrackerCreateResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-@router.post("/trackers/debug")
-async def debug_tracker_request(request: Request):
-    """Debug endpoint to see raw request data"""
-    try:
-        body = await request.json()
-        print("DEBUG REQUEST BODY:", body)
-        return {"received": body}
-    except Exception as e:
-        print("DEBUG ERROR:", str(e))
-        return {"error": str(e)}
-
-
 @router.post(
     "/trackers",
     status_code=status.HTTP_201_CREATED,
@@ -357,27 +345,27 @@ async def register_tracker(
         if auth_type in ("github_app", "oauth_app") and installation:
             oauth_installation_uuid = installation.id
 
-        new_tracker = Tracker(
-            name=name,
-            tracker_type=tracker_type.value,
-            url=str(url_str) if url_str else None,
-            api_key=api_key or "",  # Empty string for github_app auth
-            connection_details=config or {},
-            account_id=account.id,
-            is_active=True,
-            meta_data={},
-            scope_rules=scope_rules,
-            auth_type=auth_type,
-            oauth_installation_id=oauth_installation_uuid,
+        # Persist via CRUD so credentials are encrypted at rest (never write
+        # plaintext api_key columns from the endpoint).
+        new_tracker = crud_tracker.create(
+            db,
+            obj_in={
+                "name": name,
+                "tracker_type": tracker_type.value,
+                "url": str(url_str) if url_str else None,
+                "api_key": api_key or None,
+                "connection_details": config or {},
+                "account_id": account.id,
+                "is_active": True,
+                "meta_data": {},
+                "auth_type": auth_type,
+                "oauth_installation_id": oauth_installation_uuid,
+            },
         )
-
-        db.add(new_tracker)
-        db.flush()  # Get ID before creating org
-
-        # Then create or find organization for this tracker
-        # (Assuming one org per tracker for now, might need adjustment later)
-        db.commit()
-        db.refresh(new_tracker)
+        if scope_rules:
+            new_tracker.scope_rules = scope_rules
+            db.commit()
+            db.refresh(new_tracker)
 
         log_config_change(
             db,
@@ -551,25 +539,20 @@ async def update_tracker(
     if update_data.get("api_key") == "unchanged":
         del update_data["api_key"]
 
-    # Update other fields
-    for field, value in update_data.items():
-        setattr(tracker, field, value)
-
-    # Special handling if api_key is updated - revalidate connection?
-    if "api_key" in update_data:
-        # Optionally re-test connection here or mark as unvalidated
-        tracker.is_valid = False
-        tracker.last_validation = None
-        tracker.validation_message = "API key updated, revalidation needed."
+    # Special handling if api_key is updated - revalidate connection.
+    api_key_updated = "api_key" in update_data
+    if api_key_updated:
+        update_data["is_valid"] = False
+        update_data["last_validation"] = None
+        update_data["validation_message"] = "API key updated, revalidation needed."
         logger.info(
-            f"API key updated for tracker {tracker.id}, marked for revalidation."
+            "API key updated for tracker %s, marked for revalidation.", tracker.id
         )
 
     try:
-        logger.info(f"Updating tracker {tracker_id} with data: {update_data}")
-        db.merge(tracker)
-        db.commit()
-        db.refresh(tracker)
+        logger.info("Updating tracker %s with data: %s", tracker_id, update_data)
+        # Route through CRUD so credential fields encrypt via Secret Service.
+        tracker = crud_tracker.update(db, db_obj=tracker, obj_in=update_data)
 
         log_config_change(
             db,
@@ -738,7 +721,7 @@ async def test_connection_and_list_orgs(
                 detail="Tracker not found or access denied",
             )
         if test_data.api_key == "unchanged":
-            test_data.api_key = tracker.api_key
+            test_data.api_key = tracker.resolved_api_key
     try:
         client = await create_tracker_client(
             tracker_type=test_data.tracker_type.value,
@@ -820,7 +803,7 @@ async def list_projects_for_org(
                 detail="Tracker not found or access denied",
             )
         if project_data.api_key == "unchanged":
-            project_data.api_key = tracker.api_key
+            project_data.api_key = tracker.resolved_api_key
     try:
         if project_data.url and not project_data.url.endswith("/"):
             project_data.url = project_data.url + "/"

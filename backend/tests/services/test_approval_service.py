@@ -65,6 +65,50 @@ def sample_approval_request():
     return request
 
 
+class TestDecisionGuards:
+    """approve/decline must not re-decide resolved or expired requests."""
+
+    async def test_approve_already_resolved_is_noop(
+        self, approval_service, sample_approval_request
+    ):
+        sample_approval_request.status = "declined"
+        approval_service.get_approval_request_for_update = AsyncMock(
+            return_value=sample_approval_request
+        )
+        approval_service.update_approval_request = AsyncMock()
+        result = await approval_service.approve_request(sample_approval_request.id)
+        assert result is sample_approval_request
+        approval_service.update_approval_request.assert_not_called()
+
+    async def test_decline_already_resolved_is_noop(
+        self, approval_service, sample_approval_request
+    ):
+        sample_approval_request.status = "approved"
+        approval_service.get_approval_request_for_update = AsyncMock(
+            return_value=sample_approval_request
+        )
+        approval_service.update_approval_request = AsyncMock()
+        result = await approval_service.decline_request(sample_approval_request.id)
+        assert result is sample_approval_request
+        approval_service.update_approval_request.assert_not_called()
+
+    async def test_approve_expired_marks_expired(
+        self, approval_service, sample_approval_request
+    ):
+        sample_approval_request.status = "pending"
+        sample_approval_request.expires_at = datetime.utcnow() - timedelta(seconds=1)
+        expired = MagicMock(spec=ApprovalRequest)
+        expired.status = "expired"
+        approval_service.get_approval_request_for_update = AsyncMock(
+            return_value=sample_approval_request
+        )
+        approval_service.update_approval_request = AsyncMock(return_value=expired)
+        result = await approval_service.approve_request(sample_approval_request.id)
+        assert result.status == "expired"
+        update_arg = approval_service.update_approval_request.call_args.args[1]
+        assert update_arg.status == "expired"
+
+
 class TestCreateApprovalRequest:
     """Test create_approval_request method."""
 

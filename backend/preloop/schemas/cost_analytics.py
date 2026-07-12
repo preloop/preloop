@@ -92,6 +92,7 @@ class ModelPriceOverrideBase(BaseModel):
     provider_name: Optional[str] = Field(default=None, max_length=255)
     model_alias: str = Field(..., min_length=1, max_length=255)
     currency: str = Field(default="USD", min_length=3, max_length=3)
+    fx_rate_to_usd: Optional[float] = Field(default=None, gt=0)
     input_price_per_1k: Optional[float] = Field(default=None, ge=0)
     output_price_per_1k: Optional[float] = Field(default=None, ge=0)
     cache_read_input_price_per_1k: Optional[float] = Field(default=None, ge=0)
@@ -143,6 +144,11 @@ class ModelPriceOverrideBase(BaseModel):
             and self.effective_until <= self.effective_from
         ):
             raise ValueError("effective_until must be after effective_from")
+        if self.currency != "USD" and not self.fx_rate_to_usd:
+            raise ValueError(
+                "Non-USD overrides require fx_rate_to_usd (> 0) so costs can "
+                "be recorded in USD"
+            )
         return self
 
 
@@ -157,6 +163,7 @@ class ModelPriceOverrideUpdate(BaseModel):
     provider_name: Optional[str] = Field(default=None, max_length=255)
     model_alias: Optional[str] = Field(default=None, min_length=1, max_length=255)
     currency: Optional[str] = Field(default=None, min_length=3, max_length=3)
+    fx_rate_to_usd: Optional[float] = Field(default=None, gt=0)
     input_price_per_1k: Optional[float] = Field(default=None, ge=0)
     output_price_per_1k: Optional[float] = Field(default=None, ge=0)
     cache_read_input_price_per_1k: Optional[float] = Field(default=None, ge=0)
@@ -198,6 +205,14 @@ class ModelPriceOverrideResponse(ModelPriceOverrideBase):
         from_attributes = True
 
 
+class PriceCatalogInfo(BaseModel):
+    """Provenance of the vendored model-price catalog."""
+
+    source_url: Optional[str] = None
+    fetched_at: Optional[datetime] = None
+    model_count: Optional[int] = None
+
+
 class CostAnalyticsSummaryResponse(BaseModel):
     """Open-source cost overview response."""
 
@@ -208,9 +223,56 @@ class CostAnalyticsSummaryResponse(BaseModel):
     failed_requests: int = 0
     token_usage: GatewayTokenUsage
     estimated_cost: float = 0.0
+    unpriced_requests: int = 0
+    unpriced_tokens: int = 0
+    price_catalog: Optional[PriceCatalogInfo] = None
     budget: GatewayBudgetSummary
     requests_by_day: List[GatewayUsageByDay] = Field(default_factory=list)
     usage_by_model: List[GatewayUsageByModel] = Field(default_factory=list)
     usage_by_flow: List[GatewayUsageByFlow] = Field(default_factory=list)
     usage_by_session: List[GatewayUsageBySession] = Field(default_factory=list)
     usage_by_tool: List[GatewayUsageByTool] = Field(default_factory=list)
+
+
+class RepriceRequest(BaseModel):
+    """Request body for re-pricing historical gateway usage."""
+
+    start_date: datetime
+    end_date: datetime
+    only_unpriced: bool = True
+    dry_run: bool = False
+
+    @model_validator(mode="after")
+    def validate_window(self) -> "RepriceRequest":
+        """Require a positive time window."""
+        if self.end_date <= self.start_date:
+            raise ValueError("end_date must be after start_date")
+        return self
+
+
+class RepriceResponse(BaseModel):
+    """Result of a repricing run (or async submission)."""
+
+    submitted_async: bool = False
+    rows_examined: int = 0
+    rows_updated: int = 0
+    rows_skipped: int = 0
+    cost_before: float = 0.0
+    cost_after: float = 0.0
+    dry_run: bool = False
+
+
+class CostHealthCheck(BaseModel):
+    """One entry in the gateway accounting self-check checklist."""
+
+    key: str
+    status: str = Field(..., pattern="^(pass|fail|skip)$")
+    detail: str
+
+
+class CostHealthResponse(BaseModel):
+    """Account-scoped gateway accounting self-check result."""
+
+    window_hours: int
+    checks: List[CostHealthCheck] = Field(default_factory=list)
+    status: str = Field(..., pattern="^(pass|fail|skip)$")

@@ -450,7 +450,7 @@ def mock_tracker_gitlab():
     tracker.id = 2
     tracker.is_deleted = False
     tracker.tracker_type = "gitlab"
-    tracker.api_key = "gl-key"
+    tracker.resolved_api_key = "gl-key"
     tracker.connection_details = {}
     tracker.url = "https://gitlab.com"
     return tracker
@@ -463,7 +463,7 @@ def mock_tracker_jira():
     tracker.id = 3
     tracker.is_deleted = False
     tracker.tracker_type = "jira"
-    tracker.api_key = "jira-key"
+    tracker.resolved_api_key = "jira-key"
     tracker.connection_details = {}
     tracker.url = "https://jira.atlassian.com"
     return tracker
@@ -476,7 +476,7 @@ async def test_tracker_client_init_gitlab(mock_tracker_gitlab):
         client = TrackerClient(mock_tracker_gitlab)
         mock_gitlab_tracker.assert_called_once_with(
             mock_tracker_gitlab.id,
-            mock_tracker_gitlab.api_key,
+            mock_tracker_gitlab.resolved_api_key,
             {"url": mock_tracker_gitlab.url},
         )
         assert client.tracker_type == "gitlab"
@@ -489,7 +489,7 @@ async def test_tracker_client_init_jira(mock_tracker_jira):
         client = TrackerClient(mock_tracker_jira)
         mock_jira_tracker.assert_called_once_with(
             mock_tracker_jira.id,
-            mock_tracker_jira.api_key,
+            mock_tracker_jira.resolved_api_key,
             {"url": mock_tracker_jira.url},
         )
         assert client.tracker_type == "jira"

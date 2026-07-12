@@ -1,0 +1,66 @@
+"""Shared metadata for builtin MCP/REST tools.
+
+Keep tool names, descriptions, and JSON schemas here so the REST
+``BUILTIN_TOOLS`` catalog and the FastMCP registrations cannot drift.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Dict, List
+
+ASK_USER_TOOL: Dict[str, Any] = {
+    "name": "ask_user",
+    "description": (
+        "Ask the human a question and wait for their answer. Offer "
+        "multiple-choice options and/or let them type a free-text reply. "
+        "Returns the user's answer as text."
+    ),
+    "source": "builtin",
+    "requires_tracker": False,
+    "required_tracker_types": [],
+    "schema": {
+        "type": "object",
+        "properties": {
+            "question": {
+                "type": "string",
+                "description": "The question to ask the human",
+            },
+            "options": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional list of answer options to offer",
+            },
+            "allow_free_text": {
+                "type": "boolean",
+                "description": (
+                    "Whether the user may type a free-text answer (default true)"
+                ),
+            },
+            "context": {
+                "type": "string",
+                "description": "Optional additional context shown to the human",
+            },
+            "approval_workflow": {
+                "type": "string",
+                "description": (
+                    "Optional name of the approval workflow to route the question to"
+                ),
+            },
+        },
+        "required": ["question"],
+    },
+}
+
+
+def builtin_tools_with_ask_user(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Return ``tools`` with ``ASK_USER_TOOL`` inserted after request_approval."""
+    result: List[Dict[str, Any]] = []
+    inserted = False
+    for tool in tools:
+        result.append(tool)
+        if tool.get("name") == "request_approval":
+            result.append(dict(ASK_USER_TOOL))
+            inserted = True
+    if not inserted:
+        result.append(dict(ASK_USER_TOOL))
+    return result

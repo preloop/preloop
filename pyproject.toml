@@ -54,7 +54,11 @@ dependencies = [
     "jira>=3.8.0",
     "cryptography>=42.0.0",  # For Fernet encryption of sensitive data
     "firebase-admin>=6.0.0",  # For Android FCM push notifications
-    "litellm>=1.50.0",  # Provider-agnostic LLM calls for policy generation
+    # Gateway upstream + cost engine. The floor matches the streaming-usage and
+    # register_model semantics the gateway accounting relies on (verified on
+    # 1.81.x); the ceiling guards those internals — bump deliberately with the
+    # gateway streaming tests.
+    "litellm>=1.81.13,<1.90",
     "boto3>=1.34.0",  # For AWS Bedrock support through litellm
 ]
 

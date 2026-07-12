@@ -40,6 +40,11 @@ oauth_callback_router = APIRouter(tags=["MCP Servers OAuth"])
 # In-memory store for pending OAuth states (maps state -> context dict)
 _pending_oauth_states: dict[str, dict] = {}
 
+# Claim marking a short-lived token minted solely for the browser OAuth-authorize
+# redirect. Scoped to one server; NOT a general access token.
+MCP_OAUTH_AUTHORIZE_PURPOSE = "mcp_oauth_authorize"
+MCP_OAUTH_AUTHORIZE_TTL_SECONDS = 120
+
 
 @router.post("/mcp-servers", status_code=status.HTTP_201_CREATED)
 @require_permission("create_mcp_servers")
@@ -507,30 +512,93 @@ async def list_mcp_server_tools(
 # ---------------------------------------------------------------------------
 
 
+@router.post("/mcp-servers/{server_id}/oauth/authorize-token")
+async def create_mcp_oauth_authorize_token(
+    server_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> dict:
+    """Mint a short-lived, single-purpose token for the browser OAuth redirect.
+
+    The browser navigates to the authorize endpoint via a full-page redirect
+    and cannot attach an Authorization header, so the token must ride in the
+    URL. Rather than exposing the reusable access token there (where it would
+    land in browser history, server access logs, and the Referer sent onward
+    to the external OAuth provider), this endpoint — authenticated normally via
+    the Authorization header — returns a token scoped to this one server and
+    purpose and expiring in ~2 minutes.
+    """
+    server = crud_mcp_server.get(
+        db, id=server_id, account_id=str(current_user.account_id)
+    )
+    if not server:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="MCP server not found or access denied",
+        )
+
+    from datetime import timedelta
+
+    from preloop.api.auth.jwt import create_access_token
+
+    authorize_token = create_access_token(
+        {
+            "sub": str(current_user.id),
+            "purpose": MCP_OAUTH_AUTHORIZE_PURPOSE,
+            "server_id": server_id,
+        },
+        expires_delta=timedelta(seconds=MCP_OAUTH_AUTHORIZE_TTL_SECONDS),
+    )
+    return {"authorize_token": authorize_token}
+
+
 @oauth_callback_router.get("/api/v1/mcp-servers/{server_id}/oauth/authorize")
 async def mcp_server_oauth_authorize(
     server_id: str,
-    token: str = Query(..., description="JWT access token for authentication"),
+    code: str = Query(
+        ..., description="Short-lived authorize token from /oauth/authorize-token"
+    ),
     db: Session = Depends(get_db_session),
 ):
     """Initiate the MCP OAuth client flow for an external MCP server.
 
     This endpoint is on the public router because the browser navigates
-    to it directly (302 redirect flow). Auth is via the `token` query param.
+    to it directly (302 redirect flow). Auth is via the short-lived,
+    server-scoped ``code`` minted by ``POST .../oauth/authorize-token`` —
+    never the reusable access token.
 
     1. Fetches the server's /.well-known/oauth-authorization-server metadata.
     2. Dynamically registers as an OAuth client (RFC 7591) if needed.
     3. Generates PKCE code_challenge / code_verifier.
     4. Redirects the user to the external server's authorization endpoint.
     """
-    # Manually validate the JWT token
-    from preloop.api.auth import get_user_from_token_if_valid
+    # Validate the short-lived, purpose- and server-scoped authorize token.
+    from jose import JWTError
+    from jose import jwt as jose_jwt
 
-    current_user = await get_user_from_token_if_valid(token, db)
-    if not current_user:
+    from preloop.api.auth.jwt import ALGORITHM, SECRET_KEY
+    from preloop.models.crud import crud_user
+
+    try:
+        payload = jose_jwt.decode(code, SECRET_KEY, algorithms=[ALGORITHM])
+    except JWTError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
+            detail="Invalid or expired authorization code",
+        )
+    if (
+        payload.get("purpose") != MCP_OAUTH_AUTHORIZE_PURPOSE
+        or payload.get("server_id") != server_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authorization code is not valid for this request",
+        )
+    current_user = crud_user.get(db, id=payload.get("sub"))
+    if not current_user or not getattr(current_user, "is_active", True):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired authorization code",
         )
 
     server = crud_mcp_server.get(

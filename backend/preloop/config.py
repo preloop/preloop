@@ -240,6 +240,48 @@ class Settings(BaseSettings):
             "Current supported value: litellm"
         ),
     )
+    model_price_live_lookup_enabled: bool = Field(
+        True,
+        description=(
+            "When a gateway request records an unpriced model, fetch its "
+            "price from the live upstream price map once in the background "
+            "and re-price the row. Unknown models are negative-cached for a "
+            "day so repeated traffic never re-triggers lookups."
+        ),
+    )
+    provider_billing_sync_enabled: bool = Field(
+        True,
+        description=(
+            "Schedule the daily provider-billing ingestion task (cost "
+            "reconciliation). The task no-ops unless the Enterprise billing "
+            "plugin and at least one provider connection are configured."
+        ),
+    )
+    provider_billing_drift_alert_pct: float = Field(
+        10.0,
+        description=(
+            "Absolute percentage drift between provider-reported cost and "
+            "Preloop's estimated cost (per provider, per day) above which a "
+            "reconciliation drift alert is sent to the account owner. "
+            "Set to 0 or a negative value to disable drift alerting."
+        ),
+    )
+    provider_billing_drift_alert_min_usd: float = Field(
+        1.0,
+        description=(
+            "Minimum provider-reported daily cost (USD) required before a "
+            "reconciliation drift alert may fire; avoids noisy alerts on "
+            "penny-sized spend where drift percentages are meaningless."
+        ),
+    )
+    cost_digest_enabled: bool = Field(
+        True,
+        description=(
+            "Schedule the weekly cost optimization & savings digest email. "
+            "The task no-ops unless the Enterprise billing plugin is "
+            "installed."
+        ),
+    )
     model_gateway_max_preview_chars: int = Field(
         32768,
         description=(
@@ -303,6 +345,20 @@ class Settings(BaseSettings):
             "without a SaaS paywall."
         ),
     )
+    billing_budget_notification_workers: int = Field(
+        4,
+        description=(
+            "Thread-pool size for async budget-limit notification delivery "
+            "(BILLING_BUDGET_NOTIFICATION_WORKERS)"
+        ),
+    )
+    billing_budget_notification_queue_size: int = Field(
+        32,
+        description=(
+            "Max in-flight + queued budget notifications before new ones are "
+            "dropped (BILLING_BUDGET_NOTIFICATION_QUEUE_SIZE)"
+        ),
+    )
     billing_free_hosted_model_hard_cap_usd: float = Field(
         1.0,
         description=(
@@ -323,6 +379,36 @@ class Settings(BaseSettings):
     installer_audit_account_id: str = Field(
         "",
         description="Account ID used to store public installer download audit events",
+    )
+    agent_control_command_ttl_seconds: int = Field(
+        3600,
+        description=(
+            "Seconds an undelivered Agent Control command stays pending "
+            "(eligible for redelivery on agent reconnect) before the expiry "
+            "pass marks it expired"
+        ),
+    )
+    agent_control_allow_query_token: bool = Field(
+        True,
+        description=(
+            "Allow Agent Control WebSockets to authenticate via ?token= "
+            "(leaks into access logs). Set false in production once clients "
+            "send Authorization: Bearer."
+        ),
+    )
+    billing_budget_default_estimated_output_tokens: int = Field(
+        1024,
+        description=(
+            "Default estimated completion tokens used for gateway budget "
+            "preflight when the request omits max_tokens"
+        ),
+    )
+    billing_budget_chars_per_token: float = Field(
+        4.0,
+        description=(
+            "Chars-per-token heuristic divisor for gateway budget preflight "
+            "input estimates"
+        ),
     )
 
     @classmethod
@@ -487,10 +573,29 @@ class Settings(BaseSettings):
                 "BILLING_ENFORCE_ENTITLEMENTS", "true"
             ).lower()
             in ("true", "1", "t", "yes"),
+            billing_budget_notification_workers=int(
+                os.getenv("BILLING_BUDGET_NOTIFICATION_WORKERS", "4")
+            ),
+            billing_budget_notification_queue_size=int(
+                os.getenv("BILLING_BUDGET_NOTIFICATION_QUEUE_SIZE", "32")
+            ),
             billing_free_hosted_model_hard_cap_usd=float(
                 os.getenv("BILLING_FREE_HOSTED_MODEL_HARD_CAP_USD", "1.0")
             ),
             installer_audit_account_id=os.getenv("INSTALLER_AUDIT_ACCOUNT_ID", ""),
+            agent_control_command_ttl_seconds=int(
+                os.getenv("AGENT_CONTROL_COMMAND_TTL_SECONDS", "3600")
+            ),
+            agent_control_allow_query_token=os.getenv(
+                "AGENT_CONTROL_ALLOW_QUERY_TOKEN", "true"
+            ).lower()
+            in ("true", "1", "t", "yes"),
+            billing_budget_default_estimated_output_tokens=int(
+                os.getenv("BILLING_BUDGET_DEFAULT_ESTIMATED_OUTPUT_TOKENS", "1024")
+            ),
+            billing_budget_chars_per_token=float(
+                os.getenv("BILLING_BUDGET_CHARS_PER_TOKEN", "4.0")
+            ),
         )
 
 

@@ -24,6 +24,7 @@ from preloop.services.account_realtime import (
     emit_account_event,
 )
 from preloop.sync.services.event_bus import get_nats_client
+from preloop.utils.request_fingerprint import public_request_fingerprint
 
 logger = logging.getLogger(__name__)
 _REDACTED_TEXT = "***REDACTED***"
@@ -240,7 +241,9 @@ class ModelGatewayEventEmitter:
                 "gateway_provider": meta_data.get("gateway_provider"),
                 "requested_model": meta_data.get("requested_model"),
                 "upstream_request_id": usage.upstream_request_id,
-                "request_fingerprint": meta_data.get("request_fingerprint"),
+                "request_fingerprint": public_request_fingerprint(
+                    meta_data.get("request_fingerprint")
+                ),
                 "gateway_attempt": meta_data.get("gateway_attempt"),
                 "is_retry": meta_data.get("is_retry"),
                 "retry_of_api_usage_id": meta_data.get("retry_of_api_usage_id"),

@@ -3,6 +3,7 @@
 # Create CRUD instances for each model
 from ..models import (
     Account,
+    AgentControlCommand,
     ApiKey,
     ApiUsage,
     AuditLog,
@@ -22,6 +23,8 @@ from ..models import (
     ManagedAgentCredential,
     ManagedAgentEnrollment,
     ModelPriceOverride,
+    ProviderBillingConnection,
+    ProviderBillingSnapshot,
     RuntimeSession,
     RuntimeSessionActivity,
     RuntimeSessionOptimizationAction,
@@ -29,6 +32,7 @@ from ..models import (
     RuntimeSessionOptimizationResult,
 )
 from .account import CRUDAccount
+from .agent_control_command import CRUDAgentControlCommand
 from .api_key import CRUDApiKey
 from .api_usage import CRUDApiUsage
 from .audit_log import CRUDAuditLog
@@ -56,6 +60,10 @@ from .managed_agent_ai_model_binding import CRUDManagedAgentAIModelBinding
 from .managed_agent_credential import CRUDManagedAgentCredential
 from .managed_agent_enrollment import CRUDManagedAgentEnrollment
 from .model_price_override import CRUDModelPriceOverride
+from .provider_billing import (
+    CRUDProviderBillingConnection,
+    CRUDProviderBillingSnapshot,
+)
 from .tool_configuration import CRUDToolConfiguration
 from .mcp_server import CRUDMCPServer
 from .mcp_tool import CRUDMCPTool
@@ -116,6 +124,7 @@ from .budget import (
 )
 
 crud_account = CRUDAccount(Account)
+crud_agent_control_command = CRUDAgentControlCommand(AgentControlCommand)
 # crud_tracker is already instantiated in tracker.py
 crud_organization = CRUDOrganization(Organization)
 crud_project = CRUDProject(Project)
@@ -144,6 +153,10 @@ crud_managed_agent_ai_model_binding = CRUDManagedAgentAIModelBinding(
 crud_managed_agent_credential = CRUDManagedAgentCredential(ManagedAgentCredential)
 crud_managed_agent_enrollment = CRUDManagedAgentEnrollment(ManagedAgentEnrollment)
 crud_model_price_override = CRUDModelPriceOverride(ModelPriceOverride)
+crud_provider_billing_connection = CRUDProviderBillingConnection(
+    ProviderBillingConnection
+)
+crud_provider_billing_snapshot = CRUDProviderBillingSnapshot(ProviderBillingSnapshot)
 crud_runtime_session = CRUDRuntimeSession(RuntimeSession)
 crud_runtime_session_activity = CRUDRuntimeSessionActivity(RuntimeSessionActivity)
 crud_runtime_session_optimization_action = CRUDRuntimeSessionOptimizationAction(
@@ -162,6 +175,8 @@ crud_tool_access_rule = CRUDToolAccessRule()  # Instantiate CRUDToolAccessRule
 __all__ = [
     "CRUDBase",
     "CRUDAccount",
+    "CRUDAgentControlCommand",
+    "crud_agent_control_command",
     "CRUDTracker",
     "CRUDTrackerScopeRule",
     "CRUDOrganization",
@@ -232,6 +247,8 @@ __all__ = [
     "crud_managed_agent_credential",
     "crud_managed_agent_enrollment",
     "crud_model_price_override",
+    "crud_provider_billing_connection",
+    "crud_provider_billing_snapshot",
     "crud_tool_configuration",
     "crud_mcp_server",
     "crud_mcp_tool",

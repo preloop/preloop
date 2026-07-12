@@ -245,6 +245,13 @@ export class BudgetHealthCard extends LitElement {
   }
 
   private spendForPolicy(policy: BudgetPolicy): number {
+    // Prefer the server-computed, PERIOD-ALIGNED spend (today for a daily
+    // policy, this month for a monthly one). The summary-derived fallbacks
+    // below use the Cost view's date range, which ignores the policy period —
+    // that made a daily and a monthly policy show identical spend.
+    if (typeof policy.current_spend_usd === 'number') {
+      return policy.current_spend_usd;
+    }
     if (!this.summary) return 0;
     if (policy.subject_type === 'global' || policy.subject_type === 'account') {
       return (

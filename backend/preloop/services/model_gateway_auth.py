@@ -18,6 +18,12 @@ from preloop.models.models.api_key import ApiKey
 from preloop.models.models.oauth_mcp_token import OAuthMCPAccessToken
 from preloop.models.models.user import User
 
+# Explicit empty bearer for synthetic gateway contexts that already have a
+# resolved ``User`` (internal replay/optimization). ``authenticate_bearer_token``
+# treats falsy tokens as unauthenticated; callers must never pass this to that
+# path — only to ``ModelGatewayAuthContext`` when the user is already known.
+NO_BEARER_TOKEN = ""
+
 
 @dataclass
 class ModelGatewayAuthContext:

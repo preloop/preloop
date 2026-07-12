@@ -86,6 +86,15 @@ class PreloopSyncNatsWorker:
             raise
 
     async def start_listening(self):
+        # Worker tasks (e.g. usage repricing) estimate model costs; load the
+        # vendored price catalog so they price identically to the API pods.
+        try:
+            from preloop.services.model_price_catalog import load_catalog
+
+            load_catalog()
+        except Exception:
+            logger.exception("Model price catalog load failed; using litellm defaults")
+
         if not self.nc or not self.nc.is_connected:
             await self.connect()
 

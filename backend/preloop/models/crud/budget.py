@@ -90,8 +90,11 @@ class CRUDBudgetSpendActivity(CRUDBase[BudgetSpendActivity]):
             spend_usd=spend_increment_usd,
         )
 
-        # On conflict (matching the unique constraint on subject + model + period + period_start),
-        # increment the spend_usd column dynamically.
+        # Increment spend on conflict. The bucket unique constraint is
+        # NULLS NOT DISTINCT (PG >= 15, migration 20260712_budget_nnd) so
+        # conflicts fire for NULL subject_id / period_start too — without it,
+        # account-level buckets inserted a new row per request instead of
+        # accumulating.
         stmt = stmt.on_conflict_do_update(
             index_elements=[
                 "account_id",

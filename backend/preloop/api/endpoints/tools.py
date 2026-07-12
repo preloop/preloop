@@ -47,11 +47,13 @@ from preloop.schemas.gateway_usage import GatewayUsageByTool
 from preloop.utils.audit import log_config_change
 from preloop.utils.permissions import require_permission
 
+from preloop.tools.builtin_defs import ASK_USER_TOOL
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Define builtin tools metadata
-# NOTE: These must match the @mcp.tool() decorators in initialize_mcp.py
+# NOTE: Implementations live in initialize_mcp.py; shared defs in builtin_defs.py
 BUILTIN_TOOLS = [
     {
         "name": "request_approval",
@@ -86,6 +88,7 @@ BUILTIN_TOOLS = [
             "required": ["operation", "context", "reasoning"],
         },
     },
+    ASK_USER_TOOL,
     {
         "name": "get_issue",
         "description": "Get detailed information about an issue by its identifier (URL, key, or ID)",

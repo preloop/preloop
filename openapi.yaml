@@ -2120,21 +2120,6 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
-  /api/v1/trackers/debug:
-    post:
-      tags:
-      - Trackers
-      summary: Debug Tracker Request
-      description: Debug endpoint to see raw request data
-      operationId: debug_tracker_request_api_v1_trackers_debug_post
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-      security:
-      - bearerAuth: []
   /api/v1/trackers:
     get:
       tags:
@@ -2605,6 +2590,54 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/mcp-servers/{server_id}/oauth/authorize-token:
+    post:
+      tags:
+      - MCP Servers
+      summary: Create Mcp Oauth Authorize Token
+      description: 'Mint a short-lived, single-purpose token for the browser OAuth
+        redirect.
+
+
+        The browser navigates to the authorize endpoint via a full-page redirect
+
+        and cannot attach an Authorization header, so the token must ride in the
+
+        URL. Rather than exposing the reusable access token there (where it would
+
+        land in browser history, server access logs, and the Referer sent onward
+
+        to the external OAuth provider), this endpoint — authenticated normally via
+
+        the Authorization header — returns a token scoped to this one server and
+
+        purpose and expiring in ~2 minutes.'
+      operationId: create_mcp_oauth_authorize_token_api_v1_mcp_servers__server_id__oauth_authorize_token_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: server_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Server Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Create Mcp Oauth Authorize Token Api V1 Mcp Servers  Server
+                  Id  Oauth Authorize Token Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/mcp-servers/{server_id}/oauth/authorize:
     get:
       tags:
@@ -2615,7 +2648,11 @@ paths:
 
         This endpoint is on the public router because the browser navigates
 
-        to it directly (302 redirect flow). Auth is via the `token` query param.
+        to it directly (302 redirect flow). Auth is via the short-lived,
+
+        server-scoped ``code`` minted by ``POST .../oauth/authorize-token`` —
+
+        never the reusable access token.
 
 
         1. Fetches the server''s /.well-known/oauth-authorization-server metadata.
@@ -2633,14 +2670,14 @@ paths:
         schema:
           type: string
           title: Server Id
-      - name: token
+      - name: code
         in: query
         required: true
         schema:
           type: string
-          description: JWT access token for authentication
-          title: Token
-        description: JWT access token for authentication
+          description: Short-lived authorize token from /oauth/authorize-token
+          title: Code
+        description: Short-lived authorize token from /oauth/authorize-token
       responses:
         '200':
           description: Successful Response
@@ -5497,6 +5534,17 @@ paths:
           - type: string
           - type: 'null'
           title: Runtime Principal Id
+      - name: exclude_retries
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Exclude rows marked as retries of an identical earlier request.
+            Retries consume real provider tokens, so they count by default.
+          default: false
+          title: Exclude Retries
+        description: Exclude rows marked as retries of an identical earlier request.
+          Retries consume real provider tokens, so they count by default.
       responses:
         '200':
           description: Successful Response
@@ -5504,6 +5552,50 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CostAnalyticsSummaryResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/cost/health:
+    get:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: Get Cost Health
+      description: 'Run the gateway accounting self-check over a lookback window.
+
+
+        Verifies end-to-end that gateway traffic is recorded, streaming usage is
+
+        captured, requests are priced, usage is provider-reported, and audit
+
+        events are being written — so silent accounting breakage cannot go
+
+        unnoticed.'
+      operationId: get_cost_health_api_v1_cost_health_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: hours
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 168
+          minimum: 1
+          description: Lookback window in hours (max 168 = 7 days).
+          default: 24
+          title: Hours
+        description: Lookback window in hours (max 168 = 7 days).
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CostHealthResponse'
         '422':
           description: Validation Error
           content:
@@ -7638,6 +7730,14 @@ components:
           type: number
           title: Estimated Cost
           default: 0.0
+        unpriced_requests:
+          type: integer
+          title: Unpriced Requests
+          default: 0
+        unpriced_tokens:
+          type: integer
+          title: Unpriced Tokens
+          default: 0
         budget:
           $ref: '#/components/schemas/GatewayBudgetSummary'
         requests_by_day:
@@ -7830,6 +7930,22 @@ components:
           type: boolean
           title: Published
           default: false
+        command_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Command Status
+        expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Expires At
+        command_ttl_seconds:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Command Ttl Seconds
         command_envelope:
           $ref: '#/components/schemas/AgentControlEnvelope'
       type: object
@@ -8241,11 +8357,23 @@ components:
           - type: 'null'
           title: Comment
           description: Comment from the approver
+        selected_option:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Selected Option
+          description: 'For ask_user questions: the option the user chose'
+        answer_text:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Answer Text
+          description: 'For ask_user questions: a free-text answer the user typed'
       type: object
       required:
       - approved
       title: ApprovalDecision
-      description: Schema for approval decision.
+      description: Schema for an approval decision or a question answer.
     ApprovalRequestResponse:
       properties:
         tool_name:
@@ -8365,6 +8493,30 @@ components:
           title: Approval Policy Id
           description: Alias for backward compatibility with older mobile app versions.
           readOnly: true
+        is_question:
+          type: boolean
+          title: Is Question
+          description: True when this request is an ask_user question, not a gate.
+          readOnly: true
+        question:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Question
+          description: The question text the agent is asking (ask_user only).
+          readOnly: true
+        question_options:
+          items:
+            type: string
+          type: array
+          title: Question Options
+          description: Ordered answer options the agent offered (may be empty).
+          readOnly: true
+        allow_free_text:
+          type: boolean
+          title: Allow Free Text
+          description: Whether the user may type a free-text answer (default True).
+          readOnly: true
       type: object
       required:
       - tool_name
@@ -8380,6 +8532,10 @@ components:
       - webhook_posted_at
       - webhook_error
       - approval_policy_id
+      - is_question
+      - question
+      - question_options
+      - allow_free_text
       title: ApprovalRequestResponse
       description: Schema for approval request response.
     ApprovalWorkflowCreate:
@@ -9290,6 +9446,18 @@ components:
           type: number
           title: Estimated Cost
           default: 0.0
+        unpriced_requests:
+          type: integer
+          title: Unpriced Requests
+          default: 0
+        unpriced_tokens:
+          type: integer
+          title: Unpriced Tokens
+          default: 0
+        price_catalog:
+          anyOf:
+          - $ref: '#/components/schemas/PriceCatalogInfo'
+          - type: 'null'
         budget:
           $ref: '#/components/schemas/GatewayBudgetSummary'
         requests_by_day:
@@ -9325,6 +9493,45 @@ components:
       - budget
       title: CostAnalyticsSummaryResponse
       description: Open-source cost overview response.
+    CostHealthCheck:
+      properties:
+        key:
+          type: string
+          title: Key
+        status:
+          type: string
+          pattern: ^(pass|fail|skip)$
+          title: Status
+        detail:
+          type: string
+          title: Detail
+      type: object
+      required:
+      - key
+      - status
+      - detail
+      title: CostHealthCheck
+      description: One entry in the gateway accounting self-check checklist.
+    CostHealthResponse:
+      properties:
+        window_hours:
+          type: integer
+          title: Window Hours
+        checks:
+          items:
+            $ref: '#/components/schemas/CostHealthCheck'
+          type: array
+          title: Checks
+        status:
+          type: string
+          pattern: ^(pass|fail|skip)$
+          title: Status
+      type: object
+      required:
+      - window_hours
+      - status
+      title: CostHealthResponse
+      description: Account-scoped gateway accounting self-check result.
     CreateVersionRequest:
       properties:
         description:
@@ -12888,6 +13095,27 @@ components:
       - created_at
       title: PolicyVersionMetadata
       description: Metadata for a policy version (without full snapshot data).
+    PriceCatalogInfo:
+      properties:
+        source_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Url
+        fetched_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Fetched At
+        model_count:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Model Count
+      type: object
+      title: PriceCatalogInfo
+      description: Provenance of the vendored model-price catalog.
     ProjectCreate:
       properties:
         name:

@@ -1,6 +1,7 @@
 """ORM model definitions."""
 
 from .account import Account
+from .agent_control_command import AgentControlCommand
 from .api_key import ApiKey
 from .api_usage import ApiUsage
 from .audit_log import AuditLog
@@ -28,6 +29,7 @@ from .managed_agent_ai_model_binding import ManagedAgentAIModelBinding
 from .managed_agent_credential import ManagedAgentCredential
 from .managed_agent_enrollment import ManagedAgentEnrollment
 from .model_price_override import ModelPriceOverride
+from .provider_billing import ProviderBillingConnection, ProviderBillingSnapshot
 from .tool_configuration import ToolConfiguration, ApprovalWorkflow
 from .mcp_server import MCPServer
 from .mcp_tool import MCPTool
@@ -65,6 +67,7 @@ from .budget import BudgetPolicy, BudgetSpendActivity, BudgetPeriod
 __all__ = [
     "Base",
     "Account",
+    "AgentControlCommand",
     "Tracker",
     "TrackerType",
     "Organization",
@@ -96,6 +99,8 @@ __all__ = [
     "ManagedAgentCredential",
     "ManagedAgentEnrollment",
     "ModelPriceOverride",
+    "ProviderBillingConnection",
+    "ProviderBillingSnapshot",
     "ToolConfiguration",
     "ApprovalWorkflow",
     "MCPServer",

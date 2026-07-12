@@ -217,11 +217,21 @@ class ExecutionMetricsService:
         if not ai_model:
             return (0.0, False)
 
+        from preloop.services.pricing_overrides import resolve_pricing_override
+
+        pricing_override = None
+        if ai_model.account_id:
+            pricing_override = resolve_pricing_override(
+                self.db,
+                account_id=ai_model.account_id,
+                ai_model=ai_model,
+            )
         resolved_cost = estimate_ai_model_usage_cost(
             ai_model,
             prompt_tokens=token_usage.get("input_tokens", 0),
             completion_tokens=token_usage.get("output_tokens", 0),
             total_tokens=total_tokens,
+            pricing_override=pricing_override,
         )
         if resolved_cost is not None:
             has_pricing = True

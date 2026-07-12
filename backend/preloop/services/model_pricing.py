@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import re
+from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Optional
 
 import litellm
@@ -18,7 +20,85 @@ _PROVIDER_PREFIX: Dict[str, str] = {
     "gemini": "gemini",
     "qwen": "openai",
     "deepseek": "deepseek",
+    "aws": "bedrock",
+    "bedrock": "bedrock",
+    "amazon-bedrock": "bedrock",
+    "azure": "azure",
+    "vertex": "vertex_ai",
+    "vertex_ai": "vertex_ai",
 }
+
+# Bedrock cross-region inference profiles prefix the model id with a region
+# marker that litellm's price map does not include.
+_BEDROCK_REGION_PREFIXES = ("us.", "eu.", "apac.", "jp.", "au.", "ca.", "global.")
+
+# Trailing date/version stamps that often differ from the price-map key,
+# e.g. "claude-3-5-sonnet-20241022", "gpt-4o-2024-08-06", "gemini-pro@001".
+_DATE_SUFFIX_PATTERNS = (
+    re.compile(r"-\d{8}$"),
+    re.compile(r"-\d{4}-\d{2}-\d{2}$"),
+    re.compile(r"@\d+$"),
+)
+
+
+def normalize_gateway_model_alias(alias: Optional[str]) -> Optional[str]:
+    """Normalize a gateway/client model alias for pricing and matching.
+
+    Strips whitespace and a leading ``preloop/`` gateway prefix so recording
+    and pricing lookup paths share one identity for the same model.
+    """
+    if not isinstance(alias, str):
+        return None
+    trimmed = alias.strip()
+    if not trimmed:
+        return None
+    if trimmed.lower().startswith("preloop/"):
+        trimmed = trimmed.split("/", 1)[1].strip()
+    return trimmed or None
+
+
+def _expand_candidate(candidate: str, provider: str) -> Iterable[str]:
+    """Yield normalized fallback forms of one candidate model name.
+
+    Ordered from most to least specific: the raw name first, then with the
+    Bedrock region prefix stripped, then with trailing date/version stamps
+    removed (litellm aliases the undated name for most models).
+    """
+    normalized = normalize_gateway_model_alias(candidate) or candidate
+    yield normalized
+
+    stripped = normalized
+    for region_prefix in _BEDROCK_REGION_PREFIXES:
+        if stripped.startswith(region_prefix):
+            stripped = stripped[len(region_prefix) :]
+            yield stripped
+            if "/" not in stripped:
+                yield f"bedrock/{stripped}"
+            break
+
+    for pattern in _DATE_SUFFIX_PATTERNS:
+        undated = pattern.sub("", stripped)
+        if undated != stripped and undated:
+            yield undated
+            prefix = _PROVIDER_PREFIX.get(provider, provider)
+            if "/" not in undated:
+                yield f"{prefix}/{undated}"
+            break
+
+
+@dataclass(frozen=True)
+class CostEstimate:
+    """A cost estimate with its pricing provenance.
+
+    ``source`` values: ``override`` (account price override), ``model_config``
+    (pricing stored on the AIModel), ``catalog`` (Preloop's vendored price
+    snapshot, which may fall back to litellm's bundled map for models absent
+    from the snapshot), ``unpriced`` (no price could be resolved; ``cost`` is
+    None).
+    """
+
+    cost: Optional[float]
+    source: str
 
 
 def estimate_ai_model_usage_cost(
@@ -31,6 +111,26 @@ def estimate_ai_model_usage_cost(
     pricing_override: Optional[Dict[str, Any]] = None,
 ) -> Optional[float]:
     """Estimate usage cost using manual pricing overrides or LiteLLM pricing."""
+    return estimate_ai_model_usage_cost_detailed(
+        ai_model,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        usage_details=usage_details,
+        pricing_override=pricing_override,
+    ).cost
+
+
+def estimate_ai_model_usage_cost_detailed(
+    ai_model: AIModel,
+    *,
+    prompt_tokens: int,
+    completion_tokens: int,
+    total_tokens: int,
+    usage_details: Optional[Dict[str, Any]] = None,
+    pricing_override: Optional[Dict[str, Any]] = None,
+) -> CostEstimate:
+    """Estimate usage cost and report which pricing source produced it."""
     configured_pricing = pricing_override or _get_configured_pricing(ai_model)
     if configured_pricing:
         configured_cost = _estimate_cost_from_pricing(
@@ -41,10 +141,13 @@ def estimate_ai_model_usage_cost(
             usage_details=usage_details,
         )
         if configured_cost is not None:
-            return configured_cost
+            return CostEstimate(
+                cost=configured_cost,
+                source="override" if pricing_override else "model_config",
+            )
 
     if prompt_tokens <= 0 and completion_tokens <= 0:
-        return None
+        return CostEstimate(cost=None, source="unpriced")
 
     list_cost = _estimate_litellm_cost(
         ai_model,
@@ -52,13 +155,20 @@ def estimate_ai_model_usage_cost(
         completion_tokens=completion_tokens,
         usage_details=usage_details,
     )
-    if pricing_override and list_cost is not None:
-        return _apply_pricing_adjustments(
-            list_cost,
-            pricing_override,
-            total_tokens=total_tokens,
+    if list_cost is None:
+        return CostEstimate(cost=None, source="unpriced")
+    if pricing_override:
+        # Override carries only adjustments (discount/prepaid) — apply them
+        # on top of the list price.
+        return CostEstimate(
+            cost=_apply_pricing_adjustments(
+                list_cost,
+                pricing_override,
+                total_tokens=total_tokens,
+            ),
+            source="override",
         )
-    return list_cost
+    return CostEstimate(cost=list_cost, source="catalog")
 
 
 def _estimate_litellm_cost(
@@ -129,7 +239,14 @@ def _estimate_cost_from_pricing(
     """Estimate cost from a normalized pricing configuration."""
     usage_details = usage_details or {}
     prompt_tokens_details = usage_details.get("prompt_tokens_details") or {}
-    cached_tokens = int(prompt_tokens_details.get("cached_tokens") or 0)
+    # Anthropic reports cache reads at the top level; OpenAI nests them under
+    # prompt_tokens_details.cached_tokens. Without the top-level fallback,
+    # Anthropic cache reads were billed at the full input price.
+    cached_tokens = int(
+        prompt_tokens_details.get("cached_tokens")
+        or usage_details.get("cache_read_input_tokens")
+        or 0
+    )
     cache_creation_tokens = int(
         prompt_tokens_details.get("cache_creation_tokens")
         or usage_details.get("cache_creation_input_tokens")
@@ -221,13 +338,16 @@ def _iter_litellm_model_candidates(ai_model: AIModel) -> Iterable[str]:
     if model_identifier:
         candidates.append(model_identifier)
         prefix = _PROVIDER_PREFIX.get(provider, provider)
-        if "/" not in model_identifier:
+        if "/" not in model_identifier and not model_identifier.lower().startswith(
+            "preloop/"
+        ):
             candidates.append(f"{prefix}/{model_identifier}")
 
     seen = set()
     for candidate in candidates:
-        normalized = candidate.strip()
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        yield normalized
+        for expanded in _expand_candidate(candidate.strip(), provider):
+            normalized = normalize_gateway_model_alias(expanded) or expanded.strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            yield normalized

@@ -77,4 +77,9 @@ class AgentControlCommandResponse(BaseModel):
     subject: Optional[str] = None
     local_delivery: bool = False
     published: bool = False
+    # Durable persistence state: pending|delivered|acked|failed|expired.
+    command_status: Optional[str] = None
+    # Absolute expiry for pending redelivery, and the configured TTL used.
+    expires_at: Optional[datetime] = None
+    command_ttl_seconds: Optional[int] = None
     command_envelope: AgentControlEnvelope

@@ -6,10 +6,10 @@ from datetime import datetime
 # Use TYPE_CHECKING to avoid circular imports
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import ForeignKey, func
+from sqlalchemy import CheckConstraint, ForeignKey, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.types import DateTime, Float, Integer, String
+from sqlalchemy.types import Boolean, DateTime, Float, Integer, String
 
 from .base import Base
 
@@ -97,7 +97,20 @@ class ApiUsage(Base):
     prompt_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     completion_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     total_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Unified cache semantics: cache_read_tokens covers OpenAI
+    # prompt_tokens_details.cached_tokens and Anthropic cache_read_input_tokens;
+    # the raw provider breakdown stays in meta_data["usage_details"].
+    cache_read_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    cache_creation_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    reasoning_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     estimated_cost: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # ISO-4217 code of estimated_cost; NULL on legacy rows means USD.
+    currency: Mapped[Optional[str]] = mapped_column(String(3), nullable=True)
+    # override | model_config | catalog | subscription | unpriced
+    cost_source: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    # provider | estimated | partial
+    usage_source: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    is_retry: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     runtime_principal_type: Mapped[Optional[str]] = mapped_column(
         String(64), nullable=True
     )
@@ -130,6 +143,19 @@ class ApiUsage(Base):
         )
     )
     user: Mapped[Optional["User"]] = relationship("User", back_populates="api_usages")
+
+    __table_args__ = (
+        CheckConstraint(
+            "cost_source IS NULL OR cost_source IN "
+            "('override', 'model_config', 'catalog', 'subscription', 'unpriced')",
+            name="ck_api_usage_cost_source",
+        ),
+        CheckConstraint(
+            "usage_source IS NULL OR usage_source IN "
+            "('provider', 'estimated', 'partial')",
+            name="ck_api_usage_usage_source",
+        ),
+    )
 
     def __repr__(self) -> str:
         """Return a string representation of the usage record.

@@ -456,6 +456,45 @@ class ApprovalService:
         except Exception as e:
             logger.warning(f"Failed to record approval event: {e}")
 
+    _TERMINAL_STATUSES = frozenset({"approved", "declined", "cancelled", "expired"})
+
+    async def _reject_if_not_actionable(
+        self, approval_request: ApprovalRequest
+    ) -> Optional[ApprovalRequest]:
+        """Return the request if it can no longer be decided, else None.
+
+        Must be called while holding the row lock. Guards approve/decline
+        against two hazards the ``FOR UPDATE`` lock alone does not cover:
+
+        * Double-decide (TOCTOU): the request was already resolved by a
+          concurrent caller; re-deciding would flip a settled outcome (e.g.
+          an already-approved-and-executed request being declined).
+        * Stale approval: the request's deadline has passed. A caller that
+          already timed out must not be able to approve it later via its
+          token. Transition it to ``expired`` and return it.
+        """
+        if approval_request.status in self._TERMINAL_STATUSES:
+            logger.info(
+                "Approval request %s already %s; ignoring further decision",
+                approval_request.id,
+                approval_request.status,
+            )
+            return approval_request
+        if (
+            approval_request.expires_at
+            and datetime.utcnow() > approval_request.expires_at
+        ):
+            logger.info(
+                "Approval request %s is past expiry; marking expired",
+                approval_request.id,
+            )
+            update = ApprovalRequestUpdate(
+                status="expired", resolved_at=datetime.utcnow()
+            )
+            expired = await self.update_approval_request(approval_request.id, update)
+            return expired or approval_request
+        return None
+
     async def approve_request(
         self,
         request_id: uuid.UUID,
@@ -482,6 +521,11 @@ class ApprovalService:
         approval_request = await self.get_approval_request_for_update(request_id)
         if not approval_request:
             return None
+
+        # Do not re-decide an already-resolved or expired request.
+        guarded = await self._reject_if_not_actionable(approval_request)
+        if guarded is not None:
+            return guarded
 
         # Get the approval workflow to check quorum requirements
         approval_workflow = approval_request.approval_workflow
@@ -671,6 +715,11 @@ class ApprovalService:
         approval_request = await self.get_approval_request_for_update(request_id)
         if not approval_request:
             return None
+
+        # Do not re-decide an already-resolved or expired request.
+        guarded = await self._reject_if_not_actionable(approval_request)
+        if guarded is not None:
+            return guarded
 
         # Get the approval workflow to check quorum requirements
         approval_workflow = approval_request.approval_workflow

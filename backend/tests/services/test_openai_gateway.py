@@ -418,6 +418,76 @@ def test_create_response_uses_openai_codex_adapter():
     assert response["usage"]["total_tokens"] == 7
 
 
+def _codex_oauth_service_and_model():
+    auth_context = ModelGatewayAuthContext(
+        token="token",
+        user=SimpleNamespace(id="user-1", account_id="account-1"),
+    )
+    service = OpenAIGatewayService(
+        MagicMock(), auth_context, upstream_backend=MagicMock()
+    )
+    ai_model = SimpleNamespace(
+        provider_name="openai-codex",
+        model_identifier="gpt-5.4",
+        api_endpoint="https://chatgpt.com/backend-api/codex",
+        meta_data={},
+    )
+    return service, ai_model
+
+
+def test_resolve_openai_codex_credentials_maps_refresh_failure_to_401():
+    """A burned Codex refresh token must map to a 401, not escape as a 500.
+
+    Regression guard for Codex CLI live validation: OpenAI answered the token
+    refresh with 401 ``refresh_token_reused`` and the gateway surfaced it as
+    HTTP 500 "Internal server error".
+    """
+    service, ai_model = _codex_oauth_service_and_model()
+    # Simulate a stale value carried over from a previous request on this
+    # reused service instance.
+    service._last_upstream_credential_type = "oauth"
+
+    with patch(
+        "preloop.services.openai_gateway.get_secret_service"
+    ) as mock_secret_service:
+        mock_secret_service.return_value.resolve_ai_model_credentials.side_effect = (
+            CredentialRefreshError(
+                "OpenAI Codex token refresh failed with status 401",
+                provider="openai",
+                status_code=401,
+                code="refresh_token_reused",
+            )
+        )
+        with pytest.raises(ModelGatewayAPIError) as exc_info:
+            service._resolve_openai_codex_credentials(ai_model)
+
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.error_type == "authentication_error"
+    assert exc_info.value.code == "refresh_token_reused"
+    assert "could not be refreshed" in exc_info.value.message
+    assert "codex login" in exc_info.value.message
+    assert service._last_upstream_credential_type is None
+
+
+def test_resolve_openai_codex_credentials_maps_upstream_5xx_refresh_failure_to_502():
+    service, ai_model = _codex_oauth_service_and_model()
+
+    with patch(
+        "preloop.services.openai_gateway.get_secret_service"
+    ) as mock_secret_service:
+        mock_secret_service.return_value.resolve_ai_model_credentials.side_effect = (
+            CredentialRefreshError(
+                "OpenAI Codex token refresh failed with status 503",
+                provider="openai",
+                status_code=503,
+            )
+        )
+        with pytest.raises(ModelGatewayAPIError) as exc_info:
+            service._resolve_openai_codex_credentials(ai_model)
+
+    assert exc_info.value.status_code == 502
+
+
 def test_stream_response_emits_output_item_before_text_deltas():
     auth_context = ModelGatewayAuthContext(
         token="token",
