@@ -21,8 +21,10 @@ from preloop.api.auth.jwt import (
     RuntimeBearerAuthContext,
     authenticate_runtime_bearer_token,
 )
+from preloop.config import settings
 from preloop.models import models
 from preloop.models.crud import (
+    crud_agent_control_command,
     crud_managed_agent,
     crud_managed_agent_enrollment,
     crud_runtime_session,
@@ -213,6 +215,15 @@ def _connection_envelope(
     )
 
 
+def _command_source(metadata: dict[str, Any]) -> Optional[str]:
+    """Best-effort originating surface (console|mobile|watch|api) for audit."""
+    for key in ("source", "surface", "via", "device"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:32]
+    return "api"
+
+
 def _operator_command_envelope(
     agent: Any,
     *,
@@ -371,10 +382,36 @@ async def _publish_command(
         return None
 
 
+def _safe_mark_command_delivered(
+    db: Session,
+    *,
+    account_id: str,
+    command_id: str,
+) -> None:
+    """Mark a persisted command delivered; DB errors never break delivery."""
+    try:
+        crud_agent_control_command.mark_delivered(
+            db,
+            account_id=account_id,
+            command_id=command_id,
+            delivered_at=datetime.now(UTC),
+        )
+    except Exception:
+        logger.exception(
+            "Failed to mark Agent Control command %s delivered", command_id
+        )
+        try:
+            db.rollback()
+        except Exception:
+            logger.debug("Rollback after delivery-mark failure failed", exc_info=True)
+
+
 async def _subscribe_to_commands(
     *,
     managed_agent_id: str,
     websocket: WebSocket,
+    db: Optional[Session] = None,
+    account_id: Optional[str] = None,
 ) -> Any:
     subject = f"agent-control.commands.{managed_agent_id}"
     try:
@@ -388,11 +425,104 @@ async def _subscribe_to_commands(
                 await websocket.send_json(payload)
             except Exception:
                 logger.exception("Failed to forward managed-agent command")
+                return
+            # The publishing pod leaves the command pending; the pod that
+            # holds the WebSocket marks it delivered once actually sent.
+            command_id = payload.get("message_id")
+            if (
+                db is not None
+                and account_id is not None
+                and payload.get("type") == "command"
+                and isinstance(command_id, str)
+            ):
+                _safe_mark_command_delivered(
+                    db, account_id=account_id, command_id=command_id
+                )
 
         return await nats_client.subscribe(subject, cb=forward_command)
     except Exception:
         logger.debug("Managed-agent command subscription unavailable", exc_info=True)
         return None
+
+
+async def _redeliver_pending_commands(
+    db: Session,
+    connection: AgentControlConnectionContext,
+    websocket: WebSocket,
+) -> None:
+    """Resend commands persisted while the agent was offline.
+
+    Envelopes are redelivered verbatim in created_at order, keeping the
+    original ``message_id``/``command_id`` so idempotent runtime plugins can
+    dedupe replays. DB errors are logged and never break the WebSocket.
+    """
+    now = datetime.now(UTC)
+    try:
+        crud_agent_control_command.expire_stale(db, now=now)
+        pending = crud_agent_control_command.get_undelivered_for_agent(
+            db, managed_agent_id=connection.managed_agent_id, now=now
+        )
+    except Exception:
+        logger.exception(
+            "Failed to load undelivered Agent Control commands for agent %s",
+            connection.managed_agent_id,
+        )
+        try:
+            db.rollback()
+        except Exception:
+            logger.debug("Rollback after redelivery load failure failed", exc_info=True)
+        return
+
+    for record in pending:
+        try:
+            await websocket.send_json(record.envelope)
+        except Exception:
+            logger.exception(
+                "Failed to redeliver Agent Control command %s", record.command_id
+            )
+            return
+        _safe_mark_command_delivered(
+            db,
+            account_id=connection.account_id,
+            command_id=record.command_id,
+        )
+
+
+_COMMAND_ACK_NAMES = {"ack", "command_ack", "command_result", "command_error"}
+
+
+def _handle_command_ack(
+    db: Session,
+    connection: AgentControlConnectionContext,
+    inbound: AgentControlInboundEnvelope,
+) -> None:
+    """Record an end-to-end command acknowledgement from the agent.
+
+    Runtime plugins ack by sending an inbound envelope named ``ack`` or
+    ``command_ack`` (a ``command_result``/``command_error`` also proves
+    receipt) carrying the original command id. Unknown ids are logged, not
+    errors, and DB failures never break the WebSocket loop.
+    """
+    if inbound.name not in _COMMAND_ACK_NAMES:
+        return
+    command_id = inbound.payload.get("command_id")
+    if not isinstance(command_id, str) or not command_id.strip():
+        return
+    try:
+        record = crud_agent_control_command.mark_acked(
+            db,
+            account_id=connection.account_id,
+            command_id=command_id.strip(),
+            acked_at=datetime.now(UTC),
+        )
+        if record is None:
+            logger.info("Received ack for unknown Agent Control command %s", command_id)
+    except Exception:
+        logger.exception("Failed to mark Agent Control command %s acked", command_id)
+        try:
+            db.rollback()
+        except Exception:
+            logger.debug("Rollback after ack-mark failure failed", exc_info=True)
 
 
 def _persist_agent_control_result(
@@ -489,6 +619,8 @@ async def managed_agent_control_websocket(
     command_subscription = await _subscribe_to_commands(
         managed_agent_id=connection.managed_agent_id,
         websocket=websocket,
+        db=db,
+        account_id=connection.account_id,
     )
 
     now = datetime.now(UTC)
@@ -510,6 +642,10 @@ async def managed_agent_control_websocket(
             runtime_session_id=connection.runtime_session_id,
         )
     )
+    # Recover commands persisted while the agent was offline. Runs right
+    # after the connection handshake so reconnecting agents catch up before
+    # (or alongside) sending their capabilities envelope.
+    await _redeliver_pending_commands(db, connection, websocket)
 
     try:
         while True:
@@ -542,6 +678,7 @@ async def managed_agent_control_websocket(
                     connection.managed_agent_id,
                 )
                 break
+            _handle_command_ack(db, connection, inbound)
             await _emit_agent_message(db, context, connection, inbound)
             if inbound.type == "heartbeat":
                 ack = _connection_envelope(
@@ -711,14 +848,53 @@ async def _route_managed_agent_prompt(
             "voice": request.voice,
         },
     )
+    # Persist the command durably BEFORE any delivery attempt so agents that
+    # reconnect after downtime can recover missed instructions.
+    now = datetime.now(UTC)
+    crud_agent_control_command.create_command(
+        db,
+        account_id=agent.account_id,
+        managed_agent_id=agent.id,
+        runtime_session_id=agent.runtime_session_id,
+        command_id=envelope.message_id,
+        envelope=envelope.model_dump(mode="json"),
+        source=_command_source(request.metadata),
+        created_by_user_id=current_user.id,
+        expires_at=now + timedelta(seconds=settings.agent_control_command_ttl_seconds),
+    )
+
+    command_status = "pending"
     local_delivery = await agent_control_manager.send_to_agent(
         managed_agent_id=str(agent.id),
         envelope=envelope,
     )
+    if local_delivery:
+        _safe_mark_command_delivered(
+            db,
+            account_id=str(agent.account_id),
+            command_id=envelope.message_id,
+        )
+        command_status = "delivered"
     subject = None
     if not local_delivery:
+        # NATS publish is best-effort fan-out to other pods; the pod holding
+        # the WebSocket marks the command delivered when it actually sends,
+        # so the row stays pending here.
         subject = await _publish_command(envelope)
         if subject is None:
+            try:
+                crud_agent_control_command.mark_failed(
+                    db,
+                    account_id=str(agent.account_id),
+                    command_id=envelope.message_id,
+                    error="Managed agent command channel is unavailable",
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to mark Agent Control command %s failed",
+                    envelope.message_id,
+                )
+                db.rollback()
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Managed agent command channel is unavailable",
@@ -774,6 +950,7 @@ async def _route_managed_agent_prompt(
         subject=subject,
         local_delivery=local_delivery,
         published=subject is not None,
+        command_status=command_status,
         command_envelope=envelope,
     )
 

@@ -2190,7 +2190,7 @@ MREOF
                     return None
 
                 # Get token from tracker (we always have tokens for GitHub/GitLab)
-                token = tracker.api_key
+                token = tracker.resolved_api_key
                 if not token:
                     self.logger.warning(
                         f"Tracker {tracker.id} has no API key configured"
@@ -2279,10 +2279,11 @@ MREOF
                     return None, None
 
                 tracker = crud_tracker.get(db, id=organization.tracker_id)
-                if not tracker or not tracker.api_key:
+                resolved_token = tracker.resolved_api_key if tracker else ""
+                if not tracker or not resolved_token:
                     return None, None
 
-                return tracker.api_key, tracker.tracker_type.lower()
+                return resolved_token, tracker.tracker_type.lower()
 
             finally:
                 db.close()

@@ -182,6 +182,15 @@ async def test_register_tracker_success(
     mock_publish_task.assert_called_once()
     mock_send_email.assert_called_once()
 
+    # Security: the credential must be encrypted at rest, not in the plaintext
+    # api_key column. It lives in a SecretReference and resolves back correctly.
+    created = db_session.query(Tracker).filter(Tracker.id == response_json["id"]).one()
+    assert created.api_key is None
+    assert created.credentials_secret_id is not None
+    assert created.credentials_secret is not None
+    assert created.credentials_secret.encrypted_value not in (None, "new_dummy_key")
+    assert created.resolved_api_key == "new_dummy_key"
+
 
 @pytest.mark.asyncio
 @patch("preloop.api.endpoints.trackers.event_bus_service.publish_task")

@@ -29,6 +29,9 @@ VAULT_KV_V2_BACKEND = "vault_kv_v2"
 OPENBAO_KV_V2_BACKEND = "openbao_kv_v2"
 AI_MODEL_API_KEY_SECRET_KIND = "ai_model_api_key"
 AI_MODEL_CREDENTIALS_SECRET_KIND = "ai_model_credentials"
+# Provider ORGANIZATION admin keys (OpenAI Admin key / Anthropic Admin key)
+# used to fetch billing/usage actuals — distinct from inference credentials.
+PROVIDER_ADMIN_CREDENTIALS_SECRET_KIND = "provider_admin_credentials"
 OPENAI_CODEX_OAUTH_CREDENTIAL_TYPE = "oauth_openai_codex"
 ANTHROPIC_CLAUDE_CODE_OAUTH_CREDENTIAL_TYPE = "oauth_anthropic_claude_code"
 OPENAI_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"

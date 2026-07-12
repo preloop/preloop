@@ -24,6 +24,7 @@ async def require_approval(
     workflow_id: Optional[str] = None,
     correlation_id: Optional[str] = None,
     justification: Optional[str] = None,
+    return_comment_on_approve: bool = False,
 ) -> Tuple[bool, str]:
     """Check if tool requires approval and wait for decision with streaming.
 
@@ -722,10 +723,15 @@ async def require_approval(
                         f"Unexpected approval status: {final_status}",
                     )
 
-                # Approved! Continue with execution
+                # Approved! Continue with execution. When the caller asked for
+                # it (ask_user, where the "comment" is the human's answer),
+                # return the approver comment as the second element; the default
+                # stays (True, "") so tool-gating callers are unaffected.
                 logger.warning(
                     f"✅ Tool {tool_name} APPROVED - proceeding with execution"
                 )
+                if return_comment_on_approve:
+                    return (True, final_comment or "")
                 return (True, "")
 
             except Exception as e:

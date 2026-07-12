@@ -171,6 +171,12 @@ environment:
   preloopUrl: "https://preloop.ai"
   debug: false
   modelGatewayCaptureContent: true
+  # Cap glibc malloc arenas for the Python services (api/gateway). Without a
+  # cap, glibc creates up to 8 arenas per core; on many-core nodes with
+  # transparent huge pages set to [always] this inflates RSS by hundreds of
+  # MB under bursty websocket/request concurrency (observed ~1GB of
+  # AnonHugePages on staging api before OOMKill at the 2Gi limit).
+  mallocArenaMax: "2"
   # Skip execution recovery on startup (useful for debugging startup issues)
   skipExecutionRecovery: false
   # Database settings
@@ -196,6 +202,26 @@ config:
 
 # Database configuration
 database:
+  # SQLAlchemy connection pool sizing per component, injected as
+  # DATABASE_POOL_SIZE / DATABASE_MAX_OVERFLOW. Peak connections per pod =
+  # size + maxOverflow. The application defaults (20 + 40 per pod) are NOT
+  # safe once the gateway autoscales: 11 pods x 60 = 660 potential
+  # connections against max_connections=200. Budget with these values:
+  #   api        (1 pod):   10 + 20 = 30
+  #   gateway (<=5 pods):    3 +  7 = 10 each -> 50
+  #   sync workers/monitor/scheduler (5 pods): 2 + 3 = 5 each -> 25
+  # Peak ~105 against max_connections=200 (see cnpg.parameters below),
+  # leaving headroom for jobs, replication, and superuser connections.
+  pool:
+    api:
+      size: 10
+      maxOverflow: 20
+    gateway:
+      size: 3
+      maxOverflow: 7
+    worker:
+      size: 2
+      maxOverflow: 3
   # If true, deploys a PostgreSQL instance using CloudNativePG
   enabled: true
   # If external is true, uses an external PostgreSQL instance

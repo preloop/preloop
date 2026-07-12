@@ -61,14 +61,20 @@ def _tools_meta(row: ApiUsage) -> Optional[list[dict[str, Any]]]:
 
 
 def _per_prompt_token_price(
-    row: ApiUsage, model: Optional[AIModel]
+    row: ApiUsage,
+    model: Optional[AIModel],
+    pricing_override: Optional[dict[str, Any]] = None,
 ) -> tuple[float, bool]:
+    if getattr(row, "cost_source", None) == "subscription":
+        # Subscription-covered call: schema tokens carry no marginal cost.
+        return 0.0, True
     if model is not None:
         unit_cost = estimate_ai_model_usage_cost(
             model,
             prompt_tokens=1,
             completion_tokens=0,
             total_tokens=1,
+            pricing_override=pricing_override,
         )
         if unit_cost is not None and unit_cost > 0:
             return float(unit_cost), True
@@ -247,6 +253,7 @@ class ToolUsageStatsService:
             end=end,
         )
         model_cache: dict[str, Optional[AIModel]] = {}
+        override_cache: dict[str, Optional[dict[str, Any]]] = {}
         aggregates: dict[str, _SchemaCostAggregate] = {}
 
         for row in rows:
@@ -257,7 +264,21 @@ class ToolUsageStatsService:
             if model_id is not None and model_id not in model_cache:
                 model_cache[model_id] = crud_ai_model.get(self.db, id=model_id)
             model = model_cache.get(model_id) if model_id is not None else None
-            price_per_token, _ = _per_prompt_token_price(row, model)
+            if model is not None and model_id not in override_cache:
+                from preloop.services.pricing_overrides import (
+                    resolve_pricing_override,
+                )
+
+                override_cache[model_id] = resolve_pricing_override(
+                    self.db,
+                    account_id=account_id,
+                    ai_model=model,
+                    requested_alias=row.model_alias,
+                )
+            pricing_override = (
+                override_cache.get(model_id) if model_id is not None else None
+            )
+            price_per_token, _ = _per_prompt_token_price(row, model, pricing_override)
             principal_id = (
                 str(row.runtime_principal_id)
                 if row.runtime_principal_id is not None

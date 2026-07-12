@@ -709,6 +709,8 @@ class AccountGatewayUsageSummaryResponse(BaseModel):
     failed_requests: int = 0
     token_usage: GatewayTokenUsage
     estimated_cost: float = 0.0
+    unpriced_requests: int = 0
+    unpriced_tokens: int = 0
     budget: GatewayBudgetSummary
     requests_by_day: List[GatewayUsageByDay] = Field(default_factory=list)
     usage_by_model: List[GatewayUsageByModel] = Field(default_factory=list)

@@ -52,6 +52,10 @@ spec:
               value: {{ $.Values.environment.debug | quote }}
             - name: DATABASE_URL
               value: {{ include "preloop.databaseUrl" $ }}
+            - name: DATABASE_POOL_SIZE
+              value: {{ $.Values.database.pool.worker.size | quote }}
+            - name: DATABASE_MAX_OVERFLOW
+              value: {{ $.Values.database.pool.worker.maxOverflow | quote }}
             - name: PRELOOP_API_SERVICE_HTTP_ENDPOINT
               value: "http://{{ include "preloop.fullname" $ }}-api:80"
             - name: AGENT_EXECUTION_NAMESPACE

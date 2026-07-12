@@ -25,7 +25,6 @@ from preloop.models.crud import (
     crud_ai_model,
     crud_api_usage,
     crud_managed_agent,
-    crud_model_price_override,
     crud_runtime_session,
     crud_runtime_session_activity,
 )
@@ -58,7 +57,12 @@ from preloop.services.model_gateway_errors import (
     GatewayProvider,
     ModelGatewayAPIError,
 )
-from preloop.services.model_pricing import estimate_ai_model_usage_cost
+from preloop.services.model_price_catalog import schedule_price_lookup
+from preloop.services.model_pricing import (
+    _iter_litellm_model_candidates,
+    estimate_ai_model_usage_cost_detailed,
+)
+from preloop.services.pricing_overrides import resolve_pricing_override
 from preloop.services.model_runtime_resolver import resolve_ai_model_runtime
 from preloop.services.gateway_usage_search import GatewayUsageSearchService
 from preloop.services.secret_service import (
@@ -845,9 +849,11 @@ class OpenAIGatewayService:
                         "id", f"msg_{int(time.time())}"
                     )
                     if chunk_dict.get("usage") is not None:
-                        final_usage_details = chunk_dict.get("usage") or {}
+                        final_usage_details = self._merge_usage_dicts(
+                            final_usage_details, chunk_dict.get("usage")
+                        )
                         final_usage = self._normalize_usage(
-                            chunk_dict.get("usage"),
+                            final_usage_details,
                             prompt_key="prompt_tokens",
                             completion_key="completion_tokens",
                             output_names=("completion_tokens", "output_tokens"),
@@ -1069,6 +1075,7 @@ class OpenAIGatewayService:
                     endpoint_kind="anthropic_messages_stream",
                     budget_result=budget_result,
                     request_payload=payload,
+                    accumulated_output_text="".join(assistant_parts),
                 )
                 recorded = True
                 yield self._anthropic_sse_event(
@@ -1107,6 +1114,7 @@ class OpenAIGatewayService:
                         payload=payload,
                         usage_details=final_usage_details or final_usage,
                         budget_result=budget_result,
+                        accumulated_output_text="".join(assistant_parts),
                     )
 
         return event_stream()
@@ -1192,6 +1200,10 @@ class OpenAIGatewayService:
             or resolve_ai_model_runtime(model).model_gateway_model_alias
         )
 
+        client_included_usage = bool(
+            (payload.get("stream_options") or {}).get("include_usage")
+        )
+
         def event_stream() -> Iterator[str]:
             assistant_parts: List[str] = []
             final_usage = {
@@ -1252,12 +1264,24 @@ class OpenAIGatewayService:
                         self._extract_finish_reason(event_payload) or last_finish_reason
                     )
                     if chunk_dict.get("usage") is not None:
-                        final_usage_details = chunk_dict.get("usage") or {}
+                        final_usage_details = self._merge_usage_dicts(
+                            final_usage_details, chunk_dict.get("usage")
+                        )
                         final_usage = self._normalize_usage(
-                            chunk_dict.get("usage"),
+                            final_usage_details,
                             prompt_key="prompt_tokens",
                             completion_key="completion_tokens",
                         )
+                        # The gateway always asks litellm for the final usage
+                        # chunk (accounting). Clients that did not opt in via
+                        # stream_options.include_usage must not receive the
+                        # synthetic usage-only chunk.
+                        if not client_included_usage and not (
+                            delta_text
+                            or self._extract_stream_tool_call_deltas(event_payload)
+                            or self._extract_finish_reason(event_payload)
+                        ):
+                            continue
                     yield self._sse_event(event_payload)
 
                 assistant_message = {
@@ -1296,6 +1320,7 @@ class OpenAIGatewayService:
                     endpoint_kind="chat_completions_stream",
                     budget_result=budget_result,
                     request_payload=payload,
+                    accumulated_output_text="".join(assistant_parts),
                 )
                 recorded = True
                 yield self._sse_done()
@@ -1329,6 +1354,7 @@ class OpenAIGatewayService:
                         payload=payload,
                         usage_details=final_usage_details or final_usage,
                         budget_result=budget_result,
+                        accumulated_output_text="".join(assistant_parts),
                     )
 
         return event_stream()
@@ -1517,9 +1543,11 @@ class OpenAIGatewayService:
                                 }
                             )
                     if chunk_dict.get("usage") is not None:
-                        final_usage_details = chunk_dict.get("usage") or {}
+                        final_usage_details = self._merge_usage_dicts(
+                            final_usage_details, chunk_dict.get("usage")
+                        )
                         usage = self._normalize_usage(
-                            chunk_dict.get("usage"),
+                            final_usage_details,
                             prompt_key="prompt_tokens",
                             completion_key="completion_tokens",
                             output_names=("completion_tokens", "output_tokens"),
@@ -1614,6 +1642,7 @@ class OpenAIGatewayService:
                     endpoint_kind="responses_stream",
                     budget_result=budget_result,
                     request_payload=payload,
+                    accumulated_output_text="".join(assistant_parts),
                 )
                 recorded = True
                 yield self._sse_done()
@@ -1647,6 +1676,7 @@ class OpenAIGatewayService:
                         payload=payload,
                         usage_details=final_usage_details or final_usage,
                         budget_result=budget_result,
+                        accumulated_output_text="".join(assistant_parts),
                     )
 
         return event_stream()
@@ -2790,8 +2820,19 @@ class OpenAIGatewayService:
             kwargs.setdefault("aws_region_name", region)
         if stream:
             kwargs["stream"] = True
-            if payload.get("stream_options") is not None:
-                kwargs["stream_options"] = payload["stream_options"]
+            # Always request the final usage chunk from litellm. Without it,
+            # litellm only exposes streaming usage via _hidden_params (which
+            # the recording path never sees), so streamed requests were logged
+            # with 0 tokens. litellm consumes stream_options itself and does
+            # not forward it to providers that lack the parameter (verified:
+            # Anthropic request bodies stay clean). The synthetic usage chunk
+            # is stripped from the client-facing stream unless the client
+            # opted in via its own stream_options.
+            client_stream_options = payload.get("stream_options") or {}
+            kwargs["stream_options"] = {
+                **client_stream_options,
+                "include_usage": True,
+            }
         if ai_model.api_endpoint:
             kwargs["api_base"] = ai_model.api_endpoint
         if payload.get("tools") is not None:
@@ -3584,41 +3625,189 @@ class OpenAIGatewayService:
         # ``prompt_tokens_details.cached_tokens``; Anthropic reports
         # ``cache_read_input_tokens`` / ``cache_creation_input_tokens`` at the
         # top level. ``estimate_ai_model_usage_cost`` already reads these.
-        details = usage.get("prompt_tokens_details")
-        if isinstance(details, dict):
-            kept = {k: v for k, v in details.items() if v is not None}
-            if kept:
-                normalized["prompt_tokens_details"] = kept
+        for details_key in ("prompt_tokens_details", "completion_tokens_details"):
+            details = usage.get(details_key)
+            if isinstance(details, dict):
+                kept = {k: v for k, v in details.items() if v is not None}
+                if kept:
+                    normalized[details_key] = kept
         for cache_key in ("cache_read_input_tokens", "cache_creation_input_tokens"):
             if usage.get(cache_key) is not None:
                 normalized[cache_key] = int(usage.get(cache_key) or 0)
         return normalized
 
+    @staticmethod
+    def _merge_usage_dicts(
+        base: Optional[Dict[str, Any]], new: Optional[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Merge streaming usage payloads without losing earlier detail.
+
+        Providers may report usage across several chunks (e.g. Anthropic input
+        tokens on message_start, output tokens on message_delta). A later
+        sparse payload must not clobber earlier richer fields: a key from
+        ``new`` wins only when it is non-null and, for numbers, non-zero
+        (unless the base value is missing/zero). Nested dicts merge
+        recursively.
+
+        Args:
+            base: Previously accumulated usage (may be None/empty).
+            new: Usage payload from the latest chunk (may be None/empty).
+
+        Returns:
+            The merged usage dict (a new dict; inputs are not mutated).
+        """
+        merged: Dict[str, Any] = dict(base or {})
+        for key, value in (new or {}).items():
+            if value is None:
+                continue
+            existing = merged.get(key)
+            if isinstance(value, dict):
+                merged[key] = OpenAIGatewayService._merge_usage_dicts(
+                    existing if isinstance(existing, dict) else {}, value
+                )
+            elif isinstance(value, (int, float)) and not isinstance(value, bool):
+                if value != 0 or not existing:
+                    merged[key] = value
+            else:
+                merged[key] = value
+        return merged
+
+    @staticmethod
+    def _extract_token_details(
+        usage_details: Optional[Dict[str, Any]],
+    ) -> Dict[str, Optional[int]]:
+        """Extract cache/reasoning token counts from a provider usage payload.
+
+        Unifies the OpenAI shape (``prompt_tokens_details.cached_tokens`` /
+        ``cache_creation_tokens``, ``completion_tokens_details.reasoning_tokens``)
+        and the Anthropic shape (top-level ``cache_read_input_tokens`` /
+        ``cache_creation_input_tokens``).
+
+        Args:
+            usage_details: Raw provider usage dict, possibly empty.
+
+        Returns:
+            Dict with ``cache_read_tokens``, ``cache_creation_tokens``, and
+            ``reasoning_tokens`` (None when the provider reported nothing).
+        """
+        usage_details = usage_details or {}
+        prompt_details = usage_details.get("prompt_tokens_details")
+        prompt_details = prompt_details if isinstance(prompt_details, dict) else {}
+        completion_details = usage_details.get("completion_tokens_details")
+        completion_details = (
+            completion_details if isinstance(completion_details, dict) else {}
+        )
+
+        def _first_int(*values: Any) -> Optional[int]:
+            for value in values:
+                if value is not None:
+                    try:
+                        return int(value)
+                    except (TypeError, ValueError):
+                        continue
+            return None
+
+        return {
+            "cache_read_tokens": _first_int(
+                prompt_details.get("cached_tokens"),
+                usage_details.get("cache_read_input_tokens"),
+            ),
+            "cache_creation_tokens": _first_int(
+                prompt_details.get("cache_creation_tokens"),
+                usage_details.get("cache_creation_input_tokens"),
+            ),
+            "reasoning_tokens": _first_int(
+                completion_details.get("reasoning_tokens"),
+            ),
+        }
+
+    def _estimate_usage_fallback(
+        self,
+        *,
+        ai_model: AIModel,
+        request_payload: Optional[Dict[str, Any]],
+        output_text: Optional[str],
+    ) -> Optional[tuple[int, int]]:
+        """Estimate token usage locally when the provider reported none.
+
+        Uses litellm's tokenizer over the request messages and accumulated
+        output text. Only a fallback: provider-reported usage always wins.
+
+        Args:
+            ai_model: The model the request was routed to.
+            request_payload: Original request body (messages/input extracted).
+            output_text: Accumulated assistant text, if any.
+
+        Returns:
+            ``(prompt_tokens, completion_tokens)`` or None when nothing could
+            be estimated.
+        """
+        messages = (request_payload or {}).get("messages")
+        if not isinstance(messages, list) or not messages:
+            raw_input = (request_payload or {}).get("input")
+            if isinstance(raw_input, str) and raw_input:
+                messages = [{"role": "user", "content": raw_input}]
+            elif isinstance(raw_input, list) and raw_input:
+                messages = [
+                    item
+                    for item in raw_input
+                    if isinstance(item, dict) and item.get("role")
+                ]
+            else:
+                messages = None
+
+        candidates = list(_iter_litellm_model_candidates(ai_model)) or [
+            ai_model.model_identifier
+        ]
+        prompt_tokens = 0
+        if messages:
+            for candidate in candidates:
+                try:
+                    prompt_tokens = int(
+                        litellm.token_counter(model=candidate, messages=messages)
+                    )
+                    break
+                except Exception:  # noqa: BLE001 - tokenizer/model lookup issues
+                    continue
+            if not prompt_tokens:
+                # Last resort: char/4 heuristic over the serialized messages.
+                try:
+                    serialized = json.dumps(messages, default=str)
+                    prompt_tokens = max(len(serialized) // 4, 1)
+                except (TypeError, ValueError):
+                    prompt_tokens = 0
+
+        completion_tokens = 0
+        if output_text:
+            for candidate in candidates:
+                try:
+                    completion_tokens = int(
+                        litellm.token_counter(
+                            model=candidate,
+                            text=output_text,
+                            count_response_tokens=True,
+                        )
+                    )
+                    break
+                except Exception:  # noqa: BLE001
+                    continue
+            if not completion_tokens:
+                completion_tokens = max(len(output_text) // 4, 1)
+
+        if not prompt_tokens and not completion_tokens:
+            return None
+        return prompt_tokens, completion_tokens
+
     def _pricing_override_for_request(
         self, *, ai_model: AIModel, model_alias: Optional[str]
     ) -> Optional[Dict[str, Any]]:
         """Resolve account-scoped pricing metadata for a gateway usage row."""
-        try:
-            bind = self.db.get_bind()
-            if bind is not None and not inspect(bind).has_table(
-                "model_price_overrides"
-            ):
-                return None
-            override = crud_model_price_override.get_active_for_model(
-                self.db,
-                account_id=self.auth_context.user.account_id,
-                ai_model_id=ai_model.id,
-                model_alias=model_alias,
-                provider_name=ai_model.provider_name,
-            )
-        except SQLAlchemyError:
-            logger.debug("Pricing override lookup failed", exc_info=True)
-            return None
-        if override is None:
-            return None
-        pricing = override.to_pricing_dict()
-        pricing["id"] = str(override.id)
-        return pricing
+        return resolve_pricing_override(
+            self.db,
+            account_id=self.auth_context.user.account_id,
+            ai_model=ai_model,
+            requested_alias=model_alias,
+        )
 
     def _record_stream_abort(
         self,
@@ -3630,13 +3819,27 @@ class OpenAIGatewayService:
         payload: Dict[str, Any],
         usage_details: Optional[Dict[str, Any]],
         budget_result: Optional[BudgetCheckResult],
+        accumulated_output_text: Optional[str] = None,
     ) -> None:
         """Best-effort usage record when a streaming client disconnects early.
 
         Called from a ``finally`` during GeneratorExit, so it must never raise —
         a failure here would replace a clean disconnect with an error. Status
-        499 ("client closed request") flags the partial record.
+        499 ("client closed request") flags the partial record. Usage captured
+        so far is recorded as ``partial``; when no usage chunk arrived yet the
+        record path falls back to a local token estimate over the request and
+        accumulated output text.
         """
+        has_partial_usage = isinstance(usage_details, dict) and any(
+            usage_details.get(key)
+            for key in (
+                "prompt_tokens",
+                "completion_tokens",
+                "input_tokens",
+                "output_tokens",
+                "total_tokens",
+            )
+        )
         try:
             self._record_gateway_request(
                 endpoint=endpoint,
@@ -3653,6 +3856,8 @@ class OpenAIGatewayService:
                 budget_result=budget_result,
                 error_detail="client disconnected before stream completion",
                 request_payload=payload,
+                usage_source="partial" if has_partial_usage else None,
+                accumulated_output_text=accumulated_output_text,
             )
         except Exception:  # pragma: no cover - defensive; never break teardown
             logger.warning(
@@ -3675,6 +3880,8 @@ class OpenAIGatewayService:
         budget_result: Optional[BudgetCheckResult] = None,
         error_detail: Optional[str] = None,
         request_payload: Optional[Dict[str, Any]] = None,
+        usage_source: Optional[str] = None,
+        accumulated_output_text: Optional[str] = None,
     ) -> None:
         """Persist one usage fact for a gateway request."""
         runtime = resolve_ai_model_runtime(ai_model)
@@ -3686,13 +3893,43 @@ class OpenAIGatewayService:
             if isinstance(usage, dict)
             else {}
         )
-        prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
-        completion_tokens = (
-            usage.get("completion_tokens") or usage.get("output_tokens") or 0
+        if not isinstance(usage, dict):
+            usage = {}
+        # Prefer the client-facing usage payload, but fall back to the raw
+        # upstream usage so records without a response body (e.g. client
+        # disconnects) still carry the tokens captured before the abort.
+        prompt_tokens = (
+            usage.get("prompt_tokens")
+            or usage.get("input_tokens")
+            or usage_details.get("prompt_tokens")
+            or usage_details.get("input_tokens")
+            or 0
         )
-        total_tokens = usage.get("total_tokens")
-        if total_tokens is None and (prompt_tokens or completion_tokens):
+        completion_tokens = (
+            usage.get("completion_tokens")
+            or usage.get("output_tokens")
+            or usage_details.get("completion_tokens")
+            or usage_details.get("output_tokens")
+            or 0
+        )
+        total_tokens = usage.get("total_tokens") or usage_details.get("total_tokens")
+        if not total_tokens and (prompt_tokens or completion_tokens):
             total_tokens = prompt_tokens + completion_tokens
+        token_details = self._extract_token_details(usage_details)
+        usage_estimated = False
+        if not prompt_tokens and not completion_tokens and status_code in (200, 499):
+            fallback = self._estimate_usage_fallback(
+                ai_model=ai_model,
+                request_payload=request_payload,
+                output_text=accumulated_output_text,
+            )
+            if fallback:
+                prompt_tokens, completion_tokens = fallback
+                total_tokens = prompt_tokens + completion_tokens
+                usage_source = "estimated"
+                usage_estimated = True
+        if usage_source is None and (prompt_tokens or completion_tokens):
+            usage_source = "provider"
 
         runtime_context = (
             (self.auth_context.api_key.context_data or {})
@@ -3724,6 +3961,26 @@ class OpenAIGatewayService:
             ai_model=ai_model,
             model_alias=model_alias,
         )
+        cost_estimate = estimate_ai_model_usage_cost_detailed(
+            ai_model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens or 0,
+            usage_details=usage_details,
+            pricing_override=pricing_override,
+        )
+        estimated_cost = cost_estimate.cost
+        cost_source = cost_estimate.source
+        api_equivalent_cost: Optional[float] = None
+        if self._last_upstream_credential_type == "oauth" and not pricing_override:
+            # Subscription-covered upstream (Claude Code Max / ChatGPT OAuth):
+            # the call has no marginal API charge. Record $0 spend but keep
+            # the API-equivalent value so analytics can show what the
+            # subscription absorbed. An explicit price override still wins
+            # (e.g. operators amortizing a subscription across usage).
+            api_equivalent_cost = estimated_cost
+            estimated_cost = 0.0
+            cost_source = "subscription"
         usage_row = crud_api_usage.log_gateway_request(
             self.db,
             endpoint=endpoint,
@@ -3755,14 +4012,13 @@ class OpenAIGatewayService:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
-            estimated_cost=estimate_ai_model_usage_cost(
-                ai_model,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                total_tokens=total_tokens or 0,
-                usage_details=usage_details,
-                pricing_override=pricing_override,
-            ),
+            cache_read_tokens=token_details["cache_read_tokens"],
+            cache_creation_tokens=token_details["cache_creation_tokens"],
+            reasoning_tokens=token_details["reasoning_tokens"],
+            estimated_cost=estimated_cost,
+            cost_source=cost_source,
+            usage_source=usage_source,
+            is_retry=is_retry,
             runtime_principal_type=runtime_principal.get("type"),
             runtime_principal_id=runtime_principal.get("id"),
             runtime_principal_name=runtime_principal.get("name"),
@@ -3783,6 +4039,8 @@ class OpenAIGatewayService:
                 "gateway_attempt": gateway_attempt,
                 "is_retry": is_retry,
                 "retry_of_api_usage_id": retry_of_api_usage_id,
+                "usage_estimated": usage_estimated or None,
+                "api_equivalent_cost": api_equivalent_cost,
                 "context_optimization": (
                     self._last_context_optimization.to_meta()
                     if self._last_context_optimization
@@ -3796,6 +4054,15 @@ class OpenAIGatewayService:
             },
         )
         observed_at = usage_row.timestamp
+
+        if cost_source == "unpriced" and (prompt_tokens or completion_tokens):
+            # The model is missing from the price snapshot: fetch its price
+            # from the live upstream map once (background thread, negative-
+            # cached) and fix this row when found.
+            try:
+                schedule_price_lookup(ai_model=ai_model, api_usage_id=str(usage_row.id))
+            except Exception:  # noqa: BLE001 - never break recording
+                logger.debug("Scheduling live price lookup failed", exc_info=True)
 
         log_model_gateway_request(
             self.db,

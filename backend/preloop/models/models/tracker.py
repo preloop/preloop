@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from .issue import Issue
     from .organization import Organization
     from .github_app_installation import OAuthAppInstallation
+    from .secret_reference import SecretReference
 
 
 class TrackerType(enum.Enum):
@@ -53,10 +54,28 @@ class Tracker(Base):
         nullable=True,
         comment="URL to the tracker (required for Jira, optional for others)",
     )
-    api_key: Mapped[str] = mapped_column(
+    api_key: Mapped[Optional[str]] = mapped_column(
         String(1000),
-        nullable=False,
-        comment="Encrypted API key or token for authentication",
+        nullable=True,
+        comment=(
+            "Legacy plaintext API key/token. New writes store the credential in "
+            "a SecretReference (credentials_secret_id) and leave this NULL; read "
+            "via the resolved_api_key property."
+        ),
+    )
+    credentials_secret_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("secret_reference.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="Secret reference holding the encrypted tracker API key/token",
+    )
+    webhook_secret_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("secret_reference.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="Secret reference holding the encrypted Jira webhook secret",
     )
     is_active: Mapped[bool] = mapped_column(default=True)
     is_deleted: Mapped[bool] = mapped_column(
@@ -133,6 +152,12 @@ class Tracker(Base):
 
     # Relationships
     account: Mapped["Account"] = relationship("Account", back_populates="trackers")
+    credentials_secret: Mapped[Optional["SecretReference"]] = relationship(
+        "SecretReference", foreign_keys=[credentials_secret_id]
+    )
+    webhook_secret: Mapped[Optional["SecretReference"]] = relationship(
+        "SecretReference", foreign_keys=[webhook_secret_id]
+    )
     organizations: Mapped[List["Organization"]] = relationship(
         "Organization", back_populates="tracker", cascade="all, delete-orphan"
     )
@@ -163,6 +188,38 @@ class Tracker(Base):
     def github_installation_id(self) -> Optional[uuid.UUID]:
         """Alias for oauth_installation_id (GitHub compatibility)."""
         return self.oauth_installation_id
+
+    @property
+    def resolved_api_key(self) -> str:
+        """Return the tracker API key/token, decrypting the SecretReference.
+
+        Falls back to the legacy plaintext ``api_key`` column for rows not yet
+        migrated. Callers must use this instead of ``api_key`` directly.
+        """
+        if self.credentials_secret is not None:
+            # Local import avoids a models -> services import cycle at load time.
+            from preloop.services.secret_service import get_secret_service
+
+            return (
+                get_secret_service()
+                .resolve_secret_reference(self.credentials_secret)
+                .value
+            )
+        return self.api_key or ""
+
+    @property
+    def resolved_webhook_secret(self) -> Optional[str]:
+        """Return the Jira webhook secret, decrypting the SecretReference.
+
+        Falls back to the legacy plaintext ``jira_webhook_secret`` column.
+        """
+        if self.webhook_secret is not None:
+            from preloop.services.secret_service import get_secret_service
+
+            return (
+                get_secret_service().resolve_secret_reference(self.webhook_secret).value
+            )
+        return self.jira_webhook_secret
 
     # Validation status
     is_valid: Mapped[bool] = mapped_column(default=False)

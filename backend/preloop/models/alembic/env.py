@@ -16,6 +16,7 @@ from preloop.models.models import organization  # noqa: F401
 from preloop.models.models import project  # noqa: F401
 from preloop.models.models import tracker  # noqa: F401
 from preloop.models.models import account  # noqa: F401
+from preloop.models.models import agent_control_command  # noqa: F401
 from preloop.models.models import api_key  # noqa: F401
 from preloop.models.models import api_usage  # noqa: F401
 from preloop.models.models import client_version_log  # noqa: F401
@@ -23,6 +24,7 @@ from preloop.models.models import comment  # noqa: F401
 from preloop.models.models import ai_model  # noqa: F401
 from preloop.models.models import issue_duplicate  # noqa: F401
 from preloop.models.models import model_price_override  # noqa: F401
+from preloop.models.models import provider_billing  # noqa: F401
 
 # Load .env file from the parent directory (project root)
 load_dotenv(

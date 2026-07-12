@@ -240,6 +240,48 @@ class Settings(BaseSettings):
             "Current supported value: litellm"
         ),
     )
+    model_price_live_lookup_enabled: bool = Field(
+        True,
+        description=(
+            "When a gateway request records an unpriced model, fetch its "
+            "price from the live upstream price map once in the background "
+            "and re-price the row. Unknown models are negative-cached for a "
+            "day so repeated traffic never re-triggers lookups."
+        ),
+    )
+    provider_billing_sync_enabled: bool = Field(
+        True,
+        description=(
+            "Schedule the daily provider-billing ingestion task (cost "
+            "reconciliation). The task no-ops unless the Enterprise billing "
+            "plugin and at least one provider connection are configured."
+        ),
+    )
+    provider_billing_drift_alert_pct: float = Field(
+        10.0,
+        description=(
+            "Absolute percentage drift between provider-reported cost and "
+            "Preloop's estimated cost (per provider, per day) above which a "
+            "reconciliation drift alert is sent to the account owner. "
+            "Set to 0 or a negative value to disable drift alerting."
+        ),
+    )
+    provider_billing_drift_alert_min_usd: float = Field(
+        1.0,
+        description=(
+            "Minimum provider-reported daily cost (USD) required before a "
+            "reconciliation drift alert may fire; avoids noisy alerts on "
+            "penny-sized spend where drift percentages are meaningless."
+        ),
+    )
+    cost_digest_enabled: bool = Field(
+        True,
+        description=(
+            "Schedule the weekly cost optimization & savings digest email. "
+            "The task no-ops unless the Enterprise billing plugin is "
+            "installed."
+        ),
+    )
     model_gateway_max_preview_chars: int = Field(
         32768,
         description=(
@@ -323,6 +365,14 @@ class Settings(BaseSettings):
     installer_audit_account_id: str = Field(
         "",
         description="Account ID used to store public installer download audit events",
+    )
+    agent_control_command_ttl_seconds: int = Field(
+        3600,
+        description=(
+            "Seconds an undelivered Agent Control command stays pending "
+            "(eligible for redelivery on agent reconnect) before the expiry "
+            "pass marks it expired"
+        ),
     )
 
     @classmethod

@@ -87,6 +87,44 @@ BUILTIN_TOOLS = [
         },
     },
     {
+        "name": "ask_user",
+        "description": (
+            "Ask the human a question and wait for their answer. Offer "
+            "multiple-choice options and/or let them type a free-text reply. "
+            "Returns the user's answer as text."
+        ),
+        "source": "builtin",
+        "requires_tracker": False,
+        "required_tracker_types": [],
+        "schema": {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": "The question to ask the human",
+                },
+                "options": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional list of answer options to offer",
+                },
+                "allow_free_text": {
+                    "type": "boolean",
+                    "description": "Whether the user may type a free-text answer (default true)",
+                },
+                "context": {
+                    "type": "string",
+                    "description": "Optional additional context shown to the human",
+                },
+                "approval_workflow": {
+                    "type": "string",
+                    "description": "Optional name of the approval workflow to route the question to",
+                },
+            },
+            "required": ["question"],
+        },
+    },
+    {
         "name": "get_issue",
         "description": "Get detailed information about an issue by its identifier (URL, key, or ID)",
         "source": "builtin",

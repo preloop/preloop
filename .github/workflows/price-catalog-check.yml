@@ -1,0 +1,33 @@
+# Preloop Open Source - Model Price Catalog Freshness Gate
+# Fails when the vendored price snapshot (backend/preloop/services/data/
+# model_prices.json) is older than the age limit or has drifted from the
+# upstream litellm price map. Fix by running:
+#   python scripts/update_model_prices.py
+# reviewing the printed diff, and committing the regenerated snapshot.
+
+name: Price Catalog Check
+
+on:
+  schedule:
+    - cron: '0 6 * * 1' # Mondays 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  check-price-catalog:
+    name: Check vendored model prices
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Hard gate: snapshot age. Upstream drifts almost weekly (new models,
+      # price tweaks), so drift alone is reported but does not fail the job.
+      - name: Check catalog freshness (fails when older than 45 days)
+        run: python scripts/update_model_prices.py --check --max-age-days 45
+
+      - name: Report upstream drift (informational)
+        run: python scripts/update_model_prices.py --check --max-age-days 45 --compare-remote || echo "::warning::Vendored price catalog drifts from upstream litellm — run scripts/update_model_prices.py and commit the diff."

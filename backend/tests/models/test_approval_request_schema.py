@@ -288,3 +288,64 @@ class TestApprovalDecision:
         """Test that approved field is required."""
         with pytest.raises(ValidationError):
             ApprovalDecision()
+
+    def test_effective_comment_precedence(self):
+        """answer_text > selected_option > comment for ask_user answers."""
+        assert (
+            ApprovalDecision(
+                approved=True,
+                comment="c",
+                selected_option="opt",
+                answer_text="typed",
+            ).effective_comment
+            == "typed"
+        )
+        assert (
+            ApprovalDecision(
+                approved=True, comment="c", selected_option="opt"
+            ).effective_comment
+            == "opt"
+        )
+        assert ApprovalDecision(approved=True, comment="c").effective_comment == "c"
+        assert ApprovalDecision(approved=True).effective_comment is None
+
+
+class TestQuestionSurface:
+    """ask_user question fields are surfaced from tool_args."""
+
+    def _response(self, **tool_args):
+        return ApprovalRequestResponse(
+            id=uuid4(),
+            account_id=uuid4(),
+            tool_configuration_id=uuid4(),
+            approval_workflow_id=uuid4(),
+            tool_name="ask_user",
+            tool_args=tool_args,
+            status="pending",
+            requested_at=datetime.now(),
+            resolved_at=None,
+            expires_at=None,
+            approver_comment=None,
+            webhook_posted_at=None,
+            webhook_error=None,
+        )
+
+    def test_question_fields_exposed(self):
+        resp = self._response(
+            is_question=True,
+            question="Which environment?",
+            options=["staging", "production"],
+            allow_free_text=False,
+        )
+        assert resp.is_question is True
+        assert resp.question == "Which environment?"
+        assert resp.question_options == ["staging", "production"]
+        assert resp.allow_free_text is False
+
+    def test_plain_approval_is_not_a_question(self):
+        resp = self._response(command="rm -rf /tmp")
+        assert resp.is_question is False
+        assert resp.question is None
+        assert resp.question_options == []
+        # Free text defaults to allowed when unspecified.
+        assert resp.allow_free_text is True

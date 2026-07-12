@@ -3,7 +3,7 @@
 from datetime import datetime, timedelta, timezone
 import uuid
 from typing import Any, Dict, List, Optional, Union
-from sqlalchemy import String, and_, case, cast, func, or_
+from sqlalchemy import Float, String, and_, case, cast, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -131,7 +131,14 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         prompt_tokens: Optional[int] = None,
         completion_tokens: Optional[int] = None,
         total_tokens: Optional[int] = None,
+        cache_read_tokens: Optional[int] = None,
+        cache_creation_tokens: Optional[int] = None,
+        reasoning_tokens: Optional[int] = None,
         estimated_cost: Optional[float] = None,
+        currency: Optional[str] = None,
+        cost_source: Optional[str] = None,
+        usage_source: Optional[str] = None,
+        is_retry: Optional[bool] = None,
         runtime_principal_type: Optional[str] = None,
         runtime_principal_id: Optional[str] = None,
         runtime_principal_name: Optional[str] = None,
@@ -159,7 +166,14 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_creation_tokens=cache_creation_tokens,
+            reasoning_tokens=reasoning_tokens,
             estimated_cost=estimated_cost,
+            currency=currency or ("USD" if estimated_cost is not None else None),
+            cost_source=cost_source,
+            usage_source=usage_source,
+            is_retry=is_retry,
             runtime_principal_type=runtime_principal_type,
             runtime_principal_id=runtime_principal_id,
             runtime_principal_name=runtime_principal_name,
@@ -220,6 +234,135 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 )
             except ValueError:
                 pass  # account_id is not a valid UUID, so skip budget recording
+
+        db.commit()
+        db.refresh(db_obj)
+        return db_obj
+
+    def get_gateway_cost_by_provider_day(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        start_date: datetime,
+        end_date: datetime,
+        provider_name: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Aggregate estimated cost and tokens per provider and day.
+
+        Used by billing reconciliation to compare against provider-reported
+        actuals. Replay-validation traffic is excluded like the other
+        user-facing aggregations.
+        """
+        query = db.query(
+            func.lower(ApiUsage.provider_name).label("provider"),
+            func.date_trunc("day", ApiUsage.timestamp).label("day"),
+            func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
+                "estimated_cost"
+            ),
+            func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
+        ).filter(
+            ApiUsage.action_type == "model_gateway",
+            ApiUsage.account_id == account_id,
+            ApiUsage.provider_name.isnot(None),
+            exclude_replay_usage_condition(),
+            ApiUsage.timestamp >= start_date,
+            ApiUsage.timestamp < end_date,
+        )
+        if provider_name:
+            query = query.filter(
+                func.lower(ApiUsage.provider_name) == provider_name.lower()
+            )
+        rows = query.group_by("provider", "day").order_by("provider", "day").all()
+        return [
+            {
+                "provider": row.provider,
+                "day": row.day,
+                "estimated_cost": float(row.estimated_cost or 0.0),
+                "total_tokens": int(row.total_tokens or 0),
+            }
+            for row in rows
+        ]
+
+    def iter_gateway_rows_for_repricing(
+        self,
+        db: Session,
+        *,
+        account_id: Union[uuid.UUID, str],
+        start: datetime,
+        end: datetime,
+        only_unpriced: bool = True,
+        batch_size: int = 500,
+    ):
+        """Yield gateway usage rows in a window, keyset-paginated by id.
+
+        Args:
+            db: Database session.
+            account_id: Account scope.
+            start: Window start (inclusive).
+            end: Window end (exclusive).
+            only_unpriced: Restrict to rows without a stored cost.
+            batch_size: Rows fetched per query.
+
+        Yields:
+            ApiUsage rows ordered by id.
+        """
+        last_id: Optional[uuid.UUID] = None
+        while True:
+            query = db.query(ApiUsage).filter(
+                ApiUsage.account_id == account_id,
+                ApiUsage.action_type == "model_gateway",
+                ApiUsage.timestamp >= start,
+                ApiUsage.timestamp < end,
+            )
+            if only_unpriced:
+                query = query.filter(ApiUsage.estimated_cost.is_(None))
+            if last_id is not None:
+                query = query.filter(ApiUsage.id > last_id)
+            batch = query.order_by(ApiUsage.id).limit(batch_size).all()
+            if not batch:
+                return
+            yield from batch
+            last_id = batch[-1].id
+
+    def update_cost_fields(
+        self,
+        db: Session,
+        *,
+        api_usage_id: Union[uuid.UUID, str],
+        estimated_cost: Optional[float],
+        cost_source: Optional[str],
+        currency: Optional[str] = "USD",
+        meta_data_patch: Optional[Dict[str, Any]] = None,
+    ) -> Optional[ApiUsage]:
+        """Update cost columns on an existing usage row without budget effects.
+
+        Used by repricing: budget spend was charged at request time and is
+        deliberately NOT rewritten here — repricing is analytics-only.
+
+        Args:
+            db: Database session.
+            api_usage_id: Target ``ApiUsage`` row id.
+            estimated_cost: New estimated cost (may be None to mark unpriced).
+            cost_source: New cost provenance marker.
+            currency: ISO-4217 code of the new cost (defaults to USD).
+            meta_data_patch: Keys merged into ``meta_data`` (existing keys win
+                only when absent from the patch).
+
+        Returns:
+            The updated row, or None when the row does not exist.
+        """
+        db_obj = db.query(ApiUsage).filter(ApiUsage.id == api_usage_id).first()
+        if db_obj is None:
+            return None
+
+        db_obj.estimated_cost = estimated_cost
+        db_obj.cost_source = cost_source
+        db_obj.currency = currency if estimated_cost is not None else db_obj.currency
+        if meta_data_patch:
+            merged = dict(db_obj.meta_data or {})
+            merged.update(meta_data_patch)
+            db_obj.meta_data = merged
 
         db.commit()
         db.refresh(db_obj)
@@ -386,8 +529,16 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         runtime_principal_id: Optional[str] = None,
         ai_model_id: Optional[str] = None,
         api_key_id: Optional[str] = None,
+        exclude_retries: bool = False,
     ) -> Dict[str, Any]:
-        """Get aggregated gateway usage totals for an account or flow."""
+        """Get aggregated gateway usage totals for an account or flow.
+
+        Args:
+            exclude_retries: When True, rows marked as retries of an earlier
+                identical request are excluded. Default False — retried calls
+                consume real provider tokens, so they count as spend unless
+                the caller explicitly asks to collapse them.
+        """
         query = db.query(
             func.count(ApiUsage.id).label("request_count"),
             func.coalesce(
@@ -404,6 +555,36 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
                 "estimated_cost"
             ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            and_(
+                                ApiUsage.estimated_cost.is_(None),
+                                ApiUsage.total_tokens > 0,
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("unpriced_requests"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            and_(
+                                ApiUsage.estimated_cost.is_(None),
+                                ApiUsage.total_tokens > 0,
+                            ),
+                            ApiUsage.total_tokens,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("unpriced_tokens"),
         ).filter(
             ApiUsage.action_type == "model_gateway",
             ApiUsage.account_id == account_id,
@@ -422,6 +603,10 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             query = query.filter(ApiUsage.ai_model_id == ai_model_id)
         if api_key_id:
             query = query.filter(ApiUsage.api_key_id == api_key_id)
+        if exclude_retries:
+            query = query.filter(
+                or_(ApiUsage.is_retry.is_(None), ApiUsage.is_retry.is_(False))
+            )
 
         row = query.one()
         return {
@@ -432,6 +617,8 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             "completion_tokens": int(row.completion_tokens or 0),
             "total_tokens": int(row.total_tokens or 0),
             "estimated_cost": float(row.estimated_cost or 0.0),
+            "unpriced_requests": int(row.unpriced_requests or 0),
+            "unpriced_tokens": int(row.unpriced_tokens or 0),
         }
 
     def get_gateway_usage_by_model(
@@ -1322,6 +1509,137 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             .scalar()
             or 0
         )
+
+    def get_accounting_health_counters(
+        self,
+        db: Session,
+        *,
+        account_id: Union[uuid.UUID, str],
+        start: datetime,
+    ) -> Dict[str, int]:
+        """Return raw counters for the gateway accounting self-check.
+
+        One aggregation query over the account's model-gateway rows since
+        ``start`` (replay-validation traffic excluded), using conditional
+        sums so the health checks can be computed without extra round-trips.
+
+        Args:
+            db: Database session.
+            account_id: Owning account id.
+            start: Inclusive window start.
+
+        Returns:
+            Dict of integer counters:
+            - ``total_rows``: all gateway rows in the window.
+            - ``success_rows``: rows with ``status_code < 400``.
+            - ``streaming_rows``: successful rows whose
+              ``meta_data.endpoint_kind`` ends in ``_stream``.
+            - ``streaming_rows_with_tokens``: streaming rows with
+              ``total_tokens > 0``.
+            - ``priceable_rows``: successful rows with ``total_tokens > 0``.
+            - ``priced_rows``: priceable rows with a stored cost (or
+              subscription-covered, which counts as priced).
+            - ``unpriced_source_rows``: rows tagged ``cost_source='unpriced'``.
+            - ``usage_source_rows``: successful rows with a ``usage_source``.
+            - ``provider_usage_rows``: successful rows with
+              ``usage_source='provider'``.
+        """
+        endpoint_kind = ApiUsage.meta_data["endpoint_kind"].astext
+        is_success = ApiUsage.status_code < 400
+        is_streaming = and_(is_success, endpoint_kind.like("%\\_stream", escape="\\"))
+        is_priceable = and_(is_success, ApiUsage.total_tokens > 0)
+        is_priced = or_(
+            ApiUsage.estimated_cost.isnot(None),
+            ApiUsage.cost_source == "subscription",
+        )
+
+        def _count_when(condition: Any) -> Any:
+            return func.coalesce(func.sum(case((condition, 1), else_=0)), 0)
+
+        row = (
+            db.query(
+                func.count(ApiUsage.id).label("total_rows"),
+                _count_when(is_success).label("success_rows"),
+                _count_when(is_streaming).label("streaming_rows"),
+                _count_when(and_(is_streaming, ApiUsage.total_tokens > 0)).label(
+                    "streaming_rows_with_tokens"
+                ),
+                _count_when(is_priceable).label("priceable_rows"),
+                _count_when(and_(is_priceable, is_priced)).label("priced_rows"),
+                _count_when(ApiUsage.cost_source == "unpriced").label(
+                    "unpriced_source_rows"
+                ),
+                _count_when(and_(is_success, ApiUsage.usage_source.isnot(None))).label(
+                    "usage_source_rows"
+                ),
+                _count_when(
+                    and_(is_success, ApiUsage.usage_source == "provider")
+                ).label("provider_usage_rows"),
+            )
+            .filter(
+                ApiUsage.action_type == "model_gateway",
+                ApiUsage.account_id == account_id,
+                exclude_replay_usage_condition(),
+                ApiUsage.timestamp >= start,
+            )
+            .one()
+        )
+        return {
+            "total_rows": int(row.total_rows or 0),
+            "success_rows": int(row.success_rows or 0),
+            "streaming_rows": int(row.streaming_rows or 0),
+            "streaming_rows_with_tokens": int(row.streaming_rows_with_tokens or 0),
+            "priceable_rows": int(row.priceable_rows or 0),
+            "priced_rows": int(row.priced_rows or 0),
+            "unpriced_source_rows": int(row.unpriced_source_rows or 0),
+            "usage_source_rows": int(row.usage_source_rows or 0),
+            "provider_usage_rows": int(row.provider_usage_rows or 0),
+        }
+
+    def get_subscription_absorbed_cost(
+        self,
+        db: Session,
+        *,
+        account_id: Union[uuid.UUID, str],
+        start: datetime,
+        end: datetime,
+    ) -> float:
+        """Sum API-equivalent cost absorbed by subscriptions in a window.
+
+        Subscription-covered gateway calls are logged with
+        ``cost_source='subscription'`` and carry the cost the same call would
+        have incurred on pay-per-use API pricing in
+        ``meta_data.api_equivalent_cost``. Summing that field measures the
+        spend the account's subscriptions absorbed. Replay-validation traffic
+        is excluded like the other user-facing aggregations.
+
+        Args:
+            db: Database session.
+            account_id: Owning account id.
+            start: Inclusive window start.
+            end: Exclusive window end.
+
+        Returns:
+            Total absorbed cost in USD (``0.0`` when none).
+        """
+        absorbed = func.coalesce(
+            func.sum(cast(ApiUsage.meta_data["api_equivalent_cost"].astext, Float)),
+            0.0,
+        )
+        value = (
+            db.query(absorbed)
+            .filter(
+                ApiUsage.action_type == "model_gateway",
+                ApiUsage.account_id == account_id,
+                ApiUsage.cost_source == "subscription",
+                ApiUsage.meta_data["api_equivalent_cost"].astext.isnot(None),
+                exclude_replay_usage_condition(),
+                ApiUsage.timestamp >= start,
+                ApiUsage.timestamp < end,
+            )
+            .scalar()
+        )
+        return float(value or 0.0)
 
 
 crud_api_usage = CRUDApiUsage(ApiUsage)

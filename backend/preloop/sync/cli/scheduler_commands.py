@@ -3,8 +3,9 @@ import logging
 import atexit
 import signal  # Import signal
 import pytz
-from datetime import datetime  # Import datetime
+from datetime import datetime, timedelta
 import asyncio
+from preloop.config import settings
 from preloop.models.db.session import get_db_session
 from ..services.manager import sync_scheduled_jobs
 from ..services.event_bus import event_bus_service
@@ -76,6 +77,49 @@ async def run_scheduler_async(
     logger.info(
         f"Scheduled tracker job synchronization every {reload_interval} seconds."
     )
+
+    # Daily provider-billing ingestion (cost reconciliation). The worker-side
+    # task no-ops unless the Enterprise billing plugin (and at least one
+    # provider connection) is present.
+    if getattr(settings, "provider_billing_sync_enabled", True):
+
+        async def _publish_provider_billing_ingest() -> None:
+            try:
+                await event_bus_service.publish_task("ingest_provider_billing")
+            except Exception:
+                logger.exception("Failed to publish provider billing ingest task")
+
+        scheduler.add_job(
+            _publish_provider_billing_ingest,
+            trigger=IntervalTrigger(hours=24),
+            id="provider_billing_ingest_job",
+            name="Ingest Provider Billing Actuals",
+            replace_existing=True,
+            misfire_grace_time=3600,
+            next_run_time=datetime.now(pytz.utc) + timedelta(minutes=5),
+        )
+        logger.info("Scheduled daily provider billing ingestion.")
+
+    # Weekly cost optimization & savings digest. The worker-side task no-ops
+    # unless the Enterprise billing plugin is present.
+    if getattr(settings, "cost_digest_enabled", True):
+
+        async def _publish_optimization_digest() -> None:
+            try:
+                await event_bus_service.publish_task("send_optimization_digest")
+            except Exception:
+                logger.exception("Failed to publish optimization digest task")
+
+        scheduler.add_job(
+            _publish_optimization_digest,
+            trigger=IntervalTrigger(days=7),
+            id="optimization_digest_job",
+            name="Send Weekly Optimization Digest",
+            replace_existing=True,
+            misfire_grace_time=3600,
+            next_run_time=datetime.now(pytz.utc) + timedelta(minutes=10),
+        )
+        logger.info("Scheduled weekly optimization digest.")
 
     await stop_event.wait()
     logger.info("Scheduler event loop stopped.")

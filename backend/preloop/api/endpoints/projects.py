@@ -387,7 +387,7 @@ async def test_project_connection(
             tracker_client = await create_tracker_client(
                 tracker_type=tracker_type,
                 tracker_id=str(tracker.id),
-                api_key=tracker.api_key,
+                api_key=tracker.resolved_api_key,
                 connection_details=connection_details,
             )
             if not tracker_client:

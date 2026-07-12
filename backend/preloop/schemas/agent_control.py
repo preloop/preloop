@@ -77,4 +77,6 @@ class AgentControlCommandResponse(BaseModel):
     subject: Optional[str] = None
     local_delivery: bool = False
     published: bool = False
+    # Durable persistence state: pending|delivered|acked|failed|expired.
+    command_status: Optional[str] = None
     command_envelope: AgentControlEnvelope

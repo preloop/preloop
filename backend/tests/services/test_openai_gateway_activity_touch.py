@@ -11,6 +11,7 @@ from sqlalchemy.exc import OperationalError
 
 from preloop.models.crud.runtime_session import crud_runtime_session
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
+from preloop.services.model_pricing import CostEstimate
 from preloop.services.openai_gateway import OpenAIGatewayService
 
 
@@ -187,6 +188,9 @@ def test_gateway_request_recording_survives_activity_touch_timeout():
     ai_model = SimpleNamespace(
         id=uuid4(),
         provider_name="openai",
+        model_identifier="gpt-test",
+        meta_data=None,
+        model_parameters=None,
     )
 
     with (
@@ -198,8 +202,8 @@ def test_gateway_request_recording_survives_activity_touch_timeout():
             ),
         ),
         patch(
-            "preloop.services.openai_gateway.estimate_ai_model_usage_cost",
-            return_value=0.01,
+            "preloop.services.openai_gateway.estimate_ai_model_usage_cost_detailed",
+            return_value=CostEstimate(cost=0.01, source="catalog"),
         ),
         patch(
             "preloop.services.openai_gateway.crud_api_usage.log_gateway_request",

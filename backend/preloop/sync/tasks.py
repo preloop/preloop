@@ -175,6 +175,99 @@ async def process_webhook_event(
         db.close()
 
 
+def reprice_gateway_usage_task(
+    account_id: str,
+    start: str,
+    end: str,
+    only_unpriced: bool = True,
+    dry_run: bool = False,
+):
+    """Re-price gateway usage rows for one account in a time window.
+
+    Dispatched over NATS (function name in the task payload). ``start`` and
+    ``end`` are ISO-8601 timestamps.
+    """
+    from datetime import datetime
+
+    from preloop.services.model_price_catalog import load_catalog
+    from preloop.services.usage_repricing import reprice_gateway_usage
+
+    load_catalog()
+    db = next(get_db_session())
+    try:
+        result = reprice_gateway_usage(
+            db,
+            account_id=account_id,
+            start=datetime.fromisoformat(start),
+            end=datetime.fromisoformat(end),
+            only_unpriced=only_unpriced,
+            dry_run=dry_run,
+        )
+        return {
+            "rows_examined": result.rows_examined,
+            "rows_updated": result.rows_updated,
+            "rows_skipped": result.rows_skipped,
+            "cost_before": result.cost_before,
+            "cost_after": result.cost_after,
+            "dry_run": result.dry_run,
+        }
+    except Exception as e:
+        logger.error(
+            f"Error repricing usage for account {account_id}: {e}", exc_info=True
+        )
+        return None
+    finally:
+        db.close()
+
+
+def ingest_provider_billing(account_id: str | None = None):
+    """Fetch provider billing/usage actuals for reconciliation.
+
+    The implementation lives in the Enterprise billing plugin; this OSS shim
+    resolves it through the plugin service registry and no-ops (with a debug
+    log) when the plugin is not installed.
+    """
+    from preloop.plugins.base import get_plugin_manager
+
+    service = get_plugin_manager().get_service("provider_billing_ingestion")
+    if service is None:
+        logger.debug(
+            "provider_billing_ingestion service not available; skipping ingest"
+        )
+        return None
+    db = next(get_db_session())
+    try:
+        return service.ingest(db, account_id=account_id)
+    except Exception as e:
+        logger.error(f"Provider billing ingestion failed: {e}", exc_info=True)
+        return None
+    finally:
+        db.close()
+
+
+def send_optimization_digest(account_id: str | None = None):
+    """Build and email the weekly cost optimization & savings digest.
+
+    The implementation lives in the Enterprise billing plugin; this OSS shim
+    resolves it through the plugin service registry and no-ops (with a debug
+    log) when the plugin is not installed.
+    """
+    from preloop.plugins.base import get_plugin_manager
+
+    service = get_plugin_manager().get_service("optimization_digest")
+    if service is None:
+        logger.debug("optimization_digest service not available; skipping digest")
+        return None
+    db = next(get_db_session())
+    try:
+        return service(db, account_id=account_id)
+    except Exception as e:
+        logger.error(f"Optimization digest failed: {e}", exc_info=True)
+        return None
+    finally:
+        db.close()
+
+
 async def cleanup_tracker_webhooks(tracker_id: str):
     """
     Clean up webhooks when a tracker is deleted.
@@ -269,7 +362,7 @@ async def cleanup_tracker_webhooks(tracker_id: str):
                 client = await create_tracker_client(
                     tracker_type=tracker.tracker_type,
                     tracker_id=tracker_id,
-                    api_key=tracker.api_key,
+                    api_key=tracker.resolved_api_key,
                     connection_details={
                         "url": tracker.url,
                         **(tracker.connection_details or {}),

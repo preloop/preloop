@@ -239,6 +239,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Initialize Sentry if DSN is configured
     init_sentry()
 
+    # Register the vendored model-price catalog so gateway cost estimates are
+    # deterministic per release (independent of the installed litellm version).
+    try:
+        from preloop.services.model_price_catalog import load_catalog
+
+        load_catalog()
+    except Exception:
+        logger.exception("Model price catalog load failed; using litellm defaults")
+
     # Initialize database connection and optionally create tables.
     logger.info("Setting up database connection...")
     try:
@@ -411,6 +420,29 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             )
     else:
         logger.info("Skipping approval workflow repair pass for %s role.", service_role)
+
+    # Encrypt any legacy plaintext tracker credentials at rest (idempotent).
+    if not is_testing and is_api_role:
+        try:
+            from preloop.services.tracker_credential_backfill import (
+                run_tracker_credential_encryption_backfill,
+            )
+
+            tracker_stats = run_tracker_credential_encryption_backfill()
+            if (
+                tracker_stats["migrated_api_keys"]
+                or tracker_stats["migrated_webhook_secrets"]
+            ):
+                logger.info(
+                    "Tracker credential backfill complete: "
+                    "scanned=%(scanned)s, api_keys=%(migrated_api_keys)s, "
+                    "webhook_secrets=%(migrated_webhook_secrets)s" % tracker_stats
+                )
+        except Exception as e:
+            logger.warning(
+                f"Tracker credential backfill failed: {e}",
+                exc_info=True,
+            )
 
     yield
 

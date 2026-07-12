@@ -357,11 +357,29 @@ async def register_tracker(
         if auth_type in ("github_app", "oauth_app") and installation:
             oauth_installation_uuid = installation.id
 
+        # Store the credential encrypted at rest via the Secret Service rather
+        # than in the plaintext api_key column (empty for github_app auth).
+        credentials_secret_id = None
+        if api_key:
+            from preloop.models.crud.tracker import (
+                store_tracker_secret,
+                TRACKER_API_KEY_SECRET_KIND,
+            )
+
+            credentials_secret_id = store_tracker_secret(
+                db,
+                account_id=account.id,
+                name=f"{name} API key",
+                secret_value=api_key,
+                secret_kind=TRACKER_API_KEY_SECRET_KIND,
+            )
+
         new_tracker = Tracker(
             name=name,
             tracker_type=tracker_type.value,
             url=str(url_str) if url_str else None,
-            api_key=api_key or "",  # Empty string for github_app auth
+            api_key=None,
+            credentials_secret_id=credentials_secret_id,
             connection_details=config or {},
             account_id=account.id,
             is_active=True,
@@ -551,12 +569,52 @@ async def update_tracker(
     if update_data.get("api_key") == "unchanged":
         del update_data["api_key"]
 
+    # Route credential updates through the Secret Service (encrypted at rest)
+    # instead of writing the plaintext api_key / jira_webhook_secret columns.
+    from preloop.models.crud.tracker import (
+        store_tracker_secret,
+        TRACKER_API_KEY_SECRET_KIND,
+        TRACKER_WEBHOOK_SECRET_KIND,
+    )
+
+    api_key_updated = "api_key" in update_data
+    if api_key_updated:
+        new_api_key = update_data.pop("api_key")
+        tracker.api_key = None
+        tracker.credentials_secret_id = (
+            store_tracker_secret(
+                db,
+                account_id=tracker.account_id,
+                name=f"{tracker.name} API key",
+                secret_value=new_api_key,
+                secret_kind=TRACKER_API_KEY_SECRET_KIND,
+                existing_secret_id=tracker.credentials_secret_id,
+            )
+            if new_api_key
+            else None
+        )
+    if "jira_webhook_secret" in update_data:
+        new_secret = update_data.pop("jira_webhook_secret")
+        tracker.jira_webhook_secret = None
+        tracker.webhook_secret_id = (
+            store_tracker_secret(
+                db,
+                account_id=tracker.account_id,
+                name=f"{tracker.name} webhook secret",
+                secret_value=new_secret,
+                secret_kind=TRACKER_WEBHOOK_SECRET_KIND,
+                existing_secret_id=tracker.webhook_secret_id,
+            )
+            if new_secret
+            else None
+        )
+
     # Update other fields
     for field, value in update_data.items():
         setattr(tracker, field, value)
 
     # Special handling if api_key is updated - revalidate connection?
-    if "api_key" in update_data:
+    if api_key_updated:
         # Optionally re-test connection here or mark as unvalidated
         tracker.is_valid = False
         tracker.last_validation = None
@@ -738,7 +796,7 @@ async def test_connection_and_list_orgs(
                 detail="Tracker not found or access denied",
             )
         if test_data.api_key == "unchanged":
-            test_data.api_key = tracker.api_key
+            test_data.api_key = tracker.resolved_api_key
     try:
         client = await create_tracker_client(
             tracker_type=test_data.tracker_type.value,
@@ -820,7 +878,7 @@ async def list_projects_for_org(
                 detail="Tracker not found or access denied",
             )
         if project_data.api_key == "unchanged":
-            project_data.api_key = tracker.api_key
+            project_data.api_key = tracker.resolved_api_key
     try:
         if project_data.url and not project_data.url.endswith("/"):
             project_data.url = project_data.url + "/"

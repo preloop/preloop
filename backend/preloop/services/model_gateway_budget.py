@@ -8,8 +8,6 @@ import math
 from typing import Any, Dict, Optional
 
 from fastapi import HTTPException
-from sqlalchemy import inspect
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from preloop.config import settings
@@ -18,7 +16,6 @@ from preloop.models.crud import (
     crud_ai_model,
     crud_api_usage,
     crud_flow,
-    crud_model_price_override,
 )
 from preloop.models.crud.plan import subscription as crud_subscription
 from preloop.models.models.ai_model import AIModel
@@ -349,8 +346,12 @@ class ModelGatewayBudgetService:
         payload: Dict[str, Any],
         pricing_override: Optional[Dict[str, Any]] = None,
     ) -> Optional[float]:
-        estimated_input_tokens = ModelGatewayBudgetService._estimate_input_tokens(
-            payload
+        if pricing_override is None and self._is_subscription_credentialed(ai_model):
+            # Subscription-covered upstream (OAuth): no marginal API charge,
+            # matching the $0 the recording path will persist.
+            return 0.0
+        estimated_input_tokens = ModelGatewayBudgetService._count_input_tokens(
+            ai_model, payload
         )
         estimated_output_tokens = int(
             payload.get("max_completion_tokens")
@@ -366,37 +367,69 @@ class ModelGatewayBudgetService:
             pricing_override=pricing_override,
         )
 
+    @staticmethod
+    def _is_subscription_credentialed(ai_model: AIModel) -> bool:
+        """True when the model bills against an OAuth subscription."""
+        try:
+            from preloop.services.secret_service import (
+                ANTHROPIC_CLAUDE_CODE_OAUTH_CREDENTIAL_TYPE,
+                OPENAI_CODEX_OAUTH_CREDENTIAL_TYPE,
+            )
+
+            return ai_model.credential_type in {
+                ANTHROPIC_CLAUDE_CODE_OAUTH_CREDENTIAL_TYPE,
+                OPENAI_CODEX_OAUTH_CREDENTIAL_TYPE,
+            }
+        except Exception:  # noqa: BLE001 - credential resolution must not block
+            return False
+
     def _pricing_override_for_request(
         self, ai_model: AIModel, payload: Dict[str, Any]
     ) -> Optional[Dict[str, Any]]:
         """Return account pricing override for preflight cost estimates."""
-        meta_data = ai_model.meta_data if isinstance(ai_model.meta_data, dict) else {}
-        gateway_config = (
-            meta_data.get("gateway")
-            if isinstance(meta_data.get("gateway"), dict)
-            else {}
+        from preloop.services.pricing_overrides import resolve_pricing_override
+
+        return resolve_pricing_override(
+            self.db,
+            account_id=self.auth_context.user.account_id,
+            ai_model=ai_model,
+            requested_alias=payload.get("model"),
         )
-        model_alias = (
-            payload.get("model")
-            or gateway_config.get("model_alias")
-            or ai_model.model_identifier
-        )
-        try:
-            bind = self.db.get_bind()
-            if bind is not None and not inspect(bind).has_table(
-                "model_price_overrides"
-            ):
-                return None
-            override = crud_model_price_override.get_active_for_model(
-                self.db,
-                account_id=self.auth_context.user.account_id,
-                ai_model_id=ai_model.id,
-                model_alias=str(model_alias).strip() if model_alias else None,
-                provider_name=ai_model.provider_name,
-            )
-        except SQLAlchemyError:
-            return None
-        return override.to_pricing_dict() if override is not None else None
+
+    @staticmethod
+    def _count_input_tokens(ai_model: AIModel, payload: Dict[str, Any]) -> int:
+        """Count preflight input tokens with a real tokenizer when possible.
+
+        Tries litellm's tokenizer over the request messages first (accurate);
+        falls back to the chars/4 heuristic for non-message payloads or
+        tokenizer failures.
+
+        Args:
+            ai_model: Model the request targets (for tokenizer selection).
+            payload: The gateway request body.
+
+        Returns:
+            Estimated input token count (0 when the payload has no text).
+        """
+        messages = payload.get("messages")
+        if isinstance(messages, list) and messages:
+            try:
+                import litellm
+
+                from preloop.services.model_pricing import (
+                    _iter_litellm_model_candidates,
+                )
+
+                for candidate in _iter_litellm_model_candidates(ai_model):
+                    try:
+                        return int(
+                            litellm.token_counter(model=candidate, messages=messages)
+                        )
+                    except Exception:  # noqa: BLE001 - unknown model/tokenizer
+                        continue
+            except Exception:  # noqa: BLE001 - defensive; heuristics below
+                pass
+        return ModelGatewayBudgetService._estimate_input_tokens(payload)
 
     @staticmethod
     def _estimate_input_tokens(payload: Dict[str, Any]) -> int:

@@ -42,6 +42,7 @@ class ModelGatewayUsageService:
         end_date: Optional[datetime] = None,
         runtime_principal_id: Optional[str] = None,
         include_breakdown: bool = True,
+        exclude_retries: bool = False,
     ) -> AccountGatewayUsageSummaryResponse:
         start_date, end_date = self._normalize_period(start_date, end_date)
         totals = crud_api_usage.get_gateway_usage_summary(
@@ -50,6 +51,7 @@ class ModelGatewayUsageService:
             start_date=start_date,
             end_date=end_date,
             runtime_principal_id=runtime_principal_id,
+            exclude_retries=exclude_retries,
         )
         if include_breakdown:
             usage_by_model = crud_api_usage.get_gateway_usage_by_model(
@@ -125,6 +127,8 @@ class ModelGatewayUsageService:
                 total_tokens=totals["total_tokens"],
             ),
             estimated_cost=totals["estimated_cost"],
+            unpriced_requests=totals.get("unpriced_requests", 0),
+            unpriced_tokens=totals.get("unpriced_tokens", 0),
             budget=budget,
             requests_by_day=[GatewayUsageByDay(**row) for row in requests_by_day],
             usage_by_model=[self._model_row_to_schema(row) for row in usage_by_model],

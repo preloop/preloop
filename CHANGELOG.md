@@ -12,12 +12,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Per-agent native-tool approval workflow**: Operators can pin an approval workflow on a managed agent from the Console agent detail view (Tools & Governance → Native tool approvals). The pin is stored in subject governance as `approval_workflow_id` and takes precedence over the account default when `POST /api/v1/agents/permission-check` resolves a workflow. Governance updates reject workflow IDs that are invalid or not in the account.
 - **Default approval-workflow backfill**: The API startup repair pass now also seeds the account-default workflow (owner as approver) for active accounts that have none, covering signup-seed background tasks lost to restarts or transient failures.
 - **Interactive approvals opt-in**: Discover-driven agent onboarding prompts for native tool-approval hooks on supported agents (default yes), matching `preloop agents onboard --approvals`. README documents the interactive path.
+- **`ask_user` built-in tool**: Agents can ask the operator a question with multiple-choice `options` and/or a free-text answer and get the answer back, routed through the same approval workflow, notification, and audit pipeline as approvals. The question rides in the request's `tool_args` (surfaced as `is_question`/`question`/`question_options`/`allow_free_text`); the operator's reply is submitted via the existing decision endpoints, which now accept `selected_option`/`answer_text` (precedence `answer_text` > `selected_option` > `comment`). iOS and Android render options as buttons plus an answer field.
+- **Deterministic default model pricing**: A vendored litellm price snapshot (`services/data/model_prices.json`, regenerated with `scripts/update_model_prices.py`) is loaded at startup so default per-model cost estimates are fixed per release instead of depending on the installed litellm version.
+- **Multi-currency model price overrides**: Account model price overrides accept a `currency` and `fx_rate_to_usd`; non-USD overrides are converted to USD for all stored costs, preserving the original currency and unconverted prices (`original_currency`/`original_prices`) for display and audit.
+- **Historical usage repricing**: A repricing service recomputes `ApiUsage.estimated_cost` from each row's stored token counts using the current price catalog and account overrides — filling rows recorded unpriced and applying a new/edited override retroactively (analytics-only; budget-spend buckets are not rewritten, and `subscription`-priced $0 rows are skipped).
+- **Finer usage accounting**: `ApiUsage` gained `cache_read_tokens`, `cache_creation_tokens`, `reasoning_tokens`, `currency`, `cost_source`, `usage_source`, and `is_retry` columns for more accurate cost/token attribution, with streaming token-accuracy coverage.
+- **Provider billing reconciliation (data model)**: `ProviderBillingConnection`/`ProviderBillingSnapshot` tables store a per-account link to a provider's billing/usage API and persist fetched actuals so estimated `ApiUsage` spend can be reconciled against what the provider actually billed. The tables ship in the OSS models package; the fetchers and endpoints live in the Enterprise billing plugin.
+- **`preloop agents discover --json`**: The discover command's documented `--json` flag is now registered, emitting the discovered agents as JSON for scripting.
 
 ### Changed
 
 - **Default workflow owner resolution**: Seeding the account-default approval workflow prefers `Account.primary_user_id` over the oldest user in the account.
 - **Live gateway validation throttling**: Upstream HTTP 429 during live validation is treated as proof the gateway credential and wiring work; onboarding no longer rolls back gateway config for throttled probes (hard `failed` still does).
 - **CLI approvals list**: `preloop approvals list` table output now shows type, mode, default flag, approver summary, and timeout instead of the outdated tool-pattern / auto-approve / active columns.
+
+### Fixed
+
+- **Gemini gateway budget enforcement**: The Gemini-compatible gateway endpoints now inject the budget enforcer, so account/flow budget policies apply to Gemini traffic instead of being bypassable via that endpoint.
+- **Streaming usage on client disconnect**: The Anthropic, chat-completions, and responses streaming paths now record a best-effort usage row when the client disconnects mid-stream (`GeneratorExit`), so already-consumed upstream tokens are still accounted and budgets don't drift.
+
+### Security
+
+- **Refresh tokens rejected as access tokens**: The refresh-token guard in the auth dependencies read a dict field that is never a dict (`decode_token` returns a model), so a 7-day refresh token was accepted anywhere an access token was expected. It now reads the flag correctly on both the REST and WebSocket/gateway paths.
+- **MCP firewall & approval gate fail closed**: An exception during central policy evaluation or the approval check previously fell through to executing the tool. Both now block on error, matching the documented per-rule fail-closed posture.
+- **Numeric access-rule bypass fixed**: A numeric rule such as `args.amount > 300` could be defeated by sending the value as a string; ordering comparisons now coerce numeric-looking operands.
+- **Approval double-decide race & stale-approval expiry**: `approve`/`decline` now re-check, under the row lock, that a request is still pending and not past its deadline — preventing a resolved request from being flipped and an expired request from being approved via its token.
+- **MCP-server OAuth authorize no longer exposes a reusable token**: The browser authorize redirect now uses a short-lived, server-scoped token minted by `POST /api/v1/mcp-servers/{id}/oauth/authorize-token` instead of the reusable access token in the URL (which could land in history, logs, and Referer).
+- **Tracker credentials encrypted at rest**: Issue-tracker API keys and Jira webhook secrets are now stored via the Secret Service (`credentials_secret_id`/`webhook_secret_id` → `SecretReference`) instead of plaintext columns; a startup backfill migrates existing rows.
+- **CLI credential files tightened to 0600**: Managed agent config files embedding the runtime bearer token, and the CLI token file, are no longer written world-readable.
+- **Console XSS hardening**: Issue descriptions and the embedding-viewer tooltip (external tracker content) are now sanitized/escaped before rendering.
+- **Removed a debug endpoint** that returned plaintext API keys for an arbitrary username with no scoping.
 
 ## [0.10.0] - 2026-07-10
 

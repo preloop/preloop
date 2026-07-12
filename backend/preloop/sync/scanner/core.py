@@ -92,7 +92,7 @@ class TrackerClient:
 
             self.client = GitHubTracker(
                 tracker.id,
-                tracker.api_key,
+                tracker.resolved_api_key,
                 connection_details,
                 auth_type=auth_type,
                 github_installation_id=github_installation_id,
@@ -100,11 +100,15 @@ class TrackerClient:
         elif self.tracker_type == "gitlab":
             from ..trackers.gitlab import GitLabTracker
 
-            self.client = GitLabTracker(tracker.id, tracker.api_key, connection_details)
+            self.client = GitLabTracker(
+                tracker.id, tracker.resolved_api_key, connection_details
+            )
         elif self.tracker_type == "jira":
             from ..trackers.jira import JiraTracker
 
-            self.client = JiraTracker(tracker.id, tracker.api_key, connection_details)
+            self.client = JiraTracker(
+                tracker.id, tracker.resolved_api_key, connection_details
+            )
         else:
             raise ValueError(f"Unsupported tracker type: {self.tracker_type}")
 

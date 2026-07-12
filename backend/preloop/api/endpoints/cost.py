@@ -12,11 +12,27 @@ from preloop.api.auth.jwt import get_current_active_user
 from preloop.models.crud import crud_account
 from preloop.models.db.session import get_db_session
 from preloop.models.models.user import User
-from preloop.schemas.cost_analytics import CostAnalyticsSummaryResponse
+from preloop.schemas.cost_analytics import (
+    CostAnalyticsSummaryResponse,
+    CostHealthResponse,
+    PriceCatalogInfo,
+)
+from preloop.services.gateway_accounting_check import run_accounting_checks
 from preloop.services.model_gateway_usage import ModelGatewayUsageService
 from preloop.utils.permissions import require_permission
 
 router = APIRouter(prefix="/cost", tags=["Cost Analytics"])
+
+
+def _price_catalog_info() -> Optional[PriceCatalogInfo]:
+    """Return vendored price-catalog provenance for the staleness indicator."""
+    try:
+        from preloop.services.model_price_catalog import catalog_metadata
+
+        meta = catalog_metadata()
+        return PriceCatalogInfo(**meta) if meta else None
+    except Exception:  # noqa: BLE001 - purely informational
+        return None
 
 
 def _get_account_or_404(db: Session, current_user: User) -> Any:
@@ -32,6 +48,13 @@ def get_cost_summary(
     start_date: Optional[datetime] = Query(None),
     end_date: Optional[datetime] = Query(None),
     runtime_principal_id: Optional[str] = Query(None),
+    exclude_retries: bool = Query(
+        False,
+        description=(
+            "Exclude rows marked as retries of an identical earlier request. "
+            "Retries consume real provider tokens, so they count by default."
+        ),
+    ),
     db: Session = Depends(get_db_session),
     current_user: User = Depends(get_current_active_user),
 ) -> CostAnalyticsSummaryResponse:
@@ -42,6 +65,7 @@ def get_cost_summary(
         start_date=start_date,
         end_date=end_date,
         runtime_principal_id=runtime_principal_id,
+        exclude_retries=exclude_retries,
     )
     return CostAnalyticsSummaryResponse(
         period_start=summary.period_start,
@@ -51,6 +75,9 @@ def get_cost_summary(
         failed_requests=summary.failed_requests,
         token_usage=summary.token_usage,
         estimated_cost=summary.estimated_cost,
+        unpriced_requests=summary.unpriced_requests,
+        unpriced_tokens=summary.unpriced_tokens,
+        price_catalog=_price_catalog_info(),
         budget=summary.budget,
         requests_by_day=summary.requests_by_day,
         usage_by_model=summary.usage_by_model,
@@ -58,3 +85,27 @@ def get_cost_summary(
         usage_by_session=summary.usage_by_session,
         usage_by_tool=summary.usage_by_tool,
     )
+
+
+@router.get("/health", response_model=CostHealthResponse)
+@require_permission("view_cost")
+def get_cost_health(
+    hours: int = Query(
+        24,
+        ge=1,
+        le=168,
+        description="Lookback window in hours (max 168 = 7 days).",
+    ),
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_active_user),
+) -> CostHealthResponse:
+    """Run the gateway accounting self-check over a lookback window.
+
+    Verifies end-to-end that gateway traffic is recorded, streaming usage is
+    captured, requests are priced, usage is provider-reported, and audit
+    events are being written — so silent accounting breakage cannot go
+    unnoticed.
+    """
+    account = _get_account_or_404(db, current_user)
+    result = run_accounting_checks(db, account_id=str(account.id), window_hours=hours)
+    return CostHealthResponse(**result)

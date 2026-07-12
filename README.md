@@ -116,6 +116,7 @@ Define fine-grained access controls for any AI tool or operation. Tools support 
 - **Instant notifications** via mobile app, email, Slack, Mattermost, or custom webhook.
 - **One-tap approvals** from your phone, watch, or desktop — for any onboarded agent's tool calls, including native `Bash`/`Edit` actions, not just MCP tools.
 - **Async approval mode** lets the agent poll for status instead of blocking network hooks.
+- **Agent questions** — beyond allow/deny, agents can call the built-in `ask_user` tool to ask the operator a question with multiple-choice options and/or a free-text reply, and get the answer back. Rendered as option buttons + an answer field in the mobile and watch apps.
 - **Per-tool justification** — require (or optionally request) the agent to explain *why* a tool is being called.
 - **Full Audit Trail** — every action is logged with full context: what was attempted, the matched policy, execution duration, and who approved it.
 
@@ -167,7 +168,7 @@ Preloop makes model spend explainable, not just counted. The Console has a dedic
 - **Was the outcome worth it?** Enterprise analysis can use the account's default AI model to summarize sessions, compare spend against observed outcome, and flag low-value or failed runs.
 - **How could it be optimized?** Enterprise recommendations can suggest cheaper models, prompt reductions, caching, batching, retry suppression, budget policy changes, or approval gates for expensive workflows.
 
-The open-source edition includes a practical Cost Overview with Agents/Tools/Sessions/Users drill-downs, per-tool usage stats, budget-health alerts from gateway account/flow limits, MCP tool output filters that strip wasteful fields from tool results, and gateway context optimization on the hot path. Preloop Cloud and Preloop Enterprise add budget policy configuration and enforcement, negotiated provider pricing overrides, session optimization recommendations with applied-action tracking, FinOps workflows, AI-generated session value reviews and titles, anomaly detection, chargeback/showback, credits and promotions, forecasting, approval escalations, and export/reporting features through backend plugins. The frontend remains shared and exposes advanced panels through feature flags.
+The open-source edition includes a practical Cost Overview with Agents/Tools/Sessions/Users drill-downs, per-tool usage stats, budget-health alerts from gateway account/flow limits, MCP tool output filters that strip wasteful fields from tool results, and gateway context optimization on the hot path. Preloop Cloud and Preloop Enterprise add budget policy configuration and enforcement, negotiated provider pricing overrides (including non-USD contract rates), provider billing reconciliation (estimated spend vs. the actuals reported by the OpenAI and Anthropic billing APIs), historical usage repricing, session optimization recommendations with applied-action tracking, FinOps workflows, AI-generated session value reviews and titles, anomaly detection, chargeback/showback, credits and promotions, forecasting, approval escalations, and export/reporting features through backend plugins. The frontend remains shared and exposes advanced panels through feature flags.
 
 ### Runtime Session Observability
 A durable `RuntimeSession` layer gives you one timeline per managed runtime — flow executions today, and any onboarded CLI/desktop agent session going forward. Operator-scoped endpoints expose recent sessions plus captured gateway interactions so the console can drill from aggregate usage into a single session timeline. Operators can end a session explicitly; doing so updates runtime state, emits audit events, and refreshes managed-agent summaries.
@@ -276,6 +277,7 @@ Preloop Cloud and Preloop Enterprise extend the core open-source components with
 | **Cost overview, usage drill-downs & budget-health tracking** | ✅ | ✅ |
 | **Budget policy configuration & enforcement** | ❌ | ✅ |
 | **Per-account model price overrides** | ❌ | ✅ |
+| **Provider billing reconciliation & usage repricing** | ❌ | ✅ |
 | **Role-Based Access Control (RBAC)** | ❌ | ✅ |
 | **Team management & Admin Dashboard** | ❌ | ✅ |
 | **CEL conditional approval workflows** | ❌ | ✅ |

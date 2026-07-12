@@ -282,16 +282,29 @@ export class MCPServerForm extends LitElement {
     }
   }
 
-  private _startOAuthFlow(serverId?: string) {
+  private async _startOAuthFlow(serverId?: string) {
     const id = serverId || this.server?.id;
     if (!id) return;
-    const token = localStorage.getItem('accessToken');
-    if (!token) {
+    // Exchange the session for a short-lived, server-scoped authorize token so
+    // the reusable access token never lands in the URL (browser history, server
+    // logs, Referer). The browser then does a full-page redirect that the
+    // backend 302s to the external consent form.
+    try {
+      const response = await api.fetchWithAuth(
+        `/api/v1/mcp-servers/${id}/oauth/authorize-token`,
+        { method: 'POST' }
+      );
+      if (!response.ok) {
+        this.errorMessage = 'Could not start the OAuth flow. Please try again.';
+        return;
+      }
+      const { authorize_token: authorizeToken } = await response.json();
+      window.location.href = `/api/v1/mcp-servers/${id}/oauth/authorize?code=${encodeURIComponent(
+        authorizeToken
+      )}`;
+    } catch (error) {
       this.errorMessage = 'Not authenticated. Please log in again.';
-      return;
     }
-    // Navigate directly — the backend will 302 redirect to the consent form
-    window.location.href = `/api/v1/mcp-servers/${id}/oauth/authorize?token=${encodeURIComponent(token)}`;
   }
 
   closeModal(success = false) {

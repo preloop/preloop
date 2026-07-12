@@ -489,6 +489,94 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
             f"Workflow used: {approval_workflow or 'default'}"
         )
 
+    # Register Tool 7b: ask_user (ask the human a question, get an answer back)
+    # NOTE: keep in sync with BUILTIN_TOOLS in preloop/api/endpoints/tools.py
+    @mcp.tool()
+    async def ask_user(
+        question: str,
+        options: list[str] | None = None,
+        allow_free_text: bool = True,
+        context: str | None = None,
+        approval_workflow: str | None = None,
+        ctx: Optional[Context] = None,
+    ) -> str:
+        """Ask the human a question and wait for their answer.
+
+        Offer multiple-choice ``options`` and/or allow a free-text reply
+        (``allow_free_text``). Returns the user's answer as text. Unlike a plain
+        approval, this is a question: the human's chosen option or typed answer
+        is returned so the agent can act on it.
+        """
+        from preloop.services.dynamic_fastmcp_http import get_current_user_context
+        from preloop.models.db.session import get_db_session
+        from preloop.models.crud import crud_approval_workflow
+
+        user_context = get_current_user_context()
+        if not user_context:
+            return "Error: No user context available"
+
+        account_id = user_context.account_id
+
+        # Resolve the workflow to route the question to a human (same rules as
+        # request_approval: named workflow, else the account default).
+        workflow_id = None
+        db = next(get_db_session())
+        try:
+            if approval_workflow:
+                workflow = crud_approval_workflow.get_by_name(
+                    db, account_id=account_id, name=approval_workflow
+                )
+                if not workflow:
+                    return (
+                        f"Error: Approval workflow '{approval_workflow}' not found "
+                        "for your account"
+                    )
+                workflow_id = str(workflow.id)
+            else:
+                default_workflow = crud_approval_workflow.get_default(
+                    db, account_id=account_id
+                )
+                if not default_workflow:
+                    return (
+                        "Error: No default approval workflow found for your account. "
+                        "Please create an approval workflow first."
+                    )
+                workflow_id = str(default_workflow.id)
+        finally:
+            db.close()
+
+        normalized_options = [str(o) for o in (options or []) if str(o).strip()]
+
+        # The question payload rides in tool_args (JSONB) — the response schema
+        # exposes it (is_question/question/question_options/allow_free_text) so
+        # the console and mobile apps render options + a free-text answer field.
+        arguments = {
+            "is_question": True,
+            "question": question,
+            "options": normalized_options,
+            "allow_free_text": bool(allow_free_text),
+            "context": context or "",
+        }
+
+        answered, answer = await require_approval(
+            tool_name="ask_user",
+            tool_source="builtin",
+            account_id=account_id,
+            arguments=arguments,
+            workflow_id=workflow_id if workflow_id else None,
+            ctx=ctx,
+            return_comment_on_approve=True,
+        )
+
+        if not answered:
+            # Declined / cancelled / timed out — no answer was provided.
+            return f"No answer provided: {answer}" if answer else "No answer provided."
+
+        if answer:
+            return f"User answered: {answer}"
+        # Answered with no text (e.g. a bare approve on an options-only question).
+        return "User acknowledged the question but provided no answer text."
+
     # Register Tool 8: add_comment
     @mcp.tool()
     async def add_comment(

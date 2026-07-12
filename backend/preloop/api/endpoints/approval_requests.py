@@ -141,7 +141,7 @@ async def approve_request(
 
         # Approve (pass user_id for quorum tracking)
         updated = await approval_service.approve_request(
-            request_id, decision.comment, user_id=current_user.id
+            request_id, decision.effective_comment, user_id=current_user.id
         )
         if not updated:
             raise HTTPException(status_code=500, detail="Failed to approve request")
@@ -203,7 +203,7 @@ async def decline_request(
 
         # Decline (pass user_id for quorum tracking)
         updated = await approval_service.decline_request(
-            request_id, decision.comment, user_id=current_user.id
+            request_id, decision.effective_comment, user_id=current_user.id
         )
         if not updated:
             raise HTTPException(status_code=500, detail="Failed to decline request")
@@ -269,11 +269,11 @@ async def decide_request(
         # Approve or decline based on decision (pass user_id for quorum tracking)
         if decision.approved:
             updated = await approval_service.approve_request(
-                request_id, decision.comment, user_id=current_user.id
+                request_id, decision.effective_comment, user_id=current_user.id
             )
         else:
             updated = await approval_service.decline_request(
-                request_id, decision.comment, user_id=current_user.id
+                request_id, decision.effective_comment, user_id=current_user.id
             )
 
         if not updated:

@@ -1222,7 +1222,7 @@ class FlowExecutionOrchestrator:
             # Return credentials (api_key is encrypted in DB, should be decrypted here)
             return {
                 "tracker_id": tracker_id,
-                "token": tracker.api_key,  # TODO: Decrypt api_key
+                "token": tracker.resolved_api_key,
                 "tracker_type": tracker.tracker_type,
             }
 
