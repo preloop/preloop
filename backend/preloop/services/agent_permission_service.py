@@ -17,7 +17,7 @@ import logging
 import uuid
 from typing import Any, Optional, Tuple
 
-from sqlalchemy import select
+from sqlalchemy import String, and_, cast, select
 from sqlalchemy.exc import IntegrityError
 
 from preloop.models import models
@@ -47,15 +47,90 @@ async def _fetch_agent_tool_approvals_workflow(
     return result.scalars().first()
 
 
+async def _resolve_agent_configured_workflow(
+    db: Any, account_id: str, managed_agent_id: uuid.UUID
+) -> models.ApprovalWorkflow | None:
+    """Return the workflow configured for this agent via subject governance.
+
+    Operators can pin an approval workflow per managed agent in the agent
+    detail view; the choice is stored in the account's subject-governance
+    config under the agent's id. Returns None when unset or when the
+    configured workflow no longer exists in the account.
+
+    Loads the account and matching workflow in one round-trip: the pin lives
+    in nested JSON, so the join compares ``approval_workflow.id`` as text to
+    the JSON path (avoids Postgres cast failures on invalid pins). Python
+    still validates the pin so we can warn on malformed UUIDs.
+    """
+    from preloop.services.subject_governance import (
+        SUBJECT_TYPE_MANAGED_AGENTS,
+        get_subject_governance,
+    )
+
+    # Extract the pin as text via Postgres #>> so the join compares plain
+    # UUID strings (JSON -> / CAST can leave quoted JSON scalar text).
+    pinned_workflow_id = models.Account.meta_data.op("#>>")(
+        f"{{subject_governance,managed_agents,{managed_agent_id},approval_workflow_id}}"
+    )
+
+    result = await db.execute(
+        select(models.Account, models.ApprovalWorkflow)
+        .select_from(models.Account)
+        .outerjoin(
+            models.ApprovalWorkflow,
+            and_(
+                models.ApprovalWorkflow.account_id == models.Account.id,
+                cast(models.ApprovalWorkflow.id, String) == pinned_workflow_id,
+            ),
+        )
+        .where(models.Account.id == account_id)
+        .limit(1)
+    )
+    row = result.first()
+    if row is None:
+        return None
+    account, workflow = row
+    config = get_subject_governance(
+        account.meta_data or {},
+        subject_type=SUBJECT_TYPE_MANAGED_AGENTS,
+        subject_id=str(managed_agent_id),
+    )
+    workflow_id = (config or {}).get("approval_workflow_id")
+    if not workflow_id:
+        return None
+    try:
+        uuid.UUID(str(workflow_id))
+    except ValueError:
+        logger.warning(
+            "Ignoring invalid approval_workflow_id %r configured for managed agent %s",
+            workflow_id,
+            managed_agent_id,
+        )
+        return None
+    return workflow
+
+
 async def _resolve_workflow(
-    db: Any, account_id: str, approver_user_id: Optional[uuid.UUID]
+    db: Any,
+    account_id: str,
+    approver_user_id: Optional[uuid.UUID],
+    managed_agent_id: Optional[uuid.UUID] = None,
 ) -> models.ApprovalWorkflow:
     """Resolve the approval workflow to use, creating a minimal one if needed.
 
-    Prefers the account default, then any existing workflow, then creates a
-    dedicated "Agent Tool Approvals" standard workflow that notifies the
-    calling user so the request can reach their devices.
+    Prefers the workflow the operator configured for the managed agent
+    (subject governance), then the account default, then any existing
+    workflow, then creates a dedicated "Agent Tool Approvals" standard
+    workflow that notifies the calling user so the request can reach their
+    devices.
     """
+    if managed_agent_id is not None:
+        workflow = await _resolve_agent_configured_workflow(
+            db, account_id, managed_agent_id
+        )
+        if workflow is not None:
+            return workflow
+
     result = await db.execute(
         select(models.ApprovalWorkflow)
         .where(
@@ -190,7 +265,9 @@ async def request_agent_permission(
     from preloop.models.crud.approval_request import get_approval_request_async
 
     async with get_async_db_session() as db:
-        workflow = await _resolve_workflow(db, account_id, user_id)
+        workflow = await _resolve_workflow(
+            db, account_id, user_id, managed_agent_id=managed_agent_id
+        )
         timeout_seconds = workflow.timeout_seconds or 300
         config = await _resolve_tool_config(db, account_id, tool_name, workflow.id)
 

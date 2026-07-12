@@ -62,6 +62,15 @@ def mock_account():
 
 
 @pytest.fixture
+def mock_user():
+    user = MagicMock()
+    user.id = uuid.uuid4()
+    user.account_id = uuid.uuid4()
+    user.username = "testuser"
+    return user
+
+
+@pytest.fixture
 def mock_ai_model():
     model = MagicMock()
     model.id = uuid.uuid4()
@@ -375,7 +384,7 @@ PATCH_SERVICE = "preloop.services.policy_generation.PolicyGenerationService"
 
 
 class TestGeneratePolicyEndpoint:
-    async def test_success(self, mock_account, mock_db):
+    async def test_success(self, mock_account, mock_db, mock_user):
         from preloop.api.endpoints.policies import (
             GeneratePolicyRequest,
             generate_policy,
@@ -390,12 +399,17 @@ class TestGeneratePolicyEndpoint:
             instance._build_system_prompt.return_value = "system"
             instance._call_llm.return_value = VALID_POLICY_YAML
             instance._validate_output.return_value = []
-            result = await generate_policy(request, mock_account, mock_db)
+            result = await generate_policy(
+                request,
+                account=mock_account,
+                current_user=mock_user,
+                db=mock_db,
+            )
 
         assert result.yaml == VALID_POLICY_YAML
         assert result.warnings == []
 
-    async def test_no_model_returns_400(self, mock_account, mock_db):
+    async def test_no_model_returns_400(self, mock_account, mock_db, mock_user):
         from fastapi import HTTPException
 
         from preloop.api.endpoints.policies import (
@@ -411,7 +425,12 @@ class TestGeneratePolicyEndpoint:
                 "No AI models configured"
             )
             with pytest.raises(HTTPException) as exc_info:
-                await generate_policy(request, mock_account, mock_db)
+                await generate_policy(
+                    request,
+                    account=mock_account,
+                    current_user=mock_user,
+                    db=mock_db,
+                )
 
         assert exc_info.value.status_code == 400
         assert "No AI models" in exc_info.value.detail
@@ -423,7 +442,7 @@ class TestGeneratePolicyEndpoint:
 
 
 class TestGeneratePolicyFromAuditEndpoint:
-    async def test_success(self, mock_account, mock_db):
+    async def test_success(self, mock_account, mock_db, mock_user):
         from preloop.api.endpoints.policies import (
             GeneratePolicyFromAuditRequest,
             generate_policy_from_audit,
@@ -439,12 +458,17 @@ class TestGeneratePolicyFromAuditEndpoint:
             instance._build_audit_system_prompt.return_value = "system"
             instance._call_llm.return_value = VALID_POLICY_YAML
             instance._validate_output.return_value = ["minor warning"]
-            result = await generate_policy_from_audit(request, mock_account, mock_db)
+            result = await generate_policy_from_audit(
+                request,
+                account=mock_account,
+                current_user=mock_user,
+                db=mock_db,
+            )
 
         assert result.yaml == VALID_POLICY_YAML
         assert result.warnings == ["minor warning"]
 
-    async def test_with_date_range(self, mock_account, mock_db):
+    async def test_with_date_range(self, mock_account, mock_db, mock_user):
         from preloop.api.endpoints.policies import (
             GeneratePolicyFromAuditRequest,
             generate_policy_from_audit,
@@ -462,11 +486,18 @@ class TestGeneratePolicyFromAuditEndpoint:
             instance._build_audit_system_prompt.return_value = "system"
             instance._call_llm.return_value = VALID_POLICY_YAML
             instance._validate_output.return_value = []
-            result = await generate_policy_from_audit(request, mock_account, mock_db)
+            result = await generate_policy_from_audit(
+                request,
+                account=mock_account,
+                current_user=mock_user,
+                db=mock_db,
+            )
 
         assert result.yaml == VALID_POLICY_YAML
 
-    async def test_invalid_start_date_returns_400(self, mock_account, mock_db):
+    async def test_invalid_start_date_returns_400(
+        self, mock_account, mock_db, mock_user
+    ):
         from fastapi import HTTPException
 
         from preloop.api.endpoints.policies import (
@@ -477,12 +508,17 @@ class TestGeneratePolicyFromAuditEndpoint:
         request = GeneratePolicyFromAuditRequest(start_date="not-a-date")
 
         with pytest.raises(HTTPException) as exc_info:
-            await generate_policy_from_audit(request, mock_account, mock_db)
+            await generate_policy_from_audit(
+                request,
+                account=mock_account,
+                current_user=mock_user,
+                db=mock_db,
+            )
 
         assert exc_info.value.status_code == 400
         assert "Invalid start_date" in exc_info.value.detail
 
-    async def test_invalid_end_date_returns_400(self, mock_account, mock_db):
+    async def test_invalid_end_date_returns_400(self, mock_account, mock_db, mock_user):
         from fastapi import HTTPException
 
         from preloop.api.endpoints.policies import (
@@ -493,12 +529,17 @@ class TestGeneratePolicyFromAuditEndpoint:
         request = GeneratePolicyFromAuditRequest(end_date="bad")
 
         with pytest.raises(HTTPException) as exc_info:
-            await generate_policy_from_audit(request, mock_account, mock_db)
+            await generate_policy_from_audit(
+                request,
+                account=mock_account,
+                current_user=mock_user,
+                db=mock_db,
+            )
 
         assert exc_info.value.status_code == 400
         assert "Invalid end_date" in exc_info.value.detail
 
-    async def test_no_logs_returns_400(self, mock_account, mock_db):
+    async def test_no_logs_returns_400(self, mock_account, mock_db, mock_user):
         from fastapi import HTTPException
 
         from preloop.api.endpoints.policies import (
@@ -513,12 +554,17 @@ class TestGeneratePolicyFromAuditEndpoint:
             instance._resolve_model.return_value = MagicMock()
             instance._summarise_account_logs.return_value = ""
             with pytest.raises(HTTPException) as exc_info:
-                await generate_policy_from_audit(request, mock_account, mock_db)
+                await generate_policy_from_audit(
+                    request,
+                    account=mock_account,
+                    current_user=mock_user,
+                    db=mock_db,
+                )
 
         assert exc_info.value.status_code == 400
         assert "No tool-call audit logs" in exc_info.value.detail
 
-    async def test_with_external_logs(self, mock_account, mock_db):
+    async def test_with_external_logs(self, mock_account, mock_db, mock_user):
         from preloop.api.endpoints.policies import (
             GeneratePolicyFromAuditRequest,
             generate_policy_from_audit,
@@ -535,7 +581,12 @@ class TestGeneratePolicyFromAuditEndpoint:
             instance._build_audit_system_prompt.return_value = "system"
             instance._call_llm.return_value = VALID_POLICY_YAML
             instance._validate_output.return_value = []
-            result = await generate_policy_from_audit(request, mock_account, mock_db)
+            result = await generate_policy_from_audit(
+                request,
+                account=mock_account,
+                current_user=mock_user,
+                db=mock_db,
+            )
 
         assert result.yaml == VALID_POLICY_YAML
         instance._summarise_external_logs.assert_called_once_with(logs)

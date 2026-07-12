@@ -334,3 +334,45 @@ class TestCreateDefaultApprovalWorkflowBackground:
 
         # Assert
         mock_create_func.assert_called_once_with(account_id, None)
+
+
+class TestResolveAccountOwnerUserId:
+    """Tests for the owner-resolution fallback used by workflow seeding."""
+
+    def test_prefers_account_primary_user(self):
+        """The account's primary_user_id (the owner set at signup) must win
+        over the oldest-user fallback."""
+        from preloop.services.approval_workflow_service import (
+            _resolve_account_owner_user_id,
+        )
+
+        db = MagicMock()
+        primary_user_id = uuid4()
+        account = MagicMock(primary_user_id=primary_user_id)
+        db.query.return_value.filter.return_value.first.return_value = account
+
+        assert _resolve_account_owner_user_id(db, uuid4()) == primary_user_id
+
+    def test_falls_back_to_oldest_user_when_primary_unset(self):
+        from preloop.services.approval_workflow_service import (
+            _resolve_account_owner_user_id,
+        )
+
+        db = MagicMock()
+        account = MagicMock(primary_user_id=None)
+        first_user = MagicMock(id=uuid4())
+        db.query.return_value.filter.return_value.first.return_value = account
+        db.query.return_value.filter.return_value.order_by.return_value.first.return_value = first_user
+
+        assert _resolve_account_owner_user_id(db, uuid4()) == first_user.id
+
+    def test_returns_none_when_account_and_users_missing(self):
+        from preloop.services.approval_workflow_service import (
+            _resolve_account_owner_user_id,
+        )
+
+        db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = None
+        db.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
+
+        assert _resolve_account_owner_user_id(db, uuid4()) is None

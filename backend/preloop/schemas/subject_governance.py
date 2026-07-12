@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -12,6 +12,14 @@ class SubjectGovernanceConfig(BaseModel):
     model_budgets: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     tool_rules: Dict[str, List[Dict[str, Any]]] = Field(default_factory=dict)
     tool_enabled_overrides: Dict[str, bool] = Field(default_factory=dict)
+    approval_workflow_id: Optional[str] = Field(
+        None,
+        description=(
+            "Approval workflow that governs this subject's native tool-call "
+            "approvals (agents permission-check). Falls back to the account "
+            "default workflow when unset."
+        ),
+    )
 
 
 class SubjectGovernanceResponse(BaseModel):

@@ -32,7 +32,13 @@ def _resolve_account_owner_user_id(db: Session, account_id: UUID) -> Optional[UU
     is called without an explicit ``user_id`` so the seeded default workflow
     still has at least one approver — otherwise approval requests created
     against the default workflow would have no one able to act on them.
+
+    Prefers the account's ``primary_user_id`` (the actual owner set at
+    signup) and only falls back to the oldest user when it is unset.
     """
+    account = db.query(models.Account).filter(models.Account.id == account_id).first()
+    if account is not None and account.primary_user_id:
+        return account.primary_user_id
     user = (
         db.query(models.User)
         .filter(models.User.account_id == account_id)

@@ -4,6 +4,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -24,6 +25,24 @@ const (
 	// DefaultTimeout is the default HTTP client timeout.
 	DefaultTimeout = 30 * time.Second
 )
+
+// APIError is returned when the server responds with a non-2xx status.
+// Callers should use errors.As to inspect StatusCode rather than parsing
+// Error() strings.
+type APIError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("API error (status %d): %s", e.StatusCode, e.Body)
+}
+
+// IsStatus reports whether err is an *APIError with the given HTTP status.
+func IsStatus(err error, statusCode int) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == statusCode
+}
 
 // Client is an HTTP client for the Preloop API.
 type Client struct {
@@ -214,7 +233,7 @@ func (c *Client) doWithBodyAndHeaders(
 	}
 
 	if statusCode < 200 || statusCode >= 300 {
-		return fmt.Errorf("API error (status %d): %s", statusCode, string(responseBody))
+		return &APIError{StatusCode: statusCode, Body: string(responseBody)}
 	}
 
 	if result != nil && len(responseBody) > 0 {

@@ -659,13 +659,14 @@ func promptToOnboardDiscoveredAgents(
 	// agents from being touched.
 	deferLiveValidate := !skipLiveValidate
 	var enrolled []AgentConfig
-	err = promptToOnboardCandidates(os.Stdin, os.Stdout, candidates, autoApprove, func(agent AgentConfig) error {
+	err = promptToOnboardCandidates(os.Stdin, os.Stdout, candidates, autoApprove, true, func(agent AgentConfig, approvals bool) error {
 		enrollErr := executeManagedEnrollment(agent, managedEnrollmentOptions{
 			Client:            client,
 			SkipConfirmation:  true,
 			LiveValidate:      true,
 			SkipLiveValidate:  skipLiveValidate,
 			DeferLiveValidate: deferLiveValidate,
+			Approvals:         approvals,
 			Input:             os.Stdin,
 			Output:            os.Stdout,
 		})
@@ -688,7 +689,8 @@ func promptToOnboardCandidates(
 	writer io.Writer,
 	candidates []AgentConfig,
 	autoApprove bool,
-	enroll func(agent AgentConfig) error,
+	askApprovals bool,
+	enroll func(agent AgentConfig, approvals bool) error,
 ) error {
 	bufferedReader := bufio.NewReader(reader)
 
@@ -714,7 +716,18 @@ func promptToOnboardCandidates(
 		if err != nil {
 			return err
 		}
-		if err := enroll(agent); err != nil {
+		// Offer the native tool-approvals hook for supported agents when the
+		// caller's enrollment flow skips its own interactive prompts (the
+		// discover-driven path); callers whose enrollment prompts interactively
+		// pass askApprovals=false so the user is only asked once.
+		approvals := false
+		if askApprovals && !autoApprove && !nonInteractiveAutoConfirm() {
+			approvals, err = promptForApprovalsOptIn(bufferedReader, writer, agent)
+			if err != nil {
+				return fmt.Errorf("failed to read approvals confirmation: %w", err)
+			}
+		}
+		if err := enroll(agent, approvals); err != nil {
 			return err
 		}
 	}
@@ -990,7 +1003,9 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 		}
 
 		var enrolled []AgentConfig
-		err = promptToOnboardCandidates(os.Stdin, os.Stdout, candidates, autoApprove, func(a AgentConfig) error {
+		// askApprovals=false: executeManagedEnrollment prompts for the
+		// approvals hook itself when this path runs interactively.
+		err = promptToOnboardCandidates(os.Stdin, os.Stdout, candidates, autoApprove, false, func(a AgentConfig, _ bool) error {
 			agentOpts := opts
 			agentOpts.SkipConfirmation = autoApprove
 			agentOpts.DeferLiveValidate = deferLiveValidate

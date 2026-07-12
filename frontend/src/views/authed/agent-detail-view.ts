@@ -162,6 +162,7 @@ export class AgentDetailView extends LitElement {
     model_budgets: {},
     tool_rules: {},
     tool_enabled_overrides: {},
+    approval_workflow_id: null,
   };
 
   @state()
@@ -1091,6 +1092,7 @@ export class AgentDetailView extends LitElement {
         model_budgets: parsedBudgets,
         tool_rules: serializeScopedToolRules(this.scopedToolRules),
         tool_enabled_overrides: this.toolEnabledOverrides,
+        approval_workflow_id: this.governance.approval_workflow_id ?? null,
       };
       const response = await updateAgentGovernance(this.agentId, config);
       this.governance = response.config;
@@ -1111,6 +1113,17 @@ export class AgentDetailView extends LitElement {
     } finally {
       this.actionLoading = false;
     }
+  }
+
+  private saveApprovalWorkflowSelection(workflowId: string | null): void {
+    if ((this.governance.approval_workflow_id ?? null) === workflowId) {
+      return;
+    }
+    this.governance = {
+      ...this.governance,
+      approval_workflow_id: workflowId,
+    };
+    void this.saveGovernance();
   }
 
   private getGovernanceTool(toolName: string): GovernanceToolDefinition | null {
@@ -2620,6 +2633,53 @@ export class AgentDetailView extends LitElement {
                               </div>
                             </div>
                           </div>
+                        </div>
+
+                        <div
+                          class="stat-card"
+                          style="display: flex; align-items: center; justify-content: space-between; gap: var(--sl-spacing-medium); flex-shrink: 0; margin-bottom: var(--sl-spacing-medium);"
+                        >
+                          <div>
+                            <div
+                              class="stat-label"
+                              style="display: flex; align-items: center; gap: 6px;"
+                            >
+                              <sl-icon name="shield-lock"></sl-icon>
+                              Native tool approvals
+                            </div>
+                            <div class="meta-line">
+                              Approval workflow used when this agent's native
+                              tool calls (e.g. shell commands, file edits)
+                              require human approval.
+                            </div>
+                          </div>
+                          <sl-select
+                            id="agent-approval-workflow-select"
+                            size="small"
+                            hoist
+                            style="min-width: 280px;"
+                            .value=${this.governance.approval_workflow_id ?? ''}
+                            @sl-change=${(e: Event) => {
+                              const value = (e.target as HTMLSelectElement)
+                                .value;
+                              this.saveApprovalWorkflowSelection(value || null);
+                            }}
+                          >
+                            <sl-option value=""
+                              >Account default workflow</sl-option
+                            >
+                            ${this.approvalWorkflows.map(
+                              (workflow: any) => html`
+                                <sl-option value=${workflow.id}>
+                                  ${workflow.name}${
+                                    workflow.is_default
+                                      ? ' (account default)'
+                                      : ''
+                                  }
+                                </sl-option>
+                              `
+                            )}
+                          </sl-select>
                         </div>
 
                         <tools-editor-component

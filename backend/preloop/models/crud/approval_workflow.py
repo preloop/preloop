@@ -146,6 +146,26 @@ class CRUDApprovalWorkflow(CRUDBase[models.ApprovalWorkflow]):
         )
         return [row[0] for row in rows]
 
+    def find_accounts_missing_workflows(self, db: Session) -> List[UUID]:
+        """Return active ``account_id``s that have no approval workflows at all.
+
+        Every account is expected to get a default workflow seeded at signup,
+        but that seeding runs as a background task and can fail (deploy
+        restart, transient DB error). The startup repair pass uses this to
+        find such accounts and seed the default workflow retroactively so
+        approval requests always have a workflow (and approver) to route to.
+        """
+        rows = (
+            db.query(models.Account.id)
+            .outerjoin(self.model, self.model.account_id == models.Account.id)
+            .filter(
+                models.Account.is_active.is_(True),
+                self.model.id.is_(None),
+            )
+            .all()
+        )
+        return [row[0] for row in rows]
+
     def create(
         self,
         db: Session,

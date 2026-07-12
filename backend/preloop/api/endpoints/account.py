@@ -4,6 +4,7 @@ import html
 import logging
 import secrets
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
@@ -16,6 +17,7 @@ from preloop.models.crud import (
     crud_account,
     crud_ai_model,
     crud_api_key,
+    crud_approval_workflow,
     crud_managed_agent,
     crud_managed_agent_ai_model_binding,
     crud_managed_agent_credential,
@@ -220,7 +222,10 @@ def _managed_config_gateway_configured(managed_config: dict) -> bool:
 def _live_validation_disables_gateway(validation: dict) -> bool:
     """Return True when live validation results invalidate gateway onboarding."""
     live_validation_status = str(validation.get("live_validation_status") or "").strip()
-    live_validation_failed = live_validation_status in {"failed", "throttled"}
+    # "throttled" is deliberately NOT treated as failed: an upstream 429 proves
+    # the credential authenticated at the gateway and the request reached the
+    # provider, so the gateway wiring works even though the probe was rejected.
+    live_validation_failed = live_validation_status == "failed"
     live_validation_missing_gateway = (
         live_validation_status == "not_run"
         and isinstance(validation.get("live_validation_skip_reason"), str)
@@ -1240,6 +1245,22 @@ async def update_account_managed_agent_governance(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Managed agent not found"
         )
+    if payload.approval_workflow_id:
+        try:
+            workflow_id = UUID(payload.approval_workflow_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid approval workflow id",
+            )
+        workflow = crud_approval_workflow.get(
+            db, id=workflow_id, account_id=str(account.id)
+        )
+        if workflow is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Approval workflow not found in this account",
+            )
     account.meta_data = set_subject_governance(
         account.meta_data or {},
         subject_type=SUBJECT_TYPE_MANAGED_AGENTS,

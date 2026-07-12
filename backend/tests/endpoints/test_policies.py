@@ -146,7 +146,7 @@ class TestValidatePolicy:
     """Test validate_policy endpoint."""
 
     async def test_validate_valid_yaml(
-        self, mock_db, mock_account, valid_policy_yaml, mock_upload_file
+        self, mock_db, mock_account, mock_user, valid_policy_yaml, mock_upload_file
     ):
         """Test validating a valid YAML policy file."""
         file = await mock_upload_file(valid_policy_yaml, "policy.yaml")
@@ -154,6 +154,7 @@ class TestValidatePolicy:
         result = await policies.validate_policy(
             file=file,
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
@@ -162,7 +163,7 @@ class TestValidatePolicy:
         assert len(result.errors) == 0
 
     async def test_validate_invalid_yaml_syntax(
-        self, mock_db, mock_account, invalid_yaml_syntax, mock_upload_file
+        self, mock_db, mock_account, mock_user, invalid_yaml_syntax, mock_upload_file
     ):
         """Test validating YAML with syntax errors."""
         file = await mock_upload_file(invalid_yaml_syntax, "policy.yaml")
@@ -170,6 +171,7 @@ class TestValidatePolicy:
         result = await policies.validate_policy(
             file=file,
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
@@ -180,7 +182,12 @@ class TestValidatePolicy:
         assert any("YAML" in e.message or "Invalid" in e.message for e in result.errors)
 
     async def test_validate_missing_required_field(
-        self, mock_db, mock_account, invalid_yaml_missing_field, mock_upload_file
+        self,
+        mock_db,
+        mock_account,
+        mock_user,
+        invalid_yaml_missing_field,
+        mock_upload_file,
     ):
         """Test validating YAML missing required field."""
         file = await mock_upload_file(invalid_yaml_missing_field, "policy.yaml")
@@ -188,6 +195,7 @@ class TestValidatePolicy:
         result = await policies.validate_policy(
             file=file,
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
@@ -197,7 +205,7 @@ class TestValidatePolicy:
         # Should mention metadata field is required
         assert any("metadata" in e.path.lower() for e in result.errors)
 
-    async def test_validate_non_utf8_file(self, mock_db, mock_account):
+    async def test_validate_non_utf8_file(self, mock_db, mock_account, mock_user):
         """Test validating non-UTF8 encoded file."""
         mock_file = MagicMock()
         mock_file.filename = "policy.yaml"
@@ -212,6 +220,7 @@ class TestValidatePolicy:
             await policies.validate_policy(
                 file=mock_file,
                 account=mock_account,
+                current_user=mock_user,
                 db=mock_db,
             )
 
@@ -223,7 +232,13 @@ class TestUploadPolicy:
     """Test upload_policy endpoint."""
 
     async def test_upload_valid_yaml_dry_run(
-        self, mock_db, mock_account, valid_policy_yaml, mock_upload_file, mocker
+        self,
+        mock_db,
+        mock_account,
+        mock_user,
+        valid_policy_yaml,
+        mock_upload_file,
+        mocker,
     ):
         """Test uploading valid YAML with dry_run=True."""
         file = await mock_upload_file(valid_policy_yaml, "policy.yaml")
@@ -253,6 +268,7 @@ class TestUploadPolicy:
             dry_run=True,
             resolve_env=True,
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
@@ -268,7 +284,13 @@ class TestUploadPolicy:
         assert call_kwargs[1]["dry_run"] is True
 
     async def test_upload_valid_yaml_apply(
-        self, mock_db, mock_account, valid_policy_yaml, mock_upload_file, mocker
+        self,
+        mock_db,
+        mock_account,
+        mock_user,
+        valid_policy_yaml,
+        mock_upload_file,
+        mocker,
     ):
         """Test uploading valid YAML with dry_run=False (actual apply)."""
         file = await mock_upload_file(valid_policy_yaml, "policy.yaml")
@@ -298,6 +320,7 @@ class TestUploadPolicy:
             dry_run=False,
             resolve_env=True,
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
@@ -310,7 +333,7 @@ class TestUploadPolicy:
         assert call_kwargs[1]["dry_run"] is False
 
     async def test_upload_invalid_yaml_returns_error(
-        self, mock_db, mock_account, invalid_yaml_syntax, mock_upload_file
+        self, mock_db, mock_account, mock_user, invalid_yaml_syntax, mock_upload_file
     ):
         """Test uploading invalid YAML returns HTTP 400 error."""
         file = await mock_upload_file(invalid_yaml_syntax, "policy.yaml")
@@ -321,6 +344,7 @@ class TestUploadPolicy:
                 dry_run=True,
                 resolve_env=True,
                 account=mock_account,
+                current_user=mock_user,
                 db=mock_db,
             )
 
@@ -328,7 +352,13 @@ class TestUploadPolicy:
         assert "validation failed" in str(exc_info.value.detail).lower()
 
     async def test_upload_apply_failure_returns_error(
-        self, mock_db, mock_account, valid_policy_yaml, mock_upload_file, mocker
+        self,
+        mock_db,
+        mock_account,
+        mock_user,
+        valid_policy_yaml,
+        mock_upload_file,
+        mocker,
     ):
         """Test uploading when apply fails returns HTTP 500 error."""
         file = await mock_upload_file(valid_policy_yaml, "policy.yaml")
@@ -353,6 +383,7 @@ class TestUploadPolicy:
                 dry_run=False,
                 resolve_env=True,
                 account=mock_account,
+                current_user=mock_user,
                 db=mock_db,
             )
 
@@ -362,7 +393,7 @@ class TestUploadPolicy:
 class TestExportPolicy:
     """Test export_policy endpoint."""
 
-    async def test_export_yaml(self, mock_db, mock_account, mocker):
+    async def test_export_yaml(self, mock_db, mock_account, mock_user, mocker):
         """Test exporting current configuration as YAML."""
         from preloop.services.policy import (
             PolicyMetadata,
@@ -387,13 +418,14 @@ class TestExportPolicy:
             format="yaml",
             policy_name="My Export",
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
         assert result.media_type == "application/x-yaml"
         assert 'filename="policy.yaml"' in result.headers["Content-Disposition"]
 
-    async def test_export_json(self, mock_db, mock_account, mocker):
+    async def test_export_json(self, mock_db, mock_account, mock_user, mocker):
         """Test exporting current configuration as JSON."""
         from preloop.services.policy import (
             PolicyMetadata,
@@ -417,6 +449,7 @@ class TestExportPolicy:
             format="json",
             policy_name="My Export",
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
@@ -428,7 +461,13 @@ class TestDiffPolicy:
     """Test diff_policy endpoint."""
 
     async def test_diff_shows_additions(
-        self, mock_db, mock_account, valid_policy_yaml, mock_upload_file, mocker
+        self,
+        mock_db,
+        mock_account,
+        mock_user,
+        valid_policy_yaml,
+        mock_upload_file,
+        mocker,
     ):
         """Test diff shows additions when uploading new policy."""
         file = await mock_upload_file(valid_policy_yaml, "policy.yaml")
@@ -465,6 +504,7 @@ class TestDiffPolicy:
         result = await policies.diff_policy(
             file=file,
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
@@ -472,7 +512,7 @@ class TestDiffPolicy:
         assert result.has_changes is True
 
     async def test_diff_invalid_yaml_returns_error(
-        self, mock_db, mock_account, invalid_yaml_syntax, mock_upload_file
+        self, mock_db, mock_account, mock_user, invalid_yaml_syntax, mock_upload_file
     ):
         """Test diff with invalid YAML returns HTTP 400 error."""
         file = await mock_upload_file(invalid_yaml_syntax, "policy.yaml")
@@ -481,6 +521,7 @@ class TestDiffPolicy:
             await policies.diff_policy(
                 file=file,
                 account=mock_account,
+                current_user=mock_user,
                 db=mock_db,
             )
 
@@ -506,7 +547,7 @@ class TestPolicyValidationWithConditions:
     """Test policy validation with various condition expressions."""
 
     async def test_validate_policy_with_complex_conditions(
-        self, mock_db, mock_account, mock_upload_file
+        self, mock_db, mock_account, mock_user, mock_upload_file
     ):
         """Test validating policy with complex CEL conditions."""
         yaml_content = """
@@ -539,6 +580,7 @@ tools:
         result = await policies.validate_policy(
             file=file,
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
@@ -546,7 +588,7 @@ tools:
         assert len(result.errors) == 0
 
     async def test_validate_policy_with_invalid_reference(
-        self, mock_db, mock_account, mock_upload_file
+        self, mock_db, mock_account, mock_user, mock_upload_file
     ):
         """Test validating policy with invalid approval_workflow reference."""
         yaml_content = """
@@ -565,6 +607,7 @@ tools:
         result = await policies.validate_policy(
             file=file,
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
@@ -582,7 +625,7 @@ tools:
 class TestListPolicyVersions:
     """Test list_policy_versions endpoint."""
 
-    async def test_list_versions_empty(self, mock_db, mock_account, mocker):
+    async def test_list_versions_empty(self, mock_db, mock_account, mock_user, mocker):
         """Test listing versions when none exist."""
         mock_service = MagicMock()
         mock_service.list_snapshots.return_value = []
@@ -603,6 +646,7 @@ class TestListPolicyVersions:
             offset=0,
             include_snapshots=False,
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
@@ -610,7 +654,7 @@ class TestListPolicyVersions:
         assert result.total == 0
 
     async def test_list_versions_with_results(
-        self, mock_db, mock_account, mock_snapshot, mocker
+        self, mock_db, mock_account, mock_user, mock_snapshot, mocker
     ):
         """Test listing versions returns correct data."""
         mock_service = MagicMock()
@@ -632,6 +676,7 @@ class TestListPolicyVersions:
             offset=0,
             include_snapshots=False,
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
@@ -641,7 +686,7 @@ class TestListPolicyVersions:
         assert result.versions[0].is_active is True
 
     async def test_list_versions_with_pagination(
-        self, mock_db, mock_account, mock_snapshot, mocker
+        self, mock_db, mock_account, mock_user, mock_snapshot, mocker
     ):
         """Test listing versions respects pagination."""
         mock_service = MagicMock()
@@ -663,6 +708,7 @@ class TestListPolicyVersions:
             offset=5,
             include_snapshots=False,
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
@@ -679,7 +725,7 @@ class TestGetPolicyVersion:
     """Test get_policy_version endpoint."""
 
     async def test_get_version_success(
-        self, mock_db, mock_account, mock_snapshot, mocker
+        self, mock_db, mock_account, mock_user, mock_snapshot, mocker
     ):
         """Test retrieving a specific version."""
         mock_service = MagicMock()
@@ -692,6 +738,7 @@ class TestGetPolicyVersion:
         result = policies.get_policy_version(
             version_id=mock_snapshot.id,
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
@@ -699,7 +746,9 @@ class TestGetPolicyVersion:
         assert result.version_number == mock_snapshot.version_number
         assert result.snapshot_data == mock_snapshot.snapshot_data
 
-    async def test_get_version_not_found(self, mock_db, mock_account, mocker):
+    async def test_get_version_not_found(
+        self, mock_db, mock_account, mock_user, mocker
+    ):
         """Test retrieving a non-existent version returns 404."""
         mock_service = MagicMock()
         mock_service.get_snapshot.return_value = None
@@ -712,6 +761,7 @@ class TestGetPolicyVersion:
             policies.get_policy_version(
                 version_id=uuid.uuid4(),
                 account=mock_account,
+                current_user=mock_user,
                 db=mock_db,
             )
 
@@ -790,7 +840,7 @@ class TestUpdateVersionTag:
     """Test update_version_tag endpoint."""
 
     async def test_update_tag_success(
-        self, mock_db, mock_account, mock_snapshot_with_tag, mocker
+        self, mock_db, mock_account, mock_user, mock_snapshot_with_tag, mocker
     ):
         """Test updating a version's tag."""
         mock_service = MagicMock()
@@ -806,13 +856,16 @@ class TestUpdateVersionTag:
             version_id=mock_snapshot_with_tag.id,
             request=request,
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
         assert result.tag == "production"
         mock_db.commit.assert_called_once()
 
-    async def test_update_tag_version_not_found(self, mock_db, mock_account, mocker):
+    async def test_update_tag_version_not_found(
+        self, mock_db, mock_account, mock_user, mocker
+    ):
         """Test updating tag on non-existent version returns 404."""
         mock_service = MagicMock()
         mock_service.update_tag.return_value = (None, "Snapshot not found")
@@ -828,6 +881,7 @@ class TestUpdateVersionTag:
                 version_id=uuid.uuid4(),
                 request=request,
                 account=mock_account,
+                current_user=mock_user,
                 db=mock_db,
             )
 
@@ -838,7 +892,7 @@ class TestRemoveVersionTag:
     """Test remove_version_tag endpoint."""
 
     async def test_remove_tag_success(
-        self, mock_db, mock_account, mock_snapshot, mocker
+        self, mock_db, mock_account, mock_user, mock_snapshot, mocker
     ):
         """Test removing a tag from a version."""
         mock_snapshot.tag = None  # Tag was removed
@@ -852,13 +906,16 @@ class TestRemoveVersionTag:
         result = await policies.remove_version_tag(
             version_id=mock_snapshot.id,
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
         assert result.tag is None
         mock_db.commit.assert_called_once()
 
-    async def test_remove_tag_version_not_found(self, mock_db, mock_account, mocker):
+    async def test_remove_tag_version_not_found(
+        self, mock_db, mock_account, mock_user, mocker
+    ):
         """Test removing tag from non-existent version returns 404."""
         mock_service = MagicMock()
         mock_service.remove_tag.return_value = (None, "Snapshot not found")
@@ -871,6 +928,7 @@ class TestRemoveVersionTag:
             await policies.remove_version_tag(
                 version_id=uuid.uuid4(),
                 account=mock_account,
+                current_user=mock_user,
                 db=mock_db,
             )
 
@@ -880,7 +938,9 @@ class TestRemoveVersionTag:
 class TestRollbackToVersion:
     """Test rollback_to_version endpoint."""
 
-    async def test_rollback_preview_only(self, mock_db, mock_account, mocker):
+    async def test_rollback_preview_only(
+        self, mock_db, mock_account, mock_user, mocker
+    ):
         """Test rollback with preview_only=True only returns diff."""
         mock_diff = PolicyDiffResult(
             has_changes=True,
@@ -900,6 +960,7 @@ class TestRollbackToVersion:
             version_id=uuid.uuid4(),
             request=request,
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
@@ -909,7 +970,7 @@ class TestRollbackToVersion:
         # Should NOT commit when preview_only is True
         mock_db.commit.assert_not_called()
 
-    async def test_rollback_apply(self, mock_db, mock_account, mocker):
+    async def test_rollback_apply(self, mock_db, mock_account, mock_user, mocker):
         """Test rollback with preview_only=False applies changes."""
         mock_diff = PolicyDiffResult(
             has_changes=True,
@@ -929,13 +990,16 @@ class TestRollbackToVersion:
             version_id=uuid.uuid4(),
             request=request,
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
         assert result.success is True
         mock_db.commit.assert_called_once()
 
-    async def test_rollback_version_not_found(self, mock_db, mock_account, mocker):
+    async def test_rollback_version_not_found(
+        self, mock_db, mock_account, mock_user, mocker
+    ):
         """Test rollback to non-existent version returns 404."""
         mock_service = MagicMock()
         mock_service.rollback_to_snapshot.return_value = (
@@ -955,12 +1019,15 @@ class TestRollbackToVersion:
                 version_id=uuid.uuid4(),
                 request=request,
                 account=mock_account,
+                current_user=mock_user,
                 db=mock_db,
             )
 
         assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
 
-    async def test_rollback_failure_returns_error(self, mock_db, mock_account, mocker):
+    async def test_rollback_failure_returns_error(
+        self, mock_db, mock_account, mock_user, mocker
+    ):
         """Test rollback failure returns error in response."""
         mock_diff = PolicyDiffResult(
             has_changes=True,
@@ -984,6 +1051,7 @@ class TestRollbackToVersion:
             version_id=uuid.uuid4(),
             request=request,
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
@@ -995,7 +1063,9 @@ class TestRollbackToVersion:
 class TestDeletePolicyVersion:
     """Test delete_policy_version endpoint."""
 
-    async def test_delete_version_success(self, mock_db, mock_account, mocker):
+    async def test_delete_version_success(
+        self, mock_db, mock_account, mock_user, mocker
+    ):
         """Test successfully deleting a version."""
         mock_service = MagicMock()
         mock_service.delete_snapshot.return_value = (True, None)
@@ -1008,12 +1078,15 @@ class TestDeletePolicyVersion:
         await policies.delete_policy_version(
             version_id=uuid.uuid4(),
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
         mock_db.commit.assert_called_once()
 
-    async def test_delete_version_not_found(self, mock_db, mock_account, mocker):
+    async def test_delete_version_not_found(
+        self, mock_db, mock_account, mock_user, mocker
+    ):
         """Test deleting non-existent version returns 404."""
         mock_service = MagicMock()
         mock_service.delete_snapshot.return_value = (False, "Snapshot not found")
@@ -1026,13 +1099,14 @@ class TestDeletePolicyVersion:
             await policies.delete_policy_version(
                 version_id=uuid.uuid4(),
                 account=mock_account,
+                current_user=mock_user,
                 db=mock_db,
             )
 
         assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
 
     async def test_delete_active_version_returns_400(
-        self, mock_db, mock_account, mocker
+        self, mock_db, mock_account, mock_user, mocker
     ):
         """Test deleting the active version returns 400."""
         mock_service = MagicMock()
@@ -1049,6 +1123,7 @@ class TestDeletePolicyVersion:
             await policies.delete_policy_version(
                 version_id=uuid.uuid4(),
                 account=mock_account,
+                current_user=mock_user,
                 db=mock_db,
             )
 
@@ -1059,7 +1134,9 @@ class TestDeletePolicyVersion:
 class TestPrunePolicyVersions:
     """Test prune_policy_versions endpoint."""
 
-    async def test_prune_versions_success(self, mock_db, mock_account, mocker):
+    async def test_prune_versions_success(
+        self, mock_db, mock_account, mock_user, mocker
+    ):
         """Test pruning old versions."""
         mock_service = MagicMock()
         mock_service.prune_snapshots.return_value = 5  # 5 versions deleted
@@ -1077,6 +1154,7 @@ class TestPrunePolicyVersions:
         result = await policies.prune_policy_versions(
             request=request,
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
@@ -1088,7 +1166,9 @@ class TestPrunePolicyVersions:
         )
         mock_db.commit.assert_called_once()
 
-    async def test_prune_versions_none_deleted(self, mock_db, mock_account, mocker):
+    async def test_prune_versions_none_deleted(
+        self, mock_db, mock_account, mock_user, mocker
+    ):
         """Test pruning when no versions match criteria."""
         mock_service = MagicMock()
         mock_service.prune_snapshots.return_value = 0
@@ -1106,12 +1186,15 @@ class TestPrunePolicyVersions:
         result = await policies.prune_policy_versions(
             request=request,
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
         assert result.deleted_count == 0
 
-    async def test_prune_with_default_values(self, mock_db, mock_account, mocker):
+    async def test_prune_with_default_values(
+        self, mock_db, mock_account, mock_user, mocker
+    ):
         """Test pruning with default request values."""
         mock_service = MagicMock()
         mock_service.prune_snapshots.return_value = 3
@@ -1125,6 +1208,7 @@ class TestPrunePolicyVersions:
         result = await policies.prune_policy_versions(
             request=request,
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 

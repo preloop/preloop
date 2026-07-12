@@ -7,7 +7,6 @@ import pytest
 from fastapi import HTTPException, status
 
 from preloop.api.endpoints import tools
-from preloop.schemas.auth import AuthUserResponse
 from preloop.models.models.account import Account
 from preloop.models.models.mcp_server import MCPServer
 from preloop.models.models.mcp_tool import MCPTool
@@ -27,12 +26,13 @@ pytestmark = pytest.mark.asyncio
 @pytest.fixture
 def mock_user():
     """Create mock user for testing."""
-    return AuthUserResponse(
-        username="testuser",
-        email="test@example.com",
-        email_verified=True,
-        full_name="Test User",
-    )
+    user = MagicMock()
+    user.id = uuid.uuid4()
+    user.username = "testuser"
+    user.email = "test@example.com"
+    user.account_id = str(uuid.uuid4())
+    user.is_active = True
+    return user
 
 
 @pytest.fixture
@@ -67,7 +67,9 @@ class TestListAllTools:
             return_value=[],
         )
 
-        result = tools.list_all_tools(account=mock_account, db=mock_db)
+        result = tools.list_all_tools(
+            account=mock_account, current_user=mock_user, db=mock_db
+        )
 
         # Should return all builtin tools with defaults
         assert len(result) == len(tools.BUILTIN_TOOLS)
@@ -98,7 +100,9 @@ class TestListAllTools:
             return_value=[],
         )
 
-        result = tools.list_all_tools(account=mock_account, db=mock_db)
+        result = tools.list_all_tools(
+            account=mock_account, current_user=mock_user, db=mock_db
+        )
 
         # Find the configured tool
         get_issue_tool = next(t for t in result if t["name"] == "get_issue")
@@ -135,7 +139,9 @@ class TestListAllTools:
             return_value=[mcp_tool],
         )
 
-        result = tools.list_all_tools(account=mock_account, db=mock_db)
+        result = tools.list_all_tools(
+            account=mock_account, current_user=mock_user, db=mock_db
+        )
 
         # Should have builtin tools + MCP tool
         assert len(result) == len(tools.BUILTIN_TOOLS) + 1
@@ -181,6 +187,7 @@ class TestToolConfigurationEndpoints:
         result = await tools.create_tool_configuration(
             config_data=config_data,
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
@@ -213,6 +220,7 @@ class TestToolConfigurationEndpoints:
             await tools.create_tool_configuration(
                 config_data=config_data,
                 account=mock_account,
+                current_user=mock_user,
                 db=mock_db,
             )
 
@@ -271,6 +279,7 @@ class TestToolConfigurationEndpoints:
         result = await tools.create_tool_configuration(
             config_data=config_data,
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
@@ -309,6 +318,7 @@ class TestToolConfigurationEndpoints:
         result = await tools.get_tool_configuration(
             config_id=config_id,
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
@@ -329,6 +339,7 @@ class TestToolConfigurationEndpoints:
             await tools.get_tool_configuration(
                 config_id=config_id,
                 account=mock_account,
+                current_user=mock_user,
                 db=mock_db,
             )
 
@@ -361,6 +372,7 @@ class TestToolConfigurationEndpoints:
             "preloop.api.endpoints.tools.crud_tool_configuration.get",
             return_value=config,
         )
+        mocker.patch("preloop.api.endpoints.tools.log_config_change")
 
         update_data = ToolConfigurationUpdate(is_enabled=False)
 
@@ -368,6 +380,7 @@ class TestToolConfigurationEndpoints:
             config_id=config_id,
             config_update=update_data,
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
@@ -392,6 +405,7 @@ class TestToolConfigurationEndpoints:
         result = await tools.delete_tool_configuration(
             config_id=config_id,
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
@@ -449,6 +463,7 @@ class TestApprovalWorkflowEndpoints:
 
         result = await tools.list_approval_workflows(
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
@@ -515,6 +530,7 @@ class TestApprovalWorkflowEndpoints:
         result = await tools.create_approval_workflow(
             workflow_data=workflow_data,
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
@@ -544,6 +560,7 @@ class TestApprovalWorkflowEndpoints:
             await tools.create_approval_workflow(
                 workflow_data=workflow_data,
                 account=mock_account,
+                current_user=mock_user,
                 db=mock_db,
             )
 
@@ -597,6 +614,7 @@ class TestApprovalWorkflowEndpoints:
         result = await tools.get_approval_workflow(
             workflow_id=workflow_id,
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
@@ -665,6 +683,7 @@ class TestApprovalWorkflowEndpoints:
             workflow_id=workflow_id,
             workflow_update=update_data,
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
@@ -699,6 +718,7 @@ class TestApprovalWorkflowEndpoints:
         result = await tools.delete_approval_workflow(
             workflow_id=workflow_id,
             account=mock_account,
+            current_user=mock_user,
             db=mock_db,
         )
 
@@ -724,6 +744,7 @@ class TestApprovalWorkflowEndpointsErrorHandling:
             await tools.get_approval_workflow(
                 workflow_id=workflow_id,
                 account=mock_account,
+                current_user=mock_user,
                 db=mock_db,
             )
 
@@ -747,6 +768,7 @@ class TestApprovalWorkflowEndpointsErrorHandling:
                 workflow_id=workflow_id,
                 workflow_update=update_data,
                 account=mock_account,
+                current_user=mock_user,
                 db=mock_db,
             )
 
@@ -785,6 +807,7 @@ class TestApprovalWorkflowEndpointsErrorHandling:
                 workflow_id=workflow_id,
                 workflow_update=update_data,
                 account=mock_account,
+                current_user=mock_user,
                 db=mock_db,
             )
 
@@ -806,6 +829,7 @@ class TestApprovalWorkflowEndpointsErrorHandling:
             await tools.delete_approval_workflow(
                 workflow_id=workflow_id,
                 account=mock_account,
+                current_user=mock_user,
                 db=mock_db,
             )
 
@@ -836,6 +860,7 @@ class TestApprovalWorkflowEndpointsErrorHandling:
             await tools.delete_approval_workflow(
                 workflow_id=workflow_id,
                 account=mock_account,
+                current_user=mock_user,
                 db=mock_db,
             )
 
@@ -864,6 +889,7 @@ class TestApprovalWorkflowEndpointsErrorHandling:
             await tools.create_approval_workflow(
                 workflow_data=workflow_data,
                 account=mock_account,
+                current_user=mock_user,
                 db=mock_db,
             )
 
@@ -891,6 +917,7 @@ class TestToolConfigurationEndpointsErrorHandling:
                 config_id=config_id,
                 config_update=update_data,
                 account=mock_account,
+                current_user=mock_user,
                 db=mock_db,
             )
 
@@ -911,6 +938,7 @@ class TestToolConfigurationEndpointsErrorHandling:
             await tools.delete_tool_configuration(
                 config_id=config_id,
                 account=mock_account,
+                current_user=mock_user,
                 db=mock_db,
             )
 
@@ -939,6 +967,7 @@ class TestToolConfigurationEndpointsErrorHandling:
                 config_id=config_id,
                 config_update=update_data,
                 account=mock_account,
+                current_user=mock_user,
                 db=mock_db,
             )
 
@@ -966,6 +995,7 @@ class TestToolConfigurationEndpointsErrorHandling:
             await tools.delete_tool_configuration(
                 config_id=config_id,
                 account=mock_account,
+                current_user=mock_user,
                 db=mock_db,
             )
 
@@ -991,6 +1021,7 @@ class TestApprovalConditionEndpoints:
             await tools.get_tool_approval_condition(
                 config_id=config_id,
                 account=mock_account,
+                current_user=mock_user,
                 db=mock_db,
             )
 
@@ -1020,6 +1051,7 @@ class TestApprovalConditionEndpoints:
             await tools.get_tool_approval_condition(
                 config_id=config_id,
                 account=mock_account,
+                current_user=mock_user,
                 db=mock_db,
             )
 
@@ -1041,6 +1073,7 @@ class TestApprovalConditionEndpoints:
             await tools.delete_tool_approval_condition(
                 config_id=config_id,
                 account=mock_account,
+                current_user=mock_user,
                 db=mock_db,
             )
 
@@ -1069,6 +1102,7 @@ class TestApprovalConditionEndpoints:
             await tools.delete_tool_approval_condition(
                 config_id=config_id,
                 account=mock_account,
+                current_user=mock_user,
                 db=mock_db,
             )
 
@@ -1095,6 +1129,7 @@ class TestUpdateToolApprovalCondition:
                 config_id=config_id,
                 condition_data=condition_data,
                 account=mock_account,
+                current_user=mock_user,
                 db=mock_db,
             )
 

@@ -396,6 +396,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             from preloop.models.db.session import get_session_factory
             from preloop.models.crud import crud_approval_workflow
             from preloop.services.approval_workflow_service import (
+                create_default_approval_workflow_for_account,
                 repair_default_approval_workflow_for_account,
             )
 
@@ -403,6 +404,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             scan_db = session_factory()
             try:
                 broken = crud_approval_workflow.find_legacy_default_workflows(scan_db)
+                missing = crud_approval_workflow.find_accounts_missing_workflows(
+                    scan_db
+                )
             finally:
                 scan_db.close()
 
@@ -417,10 +421,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                         f"{account_id}: {inner_exc}"
                     )
 
-            if broken:
+            # Seed the default workflow (owner as approver) for accounts that
+            # have none at all — signup seeding runs as a background task and
+            # can be lost to a deploy restart or transient failure.
+            seeded = 0
+            for account_id in missing:
+                try:
+                    create_default_approval_workflow_for_account(account_id)
+                    seeded += 1
+                except Exception as inner_exc:  # pragma: no cover - defensive
+                    logger.warning(
+                        f"Default workflow seeding failed for account "
+                        f"{account_id}: {inner_exc}"
+                    )
+
+            if broken or missing:
                 logger.info(
                     f"Default approval workflow repair pass complete: "
-                    f"scanned={len(broken)}, repaired={repaired}"
+                    f"scanned={len(broken)}, repaired={repaired}, "
+                    f"missing={len(missing)}, seeded={seeded}"
                 )
         except Exception as e:
             logger.warning(

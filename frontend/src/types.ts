@@ -496,6 +496,11 @@ export interface SubjectGovernanceConfig {
   >;
   tool_rules: Record<string, Array<Record<string, unknown>>>;
   tool_enabled_overrides?: Record<string, boolean>;
+  /**
+   * Approval workflow governing this subject's native tool-call approvals
+   * (agents permission-check). Null falls back to the account default.
+   */
+  approval_workflow_id?: string | null;
 }
 
 export interface SubjectGovernanceResponse {

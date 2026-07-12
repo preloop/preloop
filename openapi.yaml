@@ -13842,6 +13842,14 @@ components:
             type: boolean
           type: object
           title: Tool Enabled Overrides
+        approval_workflow_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Approval Workflow Id
+          description: Approval workflow that governs this subject's native tool-call
+            approvals (agents permission-check). Falls back to the account default
+            workflow when unset.
       type: object
       title: SubjectGovernanceConfig
     SubjectGovernanceResponse:
