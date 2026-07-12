@@ -204,6 +204,104 @@ def test_resolve_ai_model_credentials_refreshes_openai_codex_oauth(
     assert stored["account_id"] == "acct-new"
 
 
+def test_refresh_openai_codex_token_maps_http_error_to_credential_refresh_error():
+    """A 401 from the OpenAI token endpoint must raise CredentialRefreshError.
+
+    Regression guard for the Codex live-validation 500: a burned refresh token
+    (``refresh_token_reused``) used to raise a bare ValueError that escaped the
+    gateway as HTTP 500 "Internal server error".
+    """
+    from io import BytesIO
+    from urllib.error import HTTPError
+
+    detail = json.dumps(
+        {
+            "error": {
+                "message": (
+                    "Your refresh token has already been used to generate a "
+                    "new access token. Please try signing in again."
+                ),
+                "type": "invalid_request_error",
+                "param": None,
+                "code": "refresh_token_reused",
+            }
+        }
+    )
+
+    def fake_urlopen(req, timeout=0):
+        raise HTTPError(
+            req.full_url, 401, "Unauthorized", {}, BytesIO(detail.encode("utf-8"))
+        )
+
+    original = secret_service_module.urllib_request.urlopen
+    secret_service_module.urllib_request.urlopen = fake_urlopen
+    try:
+        with pytest.raises(CredentialRefreshError) as exc_info:
+            SecretService()._refresh_openai_codex_token("stale-refresh-token")
+    finally:
+        secret_service_module.urllib_request.urlopen = original
+
+    assert exc_info.value.provider == "openai"
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.code == "refresh_token_reused"
+
+
+def test_resolve_ai_model_credentials_marks_openai_codex_refresh_failure(
+    db_session: Session,
+):
+    """Failed Codex OAuth refresh should mark stored credentials unhealthy."""
+    account: Account = crud_account.create(
+        db_session,
+        obj_in={
+            "organization_name": "Codex Refresh Failure Org",
+            "is_active": True,
+        },
+    )
+    ai_model = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Codex Stale Model",
+            "provider_name": "openai-codex",
+            "model_identifier": "gpt-5.4",
+            "credential_type": "oauth_openai_codex",
+            "credential_payload": {
+                "access": "old-access",
+                "refresh": "burned-refresh-token",
+                "expires": 1,
+                "account_id": "acct-1",
+            },
+        },
+        account_id=account.id,
+    )
+
+    service = SecretService()
+
+    def fail_refresh(refresh_token: str):
+        raise CredentialRefreshError(
+            "OpenAI Codex token refresh failed with status 401",
+            provider="openai",
+            status_code=401,
+            code="refresh_token_reused",
+        )
+
+    service._refresh_openai_codex_token = fail_refresh
+
+    with pytest.raises(CredentialRefreshError):
+        service.resolve_ai_model_credentials(
+            ai_model,
+            db=db_session,
+            allow_refresh=True,
+        )
+
+    db_session.refresh(ai_model.credentials_secret)
+    assert ai_model.credentials_secret.status == "error"
+    assert ai_model.credentials_secret.meta_data["last_refresh_status_code"] == 401
+    assert (
+        ai_model.credentials_secret.meta_data["last_refresh_code"]
+        == "refresh_token_reused"
+    )
+
+
 def test_refresh_anthropic_claude_code_token_uses_claude_code_request_shape():
     """The refresh request must look like the real Claude Code client.
 

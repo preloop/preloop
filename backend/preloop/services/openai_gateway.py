@@ -1730,11 +1730,29 @@ class OpenAIGatewayService:
         # Reset per request (mirrors _build_completion_kwargs) so an errored
         # resolution never leaves a stale value on the usage row.
         self._last_upstream_credential_type = None
-        resolved = get_secret_service().resolve_ai_model_credentials(
-            ai_model,
-            db=self.db,
-            allow_refresh=True,
-        )
+        try:
+            resolved = get_secret_service().resolve_ai_model_credentials(
+                ai_model,
+                db=self.db,
+                allow_refresh=True,
+            )
+        except CredentialRefreshError as exc:
+            # A failed subscription-OAuth refresh (e.g. refresh_token_reused
+            # after the ChatGPT session rotated elsewhere) means the stored
+            # credential needs re-authorization — an auth error, not a 500.
+            status_code = 401
+            if exc.status_code is not None and exc.status_code >= 500:
+                status_code = 502
+            raise ModelGatewayAPIError(
+                provider="openai",
+                status_code=status_code,
+                message=(
+                    "OpenAI Codex OAuth credentials could not be refreshed. "
+                    "Run `codex login` on the agent host and rerun onboarding "
+                    "to reconnect the model gateway."
+                ),
+                code=exc.code,
+            ) from exc
         if (
             not resolved
             or resolved.credential_type != OPENAI_CODEX_OAUTH_CREDENTIAL_TYPE

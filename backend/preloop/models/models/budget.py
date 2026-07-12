@@ -98,6 +98,10 @@ class BudgetSpendActivity(Base):
     )
 
     __table_args__ = (
+        # NULLS NOT DISTINCT (PG >= 15) so NULL subject_id / period_start
+        # buckets CONFLICT in the spend upsert and accumulate into one row
+        # instead of inserting a row per request. Keep in sync with the
+        # 20260712_budget_nnd migration.
         UniqueConstraint(
             "account_id",
             "subject_type",
@@ -106,6 +110,7 @@ class BudgetSpendActivity(Base):
             "period",
             "period_start",
             name="uq_budget_spend_activities_period_start",
+            postgresql_nulls_not_distinct=True,
         ),
         Index(
             "ix_budget_spend_activities_lookup",

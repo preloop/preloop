@@ -456,6 +456,104 @@ func TestInstallAgentControlRuntimePluginFindsHermesInUserLocalBin(t *testing.T)
 	}
 }
 
+func TestInstallAgentControlRuntimePluginFallsBackToPipWhenHermesRejectsIdentifier(t *testing.T) {
+	dir := t.TempDir()
+	// Point the plugin source root at an empty directory so the install target
+	// falls back to the PyPI package name, matching an end-user install.
+	t.Setenv("PRELOOP_RUNTIME_PLUGINS_DIR", filepath.Join(dir, "runtime-plugins"))
+	t.Setenv("HOME", filepath.Join(dir, "home"))
+
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("failed to create bin dir: %v", err)
+	}
+	// Real Hermes rejects PyPI package names: reproduce its marketplace error.
+	if err := os.WriteFile(
+		filepath.Join(binDir, "hermes"),
+		[]byte("#!/bin/sh\necho \"Error: Invalid plugin identifier: '$3'. Use a Git URL or owner/repo shorthand\" >&2\nexit 1\n"),
+		0755,
+	); err != nil {
+		t.Fatalf("failed to write fake Hermes installer: %v", err)
+	}
+	// Fake python3 next to the hermes executable records the pip invocation.
+	pipArgsFile := filepath.Join(dir, "pip-args.txt")
+	if err := os.WriteFile(
+		filepath.Join(binDir, "python3"),
+		[]byte("#!/bin/sh\nprintf '%s' \"$*\" > "+pipArgsFile+"\n"),
+		0755,
+	); err != nil {
+		t.Fatalf("failed to write fake python3: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(binDir, "preloop-hermes-plugin"),
+		[]byte("#!/bin/sh\n[ \"$1\" = verify ] && [ \"$2\" = --config ]\n"),
+		0755,
+	); err != nil {
+		t.Fatalf("failed to write fake Hermes verifier: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+
+	result := installAgentControlRuntimePlugin(
+		AgentConfig{Name: hermesAgentName, ConfigPath: filepath.Join(dir, "config.yaml")},
+		io.Discard,
+	)
+	if result["control_plugin_install_status"] != "installed_and_verified" ||
+		result["control_plugin_installed"] != true ||
+		result["control_plugin_verified"] != true {
+		t.Fatalf("expected pip fallback install and verify success, got %#v", result)
+	}
+	if result["control_plugin_installer"] != "pip" {
+		t.Fatalf("expected installer to be recorded as pip, got %#v", result)
+	}
+	marketplaceError, _ := result["control_plugin_marketplace_install_error"].(string)
+	if !strings.Contains(marketplaceError, "Invalid plugin identifier") {
+		t.Fatalf("expected marketplace error to be preserved, got %#v", result)
+	}
+	pipArgs, err := os.ReadFile(pipArgsFile)
+	if err != nil {
+		t.Fatalf("expected pip fallback to invoke python3: %v", err)
+	}
+	if string(pipArgs) != "-m pip install --upgrade preloop-hermes-plugin" {
+		t.Fatalf("unexpected pip invocation: %q", string(pipArgs))
+	}
+}
+
+func TestClassifyRuntimePluginInstallFailureHermesInvalidIdentifier(t *testing.T) {
+	status, remediation := classifyRuntimePluginInstallFailure(
+		"hermes",
+		"Agent Control plugin install failed: Error: Invalid plugin identifier: 'preloop-hermes-plugin'. Use a Git URL or owner/repo shorthand",
+	)
+	if status != "runtime_marketplace_rejected_identifier" {
+		t.Fatalf("unexpected status: %q", status)
+	}
+	if !strings.Contains(remediation, "pip install preloop-hermes-plugin") {
+		t.Fatalf("expected pip remediation, got %q", remediation)
+	}
+}
+
+func TestResolveHermesPipPythonPrefersHermesEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	venvBin := filepath.Join(home, ".hermes", "hermes-agent", "venv", "bin")
+	if err := os.MkdirAll(venvBin, 0755); err != nil {
+		t.Fatalf("failed to create Hermes venv bin dir: %v", err)
+	}
+	venvPython := filepath.Join(venvBin, "python3")
+	if err := os.WriteFile(venvPython, []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatalf("failed to write fake venv python: %v", err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", filepath.Join(dir, "empty-path"))
+
+	resolved, err := resolveHermesPipPython()
+	if err != nil {
+		t.Fatalf("unexpected python resolution error: %v", err)
+	}
+	if resolved != venvPython {
+		t.Fatalf("expected Hermes venv python %q, got %q", venvPython, resolved)
+	}
+}
+
 func TestRuntimeExecutableSearchDescriptionIncludesHermesUserLocalBin(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "home")
 	t.Setenv("HOME", home)

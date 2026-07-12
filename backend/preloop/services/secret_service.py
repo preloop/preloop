@@ -535,7 +535,31 @@ class SecretService:
         if not refresh_token:
             return payload
 
-        refreshed = self._refresh_openai_codex_token(refresh_token)
+        try:
+            refreshed = self._refresh_openai_codex_token(refresh_token)
+        except CredentialRefreshError as exc:
+            if (
+                db is not None
+                and ai_model.credentials_secret is not None
+                and ai_model.credentials_secret.backend_type == LOCAL_ENCRYPTED_BACKEND
+            ):
+                ai_model.credentials_secret.status = "error"
+                ai_model.credentials_secret.meta_data = {
+                    **(
+                        ai_model.credentials_secret.meta_data
+                        if isinstance(ai_model.credentials_secret.meta_data, dict)
+                        else {}
+                    ),
+                    "credential_type": OPENAI_CODEX_OAUTH_CREDENTIAL_TYPE,
+                    "last_refresh_error": str(exc),
+                    "last_refresh_status_code": exc.status_code,
+                    "last_refresh_code": exc.code,
+                    "last_refresh_failed_at": datetime.now(timezone.utc).isoformat(),
+                }
+                db.add(ai_model.credentials_secret)
+                db.commit()
+            raise
+
         account_id = refreshed.get("account_id") or payload.get("account_id")
         next_payload = {
             "type": OPENAI_CODEX_OAUTH_CREDENTIAL_TYPE,
@@ -701,6 +725,11 @@ class SecretService:
         except (TypeError, ValueError, json.JSONDecodeError):
             payload = None
         if isinstance(payload, dict):
+            # OpenAI nests the machine-readable code inside an ``error``
+            # object (e.g. {"error": {"code": "refresh_token_reused", ...}}).
+            nested = payload.get("error")
+            if isinstance(nested, dict):
+                payload = nested
             for key in ("code", "error_code", "error"):
                 value = payload.get(key)
                 if value is not None:
@@ -726,19 +755,26 @@ class SecretService:
                 payload = json.loads(response.read().decode("utf-8"))
         except urllib_error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "ignore")
-            raise ValueError(
-                f"OpenAI Codex token refresh failed with status {exc.code}: {detail}"
+            raise CredentialRefreshError(
+                f"OpenAI Codex token refresh failed with status {exc.code}: {detail}",
+                provider="openai",
+                status_code=exc.code,
+                code=self._extract_oauth_error_code(detail),
             ) from exc
         except urllib_error.URLError as exc:
-            raise ValueError(
-                f"OpenAI Codex token refresh failed: {exc.reason}"
+            raise CredentialRefreshError(
+                f"OpenAI Codex token refresh failed: {exc.reason}",
+                provider="openai",
             ) from exc
 
         access = str(payload.get("access_token") or "").strip()
         refresh = str(payload.get("refresh_token") or "").strip()
         expires_in = payload.get("expires_in")
         if not access or not refresh or not isinstance(expires_in, (int, float)):
-            raise ValueError("OpenAI Codex token refresh response missing fields")
+            raise CredentialRefreshError(
+                "OpenAI Codex token refresh response missing fields",
+                provider="openai",
+            )
         return {
             "access": access,
             "refresh": refresh,

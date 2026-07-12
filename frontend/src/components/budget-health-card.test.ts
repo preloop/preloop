@@ -157,3 +157,72 @@ describe('BudgetHealthCard', () => {
     expect(event).to.exist;
   });
 });
+
+describe('BudgetHealthCard period-aligned spend', () => {
+  const summary = {
+    period_start: '2026-07-01T00:00:00Z',
+    period_end: '2026-07-31T00:00:00Z',
+    total_requests: 10,
+    successful_requests: 10,
+    failed_requests: 0,
+    token_usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    estimated_cost: 91.83,
+    budget: {
+      monthly_limit_usd: null,
+      soft_limit_usd: null,
+      current_spend_usd: 91.83,
+      soft_limit_exceeded: false,
+      hard_limit_exceeded: false,
+    },
+    requests_by_day: [],
+    usage_by_model: [],
+    usage_by_flow: [],
+    usage_by_session: [],
+  } as unknown as AccountGatewayUsageSummaryResponse;
+
+  it('prefers the policy current_spend_usd over the summary window', async () => {
+    // Regression: a daily and a monthly global policy used to both render
+    // the summary-window spend. With server-provided period-aligned spend
+    // they must differ.
+    const periodPolicies = [
+      {
+        id: 'daily-policy',
+        subject_type: 'global',
+        subject_id: 'global',
+        model_alias: null,
+        period: 'daily',
+        hard_limit_usd: 120,
+        soft_limit_usd: 80,
+        notify_on_soft: false,
+        notify_on_hard: false,
+        notification_emails: null,
+        current_spend_usd: 3.25,
+      },
+      {
+        id: 'monthly-policy',
+        subject_type: 'global',
+        subject_id: 'global',
+        model_alias: null,
+        period: 'monthly',
+        hard_limit_usd: 300,
+        soft_limit_usd: 200,
+        notify_on_soft: false,
+        notify_on_hard: false,
+        notification_emails: null,
+        current_spend_usd: 91.83,
+      },
+    ] as unknown as BudgetPolicy[];
+
+    const element = (await fixture(html`
+      <budget-health-card
+        .summary=${summary}
+        .policies=${periodPolicies}
+      ></budget-health-card>
+    `)) as BudgetHealthCard;
+    await element.updateComplete;
+
+    const text = element.shadowRoot?.textContent || '';
+    expect(text).to.include('$3.25');
+    expect(text).to.include('$91.83');
+  });
+});

@@ -294,7 +294,21 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		if upstream != nil {
 			plan.Notes = append(plan.Notes, upstream.Notes...)
 		}
-		if upstream != nil && upstream.CanRouteThroughGateway() {
+		// When the local agent cannot supply a credential (e.g. Claude Code's
+		// subscription OAuth bundle expired or was rotated away by the
+		// gateway-managed copy), a credential already stored on a matching
+		// account AI model can still back full gateway onboarding. Check for
+		// one before downgrading the plan preview to MCP-only.
+		planServerReuse := upstream != nil &&
+			!upstream.CanRouteThroughGateway() &&
+			serverHasReusableGatewayCredential(client, agent, upstream)
+		if planServerReuse {
+			plan.Notes = append(
+				plan.Notes,
+				serverGatewayCredentialReuseNote(agent, upstream.ManagedModelAlias),
+			)
+		}
+		if upstream != nil && (upstream.CanRouteThroughGateway() || planServerReuse) {
 			plan, err = applyManagedGatewayForAgent(
 				plan,
 				agent,
@@ -441,8 +455,20 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		if upstream != nil {
 			plan.Notes = append(plan.Notes, upstream.Notes...)
 		}
-		if upstream != nil && upstream.CanRouteThroughGateway() {
-			syncedModel, gatewayNotes, gatewayErr := syncManagedGatewayAIModel(
+		// syncManagedGatewayAIModel handles both flavours of full onboarding:
+		// a locally-resolved credential (CanRouteThroughGateway) and reuse of
+		// a credential already stored on a matching account AI model. The
+		// latter matters for rotating subscription OAuth bundles (Claude
+		// Code): after the first import the Preloop account owns the live
+		// token lineage, so requiring a fresh local credential on every
+		// re-onboard would wrongly degrade the enrollment to MCP-only.
+		var syncedModel *aiModelResponse
+		if upstream != nil &&
+			(upstream.CanRouteThroughGateway() ||
+				upstreamEligibleForServerCredentialReuse(agent, upstream)) {
+			var gatewayNotes []string
+			var gatewayErr error
+			syncedModel, gatewayNotes, gatewayErr = syncManagedGatewayAIModel(
 				client,
 				managedAgent,
 				agent,
@@ -453,6 +479,8 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 				return gatewayErr
 			}
 			plan.Notes = append(plan.Notes, gatewayNotes...)
+		}
+		if upstream != nil && (upstream.CanRouteThroughGateway() || syncedModel != nil) {
 			if syncedModel != nil {
 				modelBindings = []managedAgentModelBindingSyncItem{
 					{
@@ -1701,6 +1729,72 @@ func isOAuthCredentialType(credentialType string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(credentialType)), "oauth_")
 }
 
+// oauthCredentialPayloadExpired reports whether an OAuth credential bundle's
+// access token is already past its recorded expiry ("expires", epoch millis).
+// A bundle without a parseable expiry is treated as NOT expired so that
+// callers keep today's re-seed behavior when freshness is unknown.
+func oauthCredentialPayloadExpired(payload map[string]interface{}) bool {
+	expires := coerceEpochMillis(payload["expires"])
+	if expires <= 0 {
+		return false
+	}
+	return expires <= time.Now().UTC().UnixMilli()
+}
+
+// upstreamEligibleForServerCredentialReuse reports whether a managed gateway
+// upstream that could not resolve a LOCAL credential may instead be backed by
+// a credential already stored on a matching account AI model.
+//
+// This is scoped to Claude Code: its Anthropic subscription OAuth refresh
+// token is single-use and rotates on every refresh, so after the first import
+// the Preloop account — not the local ~/.claude/.credentials.json copy — owns
+// the live token lineage. Requiring a resolvable local credential on every
+// re-onboard would therefore wrongly degrade recoverable enrollments to
+// MCP-only (the account credential is typically fresher than the local file).
+func upstreamEligibleForServerCredentialReuse(
+	agent AgentConfig,
+	upstream *managedGatewayUpstream,
+) bool {
+	if upstream == nil || !isClaudeCodeAgent(agent) {
+		return false
+	}
+	return strings.TrimSpace(upstream.ProviderName) != "" &&
+		strings.TrimSpace(upstream.ModelIdentifier) != "" &&
+		strings.TrimSpace(upstream.ManagedModelAlias) != ""
+}
+
+// serverHasReusableGatewayCredential checks (best-effort, read-only) whether
+// the account already stores a gateway-ready AI model with a credential that
+// matches the upstream. Used at plan-preview time so the printed plan shows
+// full gateway onboarding when the apply phase will reuse a stored credential.
+func serverHasReusableGatewayCredential(
+	client *api.Client,
+	agent AgentConfig,
+	upstream *managedGatewayUpstream,
+) bool {
+	if client == nil || !client.IsAuthenticated() ||
+		!upstreamEligibleForServerCredentialReuse(agent, upstream) {
+		return false
+	}
+	var existing []aiModelResponse
+	if err := client.Get("/api/v1/ai-models", &existing); err != nil {
+		return false
+	}
+	target := findReusableManagedGatewayAIModel(existing, upstream)
+	return target != nil && target.HasAPIKey
+}
+
+// serverGatewayCredentialReuseNote is the onboarding note emitted when full
+// gateway routing is kept alive by a credential already stored in the Preloop
+// account rather than a freshly imported local one.
+func serverGatewayCredentialReuseNote(agent AgentConfig, alias string) string {
+	return fmt.Sprintf(
+		"Local %s credentials could not be resolved; reusing the credential already stored in your Preloop account for %s, so model traffic still routes through Preloop.",
+		resolveAgentDisplayName(agent),
+		alias,
+	)
+}
+
 func parseCodexManagedGatewayUpstream(agent AgentConfig) (*managedGatewayUpstream, error) {
 	document, err := readAgentConfigForGatewayResolution(agent)
 	if err != nil {
@@ -2293,6 +2387,29 @@ func (c *claudeOAuthCredential) Payload() map[string]interface{} {
 		payload["expires"] = c.ExpiresAtMS
 	}
 	return payload
+}
+
+// printClaudeCodeOAuthOffboardNote warns when Claude Code's local Anthropic
+// subscription OAuth bundle is already past its recorded expiry at offboard
+// time. While Claude Code is onboarded its model traffic flows through the
+// Preloop gateway, so the local OAuth bundle sits unused, and the gateway's
+// imported copy may have refreshed — rotating (and thereby invalidating) the
+// single-use refresh token that remains in ~/.claude/.credentials.json.
+// Restoring the pre-onboarding config cannot restore a live token, so tell
+// the user how to recover instead of leaving them with a silently broken
+// login.
+func printClaudeCodeOAuthOffboardNote(writer io.Writer) {
+	credential, _ := resolveClaudeOAuthCredential()
+	if credential == nil || credential.ExpiresAtMS <= 0 {
+		return
+	}
+	if credential.ExpiresAtMS > time.Now().UTC().UnixMilli() {
+		return
+	}
+	fmt.Fprintln(
+		writer,
+		"  Note: Claude Code's local Anthropic subscription token has expired (subscription tokens rotate, and the Preloop gateway held the active copy while onboarded). If Claude Code reports it is logged out, run `claude` and use `/login` to re-authenticate.",
+	) //nolint:errcheck
 }
 
 func resolveClaudeOAuthCredential() (*claudeOAuthCredential, string) {
@@ -3488,19 +3605,38 @@ func installAgentControlRuntimePlugin(agent AgentConfig, writer io.Writer) map[s
 		if message == "" {
 			message = err.Error()
 		}
-		status, remediation := classifyRuntimePluginInstallFailure(installer, message)
-		result["control_plugin_install_status"] = status
-		result["control_plugin_install_error"] = message
-		if remediation != "" {
-			result["control_plugin_install_remediation"] = remediation
-		}
-		if writer != nil {
-			fmt.Fprintf(writer, "  Warning: Agent Control plugin install failed: %s\n", message) //nolint:errcheck
-			if remediation != "" {
-				fmt.Fprintf(writer, "  %s\n", remediation) //nolint:errcheck
+		pipInstalled := false
+		if runtimeSessionSourceTypeForAgent(agent.Name) == hermesSourceType {
+			// Hermes has no PyPI-backed plugin marketplace: `hermes plugins
+			// install` only accepts Git URLs or owner/repo shorthands, while the
+			// Preloop plugin ships on PyPI (`preloop-hermes-plugin`) and is
+			// discovered through the `hermes_agent.plugins` entry point after a
+			// plain pip install (see runtime-plugins/PUBLISHING.md). Fall back to
+			// pip in Hermes' Python environment when the installer rejects it.
+			var pipError string
+			pipInstalled, pipError = installHermesPluginViaPip(installTarget, writer)
+			if pipInstalled {
+				result["control_plugin_installer"] = "pip"
+				result["control_plugin_marketplace_install_error"] = message
+			} else if pipError != "" {
+				message = fmt.Sprintf("%s (pip fallback also failed: %s)", message, pipError)
 			}
 		}
-		return mergeStringMaps(result, ensureManagedAgentControlSidecar(agent, writer))
+		if !pipInstalled {
+			status, remediation := classifyRuntimePluginInstallFailure(installer, message)
+			result["control_plugin_install_status"] = status
+			result["control_plugin_install_error"] = message
+			if remediation != "" {
+				result["control_plugin_install_remediation"] = remediation
+			}
+			if writer != nil {
+				fmt.Fprintf(writer, "  Warning: Agent Control plugin install failed: %s\n", message) //nolint:errcheck
+				if remediation != "" {
+					fmt.Fprintf(writer, "  %s\n", remediation) //nolint:errcheck
+				}
+			}
+			return mergeStringMaps(result, ensureManagedAgentControlSidecar(agent, writer))
+		}
 	}
 
 	verification := verifyAgentControlRuntimePlugin(agent)
@@ -3519,6 +3655,11 @@ func installAgentControlRuntimePlugin(agent AgentConfig, writer io.Writer) map[s
 func classifyRuntimePluginInstallFailure(installer string, message string) (string, string) {
 	normalizedInstaller := strings.ToLower(strings.TrimSpace(installer))
 	normalizedMessage := strings.ToLower(strings.TrimSpace(message))
+	if normalizedInstaller == "hermes" &&
+		strings.Contains(normalizedMessage, "invalid plugin identifier") {
+		return "runtime_marketplace_rejected_identifier",
+			"Hermes' `plugins install` only accepts Git URLs or owner/repo shorthands; the Preloop plugin is distributed on PyPI. Install it with `pip install preloop-hermes-plugin` using Hermes' Python environment, then restart Hermes."
+	}
 	if normalizedInstaller == "openclaw" &&
 		(strings.Contains(normalizedMessage, "requires node") ||
 			strings.Contains(normalizedMessage, "unsupported engine") ||
@@ -4474,7 +4615,12 @@ func syncManagedGatewayAIModel(
 	upstream *managedGatewayUpstream,
 	gatewayURL string,
 ) (*aiModelResponse, []string, error) {
-	if client == nil || upstream == nil || !upstream.CanRouteThroughGateway() {
+	if client == nil || upstream == nil {
+		return nil, nil, nil
+	}
+	hasLocalCredential := upstream.CanRouteThroughGateway()
+	if !hasLocalCredential &&
+		!upstreamEligibleForServerCredentialReuse(agent, upstream) {
 		return nil, nil, nil
 	}
 
@@ -4484,6 +4630,11 @@ func syncManagedGatewayAIModel(
 	}
 
 	target := findReusableManagedGatewayAIModel(existing, upstream)
+	if !hasLocalCredential && (target == nil || !target.HasAPIKey) {
+		// Server-credential reuse needs an existing account model that
+		// already holds a credential; never create a credential-less model.
+		return nil, nil, nil
+	}
 	metaData := mergeGatewayMetaForAIModel(
 		target,
 		managedAgent,
@@ -4496,6 +4647,12 @@ func syncManagedGatewayAIModel(
 	metaData["source_agent"] = upstream.SourceAgent
 	metaData = mergeManagedGatewayUpstreamMeta(metaData, upstream)
 	notes := append([]string{}, upstream.Notes...)
+	if !hasLocalCredential {
+		notes = append(
+			notes,
+			serverGatewayCredentialReuseNote(agent, upstream.ManagedModelAlias),
+		)
+	}
 
 	if target != nil {
 		update := map[string]interface{}{}
@@ -4518,10 +4675,22 @@ func syncManagedGatewayAIModel(
 		// MUST overwrite the stale stored copy — otherwise the gateway keeps
 		// trying to refresh a dead/expired token and 401s with
 		// "Model credentials could not be refreshed".
+		//
+		// The one exception is a LOCAL bundle that is itself already past
+		// its recorded expiry. Provider refresh tokens are single-use: once
+		// the gateway refreshes the imported copy, the provider rotates the
+		// refresh token and the copy left in the agent's local credential
+		// store is dead. Overwriting the account's live, gateway-refreshed
+		// bundle with that stale local copy bricks the credential
+		// (``invalid_grant`` / "Refresh token not found or invalid") and
+		// downgrades every later onboarding to MCP-only. When the local
+		// bundle is expired and the account already holds a same-type OAuth
+		// credential, keep the account copy — the gateway can refresh it.
 		if len(upstream.CredentialPayload) > 0 &&
 			(!target.HasAPIKey ||
 				strings.TrimSpace(target.CredentialType) != strings.TrimSpace(upstream.CredentialType) ||
-				isOAuthCredentialType(upstream.CredentialType)) {
+				(isOAuthCredentialType(upstream.CredentialType) &&
+					!oauthCredentialPayloadExpired(upstream.CredentialPayload))) {
 			update["credential_type"] = upstream.CredentialType
 			update["credential_payload"] = upstream.CredentialPayload
 		}

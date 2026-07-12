@@ -71,23 +71,29 @@ resolve_install_dir() {
 
 # prompt_default_yes prompts the user with a [Y/n] style question and writes
 # the answer (lower-cased, with empty input treated as "y") to stdout.
+# Callers invoke this inside a command substitution, which captures stdout,
+# so the prompt itself MUST go to stderr: otherwise the user sees nothing
+# while `read` blocks and the captured value would contain the prompt text.
 # When PRELOOP_CONFIRM is set, the prompt is skipped and "y" is echoed.
 prompt_default_yes() {
   prompt_text="$1"
   if preloop_confirm_set; then
-    printf '%s y (PRELOOP_CONFIRM)\n' "$prompt_text"
+    printf '%s y (PRELOOP_CONFIRM)\n' "$prompt_text" >&2
     echo "y"
     return
   fi
-  printf '%s ' "$prompt_text"
-  if read -r answer < /dev/tty 2>/dev/null; then
+  printf '%s ' "$prompt_text" >&2
+  # 2>/dev/null must come first so the shell's "cannot open /dev/tty" error
+  # is silenced when there is no controlling terminal.
+  if read -r answer 2>/dev/null < /dev/tty; then
     if [ -z "$answer" ]; then
       echo "y"
     else
-      printf '%s' "$answer" | tr '[:upper:]' '[:lower:]'
+      printf '%s\n' "$answer" | tr '[:upper:]' '[:lower:]'
     fi
   else
-    # No tty - accept the default
+    # No tty - accept the default (echo it to stderr to finish the prompt line)
+    echo "y" >&2
     echo "y"
   fi
 }

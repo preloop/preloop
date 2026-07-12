@@ -125,7 +125,7 @@ frontend:unit-tests:
     - build:backend
   image: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
   services:
-    - name: pgvector/pgvector:pg13
+    - name: pgvector/pgvector:pg16
       alias: postgres
   variables:
     POSTGRES_DB: test_db

@@ -3653,6 +3653,12 @@ export interface BudgetPolicy {
   notification_user_ids: string[] | null;
   notification_team_ids: string[] | null;
   notification_emails: string[] | null;
+  // Spend within the policy's CURRENT period window (today for daily, this
+  // month for monthly, ...), computed server-side from the period-aligned
+  // budget spend buckets. Optional for backward compatibility.
+  current_spend_usd?: number | null;
+  period_start?: string | null;
+  period_end?: string | null;
 }
 
 export interface BudgetPolicyCreate {

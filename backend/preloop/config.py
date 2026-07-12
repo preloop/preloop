@@ -345,6 +345,20 @@ class Settings(BaseSettings):
             "without a SaaS paywall."
         ),
     )
+    billing_budget_notification_workers: int = Field(
+        4,
+        description=(
+            "Thread-pool size for async budget-limit notification delivery "
+            "(BILLING_BUDGET_NOTIFICATION_WORKERS)"
+        ),
+    )
+    billing_budget_notification_queue_size: int = Field(
+        32,
+        description=(
+            "Max in-flight + queued budget notifications before new ones are "
+            "dropped (BILLING_BUDGET_NOTIFICATION_QUEUE_SIZE)"
+        ),
+    )
     billing_free_hosted_model_hard_cap_usd: float = Field(
         1.0,
         description=(
@@ -537,6 +551,12 @@ class Settings(BaseSettings):
                 "BILLING_ENFORCE_ENTITLEMENTS", "true"
             ).lower()
             in ("true", "1", "t", "yes"),
+            billing_budget_notification_workers=int(
+                os.getenv("BILLING_BUDGET_NOTIFICATION_WORKERS", "4")
+            ),
+            billing_budget_notification_queue_size=int(
+                os.getenv("BILLING_BUDGET_NOTIFICATION_QUEUE_SIZE", "32")
+            ),
             billing_free_hosted_model_hard_cap_usd=float(
                 os.getenv("BILLING_FREE_HOSTED_MODEL_HARD_CAP_USD", "1.0")
             ),

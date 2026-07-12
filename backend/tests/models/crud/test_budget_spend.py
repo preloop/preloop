@@ -54,3 +54,70 @@ def test_get_spend_multi(db_session, create_account):
 
     # The nonexistent entry shouldn't be mapped
     assert ("nonexistent", None, None, BudgetPeriod.daily, dt) not in result
+
+
+def test_upsert_spend_accumulates_null_subject_buckets(db_session, create_account):
+    """Account-level buckets (NULL subject_id) must accumulate into ONE row.
+
+    Regression: the bucket unique constraint treated NULLs as distinct, so
+    ON CONFLICT never fired and every request inserted a new row (staging had
+    ~15x row bloat). The constraint is now NULLS NOT DISTINCT.
+    """
+    from preloop.models.models.budget import BudgetSpendActivity
+
+    account = create_account()
+    dt = datetime(2026, 7, 12, 0, 0, 0, tzinfo=timezone.utc)
+
+    for _ in range(3):
+        crud_budget_spend.upsert_spend(
+            db_session,
+            account_id=account.id,
+            subject_type="account",
+            subject_id=None,
+            model_alias=None,
+            period=BudgetPeriod.daily,
+            period_start=dt,
+            spend_increment_usd=1.0,
+        )
+
+    rows = (
+        db_session.query(BudgetSpendActivity)
+        .filter(
+            BudgetSpendActivity.account_id == account.id,
+            BudgetSpendActivity.subject_type == "account",
+            BudgetSpendActivity.period == BudgetPeriod.daily,
+        )
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].spend_usd == 3.0
+
+
+def test_upsert_spend_accumulates_all_time_bucket(db_session, create_account):
+    """all_time buckets (NULL period_start) also accumulate into one row."""
+    from preloop.models.models.budget import BudgetSpendActivity
+
+    account = create_account()
+    for _ in range(2):
+        crud_budget_spend.upsert_spend(
+            db_session,
+            account_id=account.id,
+            subject_type="account",
+            subject_id=None,
+            model_alias=None,
+            period=BudgetPeriod.all_time,
+            period_start=None,
+            spend_increment_usd=2.5,
+        )
+
+    rows = (
+        db_session.query(BudgetSpendActivity)
+        .filter(
+            BudgetSpendActivity.account_id == account.id,
+            BudgetSpendActivity.subject_type == "account",
+            BudgetSpendActivity.period == BudgetPeriod.all_time,
+        )
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].spend_usd == 5.0
