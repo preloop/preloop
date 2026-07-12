@@ -106,6 +106,7 @@ def test_get_account_summary_aggregates_gateway_usage(db_session, test_user):
         account=account,
         start_date=now - timedelta(days=1),
         end_date=now + timedelta(days=1),
+        include_breakdown=True,
     )
 
     assert summary.total_requests == 2
@@ -233,6 +234,7 @@ def test_get_account_summary_preserves_legacy_flow_execution_sessions(
         account=account,
         start_date=now - timedelta(days=1),
         end_date=now + timedelta(days=1),
+        include_breakdown=True,
     )
 
     assert len(summary.usage_by_session) == 1

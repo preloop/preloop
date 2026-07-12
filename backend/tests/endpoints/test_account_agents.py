@@ -251,6 +251,132 @@ def test_account_agents_endpoint_lists_onboarded_agents(client, db_session, test
     assert item["model_gateway_configured"] is False
 
 
+def test_account_agents_list_batches_usage_and_enrichment_for_multiple_agents(
+    client, db_session, test_user
+):
+    """List enrichment should keep per-agent usage and enrollment fields for many agents."""
+    from preloop.models.crud.managed_agent import (
+        _usage_aggregate_for_principal,
+        _usage_aggregates_for_principals,
+    )
+
+    for index, source_id in enumerate(("workspace-a", "workspace-b"), start=1):
+        token_response = client.post(
+            "/api/v1/auth/runtime-sessions/token",
+            json={
+                "session_source_type": "claude_code",
+                "session_source_id": source_id,
+                "session_reference": f"claude-session-{source_id}",
+                "runtime_principal_name": f"Agent {source_id}",
+                "allowed_mcp_servers": [],
+            },
+        )
+        assert token_response.status_code == 201
+        agent = crud_managed_agent.get_by_source(
+            db_session,
+            account_id=str(test_user.account_id),
+            session_source_type="claude_code",
+            session_source_id=source_id,
+        )
+        assert agent is not None
+        runtime_session = crud_runtime_session.get_by_source(
+            db_session,
+            account_id=test_user.account_id,
+            session_source_type="claude_code",
+            session_source_id=source_id,
+        )
+        assert runtime_session is not None
+        crud_api_usage.log_gateway_request(
+            db_session,
+            endpoint="/openai/v1/responses",
+            method="POST",
+            status_code=200,
+            duration=0.1,
+            user_id=str(test_user.id),
+            account_id=str(test_user.account_id),
+            runtime_session_id=str(runtime_session.id),
+            model_alias=f"openai/gpt-{index}",
+            provider_name="openai",
+            prompt_tokens=10 * index,
+            completion_tokens=5 * index,
+            total_tokens=15 * index,
+            estimated_cost=0.1 * index,
+            runtime_principal_type="claude_code",
+            runtime_principal_id=source_id,
+            runtime_principal_name=f"Agent {source_id}",
+        )
+        crud_managed_agent_enrollment.create_for_agent(
+            db_session,
+            account_id=test_user.account_id,
+            agent_id=agent.id,
+            created_by_user_id=test_user.id,
+            enrollment_type="cli_managed_config",
+            adapter_key="claude_code",
+            status="active",
+            managed_config={
+                "mcp": {
+                    "preloop": {
+                        "type": "remote",
+                        "url": "https://preloop.example/mcp/v1",
+                    }
+                },
+                "model": f"preloop/openai/gpt-{index}",
+                "provider": {
+                    "preloop": {
+                        "options": {
+                            "baseURL": "https://preloop.example/openai/v1",
+                            "apiKey": "agt_secret",
+                        }
+                    }
+                },
+            },
+            validation_result={
+                "preloop_server_present": True,
+                "gateway_provider_ok": True,
+                "gateway_base_url_ok": True,
+                "gateway_token_ok": True,
+            },
+            commit=False,
+        )
+    db_session.commit()
+
+    principals = [
+        ("claude_code", "workspace-a"),
+        ("claude_code", "workspace-b"),
+    ]
+    batched = _usage_aggregates_for_principals(
+        db_session,
+        account_id=str(test_user.account_id),
+        principals=principals,
+    )
+    for principal in principals:
+        single = _usage_aggregate_for_principal(
+            db_session,
+            account_id=str(test_user.account_id),
+            principal_type=principal[0],
+            principal_id=principal[1],
+        )
+        assert batched[principal] == single
+
+    response = client.get("/api/v1/agents")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 2
+    items_by_source = {item["session_source_id"]: item for item in body["items"]}
+    assert items_by_source["workspace-a"]["total_requests"] == 1
+    assert items_by_source["workspace-a"]["estimated_cost"] == 0.1
+    assert items_by_source["workspace-a"]["latest_model_alias"] == "openai/gpt-1"
+    assert items_by_source["workspace-a"]["onboarding_state"] == "fully_onboarded"
+    assert items_by_source["workspace-a"]["configured_model_alias"] == "openai/gpt-1"
+    assert items_by_source["workspace-b"]["total_requests"] == 1
+    assert items_by_source["workspace-b"]["estimated_cost"] == 0.2
+    assert items_by_source["workspace-b"]["latest_model_alias"] == "openai/gpt-2"
+    assert items_by_source["workspace-b"]["onboarding_state"] == "fully_onboarded"
+    assert items_by_source["workspace-b"]["configured_model_alias"] == "openai/gpt-2"
+    assert "control_state" in items_by_source["workspace-a"]
+    assert "mcp_proxy_configured" in items_by_source["workspace-a"]
+
+
 def test_account_agents_endpoint_exposes_configured_model_alias(
     client, db_session, test_user
 ):

@@ -69,6 +69,46 @@ import type {
 // Global refresh promise to prevent concurrent refresh requests
 let refreshPromise: Promise<string | null> | null = null;
 
+// Short-TTL in-memory caches with single-flight dedupe for hot auth/bootstrap
+// endpoints. Invalidated on logout / auth-change so navigations reuse results
+// without serving stale identity or feature flags across sessions.
+const FEATURES_CACHE_TTL_MS = 45_000;
+const USER_PROFILE_CACHE_TTL_MS = 45_000;
+
+type TimedCacheEntry<T> = {
+  data: T;
+  expiresAt: number;
+};
+
+let featuresCache: TimedCacheEntry<FeaturesResponse> | null = null;
+let featuresInflight: Promise<FeaturesResponse> | null = null;
+let featuresEpoch = 0;
+let userProfileCache: TimedCacheEntry<UserProfile> | null = null;
+let userProfileInflight: Promise<UserProfile> | null = null;
+let userProfileEpoch = 0;
+
+export function invalidateApiCaches(): void {
+  featuresCache = null;
+  featuresInflight = null;
+  featuresEpoch += 1;
+  userProfileCache = null;
+  userProfileInflight = null;
+  userProfileEpoch += 1;
+  if (typeof sessionStorage !== 'undefined') {
+    try {
+      sessionStorage.removeItem('preloop.agents.gateway_summary.v1');
+      for (let i = sessionStorage.length - 1; i >= 0; i -= 1) {
+        const key = sessionStorage.key(i);
+        if (key?.startsWith('preloop.cost.previous_summary.v1:')) {
+          sessionStorage.removeItem(key);
+        }
+      }
+    } catch {
+      // ignore storage errors
+    }
+  }
+}
+
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', (event) => {
     // Notify the app when the accessToken is changed by another tab
@@ -77,6 +117,9 @@ if (typeof window !== 'undefined') {
         new CustomEvent('auth-change', { bubbles: true, composed: true })
       );
     }
+  });
+  window.addEventListener('auth-change', () => {
+    invalidateApiCaches();
   });
 }
 
@@ -1807,11 +1850,37 @@ export interface UserProfile {
 
 // Account
 export async function getUserProfile(): Promise<UserProfile> {
-  const response = await fetchWithAuth('/api/v1/auth/users/me');
-  if (!response.ok) {
-    throw new Error('Failed to fetch user profile');
+  const now = Date.now();
+  if (userProfileCache && userProfileCache.expiresAt > now) {
+    return userProfileCache.data;
   }
-  return response.json();
+  if (userProfileInflight) {
+    return userProfileInflight;
+  }
+
+  const epoch = userProfileEpoch;
+  userProfileInflight = (async () => {
+    try {
+      const response = await fetchWithAuth('/api/v1/auth/users/me');
+      if (!response.ok) {
+        throw new Error('Failed to fetch user profile');
+      }
+      const data = (await response.json()) as UserProfile;
+      if (epoch === userProfileEpoch) {
+        userProfileCache = {
+          data,
+          expiresAt: Date.now() + USER_PROFILE_CACHE_TTL_MS,
+        };
+      }
+      return data;
+    } finally {
+      if (epoch === userProfileEpoch) {
+        userProfileInflight = null;
+      }
+    }
+  })();
+
+  return userProfileInflight;
 }
 
 export async function getAccountDetails() {
@@ -1831,7 +1900,10 @@ export async function updateUserProfile(details: { full_name: string }) {
   if (!response.ok) {
     throw new Error('Failed to update user profile');
   }
-  return response.json();
+  const data = await response.json();
+  // Profile changed — drop cached /me so the next reader gets fresh data.
+  userProfileCache = null;
+  return data;
 }
 
 export async function changePassword(passwords: {
@@ -3455,11 +3527,37 @@ export interface FeaturesResponse {
 }
 
 export async function getFeatures(): Promise<FeaturesResponse> {
-  const response = await fetchPublic('/api/v1/features');
-  if (!response.ok) {
-    throw new Error('Failed to fetch features');
+  const now = Date.now();
+  if (featuresCache && featuresCache.expiresAt > now) {
+    return featuresCache.data;
   }
-  return response.json();
+  if (featuresInflight) {
+    return featuresInflight;
+  }
+
+  const epoch = featuresEpoch;
+  featuresInflight = (async () => {
+    try {
+      const response = await fetchPublic('/api/v1/features');
+      if (!response.ok) {
+        throw new Error('Failed to fetch features');
+      }
+      const data = (await response.json()) as FeaturesResponse;
+      if (epoch === featuresEpoch) {
+        featuresCache = {
+          data,
+          expiresAt: Date.now() + FEATURES_CACHE_TTL_MS,
+        };
+      }
+      return data;
+    } finally {
+      if (epoch === featuresEpoch) {
+        featuresInflight = null;
+      }
+    }
+  })();
+
+  return featuresInflight;
 }
 
 // Account Organization API

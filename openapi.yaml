@@ -572,10 +572,12 @@ paths:
       tags:
       - Auth
       summary: Get Api Usage
-      description: "Get API usage statistics for the current user.\n\nArgs:\n    start_date:\
-        \ Optional start date for filtering.\n    end_date: Optional end date for\
-        \ filtering.\n    current_user: The current authenticated user.\n\nReturns:\n\
-        \    API usage statistics."
+      description: "Get API usage statistics for the current user.\n\nAggregates in\
+        \ SQL (not in Python). When neither date is provided, the\nwindow defaults\
+        \ to the last 30 days. Endpoint breakdown is capped to\nthe top 50 endpoints\
+        \ by request count.\n\nArgs:\n    start_date: Optional start date for filtering.\n\
+        \    end_date: Optional end date for filtering.\n    current_user: The current\
+        \ authenticated user.\n\nReturns:\n    API usage statistics."
       operationId: get_api_usage_api_v1_auth_api_usage_get
       security:
       - OAuth2PasswordBearer: []
@@ -726,8 +728,14 @@ paths:
         required: false
         schema:
           type: boolean
-          default: true
+          description: When true, include per-model/flow/session/tool/day breakdowns.
+            Default false for lightweight card/summary callers; cost views should
+            pass true (or use /cost/summary).
+          default: false
           title: Include Breakdown
+        description: When true, include per-model/flow/session/tool/day breakdowns.
+          Default false for lightweight card/summary callers; cost views should pass
+          true (or use /cost/summary).
       responses:
         '200':
           description: Successful Response

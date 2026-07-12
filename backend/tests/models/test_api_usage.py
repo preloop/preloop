@@ -559,3 +559,136 @@ def test_get_gateway_usage_by_model_strictly_isolates_runtime_session(
     assert sibling_result[0]["completion_tokens"] == 25
     assert sibling_result[0]["total_tokens"] == 75
     assert sibling_result[0]["estimated_cost"] == 0.5
+
+
+def test_get_statistics_for_user_aggregates_in_sql(
+    db_session, create_account, create_user
+):
+    """SQL aggregation returns totals, date buckets, issue actions, endpoints."""
+    account = create_account()
+    user = create_user(account=account)
+    now = datetime.now(timezone.utc)
+
+    crud_api_usage.log_request(
+        db_session,
+        username=user.username,
+        endpoint="/api/v1/issues",
+        method="POST",
+        status_code=201,
+        duration=0.1,
+        action_type="create_issue",
+    )
+    crud_api_usage.log_request(
+        db_session,
+        username=user.username,
+        endpoint="/api/v1/issues",
+        method="PATCH",
+        status_code=200,
+        duration=0.2,
+        action_type="update_issue",
+    )
+    crud_api_usage.log_request(
+        db_session,
+        username=user.username,
+        endpoint="/api/v1/issues/1/close",
+        method="POST",
+        status_code=200,
+        duration=0.15,
+        action_type="close_issue",
+    )
+    for _ in range(3):
+        crud_api_usage.log_request(
+            db_session,
+            username=user.username,
+            endpoint="/api/v1/search",
+            method="GET",
+            status_code=200,
+            duration=0.05,
+            action_type="search",
+        )
+
+    stats = crud_api_usage.get_statistics_for_user(
+        db_session,
+        username=user.username,
+        start_date=now - timedelta(days=1),
+        end_date=now + timedelta(days=1),
+    )
+
+    assert stats["total_requests"] == 6
+    assert stats["issues_created"] == 1
+    assert stats["issues_updated"] == 1
+    assert stats["issues_closed"] == 1
+    assert stats["requests_by_endpoint"]["/api/v1/search"] == 3
+    assert stats["requests_by_endpoint"]["/api/v1/issues"] == 2
+    assert sum(stats["requests_by_date"].values()) == 6
+    today = now.date().isoformat()
+    assert today in stats["requests_by_date"]
+
+
+def test_get_statistics_for_user_caps_endpoints(
+    db_session, create_account, create_user
+):
+    """requests_by_endpoint is limited to top N by count."""
+    account = create_account()
+    user = create_user(account=account)
+    now = datetime.now(timezone.utc)
+
+    for i in range(5):
+        for _ in range(i + 1):
+            crud_api_usage.log_request(
+                db_session,
+                username=user.username,
+                endpoint=f"/api/v1/ep-{i}",
+                method="GET",
+                status_code=200,
+                duration=0.01,
+            )
+
+    stats = crud_api_usage.get_statistics_for_user(
+        db_session,
+        username=user.username,
+        start_date=now - timedelta(days=1),
+        end_date=now + timedelta(days=1),
+        endpoint_limit=2,
+    )
+
+    assert len(stats["requests_by_endpoint"]) == 2
+    assert list(stats["requests_by_endpoint"].keys()) == [
+        "/api/v1/ep-4",
+        "/api/v1/ep-3",
+    ]
+    assert stats["total_requests"] == 15
+
+
+def test_get_statistics_for_user_defaults_to_last_30_days(
+    db_session, create_account, create_user
+):
+    """With no dates, only rows from the last 30 days are counted."""
+    account = create_account()
+    user = create_user(account=account)
+
+    recent = crud_api_usage.log_request(
+        db_session,
+        username=user.username,
+        endpoint="/api/v1/recent",
+        method="GET",
+        status_code=200,
+        duration=0.01,
+    )
+    old = crud_api_usage.log_request(
+        db_session,
+        username=user.username,
+        endpoint="/api/v1/old",
+        method="GET",
+        status_code=200,
+        duration=0.01,
+    )
+    # Force the second row outside the default window.
+    old.timestamp = datetime.now(timezone.utc) - timedelta(days=45)
+    db_session.commit()
+
+    stats = crud_api_usage.get_statistics_for_user(db_session, username=user.username)
+
+    assert stats["total_requests"] == 1
+    assert stats["requests_by_endpoint"] == {"/api/v1/recent": 1}
+    assert recent.id is not None

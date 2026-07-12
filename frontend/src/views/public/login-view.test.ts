@@ -2,6 +2,7 @@ import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 import './login-view';
 import { LoginView } from './login-view';
+import { invalidateApiCaches } from '../../api';
 
 describe('LoginView', () => {
   let element: LoginView;
@@ -36,6 +37,7 @@ describe('LoginView', () => {
     fetchStub.restore();
     // Clean up BRAND_CONFIG
     delete (window as any).BRAND_CONFIG;
+    invalidateApiCaches();
   });
 
   it('should render the login form', () => {

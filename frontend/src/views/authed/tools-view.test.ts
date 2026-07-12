@@ -3,6 +3,7 @@ import sinon from 'sinon';
 
 import './tools-view';
 import type { ToolsView } from './tools-view';
+import { invalidateApiCaches } from '../../api';
 
 describe('ToolsView (approvals + conditions)', () => {
   let fetchStub: sinon.SinonStub;
@@ -121,6 +122,7 @@ describe('ToolsView (approvals + conditions)', () => {
   afterEach(() => {
     fetchStub.restore();
     localStorage.clear();
+    invalidateApiCaches();
   });
 
   it('does not create tool configuration twice when adding a rule immediately after toggling enabled', async () => {
@@ -263,6 +265,7 @@ describe('ToolsView – filter persistence', () => {
   afterEach(() => {
     fetchStub.restore();
     localStorage.clear();
+    invalidateApiCaches();
   });
 
   it('defaults to "available" filter when no saved preference', async () => {
@@ -435,6 +438,7 @@ describe('ToolsView – starter policy suggestions', () => {
     fetchStub.restore();
     localStorage.clear();
     window.history.replaceState({}, '', window.location.pathname);
+    invalidateApiCaches();
   });
 
   function makeServer(

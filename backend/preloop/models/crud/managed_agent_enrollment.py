@@ -31,6 +31,68 @@ class CRUDManagedAgentEnrollment(CRUDBase[ManagedAgentEnrollment]):
             .first()
         )
 
+    def list_latest_by_agents(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        agent_ids: list[str],
+    ) -> dict[str, dict[str, Optional[ManagedAgentEnrollment]]]:
+        """Return latest enrollment picks for many agents in one query.
+
+        Each agent id maps to a dict with:
+        - ``cli_managed_config``: latest CLI managed-config enrollment
+        - ``runtime_plugin_control``: latest runtime plugin control enrollment
+        - ``any``: latest enrollment of any type
+
+        Args:
+            db: Active database session.
+            account_id: Owning account identifier.
+            agent_ids: Managed agent ids to load enrollments for.
+
+        Returns:
+            Mapping from agent id string to the enrollment picks above.
+        """
+        normalized_ids = [str(agent_id) for agent_id in agent_ids]
+        if not normalized_ids:
+            return {}
+
+        rows = (
+            db.query(self.model)
+            .filter(
+                self.model.account_id == account_id,
+                self.model.managed_agent_id.in_(normalized_ids),
+            )
+            .order_by(self.model.created_at.desc())
+            .all()
+        )
+
+        result: dict[str, dict[str, Optional[ManagedAgentEnrollment]]] = {
+            agent_id: {
+                "cli_managed_config": None,
+                "runtime_plugin_control": None,
+                "any": None,
+            }
+            for agent_id in normalized_ids
+        }
+        for row in rows:
+            bucket = result.get(str(row.managed_agent_id))
+            if bucket is None:
+                continue
+            if bucket["any"] is None:
+                bucket["any"] = row
+            if (
+                row.enrollment_type == "cli_managed_config"
+                and bucket["cli_managed_config"] is None
+            ):
+                bucket["cli_managed_config"] = row
+            if (
+                row.enrollment_type == "runtime_plugin_control"
+                and bucket["runtime_plugin_control"] is None
+            ):
+                bucket["runtime_plugin_control"] = row
+        return result
+
     def list_for_agent(
         self, db: Session, *, account_id: str, agent_id: str
     ) -> list[dict[str, Any]]:

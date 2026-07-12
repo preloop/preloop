@@ -329,15 +329,14 @@ def _ai_model_meta_lookup(ai_model: Any, *path: str) -> Optional[str]:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
-def _managed_agent_configured_model_id(
-    db: Session,
+def _managed_agent_configured_model_id_from_models(
+    models: list[Any],
     *,
-    account_id: str,
     agent_id: str,
     configured_model_alias: Optional[str],
 ) -> Optional[str]:
+    """Resolve configured model id from a preloaded account model list."""
     normalized_alias = _normalize_gateway_model_alias(configured_model_alias)
-    models = crud_ai_model.get_by_account(db, account_id=account_id)
 
     best_match: Optional[Any] = None
     for ai_model in models:
@@ -369,6 +368,21 @@ def _managed_agent_configured_model_id(
     return None
 
 
+def _managed_agent_configured_model_id(
+    db: Session,
+    *,
+    account_id: str,
+    agent_id: str,
+    configured_model_alias: Optional[str],
+) -> Optional[str]:
+    models = crud_ai_model.get_by_account(db, account_id=account_id)
+    return _managed_agent_configured_model_id_from_models(
+        models,
+        agent_id=agent_id,
+        configured_model_alias=configured_model_alias,
+    )
+
+
 def _managed_agent_binding_summary(binding: Any) -> ManagedAgentModelBindingSummary:
     """Normalize one explicit binding row for API responses."""
     ai_model = getattr(binding, "ai_model", None)
@@ -388,27 +402,20 @@ def _managed_agent_binding_summary(binding: Any) -> ManagedAgentModelBindingSumm
     )
 
 
-def _managed_agent_configured_models(
-    db: Session,
+def _managed_agent_configured_models_from_cache(
     *,
-    account_id: str,
     agent_id: str,
+    binding_rows: list[Any],
     latest_enrollment: Optional[dict],
+    account_models: list[Any],
 ) -> list[ManagedAgentModelBindingSummary]:
-    """Return configured-model bindings with compatibility fallback."""
-    binding_rows = crud_managed_agent_ai_model_binding.list_for_agent(
-        db,
-        account_id=account_id,
-        agent_id=agent_id,
-        include_inactive=False,
-    )
+    """Return configured-model bindings using preloaded rows and models."""
     if binding_rows:
         return [_managed_agent_binding_summary(binding) for binding in binding_rows]
 
     configured_alias = _managed_agent_configured_model_alias(latest_enrollment)
-    configured_model_id = _managed_agent_configured_model_id(
-        db,
-        account_id=account_id,
+    configured_model_id = _managed_agent_configured_model_id_from_models(
+        account_models,
         agent_id=agent_id,
         configured_model_alias=configured_alias,
     )
@@ -417,10 +424,10 @@ def _managed_agent_configured_models(
 
     ai_model = None
     if configured_model_id is not None:
-        try:
-            ai_model = crud_ai_model.get(db, id=configured_model_id)
-        except Exception:
-            ai_model = None
+        for candidate in account_models:
+            if str(candidate.id) == configured_model_id:
+                ai_model = candidate
+                break
 
     return [
         ManagedAgentModelBindingSummary(
@@ -436,6 +443,29 @@ def _managed_agent_configured_models(
             ai_model_name=getattr(ai_model, "name", None),
         )
     ]
+
+
+def _managed_agent_configured_models(
+    db: Session,
+    *,
+    account_id: str,
+    agent_id: str,
+    latest_enrollment: Optional[dict],
+) -> list[ManagedAgentModelBindingSummary]:
+    """Return configured-model bindings with compatibility fallback."""
+    binding_rows = crud_managed_agent_ai_model_binding.list_for_agent(
+        db,
+        account_id=account_id,
+        agent_id=agent_id,
+        include_inactive=False,
+    )
+    account_models = crud_ai_model.get_by_account(db, account_id=account_id)
+    return _managed_agent_configured_models_from_cache(
+        agent_id=agent_id,
+        binding_rows=binding_rows,
+        latest_enrollment=latest_enrollment,
+        account_models=account_models,
+    )
 
 
 def _managed_agent_live_validation_state(
@@ -598,87 +628,117 @@ def _managed_agent_control_fields(
     }
 
 
+def _enrich_managed_agent_summaries(
+    db: Session, *, account_id: str, summaries: list[dict]
+) -> list[dict]:
+    """Enrich many managed-agent summaries with enrollment and model fields.
+
+    Loads enrollments, model bindings, and account AI models in batch so list
+    endpoints avoid per-agent round trips while preserving the same response
+    fields as :func:`_enrich_managed_agent_summary`.
+
+    Args:
+        db: Active database session.
+        account_id: Owning account identifier.
+        summaries: Raw managed-agent summary dicts to enrich in place.
+
+    Returns:
+        The same summaries list with enrichment fields applied.
+    """
+    if not summaries:
+        return summaries
+
+    agent_ids = [str(summary["id"]) for summary in summaries]
+    enrollments_by_agent = crud_managed_agent_enrollment.list_latest_by_agents(
+        db, account_id=account_id, agent_ids=agent_ids
+    )
+    bindings_by_agent = crud_managed_agent_ai_model_binding.list_for_agents(
+        db,
+        account_id=account_id,
+        agent_ids=agent_ids,
+        include_inactive=False,
+    )
+    account_models = crud_ai_model.get_by_account(db, account_id=account_id)
+
+    for summary in summaries:
+        agent_id = str(summary["id"])
+        picks = enrollments_by_agent.get(
+            agent_id,
+            {
+                "cli_managed_config": None,
+                "runtime_plugin_control": None,
+                "any": None,
+            },
+        )
+        cli_enrollment = picks.get("cli_managed_config")
+        control_enrollment = picks.get("runtime_plugin_control")
+        latest_enrollment = cli_enrollment or control_enrollment or picks.get("any")
+        latest_enrollment_summary = (
+            crud_managed_agent_enrollment._to_summary(latest_enrollment)
+            if latest_enrollment is not None
+            else None
+        )
+        control_enrollment_summary = (
+            crud_managed_agent_enrollment._to_summary(control_enrollment)
+            if control_enrollment is not None
+            else None
+        )
+        (
+            summary["mcp_proxy_configured"],
+            summary["model_gateway_configured"],
+            summary["onboarding_state"],
+        ) = _managed_agent_onboarding_flags(latest_enrollment_summary)
+        (
+            summary["live_validation_supported"],
+            summary["live_validation_passed"],
+            summary["live_validation_status"],
+            summary["last_validated_at"],
+        ) = _managed_agent_live_validation_state(latest_enrollment_summary)
+        summary["configured_model_alias"] = _managed_agent_configured_model_alias(
+            latest_enrollment_summary
+        )
+        summary["configured_models"] = [
+            binding.model_dump(mode="json")
+            for binding in _managed_agent_configured_models_from_cache(
+                agent_id=agent_id,
+                binding_rows=bindings_by_agent.get(agent_id, []),
+                latest_enrollment=latest_enrollment_summary,
+                account_models=account_models,
+            )
+        ]
+        primary_binding = next(
+            (
+                binding
+                for binding in summary["configured_models"]
+                if binding.get("is_primary")
+            ),
+            None,
+        )
+        if primary_binding and primary_binding.get("gateway_alias"):
+            summary["configured_model_alias"] = primary_binding["gateway_alias"]
+        summary["configured_model_id"] = _managed_agent_configured_model_id_from_models(
+            account_models,
+            agent_id=agent_id,
+            configured_model_alias=summary["configured_model_alias"],
+        )
+        if primary_binding and primary_binding.get("ai_model_id"):
+            summary["configured_model_id"] = primary_binding["ai_model_id"]
+        summary.update(
+            _managed_agent_control_fields(
+                summary,
+                latest_enrollment_summary,
+                control_enrollment_summary,
+            )
+        )
+    return summaries
+
+
 def _enrich_managed_agent_summary(
     db: Session, *, account_id: str, summary: dict
 ) -> dict:
-    cli_enrollment = crud_managed_agent_enrollment.get_latest_for_agent_by_type(
-        db,
-        account_id=account_id,
-        agent_id=summary["id"],
-        enrollment_type="cli_managed_config",
-    )
-    control_enrollment = crud_managed_agent_enrollment.get_latest_for_agent_by_type(
-        db,
-        account_id=account_id,
-        agent_id=summary["id"],
-        enrollment_type="runtime_plugin_control",
-    )
-    latest_enrollment = (
-        cli_enrollment
-        or control_enrollment
-        or crud_managed_agent_enrollment.get_latest_for_agent(
-            db, account_id=account_id, agent_id=summary["id"]
-        )
-    )
-    latest_enrollment_summary = (
-        crud_managed_agent_enrollment._to_summary(latest_enrollment)
-        if latest_enrollment is not None
-        else None
-    )
-    control_enrollment_summary = (
-        crud_managed_agent_enrollment._to_summary(control_enrollment)
-        if control_enrollment is not None
-        else None
-    )
-    (
-        summary["mcp_proxy_configured"],
-        summary["model_gateway_configured"],
-        summary["onboarding_state"],
-    ) = _managed_agent_onboarding_flags(latest_enrollment_summary)
-    (
-        summary["live_validation_supported"],
-        summary["live_validation_passed"],
-        summary["live_validation_status"],
-        summary["last_validated_at"],
-    ) = _managed_agent_live_validation_state(latest_enrollment_summary)
-    summary["configured_model_alias"] = _managed_agent_configured_model_alias(
-        latest_enrollment_summary
-    )
-    summary["configured_models"] = [
-        binding.model_dump(mode="json")
-        for binding in _managed_agent_configured_models(
-            db,
-            account_id=account_id,
-            agent_id=summary["id"],
-            latest_enrollment=latest_enrollment_summary,
-        )
-    ]
-    primary_binding = next(
-        (
-            binding
-            for binding in summary["configured_models"]
-            if binding.get("is_primary")
-        ),
-        None,
-    )
-    if primary_binding and primary_binding.get("gateway_alias"):
-        summary["configured_model_alias"] = primary_binding["gateway_alias"]
-    summary["configured_model_id"] = _managed_agent_configured_model_id(
-        db,
-        account_id=account_id,
-        agent_id=summary["id"],
-        configured_model_alias=summary["configured_model_alias"],
-    )
-    if primary_binding and primary_binding.get("ai_model_id"):
-        summary["configured_model_id"] = primary_binding["ai_model_id"]
-    summary.update(
-        _managed_agent_control_fields(
-            summary,
-            latest_enrollment_summary,
-            control_enrollment_summary,
-        )
-    )
-    return summary
+    return _enrich_managed_agent_summaries(
+        db, account_id=account_id, summaries=[summary]
+    )[0]
 
 
 def _build_managed_agent_detail_response(
@@ -872,7 +932,14 @@ def get_account_gateway_usage_summary(
     start_date: Optional[datetime] = Query(None),
     end_date: Optional[datetime] = Query(None),
     runtime_principal_id: Optional[str] = Query(None),
-    include_breakdown: bool = Query(True),
+    include_breakdown: bool = Query(
+        False,
+        description=(
+            "When true, include per-model/flow/session/tool/day breakdowns. "
+            "Default false for lightweight card/summary callers; cost views "
+            "should pass true (or use /cost/summary)."
+        ),
+    ),
 ):
     """Get account-scoped model gateway usage summary."""
     return ModelGatewayUsageService(db).get_account_summary(
@@ -970,12 +1037,11 @@ def list_account_managed_agents(
         total=result["total"],
         limit=limit,
         offset=offset,
-        items=[
-            _enrich_managed_agent_summary(
-                db, account_id=str(account.id), summary=dict(item)
-            )
-            for item in result["items"]
-        ],
+        items=_enrich_managed_agent_summaries(
+            db,
+            account_id=str(account.id),
+            summaries=[dict(item) for item in result["items"]],
+        ),
     )
 
 
@@ -997,12 +1063,11 @@ def list_account_controllable_agents(
         limit=limit,
         offset=offset,
     )
-    items = [
-        _enrich_managed_agent_summary(
-            db, account_id=str(account.id), summary=dict(item)
-        )
-        for item in result["items"]
-    ]
+    items = _enrich_managed_agent_summaries(
+        db,
+        account_id=str(account.id),
+        summaries=[dict(item) for item in result["items"]],
+    )
     items = [
         item
         for item in items

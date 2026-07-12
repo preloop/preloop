@@ -6,7 +6,7 @@ from datetime import datetime
 # Use TYPE_CHECKING to avoid circular imports
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import CheckConstraint, ForeignKey, func
+from sqlalchemy import CheckConstraint, ForeignKey, Index, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Boolean, DateTime, Float, Integer, String
@@ -154,6 +154,21 @@ class ApiUsage(Base):
             "usage_source IS NULL OR usage_source IN "
             "('provider', 'estimated', 'partial')",
             name="ck_api_usage_usage_source",
+        ),
+        Index(
+            "ix_api_usage_account_action_ts",
+            "account_id",
+            "action_type",
+            "timestamp",
+            postgresql_ops={"timestamp": "DESC"},
+        ),
+        Index(
+            "ix_api_usage_account_principal_ts",
+            "account_id",
+            "runtime_principal_type",
+            "runtime_principal_id",
+            "timestamp",
+            postgresql_ops={"timestamp": "DESC"},
         ),
     )
 

@@ -73,7 +73,7 @@ export class ToolsView extends LitElement {
   @state() private error: string | null = null;
   @state() private isAddingMCPServer = false;
   @state() private editingMCPServer: MCPServer | null = null;
-  @state() private currentUser: { id: string } | null = null;
+  @state() private currentUser: { id?: string } | null = null;
   @state() private showSetupDialog = false;
   @state() private features: { [key: string]: boolean | string[] } = {};
   @state() private filterText = '';
@@ -775,6 +775,8 @@ export class ToolsView extends LitElement {
       this.mcpServers = servers;
       this.approvalPolicies = policies;
       this.hasDefaultAIModel = aiModels.some((model) => model.is_default);
+      // Tool usage stats are intentionally async and must not block the tools
+      // list — kick off after list data is assigned so first paint stays fast.
       void this._loadToolUsageStats();
 
       if (

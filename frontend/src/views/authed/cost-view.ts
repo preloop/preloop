@@ -595,14 +595,15 @@ export class CostView extends AuthedElement {
 
   // Date-range selector change handler. Defined as a bound arrow property so
   // `this` is always the element regardless of how Lit invokes the listener.
-  // Updates the selected range, persists it, and re-fetches the summary so the
-  // KPIs and every tab reflect the new window (see C).
+  // Clears previous-period comparison before reload so a stale delta from
+  // another range is never shown (see C).
   private handleRangeChange = (event: Event) => {
     const value = (event.target as HTMLSelectElement).value as DateRangePreset;
     if (!DATE_RANGE_PRESETS.includes(value) || value === this.selectedRange) {
       return;
     }
     this.selectedRange = value;
+    this.previousRangeSummary = null;
     this.persistDateRange(value);
     void this.load();
   };
@@ -616,16 +617,15 @@ export class CostView extends AuthedElement {
     // time each tab is shown (see D).
     this.loadedTabs = new Set<string>();
     try {
-      const [summary, aiModels, features, previousSummary] = await Promise.all([
+      // Current-period summary drives first paint. Previous-period comparison
+      // is secondary and loads in the background (backend has no single-call
+      // delta endpoint).
+      const [summary, aiModels, features] = await Promise.all([
         getCostAnalyticsSummary(this.getDateParams()),
         getAIModels(),
         getFeatures().catch(() => ({ features: {} })),
-        getCostAnalyticsSummary(
-          this.getPreviousDateParams(this.selectedRange)
-        ).catch(() => null),
       ]);
       this.summary = summary;
-      this.previousRangeSummary = previousSummary;
       this.featureFlags = features.features || {};
       await this.loadBudgetPolicies();
       this.aiModels = aiModels;
@@ -636,6 +636,7 @@ export class CostView extends AuthedElement {
       } else {
         this.pricingOverrides = [];
       }
+      void this.loadPreviousRangeSummary();
       // Per-tab auxiliary data (owner map for Users, flag count for Tools) is
       // fetched lazily via handleTabShow when a tab is first opened, not up
       // front, to keep the initial load fast (see D).
@@ -646,6 +647,50 @@ export class CostView extends AuthedElement {
           : 'Failed to load cost analytics';
     } finally {
       this.loading = false;
+    }
+  }
+
+  private async loadPreviousRangeSummary(): Promise<void> {
+    const range = this.selectedRange;
+    const cacheKey = `preloop.cost.previous_summary.v1:${range}`;
+    try {
+      const cached = sessionStorage.getItem(cacheKey);
+      if (cached) {
+        const parsed = JSON.parse(cached) as {
+          cachedAt: number;
+          data: CostAnalyticsSummaryResponse;
+        };
+        if (
+          parsed?.data &&
+          Date.now() - parsed.cachedAt < 120_000 &&
+          !this.previousRangeSummary
+        ) {
+          this.previousRangeSummary = parsed.data;
+        }
+      }
+    } catch {
+      // ignore cache read errors
+    }
+
+    try {
+      const previousSummary = await getCostAnalyticsSummary(
+        this.getPreviousDateParams(range)
+      );
+      // Ignore if the user changed range while this request was in flight.
+      if (this.selectedRange !== range) return;
+      this.previousRangeSummary = previousSummary;
+      try {
+        sessionStorage.setItem(
+          cacheKey,
+          JSON.stringify({ cachedAt: Date.now(), data: previousSummary })
+        );
+      } catch {
+        // ignore cache write errors
+      }
+    } catch {
+      if (this.selectedRange === range && !this.previousRangeSummary) {
+        this.previousRangeSummary = null;
+      }
     }
   }
 

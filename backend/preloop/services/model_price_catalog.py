@@ -126,7 +126,7 @@ def load_catalog(path: Optional[Path] = None, *, force: bool = False) -> bool:
                     "after registration",
                     sample_key,
                 )
-        except Exception:
+        except Exception:  # noqa: BLE001 - litellm.register_model may reject bad pricing
             logger.exception("Failed to register model price catalog with litellm")
             return False
 

@@ -136,8 +136,12 @@ class ModelGatewayEventEmitter:
 
                 try:
                     run_async(self._publish_to_nats(event))
-                except Exception:
-                    pass
+                except Exception:  # noqa: BLE001 - sync NATS publish is best-effort
+                    logger.debug(
+                        "Failed to publish gateway activity event to NATS "
+                        "(sync fallback path)",
+                        exc_info=True,
+                    )
 
         if usage.account_id:
             emit_account_event(

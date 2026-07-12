@@ -41,7 +41,7 @@ class ModelGatewayUsageService:
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
         runtime_principal_id: Optional[str] = None,
-        include_breakdown: bool = True,
+        include_breakdown: bool = False,
         exclude_retries: bool = False,
     ) -> AccountGatewayUsageSummaryResponse:
         start_date, end_date = self._normalize_period(start_date, end_date)
