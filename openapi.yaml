@@ -567,49 +567,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/auth/api-keys/debug:
-    get:
-      tags:
-      - Auth
-      summary: Debug Api Keys
-      description: "Debug endpoint to get API keys with their values (admin only).\n\
-        \nArgs:\n    username: The username to get keys for\n    api_key: Optional\
-        \ specific API key to look up\n    current_user: The current authenticated\
-        \ user.\n\nReturns:\n    List of API keys with their values."
-      operationId: debug_api_keys_api_v1_auth_api_keys_debug_get
-      security:
-      - OAuth2PasswordBearer: []
-      parameters:
-      - name: username
-        in: query
-        required: true
-        schema:
-          type: string
-          title: Username
-      - name: api_key
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Api Key
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/ApiKeyResponse'
-                title: Response Debug Api Keys Api V1 Auth Api Keys Debug Get
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/auth/api-usage:
     get:
       tags:

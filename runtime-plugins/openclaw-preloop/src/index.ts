@@ -110,15 +110,36 @@ type OperatorCommand = {
   };
 };
 
+/** Reconnect backoff bounds and heartbeat cadence (mirror the Python client). */
+const RECONNECT_BASE_DELAY_MS = 2_000;
+const RECONNECT_MAX_DELAY_MS = 30_000;
+const HEARTBEAT_INTERVAL_MS = 30_000;
+
 export class PreloopOpenClawPlugin {
   runtime = "openclaw";
   private controlConfig?: ControlConfig;
   private socket?: WebSocket;
+  private openclawRuntime?: OpenClawRuntime;
+  private stopped = false;
+  private reconnectAttempts = 0;
+  private reconnectTimer?: ReturnType<typeof setTimeout>;
+  private heartbeatTimer?: ReturnType<typeof setInterval>;
+  private logger?: (message: string) => void;
 
   constructor(
     private readonly configPath?: string,
     private readonly fetchImpl?: FetchLike,
   ) {}
+
+  setLogger(logger: (message: string) => void): void {
+    this.logger = logger;
+  }
+
+  private log(message: string): void {
+    if (this.logger) {
+      this.logger(message);
+    }
+  }
 
   configure(config: ControlConfig): void {
     this.controlConfig = config;
@@ -158,13 +179,41 @@ export class PreloopOpenClawPlugin {
   }
 
   async start(openclawRuntime?: OpenClawRuntime): Promise<void> {
+    this.stopped = false;
+    this.openclawRuntime = openclawRuntime;
+    // Resolve config once up front so a bad config surfaces to the caller
+    // (register() logs it) instead of being retried forever.
+    this.controlConfig = this.controlConfig ?? this.loadConfig();
+    this.connect();
+  }
+
+  private connect(): void {
+    if (this.stopped) {
+      return;
+    }
     const config = this.controlConfig ?? this.loadConfig();
     const wsUrl = new URL(config.control_ws_url!);
+    // Note: Node's global WebSocket has no header option, so the durable
+    // bearer token is passed as a query param. The backend accepts this form.
     wsUrl.searchParams.set("token", config.bearer_token!);
-    this.socket = new WebSocket(wsUrl);
 
-    this.socket.addEventListener("open", () => {
-      this.socket?.send(
+    let socket: WebSocket;
+    try {
+      socket = new WebSocket(wsUrl);
+    } catch (error) {
+      this.log(
+        `Preloop Agent Control connect failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      this.scheduleReconnect();
+      return;
+    }
+    this.socket = socket;
+
+    socket.addEventListener("open", () => {
+      this.reconnectAttempts = 0;
+      socket.send(
         JSON.stringify({
           type: "presence",
           name: "capabilities",
@@ -186,13 +235,33 @@ export class PreloopOpenClawPlugin {
           },
         }),
       );
+      this.startHeartbeat(config);
     });
 
-    this.socket.addEventListener("message", async (event) => {
-      const command = JSON.parse(String(event.data)) as OperatorCommand;
+    socket.addEventListener("message", async (event) => {
+      let command: OperatorCommand;
       try {
-        const result = await this.dispatch(openclawRuntime, command);
-        this.socket?.send(
+        command = JSON.parse(String(event.data)) as OperatorCommand;
+      } catch (error) {
+        // Malformed frame: report it rather than throwing an unhandled
+        // rejection out of the async listener.
+        socket.send(
+          JSON.stringify({
+            type: "status",
+            name: "command_error",
+            payload: {
+              status: "failed",
+              error: `invalid_json: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            },
+          }),
+        );
+        return;
+      }
+      try {
+        const result = await this.dispatch(this.openclawRuntime, command);
+        socket.send(
           JSON.stringify({
             type: "status",
             name: "command_result",
@@ -206,7 +275,7 @@ export class PreloopOpenClawPlugin {
           }),
         );
       } catch (error) {
-        this.socket?.send(
+        socket.send(
           JSON.stringify({
             type: "status",
             name: "command_error",
@@ -220,9 +289,74 @@ export class PreloopOpenClawPlugin {
         );
       }
     });
+
+    const onClose = (): void => {
+      this.stopHeartbeat();
+      if (this.socket === socket) {
+        this.socket = undefined;
+      }
+      this.scheduleReconnect();
+    };
+    socket.addEventListener("close", onClose);
+    socket.addEventListener("error", () => {
+      // 'error' is followed by 'close' in the WS lifecycle; log and let
+      // onClose drive the reconnect so we don't schedule twice.
+      this.log("Preloop Agent Control websocket error");
+    });
+  }
+
+  private scheduleReconnect(): void {
+    if (this.stopped || this.reconnectTimer) {
+      return;
+    }
+    const delay = Math.min(
+      RECONNECT_MAX_DELAY_MS,
+      RECONNECT_BASE_DELAY_MS * 2 ** this.reconnectAttempts,
+    );
+    this.reconnectAttempts += 1;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
+      this.connect();
+    }, delay);
+    // Don't keep the process alive solely for the reconnect timer.
+    (this.reconnectTimer as { unref?: () => void }).unref?.();
+  }
+
+  private startHeartbeat(config: ControlConfig): void {
+    this.stopHeartbeat();
+    this.heartbeatTimer = setInterval(() => {
+      if (!this.socket || this.socket.readyState !== this.socket.OPEN) {
+        return;
+      }
+      this.socket.send(
+        JSON.stringify({
+          type: "status",
+          name: "heartbeat",
+          message_id: randomUUID(),
+          payload: {
+            status: "online",
+            runtime_principal_id: config.runtime_principal_id,
+          },
+        }),
+      );
+    }, HEARTBEAT_INTERVAL_MS);
+    (this.heartbeatTimer as { unref?: () => void }).unref?.();
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = undefined;
+    }
   }
 
   stop(): void {
+    this.stopped = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
+    this.stopHeartbeat();
     this.socket?.close();
     this.socket = undefined;
   }
@@ -471,6 +605,11 @@ export function register(api: {
   };
 }): void {
   const instance = new PreloopOpenClawPlugin();
+  if (api.logger?.warn || api.logger?.error) {
+    instance.setLogger((message) =>
+      (api.logger?.warn ?? api.logger?.error)?.(message),
+    );
+  }
   if (api.pluginConfig && Object.keys(api.pluginConfig).length > 0) {
     instance.configure(api.pluginConfig as ControlConfig);
   }

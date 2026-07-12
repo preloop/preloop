@@ -8,6 +8,7 @@ from fastapi import APIRouter, Body, Depends, Header, Query
 from sqlalchemy.orm import Session
 from starlette.responses import StreamingResponse
 
+from preloop.api.deps import get_budget_enforcer
 from preloop.models.db.session import get_db_session
 from preloop.services.gemini_gateway import GeminiGatewayService
 from preloop.services.model_gateway_auth import (
@@ -75,11 +76,15 @@ def generate_content(
     payload: Dict[str, Any] = Body(...),
     db: Session = Depends(get_db_session),
     auth_context: ModelGatewayAuthContext = Depends(get_gemini_gateway_auth_context),
+    budget_enforcer: Any = Depends(get_budget_enforcer),
     x_preloop_session_id: Optional[str] = Header(None, alias="X-Preloop-Session-Id"),
 ) -> Dict[str, Any]:
     """Generate Gemini-compatible content from the shared gateway."""
     return GeminiGatewayService(
-        db, auth_context, client_session_id=x_preloop_session_id
+        db,
+        auth_context,
+        client_session_id=x_preloop_session_id,
+        budget_enforcer=budget_enforcer,
     ).generate_content(model_name, payload)
 
 
@@ -89,12 +94,16 @@ def stream_generate_content(
     payload: Dict[str, Any] = Body(...),
     db: Session = Depends(get_db_session),
     auth_context: ModelGatewayAuthContext = Depends(get_gemini_gateway_auth_context),
+    budget_enforcer: Any = Depends(get_budget_enforcer),
     x_preloop_session_id: Optional[str] = Header(None, alias="X-Preloop-Session-Id"),
 ) -> StreamingResponse:
     """Stream Gemini-compatible content from the shared gateway."""
     return StreamingResponse(
         GeminiGatewayService(
-            db, auth_context, client_session_id=x_preloop_session_id
+            db,
+            auth_context,
+            client_session_id=x_preloop_session_id,
+            budget_enforcer=budget_enforcer,
         ).stream_generate_content(model_name, payload),
         media_type="text/event-stream",
     )

@@ -282,11 +282,23 @@ export class EmbeddingViewer extends LitElement {
       tooltip.style.display = 'block';
       tooltip.style.left = `${x}px`;
       tooltip.style.top = `${y}px`;
-      tooltip.innerHTML = `
-                <strong>${object.issueKey}</strong><br>
-                ${object.title}<br>
-                <small>Created: ${new Date(object.createdAt).toLocaleDateString()}</small>
-            `;
+      // Build with textContent rather than innerHTML: issueKey/title are
+      // external issue-tracker fields and interpolating them into innerHTML is
+      // a DOM XSS vector (e.g. a title of `<img src=x onerror=...>`).
+      const key = document.createElement('strong');
+      key.textContent = object.issueKey ?? '';
+      const title = document.createTextNode(object.title ?? '');
+      const created = document.createElement('small');
+      created.textContent = `Created: ${new Date(
+        object.createdAt
+      ).toLocaleDateString()}`;
+      tooltip.replaceChildren(
+        key,
+        document.createElement('br'),
+        title,
+        document.createElement('br'),
+        created
+      );
     } else {
       tooltip.style.display = 'none';
     }

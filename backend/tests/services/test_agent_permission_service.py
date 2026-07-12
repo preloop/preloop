@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from preloop.models import models
 from preloop.services.agent_permission_service import (
     AGENT_TOOL_APPROVALS_WORKFLOW_NAME,
+    _managed_agent_approval_workflow_json_path,
     _resolve_workflow,
 )
 from preloop.services.approval_workflow_service import DEFAULT_APPROVAL_TYPE
@@ -141,3 +142,21 @@ async def test_resolve_workflow_falls_back_when_agent_pin_missing() -> None:
     )
 
     assert workflow is default_workflow
+
+
+def test_managed_agent_approval_workflow_json_path_rejects_unsafe_segments() -> None:
+    """Path builder must coerce to UUID so free-form strings cannot inject
+    commas/braces into the Postgres #>> path."""
+    agent_id = uuid.uuid4()
+    path = _managed_agent_approval_workflow_json_path(agent_id)
+    assert path == (
+        f"{{subject_governance,managed_agents,{agent_id},approval_workflow_id}}"
+    )
+    # String UUID form is accepted via coercion.
+    assert _managed_agent_approval_workflow_json_path(str(agent_id)) == path  # type: ignore[arg-type]
+    try:
+        _managed_agent_approval_workflow_json_path("evil,injected}")  # type: ignore[arg-type]
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError for non-UUID path segment")

@@ -505,3 +505,32 @@ def test_find_accounts_missing_workflows_flags_and_clears(
 
     missing = crud_approval_workflow.find_accounts_missing_workflows(db_session)
     assert test_user.account_id not in missing
+
+
+def test_find_startup_repair_targets_combines_broken_and_missing(
+    crud_approval_workflow, db_session, test_user
+):
+    """The startup scan must return both legacy defaults and accounts with no
+    workflows in a single pass."""
+    from preloop.models.crud import crud_approval_workflow as crud
+
+    # test_user's account starts with no workflows -> missing.
+    broken, missing = crud.find_startup_repair_targets(db_session)
+    assert test_user.account_id in missing
+    assert test_user.account_id not in broken
+
+    # Seed a legacy-shaped default (manual + no approvers) -> broken, not missing.
+    crud.create(
+        db_session,
+        obj_in={
+            "name": "Default Approval Workflow",
+            "approval_type": "manual",
+            "is_default": True,
+            "approver_user_ids": [],
+            "approver_team_ids": [],
+        },
+        account_id=str(test_user.account_id),
+    )
+    broken, missing = crud.find_startup_repair_targets(db_session)
+    assert test_user.account_id in broken
+    assert test_user.account_id not in missing

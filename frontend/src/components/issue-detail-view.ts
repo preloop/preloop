@@ -1,6 +1,7 @@
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
+import DOMPurify from 'dompurify';
 import { when } from 'lit/directives/when.js';
 import {
   AIModelVerdict,
@@ -128,7 +129,7 @@ export class IssueDetailView extends LitElement {
           issue1.description,
           () =>
             html`<div class="issue-description">
-              ${unsafeHTML(issue1.description)}
+              ${unsafeHTML(DOMPurify.sanitize(issue1.description ?? ''))}
             </div>`
         )}
       </div>
@@ -146,7 +147,7 @@ export class IssueDetailView extends LitElement {
           issue2.description,
           () =>
             html`<div class="issue-description">
-              ${unsafeHTML(issue2.description)}
+              ${unsafeHTML(DOMPurify.sanitize(issue2.description ?? ''))}
             </div>`
         )}
       </div>

@@ -1394,73 +1394,11 @@ def update_api_key_governance(
     )
 
 
-@router.get("/api-keys/debug", response_model=List[ApiKeyResponse])
-def debug_api_keys(
-    username: str,
-    api_key: Optional[str] = None,
-    current_user: AuthUserResponse = Depends(get_current_active_user),
-    db: Session = Depends(get_db_session),
-) -> List[ApiKeyResponse]:
-    """Debug endpoint to get API keys with their values (admin only).
-
-    Args:
-        username: The username to get keys for
-        api_key: Optional specific API key to look up
-        current_user: The current authenticated user.
-
-    Returns:
-        List of API keys with their values.
-    """
-    # This is for debugging only
-    session = db
-
-    try:
-        # Check if specific key was requested
-        if api_key:
-            logger.info(f"Looking up specific API key: {api_key[:10]}...")
-            # Get specific key using CRUD layer
-            key = crud_api_key.get_by_key(session, key=api_key)
-            return (
-                [
-                    ApiKeyResponse(
-                        id=key.id
-                        if key
-                        else UUID("00000000-0000-0000-0000-000000000000"),
-                        name=key.name if key else "Not Found",
-                        key=key.key if key else api_key,
-                        created_at=key.created_at if key else datetime.now(UTC),
-                        expires_at=key.expires_at if key else None,
-                        scopes=key.scopes if key else [],
-                        user_id=key.user_id if key else uuid.uuid4(),
-                        last_used_at=key.last_used_at if key else None,
-                    )
-                ]
-                if key
-                else []
-            )
-
-        # Get all keys for the specified user using CRUD layer
-        keys = crud_api_key.get_by_user(session, username=username)
-
-        return [
-            ApiKeyResponse(
-                id=key.id,
-                name=key.name,
-                key=key.key,
-                created_at=key.created_at,
-                expires_at=key.expires_at,
-                scopes=key.scopes,
-                user_id=key.user_id,
-                last_used_at=key.last_used_at,
-            )
-            for key in keys
-        ]
-    except Exception as e:
-        logger.error(f"Error debugging API keys: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error debugging API keys: {str(e)}",
-        )
+# NOTE: the former GET /api-keys/debug endpoint was removed. It returned
+# plaintext API-key values for an arbitrary username with no account scoping or
+# superuser check — a cross-account credential-disclosure IDOR waiting for a
+# route-ordering change to become reachable. There is no debug substitute;
+# operators should use the account-scoped key management endpoints.
 
 
 @router.delete("/api-keys/{key_id}", status_code=status.HTTP_204_NO_CONTENT)

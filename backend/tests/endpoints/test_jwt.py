@@ -271,13 +271,11 @@ class TestGetCurrentUser:
         assert "Invalid user ID" in exc_info.value.detail
 
     def test_get_current_user_refresh_token_rejected(self, mock_user):
-        """Test that refresh tokens cannot be used for authentication."""
+        """Refresh tokens must not authenticate access-token endpoints."""
         user_id = str(mock_user.id)
         # Create a refresh token (with refresh=True)
         token = jwt_module.create_access_token({"sub": user_id, "refresh": True})
 
-        # Note: The implementation checks for dict, but decode_token returns TokenData
-        # This test verifies the intended behavior
         with patch.object(jwt_module, "get_db_session") as mock_get_db:
             mock_session = MagicMock()
             mock_query = MagicMock()
@@ -286,9 +284,12 @@ class TestGetCurrentUser:
             mock_session.query.return_value = mock_query
             mock_get_db.return_value = iter([mock_session])
 
-            # Should succeed because decode_token returns TokenData, not dict
-            result = jwt_module.get_current_user(token, db=mock_session)
-            assert result == mock_user
+            # decode_token returns a TokenData model; the refresh flag is read
+            # as an attribute, so a refresh token is rejected with 401.
+            with pytest.raises(HTTPException) as exc_info:
+                jwt_module.get_current_user(token, db=mock_session)
+            assert exc_info.value.status_code == 401
+            assert "refresh token" in exc_info.value.detail.lower()
 
 
 class TestGetCurrentActiveUser:

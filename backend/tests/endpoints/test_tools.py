@@ -1,7 +1,7 @@
 """Tests for tools API endpoints."""
 
 import uuid
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, create_autospec
 
 import pytest
 from fastapi import HTTPException, status
@@ -11,6 +11,7 @@ from preloop.models.models.account import Account
 from preloop.models.models.mcp_server import MCPServer
 from preloop.models.models.mcp_tool import MCPTool
 from preloop.models.models.tool_configuration import ApprovalWorkflow, ToolConfiguration
+from preloop.models.models.user import User
 from preloop.models.schemas.tool_configuration import (
     ApprovalWorkflowCreate,
     ApprovalWorkflowResponse,
@@ -25,12 +26,15 @@ pytestmark = pytest.mark.asyncio
 
 @pytest.fixture
 def mock_user():
-    """Create mock user for testing."""
-    user = MagicMock()
+    """Autospec ``User`` — the type tools endpoints inject via
+    ``get_current_active_user`` (not ``AuthUserResponse``, which lacks
+    ``id`` / ``account_id``). Unknown attribute access raises AttributeError.
+    """
+    user = create_autospec(User, instance=True)
     user.id = uuid.uuid4()
     user.username = "testuser"
     user.email = "test@example.com"
-    user.account_id = str(uuid.uuid4())
+    user.account_id = uuid.uuid4()
     user.is_active = True
     return user
 

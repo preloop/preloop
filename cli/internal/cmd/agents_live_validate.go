@@ -339,16 +339,22 @@ func isUpstreamRateLimitedValidationError(err error) bool {
 		strings.Contains(message, "status 429")
 }
 
-// liveValidationThrottleBackoffs are the waits between probe retries when the
-// upstream provider rate-limits the live-validation request. Two short
-// retries cover the common transient case (a burst of onboarding probes or
-// concurrent agent traffic) without stalling onboarding for long.
-var liveValidationThrottleBackoffs = []time.Duration{
-	3 * time.Second,
-	8 * time.Second,
+// liveValidationThrottleBackoffSchedule returns the waits between probe
+// retries when the upstream provider rate-limits the live-validation
+// request. Two short retries cover the common transient case (a burst of
+// onboarding probes or concurrent agent traffic) without stalling
+// onboarding for long. Returns a fresh slice so callers cannot mutate
+// shared package state.
+func liveValidationThrottleBackoffSchedule() []time.Duration {
+	return []time.Duration{
+		3 * time.Second,
+		8 * time.Second,
+	}
 }
 
 // liveValidationSleep is time.Sleep, injectable so tests can run instantly.
+// Not safe for concurrent reassignment: tests that override it must not use
+// t.Parallel alongside other live-validation tests in this package.
 var liveValidationSleep = time.Sleep
 
 // postGatewayProbeWithThrottleRetry runs the gateway probe, retrying only on
@@ -358,7 +364,7 @@ var liveValidationSleep = time.Sleep
 func postGatewayProbeWithThrottleRetry(post func() error) (int, error) {
 	attempts := 1
 	err := post()
-	for _, backoff := range liveValidationThrottleBackoffs {
+	for _, backoff := range liveValidationThrottleBackoffSchedule() {
 		if err == nil || !isUpstreamRateLimitedValidationError(err) {
 			return attempts, err
 		}

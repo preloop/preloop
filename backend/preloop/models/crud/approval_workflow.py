@@ -166,6 +166,54 @@ class CRUDApprovalWorkflow(CRUDBase[models.ApprovalWorkflow]):
         )
         return [row[0] for row in rows]
 
+    def find_startup_repair_targets(self, db: Session) -> tuple[List[UUID], List[UUID]]:
+        """Return ``(legacy_default_ids, missing_workflow_ids)`` in one DB pass.
+
+        Combines :meth:`find_legacy_default_workflows` and
+        :meth:`find_accounts_missing_workflows` via ``UNION ALL`` so the
+        startup repair scan pays one round-trip instead of two.
+        """
+        from sqlalchemy import literal
+
+        broken_q = db.query(
+            literal("broken").label("kind"),
+            self.model.account_id.label("account_id"),
+        ).filter(
+            self.model.is_default.is_(True),
+            (
+                (self.model.approval_type == "manual")
+                | (
+                    (
+                        (self.model.approver_user_ids.is_(None))
+                        | (self.model.approver_user_ids == [])
+                    )
+                    & (
+                        (self.model.approver_team_ids.is_(None))
+                        | (self.model.approver_team_ids == [])
+                    )
+                )
+            ),
+        )
+        missing_q = (
+            db.query(
+                literal("missing").label("kind"),
+                models.Account.id.label("account_id"),
+            )
+            .outerjoin(self.model, self.model.account_id == models.Account.id)
+            .filter(
+                models.Account.is_active.is_(True),
+                self.model.id.is_(None),
+            )
+        )
+        broken: List[UUID] = []
+        missing: List[UUID] = []
+        for kind, account_id in broken_q.union_all(missing_q).all():
+            if kind == "broken":
+                broken.append(account_id)
+            else:
+                missing.append(account_id)
+        return broken, missing
+
     def create(
         self,
         db: Session,

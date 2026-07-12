@@ -376,3 +376,81 @@ class TestResolveAccountOwnerUserId:
         db.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
 
         assert _resolve_account_owner_user_id(db, uuid4()) is None
+
+
+class TestRunDefaultApprovalWorkflowStartupRepair:
+    """Tests for the boot-time repair/seed pass."""
+
+    @patch(
+        "preloop.services.approval_workflow_service.create_default_approval_workflow_for_account"
+    )
+    @patch(
+        "preloop.services.approval_workflow_service.repair_default_approval_workflow_for_account"
+    )
+    @patch("preloop.services.approval_workflow_service.crud_approval_workflow")
+    @patch("preloop.services.approval_workflow_service.get_session_factory")
+    def test_continues_when_per_account_seed_raises(
+        self, mock_session_factory, mock_crud, mock_repair, mock_create
+    ):
+        """A single account failure must not abort seeding of the remaining
+        accounts — the lifespan path used to be ``# pragma: no cover``."""
+        from preloop.services.approval_workflow_service import (
+            run_default_approval_workflow_startup_repair,
+        )
+
+        broken_id = uuid4()
+        missing_ok = uuid4()
+        missing_fail = uuid4()
+        mock_db = MagicMock()
+        mock_session_factory.return_value = MagicMock(return_value=mock_db)
+        mock_crud.find_startup_repair_targets.return_value = (
+            [broken_id],
+            [missing_fail, missing_ok],
+        )
+        mock_repair.return_value = True
+        mock_create.side_effect = [RuntimeError("seed boom"), None]
+
+        stats = run_default_approval_workflow_startup_repair()
+
+        assert stats == {
+            "broken": 1,
+            "repaired": 1,
+            "missing": 2,
+            "seeded": 1,
+        }
+        mock_repair.assert_called_once_with(broken_id)
+        assert mock_create.call_count == 2
+        mock_db.close.assert_called_once()
+
+    @patch(
+        "preloop.services.approval_workflow_service.create_default_approval_workflow_for_account"
+    )
+    @patch(
+        "preloop.services.approval_workflow_service.repair_default_approval_workflow_for_account"
+    )
+    @patch("preloop.services.approval_workflow_service.crud_approval_workflow")
+    @patch("preloop.services.approval_workflow_service.get_session_factory")
+    def test_continues_when_per_account_repair_raises(
+        self, mock_session_factory, mock_crud, mock_repair, mock_create
+    ):
+        from preloop.services.approval_workflow_service import (
+            run_default_approval_workflow_startup_repair,
+        )
+
+        broken_fail = uuid4()
+        broken_ok = uuid4()
+        mock_db = MagicMock()
+        mock_session_factory.return_value = MagicMock(return_value=mock_db)
+        mock_crud.find_startup_repair_targets.return_value = (
+            [broken_fail, broken_ok],
+            [],
+        )
+        mock_repair.side_effect = [RuntimeError("repair boom"), True]
+
+        stats = run_default_approval_workflow_startup_repair()
+
+        assert stats["broken"] == 2
+        assert stats["repaired"] == 1
+        assert stats["missing"] == 0
+        assert stats["seeded"] == 0
+        mock_create.assert_not_called()

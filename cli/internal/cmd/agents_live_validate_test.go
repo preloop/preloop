@@ -874,7 +874,7 @@ func TestPostGatewayProbeWithThrottleRetry(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected persistent throttle error to surface")
 		}
-		expected := 1 + len(liveValidationThrottleBackoffs)
+		expected := 1 + len(liveValidationThrottleBackoffSchedule())
 		if attempts != expected || calls != expected {
 			t.Fatalf("expected %d attempts, got attempts=%d calls=%d", expected, attempts, calls)
 		}

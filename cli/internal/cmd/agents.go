@@ -514,6 +514,7 @@ func init() {
 	agentsCmd.AddCommand(agentsStarterPolicyCmd)
 
 	agentsDiscoverCmd.Flags().Bool("add", false, "deprecated: use 'preloop agents onboard <agent>' instead")
+	agentsDiscoverCmd.Flags().Bool("json", false, "output discovered agents as JSON (read-only, no prompts)")
 	agentsDiscoverCmd.Flags().Bool("no-onboard-prompt", false, "do not prompt to onboard discovered agents")
 	agentsDiscoverCmd.Flags().BoolP("yes", "y", false, "auto-approve interactive onboarding prompts")
 	agentsDiscoverCmd.Flags().BoolP("force", "f", false, "alias for --yes")
@@ -3848,8 +3849,14 @@ func writeJSONDocument(path string, doc map[string]interface{}) error {
 		return fmt.Errorf("failed to encode managed config: %w", err)
 	}
 	data = append(data, '\n')
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	// 0600: the managed config embeds the durable runtime bearer token, so it
+	// must not be world-readable. Chmod after write enforces the mode even when
+	// the file already existed (os.WriteFile only sets mode on creation).
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		return fmt.Errorf("failed to write managed config: %w", err)
+	}
+	if err := os.Chmod(path, 0600); err != nil {
+		return fmt.Errorf("failed to secure managed config permissions: %w", err)
 	}
 	return nil
 }
@@ -3865,8 +3872,12 @@ func writeTOMLDocument(path string, doc map[string]interface{}) error {
 	if len(data) == 0 || data[len(data)-1] != '\n' {
 		data = append(data, '\n')
 	}
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	// 0600: embeds the runtime bearer token (see writeJSONDocument).
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		return fmt.Errorf("failed to write managed config: %w", err)
+	}
+	if err := os.Chmod(path, 0600); err != nil {
+		return fmt.Errorf("failed to secure managed config permissions: %w", err)
 	}
 	return nil
 }

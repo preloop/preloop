@@ -736,5 +736,14 @@ async def require_approval(
 
     except Exception as e:
         logger.error(f"Error checking approval requirement: {e}", exc_info=True)
-        # Fail-open: if approval check fails, allow execution
-        return (True, "")
+        # SECURITY: fail CLOSED. If the approval check itself fails (DB outage,
+        # workflow lookup error, etc.) we must block rather than execute — a
+        # tool gated behind ``require_approval`` must never run un-approved just
+        # because an infrastructure error prevented the check. The inner
+        # approval-flow error path (above) already fails closed; keep this
+        # outer handler consistent.
+        return (
+            False,
+            "Approval check failed and the tool call was blocked as a safety "
+            "measure. Please retry.",
+        )

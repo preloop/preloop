@@ -23,6 +23,10 @@ from sqlalchemy.exc import IntegrityError
 from preloop.models import models
 from preloop.models.db.session import get_async_db_session
 from preloop.services.approval_workflow_service import DEFAULT_APPROVAL_TYPE
+from preloop.services.subject_governance import (
+    SUBJECT_TYPE_MANAGED_AGENTS,
+    get_subject_governance,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +34,21 @@ logger = logging.getLogger(__name__)
 # so central-policy rules and analytics can target them later.
 AGENT_TOOL_SOURCE = "agent"
 AGENT_TOOL_APPROVALS_WORKFLOW_NAME = "Agent Tool Approvals"
+
+
+def _managed_agent_approval_workflow_json_path(managed_agent_id: uuid.UUID) -> str:
+    """Build a Postgres ``#>>`` path for a managed-agent workflow pin.
+
+    Always coerce to ``uuid.UUID`` first so path segments cannot contain
+    commas or braces that would alter the JSON-path structure. Callers must
+    not copy this pattern with free-form strings.
+    """
+    agent_uuid = (
+        managed_agent_id
+        if isinstance(managed_agent_id, uuid.UUID)
+        else uuid.UUID(str(managed_agent_id))
+    )
+    return f"{{subject_governance,managed_agents,{agent_uuid},approval_workflow_id}}"
 
 
 async def _fetch_agent_tool_approvals_workflow(
@@ -62,15 +81,10 @@ async def _resolve_agent_configured_workflow(
     the JSON path (avoids Postgres cast failures on invalid pins). Python
     still validates the pin so we can warn on malformed UUIDs.
     """
-    from preloop.services.subject_governance import (
-        SUBJECT_TYPE_MANAGED_AGENTS,
-        get_subject_governance,
-    )
-
     # Extract the pin as text via Postgres #>> so the join compares plain
     # UUID strings (JSON -> / CAST can leave quoted JSON scalar text).
     pinned_workflow_id = models.Account.meta_data.op("#>>")(
-        f"{{subject_governance,managed_agents,{managed_agent_id},approval_workflow_id}}"
+        _managed_agent_approval_workflow_json_path(managed_agent_id)
     )
 
     result = await db.execute(

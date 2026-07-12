@@ -413,7 +413,13 @@ class TestMCPCallTool:
             Tool(name="builtin_tool", description="Builtin", parameters={})
         ]
 
-        with patch.object(dynamic_mcp, "list_tools", return_value=available_tools):
+        with (
+            patch.object(dynamic_mcp, "list_tools", return_value=available_tools),
+            patch(
+                "preloop.services.policy_evaluator.evaluate_policy_async",
+                new=AsyncMock(return_value=("allow", None, None)),
+            ),
+        ):
             # Mock super().call_tool for FastMCP 3.x
             mock_result = ToolResult(
                 content=[types.TextContent(type="text", text="Result")]
@@ -441,7 +447,13 @@ class TestMCPCallTool:
             Tool(name="proxied_tool", description="Proxied", parameters={})
         ]
 
-        with patch.object(dynamic_mcp, "list_tools", return_value=available_tools):
+        with (
+            patch.object(dynamic_mcp, "list_tools", return_value=available_tools),
+            patch(
+                "preloop.services.policy_evaluator.evaluate_policy_async",
+                new=AsyncMock(return_value=("allow", None, None)),
+            ),
+        ):
             # Mock super().call_tool to verify name translation
             mock_result = ToolResult(
                 content=[types.TextContent(type="text", text="Result")]

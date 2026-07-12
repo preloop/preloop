@@ -338,10 +338,28 @@ class HermesPreloopPlugin:
 
         document: dict[str, Any] = {}
         if config_path.exists():
-            loaded = yaml.safe_load(config_path.read_text())
+            original = config_path.read_text()
+            loaded = yaml.safe_load(original)
             if isinstance(loaded, dict):
                 document = loaded
-        preloop = document.setdefault("preloop", {})
+            # Back up the existing config before rewriting so a bad rewrite is
+            # recoverable (the rewrite drops comments/formatting).
+            backup_path = config_path.with_suffix(config_path.suffix + ".preloop.bak")
+            try:
+                backup_path.write_text(original)
+            except OSError as exc:
+                logger.warning(
+                    "Failed to write backup config to %s; continuing without backup: %s",
+                    backup_path,
+                    exc,
+                )
+        # Guard against an existing non-dict ``preloop:`` scalar, which would
+        # make setdefault(...)/item-assignment raise.
+        existing_preloop = document.get("preloop")
+        if not isinstance(existing_preloop, dict):
+            existing_preloop = {}
+            document["preloop"] = existing_preloop
+        preloop = existing_preloop
         preloop["control"] = {
             "enabled": True,
             "protocol": "preloop.agent_control.v1",

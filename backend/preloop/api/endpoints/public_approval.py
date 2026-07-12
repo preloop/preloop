@@ -151,11 +151,14 @@ async def decide_approval_request_public(
                 status_code=500, detail="Failed to update approval request"
             )
 
-        # Return updated data
+        from preloop.utils.redaction import redact_dict
+
+        # Return updated data. Redact tool_args to match the GET read path and
+        # the redaction policy — secrets in tool arguments must not leak here.
         return ApprovalRequestPublic(
             id=str(updated_request.id),
             tool_name=updated_request.tool_name,
-            tool_args=updated_request.tool_args,
+            tool_args=redact_dict(updated_request.tool_args or {}),
             agent_reasoning=updated_request.agent_reasoning,
             status=updated_request.status,
             requested_at=updated_request.requested_at.isoformat(),
