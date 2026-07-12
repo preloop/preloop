@@ -59,6 +59,13 @@ class FlowExecution(Base):
         Numeric(10, 4), nullable=True, default=0.0
     )  # Estimated cost in USD
 
+    # Worker claim lease for multi-replica-safe orchestration
+    orchestrator_worker_id = Column(String(255), nullable=True, index=True)
+    orchestrator_claimed_at = Column(DateTime(timezone=True), nullable=True)
+    orchestrator_heartbeat_at = Column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+
     created_at = Column(DateTime, default=datetime.now(UTC), nullable=False)
     updated_at = Column(
         DateTime,

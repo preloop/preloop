@@ -122,6 +122,8 @@ class FlowExecutionOrchestrator:
         self._commit_sha: Optional[str] = None
         self._status_context: str = "preloop"
         self._is_recovered: bool = False  # Set to True during execution recovery
+        # Set when a sync worker owns this orchestrator (claim lease heartbeat).
+        self._orchestrator_worker_id: Optional[str] = None
 
     def _extract_commit_sha(self) -> Optional[str]:
         """Extract the commit SHA from the trigger event data.
@@ -1885,8 +1887,29 @@ class FlowExecutionOrchestrator:
             # treating the execution as succeeded.
             post_sentinel_grace = 120  # seconds
             sentinel_seen_at: Optional[float] = None
+            last_heartbeat_at = -30  # force first heartbeat near start
+            heartbeat_interval = 30
 
             while elapsed < max_wait_time:
+                if (
+                    self._orchestrator_worker_id
+                    and self.execution_log is not None
+                    and elapsed - last_heartbeat_at >= heartbeat_interval
+                ):
+                    try:
+                        crud_flow_execution.touch_heartbeat(
+                            self.db,
+                            execution_id=self.execution_log.id,
+                            worker_id=self._orchestrator_worker_id,
+                        )
+                        last_heartbeat_at = elapsed
+                    except Exception as heartbeat_error:
+                        logger.warning(
+                            "Failed to touch orchestrator heartbeat for %s: %s",
+                            self.execution_log.id,
+                            heartbeat_error,
+                        )
+
                 # Check if user requested stop
                 if self._stop_requested.is_set():
                     logger.info(
@@ -2115,7 +2138,16 @@ class FlowExecutionOrchestrator:
                 logger.warning(f"Error during agent cleanup: {cleanup_error}")
 
     def _create_execution_log(self):
-        """Create an initial record in FlowExecutions."""
+        """Create an initial record in FlowExecutions.
+
+        No-op when ``execution_log`` was pre-created (manual trigger / worker
+        dispatch) so ``run()`` can be reused for both paths.
+        """
+        if self.execution_log is not None:
+            logger.info("Using pre-created execution log: %s", self.execution_log.id)
+            self._sync_runtime_session()
+            return
+
         logger.info("Creating initial execution log")
 
         # Ensure trigger_event_data is JSON serializable (convert UUIDs, datetimes, etc.)

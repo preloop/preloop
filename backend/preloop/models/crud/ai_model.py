@@ -2,7 +2,7 @@
 
 import json
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -165,6 +165,61 @@ class CRUDAIModel(CRUDBase[AIModel]):
     ) -> list[AIModel]:
         """Get all AIModels for a specific account."""
         return db.query(self.model).filter(self.model.account_id == account_id).all()
+
+    def get_for_managed_agent_enrichment(
+        self,
+        db: Session,
+        *,
+        account_id: uuid.UUID | str,
+        agent_ids: Sequence[str],
+        gateway_aliases: Sequence[str] | None = None,
+    ) -> list[AIModel]:
+        """Load only AI models needed to enrich a page of managed agents.
+
+        Prefers models tagged with ``meta_data.managed_agent_id`` for the given
+        agents, and optionally models whose gateway alias matches a legacy
+        configured alias. Avoids loading the full account model catalog when
+        list pages only need a handful of agents.
+
+        Args:
+            db: Active database session.
+            account_id: Owning account identifier.
+            agent_ids: Managed agent ids that need model resolution.
+            gateway_aliases: Optional gateway aliases for legacy alias→id match.
+
+        Returns:
+            Matching AI models for the account, or an empty list when no
+            agent/alias filters are provided.
+        """
+        normalized_agent_ids = [
+            str(agent_id).strip() for agent_id in agent_ids if str(agent_id).strip()
+        ]
+        normalized_aliases = [
+            str(alias).strip()
+            for alias in (gateway_aliases or [])
+            if str(alias).strip()
+        ]
+        if not normalized_agent_ids and not normalized_aliases:
+            return []
+
+        clauses = []
+        if normalized_agent_ids:
+            clauses.append(
+                self.model.meta_data["managed_agent_id"].astext.in_(
+                    normalized_agent_ids
+                )
+            )
+        if normalized_aliases:
+            clauses.append(
+                self.model.meta_data["gateway"]["model_alias"].astext.in_(
+                    normalized_aliases
+                )
+            )
+        return (
+            db.query(self.model)
+            .filter(self.model.account_id == account_id, or_(*clauses))
+            .all()
+        )
 
     def get_all_for_account(
         self, db: Session, *, account_id: uuid.UUID | str

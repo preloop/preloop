@@ -298,6 +298,28 @@ class Settings(BaseSettings):
         3600,
         description="Maximum wall-clock time to wait for one flow execution before failing it",
     )
+    flow_execution_worker_enabled: bool = Field(
+        False,
+        description=(
+            "When true, flow orchestration runs on sync workers via JetStream "
+            "(execute_flow / resume_flow_execution) instead of asyncio.create_task "
+            "in the API or webhook worker process."
+        ),
+    )
+    flow_execution_claim_stale_seconds: int = Field(
+        120,
+        description=(
+            "Seconds after the last orchestrator heartbeat before another worker "
+            "may reclaim an active flow execution."
+        ),
+    )
+    flow_execution_reclaim_interval_seconds: int = Field(
+        30,
+        description=(
+            "How often flow-execution workers re-dispatch stale/unclaimed "
+            "active executions (deploy handoff safety net)."
+        ),
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -549,6 +571,16 @@ class Settings(BaseSettings):
             ),
             flow_execution_max_wait_seconds=int(
                 os.getenv("FLOW_EXECUTION_MAX_WAIT_SECONDS", "3600")
+            ),
+            flow_execution_worker_enabled=os.getenv(
+                "FLOW_EXECUTION_WORKER_ENABLED", "false"
+            ).lower()
+            in ("true", "1", "t", "yes"),
+            flow_execution_claim_stale_seconds=int(
+                os.getenv("FLOW_EXECUTION_CLAIM_STALE_SECONDS", "120")
+            ),
+            flow_execution_reclaim_interval_seconds=int(
+                os.getenv("FLOW_EXECUTION_RECLAIM_INTERVAL_SECONDS", "30")
             ),
             stripe_secret_key=stripe_secret_key,
             stripe_webhook_secret=stripe_webhook_secret,

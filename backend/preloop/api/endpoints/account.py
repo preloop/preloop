@@ -658,8 +658,13 @@ def _enrich_managed_agent_summaries(
         agent_ids=agent_ids,
         include_inactive=False,
     )
-    account_models = crud_ai_model.get_by_account(db, account_id=account_id)
 
+    # Only agents without explicit bindings need the legacy AI-model catalog
+    # lookup. Scope that load to this page's agents/aliases instead of every
+    # model on the account.
+    agents_needing_models: set[str] = set()
+    aliases_needed: list[str] = []
+    enrollment_summaries: dict[str, tuple[Optional[dict], Optional[dict]]] = {}
     for summary in summaries:
         agent_id = str(summary["id"])
         picks = enrollments_by_agent.get(
@@ -683,6 +688,33 @@ def _enrich_managed_agent_summaries(
             if control_enrollment is not None
             else None
         )
+        enrollment_summaries[agent_id] = (
+            latest_enrollment_summary,
+            control_enrollment_summary,
+        )
+        if bindings_by_agent.get(agent_id):
+            continue
+        agents_needing_models.add(agent_id)
+        alias = _managed_agent_configured_model_alias(latest_enrollment_summary)
+        if alias:
+            aliases_needed.append(alias)
+
+    account_models = (
+        crud_ai_model.get_for_managed_agent_enrichment(
+            db,
+            account_id=account_id,
+            agent_ids=list(agents_needing_models),
+            gateway_aliases=aliases_needed,
+        )
+        if agents_needing_models
+        else []
+    )
+
+    for summary in summaries:
+        agent_id = str(summary["id"])
+        latest_enrollment_summary, control_enrollment_summary = enrollment_summaries[
+            agent_id
+        ]
         (
             summary["mcp_proxy_configured"],
             summary["model_gateway_configured"],
@@ -716,13 +748,18 @@ def _enrich_managed_agent_summaries(
         )
         if primary_binding and primary_binding.get("gateway_alias"):
             summary["configured_model_alias"] = primary_binding["gateway_alias"]
-        summary["configured_model_id"] = _managed_agent_configured_model_id_from_models(
-            account_models,
-            agent_id=agent_id,
-            configured_model_alias=summary["configured_model_alias"],
-        )
         if primary_binding and primary_binding.get("ai_model_id"):
             summary["configured_model_id"] = primary_binding["ai_model_id"]
+        elif agent_id in agents_needing_models:
+            summary["configured_model_id"] = (
+                _managed_agent_configured_model_id_from_models(
+                    account_models,
+                    agent_id=agent_id,
+                    configured_model_alias=summary["configured_model_alias"],
+                )
+            )
+        else:
+            summary["configured_model_id"] = None
         summary.update(
             _managed_agent_control_fields(
                 summary,
@@ -933,11 +970,12 @@ def get_account_gateway_usage_summary(
     end_date: Optional[datetime] = Query(None),
     runtime_principal_id: Optional[str] = Query(None),
     include_breakdown: bool = Query(
-        False,
+        True,
         description=(
             "When true, include per-model/flow/session/tool/day breakdowns. "
-            "Default false for lightweight card/summary callers; cost views "
-            "should pass true (or use /cost/summary)."
+            "Default true preserves the historical response shape for API "
+            "clients; lightweight card callers (Overview/Agents) should pass "
+            "false. Prefer /cost/summary for full cost analytics."
         ),
     ),
 ):

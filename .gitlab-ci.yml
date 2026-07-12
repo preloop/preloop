@@ -653,6 +653,10 @@ test:coverage:
       --set worker.pools[2].name=webhook
       --set worker.pools[2].replicaCount=1
       --set worker.pools[2].tasks=process_webhook_event
+      --set worker.pools[3].name=flow-execution
+      --set worker.pools[3].replicaCount=1
+      --set worker.pools[3].tasks=execute_flow,resume_flow_execution
+      --set flowExecution.workerEnabled=true
       --set seed.enabled=${SEED_ENABLED}
       --set seed.email=${PRELOOP_TEST_EMAIL}
       --set seed.username=${PRELOOP_TEST_USERNAME}

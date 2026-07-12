@@ -428,3 +428,31 @@ async def cleanup_tracker_webhooks(tracker_id: str) -> None:
         )
     finally:
         db.close()
+
+
+# Tasks that ack JetStream after a successful DB claim, then run for a long time.
+ACK_AFTER_CLAIM_TASKS = frozenset({"execute_flow", "resume_flow_execution"})
+
+
+async def execute_flow(
+    execution_id: str,
+    *,
+    _ack: Any = None,
+) -> dict[str, Any] | None:
+    """Claim and run a flow execution on a sync worker."""
+    from preloop.services.flow_execution_runner import claim_and_run_execution
+
+    logger.info("execute_flow task started for execution %s", execution_id)
+    return await claim_and_run_execution(execution_id, resume=False, ack=_ack)
+
+
+async def resume_flow_execution(
+    execution_id: str,
+    *,
+    _ack: Any = None,
+) -> dict[str, Any] | None:
+    """Claim and resume monitoring for an orphaned/stale flow execution."""
+    from preloop.services.flow_execution_runner import claim_and_run_execution
+
+    logger.info("resume_flow_execution task started for execution %s", execution_id)
+    return await claim_and_run_execution(execution_id, resume=True, ack=_ack)

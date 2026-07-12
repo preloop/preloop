@@ -139,7 +139,7 @@ class TestFlowTriggerService:
         }
 
         with patch.object(
-            service, "_run_orchestrator_with_session", new_callable=AsyncMock
+            service, "_start_flow_execution", new_callable=AsyncMock
         ) as mock_run:
             await service.process_event(event_data)
 
@@ -165,7 +165,7 @@ class TestFlowTriggerService:
         }
 
         with patch.object(
-            service, "_run_orchestrator_with_session", new_callable=AsyncMock
+            service, "_start_flow_execution", new_callable=AsyncMock
         ) as mock_run:
             await service.process_event(event_data)
 
@@ -205,7 +205,7 @@ class TestFlowTriggerService:
         }
 
         with patch.object(
-            service, "_run_orchestrator_with_session", new_callable=AsyncMock
+            service, "_start_flow_execution", new_callable=AsyncMock
         ) as mock_run:
             await service.process_event(event_data)
 
@@ -231,7 +231,7 @@ class TestFlowTriggerService:
         }
 
         with patch.object(
-            service, "_run_orchestrator_with_session", new_callable=AsyncMock
+            service, "_start_flow_execution", new_callable=AsyncMock
         ) as mock_run:
             await service.process_event(event_data)
 
@@ -273,7 +273,7 @@ class TestFlowTriggerService:
         }
 
         with patch.object(
-            service, "_run_orchestrator_with_session", new_callable=AsyncMock
+            service, "_start_flow_execution", new_callable=AsyncMock
         ) as mock_run:
             await service.process_event(event_data)
 
@@ -329,7 +329,7 @@ class TestFlowTriggerService:
         }
 
         with patch.object(
-            service, "_run_orchestrator_with_session", new_callable=AsyncMock
+            service, "_start_flow_execution", new_callable=AsyncMock
         ) as mock_run:
             await service.process_event(event_data)
 

@@ -9,10 +9,11 @@ import logging
 import os
 import datetime
 import inspect
+import signal
 import nats
 import socket
 import uuid
-from typing import List, Optional, Tuple
+from typing import List, Optional, Set, Tuple
 from nats.aio.client import Client as NATSClient
 from nats.aio.errors import ErrNoServers
 from nats.js.api import ConsumerConfig, StreamConfig
@@ -20,6 +21,8 @@ from nats.js.errors import APIError
 
 import preloop.sync.tasks as tasks
 from preloop.sync.config import logger
+
+FLOW_ORCHESTRATION_TASKS = frozenset({"execute_flow", "resume_flow_execution"})
 
 
 class PreloopSyncNatsWorker:
@@ -36,6 +39,18 @@ class PreloopSyncNatsWorker:
         self.js = None
         self.subs: List[Tuple[str, nats.aio.client.Subscription]] = []
         self.connection_name = f"worker-{socket.gethostname()}-{uuid.uuid4().hex[:6]}"
+        # When False, stop fetching new JetStream messages (deploy drain).
+        self._accepting = True
+        self._inflight: Set[asyncio.Task] = set()
+        self._reclaim_task: Optional[asyncio.Task] = None
+        self._pull_tasks: List[asyncio.Task] = []
+
+    @property
+    def handles_flow_orchestration(self) -> bool:
+        """True when this worker may run execute_flow / resume_flow_execution."""
+        if not self.tasks_allowlist:
+            return True
+        return bool(FLOW_ORCHESTRATION_TASKS.intersection(self.tasks_allowlist))
 
     async def connect(self):
         if self.nc and self.nc.is_connected:
@@ -122,9 +137,6 @@ class PreloopSyncNatsWorker:
                 durable_name = f"{self.queue_name}_{sanitized_subject}"
 
                 # 1. Explicitly create or update the consumer. This is an
-                # idempotent operation that ensures the consumer exists on the
-                # server with the correct configuration.
-                # 1. Explicitly create or update the consumer. This is an
                 # idempotent operation. The `deliver_group` makes this a queue
                 # consumer on the server side, ensuring messages are load-balanced.
                 consumer_config = ConsumerConfig(
@@ -154,6 +166,7 @@ class PreloopSyncNatsWorker:
             logger.info(f"Received message on '{subject}': {data}")
 
             start_time = datetime.datetime.now()
+            acked = False
 
             try:
                 payload = json.loads(data)
@@ -168,6 +181,7 @@ class PreloopSyncNatsWorker:
                             Exception(f"Unknown message format: {data}")
                         )
                     await msg.ack()
+                    acked = True
                     return
 
                 try:
@@ -181,21 +195,59 @@ class PreloopSyncNatsWorker:
                             AttributeError(f"Task function not found: '{task_name}'")
                         )
                     await msg.ack()
+                    acked = True
                     return
 
-                if inspect.iscoroutinefunction(func):
-                    stats = await func(
-                        *payload.get("args", []), **payload.get("kwargs", {})
+                # Draining: do not start new long-running orchestration; nak so
+                # another worker (or this worker after restart) can take it.
+                if not self._accepting and task_name in FLOW_ORCHESTRATION_TASKS:
+                    try:
+                        await msg.nak()
+                    except Exception:
+                        pass
+                    logger.info(
+                        "Draining: nacked %s so another worker can adopt it",
+                        task_name,
                     )
+                    return
+
+                async def early_ack() -> None:
+                    nonlocal acked
+                    if not acked:
+                        await msg.ack()
+                        acked = True
+                        logger.info(
+                            "Acknowledged task '%s' after claim (ack-after-claim)",
+                            task_name,
+                        )
+
+                call_kwargs = dict(payload.get("kwargs", {}) or {})
+                if task_name in getattr(tasks, "ACK_AFTER_CLAIM_TASKS", ()):
+                    call_kwargs["_ack"] = early_ack
+
+                if inspect.iscoroutinefunction(func):
+                    stats = await func(*payload.get("args", []), **call_kwargs)
                 else:
-                    stats = func(*payload.get("args", []), **payload.get("kwargs", {}))
-                await msg.ack()
+                    stats = func(*payload.get("args", []), **call_kwargs)
+
+                if not acked:
+                    await msg.ack()
+                    acked = True
 
                 end_time = datetime.datetime.now()
                 logger.info(
                     f"Task '{task_name}' completed and acknowledged. Stats: {stats}. Duration: {end_time - start_time}"
                 )
 
+            except asyncio.CancelledError:
+                # Deploy drain cancelled an in-flight handler. Prefer nak if we
+                # never claimed/acked so the message can be redelivered.
+                if not acked:
+                    try:
+                        await msg.nak()
+                    except Exception:
+                        pass
+                raise
             except json.JSONDecodeError as e:
                 logger.error(f"Failed to decode JSON payload: {data}. Error: {e}")
                 if os.getenv("SENTRY_DSN"):
@@ -210,28 +262,52 @@ class PreloopSyncNatsWorker:
 
                     sentry_sdk.capture_exception(e)
 
-        tasks_to_await = []
+        self._pull_tasks = []
         for _, sub in self.subs:
-            tasks_to_await.append(
-                asyncio.create_task(self._process_pull_messages(sub, message_handler))
+            task = asyncio.create_task(
+                self._process_pull_messages(sub, message_handler)
             )
+            self._pull_tasks.append(task)
 
-        await asyncio.gather(*tasks_to_await)
+        if self.handles_flow_orchestration:
+            self._reclaim_task = asyncio.create_task(self._stale_claim_reaper_loop())
+
+        await asyncio.gather(*self._pull_tasks)
 
     async def _process_pull_messages(self, sub, handler):
         """
         Continuously fetches and processes messages from a pull subscription.
         """
-        while True:
+        while self._accepting:
             try:
                 # Fetch a single message, waiting up to 60 seconds.
                 msgs = await sub.fetch(batch=1, timeout=60)
                 for msg in msgs:
-                    await handler(msg)
+                    if not self._accepting:
+                        try:
+                            await msg.nak()
+                        except Exception:
+                            pass
+                        return
+                    task = asyncio.create_task(handler(msg))
+                    self._inflight.add(task)
+
+                    def _done(t: asyncio.Task, *, _tasks=self._inflight) -> None:
+                        _tasks.discard(t)
+
+                    task.add_done_callback(_done)
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        raise
             except nats.errors.TimeoutError:
                 # This is expected when no messages are available. Continue polling.
                 continue
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
+                if not self._accepting:
+                    return
                 logger.error(
                     f"Error fetching/processing messages from subscription '{sub.subject}': {e}",
                     exc_info=True,
@@ -239,8 +315,94 @@ class PreloopSyncNatsWorker:
                 # Avoid a tight loop on persistent errors.
                 await asyncio.sleep(1)
 
+    async def _stale_claim_reaper_loop(self) -> None:
+        """Periodically re-dispatch stale/unclaimed active flow executions."""
+        from preloop.config import settings
+        from preloop.services.flow_execution_dispatcher import (
+            flow_execution_worker_enabled,
+        )
+        from preloop.services.execution_recovery import get_recovery_service
+        from preloop.models.db.session import get_db_session
+
+        interval = max(
+            5,
+            int(getattr(settings, "flow_execution_reclaim_interval_seconds", 30) or 30),
+        )
+        logger.info(
+            "Flow-execution stale-claim reaper started (interval=%ss)", interval
+        )
+        while self._accepting:
+            try:
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                break
+            if not self._accepting:
+                break
+            if not flow_execution_worker_enabled():
+                continue
+            try:
+                recovery_service = get_recovery_service()
+                db = next(get_db_session())
+                try:
+                    recovered = await recovery_service.recover_orphaned_executions(db)
+                    if recovered:
+                        logger.info(
+                            "Stale-claim reaper re-dispatched %s execution(s)",
+                            recovered,
+                        )
+                finally:
+                    db.close()
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.error("Stale-claim reaper failed: %s", exc, exc_info=True)
+
+    async def begin_drain(self) -> None:
+        """Stop accepting work and hand off owned flow claims to peers."""
+        if not self._accepting:
+            return
+        logger.info("Worker drain started: stopping new JetStream fetches")
+        self._accepting = False
+
+        if self._reclaim_task and not self._reclaim_task.done():
+            self._reclaim_task.cancel()
+            try:
+                await self._reclaim_task
+            except asyncio.CancelledError:
+                pass
+
+        # Cancel in-flight handlers so claim_and_run finally releases+redispatches.
+        inflight = list(self._inflight)
+        for task in inflight:
+            if not task.done():
+                task.cancel()
+        if inflight:
+            await asyncio.gather(*inflight, return_exceptions=True)
+
+        for pull_task in self._pull_tasks:
+            if not pull_task.done():
+                pull_task.cancel()
+        if self._pull_tasks:
+            await asyncio.gather(*self._pull_tasks, return_exceptions=True)
+
+        if self.handles_flow_orchestration:
+            try:
+                from preloop.services.flow_execution_dispatcher import (
+                    flow_execution_worker_enabled,
+                )
+                from preloop.services.flow_execution_runner import evacuate_owned_claims
+
+                if flow_execution_worker_enabled():
+                    evacuated = await evacuate_owned_claims()
+                    logger.info(
+                        "Drain evacuated %s remaining owned claim(s)", evacuated
+                    )
+            except Exception as exc:
+                logger.error("Drain evacuate failed: %s", exc, exc_info=True)
+
     async def stop(self):
         logger.info("Worker stop signal received.")
+        await self.begin_drain()
         for subject, sub in self.subs:
             try:
                 await sub.unsubscribe()
@@ -258,13 +420,40 @@ class PreloopSyncNatsWorker:
         self.nc = None
 
 
-async def main(tasks_allowlist: Optional[List[str]] = None):
-    # Configuration should ideally come from environment variables or a config file
-    # Using preloop_settings.nats_url as an example, assuming it's accessible
-    # and correctly configured for Preloop Sync's environment.
-    # If Preloop Sync has its own settings management (e.g. preloop_sync_settings), use that.
+async def _run_boot_recovery(tasks_allowlist: Optional[List[str]]) -> None:
+    """Re-dispatch stale/unclaimed executions when this pool owns flow tasks."""
+    flow_tasks = FLOW_ORCHESTRATION_TASKS
+    allowlist_set = set(tasks_allowlist or [])
+    if allowlist_set and not (allowlist_set & flow_tasks):
+        return
+    try:
+        from preloop.services.flow_execution_dispatcher import (
+            flow_execution_worker_enabled,
+        )
+        from preloop.services.execution_recovery import get_recovery_service
+        from preloop.models.db.session import get_db_session
 
-    # Fallback to a default NATS URL if not found in settings, or make it mandatory.
+        if not flow_execution_worker_enabled():
+            return
+        recovery_service = get_recovery_service()
+        db = next(get_db_session())
+        try:
+            recovered = await recovery_service.recover_orphaned_executions(db)
+            logger.info(
+                "Flow-execution worker boot recovery dispatched %s execution(s)",
+                recovered,
+            )
+        finally:
+            db.close()
+    except Exception as recovery_error:
+        logger.error(
+            "Flow-execution worker recovery failed: %s",
+            recovery_error,
+            exc_info=True,
+        )
+
+
+async def main(tasks_allowlist: Optional[List[str]] = None):
     # Get NATS_URL directly from environment variables
     nats_server_url = os.getenv("NATS_URL", "nats://localhost:4222")
 
@@ -282,6 +471,8 @@ async def main(tasks_allowlist: Optional[List[str]] = None):
             "Flow execution updates will not be published to NATS, but worker will continue"
         )
 
+    await _run_boot_recovery(tasks_allowlist)
+
     queue = "preloop_sync_worker_queue"
 
     worker = PreloopSyncNatsWorker(
@@ -290,8 +481,40 @@ async def main(tasks_allowlist: Optional[List[str]] = None):
         tasks_allowlist=tasks_allowlist,
     )
 
+    loop = asyncio.get_running_loop()
+    drain_requested = asyncio.Event()
+
+    def _request_drain() -> None:
+        if not drain_requested.is_set():
+            logger.info("Received shutdown signal; beginning worker drain")
+            drain_requested.set()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, _request_drain)
+        except NotImplementedError:
+            # Windows / restricted environments
+            signal.signal(sig, lambda *_: _request_drain())
+
+    listen_task = asyncio.create_task(worker.start_listening())
+    drain_wait = asyncio.create_task(drain_requested.wait())
+
     try:
-        await worker.start_listening()
+        done, pending = await asyncio.wait(
+            {listen_task, drain_wait},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if drain_requested.is_set():
+            await worker.begin_drain()
+            if not listen_task.done():
+                listen_task.cancel()
+                try:
+                    await listen_task
+                except asyncio.CancelledError:
+                    pass
+        else:
+            # listen_task finished on its own
+            await listen_task
     except asyncio.CancelledError:
         logger.info("Worker task cancelled.")
     except ErrNoServers:
@@ -301,6 +524,7 @@ async def main(tasks_allowlist: Optional[List[str]] = None):
     except Exception as e:
         logger.error(f"NATS Worker encountered an unhandled error: {e}", exc_info=True)
     finally:
+        drain_wait.cancel()
         logger.info("NATS Worker shutting down...")
         await worker.stop()
         # Close the event bus service

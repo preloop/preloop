@@ -729,13 +729,15 @@ paths:
         schema:
           type: boolean
           description: When true, include per-model/flow/session/tool/day breakdowns.
-            Default false for lightweight card/summary callers; cost views should
-            pass true (or use /cost/summary).
-          default: false
+            Default true preserves the historical response shape for API clients;
+            lightweight card callers (Overview/Agents) should pass false. Prefer /cost/summary
+            for full cost analytics.
+          default: true
           title: Include Breakdown
         description: When true, include per-model/flow/session/tool/day breakdowns.
-          Default false for lightweight card/summary callers; cost views should pass
-          true (or use /cost/summary).
+          Default true preserves the historical response shape for API clients; lightweight
+          card callers (Overview/Agents) should pass false. Prefer /cost/summary for
+          full cost analytics.
       responses:
         '200':
           description: Successful Response

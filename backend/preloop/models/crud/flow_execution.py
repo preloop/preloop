@@ -378,3 +378,175 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         db.add(log_entry)
         if commit:
             db.commit()
+
+    ACTIVE_ORCHESTRATOR_STATUSES = (
+        "PENDING",
+        "INITIALIZING",
+        "STARTING",
+        "RUNNING",
+    )
+
+    def claim_execution(
+        self,
+        db: Session,
+        *,
+        execution_id: Any,
+        worker_id: str,
+        stale_after_seconds: int = 120,
+    ) -> Optional[FlowExecution]:
+        """Atomically claim an active execution for a worker.
+
+        Uses ``FOR UPDATE SKIP LOCKED`` so concurrent workers never double-claim.
+        An execution is claimable when unclaimed, claimed by this worker, or the
+        previous claim heartbeat is older than ``stale_after_seconds``.
+
+        Args:
+            db: Database session.
+            execution_id: Flow execution id.
+            worker_id: Stable id for the claiming worker (pod name / hostname).
+            stale_after_seconds: Seconds after last heartbeat before a claim is
+                considered abandoned.
+
+        Returns:
+            The claimed execution row, or ``None`` if another worker holds a
+            fresh claim or the execution is not claimable.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        from sqlalchemy import or_
+
+        now = datetime.now(timezone.utc)
+        stale_before = now - timedelta(seconds=max(1, stale_after_seconds))
+
+        row = (
+            db.query(FlowExecution)
+            .filter(
+                FlowExecution.id == execution_id,
+                FlowExecution.status.in_(self.ACTIVE_ORCHESTRATOR_STATUSES),
+                or_(
+                    FlowExecution.orchestrator_worker_id.is_(None),
+                    FlowExecution.orchestrator_worker_id == worker_id,
+                    FlowExecution.orchestrator_heartbeat_at.is_(None),
+                    FlowExecution.orchestrator_heartbeat_at < stale_before,
+                ),
+            )
+            .with_for_update(skip_locked=True)
+            .first()
+        )
+        if row is None:
+            return None
+
+        row.orchestrator_worker_id = worker_id
+        row.orchestrator_claimed_at = now
+        row.orchestrator_heartbeat_at = now
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        return row
+
+    def touch_heartbeat(
+        self,
+        db: Session,
+        *,
+        execution_id: Any,
+        worker_id: str,
+    ) -> bool:
+        """Refresh the claim heartbeat for the owning worker.
+
+        Returns:
+            True if the heartbeat was updated for this worker.
+        """
+        from datetime import datetime, timezone
+
+        row = (
+            db.query(FlowExecution)
+            .filter(
+                FlowExecution.id == execution_id,
+                FlowExecution.orchestrator_worker_id == worker_id,
+            )
+            .with_for_update()
+            .first()
+        )
+        if row is None:
+            return False
+        row.orchestrator_heartbeat_at = datetime.now(timezone.utc)
+        db.add(row)
+        db.commit()
+        return True
+
+    def release_claim(
+        self,
+        db: Session,
+        *,
+        execution_id: Any,
+        worker_id: Optional[str] = None,
+    ) -> bool:
+        """Clear orchestrator claim fields after terminal status or abort.
+
+        Args:
+            db: Database session.
+            execution_id: Flow execution id.
+            worker_id: When set, only release if this worker still owns the claim.
+
+        Returns:
+            True if a claim was cleared.
+        """
+        query = db.query(FlowExecution).filter(FlowExecution.id == execution_id)
+        if worker_id is not None:
+            query = query.filter(FlowExecution.orchestrator_worker_id == worker_id)
+        row = query.with_for_update().first()
+        if row is None:
+            return False
+        row.orchestrator_worker_id = None
+        row.orchestrator_claimed_at = None
+        row.orchestrator_heartbeat_at = None
+        db.add(row)
+        db.commit()
+        return True
+
+    def list_stale_or_unclaimed_active(
+        self,
+        db: Session,
+        *,
+        stale_after_seconds: int = 120,
+        limit: int = 200,
+    ) -> List[FlowExecution]:
+        """List active executions that need dispatch/resume (unclaimed or stale)."""
+        from datetime import datetime, timedelta, timezone
+
+        from sqlalchemy import or_
+
+        now = datetime.now(timezone.utc)
+        stale_before = now - timedelta(seconds=max(1, stale_after_seconds))
+        return (
+            db.query(FlowExecution)
+            .options(joinedload(FlowExecution.flow))
+            .filter(
+                FlowExecution.status.in_(self.ACTIVE_ORCHESTRATOR_STATUSES),
+                or_(
+                    FlowExecution.orchestrator_worker_id.is_(None),
+                    FlowExecution.orchestrator_heartbeat_at.is_(None),
+                    FlowExecution.orchestrator_heartbeat_at < stale_before,
+                ),
+            )
+            .order_by(FlowExecution.start_time.asc())
+            .limit(limit)
+            .all()
+        )
+
+    def list_claimed_by_worker(
+        self,
+        db: Session,
+        *,
+        worker_id: str,
+        active_only: bool = True,
+    ) -> List[FlowExecution]:
+        """List executions currently claimed by ``worker_id``."""
+        query = db.query(FlowExecution).filter(
+            FlowExecution.orchestrator_worker_id == worker_id
+        )
+        if active_only:
+            query = query.filter(
+                FlowExecution.status.in_(self.ACTIVE_ORCHESTRATOR_STATUSES)
+            )
+        return query.order_by(FlowExecution.start_time.asc()).all()
