@@ -2120,21 +2120,6 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
-  /api/v1/trackers/debug:
-    post:
-      tags:
-      - Trackers
-      summary: Debug Tracker Request
-      description: Debug endpoint to see raw request data
-      operationId: debug_tracker_request_api_v1_trackers_debug_post
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-      security:
-      - bearerAuth: []
   /api/v1/trackers:
     get:
       tags:

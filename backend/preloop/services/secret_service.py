@@ -86,6 +86,12 @@ class CredentialRefreshError(ValueError):
         self.status_code = status_code
         self.code = code
 
+    def safe_summary(self) -> str:
+        """Return a DB-safe summary that never embeds provider response bodies."""
+        status = self.status_code if self.status_code is not None else "?"
+        code = self.code or "unknown"
+        return f"{self.provider} refresh failed (status={status}, code={code})"
+
 
 class SecretBackend(Protocol):
     """Interface for secret backend adapters."""
@@ -551,7 +557,7 @@ class SecretService:
                         else {}
                     ),
                     "credential_type": OPENAI_CODEX_OAUTH_CREDENTIAL_TYPE,
-                    "last_refresh_error": str(exc),
+                    "last_refresh_error": exc.safe_summary(),
                     "last_refresh_status_code": exc.status_code,
                     "last_refresh_code": exc.code,
                     "last_refresh_failed_at": datetime.now(timezone.utc).isoformat(),
@@ -620,7 +626,7 @@ class SecretService:
                         else {}
                     ),
                     "credential_type": ANTHROPIC_CLAUDE_CODE_OAUTH_CREDENTIAL_TYPE,
-                    "last_refresh_error": str(exc),
+                    "last_refresh_error": exc.safe_summary(),
                     "last_refresh_status_code": exc.status_code,
                     "last_refresh_code": exc.code,
                     "last_refresh_failed_at": datetime.now(timezone.utc).isoformat(),
@@ -690,12 +696,18 @@ class SecretService:
                 payload = json.loads(response.read().decode("utf-8"))
         except urllib_error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "ignore")
+            code = self._extract_oauth_error_code(detail)
+            logger.warning(
+                "Anthropic Claude Code OAuth refresh HTTP %s (code=%s)",
+                exc.code,
+                code,
+            )
             raise CredentialRefreshError(
-                "Anthropic Claude Code OAuth token refresh failed with status "
-                f"{exc.code}: {detail}",
+                f"Anthropic Claude Code OAuth token refresh failed with status "
+                f"{exc.code}",
                 provider="anthropic",
                 status_code=exc.code,
-                code=self._extract_oauth_error_code(detail),
+                code=code,
             ) from exc
         except urllib_error.URLError as exc:
             raise CredentialRefreshError(
@@ -755,11 +767,17 @@ class SecretService:
                 payload = json.loads(response.read().decode("utf-8"))
         except urllib_error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "ignore")
+            code = self._extract_oauth_error_code(detail)
+            logger.warning(
+                "OpenAI Codex OAuth refresh HTTP %s (code=%s)",
+                exc.code,
+                code,
+            )
             raise CredentialRefreshError(
-                f"OpenAI Codex token refresh failed with status {exc.code}: {detail}",
+                f"OpenAI Codex token refresh failed with status {exc.code}",
                 provider="openai",
                 status_code=exc.code,
-                code=self._extract_oauth_error_code(detail),
+                code=code,
             ) from exc
         except urllib_error.URLError as exc:
             raise CredentialRefreshError(

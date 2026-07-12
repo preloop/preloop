@@ -65,18 +65,6 @@ class TrackerCreateResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-@router.post("/trackers/debug")
-async def debug_tracker_request(request: Request):
-    """Debug endpoint to see raw request data"""
-    try:
-        body = await request.json()
-        print("DEBUG REQUEST BODY:", body)
-        return {"received": body}
-    except Exception as e:
-        print("DEBUG ERROR:", str(e))
-        return {"error": str(e)}
-
-
 @router.post(
     "/trackers",
     status_code=status.HTTP_201_CREATED,

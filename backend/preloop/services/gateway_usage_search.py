@@ -12,6 +12,7 @@ from preloop.models.models.api_usage import ApiUsage
 from preloop.models.models.gateway_usage_search_document import (
     GatewayUsageSearchDocument,
 )
+from preloop.utils.request_fingerprint import public_request_fingerprint
 
 
 class GatewayUsageSearchService:
@@ -91,7 +92,9 @@ class GatewayUsageSearchService:
             "status_code": usage.status_code,
             "provider_name": usage.provider_name,
             "model_alias": usage.model_alias,
-            "request_fingerprint": usage_meta.get("request_fingerprint"),
+            "request_fingerprint": public_request_fingerprint(
+                usage_meta.get("request_fingerprint")
+            ),
             "gateway_attempt": usage_meta.get("gateway_attempt"),
             "is_retry": usage_meta.get("is_retry"),
             "retry_of_api_usage_id": usage_meta.get("retry_of_api_usage_id"),

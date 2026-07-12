@@ -132,6 +132,7 @@ def reprice_gateway_usage(
     model_cache: Dict[str, Optional[AIModel]] = {}
     override_cache: Dict[str, Optional[dict]] = {}
     repriced_at = datetime.now(timezone.utc).isoformat()
+    pending_updates = 0
 
     for row in crud_api_usage.iter_gateway_rows_for_repricing(
         db,
@@ -162,7 +163,8 @@ def reprice_gateway_usage(
             result.cost_after += float(row.estimated_cost or 0.0)
             continue
 
-        override_key = f"{model_id}:{row.model_alias or ''}"
+        # Use a unit separator so aliases containing ":" cannot collide.
+        override_key = f"{model_id}\x1f{row.model_alias or ''}"
         if override_key not in override_cache:
             override_cache[override_key] = resolve_pricing_override(
                 db,
@@ -207,7 +209,15 @@ def reprice_gateway_usage(
                 "previous_estimated_cost": row.estimated_cost,
                 "previous_cost_source": row.cost_source,
             },
+            commit=False,
         )
+        pending_updates += 1
+        if pending_updates >= batch_size:
+            db.commit()
+            pending_updates = 0
+
+    if pending_updates and not dry_run:
+        db.commit()
 
     logger.info(
         "Repriced gateway usage for account %s: examined=%s updated=%s "

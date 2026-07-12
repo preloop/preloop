@@ -71,7 +71,7 @@ def test_run_tracker_credential_encryption_backfill_migrates_candidates(
         "preloop.services.tracker_credential_backfill.get_session_factory",
         lambda: _Factory(),
     )
-    # Avoid closing the shared test session.
+    # Avoid closing the shared test session (list + migrate + final close).
     monkeypatch.setattr(db_session, "close", lambda: None)
 
     counts = run_tracker_credential_encryption_backfill()
@@ -101,3 +101,44 @@ def test_backfill_skips_already_encrypted_trackers(db_session, create_account) -
 
     candidates = crud_tracker.list_plaintext_credential_candidates(db_session)
     assert all(row.id != tracker.id for row in candidates)
+
+
+def test_backfill_continues_after_partial_failure(
+    db_session, create_account, monkeypatch
+) -> None:
+    """One tracker failure must not abort remaining candidates."""
+    account = create_account()
+    bad = _insert_plaintext_tracker(db_session, account.id, name="Bad Tracker")
+    good = _insert_plaintext_tracker(db_session, account.id, name="Good Tracker")
+
+    class _Factory:
+        def __call__(self):
+            return db_session
+
+    monkeypatch.setattr(
+        "preloop.services.tracker_credential_backfill.get_session_factory",
+        lambda: _Factory(),
+    )
+    monkeypatch.setattr(db_session, "close", lambda: None)
+
+    original = crud_tracker.migrate_plaintext_credentials
+
+    def _flaky_migrate(db, *, tracker, commit=True):
+        if tracker.id == bad.id:
+            raise RuntimeError("simulated encryption failure")
+        return original(db, tracker=tracker, commit=commit)
+
+    monkeypatch.setattr(
+        "preloop.services.tracker_credential_backfill.crud_tracker.migrate_plaintext_credentials",
+        _flaky_migrate,
+    )
+
+    counts = run_tracker_credential_encryption_backfill()
+
+    assert counts["scanned"] >= 2
+    assert counts["migrated_api_keys"] >= 1
+    db_session.refresh(good)
+    assert good.api_key is None
+    assert good.credentials_secret_id is not None
+    db_session.refresh(bad)
+    assert bad.api_key == "plaintext-api-key"

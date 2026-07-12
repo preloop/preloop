@@ -36,6 +36,7 @@ from preloop.schemas.gateway_usage import (
     RuntimeSessionSummary,
 )
 from preloop.services.model_gateway_usage import ModelGatewayUsageService
+from preloop.utils.request_fingerprint import public_request_fingerprint
 
 logger = logging.getLogger(__name__)
 
@@ -811,7 +812,9 @@ class RuntimeSessionExplorerService:
                     api_key_name=interaction.api_key_name,
                     estimated_cost=interaction.estimated_cost,
                     total_tokens=interaction.token_usage.total_tokens,
-                    request_fingerprint=meta_data.get("request_fingerprint"),
+                    request_fingerprint=public_request_fingerprint(
+                        meta_data.get("request_fingerprint")
+                    ),
                     gateway_attempt=gateway_attempt,
                     is_retry=self._parse_bool(meta_data.get("is_retry")),
                     retry_of_api_usage_id=meta_data.get("retry_of_api_usage_id"),
@@ -850,8 +853,8 @@ class RuntimeSessionExplorerService:
                     total_tokens=self._parse_optional_int(
                         (activity.metadata_ or {}).get("total_tokens")
                     ),
-                    request_fingerprint=(activity.metadata_ or {}).get(
-                        "request_fingerprint"
+                    request_fingerprint=public_request_fingerprint(
+                        (activity.metadata_ or {}).get("request_fingerprint")
                     ),
                     gateway_attempt=self._parse_optional_int(
                         (activity.metadata_ or {}).get("gateway_attempt")

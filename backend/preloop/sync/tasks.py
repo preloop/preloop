@@ -2,35 +2,47 @@ from preloop.sync.config import logger
 from preloop.models.db.session import get_db_session
 from preloop.models.crud import crud_tracker
 from preloop.sync.scanner.core import scan_tracker
+from datetime import datetime
+from typing import Any, Optional, Union
 
 
-def scan_tracker_task(tracker_id: int, since=None, force_update=False):
-    return poll_tracker(tracker_id, since, force_update)
+async def scan_tracker_task(
+    tracker_id: Union[int, str],
+    since: Optional[datetime] = None,
+    force_update: bool = False,
+) -> Optional[dict[str, Any]]:
+    return await poll_tracker(tracker_id, since, force_update)
 
 
-async def poll_tracker(tracker_id: int, since=None, force_update=False):
-    logger.info(f"Starting scan for tracker {tracker_id}")
+async def poll_tracker(
+    tracker_id: Union[int, str],
+    since: Optional[datetime] = None,
+    force_update: bool = False,
+) -> Optional[dict[str, Any]]:
+    logger.info("Starting scan for tracker %s", tracker_id)
     db = next(get_db_session())
     try:
         tracker = crud_tracker.get(db, id=tracker_id)
         if not tracker:
-            logger.error(f"Tracker {tracker_id} not found")
+            logger.error("Tracker %s not found", tracker_id)
             return None
 
         # Await the async scan_tracker directly
         stats = await scan_tracker(db, tracker, since=since, force_update=force_update)
         crud_tracker.validate(db, id=tracker_id, is_valid=True)
-        logger.info(f"Scan for tracker {tracker_id} completed. Stats: {stats}")
+        logger.info("Scan for tracker %s completed. Stats: %s", tracker_id, stats)
         return stats
     except Exception as e:
-        logger.error(f"Error scanning tracker {tracker_id}: {e}", exc_info=True)
+        logger.error("Error scanning tracker %s: %s", tracker_id, e, exc_info=True)
         crud_tracker.validate(db, id=tracker_id, is_valid=False, message=str(e))
         return None
     finally:
         db.close()
 
 
-def notify_admins(subject: str, message: str, message_html: str = None):
+def notify_admins(
+    subject: str, message: str, message_html: Optional[str] = None
+) -> None:
     """Send admin notifications via email, Slack, and Mattermost.
 
     Skips all notifications during testing (when TESTING=true environment variable is set).
@@ -96,7 +108,7 @@ def notify_admins(subject: str, message: str, message_html: str = None):
             logger.error(f"Failed to send Mattermost notification: {e}")
 
 
-def serialize_uuids(obj):
+def serialize_uuids(obj: Any) -> Any:
     """
     Recursively convert UUID objects to strings in a dictionary or list.
     This ensures UUIDs can be serialized to JSON for JSONB fields.
@@ -116,8 +128,11 @@ def serialize_uuids(obj):
 
 
 async def process_webhook_event(
-    tracker_id: int, event_type: str, payload: dict, **kwargs
-):
+    tracker_id: int,
+    event_type: str,
+    payload: dict[str, Any],
+    **kwargs: Any,
+) -> None:
     """
     This task is triggered when a webhook event is received from a tracker.
     It uses the FlowTriggerService to check if any flows should be initiated.
@@ -271,7 +286,7 @@ def send_optimization_digest(account_id: str | None = None) -> object | None:
         db.close()
 
 
-async def cleanup_tracker_webhooks(tracker_id: str):
+async def cleanup_tracker_webhooks(tracker_id: str) -> None:
     """
     Clean up webhooks when a tracker is deleted.
 

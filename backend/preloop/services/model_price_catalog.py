@@ -9,8 +9,8 @@ version happens to be installed.
 The snapshot is deliberately small (current chat models only), so a model can
 legitimately be missing from it. When the gateway records an ``unpriced``
 usage row, :func:`schedule_price_lookup` fetches the model's price from the
-live upstream map ONCE in a background thread, registers it with litellm, and
-re-prices the triggering row. Lookups are throttled hard:
+live upstream map ONCE via a bounded background pool, registers it with
+litellm, and re-prices the triggering row. Lookups are throttled hard:
 
 - the downloaded upstream map is cached in-process for ``_REMOTE_TTL_SECONDS``,
 - failed downloads back off for ``_REMOTE_FAILURE_BACKOFF_SECONDS``,
@@ -27,6 +27,7 @@ import logging
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -64,8 +65,16 @@ _remote_fetched_at: float = 0.0
 _remote_failed_at: float = 0.0
 # candidate name -> monotonic time of the failed lookup (negative cache).
 _negative_cache: Dict[str, float] = {}
-# candidate names with a lookup thread currently in flight.
+# candidate names with a lookup currently in flight.
 _pending_lookups: set[str] = set()
+# Bound concurrent live lookups so unknown models cannot spawn unbounded threads.
+_LOOKUP_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="price-lookup")
+
+
+def _model_log_token(model_name: str) -> str:
+    """Return a stable log token that never embeds the raw model name."""
+    digest = hashlib.sha256(model_name.encode("utf-8", errors="replace")).hexdigest()
+    return f"model#{digest[:12]}"
 
 
 def load_catalog(path: Optional[Path] = None, *, force: bool = False) -> bool:
@@ -171,7 +180,14 @@ def _fetch_remote_price_map() -> Optional[Dict[str, Any]]:
         ):
             return None
 
-    import httpx
+    try:
+        import httpx
+    except ImportError:
+        # Optional dependency for live lookups; do not retry a missing module.
+        logger.warning("httpx is unavailable; skipping live model price lookup")
+        with _lookup_lock:
+            _remote_failed_at = time.monotonic()
+        return None
 
     last_error: Optional[BaseException] = None
     for attempt in range(max(1, _REMOTE_FETCH_RETRIES + 1)):
@@ -255,12 +271,15 @@ def lookup_model_price_now(candidates: List[str]) -> Optional[str]:
                 litellm.register_model({candidate: entry})
                 matched_key = candidate
                 logger.info(
-                    "Live price lookup registered model %s from upstream map",
-                    candidate,
+                    "Live price lookup registered %s from upstream map",
+                    _model_log_token(candidate),
                 )
                 break
             except Exception:  # noqa: BLE001
-                logger.exception("Failed to register live price for %s", candidate)
+                logger.exception(
+                    "Failed to register live price for %s",
+                    _model_log_token(candidate),
+                )
                 return None
 
     with _lookup_lock:
@@ -275,16 +294,17 @@ def schedule_price_lookup(*, ai_model: Any, api_usage_id: Optional[str] = None) 
     """Schedule a one-shot background price lookup for an unpriced model.
 
     Fired from the gateway recording path when a usage row lands as
-    ``unpriced``. Runs off the hot path in a daemon thread; when the lookup
-    succeeds and ``api_usage_id`` is given, the triggering row is re-priced
-    in place. De-duplicated against in-flight lookups and the negative cache.
+    ``unpriced``. Runs off the hot path via a bounded thread pool; when the
+    lookup succeeds and ``api_usage_id`` is given, the triggering row is
+    re-priced in place. De-duplicated against in-flight lookups and the
+    negative cache.
 
     Args:
         ai_model: The AIModel the request was routed to.
         api_usage_id: The unpriced ``ApiUsage`` row to fix on success.
 
     Returns:
-        True when a lookup thread was started.
+        True when a lookup was submitted to the pool.
     """
     import os
 
@@ -302,6 +322,7 @@ def schedule_price_lookup(*, ai_model: Any, api_usage_id: Optional[str] = None) 
         return False
 
     dedupe_key = candidates[0]
+    log_token = _model_log_token(dedupe_key)
     now = time.monotonic()
     with _lookup_lock:
         if dedupe_key in _pending_lookups:
@@ -320,14 +341,12 @@ def schedule_price_lookup(*, ai_model: Any, api_usage_id: Optional[str] = None) 
             if matched and api_usage_id:
                 _reprice_usage_row(api_usage_id)
         except Exception:  # noqa: BLE001 - background best-effort
-            logger.exception("Live price lookup failed for %s", dedupe_key)
+            logger.exception("Live price lookup failed for %s", log_token)
         finally:
             with _lookup_lock:
                 _pending_lookups.discard(dedupe_key)
 
-    threading.Thread(
-        target=_run, name=f"price-lookup-{dedupe_key}", daemon=True
-    ).start()
+    _LOOKUP_EXECUTOR.submit(_run)
     return True
 
 

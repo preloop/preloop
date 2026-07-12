@@ -195,14 +195,16 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             from .budget import record_spend_for_request
 
             try:
-                import uuid
-
                 parsed_account_id = (
                     account_id
                     if isinstance(account_id, uuid.UUID)
                     else uuid.UUID(str(account_id))
                 )
+            except (ValueError, TypeError, AttributeError):
+                # account_id is not a valid UUID — skip budget recording only.
+                parsed_account_id = None
 
+            if parsed_account_id is not None:
                 subject_scopes: list[tuple[str, Optional[str]]] = []
                 if api_key_id:
                     subject_scopes.append(("api_key", str(api_key_id)))
@@ -232,8 +234,6 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                     timestamp=db_obj.timestamp,
                     subject_scopes=subject_scopes,
                 )
-            except ValueError:
-                pass  # account_id is not a valid UUID, so skip budget recording
 
         db.commit()
         db.refresh(db_obj)
@@ -334,6 +334,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         cost_source: Optional[str],
         currency: Optional[str] = "USD",
         meta_data_patch: Optional[Dict[str, Any]] = None,
+        commit: bool = True,
     ) -> Optional[ApiUsage]:
         """Update cost columns on an existing usage row without budget effects.
 
@@ -348,6 +349,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             currency: ISO-4217 code of the new cost (defaults to USD).
             meta_data_patch: Keys merged into ``meta_data`` (existing keys win
                 only when absent from the patch).
+            commit: When False, flush only so callers can batch commits.
 
         Returns:
             The updated row, or None when the row does not exist.
@@ -364,8 +366,15 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             merged.update(meta_data_patch)
             db_obj.meta_data = merged
 
-        db.commit()
-        db.refresh(db_obj)
+        if commit:
+            try:
+                db.commit()
+                db.refresh(db_obj)
+            except Exception:
+                db.rollback()
+                raise
+        else:
+            db.flush()
         return db_obj
 
     def get_gateway_attempt_summary(
@@ -499,8 +508,14 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
         account_id: Optional[str] = None,
+        limit: int = 100_000,
     ) -> List[ApiUsage]:
-        """Get API usage for a user with optional date filters."""
+        """Get API usage for a user with optional date filters.
+
+        Caps the result set at ``limit`` to avoid unbounded memory use for
+        accounts with very large histories. Callers that need full aggregates
+        over huge windows should use SQL aggregations instead.
+        """
         query = (
             db.query(ApiUsage)
             .join(User, ApiUsage.user_id == User.id)
@@ -515,7 +530,11 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         if account_id:
             query = query.filter(User.account_id == account_id)
 
-        return query.all()
+        return (
+            query.order_by(ApiUsage.timestamp.desc(), ApiUsage.id.desc())
+            .limit(limit)
+            .all()
+        )
 
     def get_gateway_usage_summary(
         self,
@@ -608,7 +627,19 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 or_(ApiUsage.is_retry.is_(None), ApiUsage.is_retry.is_(False))
             )
 
-        row = query.one()
+        row = query.one_or_none()
+        if row is None:
+            return {
+                "request_count": 0,
+                "success_count": 0,
+                "error_count": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "estimated_cost": 0.0,
+                "unpriced_requests": 0,
+                "unpriced_tokens": 0,
+            }
         return {
             "request_count": int(row.request_count or 0),
             "success_count": int(row.success_count or 0),
@@ -650,6 +681,9 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 "estimated_cost"
             ),
         ).filter(
+            # Aggregate by model identity; aliases that share ai_model_id still
+            # appear as separate groups when model_alias differs (intentional —
+            # callers often filter/sort by the client-visible alias).
             ApiUsage.action_type == "model_gateway",
             ApiUsage.account_id == account_id,
             exclude_replay_usage_condition(),
@@ -1165,9 +1199,10 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         if not account or not account.users:
             return 0
 
-        # Get API usage for the execution timeframe
+        # Get API usage for the execution timeframe (gateway traffic only).
         query = db.query(ApiUsage).filter(
             ApiUsage.user_id.in_([u.id for u in account.users]),
+            ApiUsage.action_type == "model_gateway",
             ApiUsage.timestamp >= execution.start_time,
         )
 
@@ -1582,8 +1617,20 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 exclude_replay_usage_condition(),
                 ApiUsage.timestamp >= start,
             )
-            .one()
+            .one_or_none()
         )
+        if row is None:
+            return {
+                "total_rows": 0,
+                "success_rows": 0,
+                "streaming_rows": 0,
+                "streaming_rows_with_tokens": 0,
+                "priceable_rows": 0,
+                "priced_rows": 0,
+                "unpriced_source_rows": 0,
+                "usage_source_rows": 0,
+                "provider_usage_rows": 0,
+            }
         return {
             "total_rows": int(row.total_rows or 0),
             "success_rows": int(row.success_rows or 0),

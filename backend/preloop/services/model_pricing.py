@@ -91,8 +91,10 @@ class CostEstimate:
     """A cost estimate with its pricing provenance.
 
     ``source`` values: ``override`` (account price override), ``model_config``
-    (pricing stored on the AIModel), ``catalog`` (vendored/litellm list
-    price), ``unpriced`` (no price could be resolved; ``cost`` is None).
+    (pricing stored on the AIModel), ``catalog`` (Preloop's vendored price
+    snapshot, which may fall back to litellm's bundled map for models absent
+    from the snapshot), ``unpriced`` (no price could be resolved; ``cost`` is
+    None).
     """
 
     cost: Optional[float]

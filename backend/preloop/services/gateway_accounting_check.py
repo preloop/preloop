@@ -151,7 +151,7 @@ def _audit_events_check(
             "audit_log table not present (audit plugin not installed)",
         )
     count = crud_audit_log.count_by_account(db, account_id=account_id, start_date=start)
-    if count and count > 0:
+    if count > 0:
         return _check(
             "audit_events_present",
             "pass",
@@ -180,9 +180,28 @@ def run_accounting_checks(
         passes, else skip).
     """
     start = datetime.now(timezone.utc) - timedelta(hours=window_hours)
-    counters = crud_api_usage.get_accounting_health_counters(
-        db, account_id=account_id, start=start
-    )
+    try:
+        counters = crud_api_usage.get_accounting_health_counters(
+            db, account_id=account_id, start=start
+        )
+    except SQLAlchemyError as exc:
+        # Health checks must report degraded state, not crash the endpoint.
+        logger.warning(
+            "Gateway accounting health counter query failed: %s",
+            exc,
+            exc_info=True,
+        )
+        return {
+            "window_hours": window_hours,
+            "checks": [
+                _check(
+                    "gateway_traffic_seen",
+                    "fail",
+                    f"accounting counter query failed: {exc.__class__.__name__}",
+                )
+            ],
+            "status": "fail",
+        }
 
     checks: List[Dict[str, str]] = []
     total = counters["total_rows"]
@@ -197,7 +216,21 @@ def run_accounting_checks(
         checks.append(_streaming_check(counters))
         checks.append(_costs_priced_check(counters))
         checks.append(_usage_source_check(counters))
-        checks.append(_audit_events_check(db, account_id=account_id, start=start))
+        try:
+            checks.append(_audit_events_check(db, account_id=account_id, start=start))
+        except SQLAlchemyError as exc:
+            logger.warning(
+                "Gateway accounting audit check failed: %s",
+                exc,
+                exc_info=True,
+            )
+            checks.append(
+                _check(
+                    "audit_events_present",
+                    "fail",
+                    f"audit event query failed: {exc.__class__.__name__}",
+                )
+            )
     else:
         checks.append(_check("gateway_traffic_seen", "skip", NO_TRAFFIC_DETAIL))
         for key in (

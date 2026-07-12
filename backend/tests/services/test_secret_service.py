@@ -300,6 +300,10 @@ def test_resolve_ai_model_credentials_marks_openai_codex_refresh_failure(
         ai_model.credentials_secret.meta_data["last_refresh_code"]
         == "refresh_token_reused"
     )
+    assert (
+        ai_model.credentials_secret.meta_data["last_refresh_error"]
+        == "openai refresh failed (status=401, code=refresh_token_reused)"
+    )
 
 
 def test_refresh_anthropic_claude_code_token_uses_claude_code_request_shape():

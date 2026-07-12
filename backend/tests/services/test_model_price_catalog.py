@@ -121,6 +121,23 @@ def test_remote_fetch_failure_backs_off(monkeypatch) -> None:
     assert calls["count"] == expected_attempts  # second call sits out backoff
 
 
+def test_lookup_model_price_now_registers_match(monkeypatch) -> None:
+    """Live lookup path registers a matched remote price with litellm."""
+    model_price_catalog.reset_lookup_state_for_tests()
+    remote = {
+        "openai/live-lookup-model": {
+            "litellm_provider": "openai",
+            "mode": "chat",
+            "input_cost_per_token": 0.000001,
+            "output_cost_per_token": 0.000002,
+        }
+    }
+    monkeypatch.setattr(model_price_catalog, "_fetch_remote_price_map", lambda: remote)
+    matched = model_price_catalog.lookup_model_price_now(["openai/live-lookup-model"])
+    assert matched == "openai/live-lookup-model"
+    assert "openai/live-lookup-model" in litellm.model_cost
+
+
 def test_schedule_price_lookup_disabled_under_testing() -> None:
     """The background scheduler is inert in test runs (TESTING=true)."""
     model_price_catalog.reset_lookup_state_for_tests()
@@ -133,3 +150,45 @@ def test_schedule_price_lookup_disabled_under_testing() -> None:
         model_parameters=None,
     )
     assert model_price_catalog.schedule_price_lookup(ai_model=ai_model) is False
+
+
+def test_model_log_token_hides_raw_name() -> None:
+    """Log tokens are stable hashes and never embed the raw model name."""
+    raw = "secret-customer-model/v1"
+    token = model_price_catalog._model_log_token(raw)
+    assert token.startswith("model#")
+    assert raw not in token
+    assert model_price_catalog._model_log_token(raw) == token
+
+
+def test_schedule_price_lookup_uses_bounded_executor(monkeypatch) -> None:
+    """Live lookups submit to the shared pool instead of spawning raw threads."""
+    model_price_catalog.reset_lookup_state_for_tests()
+    monkeypatch.setenv("TESTING", "false")
+
+    from types import SimpleNamespace
+
+    class _Settings:
+        model_price_live_lookup_enabled = True
+
+    import preloop.config as config_mod
+
+    monkeypatch.setattr(config_mod, "settings", _Settings())
+
+    submitted: list[object] = []
+
+    def _fake_submit(fn):
+        submitted.append(fn)
+        return object()
+
+    monkeypatch.setattr(model_price_catalog._LOOKUP_EXECUTOR, "submit", _fake_submit)
+
+    ai_model = SimpleNamespace(
+        provider_name="openai",
+        model_identifier="executor-test-model",
+        meta_data=None,
+        model_parameters=None,
+    )
+    assert model_price_catalog.schedule_price_lookup(ai_model=ai_model) is True
+    assert len(submitted) == 1
+    assert "executor-test-model" in model_price_catalog._pending_lookups

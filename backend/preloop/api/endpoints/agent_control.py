@@ -13,8 +13,10 @@ from typing import Any, Optional
 import nats.errors
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
+from pydantic_core import PydanticSerializationError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import ObjectDeletedError, StaleDataError
 from starlette import status
 
 from preloop.api.auth import get_current_active_user
@@ -63,6 +65,9 @@ _NATS_DELIVERY_ERRORS = (
     asyncio.TimeoutError,
 )
 _DB_DELIVERY_ERRORS = (SQLAlchemyError,)
+# Agent/session vanished under the live WebSocket (deleted row or concurrent
+# modification). Distinct from transient DB failures so logs stay accurate.
+_AGENT_GONE_ERRORS = (ObjectDeletedError, StaleDataError)
 _WS_DELIVERY_ERRORS = (
     WebSocketDisconnect,
     OSError,
@@ -71,6 +76,12 @@ _WS_DELIVERY_ERRORS = (
     ValueError,
     json.JSONDecodeError,
     UnicodeDecodeError,
+)
+_SERIALIZATION_ERRORS = (
+    TypeError,
+    ValueError,
+    OverflowError,
+    PydanticSerializationError,
 )
 
 HEARTBEAT_TOUCH_INTERVAL = timedelta(seconds=15)
@@ -195,7 +206,29 @@ class AgentControlConnectionManager:
             websocket = self._connections.get(connection_id or "")
         if websocket is None:
             return False
-        await websocket.send_json(envelope.model_dump(mode="json"))
+        try:
+            payload = envelope.model_dump(mode="json")
+        except _SERIALIZATION_ERRORS:
+            logger.exception(
+                "Failed to serialize Agent Control envelope for agent %s; "
+                "sending minimal fallback",
+                managed_agent_id,
+            )
+            payload = {
+                "type": getattr(envelope, "type", "error"),
+                "name": "serialization_error",
+                "message_id": getattr(envelope, "message_id", None),
+                "managed_agent_id": managed_agent_id,
+                "payload": {"error": "envelope_serialization_failed"},
+            }
+        try:
+            await websocket.send_json(payload)
+        except _WS_DELIVERY_ERRORS:
+            logger.exception(
+                "Failed to send Agent Control envelope to agent %s",
+                managed_agent_id,
+            )
+            return False
         return True
 
 
@@ -592,6 +625,41 @@ def _handle_command_ack(
         logger.exception("Failed to mark Agent Control command %s acked", command_id)
 
 
+_AGENT_CONTROL_TRUNCATE_KEYS = frozenset(
+    {"result", "reply_text", "error", "message", "text", "output"}
+)
+_MAX_AGENT_CONTROL_PAYLOAD_CHARS = 4096
+
+
+def _sanitize_agent_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Redact secrets and truncate bulky agent output before emit/persist."""
+    from preloop.utils.redaction import redact_dict
+
+    safe = redact_dict(payload)
+    if not isinstance(safe, dict):
+        return {}
+    sanitized: dict[str, Any] = {}
+    for key, value in safe.items():
+        if key in _AGENT_CONTROL_TRUNCATE_KEYS and isinstance(value, str):
+            if len(value) > _MAX_AGENT_CONTROL_PAYLOAD_CHARS:
+                sanitized[key] = (
+                    value[:_MAX_AGENT_CONTROL_PAYLOAD_CHARS] + "...[truncated]"
+                )
+            else:
+                sanitized[key] = value
+        elif key == "result" and not isinstance(
+            value, (str, int, float, bool, type(None))
+        ):
+            # Drop bulky structured results from realtime/audit surfaces.
+            sanitized[key] = {
+                "_omitted": "structured_result",
+                "type": type(value).__name__,
+            }
+        else:
+            sanitized[key] = value
+    return sanitized
+
+
 def _persist_agent_control_result(
     db: Session,
     context: RuntimeBearerAuthContext,
@@ -624,7 +692,7 @@ def _persist_agent_control_result(
         fallback_runtime_session_id=context.runtime_session.id,
         status=result_status,
         message=message,
-        metadata=inbound.payload,
+        metadata=_sanitize_agent_control_payload(inbound.payload),
     )
 
 
@@ -646,7 +714,7 @@ async def _emit_agent_message(
             payload={
                 "name": inbound.name or inbound.type,
                 "message_id": inbound.message_id,
-                "agent_payload": inbound.payload,
+                "agent_payload": _sanitize_agent_control_payload(inbound.payload),
             },
             managed_agent_id=connection.managed_agent_id,
             runtime_session_id=connection.runtime_session_id,
@@ -736,13 +804,37 @@ async def managed_agent_control_websocket(
                 )
                 continue
 
+            agent = crud_managed_agent.get_for_account(
+                db,
+                account_id=connection.account_id,
+                agent_id=connection.managed_agent_id,
+            )
+            if agent is None or agent.lifecycle_state in {
+                "suspended",
+                "decommissioned",
+            }:
+                logger.info(
+                    "Managed agent %s deleted or inactive during control "
+                    "websocket; closing",
+                    connection.managed_agent_id,
+                )
+                break
+
             try:
                 _touch_presence(db, context, observed_at=datetime.now(UTC))
                 _mark_control_verified_from_capabilities(db, context, inbound)
-            except Exception:
+            except _AGENT_GONE_ERRORS:
                 logger.info(
                     "Managed agent %s deleted during control websocket; closing",
                     connection.managed_agent_id,
+                )
+                break
+            except _DB_DELIVERY_ERRORS:
+                logger.warning(
+                    "Managed agent %s presence/capability DB update failed; "
+                    "closing control websocket",
+                    connection.managed_agent_id,
+                    exc_info=True,
                 )
                 break
             _handle_command_ack(db, connection, inbound)
@@ -767,8 +859,6 @@ async def managed_agent_control_websocket(
                     "Failed to unsubscribe agent command subscription",
                     exc_info=True,
                 )
-            finally:
-                command_subscription = None
         removed_active = await agent_control_manager.disconnect(connection_id)
         if removed_active:
             crud_managed_agent.clear_runtime_session_binding(
@@ -957,20 +1047,24 @@ async def _route_managed_agent_prompt(
         # so the row stays pending here.
         subject = await _publish_command(envelope)
         if subject is None:
+            # Savepoint so a failed mark_failed cannot roll back the already
+            # committed create_command (or other outer session work).
             try:
-                crud_agent_control_command.mark_failed(
-                    db,
-                    account_id=str(agent.account_id),
-                    managed_agent_id=str(agent.id),
-                    command_id=envelope.message_id,
-                    error="Managed agent command channel is unavailable",
-                )
-            except Exception:
+                with db.begin_nested():
+                    crud_agent_control_command.mark_failed(
+                        db,
+                        account_id=str(agent.account_id),
+                        managed_agent_id=str(agent.id),
+                        command_id=envelope.message_id,
+                        error="Managed agent command channel is unavailable",
+                        commit=False,
+                    )
+                db.commit()
+            except _DB_DELIVERY_ERRORS:
                 logger.exception(
                     "Failed to mark Agent Control command %s failed",
                     envelope.message_id,
                 )
-                db.rollback()
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Managed agent command channel is unavailable",

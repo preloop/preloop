@@ -395,11 +395,20 @@ class ModelGatewayBudgetService:
         """Return account pricing override for preflight cost estimates."""
         from preloop.services.pricing_overrides import resolve_pricing_override
 
+        raw_model = payload.get("model")
+        requested_alias = None
+        if isinstance(raw_model, str):
+            # Bound and sanitize client-supplied model names before lookup /
+            # logging paths touch them.
+            cleaned = raw_model.strip()[:128]
+            if cleaned and all(ord(ch) >= 32 for ch in cleaned):
+                requested_alias = cleaned
+
         return resolve_pricing_override(
             self.db,
             account_id=self.auth_context.user.account_id,
             ai_model=ai_model,
-            requested_alias=payload.get("model"),
+            requested_alias=requested_alias,
         )
 
     @staticmethod

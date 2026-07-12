@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, TypedDict, Union
 
 from sqlalchemy import inspect
 from sqlalchemy.exc import SQLAlchemyError
@@ -22,13 +22,32 @@ from preloop.models.models.ai_model import AIModel
 logger = logging.getLogger(__name__)
 
 
+class PricingOverrideDict(TypedDict, total=False):
+    """Normalized pricing fields returned by :func:`resolve_pricing_override`."""
+
+    id: str
+    currency: str
+    input_price_per_1k: float
+    output_price_per_1k: float
+    cache_read_input_price_per_1k: float
+    cache_creation_input_price_per_1k: float
+    price_per_1k: float
+    request_price: float
+    discount_percent: float
+    prepaid_token_balance: float
+    prepaid_credit_balance_usd: float
+    original_currency: str
+    fx_rate_to_usd: float
+    original_prices: Dict[str, float]
+
+
 def resolve_pricing_override(
     db: Session,
     *,
     account_id: Union[uuid.UUID, str],
     ai_model: AIModel,
     requested_alias: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
+) -> Optional[PricingOverrideDict]:
     """Resolve the active pricing override for one model request.
 
     Canonical alias precedence: the model's configured gateway alias first,
@@ -59,18 +78,16 @@ def resolve_pricing_override(
     gateway_config: Dict[str, Any] = (
         raw_gateway_config if isinstance(raw_gateway_config, dict) else {}
     )
-    alias_candidates = []
+    alias_candidates: list[str] = []
     for alias in (
         gateway_config.get("model_alias"),
         requested_alias,
         ai_model.model_identifier,
     ):
-        if (
-            isinstance(alias, str)
-            and alias.strip()
-            and alias.strip() not in alias_candidates
-        ):
-            alias_candidates.append(alias.strip())
+        if isinstance(alias, str):
+            normalized = alias.strip()
+            if normalized and normalized not in alias_candidates:
+                alias_candidates.append(normalized)
 
     for alias in alias_candidates:
         try:
@@ -82,10 +99,16 @@ def resolve_pricing_override(
                 provider_name=ai_model.provider_name,
             )
         except SQLAlchemyError:
-            logger.debug("Pricing override lookup failed", exc_info=True)
-            return None
+            # Transient lookup failure for one alias must not skip remaining
+            # candidates (gateway alias → requested → model identifier).
+            logger.debug(
+                "Pricing override lookup failed for alias %s",
+                alias,
+                exc_info=True,
+            )
+            continue
         if override is not None:
             pricing = override.to_pricing_dict()
             pricing["id"] = str(override.id)
-            return pricing
+            return pricing  # type: ignore[return-value]
     return None

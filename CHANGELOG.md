@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Durable Agent Control command persistence**: Operator commands are stored before delivery, with ack/delivery scoped to the target managed agent, batched redelivery marks, and enum CHECK constraints for command status / cost provenance markers.
 - **Per-agent native-tool approval workflow**: Operators can pin an approval workflow on a managed agent from the Console agent detail view (Tools & Governance → Native tool approvals). The pin is stored in subject governance as `approval_workflow_id` and takes precedence over the account default when `POST /api/v1/agents/permission-check` resolves a workflow. Governance updates reject workflow IDs that are invalid or not in the account.
 - **Default approval-workflow backfill**: The API startup repair pass now also seeds the account-default workflow (owner as approver) for active accounts that have none, covering signup-seed background tasks lost to restarts or transient failures.
 - **Interactive approvals opt-in**: Discover-driven agent onboarding prompts for native tool-approval hooks on supported agents (default yes), matching `preloop agents onboard --approvals`. README documents the interactive path.
@@ -28,11 +29,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Gateway cost summary on zero traffic**: Aggregations use `one_or_none()` with zero defaults so empty windows no longer 500 the cost summary / accounting health APIs.
+- **Repricing commit batching**: Historical usage repricing commits in page-sized batches instead of once per row, avoiding partial multi-commit windows on crash.
+- **Tracker credential backfill isolation**: Each tracker migrates in its own DB session so a single failure cannot poison later candidates.
+- **Execution timeframe usage counts**: The fallback count path filters to `model_gateway` rows only.
 - **Gemini gateway budget enforcement**: The Gemini-compatible gateway endpoints now inject the budget enforcer, so account/flow budget policies apply to Gemini traffic instead of being bypassable via that endpoint.
 - **Streaming usage on client disconnect**: The Anthropic, chat-completions, and responses streaming paths now record a best-effort usage row when the client disconnects mid-stream (`GeneratorExit`), so already-consumed upstream tokens are still accounted and budgets don't drift.
 
 ### Security
 
+- **Removed unauthenticated tracker debug endpoint**: `POST /api/v1/trackers/debug` echoed raw request bodies (including credentials) to the response and stdout.
+- **Agent Control payloads sanitized**: Inbound agent event payloads are redacted and truncated before event-bus emit and activity persist.
+- **OAuth refresh errors no longer store provider bodies**: `last_refresh_error` persists a status/code summary only; raw provider response bodies stay out of the DB.
 - **Refresh tokens rejected as access tokens**: The refresh-token guard in the auth dependencies read a dict field that is never a dict (`decode_token` returns a model), so a 7-day refresh token was accepted anywhere an access token was expected. It now reads the flag correctly on both the REST and WebSocket/gateway paths.
 - **MCP firewall & approval gate fail closed**: An exception during central policy evaluation or the approval check previously fell through to executing the tool. Both now block on error, matching the documented per-rule fail-closed posture.
 - **Numeric access-rule bypass fixed**: A numeric rule such as `args.amount > 300` could be defeated by sending the value as a string; ordering comparisons now coerce numeric-looking operands.
