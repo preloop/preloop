@@ -115,14 +115,12 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
         skip: int = 0,
         limit: int = 100,
     ) -> list[ApprovalRequest]:
-        """Get approval requests for an account with optional filters."""
-        if status in (None, "pending"):
-            self.expire_stale_pending(
-                db,
-                account_id=account_id,
-                execution_id=execution_id,
-            )
+        """Get approval requests for an account with optional filters.
 
+        Expiry is handled by explicit sweep callers via ``expire_stale_pending``;
+        keeping this method read-only avoids hidden UPDATE+COMMIT work on list
+        endpoints.
+        """
         query = db.query(self.model).filter(self.model.account_id == account_id)
 
         if execution_id:

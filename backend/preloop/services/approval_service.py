@@ -277,7 +277,9 @@ class ApprovalService:
 
             # Publish to NATS subject for approval updates
             subject = "approval-updates"
-            await task_publisher.nc.publish(subject, json.dumps(update_data).encode())
+            await task_publisher.nc.publish(
+                subject, json.dumps(update_data, default=str).encode()
+            )
 
             logger.info(
                 f"Broadcasted approval {event_type} for request {approval_request.id}"

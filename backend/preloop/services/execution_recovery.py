@@ -122,23 +122,25 @@ class ExecutionRecoveryService:
             logger.info("No stale/unclaimed executions to re-dispatch")
             return 0
 
-        dispatched = 0
-        for execution in candidates:
+        semaphore = asyncio.Semaphore(20)
+
+        async def dispatch_candidate(execution: models.FlowExecution) -> bool:
             try:
-                if execution.agent_session_reference:
-                    ok = await dispatch_resume(execution.id)
-                else:
-                    ok = await dispatch_execute(execution.id)
-                if ok:
-                    dispatched += 1
-                    logger.info(
-                        "Re-dispatched %s for execution %s (status=%s)",
-                        "resume_flow_execution"
-                        if execution.agent_session_reference
-                        else "execute_flow",
-                        execution.id,
-                        execution.status,
-                    )
+                async with semaphore:
+                    if execution.agent_session_reference:
+                        ok = await dispatch_resume(execution.id)
+                    else:
+                        ok = await dispatch_execute(execution.id)
+                    if ok:
+                        logger.info(
+                            "Re-dispatched %s for execution %s (status=%s)",
+                            "resume_flow_execution"
+                            if execution.agent_session_reference
+                            else "execute_flow",
+                            execution.id,
+                            execution.status,
+                        )
+                    return bool(ok)
             except Exception as e:
                 logger.error(
                     "Failed to re-dispatch execution %s: %s",
@@ -146,6 +148,12 @@ class ExecutionRecoveryService:
                     e,
                     exc_info=True,
                 )
+                return False
+
+        results = await asyncio.gather(
+            *(dispatch_candidate(execution) for execution in candidates)
+        )
+        dispatched = sum(1 for ok in results if ok)
 
         logger.info(
             "Worker-mode recovery dispatched %s/%s execution(s)",

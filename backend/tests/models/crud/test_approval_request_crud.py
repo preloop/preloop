@@ -170,10 +170,10 @@ def test_expire_stale_pending_marks_expired(crud_approval_request, mock_db_sessi
     mock_db_session.commit.assert_called_once()
 
 
-def test_get_multi_by_account_pending_expires_stale_rows(
+def test_get_multi_by_account_pending_does_not_expire_stale_rows(
     crud_approval_request, mock_db_session
 ):
-    """Test pending account lists eagerly expire stale approval requests."""
+    """Test pending account lists remain read-only."""
     account_id = str(uuid4())
     mock_requests = [MagicMock()]
 
@@ -197,11 +197,7 @@ def test_get_multi_by_account_pending_expires_stale_rows(
         )
 
     assert result == mock_requests
-    expire_stale.assert_called_once_with(
-        mock_db_session,
-        account_id=account_id,
-        execution_id=None,
-    )
+    expire_stale.assert_not_called()
 
 
 def test_get_multi_by_account_approved_does_not_expire_stale_rows(

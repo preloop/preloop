@@ -76,7 +76,7 @@ describe('ConsoleShell', () => {
     // Stub getFeatures (fetchPublic) and _checkTrackers (fetch with auth)
     fetchStub.callsFake(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
-      if (url === '/api/v1/features') {
+      if (url.endsWith('/api/v1/features')) {
         return new Response(
           JSON.stringify({
             plugins: [],
@@ -85,7 +85,7 @@ describe('ConsoleShell', () => {
           { status: 200, headers: { 'Content-Type': 'application/json' } }
         );
       }
-      if (url === '/api/v1/auth/users/me') {
+      if (url.endsWith('/api/v1/auth/users/me')) {
         // permissions: null => RBAC inactive, so nav stays unrestricted in tests
         return new Response(
           JSON.stringify({
@@ -97,7 +97,7 @@ describe('ConsoleShell', () => {
           { status: 200, headers: { 'Content-Type': 'application/json' } }
         );
       }
-      if (url === '/api/v1/trackers') {
+      if (url.endsWith('/api/v1/trackers')) {
         return new Response(JSON.stringify([]), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
@@ -259,7 +259,7 @@ describe('ConsoleShell', () => {
     invalidateApiCaches();
     fetchStub.callsFake(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
-      if (url === '/api/v1/features') {
+      if (url.endsWith('/api/v1/features')) {
         return new Response(
           JSON.stringify({
             plugins: [],
@@ -268,7 +268,7 @@ describe('ConsoleShell', () => {
           { status: 200, headers: { 'Content-Type': 'application/json' } }
         );
       }
-      if (url === '/api/v1/auth/users/me') {
+      if (url.endsWith('/api/v1/auth/users/me')) {
         return new Response(
           JSON.stringify({
             username: 'test',

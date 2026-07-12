@@ -710,6 +710,7 @@ def _enrich_managed_agent_summaries(
         else []
     )
 
+    unresolved_model_summaries: list[tuple[dict, str, str]] = []
     for summary in summaries:
         agent_id = str(summary["id"])
         latest_enrollment_summary, control_enrollment_summary = enrollment_summaries[
@@ -760,15 +761,13 @@ def _enrich_managed_agent_summaries(
             )
             # Enrichment subset may miss models that are neither agent-tagged
             # nor alias-matched in meta_data; fall back to the full account
-            # catalog so configured_model_id resolution stays correct.
+            # catalog in one batch after this loop so correctness does not
+            # reintroduce per-agent full-catalog loads.
             if summary["configured_model_id"] is None and summary.get(
                 "configured_model_alias"
             ):
-                summary["configured_model_id"] = _managed_agent_configured_model_id(
-                    db,
-                    account_id=account_id,
-                    agent_id=agent_id,
-                    configured_model_alias=summary["configured_model_alias"],
+                unresolved_model_summaries.append(
+                    (summary, agent_id, str(summary["configured_model_alias"]))
                 )
         else:
             summary["configured_model_id"] = None
@@ -779,6 +778,36 @@ def _enrich_managed_agent_summaries(
                 control_enrollment_summary,
             )
         )
+
+    if unresolved_model_summaries:
+        full_account_models = crud_ai_model.get_by_account(db, account_id=account_id)
+        models_by_id = {str(ai_model.id): ai_model for ai_model in full_account_models}
+        for summary, agent_id, configured_model_alias in unresolved_model_summaries:
+            configured_model_id = _managed_agent_configured_model_id_from_models(
+                full_account_models,
+                agent_id=agent_id,
+                configured_model_alias=configured_model_alias,
+            )
+            summary["configured_model_id"] = configured_model_id
+            primary_binding = next(
+                (
+                    binding
+                    for binding in summary.get("configured_models", [])
+                    if binding.get("is_primary")
+                ),
+                None,
+            )
+            if primary_binding and configured_model_id:
+                ai_model = models_by_id.get(configured_model_id)
+                primary_binding["ai_model_id"] = configured_model_id
+                primary_binding["status"] = "gateway_ready"
+                primary_binding["provider_name"] = getattr(
+                    ai_model, "provider_name", None
+                )
+                primary_binding["model_identifier"] = getattr(
+                    ai_model, "model_identifier", None
+                )
+                primary_binding["ai_model_name"] = getattr(ai_model, "name", None)
     return summaries
 
 
