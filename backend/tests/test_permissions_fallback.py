@@ -153,6 +153,8 @@ class TestRequirePermissionMissingDependencies:
             return decorator
 
         monkeypatch.setattr(perms, "_plugin_require_permission", fake_plugin_require)
+        # Force the fail-closed path even under the suite's DISABLE_RBAC default.
+        monkeypatch.setattr(perms, "_rbac_checks_enabled", lambda: True)
 
         @perms.require_permission("view_issues")
         def sync_handler():
@@ -182,6 +184,7 @@ class TestRequirePermissionMissingDependencies:
             return decorator
 
         monkeypatch.setattr(perms, "_plugin_require_permission", fake_plugin_require)
+        monkeypatch.setattr(perms, "_rbac_checks_enabled", lambda: True)
 
         @perms.require_permission("view_issues")
         async def async_handler():
@@ -194,3 +197,25 @@ class TestRequirePermissionMissingDependencies:
         assert exc_info.value.status_code == 500
         assert called["plugin"] is False
         assert called["raw"] is False
+
+    def test_wrapper_skips_deps_check_when_rbac_disabled(self, monkeypatch):
+        """Under DISABLE_RBAC the fail-closed deps gate must not fire."""
+        import preloop.utils.permissions as perms
+
+        def fake_plugin_require(permission_name: str):
+            def decorator(func):
+                def plugin_wrapped(*args, **kwargs):
+                    return func(*args, **kwargs)
+
+                return plugin_wrapped
+
+            return decorator
+
+        monkeypatch.setattr(perms, "_plugin_require_permission", fake_plugin_require)
+        monkeypatch.setattr(perms, "_rbac_checks_enabled", lambda: False)
+
+        @perms.require_permission("view_issues")
+        def sync_handler():
+            return "ok"
+
+        assert sync_handler() == "ok"

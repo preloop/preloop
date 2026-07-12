@@ -202,7 +202,9 @@ class TestApproveRequest:
     """Tests for the approve_request endpoint."""
 
     @pytest.mark.asyncio
-    async def test_approve_request_success(self, mock_user, mock_approval_request):
+    async def test_approve_request_success(
+        self, mock_user, mock_approval_request, mock_db_session
+    ):
         """Test successful approval of a request."""
         from preloop.models.schemas.approval_request import (
             ApprovalDecision,
@@ -245,6 +247,7 @@ class TestApproveRequest:
                         decision=decision,
                         request=mock_http_request,
                         current_user=mock_user,
+                        db=mock_db_session,
                     )
 
                     assert result == expected_response
@@ -258,7 +261,7 @@ class TestApproveRequest:
                     )
 
     @pytest.mark.asyncio
-    async def test_approve_request_not_found(self, mock_user):
+    async def test_approve_request_not_found(self, mock_user, mock_db_session):
         """Test 404 when approval request is not found."""
         from preloop.models.schemas.approval_request import ApprovalDecision
 
@@ -286,13 +289,16 @@ class TestApproveRequest:
                         decision=decision,
                         request=mock_http_request,
                         current_user=mock_user,
+                        db=mock_db_session,
                     )
 
                 assert exc_info.value.status_code == 404
                 assert exc_info.value.detail == "Approval request not found"
 
     @pytest.mark.asyncio
-    async def test_approve_request_unauthorized(self, mock_user, mock_approval_request):
+    async def test_approve_request_unauthorized(
+        self, mock_user, mock_approval_request, mock_db_session
+    ):
         """Test 403 when user is not authorized to approve."""
         from preloop.models.schemas.approval_request import ApprovalDecision
 
@@ -323,6 +329,7 @@ class TestApproveRequest:
                         decision=decision,
                         request=mock_http_request,
                         current_user=mock_user,
+                        db=mock_db_session,
                     )
 
                 assert exc_info.value.status_code == 403
@@ -330,7 +337,7 @@ class TestApproveRequest:
 
     @pytest.mark.asyncio
     async def test_approve_request_already_resolved(
-        self, mock_user, mock_approval_request
+        self, mock_user, mock_approval_request, mock_db_session
     ):
         """Test 400 when request is already resolved."""
         from preloop.models.schemas.approval_request import ApprovalDecision
@@ -361,6 +368,7 @@ class TestApproveRequest:
                         decision=decision,
                         request=mock_http_request,
                         current_user=mock_user,
+                        db=mock_db_session,
                     )
 
                 assert exc_info.value.status_code == 400
@@ -371,7 +379,9 @@ class TestDeclineRequest:
     """Tests for the decline_request endpoint."""
 
     @pytest.mark.asyncio
-    async def test_decline_request_success(self, mock_user, mock_approval_request):
+    async def test_decline_request_success(
+        self, mock_user, mock_approval_request, mock_db_session
+    ):
         """Test successful decline of a request."""
         from preloop.models.schemas.approval_request import (
             ApprovalDecision,
@@ -413,6 +423,7 @@ class TestDeclineRequest:
                         decision=decision,
                         request=mock_http_request,
                         current_user=mock_user,
+                        db=mock_db_session,
                     )
 
                     assert result == expected_response
@@ -426,7 +437,7 @@ class TestDeclineRequest:
                     )
 
     @pytest.mark.asyncio
-    async def test_decline_request_not_found(self, mock_user):
+    async def test_decline_request_not_found(self, mock_user, mock_db_session):
         """Test 404 when approval request is not found."""
         from preloop.models.schemas.approval_request import ApprovalDecision
 
@@ -454,6 +465,7 @@ class TestDeclineRequest:
                         decision=decision,
                         request=mock_http_request,
                         current_user=mock_user,
+                        db=mock_db_session,
                     )
 
                 assert exc_info.value.status_code == 404
@@ -463,7 +475,9 @@ class TestDecideRequest:
     """Tests for the decide_request endpoint."""
 
     @pytest.mark.asyncio
-    async def test_decide_request_approve(self, mock_user, mock_approval_request):
+    async def test_decide_request_approve(
+        self, mock_user, mock_approval_request, mock_db_session
+    ):
         """Test decide endpoint with approved=True."""
         from preloop.models.schemas.approval_request import (
             ApprovalDecision,
@@ -505,6 +519,7 @@ class TestDecideRequest:
                         decision=decision,
                         request=mock_http_request,
                         current_user=mock_user,
+                        db=mock_db_session,
                     )
 
                     assert result == expected_response
@@ -512,7 +527,9 @@ class TestDecideRequest:
                     mock_service.decline_request.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_decide_request_decline(self, mock_user, mock_approval_request):
+    async def test_decide_request_decline(
+        self, mock_user, mock_approval_request, mock_db_session
+    ):
         """Test decide endpoint with approved=False."""
         from preloop.models.schemas.approval_request import (
             ApprovalDecision,
@@ -554,6 +571,7 @@ class TestDecideRequest:
                         decision=decision,
                         request=mock_http_request,
                         current_user=mock_user,
+                        db=mock_db_session,
                     )
 
                     assert result == expected_response
@@ -561,7 +579,9 @@ class TestDecideRequest:
                     mock_service.approve_request.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_decide_request_failure(self, mock_user, mock_approval_request):
+    async def test_decide_request_failure(
+        self, mock_user, mock_approval_request, mock_db_session
+    ):
         """Test 500 when decision processing fails."""
         from preloop.models.schemas.approval_request import ApprovalDecision
 
@@ -590,6 +610,7 @@ class TestDecideRequest:
                         decision=decision,
                         request=mock_http_request,
                         current_user=mock_user,
+                        db=mock_db_session,
                     )
 
                 assert exc_info.value.status_code == 500

@@ -21,13 +21,37 @@ const (
 
 // ApprovalWorkflow represents an approval workflow.
 type ApprovalWorkflow struct {
-	ID          string   `json:"id" yaml:"id"`
-	Name        string   `json:"name" yaml:"name"`
-	Description string   `json:"description,omitempty" yaml:"description,omitempty"`
-	ToolPattern string   `json:"tool_pattern,omitempty" yaml:"tool_pattern,omitempty"`
-	Approvers   []string `json:"approvers,omitempty" yaml:"approvers,omitempty"`
-	AutoApprove bool     `json:"auto_approve" yaml:"auto_approve"`
-	Active      bool     `json:"active" yaml:"active"`
+	ID                   string   `json:"id" yaml:"id"`
+	Name                 string   `json:"name" yaml:"name"`
+	Description          string   `json:"description,omitempty" yaml:"description,omitempty"`
+	ApprovalType         string   `json:"approval_type" yaml:"approval_type"`
+	ApprovalMode         string   `json:"approval_mode" yaml:"approval_mode"`
+	IsDefault            bool     `json:"is_default" yaml:"is_default"`
+	TimeoutSeconds       int      `json:"timeout_seconds" yaml:"timeout_seconds"`
+	AsyncApprovalEnabled bool     `json:"async_approval_enabled" yaml:"async_approval_enabled"`
+	ApprovalsRequired    int      `json:"approvals_required" yaml:"approvals_required"`
+	ApproverUserIDs      []string `json:"approver_user_ids,omitempty" yaml:"approver_user_ids,omitempty"`
+	ApproverTeamIDs      []string `json:"approver_team_ids,omitempty" yaml:"approver_team_ids,omitempty"`
+}
+
+// approverSummary renders a compact human-readable count of the workflow's
+// approvers, e.g. "2 users", "1 user, 1 team", or "none".
+func (p ApprovalWorkflow) approverSummary() string {
+	parts := make([]string, 0, 2)
+	if n := len(p.ApproverUserIDs); n == 1 {
+		parts = append(parts, "1 user")
+	} else if n > 1 {
+		parts = append(parts, fmt.Sprintf("%d users", n))
+	}
+	if n := len(p.ApproverTeamIDs); n == 1 {
+		parts = append(parts, "1 team")
+	} else if n > 1 {
+		parts = append(parts, fmt.Sprintf("%d teams", n))
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, ", ")
 }
 
 // ApprovalRequest represents an approval request.
@@ -157,22 +181,18 @@ func runApprovalsList(cmd *cobra.Command, args []string) error {
 
 	default: // table
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "NAME\tTOOL PATTERN\tAUTO-APPROVE\tACTIVE\tAPPROVERS") //nolint:errcheck
+		fmt.Fprintln(w, "NAME\tTYPE\tMODE\tDEFAULT\tAPPROVERS\tTIMEOUT") //nolint:errcheck
 		for _, p := range policies {
-			autoApprove := "no"
-			if p.AutoApprove {
-				autoApprove = "yes"
+			isDefault := "no"
+			if p.IsDefault {
+				isDefault = "yes"
 			}
-			active := "no"
-			if p.Active {
-				active = "yes"
+			timeout := "-"
+			if p.TimeoutSeconds > 0 {
+				timeout = fmt.Sprintf("%ds", p.TimeoutSeconds)
 			}
-			approvers := strings.Join(p.Approvers, ", ")
-			if len(approvers) > 30 {
-				approvers = approvers[:27] + "..."
-			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", //nolint:errcheck
-				p.Name, p.ToolPattern, autoApprove, active, approvers)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", //nolint:errcheck
+				p.Name, p.ApprovalType, p.ApprovalMode, isDefault, p.approverSummary(), timeout)
 		}
 		return w.Flush()
 	}

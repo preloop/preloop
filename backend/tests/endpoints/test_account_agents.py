@@ -1,6 +1,7 @@
 """Endpoint tests for managed-agent registry surfaces."""
 
 from datetime import UTC, datetime
+from uuid import uuid4
 
 from preloop.api.endpoints.account import (
     _managed_agent_control_fields,
@@ -147,6 +148,37 @@ def test_onboarding_flags_downgrade_failed_live_gateway_to_mcp_only():
     assert mcp_configured is True
     assert gateway_configured is False
     assert state == "mcp_proxy_only"
+
+
+def test_onboarding_flags_keep_gateway_when_live_validation_throttled():
+    """An upstream rate-limit is inconclusive: the probe authenticated at the
+    gateway and reached the provider, so a throttled live validation must not
+    downgrade a configured gateway onboarding to MCP-only."""
+    mcp_configured, gateway_configured, state = _managed_agent_onboarding_flags(
+        {
+            "managed_config": {
+                "mcpServers": {"preloop": {"url": "https://preloop.example/mcp/v1"}},
+                "baseUrl": "https://preloop.example/openai/v1",
+                "apiKey": "agt_managed",
+                "model": {"name": "claude/haiku"},
+            },
+            "validation_result": {
+                "preloop_server_present": True,
+                "gateway_provider_ok": True,
+                "gateway_base_url_ok": True,
+                "gateway_token_ok": True,
+                "model_provider_rewritten": True,
+                "live_validation_supported": True,
+                "live_validation_attempted": True,
+                "live_validation_status": "throttled",
+                "live_validation_passed": False,
+            },
+        }
+    )
+
+    assert mcp_configured is True
+    assert gateway_configured is True
+    assert state == "fully_onboarded"
 
 
 def test_account_agents_endpoint_lists_onboarded_agents(client, db_session, test_user):
@@ -1145,6 +1177,70 @@ def test_account_agent_governance_round_trip(client, db_session, test_user):
     verify_response = client.get(f"/api/v1/agents/{agent_id}/governance")
     assert verify_response.status_code == 200
     assert verify_response.json()["config"] == updated["config"]
+
+
+def test_account_agent_governance_approval_workflow(client, db_session, test_user):
+    """Operators can pin the approval workflow that governs an agent's native
+    tool-call approvals; the id must reference a workflow in the account."""
+    from preloop.models.crud import crud_approval_workflow
+
+    token_response = client.post(
+        "/api/v1/auth/runtime-sessions/token",
+        json={
+            "session_source_type": "claude_code",
+            "session_source_id": "claude-approvals-workflow",
+            "runtime_principal_name": "Approvals Agent",
+        },
+    )
+    assert token_response.status_code == 201
+
+    list_response = client.get("/api/v1/agents")
+    assert list_response.status_code == 200
+    agent_id = list_response.json()["items"][0]["id"]
+
+    workflow = crud_approval_workflow.create(
+        db_session,
+        obj_in={
+            "name": "Agent-specific workflow",
+            "approval_type": "standard",
+            "approver_user_ids": [str(test_user.id)],
+        },
+        account_id=str(test_user.account_id),
+    )
+
+    # Unknown workflow ids are rejected.
+    invalid_response = client.put(
+        f"/api/v1/agents/{agent_id}/governance",
+        json={"approval_workflow_id": str(uuid4())},
+    )
+    assert invalid_response.status_code == 400
+
+    # Malformed ids are rejected.
+    malformed_response = client.put(
+        f"/api/v1/agents/{agent_id}/governance",
+        json={"approval_workflow_id": "not-a-uuid"},
+    )
+    assert malformed_response.status_code == 400
+
+    # A workflow belonging to the account is accepted and persisted.
+    update_response = client.put(
+        f"/api/v1/agents/{agent_id}/governance",
+        json={"approval_workflow_id": str(workflow.id)},
+    )
+    assert update_response.status_code == 200
+    assert update_response.json()["config"]["approval_workflow_id"] == str(workflow.id)
+
+    verify_response = client.get(f"/api/v1/agents/{agent_id}/governance")
+    assert verify_response.status_code == 200
+    assert verify_response.json()["config"]["approval_workflow_id"] == str(workflow.id)
+
+    # Clearing the field removes the per-agent pin.
+    clear_response = client.put(
+        f"/api/v1/agents/{agent_id}/governance",
+        json={"approval_workflow_id": None},
+    )
+    assert clear_response.status_code == 200
+    assert clear_response.json()["config"]["approval_workflow_id"] is None
 
 
 def test_account_agent_enrollment_validate_and_restore(client, db_session, test_user):

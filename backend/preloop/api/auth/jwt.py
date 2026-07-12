@@ -413,8 +413,11 @@ def get_current_user(
         token_data = decode_token(token)
         logger.info(f"JWT decoded successfully: {token_data}")
 
-        # Check if it's a refresh token
-        if isinstance(token_data, dict) and token_data.get("refresh", False):
+        # Check if it's a refresh token. decode_token() returns a TokenData
+        # model (never a dict), so the refresh flag must be read as an
+        # attribute — an isinstance(..., dict) guard here is dead code and
+        # would let a 7-day refresh token be used as an access token.
+        if getattr(token_data, "refresh", False):
             logger.warning("Attempted to use refresh token for authentication")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -593,7 +596,9 @@ def get_user_from_token_if_valid_sync(token: str, db_session: Any) -> Optional[U
                 return _authenticate_with_api_key(db_session, api_key)
 
         token_data = decode_token(token)
-        if isinstance(token_data, dict) and token_data.get("refresh", False):
+        # TokenData model, not a dict — read the refresh flag as an attribute so
+        # refresh tokens can't authenticate WebSocket/gateway sessions.
+        if getattr(token_data, "refresh", False):
             return None
 
         user_id_str = getattr(token_data, "sub", "")

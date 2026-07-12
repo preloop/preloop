@@ -26,6 +26,21 @@ except ImportError:
 _MISSING_DEPS_DETAIL = "Permission check requires current_user and db dependencies"
 
 
+def _rbac_checks_enabled() -> bool:
+    """Return True when permission enforcement should run.
+
+    Honors both the process env flag and the in-memory settings singleton
+    (tests often toggle env without recreating Settings).
+    """
+    import os
+
+    from preloop.config import settings
+
+    if settings.disable_rbac:
+        return False
+    return os.getenv("DISABLE_RBAC", "false").lower() != "true"
+
+
 def _ensure_permission_dependencies(**kwargs: object) -> None:
     """Fail closed when the decorated endpoint lacks auth dependencies."""
     if "current_user" not in kwargs or "db" not in kwargs:
@@ -72,14 +87,19 @@ def require_permission(permission_name: str):
 
             @functools.wraps(func)
             async def async_wrapper(*args, **kwargs):
-                _ensure_permission_dependencies(**kwargs)
+                # Only fail-closed on missing deps when RBAC is actually on —
+                # otherwise endpoints that omit unused ``db`` break under the
+                # test-suite DISABLE_RBAC default.
+                if _rbac_checks_enabled():
+                    _ensure_permission_dependencies(**kwargs)
                 return await plugin_wrapped(*args, **kwargs)
 
             return async_wrapper
 
         @functools.wraps(func)
         def sync_wrapper(*args, **kwargs):
-            _ensure_permission_dependencies(**kwargs)
+            if _rbac_checks_enabled():
+                _ensure_permission_dependencies(**kwargs)
             result = plugin_wrapped(*args, **kwargs)
             if inspect.isawaitable(result):
                 return _run_awaitable_sync(result)

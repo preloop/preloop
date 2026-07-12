@@ -1836,7 +1836,8 @@ func TestPromptToOnboardCandidates_DeclineContinuesToNextAgent(t *testing.T) {
 		output,
 		candidates,
 		false,
-		func(agent AgentConfig) error {
+		false,
+		func(agent AgentConfig, _ bool) error {
 			enrolled = append(enrolled, agent)
 			return nil
 		},
@@ -1861,6 +1862,96 @@ func TestPromptToOnboardCandidates_DeclineContinuesToNextAgent(t *testing.T) {
 	if !strings.Contains(rendered, "Agent name [Codex CLI]: ") {
 		t.Fatalf("expected name prompt in output, got %q", rendered)
 	}
+}
+
+func TestPromptToOnboardCandidates_AsksApprovalsForSupportedAgents(t *testing.T) {
+	// OpenClaw: confirm + name (no approvals question — its hook ships via the
+	// runtime plugin, not the local adapter). Codex CLI: confirm + name +
+	// approvals yes.
+	input := strings.NewReader("y\n\ny\n\ny\n")
+	output := &bytes.Buffer{}
+	candidates := []AgentConfig{
+		{Name: "OpenClaw", ConfigPath: "/tmp/openclaw.json"},
+		{Name: "Codex CLI", ConfigPath: "/tmp/codex.toml"},
+	}
+
+	approvalsByAgent := map[string]bool{}
+	err := promptToOnboardCandidates(
+		input,
+		output,
+		candidates,
+		false,
+		true,
+		func(agent AgentConfig, approvals bool) error {
+			approvalsByAgent[agent.Name] = approvals
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if approvalsByAgent["OpenClaw"] {
+		t.Fatal("expected no approvals opt-in for unsupported agent")
+	}
+	if !approvalsByAgent["Codex CLI"] {
+		t.Fatal("expected approvals opt-in for Codex CLI")
+	}
+	rendered := output.String()
+	if strings.Count(rendered, "through Preloop approvals?") != 1 {
+		t.Fatalf("expected exactly one approvals question, got %q", rendered)
+	}
+}
+
+func TestPromptForApprovalsOptIn(t *testing.T) {
+	t.Run("default yes for supported agent", func(t *testing.T) {
+		output := &bytes.Buffer{}
+		optIn, err := promptForApprovalsOptIn(
+			strings.NewReader("\n"),
+			output,
+			AgentConfig{Name: "Claude Code", ConfigPath: "/tmp/settings.json"},
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !optIn {
+			t.Fatal("expected empty answer to default to yes")
+		}
+		if !strings.Contains(output.String(), "Route Claude Code's native tool calls") {
+			t.Fatalf("expected approvals prompt in output, got %q", output.String())
+		}
+	})
+
+	t.Run("explicit no is honored", func(t *testing.T) {
+		optIn, err := promptForApprovalsOptIn(
+			strings.NewReader("n\n"),
+			&bytes.Buffer{},
+			AgentConfig{Name: "Cursor", ConfigPath: "/tmp/mcp.json"},
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if optIn {
+			t.Fatal("expected explicit no to decline the hook")
+		}
+	})
+
+	t.Run("unsupported agent never prompts", func(t *testing.T) {
+		output := &bytes.Buffer{}
+		optIn, err := promptForApprovalsOptIn(
+			strings.NewReader(""),
+			output,
+			AgentConfig{Name: "Gemini CLI", ConfigPath: "/tmp/settings.json"},
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if optIn {
+			t.Fatal("expected unsupported agent to skip the hook")
+		}
+		if output.Len() != 0 {
+			t.Fatalf("expected no prompt output, got %q", output.String())
+		}
+	})
 }
 
 func TestPrepareAgentForEnrollment_AllowsEditingAgentName(t *testing.T) {

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -269,6 +270,19 @@ func TestGet_APIError(t *testing.T) {
 	err := client.Get("/test", &result)
 	if err == nil {
 		t.Fatal("expected error for 401 response")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *APIError, got %T: %v", err, err)
+	}
+	if apiErr.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected status 401, got %d", apiErr.StatusCode)
+	}
+	if !IsStatus(err, http.StatusUnauthorized) {
+		t.Fatal("IsStatus should match 401")
+	}
+	if IsStatus(err, http.StatusTooManyRequests) {
+		t.Fatal("IsStatus should not match 429")
 	}
 }
 

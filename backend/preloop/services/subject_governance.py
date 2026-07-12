@@ -87,6 +87,10 @@ def sanitize_subject_governance_config(config: dict[str, Any]) -> dict[str, Any]
     context_optimization = config.get("context_optimization")
     if isinstance(context_optimization, dict):
         sanitized["context_optimization"] = deepcopy(context_optimization)
+    sanitized["approval_workflow_id"] = None
+    approval_workflow_id = config.get("approval_workflow_id")
+    if approval_workflow_id is not None and str(approval_workflow_id).strip():
+        sanitized["approval_workflow_id"] = str(approval_workflow_id).strip()
     return sanitized
 
 

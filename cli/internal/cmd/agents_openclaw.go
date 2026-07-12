@@ -349,6 +349,18 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 			fmt.Println("Aborted without applying onboarding.")
 			return nil
 		}
+		// Offer the native tool-approvals hook even when the user did not
+		// pass --approvals, so interactive onboarding surfaces the feature
+		// for the agents that support it. Non-interactive runs
+		// (PRELOOP_CONFIRM) stay flag-driven: hooks change tool-call behavior
+		// and must not be installed by an auto-answered prompt.
+		if !opts.Approvals && !nonInteractiveAutoConfirm() {
+			optIn, approvalsErr := promptForApprovalsOptIn(input, output, agent)
+			if approvalsErr != nil {
+				return fmt.Errorf("failed to read approvals confirmation: %w", approvalsErr)
+			}
+			opts.Approvals = optIn
+		}
 	}
 
 	serverSync, err := ensureDiscoveredRemoteServers(client, syncAgent, baseURL)
@@ -595,14 +607,20 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	}
 
 	var liveValidationErr error
+	liveValidationThrottled := false
 	if requestedLiveValidation {
 		liveOutcome, err := runManagedAgentLiveValidation(client, agent, validationResult)
 		if liveOutcome != nil && len(liveOutcome.ValidationResult) > 0 {
 			validationResult = liveOutcome.ValidationResult
 		}
+		liveValidationThrottled = liveValidationStatusThrottled(validationResult)
 		if liveOutcome != nil && liveOutcome.Attempted {
+			// A throttled probe is inconclusive, not a failure: the static
+			// config checks passed and the gateway config stays in place, so
+			// persist "validated" and let live_validation_status carry the
+			// "throttled" detail.
 			validationStatus := "validated"
-			if !liveOutcome.Passed {
+			if !liveOutcome.Passed && !liveValidationThrottled {
 				validationStatus = "validation_failed"
 			}
 			if _, persistErr := validateManagedEnrollmentRecord(
@@ -619,7 +637,29 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 			liveValidationErr = err
 		}
 	}
-	if liveValidationErr != nil {
+	if liveValidationErr != nil && liveValidationThrottled {
+		// A 429 proves the durable credential authenticated at the gateway and
+		// the request reached the upstream provider — the wiring works, the
+		// provider is just rate-limited right now. Rolling back the gateway
+		// config here would discard a working onboarding over a transient
+		// condition (and re-running onboarding to "fix" it only sends more
+		// probes into the same rate limiter).
+		quotedName := shellQuoteAgentName(resolveAgentDisplayName(agent))
+		fmt.Fprintf(
+			output,
+			"  Note: the upstream provider rate-limited the live validation probe; keeping the Preloop gateway configuration in place.\n",
+		) //nolint:errcheck
+		fmt.Fprintf(
+			output,
+			"        Re-verify later with: preloop agents validate %s --live\n",
+			quotedName,
+		) //nolint:errcheck
+		fmt.Fprintf(
+			output,
+			"        Or revert to direct model access with: preloop agents restore %s\n",
+			quotedName,
+		) //nolint:errcheck
+	} else if liveValidationErr != nil {
 		if rollbackErr := recoverManagedGatewayAfterLiveValidationFailure(
 			agent,
 			originalBytes,
@@ -713,7 +753,11 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		// <agent> --live`` is the dedicated command for "exit non-zero on
 		// live-validate failure" semantics. Print a clear warning with a
 		// recovery hint and continue.
-		fmt.Printf("  Warning: live validation failed: %v\n", liveValidationErr)
+		warningLabel := "failed"
+		if liveValidationThrottled {
+			warningLabel = "throttled by the upstream provider"
+		}
+		fmt.Printf("  Warning: live validation %s: %v\n", warningLabel, liveValidationErr)
 		fmt.Printf(
 			"           Run: preloop agents validate %s --live\n",
 			shellQuoteAgentName(resolveAgentDisplayName(agent)),

@@ -1091,7 +1091,23 @@ class OpenAIGatewayService:
                         error_detail=str(exc),
                         request_payload=payload,
                     )
+                    recorded = True
                 raise
+            finally:
+                # Client disconnect raises GeneratorExit (a BaseException) at the
+                # paused yield, which the except above does not catch — so
+                # already-consumed upstream tokens would go unbilled and let
+                # cumulative budgets drift. Record a best-effort row here.
+                if not recorded:
+                    self._record_stream_abort(
+                        endpoint="/anthropic/v1/messages",
+                        endpoint_kind="anthropic_messages_stream",
+                        started_at=started_at,
+                        ai_model=model,
+                        payload=payload,
+                        usage_details=final_usage_details or final_usage,
+                        budget_result=budget_result,
+                    )
 
         return event_stream()
 
@@ -1299,7 +1315,21 @@ class OpenAIGatewayService:
                         error_detail=str(exc),
                         request_payload=payload,
                     )
+                    recorded = True
                 raise
+            finally:
+                # See stream_message: catch the client-disconnect GeneratorExit
+                # so consumed tokens are still accounted.
+                if not recorded:
+                    self._record_stream_abort(
+                        endpoint="/openai/v1/chat/completions",
+                        endpoint_kind="chat_completions_stream",
+                        started_at=started_at,
+                        ai_model=model,
+                        payload=payload,
+                        usage_details=final_usage_details or final_usage,
+                        budget_result=budget_result,
+                    )
 
         return event_stream()
 
@@ -1603,7 +1633,21 @@ class OpenAIGatewayService:
                         error_detail=str(exc),
                         request_payload=payload,
                     )
+                    recorded = True
                 raise
+            finally:
+                # See stream_message: account for tokens consumed before a
+                # client disconnect (GeneratorExit).
+                if not recorded:
+                    self._record_stream_abort(
+                        endpoint="/openai/v1/responses",
+                        endpoint_kind="responses_stream",
+                        started_at=started_at,
+                        ai_model=model,
+                        payload=payload,
+                        usage_details=final_usage_details or final_usage,
+                        budget_result=budget_result,
+                    )
 
         return event_stream()
 
@@ -3575,6 +3619,46 @@ class OpenAIGatewayService:
         pricing = override.to_pricing_dict()
         pricing["id"] = str(override.id)
         return pricing
+
+    def _record_stream_abort(
+        self,
+        *,
+        endpoint: str,
+        endpoint_kind: str,
+        started_at: float,
+        ai_model: AIModel,
+        payload: Dict[str, Any],
+        usage_details: Optional[Dict[str, Any]],
+        budget_result: Optional[BudgetCheckResult],
+    ) -> None:
+        """Best-effort usage record when a streaming client disconnects early.
+
+        Called from a ``finally`` during GeneratorExit, so it must never raise —
+        a failure here would replace a clean disconnect with an error. Status
+        499 ("client closed request") flags the partial record.
+        """
+        try:
+            self._record_gateway_request(
+                endpoint=endpoint,
+                method="POST",
+                status_code=499,
+                duration=time.perf_counter() - started_at,
+                ai_model=ai_model,
+                requested_model=payload.get("model"),
+                response_payload=None,
+                upstream_response={"usage": usage_details}
+                if isinstance(usage_details, dict)
+                else None,
+                endpoint_kind=endpoint_kind,
+                budget_result=budget_result,
+                error_detail="client disconnected before stream completion",
+                request_payload=payload,
+            )
+        except Exception:  # pragma: no cover - defensive; never break teardown
+            logger.warning(
+                "Failed to record gateway usage after client disconnect",
+                exc_info=True,
+            )
 
     def _record_gateway_request(
         self,

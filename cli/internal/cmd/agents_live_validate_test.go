@@ -20,10 +20,13 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/preloop/preloop/cli/internal/api"
 )
 
 func decodeBuilderPayload(t *testing.T, body map[string]interface{}) map[string]interface{} {
@@ -671,7 +674,10 @@ func TestPrintDeferredLiveValidationLine_StatusVariants(t *testing.T) {
 						"live_validation_status": "throttled",
 					},
 				},
-				Err:      errStringForTest("API error (status 429): rate_limit_error"),
+				Err: &api.APIError{
+					StatusCode: http.StatusTooManyRequests,
+					Body:       "rate_limit_error",
+				},
 				Duration: 120 * time.Millisecond,
 			},
 			contains: []string{
@@ -818,5 +824,161 @@ func TestRunDeferredLiveValidationsParallel_ConcurrentNoOpIsSafe(t *testing.T) {
 	}
 	if calls.Load() != 16 {
 		t.Fatalf("expected 16 concurrent calls to complete, got %d", calls.Load())
+	}
+}
+
+// The throttle-retry helper exists because a burst of onboarding probes (or
+// the user's own concurrent agent traffic) commonly trips upstream rate
+// limiters; a couple of spaced retries turns most of those transient 429s
+// into a passing validation instead of a spurious gateway rollback.
+func TestPostGatewayProbeWithThrottleRetry(t *testing.T) {
+	restoreSleep := liveValidationSleep
+	defer func() { liveValidationSleep = restoreSleep }()
+	var slept []time.Duration
+	liveValidationSleep = func(d time.Duration) { slept = append(slept, d) }
+
+	t.Run("retries throttle errors and succeeds", func(t *testing.T) {
+		slept = nil
+		calls := 0
+		attempts, err := postGatewayProbeWithThrottleRetry(func() error {
+			calls++
+			if calls < 3 {
+				return &api.APIError{
+					StatusCode: http.StatusTooManyRequests,
+					Body:       "throttling_error",
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("expected success after retries, got %v", err)
+		}
+		if attempts != 3 || calls != 3 {
+			t.Fatalf("expected 3 attempts, got attempts=%d calls=%d", attempts, calls)
+		}
+		if len(slept) != 2 {
+			t.Fatalf("expected 2 backoff sleeps, got %v", slept)
+		}
+	})
+
+	t.Run("gives up after backoff schedule on persistent throttle", func(t *testing.T) {
+		slept = nil
+		calls := 0
+		attempts, err := postGatewayProbeWithThrottleRetry(func() error {
+			calls++
+			return &api.APIError{
+				StatusCode: http.StatusTooManyRequests,
+				Body:       "rate_limit_error",
+			}
+		})
+		if err == nil {
+			t.Fatal("expected persistent throttle error to surface")
+		}
+		expected := 1 + len(liveValidationThrottleBackoffSchedule())
+		if attempts != expected || calls != expected {
+			t.Fatalf("expected %d attempts, got attempts=%d calls=%d", expected, attempts, calls)
+		}
+	})
+
+	t.Run("does not retry non-throttle errors", func(t *testing.T) {
+		slept = nil
+		calls := 0
+		attempts, err := postGatewayProbeWithThrottleRetry(func() error {
+			calls++
+			return &api.APIError{StatusCode: http.StatusUnauthorized, Body: "unauthorized"}
+		})
+		if err == nil {
+			t.Fatal("expected error to surface")
+		}
+		if attempts != 1 || calls != 1 {
+			t.Fatalf("expected a single attempt, got attempts=%d calls=%d", attempts, calls)
+		}
+		if len(slept) != 0 {
+			t.Fatalf("expected no sleeps, got %v", slept)
+		}
+	})
+
+	t.Run("succeeds first try without sleeping", func(t *testing.T) {
+		slept = nil
+		attempts, err := postGatewayProbeWithThrottleRetry(func() error { return nil })
+		if err != nil || attempts != 1 || len(slept) != 0 {
+			t.Fatalf("expected clean single attempt, got attempts=%d err=%v slept=%v", attempts, err, slept)
+		}
+	})
+}
+
+func TestIsUpstreamRateLimitedValidationError(t *testing.T) {
+	if isUpstreamRateLimitedValidationError(nil) {
+		t.Fatal("nil must not be rate-limited")
+	}
+	if !isUpstreamRateLimitedValidationError(&api.APIError{
+		StatusCode: http.StatusTooManyRequests,
+		Body:       "anything",
+	}) {
+		t.Fatal("typed 429 APIError must be detected")
+	}
+	if isUpstreamRateLimitedValidationError(&api.APIError{
+		StatusCode: http.StatusUnauthorized,
+		Body:       "rate_limit_error",
+	}) {
+		t.Fatal("typed non-429 APIError must not match on body text alone")
+	}
+	// Fallback path for wrapped/non-client errors that only expose a message.
+	if !isUpstreamRateLimitedValidationError(
+		errStringForTest("upstream said rate_limit_error"),
+	) {
+		t.Fatal("string fallback should still detect provider rate-limit codes")
+	}
+}
+
+func TestLiveValidationStatusThrottled(t *testing.T) {
+	if liveValidationStatusThrottled(nil) {
+		t.Fatal("nil result must not be throttled")
+	}
+	if liveValidationStatusThrottled(map[string]interface{}{"live_validation_status": "failed"}) {
+		t.Fatal("failed result must not be throttled")
+	}
+	if !liveValidationStatusThrottled(map[string]interface{}{"live_validation_status": "throttled"}) {
+		t.Fatal("throttled result must be detected")
+	}
+	if liveValidationOutcomeThrottled(nil) {
+		t.Fatal("nil outcome must not be throttled")
+	}
+	if !liveValidationOutcomeThrottled(&managedLiveValidationOutcome{
+		ValidationResult: map[string]interface{}{"live_validation_status": "throttled"},
+	}) {
+		t.Fatal("throttled outcome must be detected")
+	}
+}
+
+// A throttled live validation must never roll the managed gateway config
+// back: the 429 proved the credential authenticated and the request reached
+// the upstream. This is the regression test for the onboarding loop where a
+// rate-limited probe silently restored direct model access.
+func TestRecoverDeferredGatewayValidationFailure_SkipsRollbackWhenThrottled(t *testing.T) {
+	var buf bytes.Buffer
+	recoverDeferredGatewayValidationFailure(&buf, deferredLiveValidationResult{
+		Agent: AgentConfig{Name: "Claude Code"},
+		Outcome: &managedLiveValidationOutcome{
+			Attempted: true,
+			Passed:    false,
+			ValidationResult: map[string]interface{}{
+				"live_validation_status": "throttled",
+			},
+		},
+		Err: &api.APIError{
+			StatusCode: http.StatusTooManyRequests,
+			Body:       "throttling_error",
+		},
+	})
+	rendered := buf.String()
+	if !strings.Contains(rendered, "rate-limited") {
+		t.Fatalf("expected throttle note in output, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "keeping the Preloop gateway configuration") {
+		t.Fatalf("expected keep-config note in output, got %q", rendered)
+	}
+	if strings.Contains(rendered, "Restored") {
+		t.Fatalf("expected no restore to run for throttled outcome, got %q", rendered)
 	}
 }

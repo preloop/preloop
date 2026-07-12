@@ -1,6 +1,7 @@
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
+import DOMPurify from 'dompurify';
 import { when } from 'lit/directives/when.js';
 import { getStatusVariant, getComplianceVariant } from '../utils/verdict';
 import { Issue, IssueComplianceResult } from '../types';
@@ -80,7 +81,7 @@ export class SingleIssueDetailView extends LitElement {
           this.issue.description,
           () =>
             html`<div class="issue-description">
-              ${unsafeHTML(this.issue.description)}
+              ${unsafeHTML(DOMPurify.sanitize(this.issue.description ?? ''))}
             </div>`,
           () =>
             html`<sl-alert variant="primary" open>

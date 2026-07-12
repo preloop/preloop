@@ -433,6 +433,18 @@ class TestEvaluateSimpleExpression:
         assert evaluate_simple_expression("args.amount >= 100", {"amount": 100})
         assert evaluate_simple_expression("args.amount <= 100", {"amount": 100})
 
+    def test_comparison_coerces_stringified_numbers(self):
+        """A numeric rule must not be bypassable by passing a string.
+
+        Security regression: previously ``"1000000" > 300`` raised TypeError,
+        was swallowed to a non-match, and fell through to the default allow.
+        """
+        assert evaluate_simple_expression("args.amount > 300", {"amount": "1000000"})
+        assert not evaluate_simple_expression("args.amount > 300", {"amount": "10"})
+        assert evaluate_simple_expression("args.amount >= 300", {"amount": "300"})
+        # A genuinely non-numeric string still does not satisfy an ordering rule.
+        assert not evaluate_simple_expression("args.amount > 300", {"amount": "abc"})
+
     def test_contains_string(self):
         """args.field.contains('substring')."""
         assert evaluate_simple_expression(

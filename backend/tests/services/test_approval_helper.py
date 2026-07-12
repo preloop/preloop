@@ -866,8 +866,12 @@ class TestRequireApprovalEdgeCases:
         assert approved is False
         assert "error" in error.lower()
 
-    async def test_database_error_fails_open(self):
-        """Test that database errors fail open (allow execution)."""
+    async def test_database_error_fails_closed(self):
+        """Database errors must fail CLOSED (block execution).
+
+        A tool gated behind require_approval must never run un-approved just
+        because the approval check hit an infrastructure error.
+        """
         mock_db = create_mock_db_session()
         # Simulate database error
         mock_db.execute = AsyncMock(side_effect=Exception("Database error"))
@@ -884,9 +888,9 @@ class TestRequireApprovalEdgeCases:
                 ctx=None,
             )
 
-        # Should fail open
-        assert approved is True
-        assert error == ""
+        # Should fail closed
+        assert approved is False
+        assert error != ""
 
 
 class TestRequireApprovalProgressReporting:

@@ -104,7 +104,8 @@ runtime, and let the plugin connect.
 Don't have the runtime installed yet? `preloop agents install-runtime <hermes|openclaw>`
 installs it locally and onboards it through Preloop in one step. To route an
 agent's **native** tool calls (e.g. Claude Code `Bash`/`Edit`) through Preloop
-approvals, onboard with `preloop agents onboard <agent> --approvals`.
+approvals, onboard with `preloop agents onboard <agent> --approvals` — or just
+answer yes when interactive onboarding offers it for supported agents.
 
 <p align="center">
   <img alt="Preloop dashboard with live agent and gateway usage" src="frontend/public/assets/screenshots/quickstart/dark/dashboard.png" style="width: 100%; max-width: 1135px; border-radius: 12px;" />

@@ -638,6 +638,19 @@ def _compare_values(lhs: Any, operator: str, rhs: Any) -> bool:
             return rhs is not None
         return False
 
+    # For ordering comparisons, coerce numeric-looking operands to numbers.
+    # SECURITY: without this, an agent could defeat a numeric rule such as
+    # ``args.amount > 300`` by sending ``amount`` as the *string* "1000000":
+    # ``"1000000" > 300`` raises TypeError, which was swallowed to a
+    # non-match and fell through to the default-allow, skipping the intended
+    # approval/deny. Coercing keeps the comparison meaningful across the JSON
+    # string/number ambiguity.
+    if operator in (">", "<", ">=", "<="):
+        lhs_num = _coerce_number(lhs)
+        rhs_num = _coerce_number(rhs)
+        if lhs_num is not None and rhs_num is not None:
+            lhs, rhs = lhs_num, rhs_num
+
     try:
         if operator == "==":
             return lhs == rhs
@@ -656,6 +669,25 @@ def _compare_values(lhs: Any, operator: str, rhs: Any) -> bool:
     except TypeError:
         # Type mismatch in comparison
         return False
+
+
+def _coerce_number(value: Any) -> Optional[float]:
+    """Return ``value`` as a float if it is numeric or a numeric string.
+
+    Bools are intentionally excluded (``True`` is not a quantity here) and
+    non-numeric strings return ``None`` so the caller keeps the original
+    values.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
 
 
 def _evaluate_cel_condition(

@@ -21,8 +21,17 @@ class GeminiGatewayService(OpenAIGatewayService):
         db: Session,
         auth_context: ModelGatewayAuthContext,
         client_session_id: Optional[str] = None,
+        budget_enforcer: Optional[Any] = None,
     ) -> None:
-        super().__init__(db, auth_context, client_session_id=client_session_id)
+        # Forward the budget enforcer so Gemini traffic is subject to the same
+        # account/flow budget policy enforcement as the OpenAI/Anthropic
+        # endpoints — otherwise clients could route around budgets via Gemini.
+        super().__init__(
+            db,
+            auth_context,
+            client_session_id=client_session_id,
+            budget_enforcer=budget_enforcer,
+        )
 
     def list_models(self) -> Dict[str, Any]:
         """List Gemini-compatible model descriptors."""

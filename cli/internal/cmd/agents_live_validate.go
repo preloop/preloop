@@ -30,6 +30,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -233,19 +234,19 @@ func runGatewayLiveValidation(
 	}
 
 	gatewayClient := api.NewClientWithToken(baseURL, spec.Token)
-	var gatewayResponse map[string]interface{}
-	var requestErr error
-	if len(spec.Headers) == 0 {
-		requestErr = gatewayClient.Post(spec.Endpoint, spec.Body, &gatewayResponse)
-	} else {
-		requestErr = gatewayClient.PostWithHeaders(
+	postProbe := func() error {
+		var gatewayResponse map[string]interface{}
+		if len(spec.Headers) == 0 {
+			return gatewayClient.Post(spec.Endpoint, spec.Body, &gatewayResponse)
+		}
+		return gatewayClient.PostWithHeaders(
 			spec.Endpoint,
 			spec.Body,
 			spec.Headers,
 			&gatewayResponse,
 		)
 	}
-	_ = gatewayResponse
+	probeAttempts, requestErr := postGatewayProbeWithThrottleRetry(postProbe)
 
 	apiKeyID := mostLikelyManagedAPIKeyID(detail.Credentials)
 	var searchHit *gatewayUsageSearchItem
@@ -269,6 +270,7 @@ func runGatewayLiveValidation(
 	}
 	result := mergeStringMaps(validationResult, map[string]interface{}{
 		"live_validation_attempted":      true,
+		"live_validation_attempts":       probeAttempts,
 		"live_validation_passed":         passed,
 		"live_validation_status":         liveValidationStatus,
 		"live_validation_token":          validationToken,
@@ -322,11 +324,72 @@ func isUpstreamRateLimitedValidationError(err error) bool {
 	if err == nil {
 		return false
 	}
+	// Prefer the typed HTTP status from the API client. Once we have an
+	// *api.APIError, trust StatusCode only — body text can mention rate
+	// limits on non-429 responses and must not override the status.
+	var apiErr *api.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode == http.StatusTooManyRequests
+	}
+	// Fallback for wrapped/non-client errors that only expose a message.
 	message := strings.ToLower(err.Error())
 	return strings.Contains(message, "rate_limit_error") ||
 		strings.Contains(message, "ratelimiterror") ||
 		strings.Contains(message, "throttling_error") ||
 		strings.Contains(message, "status 429")
+}
+
+// liveValidationThrottleBackoffSchedule returns the waits between probe
+// retries when the upstream provider rate-limits the live-validation
+// request. Two short retries cover the common transient case (a burst of
+// onboarding probes or concurrent agent traffic) without stalling
+// onboarding for long. Returns a fresh slice so callers cannot mutate
+// shared package state.
+func liveValidationThrottleBackoffSchedule() []time.Duration {
+	return []time.Duration{
+		3 * time.Second,
+		8 * time.Second,
+	}
+}
+
+// liveValidationSleep is time.Sleep, injectable so tests can run instantly.
+// Not safe for concurrent reassignment: tests that override it must not use
+// t.Parallel alongside other live-validation tests in this package.
+var liveValidationSleep = time.Sleep
+
+// postGatewayProbeWithThrottleRetry runs the gateway probe, retrying only on
+// upstream rate-limit errors with the backoff schedule above. It returns the
+// number of attempts made and the final error (nil on success). Non-throttle
+// errors never retry: they indicate a config/auth problem a retry cannot fix.
+func postGatewayProbeWithThrottleRetry(post func() error) (int, error) {
+	attempts := 1
+	err := post()
+	for _, backoff := range liveValidationThrottleBackoffSchedule() {
+		if err == nil || !isUpstreamRateLimitedValidationError(err) {
+			return attempts, err
+		}
+		liveValidationSleep(backoff)
+		attempts++
+		err = post()
+	}
+	return attempts, err
+}
+
+// liveValidationStatusThrottled reports whether a validation result recorded
+// an upstream rate-limit outcome. Throttling is treated as inconclusive-but-
+// plumbing-verified: a 429 proves the durable credential authenticated at the
+// gateway and the request reached the upstream provider, so callers must NOT
+// roll back the managed gateway configuration over it.
+func liveValidationStatusThrottled(validationResult map[string]interface{}) bool {
+	if validationResult == nil {
+		return false
+	}
+	status, _ := validationResult["live_validation_status"].(string)
+	return status == "throttled"
+}
+
+func liveValidationOutcomeThrottled(outcome *managedLiveValidationOutcome) bool {
+	return outcome != nil && liveValidationStatusThrottled(outcome.ValidationResult)
 }
 
 func listManagedValidationAIModels(client *api.Client) []aiModelResponse {
@@ -1097,6 +1160,14 @@ func recoverDeferredGatewayValidationFailure(
 	if result.Err == nil {
 		return
 	}
+	if liveValidationOutcomeThrottled(result.Outcome) {
+		fmt.Fprintf(
+			output,
+			"      Note: the upstream provider rate-limited the live validation probe; keeping the Preloop gateway configuration in place. Re-verify with: preloop agents validate %s --live\n",
+			shellQuoteAgentName(resolveAgentDisplayName(result.Agent)),
+		) //nolint:errcheck
+		return
+	}
 	if !isClaudeCodeAgent(result.Agent) &&
 		!isCodexCLIAgent(result.Agent) &&
 		!isGeminiCLIAgent(result.Agent) {
@@ -1158,8 +1229,13 @@ func persistDeferredLiveValidationResult(
 	if enrollmentID == "" {
 		return
 	}
+	// A throttled probe is inconclusive, not a failure: the static config
+	// checks passed and the gateway config stays in place, so persist
+	// "validated" and let live_validation_status carry the "throttled" detail.
 	status := "validated"
-	if result.Outcome.Attempted && !result.Outcome.Passed {
+	if result.Outcome.Attempted &&
+		!result.Outcome.Passed &&
+		!liveValidationOutcomeThrottled(result.Outcome) {
 		status = "validation_failed"
 	}
 	_, _ = validateManagedEnrollmentRecord(

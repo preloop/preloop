@@ -429,4 +429,44 @@ describe('AgentDetailView', () => {
     );
     expect(wrongModelLink).to.not.exist;
   });
+
+  it('lets the user pick the approval workflow for native tool approvals', async () => {
+    const element = await fixture<AgentDetailView>(
+      html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+    );
+
+    await waitUntil(
+      () => !(element as any).loading && (element as any).agent !== null,
+      'Agent detail view did not finish loading'
+    );
+
+    (element as any).activeTab = 'tools';
+    await element.updateComplete;
+
+    const select = element.shadowRoot?.querySelector(
+      '#agent-approval-workflow-select'
+    ) as any;
+    expect(select).to.exist;
+
+    // Options: the account-default fallback plus every workflow.
+    const optionValues = Array.from(select.querySelectorAll('sl-option')).map(
+      (option: any) => option.value
+    );
+    expect(optionValues).to.deep.equal(['', 'wf-1']);
+
+    // Selecting a workflow persists it through the governance PUT.
+    (element as any).saveApprovalWorkflowSelection('wf-1');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const putCall = fetchStub
+      .getCalls()
+      .find(
+        (call) =>
+          String(call.args[0]) === '/api/v1/agents/agent-1/governance' &&
+          call.args[1]?.method === 'PUT'
+      );
+    expect(putCall).to.exist;
+    const body = JSON.parse(putCall!.args[1].body);
+    expect(body.approval_workflow_id).to.equal('wf-1');
+  });
 });

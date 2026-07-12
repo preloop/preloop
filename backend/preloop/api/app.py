@@ -393,34 +393,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # them. The repair pass is idempotent and safe to run on every boot.
     if not is_testing and is_api_role:
         try:
-            from preloop.models.db.session import get_session_factory
-            from preloop.models.crud import crud_approval_workflow
             from preloop.services.approval_workflow_service import (
-                repair_default_approval_workflow_for_account,
+                run_default_approval_workflow_startup_repair,
             )
 
-            session_factory = get_session_factory()
-            scan_db = session_factory()
-            try:
-                broken = crud_approval_workflow.find_legacy_default_workflows(scan_db)
-            finally:
-                scan_db.close()
-
-            repaired = 0
-            for account_id in broken:
-                try:
-                    if repair_default_approval_workflow_for_account(account_id):
-                        repaired += 1
-                except Exception as inner_exc:  # pragma: no cover - defensive
-                    logger.warning(
-                        f"Default workflow repair failed for account "
-                        f"{account_id}: {inner_exc}"
-                    )
-
-            if broken:
+            stats = run_default_approval_workflow_startup_repair()
+            if stats["broken"] or stats["missing"]:
                 logger.info(
-                    f"Default approval workflow repair pass complete: "
-                    f"scanned={len(broken)}, repaired={repaired}"
+                    "Default approval workflow repair pass complete: "
+                    "scanned=%(broken)s, repaired=%(repaired)s, "
+                    "missing=%(missing)s, seeded=%(seeded)s" % stats
                 )
         except Exception as e:
             logger.warning(

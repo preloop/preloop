@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from preloop.models import models
 from preloop.services.agent_permission_service import (
     AGENT_TOOL_APPROVALS_WORKFLOW_NAME,
+    _managed_agent_approval_workflow_json_path,
     _resolve_workflow,
 )
 from preloop.services.approval_workflow_service import DEFAULT_APPROVAL_TYPE
@@ -66,3 +67,96 @@ async def test_resolve_workflow_recovers_from_duplicate_name_race() -> None:
 
     assert workflow is existing
     db.rollback.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_resolve_workflow_prefers_agent_configured_workflow() -> None:
+    """A workflow pinned on the managed agent via subject governance must win
+    over the account default."""
+    account_id = str(uuid.uuid4())
+    managed_agent_id = uuid.uuid4()
+    pinned = models.ApprovalWorkflow(
+        id=uuid.uuid4(),
+        account_id=account_id,
+        name="Agent-specific workflow",
+        approval_type=DEFAULT_APPROVAL_TYPE,
+    )
+    account = MagicMock()
+    account.meta_data = {
+        "subject_governance": {
+            "managed_agents": {
+                str(managed_agent_id): {"approval_workflow_id": str(pinned.id)}
+            },
+            "api_keys": {},
+        }
+    }
+
+    account_and_workflow = MagicMock()
+    account_and_workflow.first.return_value = (account, pinned)
+
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=account_and_workflow)
+
+    workflow = await _resolve_workflow(
+        db, account_id, uuid.uuid4(), managed_agent_id=managed_agent_id
+    )
+
+    assert workflow is pinned
+    # Account + pinned workflow are loaded in one outerjoin round-trip.
+    assert db.execute.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_resolve_workflow_falls_back_when_agent_pin_missing() -> None:
+    """When the pinned workflow no longer exists, resolution falls back to the
+    account default instead of failing the permission check."""
+    account_id = str(uuid.uuid4())
+    managed_agent_id = uuid.uuid4()
+    default_workflow = models.ApprovalWorkflow(
+        id=uuid.uuid4(),
+        account_id=account_id,
+        name="Default Approval Workflow",
+        approval_type=DEFAULT_APPROVAL_TYPE,
+        is_default=True,
+    )
+    account = MagicMock()
+    account.meta_data = {
+        "subject_governance": {
+            "managed_agents": {
+                str(managed_agent_id): {"approval_workflow_id": str(uuid.uuid4())}
+            },
+            "api_keys": {},
+        }
+    }
+
+    account_and_missing = MagicMock()
+    account_and_missing.first.return_value = (account, None)
+    default_result = MagicMock()
+    default_result.scalars.return_value.first.return_value = default_workflow
+
+    db = AsyncMock()
+    db.execute = AsyncMock(side_effect=[account_and_missing, default_result])
+
+    workflow = await _resolve_workflow(
+        db, account_id, uuid.uuid4(), managed_agent_id=managed_agent_id
+    )
+
+    assert workflow is default_workflow
+
+
+def test_managed_agent_approval_workflow_json_path_rejects_unsafe_segments() -> None:
+    """Path builder must coerce to UUID so free-form strings cannot inject
+    commas/braces into the Postgres #>> path."""
+    agent_id = uuid.uuid4()
+    path = _managed_agent_approval_workflow_json_path(agent_id)
+    assert path == (
+        f"{{subject_governance,managed_agents,{agent_id},approval_workflow_id}}"
+    )
+    # String UUID form is accepted via coercion.
+    assert _managed_agent_approval_workflow_json_path(str(agent_id)) == path  # type: ignore[arg-type]
+    try:
+        _managed_agent_approval_workflow_json_path("evil,injected}")  # type: ignore[arg-type]
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError for non-UUID path segment")

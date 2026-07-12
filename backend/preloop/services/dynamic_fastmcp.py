@@ -1061,9 +1061,27 @@ async def {internal_name}({params_str}) -> str:
             logger.error(
                 f"Error evaluating access rules for '{name}': {e}", exc_info=True
             )
-            # Fail open for evaluation errors to avoid blocking all tools
-            # (the policy_evaluator already fails closed per-rule)
+            # SECURITY: fail CLOSED. If the central policy evaluation itself
+            # raises (DB outage, malformed principal id, etc.) we must not fall
+            # through to execution — otherwise any explicit ``deny`` /
+            # ``require_approval`` rule (including subject-governance
+            # tool-disabled denials) could be bypassed simply by inducing an
+            # infrastructure error. Block the call and surface a ret600able
+            # error to the agent.
             _rule_workflow_id_var.set(None)
+            return ToolResult(
+                content=[
+                    TextContent(
+                        type="text",
+                        text=(
+                            f"Access denied: policy evaluation for '{name}' "
+                            "failed and the request was blocked as a safety "
+                            "measure. Please retry; if this persists, contact "
+                            "your Preloop administrator."
+                        ),
+                    )
+                ]
+            )
 
         # ── Translate and execute ───────────────────────────────────────
         # Translate tool name for proxied tools

@@ -96,8 +96,14 @@ func writeHermesAgentConfigDocument(path string, doc map[string]interface{}) err
 	if len(data) == 0 || data[len(data)-1] != '\n' {
 		data = append(data, '\n')
 	}
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	// 0600: the Hermes config embeds the runtime bearer token in the managed
+	// preloop.control block, so keep it non-world-readable. Chmod enforces the
+	// mode even if the file already existed.
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		return fmt.Errorf("failed to write managed Hermes config: %w", err)
+	}
+	if err := os.Chmod(path, 0600); err != nil {
+		return fmt.Errorf("failed to secure managed Hermes config permissions: %w", err)
 	}
 	return nil
 }

@@ -32,7 +32,13 @@ def _resolve_account_owner_user_id(db: Session, account_id: UUID) -> Optional[UU
     is called without an explicit ``user_id`` so the seeded default workflow
     still has at least one approver — otherwise approval requests created
     against the default workflow would have no one able to act on them.
+
+    Prefers the account's ``primary_user_id`` (the actual owner set at
+    signup) and only falls back to the oldest user when it is unset.
     """
+    account = db.query(models.Account).filter(models.Account.id == account_id).first()
+    if account is not None and account.primary_user_id:
+        return account.primary_user_id
     user = (
         db.query(models.User)
         .filter(models.User.account_id == account_id)
@@ -224,3 +230,48 @@ def create_default_approval_workflow_background(
             f"for account {account_id}: {e}",
             exc_info=True,
         )
+
+
+def run_default_approval_workflow_startup_repair() -> dict[str, int]:
+    """Heal legacy defaults and seed missing account workflows on API boot.
+
+    Idempotent and safe to run on every startup. Per-account failures are
+    logged and skipped so one bad account cannot abort the whole pass.
+    """
+    session_factory = get_session_factory()
+    scan_db = session_factory()
+    try:
+        broken, missing = crud_approval_workflow.find_startup_repair_targets(scan_db)
+    finally:
+        scan_db.close()
+
+    repaired = 0
+    for account_id in broken:
+        try:
+            if repair_default_approval_workflow_for_account(account_id):
+                repaired += 1
+        except Exception as inner_exc:
+            logger.warning(
+                "Default workflow repair failed for account %s: %s",
+                account_id,
+                inner_exc,
+            )
+
+    seeded = 0
+    for account_id in missing:
+        try:
+            create_default_approval_workflow_for_account(account_id)
+            seeded += 1
+        except Exception as inner_exc:
+            logger.warning(
+                "Default workflow seeding failed for account %s: %s",
+                account_id,
+                inner_exc,
+            )
+
+    return {
+        "broken": len(broken),
+        "repaired": repaired,
+        "missing": len(missing),
+        "seeded": seeded,
+    }

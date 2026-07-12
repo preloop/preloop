@@ -42,6 +42,27 @@ func isApprovalHookSupportedAgent(agent AgentConfig) bool {
 	return permissionSourceForAgent(agent) != ""
 }
 
+// promptForApprovalsOptIn asks the user whether to install the native
+// tool-approvals hook for a supported agent when onboarding was started
+// without --approvals. Unsupported agents never prompt and never opt in.
+func promptForApprovalsOptIn(
+	reader io.Reader,
+	writer io.Writer,
+	agent AgentConfig,
+) (bool, error) {
+	if !isApprovalHookSupportedAgent(agent) {
+		return false, nil
+	}
+	return confirmActionDefaultYes(
+		reader,
+		writer,
+		fmt.Sprintf(
+			"Route %s's native tool calls (shell commands, file edits) through Preloop approvals? (Y/n): ",
+			resolveAgentDisplayName(agent),
+		),
+	)
+}
+
 func permissionHookAgentsDir() (string, error) {
 	baseDir, err := config.GetConfigDir()
 	if err != nil {

@@ -124,9 +124,18 @@ func Save(cfg *Config) error {
 	if err := v.WriteConfig(); err != nil {
 		// If config file doesn't exist, create it
 		if os.IsNotExist(err) {
-			return v.SafeWriteConfig()
+			if err := v.SafeWriteConfig(); err != nil {
+				return err
+			}
+		} else {
+			return fmt.Errorf("failed to write config: %w", err)
 		}
-		return fmt.Errorf("failed to write config: %w", err)
+	}
+
+	// The config holds access/refresh tokens; viper writes 0644 by default, so
+	// tighten to 0600 (owner-only). The parent dir is already 0700.
+	if err := os.Chmod(cfgPath, 0600); err != nil {
+		return fmt.Errorf("failed to secure config permissions: %w", err)
 	}
 
 	return nil
