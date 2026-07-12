@@ -318,58 +318,40 @@ class DynamicFastMCP(FastMCP):
         account_meta = {}
 
         try:
-            # Parallelize all three DB lookups required for tool listing
-            def _fetch_proxied_tools():
+            # One shared DB session for all list_tools metadata lookups so we
+            # do not open three concurrent connections per tools/list call.
+            def _fetch_list_tools_metadata():
                 db = next(get_db())
                 try:
                     from preloop.services.mcp_tool_discovery import (
                         _get_proxied_tools_sync,
                     )
+                    from preloop.models.crud import crud_account
 
-                    return _get_proxied_tools_sync(user_context.account_id, db)
-                finally:
-                    db.close()
-
-            def _fetch_tool_configs():
-                db = next(get_db())
-                try:
+                    proxied = _get_proxied_tools_sync(user_context.account_id, db)
                     configs = crud_tool_configuration.get_multi_by_account(
                         db, account_id=str(user_context.account_id), limit=1000
                     )
-                    return {
+                    modes = {
                         tc.tool_name: tc.justification_mode
                         for tc in configs
                         if tc.justification_mode in ("optional", "required")
                     }
-                finally:
-                    db.close()
-
-            def _fetch_account_meta():
-                db = next(get_db())
-                try:
-                    from preloop.models.crud import crud_account
-
                     acc = crud_account.get(db, id=user_context.account_id)
-                    return getattr(acc, "meta_data", {})
+                    meta = getattr(acc, "meta_data", {}) or {}
+                    return proxied, modes, meta
                 finally:
                     db.close()
 
-            logger.info("Fetching DB metadata for list_tools concurrently...")
+            logger.info("Fetching DB metadata for list_tools...")
             loop = asyncio.get_event_loop()
             (
                 proxied_tools_data,
                 justification_modes,
                 account_meta,
-            ) = await asyncio.gather(
-                asyncio.wait_for(
-                    loop.run_in_executor(None, _fetch_proxied_tools), timeout=30
-                ),
-                asyncio.wait_for(
-                    loop.run_in_executor(None, _fetch_tool_configs), timeout=30
-                ),
-                asyncio.wait_for(
-                    loop.run_in_executor(None, _fetch_account_meta), timeout=30
-                ),
+            ) = await asyncio.wait_for(
+                loop.run_in_executor(None, _fetch_list_tools_metadata),
+                timeout=30,
             )
             logger.info(f"Fetched {len(proxied_tools_data)} proxied tools")
 

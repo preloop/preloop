@@ -117,15 +117,19 @@ class CRUDProviderBillingSnapshot(CRUDBase[ProviderBillingSnapshot]):
         account_id: Union[uuid.UUID, str],
         rows: List[Dict[str, Any]],
     ) -> int:
-        """Idempotently insert/update snapshot rows.
+        """Idempotently insert/update snapshot rows in one batched statement.
 
         Each row dict must contain the snapshot columns except ``account_id``
-        and ``dedup_key`` (computed here).
+        and ``dedup_key`` (computed here). Duplicate ``dedup_key`` values
+        within ``rows`` are collapsed last-wins before the upsert.
 
         Returns:
-            Number of rows written.
+            Number of logical rows written.
         """
-        written = 0
+        if not rows:
+            return 0
+
+        values_by_dedup: Dict[str, Dict[str, Any]] = {}
         for row in rows:
             dedup_key = snapshot_dedup_key(
                 provider=row["provider"],
@@ -137,7 +141,7 @@ class CRUDProviderBillingSnapshot(CRUDBase[ProviderBillingSnapshot]):
                 project_or_workspace_id=row.get("project_or_workspace_id"),
                 service_tier=row.get("service_tier"),
             )
-            values = {
+            values_by_dedup[dedup_key] = {
                 "id": uuid.uuid4(),
                 "account_id": account_id,
                 "dedup_key": dedup_key,
@@ -164,26 +168,27 @@ class CRUDProviderBillingSnapshot(CRUDBase[ProviderBillingSnapshot]):
                     )
                 },
             }
-            statement = pg_insert(ProviderBillingSnapshot).values(**values)
-            statement = statement.on_conflict_do_update(
-                constraint="uq_provider_billing_snapshot_dedup",
-                set_={
-                    "cost_amount": statement.excluded.cost_amount,
-                    "currency": statement.excluded.currency,
-                    "uncached_input_tokens": statement.excluded.uncached_input_tokens,
-                    "cached_input_tokens": statement.excluded.cached_input_tokens,
-                    "cache_creation_tokens": statement.excluded.cache_creation_tokens,
-                    "output_tokens": statement.excluded.output_tokens,
-                    "bucket_end": statement.excluded.bucket_end,
-                    "raw": statement.excluded.raw,
-                    "fetched_at": statement.excluded.fetched_at,
-                    "updated_at": func.now(),
-                },
-            )
-            db.execute(statement)
-            written += 1
+
+        values_list = list(values_by_dedup.values())
+        statement = pg_insert(ProviderBillingSnapshot).values(values_list)
+        statement = statement.on_conflict_do_update(
+            constraint="uq_provider_billing_snapshot_dedup",
+            set_={
+                "cost_amount": statement.excluded.cost_amount,
+                "currency": statement.excluded.currency,
+                "uncached_input_tokens": statement.excluded.uncached_input_tokens,
+                "cached_input_tokens": statement.excluded.cached_input_tokens,
+                "cache_creation_tokens": statement.excluded.cache_creation_tokens,
+                "output_tokens": statement.excluded.output_tokens,
+                "bucket_end": statement.excluded.bucket_end,
+                "raw": statement.excluded.raw,
+                "fetched_at": statement.excluded.fetched_at,
+                "updated_at": func.now(),
+            },
+        )
+        db.execute(statement)
         db.commit()
-        return written
+        return len(values_list)
 
     def aggregate_actuals_by_provider_day(
         self,

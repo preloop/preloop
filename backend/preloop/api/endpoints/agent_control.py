@@ -10,8 +10,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Optional
 
+import nats.errors
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette import status
 
@@ -49,6 +51,27 @@ from preloop.sync.services.event_bus import get_nats_client
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Operational failures on the delivery path (NATS / DB / WS). Catch these
+# instead of bare ``Exception`` so programming bugs (AttributeError, TypeError,
+# etc.) still surface.
+_NATS_DELIVERY_ERRORS = (
+    nats.errors.Error,
+    OSError,
+    TimeoutError,
+    ConnectionError,
+    asyncio.TimeoutError,
+)
+_DB_DELIVERY_ERRORS = (SQLAlchemyError,)
+_WS_DELIVERY_ERRORS = (
+    WebSocketDisconnect,
+    OSError,
+    ConnectionError,
+    RuntimeError,
+    ValueError,
+    json.JSONDecodeError,
+    UnicodeDecodeError,
+)
 
 HEARTBEAT_TOUCH_INTERVAL = timedelta(seconds=15)
 SUPPORTED_CONTROL_AGENT_KINDS = {"hermes", "openclaw"}
@@ -184,13 +207,21 @@ def _extract_bearer_token(websocket: WebSocket) -> Optional[str]:
     if auth_header.startswith("Bearer "):
         return auth_header[7:]
     query_token = websocket.query_params.get("token")
-    if query_token:
+    if not query_token:
+        return None
+    if not settings.agent_control_allow_query_token:
         logger.warning(
-            "Agent Control WebSocket authenticated via ?token= query parameter; "
-            "prefer Authorization: Bearer and redact token query params from "
-            "reverse-proxy access logs"
+            "Agent Control WebSocket ?token= query auth rejected "
+            "(set AGENT_CONTROL_ALLOW_QUERY_TOKEN=true to enable; prefer "
+            "Authorization: Bearer)"
         )
-    return query_token or None
+        return None
+    logger.warning(
+        "Agent Control WebSocket authenticated via ?token= query parameter; "
+        "prefer Authorization: Bearer and redact token query params from "
+        "reverse-proxy access logs"
+    )
+    return query_token
 
 
 def _connection_envelope(
@@ -377,7 +408,7 @@ async def _publish_command(
             json.dumps(envelope.model_dump(mode="json")).encode("utf-8"),
         )
         return subject
-    except Exception:
+    except _NATS_DELIVERY_ERRORS:
         logger.exception("Failed to publish managed-agent command")
         return None
 
@@ -387,23 +418,30 @@ def _safe_mark_command_delivered(
     *,
     account_id: str,
     command_id: str,
+    managed_agent_id: Optional[str] = None,
+    commit: bool = True,
 ) -> None:
-    """Mark a persisted command delivered; DB errors never break delivery."""
+    """Mark a persisted command delivered; DB errors never break delivery.
+
+    Uses a savepoint so a failed mark cannot roll back unrelated outer
+    transaction work on the shared WebSocket session.
+    """
     try:
-        crud_agent_control_command.mark_delivered(
-            db,
-            account_id=account_id,
-            command_id=command_id,
-            delivered_at=datetime.now(UTC),
-        )
-    except Exception:
+        with db.begin_nested():
+            crud_agent_control_command.mark_delivered(
+                db,
+                account_id=account_id,
+                command_id=command_id,
+                managed_agent_id=managed_agent_id,
+                delivered_at=datetime.now(UTC),
+                commit=False,
+            )
+        if commit:
+            db.commit()
+    except _DB_DELIVERY_ERRORS:
         logger.exception(
             "Failed to mark Agent Control command %s delivered", command_id
         )
-        try:
-            db.rollback()
-        except Exception:
-            logger.debug("Rollback after delivery-mark failure failed", exc_info=True)
 
 
 async def _subscribe_to_commands(
@@ -423,24 +461,34 @@ async def _subscribe_to_commands(
             try:
                 payload = json.loads(msg.data.decode())
                 await websocket.send_json(payload)
-            except Exception:
+            except _WS_DELIVERY_ERRORS:
                 logger.exception("Failed to forward managed-agent command")
+                # Do not mark delivered — NATS/WS may retry; continue to the
+                # next message without treating this payload as sent.
                 return
             # The publishing pod leaves the command pending; the pod that
             # holds the WebSocket marks it delivered once actually sent.
             command_id = payload.get("message_id")
+            envelope_agent_id = payload.get("managed_agent_id")
             if (
                 db is not None
                 and account_id is not None
                 and payload.get("type") == "command"
                 and isinstance(command_id, str)
+                and (
+                    envelope_agent_id is None
+                    or str(envelope_agent_id) == str(managed_agent_id)
+                )
             ):
                 _safe_mark_command_delivered(
-                    db, account_id=account_id, command_id=command_id
+                    db,
+                    account_id=account_id,
+                    command_id=command_id,
+                    managed_agent_id=managed_agent_id,
                 )
 
         return await nats_client.subscribe(subject, cb=forward_command)
-    except Exception:
+    except _NATS_DELIVERY_ERRORS:
         logger.debug("Managed-agent command subscription unavailable", exc_info=True)
         return None
 
@@ -454,38 +502,52 @@ async def _redeliver_pending_commands(
 
     Envelopes are redelivered verbatim in created_at order, keeping the
     original ``message_id``/``command_id`` so idempotent runtime plugins can
-    dedupe replays. DB errors are logged and never break the WebSocket.
+    dedupe replays. Successfully sent ids are marked delivered in one batch
+    commit. DB errors are logged and never break the WebSocket.
     """
     now = datetime.now(UTC)
     try:
-        crud_agent_control_command.expire_stale(db, now=now)
-        pending = crud_agent_control_command.get_undelivered_for_agent(
-            db, managed_agent_id=connection.managed_agent_id, now=now
-        )
-    except Exception:
+        with db.begin_nested():
+            crud_agent_control_command.expire_stale(db, now=now, commit=False)
+            pending = crud_agent_control_command.get_undelivered_for_agent(
+                db, managed_agent_id=connection.managed_agent_id, now=now
+            )
+        db.commit()
+    except _DB_DELIVERY_ERRORS:
         logger.exception(
             "Failed to load undelivered Agent Control commands for agent %s",
             connection.managed_agent_id,
         )
-        try:
-            db.rollback()
-        except Exception:
-            logger.debug("Rollback after redelivery load failure failed", exc_info=True)
         return
 
+    delivered_ids: list[str] = []
     for record in pending:
         try:
             await websocket.send_json(record.envelope)
-        except Exception:
+        except _WS_DELIVERY_ERRORS:
             logger.exception(
                 "Failed to redeliver Agent Control command %s", record.command_id
             )
-            return
-        _safe_mark_command_delivered(
-            db,
-            account_id=connection.account_id,
-            command_id=record.command_id,
-        )
+            break
+        delivered_ids.append(record.command_id)
+
+    if delivered_ids:
+        try:
+            with db.begin_nested():
+                crud_agent_control_command.mark_delivered_many(
+                    db,
+                    account_id=connection.account_id,
+                    managed_agent_id=connection.managed_agent_id,
+                    command_ids=delivered_ids,
+                    delivered_at=datetime.now(UTC),
+                    commit=False,
+                )
+            db.commit()
+        except _DB_DELIVERY_ERRORS:
+            logger.exception(
+                "Failed to batch-mark %s Agent Control commands delivered",
+                len(delivered_ids),
+            )
 
 
 _COMMAND_ACK_NAMES = {"ack", "command_ack", "command_result", "command_error"}
@@ -500,8 +562,10 @@ def _handle_command_ack(
 
     Runtime plugins ack by sending an inbound envelope named ``ack`` or
     ``command_ack`` (a ``command_result``/``command_error`` also proves
-    receipt) carrying the original command id. Unknown ids are logged, not
-    errors, and DB failures never break the WebSocket loop.
+    receipt) carrying the original command id. The ack is scoped to the
+    connected ``managed_agent_id`` so a peer agent cannot spoof another
+    agent's delivery state. Unknown ids are logged, not errors, and DB
+    failures never break the WebSocket loop.
     """
     if inbound.name not in _COMMAND_ACK_NAMES:
         return
@@ -509,20 +573,23 @@ def _handle_command_ack(
     if not isinstance(command_id, str) or not command_id.strip():
         return
     try:
-        record = crud_agent_control_command.mark_acked(
-            db,
-            account_id=connection.account_id,
-            command_id=command_id.strip(),
-            acked_at=datetime.now(UTC),
-        )
+        with db.begin_nested():
+            record = crud_agent_control_command.mark_acked(
+                db,
+                account_id=connection.account_id,
+                managed_agent_id=connection.managed_agent_id,
+                command_id=command_id.strip(),
+                acked_at=datetime.now(UTC),
+                commit=False,
+            )
+        db.commit()
         if record is None:
-            logger.info("Received ack for unknown Agent Control command %s", command_id)
-    except Exception:
+            logger.info(
+                "Received ack for unknown or cross-agent Agent Control command %s",
+                command_id,
+            )
+    except _DB_DELIVERY_ERRORS:
         logger.exception("Failed to mark Agent Control command %s acked", command_id)
-        try:
-            db.rollback()
-        except Exception:
-            logger.debug("Rollback after ack-mark failure failed", exc_info=True)
 
 
 def _persist_agent_control_result(
@@ -695,8 +762,13 @@ async def managed_agent_control_websocket(
         if command_subscription is not None:
             try:
                 await command_subscription.unsubscribe()
-            except Exception:
-                logger.debug("Failed to unsubscribe agent command subscription")
+            except _NATS_DELIVERY_ERRORS:
+                logger.debug(
+                    "Failed to unsubscribe agent command subscription",
+                    exc_info=True,
+                )
+            finally:
+                command_subscription = None
         removed_active = await agent_control_manager.disconnect(connection_id)
         if removed_active:
             crud_managed_agent.clear_runtime_session_binding(
@@ -851,6 +923,8 @@ async def _route_managed_agent_prompt(
     # Persist the command durably BEFORE any delivery attempt so agents that
     # reconnect after downtime can recover missed instructions.
     now = datetime.now(UTC)
+    command_ttl_seconds = int(settings.agent_control_command_ttl_seconds)
+    expires_at = now + timedelta(seconds=command_ttl_seconds)
     crud_agent_control_command.create_command(
         db,
         account_id=agent.account_id,
@@ -860,7 +934,7 @@ async def _route_managed_agent_prompt(
         envelope=envelope.model_dump(mode="json"),
         source=_command_source(request.metadata),
         created_by_user_id=current_user.id,
-        expires_at=now + timedelta(seconds=settings.agent_control_command_ttl_seconds),
+        expires_at=expires_at,
     )
 
     command_status = "pending"
@@ -873,6 +947,7 @@ async def _route_managed_agent_prompt(
             db,
             account_id=str(agent.account_id),
             command_id=envelope.message_id,
+            managed_agent_id=str(agent.id),
         )
         command_status = "delivered"
     subject = None
@@ -886,6 +961,7 @@ async def _route_managed_agent_prompt(
                 crud_agent_control_command.mark_failed(
                     db,
                     account_id=str(agent.account_id),
+                    managed_agent_id=str(agent.id),
                     command_id=envelope.message_id,
                     error="Managed agent command channel is unavailable",
                 )
@@ -951,6 +1027,8 @@ async def _route_managed_agent_prompt(
         local_delivery=local_delivery,
         published=subject is not None,
         command_status=command_status,
+        expires_at=expires_at,
+        command_ttl_seconds=command_ttl_seconds,
         command_envelope=envelope,
     )
 

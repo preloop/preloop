@@ -41,6 +41,22 @@ _DATE_SUFFIX_PATTERNS = (
 )
 
 
+def normalize_gateway_model_alias(alias: Optional[str]) -> Optional[str]:
+    """Normalize a gateway/client model alias for pricing and matching.
+
+    Strips whitespace and a leading ``preloop/`` gateway prefix so recording
+    and pricing lookup paths share one identity for the same model.
+    """
+    if not isinstance(alias, str):
+        return None
+    trimmed = alias.strip()
+    if not trimmed:
+        return None
+    if trimmed.lower().startswith("preloop/"):
+        trimmed = trimmed.split("/", 1)[1].strip()
+    return trimmed or None
+
+
 def _expand_candidate(candidate: str, provider: str) -> Iterable[str]:
     """Yield normalized fallback forms of one candidate model name.
 
@@ -48,9 +64,10 @@ def _expand_candidate(candidate: str, provider: str) -> Iterable[str]:
     Bedrock region prefix stripped, then with trailing date/version stamps
     removed (litellm aliases the undated name for most models).
     """
-    yield candidate
+    normalized = normalize_gateway_model_alias(candidate) or candidate
+    yield normalized
 
-    stripped = candidate
+    stripped = normalized
     for region_prefix in _BEDROCK_REGION_PREFIXES:
         if stripped.startswith(region_prefix):
             stripped = stripped[len(region_prefix) :]
@@ -319,13 +336,15 @@ def _iter_litellm_model_candidates(ai_model: AIModel) -> Iterable[str]:
     if model_identifier:
         candidates.append(model_identifier)
         prefix = _PROVIDER_PREFIX.get(provider, provider)
-        if "/" not in model_identifier:
+        if "/" not in model_identifier and not model_identifier.lower().startswith(
+            "preloop/"
+        ):
             candidates.append(f"{prefix}/{model_identifier}")
 
     seen = set()
     for candidate in candidates:
         for expanded in _expand_candidate(candidate.strip(), provider):
-            normalized = expanded.strip()
+            normalized = normalize_gateway_model_alias(expanded) or expanded.strip()
             if not normalized or normalized in seen:
                 continue
             seen.add(normalized)

@@ -181,7 +181,7 @@ def reprice_gateway_usage_task(
     end: str,
     only_unpriced: bool = True,
     dry_run: bool = False,
-):
+) -> dict[str, object] | None:
     """Re-price gateway usage rows for one account in a time window.
 
     Dispatched over NATS (function name in the task payload). ``start`` and
@@ -213,14 +213,17 @@ def reprice_gateway_usage_task(
         }
     except Exception as e:
         logger.error(
-            f"Error repricing usage for account {account_id}: {e}", exc_info=True
+            "Error repricing usage for account %s: %s",
+            account_id,
+            e,
+            exc_info=True,
         )
         return None
     finally:
         db.close()
 
 
-def ingest_provider_billing(account_id: str | None = None):
+def ingest_provider_billing(account_id: str | None = None) -> object | None:
     """Fetch provider billing/usage actuals for reconciliation.
 
     The implementation lives in the Enterprise billing plugin; this OSS shim
@@ -239,13 +242,13 @@ def ingest_provider_billing(account_id: str | None = None):
     try:
         return service.ingest(db, account_id=account_id)
     except Exception as e:
-        logger.error(f"Provider billing ingestion failed: {e}", exc_info=True)
+        logger.error("Provider billing ingestion failed: %s", e, exc_info=True)
         return None
     finally:
         db.close()
 
 
-def send_optimization_digest(account_id: str | None = None):
+def send_optimization_digest(account_id: str | None = None) -> object | None:
     """Build and email the weekly cost optimization & savings digest.
 
     The implementation lives in the Enterprise billing plugin; this OSS shim
@@ -262,7 +265,7 @@ def send_optimization_digest(account_id: str | None = None):
     try:
         return service(db, account_id=account_id)
     except Exception as e:
-        logger.error(f"Optimization digest failed: {e}", exc_info=True)
+        logger.error("Optimization digest failed: %s", e, exc_info=True)
         return None
     finally:
         db.close()

@@ -357,45 +357,27 @@ async def register_tracker(
         if auth_type in ("github_app", "oauth_app") and installation:
             oauth_installation_uuid = installation.id
 
-        # Store the credential encrypted at rest via the Secret Service rather
-        # than in the plaintext api_key column (empty for github_app auth).
-        credentials_secret_id = None
-        if api_key:
-            from preloop.models.crud.tracker import (
-                store_tracker_secret,
-                TRACKER_API_KEY_SECRET_KIND,
-            )
-
-            credentials_secret_id = store_tracker_secret(
-                db,
-                account_id=account.id,
-                name=f"{name} API key",
-                secret_value=api_key,
-                secret_kind=TRACKER_API_KEY_SECRET_KIND,
-            )
-
-        new_tracker = Tracker(
-            name=name,
-            tracker_type=tracker_type.value,
-            url=str(url_str) if url_str else None,
-            api_key=None,
-            credentials_secret_id=credentials_secret_id,
-            connection_details=config or {},
-            account_id=account.id,
-            is_active=True,
-            meta_data={},
-            scope_rules=scope_rules,
-            auth_type=auth_type,
-            oauth_installation_id=oauth_installation_uuid,
+        # Persist via CRUD so credentials are encrypted at rest (never write
+        # plaintext api_key columns from the endpoint).
+        new_tracker = crud_tracker.create(
+            db,
+            obj_in={
+                "name": name,
+                "tracker_type": tracker_type.value,
+                "url": str(url_str) if url_str else None,
+                "api_key": api_key or None,
+                "connection_details": config or {},
+                "account_id": account.id,
+                "is_active": True,
+                "meta_data": {},
+                "auth_type": auth_type,
+                "oauth_installation_id": oauth_installation_uuid,
+            },
         )
-
-        db.add(new_tracker)
-        db.flush()  # Get ID before creating org
-
-        # Then create or find organization for this tracker
-        # (Assuming one org per tracker for now, might need adjustment later)
-        db.commit()
-        db.refresh(new_tracker)
+        if scope_rules:
+            new_tracker.scope_rules = scope_rules
+            db.commit()
+            db.refresh(new_tracker)
 
         log_config_change(
             db,
@@ -569,65 +551,20 @@ async def update_tracker(
     if update_data.get("api_key") == "unchanged":
         del update_data["api_key"]
 
-    # Route credential updates through the Secret Service (encrypted at rest)
-    # instead of writing the plaintext api_key / jira_webhook_secret columns.
-    from preloop.models.crud.tracker import (
-        store_tracker_secret,
-        TRACKER_API_KEY_SECRET_KIND,
-        TRACKER_WEBHOOK_SECRET_KIND,
-    )
-
+    # Special handling if api_key is updated - revalidate connection.
     api_key_updated = "api_key" in update_data
     if api_key_updated:
-        new_api_key = update_data.pop("api_key")
-        tracker.api_key = None
-        tracker.credentials_secret_id = (
-            store_tracker_secret(
-                db,
-                account_id=tracker.account_id,
-                name=f"{tracker.name} API key",
-                secret_value=new_api_key,
-                secret_kind=TRACKER_API_KEY_SECRET_KIND,
-                existing_secret_id=tracker.credentials_secret_id,
-            )
-            if new_api_key
-            else None
-        )
-    if "jira_webhook_secret" in update_data:
-        new_secret = update_data.pop("jira_webhook_secret")
-        tracker.jira_webhook_secret = None
-        tracker.webhook_secret_id = (
-            store_tracker_secret(
-                db,
-                account_id=tracker.account_id,
-                name=f"{tracker.name} webhook secret",
-                secret_value=new_secret,
-                secret_kind=TRACKER_WEBHOOK_SECRET_KIND,
-                existing_secret_id=tracker.webhook_secret_id,
-            )
-            if new_secret
-            else None
-        )
-
-    # Update other fields
-    for field, value in update_data.items():
-        setattr(tracker, field, value)
-
-    # Special handling if api_key is updated - revalidate connection?
-    if api_key_updated:
-        # Optionally re-test connection here or mark as unvalidated
-        tracker.is_valid = False
-        tracker.last_validation = None
-        tracker.validation_message = "API key updated, revalidation needed."
+        update_data["is_valid"] = False
+        update_data["last_validation"] = None
+        update_data["validation_message"] = "API key updated, revalidation needed."
         logger.info(
-            f"API key updated for tracker {tracker.id}, marked for revalidation."
+            "API key updated for tracker %s, marked for revalidation.", tracker.id
         )
 
     try:
-        logger.info(f"Updating tracker {tracker_id} with data: {update_data}")
-        db.merge(tracker)
-        db.commit()
-        db.refresh(tracker)
+        logger.info("Updating tracker %s with data: %s", tracker_id, update_data)
+        # Route through CRUD so credential fields encrypt via Secret Service.
+        tracker = crud_tracker.update(db, db_obj=tracker, obj_in=update_data)
 
         log_config_change(
             db,

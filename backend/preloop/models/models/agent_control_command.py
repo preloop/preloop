@@ -26,7 +26,15 @@ import uuid
 from datetime import datetime
 from typing import Any, Optional
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -91,6 +99,10 @@ class AgentControlCommand(Base):
             "ix_agent_control_command_agent_status",
             "managed_agent_id",
             "status",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'delivered', 'acked', 'failed', 'expired')",
+            name="ck_agent_control_command_status",
         ),
     )
 

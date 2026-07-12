@@ -11,13 +11,8 @@ from __future__ import annotations
 
 import logging
 
-from preloop.models.crud.tracker import (
-    TRACKER_API_KEY_SECRET_KIND,
-    TRACKER_WEBHOOK_SECRET_KIND,
-    store_tracker_secret,
-)
+from preloop.models.crud.tracker import crud_tracker
 from preloop.models.db.session import get_session_factory
-from preloop.models.models.tracker import Tracker
 
 logger = logging.getLogger(__name__)
 
@@ -30,50 +25,18 @@ def run_tracker_credential_encryption_backfill() -> dict[str, int]:
     migrated_webhook = 0
     scanned = 0
     try:
-        # Only rows that still carry a plaintext value with no secret reference.
-        candidates = (
-            db.query(Tracker)
-            .filter(
-                (
-                    (Tracker.api_key.isnot(None) & (Tracker.api_key != ""))
-                    & Tracker.credentials_secret_id.is_(None)
-                )
-                | (
-                    (
-                        Tracker.jira_webhook_secret.isnot(None)
-                        & (Tracker.jira_webhook_secret != "")
-                    )
-                    & Tracker.webhook_secret_id.is_(None)
-                )
-            )
-            .all()
-        )
+        candidates = crud_tracker.list_plaintext_credential_candidates(db)
         for tracker in candidates:
             scanned += 1
             try:
-                if tracker.api_key and not tracker.credentials_secret_id:
-                    tracker.credentials_secret_id = store_tracker_secret(
-                        db,
-                        account_id=tracker.account_id,
-                        name=f"{tracker.name} API key",
-                        secret_value=tracker.api_key,
-                        secret_kind=TRACKER_API_KEY_SECRET_KIND,
-                    )
-                    tracker.api_key = None
+                result = crud_tracker.migrate_plaintext_credentials(
+                    db, tracker=tracker, commit=True
+                )
+                if result["migrated_api_key"]:
                     migrated_api += 1
-                if tracker.jira_webhook_secret and not tracker.webhook_secret_id:
-                    tracker.webhook_secret_id = store_tracker_secret(
-                        db,
-                        account_id=tracker.account_id,
-                        name=f"{tracker.name} webhook secret",
-                        secret_value=tracker.jira_webhook_secret,
-                        secret_kind=TRACKER_WEBHOOK_SECRET_KIND,
-                    )
-                    tracker.jira_webhook_secret = None
+                if result["migrated_webhook_secret"]:
                     migrated_webhook += 1
-                db.add(tracker)
-                db.commit()
-            except Exception as inner_exc:  # pragma: no cover - defensive
+            except Exception as inner_exc:
                 db.rollback()
                 logger.warning(
                     "Tracker credential backfill failed for tracker %s: %s",

@@ -21,8 +21,10 @@ re-prices the triggering row. Lookups are throttled hard:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
 import threading
 import time
 from pathlib import Path
@@ -32,14 +34,24 @@ logger = logging.getLogger(__name__)
 
 CATALOG_PATH = Path(__file__).resolve().parent / "data" / "model_prices.json"
 META_KEY = "_preloop_meta"
-REMOTE_PRICE_MAP_URL = (
+# Default follows litellm's published map on GitHub. Prefer pinning a content
+# hash via MODEL_PRICE_MAP_SHA256 so a compromised upstream revision cannot
+# silently change pricing behavior.
+REMOTE_PRICE_MAP_URL = os.getenv(
+    "MODEL_PRICE_MAP_URL",
     "https://raw.githubusercontent.com/BerriAI/litellm/main/"
-    "model_prices_and_context_window.json"
+    "model_prices_and_context_window.json",
 )
+REMOTE_PRICE_MAP_SHA256 = os.getenv("MODEL_PRICE_MAP_SHA256", "").strip().lower()
 
-_REMOTE_TTL_SECONDS = 6 * 3600
-_REMOTE_FAILURE_BACKOFF_SECONDS = 15 * 60
-_NEGATIVE_TTL_SECONDS = 24 * 3600
+_REMOTE_TTL_SECONDS = int(os.getenv("MODEL_PRICE_MAP_TTL_SECONDS", str(6 * 3600)))
+_REMOTE_FAILURE_BACKOFF_SECONDS = int(
+    os.getenv("MODEL_PRICE_MAP_FAILURE_BACKOFF_SECONDS", str(15 * 60))
+)
+_NEGATIVE_TTL_SECONDS = int(
+    os.getenv("MODEL_PRICE_MAP_NEGATIVE_TTL_SECONDS", str(24 * 3600))
+)
+_REMOTE_FETCH_RETRIES = int(os.getenv("MODEL_PRICE_MAP_FETCH_RETRIES", "2"))
 
 _lock = threading.Lock()
 _loaded = False
@@ -126,14 +138,15 @@ def catalog_metadata() -> Optional[Dict[str, Any]]:
     API responses can report staleness without forcing registration.
     """
     global _metadata
-    if _metadata is None:
-        try:
-            raw = json.loads(CATALOG_PATH.read_text())
-            meta = raw.get(META_KEY)
-            _metadata = meta if isinstance(meta, dict) else None
-        except (OSError, ValueError):
-            return None
-    return _metadata
+    with _lock:
+        if _metadata is None:
+            try:
+                raw = json.loads(CATALOG_PATH.read_text())
+                meta = raw.get(META_KEY)
+                _metadata = meta if isinstance(meta, dict) else None
+            except (OSError, ValueError):
+                return None
+        return _metadata
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +158,8 @@ def _fetch_remote_price_map() -> Optional[Dict[str, Any]]:
     """Download the upstream price map, honoring cache and failure backoff.
 
     Returns the cached/downloaded map, or None while a failure backoff is in
-    effect or the download fails.
+    effect or the download fails. When ``MODEL_PRICE_MAP_SHA256`` is set, the
+    response body must match that digest or the fetch is rejected.
     """
     global _remote_map, _remote_fetched_at, _remote_failed_at
     now = time.monotonic()
@@ -157,14 +171,34 @@ def _fetch_remote_price_map() -> Optional[Dict[str, Any]]:
         ):
             return None
 
-    try:
-        import httpx
+    import httpx
 
-        response = httpx.get(REMOTE_PRICE_MAP_URL, timeout=30.0)
-        response.raise_for_status()
-        fetched = response.json()
-    except Exception:  # noqa: BLE001 - network is best-effort here
-        logger.warning("Live model price map download failed", exc_info=True)
+    last_error: Optional[BaseException] = None
+    for attempt in range(max(1, _REMOTE_FETCH_RETRIES + 1)):
+        try:
+            response = httpx.get(REMOTE_PRICE_MAP_URL, timeout=30.0)
+            response.raise_for_status()
+            body = response.content
+            if REMOTE_PRICE_MAP_SHA256:
+                digest = hashlib.sha256(body).hexdigest()
+                if digest != REMOTE_PRICE_MAP_SHA256:
+                    raise ValueError(
+                        "Remote price map SHA-256 mismatch "
+                        f"(expected {REMOTE_PRICE_MAP_SHA256}, got {digest})"
+                    )
+            fetched = response.json()
+            last_error = None
+            break
+        except Exception as exc:  # noqa: BLE001 - network is best-effort here
+            last_error = exc
+            logger.warning(
+                "Live model price map download failed (attempt %s/%s)",
+                attempt + 1,
+                max(1, _REMOTE_FETCH_RETRIES + 1),
+                exc_info=True,
+            )
+            fetched = None
+    if last_error is not None or fetched is None:
         with _lookup_lock:
             _remote_failed_at = time.monotonic()
         return None

@@ -286,14 +286,9 @@ def _lookup_nested_string(root: dict, *path: str) -> Optional[str]:
 
 
 def _normalize_gateway_model_alias(alias: Optional[str]) -> Optional[str]:
-    if not isinstance(alias, str):
-        return None
-    trimmed = alias.strip()
-    if not trimmed:
-        return None
-    if trimmed.lower().startswith("preloop/"):
-        trimmed = trimmed.split("/", 1)[1].strip()
-    return trimmed or None
+    from preloop.services.model_pricing import normalize_gateway_model_alias
+
+    return normalize_gateway_model_alias(alias)
 
 
 def _managed_agent_configured_model_alias(

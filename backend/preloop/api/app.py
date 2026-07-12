@@ -241,11 +241,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Register the vendored model-price catalog so gateway cost estimates are
     # deterministic per release (independent of the installed litellm version).
+    # load_catalog() already handles missing/corrupt files; this catch is only
+    # for an unavailable module so unexpected errors still fail startup.
     try:
         from preloop.services.model_price_catalog import load_catalog
 
         load_catalog()
-    except Exception:
+    except ImportError:
         logger.exception("Model price catalog load failed; using litellm defaults")
 
     # Initialize database connection and optionally create tables.
@@ -422,8 +424,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.info("Skipping approval workflow repair pass for %s role.", service_role)
 
     # Encrypt any legacy plaintext tracker credentials at rest (idempotent).
+    # Per-row failures are handled inside the backfill; catch only import/DB
+    # setup failures here so unexpected bugs still fail startup loudly.
     if not is_testing and is_api_role:
         try:
+            from sqlalchemy.exc import SQLAlchemyError
+
             from preloop.services.tracker_credential_backfill import (
                 run_tracker_credential_encryption_backfill,
             )
@@ -438,7 +444,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     "scanned=%(scanned)s, api_keys=%(migrated_api_keys)s, "
                     "webhook_secrets=%(migrated_webhook_secrets)s" % tracker_stats
                 )
-        except Exception as e:
+        except (ImportError, SQLAlchemyError) as e:
             logger.warning(
                 f"Tracker credential backfill failed: {e}",
                 exc_info=True,

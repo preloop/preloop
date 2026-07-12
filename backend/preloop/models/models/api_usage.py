@@ -6,7 +6,7 @@ from datetime import datetime
 # Use TYPE_CHECKING to avoid circular imports
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import ForeignKey, func
+from sqlalchemy import CheckConstraint, ForeignKey, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Boolean, DateTime, Float, Integer, String
@@ -143,6 +143,19 @@ class ApiUsage(Base):
         )
     )
     user: Mapped[Optional["User"]] = relationship("User", back_populates="api_usages")
+
+    __table_args__ = (
+        CheckConstraint(
+            "cost_source IS NULL OR cost_source IN "
+            "('override', 'model_config', 'catalog', 'subscription', 'unpriced')",
+            name="ck_api_usage_cost_source",
+        ),
+        CheckConstraint(
+            "usage_source IS NULL OR usage_source IN "
+            "('provider', 'estimated', 'partial')",
+            name="ck_api_usage_usage_source",
+        ),
+    )
 
     def __repr__(self) -> str:
         """Return a string representation of the usage record.

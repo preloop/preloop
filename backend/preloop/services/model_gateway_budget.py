@@ -29,6 +29,15 @@ from preloop.services.subject_governance import (
 )
 
 
+def _default_estimated_output_tokens() -> int:
+    return max(1, int(settings.billing_budget_default_estimated_output_tokens))
+
+
+def _chars_per_token() -> float:
+    return max(1.0, float(settings.billing_budget_chars_per_token))
+
+
+# Back-compat alias for tests/imports that still reference the constant.
 DEFAULT_ESTIMATED_OUTPUT_TOKENS = 1024
 
 
@@ -357,7 +366,7 @@ class ModelGatewayBudgetService:
             payload.get("max_completion_tokens")
             or payload.get("max_output_tokens")
             or payload.get("max_tokens")
-            or DEFAULT_ESTIMATED_OUTPUT_TOKENS
+            or _default_estimated_output_tokens()
         )
         return estimate_ai_model_usage_cost(
             ai_model,
@@ -370,18 +379,15 @@ class ModelGatewayBudgetService:
     @staticmethod
     def _is_subscription_credentialed(ai_model: AIModel) -> bool:
         """True when the model bills against an OAuth subscription."""
-        try:
-            from preloop.services.secret_service import (
-                ANTHROPIC_CLAUDE_CODE_OAUTH_CREDENTIAL_TYPE,
-                OPENAI_CODEX_OAUTH_CREDENTIAL_TYPE,
-            )
+        from preloop.services.secret_service import (
+            ANTHROPIC_CLAUDE_CODE_OAUTH_CREDENTIAL_TYPE,
+            OPENAI_CODEX_OAUTH_CREDENTIAL_TYPE,
+        )
 
-            return ai_model.credential_type in {
-                ANTHROPIC_CLAUDE_CODE_OAUTH_CREDENTIAL_TYPE,
-                OPENAI_CODEX_OAUTH_CREDENTIAL_TYPE,
-            }
-        except Exception:  # noqa: BLE001 - credential resolution must not block
-            return False
+        return ai_model.credential_type in {
+            ANTHROPIC_CLAUDE_CODE_OAUTH_CREDENTIAL_TYPE,
+            OPENAI_CODEX_OAUTH_CREDENTIAL_TYPE,
+        }
 
     def _pricing_override_for_request(
         self, ai_model: AIModel, payload: Dict[str, Any]
@@ -398,37 +404,21 @@ class ModelGatewayBudgetService:
 
     @staticmethod
     def _count_input_tokens(ai_model: AIModel, payload: Dict[str, Any]) -> int:
-        """Count preflight input tokens with a real tokenizer when possible.
+        """Estimate preflight input tokens for budget checks.
 
-        Tries litellm's tokenizer over the request messages first (accurate);
-        falls back to the chars/4 heuristic for non-message payloads or
-        tokenizer failures.
+        Uses the cheap chars/4 heuristic rather than ``litellm.token_counter``
+        so every gateway request does not pay tokenizer overhead on the hot
+        path. Post-response recording still uses accurate provider usage.
 
         Args:
-            ai_model: Model the request targets (for tokenizer selection).
+            ai_model: Model the request targets (unused; kept for call-site
+                compatibility with earlier tokenizer-based estimation).
             payload: The gateway request body.
 
         Returns:
             Estimated input token count (0 when the payload has no text).
         """
-        messages = payload.get("messages")
-        if isinstance(messages, list) and messages:
-            try:
-                import litellm
-
-                from preloop.services.model_pricing import (
-                    _iter_litellm_model_candidates,
-                )
-
-                for candidate in _iter_litellm_model_candidates(ai_model):
-                    try:
-                        return int(
-                            litellm.token_counter(model=candidate, messages=messages)
-                        )
-                    except Exception:  # noqa: BLE001 - unknown model/tokenizer
-                        continue
-            except Exception:  # noqa: BLE001 - defensive; heuristics below
-                pass
+        del ai_model  # reserved for future tokenizer selection
         return ModelGatewayBudgetService._estimate_input_tokens(payload)
 
     @staticmethod
@@ -456,7 +446,8 @@ class ModelGatewayBudgetService:
                         )
                     )
         total_chars = sum(len(part) for part in text_parts if part)
-        return max(1, math.ceil(total_chars / 4)) if total_chars else 0
+        chars_per_token = _chars_per_token()
+        return max(1, math.ceil(total_chars / chars_per_token)) if total_chars else 0
 
     @staticmethod
     def _content_to_text(content: Any) -> str:

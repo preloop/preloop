@@ -388,6 +388,28 @@ class Settings(BaseSettings):
             "pass marks it expired"
         ),
     )
+    agent_control_allow_query_token: bool = Field(
+        True,
+        description=(
+            "Allow Agent Control WebSockets to authenticate via ?token= "
+            "(leaks into access logs). Set false in production once clients "
+            "send Authorization: Bearer."
+        ),
+    )
+    billing_budget_default_estimated_output_tokens: int = Field(
+        1024,
+        description=(
+            "Default estimated completion tokens used for gateway budget "
+            "preflight when the request omits max_tokens"
+        ),
+    )
+    billing_budget_chars_per_token: float = Field(
+        4.0,
+        description=(
+            "Chars-per-token heuristic divisor for gateway budget preflight "
+            "input estimates"
+        ),
+    )
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -561,6 +583,19 @@ class Settings(BaseSettings):
                 os.getenv("BILLING_FREE_HOSTED_MODEL_HARD_CAP_USD", "1.0")
             ),
             installer_audit_account_id=os.getenv("INSTALLER_AUDIT_ACCOUNT_ID", ""),
+            agent_control_command_ttl_seconds=int(
+                os.getenv("AGENT_CONTROL_COMMAND_TTL_SECONDS", "3600")
+            ),
+            agent_control_allow_query_token=os.getenv(
+                "AGENT_CONTROL_ALLOW_QUERY_TOKEN", "true"
+            ).lower()
+            in ("true", "1", "t", "yes"),
+            billing_budget_default_estimated_output_tokens=int(
+                os.getenv("BILLING_BUDGET_DEFAULT_ESTIMATED_OUTPUT_TOKENS", "1024")
+            ),
+            billing_budget_chars_per_token=float(
+                os.getenv("BILLING_BUDGET_CHARS_PER_TOKEN", "4.0")
+            ),
         )
 
 

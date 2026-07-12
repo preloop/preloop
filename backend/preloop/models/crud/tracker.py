@@ -59,26 +59,32 @@ class CRUDTracker(CRUDBase[Tracker]):
         as plaintext at rest. Mutates ``obj_data`` in place: the plaintext
         columns are cleared and the ``*_secret_id`` FKs are set.
         """
-        if obj_data.get("api_key"):
-            obj_data["credentials_secret_id"] = store_tracker_secret(
-                db,
-                account_id=account_id,
-                name=f"{tracker_name} API key",
-                secret_value=obj_data["api_key"],
-                secret_kind=TRACKER_API_KEY_SECRET_KIND,
-                existing_secret_id=existing_api_secret_id,
-            )
+        if "api_key" in obj_data:
+            if obj_data.get("api_key"):
+                obj_data["credentials_secret_id"] = store_tracker_secret(
+                    db,
+                    account_id=account_id,
+                    name=f"{tracker_name} API key",
+                    secret_value=obj_data["api_key"],
+                    secret_kind=TRACKER_API_KEY_SECRET_KIND,
+                    existing_secret_id=existing_api_secret_id,
+                )
+            else:
+                obj_data["credentials_secret_id"] = None
             obj_data["api_key"] = None
 
-        if obj_data.get("jira_webhook_secret"):
-            obj_data["webhook_secret_id"] = store_tracker_secret(
-                db,
-                account_id=account_id,
-                name=f"{tracker_name} webhook secret",
-                secret_value=obj_data["jira_webhook_secret"],
-                secret_kind=TRACKER_WEBHOOK_SECRET_KIND,
-                existing_secret_id=existing_webhook_secret_id,
-            )
+        if "jira_webhook_secret" in obj_data:
+            if obj_data.get("jira_webhook_secret"):
+                obj_data["webhook_secret_id"] = store_tracker_secret(
+                    db,
+                    account_id=account_id,
+                    name=f"{tracker_name} webhook secret",
+                    secret_value=obj_data["jira_webhook_secret"],
+                    secret_kind=TRACKER_WEBHOOK_SECRET_KIND,
+                    existing_secret_id=existing_webhook_secret_id,
+                )
+            else:
+                obj_data["webhook_secret_id"] = None
             obj_data["jira_webhook_secret"] = None
 
     def create(self, db: Session, *, obj_in: Dict[str, Any]) -> Tracker:
@@ -117,6 +123,65 @@ class CRUDTracker(CRUDBase[Tracker]):
         )
 
         return super().update(db=db, db_obj=db_obj, obj_in=obj_data)
+
+    def list_plaintext_credential_candidates(self, db: Session) -> List[Tracker]:
+        """Return trackers that still store plaintext credentials to migrate."""
+        return (
+            db.query(Tracker)
+            .filter(
+                (
+                    (Tracker.api_key.isnot(None) & (Tracker.api_key != ""))
+                    & Tracker.credentials_secret_id.is_(None)
+                )
+                | (
+                    (
+                        Tracker.jira_webhook_secret.isnot(None)
+                        & (Tracker.jira_webhook_secret != "")
+                    )
+                    & Tracker.webhook_secret_id.is_(None)
+                )
+            )
+            .all()
+        )
+
+    def migrate_plaintext_credentials(
+        self, db: Session, *, tracker: Tracker, commit: bool = True
+    ) -> dict[str, bool]:
+        """Encrypt one tracker's plaintext credentials via Secret Service.
+
+        Returns flags indicating which credential kinds were migrated.
+        """
+        migrated_api = False
+        migrated_webhook = False
+        if tracker.api_key and not tracker.credentials_secret_id:
+            tracker.credentials_secret_id = store_tracker_secret(
+                db,
+                account_id=tracker.account_id,
+                name=f"{tracker.name} API key",
+                secret_value=tracker.api_key,
+                secret_kind=TRACKER_API_KEY_SECRET_KIND,
+            )
+            tracker.api_key = None
+            migrated_api = True
+        if tracker.jira_webhook_secret and not tracker.webhook_secret_id:
+            tracker.webhook_secret_id = store_tracker_secret(
+                db,
+                account_id=tracker.account_id,
+                name=f"{tracker.name} webhook secret",
+                secret_value=tracker.jira_webhook_secret,
+                secret_kind=TRACKER_WEBHOOK_SECRET_KIND,
+            )
+            tracker.jira_webhook_secret = None
+            migrated_webhook = True
+        if migrated_api or migrated_webhook:
+            tracker.last_updated = datetime.now(timezone.utc)
+            if commit:
+                db.commit()
+                db.refresh(tracker)
+        return {
+            "migrated_api_key": migrated_api,
+            "migrated_webhook_secret": migrated_webhook,
+        }
 
     def get_for_account(
         self, db: Session, *, account_id: str, skip: int = 0, limit: int = 100

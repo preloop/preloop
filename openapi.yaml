@@ -7950,6 +7950,17 @@ components:
           - type: string
           - type: 'null'
           title: Command Status
+        expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Expires At
+        command_ttl_seconds:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Command Ttl Seconds
         command_envelope:
           $ref: '#/components/schemas/AgentControlEnvelope'
       type: object

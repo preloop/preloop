@@ -15,6 +15,8 @@ from sqlalchemy.types import JSON, DateTime
 from .base import Base
 from .tracker_scope_rule import TrackerScopeRule
 
+_MISSING = object()
+
 if TYPE_CHECKING:
     from .account import Account
     from .comment import Comment
@@ -195,31 +197,47 @@ class Tracker(Base):
 
         Falls back to the legacy plaintext ``api_key`` column for rows not yet
         migrated. Callers must use this instead of ``api_key`` directly.
+
+        The decrypted value is cached on the instance for the lifetime of the
+        ORM object so listing/scanning paths do not re-decrypt on every access.
         """
+        cached = getattr(self, "_resolved_api_key_cache", None)
+        if cached is not None:
+            return cached
         if self.credentials_secret is not None:
             # Local import avoids a models -> services import cycle at load time.
             from preloop.services.secret_service import get_secret_service
 
-            return (
+            value = (
                 get_secret_service()
                 .resolve_secret_reference(self.credentials_secret)
                 .value
             )
-        return self.api_key or ""
+        else:
+            value = self.api_key or ""
+        object.__setattr__(self, "_resolved_api_key_cache", value)
+        return value
 
     @property
     def resolved_webhook_secret(self) -> Optional[str]:
         """Return the Jira webhook secret, decrypting the SecretReference.
 
         Falls back to the legacy plaintext ``jira_webhook_secret`` column.
+        Cached on the instance like :attr:`resolved_api_key`.
         """
+        cached = getattr(self, "_resolved_webhook_secret_cache", _MISSING)
+        if cached is not _MISSING:
+            return cached  # type: ignore[return-value]
         if self.webhook_secret is not None:
             from preloop.services.secret_service import get_secret_service
 
-            return (
+            value = (
                 get_secret_service().resolve_secret_reference(self.webhook_secret).value
             )
-        return self.jira_webhook_secret
+        else:
+            value = self.jira_webhook_secret
+        object.__setattr__(self, "_resolved_webhook_secret_cache", value)
+        return value
 
     # Validation status
     is_valid: Mapped[bool] = mapped_column(default=False)

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy import inspect
 from sqlalchemy.exc import SQLAlchemyError
@@ -34,6 +34,9 @@ PROVIDER_USAGE_FAIL_SHARE = 0.5
 
 NO_TRAFFIC_DETAIL = "no gateway traffic in window"
 
+# Process-level cache: audit_log presence does not flip without a migration.
+_AUDIT_TABLE_EXISTS: Optional[bool] = None
+
 
 def _check(key: str, status: str, detail: str) -> Dict[str, str]:
     """Build one checklist entry."""
@@ -42,12 +45,17 @@ def _check(key: str, status: str, detail: str) -> Dict[str, str]:
 
 def _audit_table_exists(db: Session) -> bool:
     """Return True when the ``audit_log`` table exists in the database."""
+    global _AUDIT_TABLE_EXISTS
+    if _AUDIT_TABLE_EXISTS is not None:
+        return _AUDIT_TABLE_EXISTS
     try:
         bind = db.get_bind()
-        return bind is not None and inspect(bind).has_table("audit_log")
+        exists = bind is not None and inspect(bind).has_table("audit_log")
     except SQLAlchemyError:
         logger.debug("Audit table existence check failed", exc_info=True)
         return False
+    _AUDIT_TABLE_EXISTS = exists
+    return exists
 
 
 def _streaming_check(counters: Dict[str, int]) -> Dict[str, str]:

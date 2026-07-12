@@ -1,7 +1,7 @@
 """Initialize and configure the DynamicFastMCP server with all default tools.
 
-IMPORTANT: Tool descriptions and schemas must match BUILTIN_TOOLS in
-preloop/api/endpoints/tools.py to ensure consistency between MCP and REST API.
+IMPORTANT: Tool descriptions and schemas must match shared defs in
+preloop.tools.builtin_defs (and BUILTIN_TOOLS in tools.py).
 """
 
 import logging
@@ -18,6 +18,7 @@ from preloop.services.dynamic_fastmcp import (
     _justification_var,
     create_dynamic_mcp_server,
 )
+from preloop.tools.builtin_defs import ASK_USER_TOOL
 
 logger = logging.getLogger(__name__)
 
@@ -489,9 +490,8 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
             f"Workflow used: {approval_workflow or 'default'}"
         )
 
-    # Register Tool 7b: ask_user (ask the human a question, get an answer back)
-    # NOTE: keep in sync with BUILTIN_TOOLS in preloop/api/endpoints/tools.py
-    @mcp.tool()
+    # Register Tool 7b: ask_user (shared metadata: tools.builtin_defs.ASK_USER_TOOL)
+    @mcp.tool(description=ASK_USER_TOOL["description"])
     async def ask_user(
         question: str,
         options: list[str] | None = None,
@@ -559,7 +559,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         }
 
         answered, answer = await require_approval(
-            tool_name="ask_user",
+            tool_name=ASK_USER_TOOL["name"],
             tool_source="builtin",
             account_id=account_id,
             arguments=arguments,

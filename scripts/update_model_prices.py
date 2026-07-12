@@ -108,6 +108,8 @@ def fetch_remote(url: str = SOURCE_URL) -> Dict[str, Any]:
 
         context = ssl.create_default_context(cafile=certifi.where())
     except ImportError:
+        # certifi is optional: fall back to the system CA store via
+        # urlopen's default SSL context when the package is not installed.
         pass
     with urllib.request.urlopen(  # noqa: S310
         url, timeout=60, context=context

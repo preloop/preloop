@@ -115,9 +115,10 @@ def test_remote_fetch_failure_backs_off(monkeypatch) -> None:
 
     monkeypatch.setitem(sys.modules, "httpx", _FakeHttpx)
 
+    expected_attempts = max(1, model_price_catalog._REMOTE_FETCH_RETRIES + 1)
     assert model_price_catalog._fetch_remote_price_map() is None
     assert model_price_catalog._fetch_remote_price_map() is None
-    assert calls["count"] == 1  # second call sits out the failure backoff
+    assert calls["count"] == expected_attempts  # second call sits out backoff
 
 
 def test_schedule_price_lookup_disabled_under_testing() -> None:
