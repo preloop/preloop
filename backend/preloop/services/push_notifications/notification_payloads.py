@@ -74,8 +74,34 @@ class NotificationPayloadBuilder:
         Returns:
             APNs payload dictionary.
         """
+        # An `ask_user` call is a QUESTION, not a permission request: the
+        # operator picks an option or types an answer rather than approving.
+        # Clients branch on `is_question` (and on the aps category) to render
+        # the right UI, including option buttons directly in the notification.
+        args = tool_args or {}
+        is_question = bool(args.get("is_question"))
+        question_options = [
+            str(option)
+            for option in (args.get("options") or args.get("question_options") or [])
+            if str(option).strip()
+        ]
+        allow_free_text = bool(args.get("allow_free_text", True))
+
         # Customize alert based on priority
-        if priority == "urgent":
+        if is_question:
+            title = "Agent question"
+            if priority == "urgent":
+                title = "🚨 Agent question (urgent)"
+                sound = "critical.caf"
+                interruption_level = "critical"
+            elif priority == "high":
+                title = "⚠️ Agent question"
+                sound = "default"
+                interruption_level = "time-sensitive"
+            else:
+                sound = "default"
+                interruption_level = "active"
+        elif priority == "urgent":
             title = "🚨 URGENT: Approval Needed"
             sound = "critical.caf"  # Must exist in app bundle
             interruption_level = "critical"
@@ -87,6 +113,20 @@ class NotificationPayloadBuilder:
             title = "New Approval Request"
             sound = "default"
             interruption_level = "active"
+
+        # iOS notification categories are STATIC (registered at app launch), so
+        # option buttons are exposed via pre-registered per-arity categories
+        # whose action ids are positional (OPTION_0..OPTION_N). The client maps
+        # each id back to the label in `question_options`. iOS shows at most 4
+        # actions, so cap at 4 options; beyond that the client falls back to
+        # opening the app / inline text answer.
+        category = "APPROVAL_REQUEST"
+        if is_question:
+            option_count = len(question_options)
+            if 2 <= option_count <= 4:
+                category = f"QUESTION_{option_count}_OPTIONS"
+            else:
+                category = "QUESTION_REQUEST"
 
         # Format tool name nicely
         tool_display = tool_name.replace("_", " ").title()
@@ -137,7 +177,7 @@ class NotificationPayloadBuilder:
 
         # Custom data for app routing (used by both iOS and Android)
         custom_data = {
-            "type": "new_approval_request",
+            "type": "question" if is_question else "new_approval_request",
             "approval_request_id": request_id,
             "tool_name": tool_name,
             "priority": priority,
@@ -146,6 +186,13 @@ class NotificationPayloadBuilder:
             custom_data["summary"] = ask_text
         if expires_at:
             custom_data["expires_at"] = expires_at.isoformat()
+        if is_question:
+            # Clients render option buttons (positional OPTION_i actions map
+            # back to these labels) and an inline dictated answer.
+            custom_data["is_question"] = True
+            custom_data["question"] = str(args.get("question") or ask_text or "")
+            custom_data["question_options"] = question_options
+            custom_data["allow_free_text"] = allow_free_text
 
         payload = {
             "aps": {
@@ -156,7 +203,7 @@ class NotificationPayloadBuilder:
                 },
                 "sound": sound,
                 "badge": 1,  # iOS will auto-increment
-                "category": "APPROVAL_REQUEST",
+                "category": category,
                 "thread-id": "approval-requests",
                 "interruption-level": interruption_level,
                 "relevance-score": 1.0 if priority in ["urgent", "high"] else 0.5,

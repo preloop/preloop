@@ -1131,3 +1131,52 @@ export interface DashboardTelemetryResponse {
   daily_cost: number;
   success_rate: number;
 }
+
+export type ApprovalRequestStatus =
+  'pending' | 'approved' | 'declined' | 'expired' | 'cancelled';
+
+/**
+ * A pending human decision surfaced by the approvals API.
+ *
+ * Two flavours share this shape:
+ *  - tool approvals (approve / decline, optional comment)
+ *  - agent questions (`is_question`, tool_name `ask_user`): the operator picks
+ *    one of `question_options` or types free text when `allow_free_text`.
+ *
+ * The question fields are optional so older backends that omit them degrade to
+ * the plain approve/decline UI.
+ */
+export interface ApprovalRequest {
+  id: string;
+  account_id: string;
+  tool_configuration_id: string;
+  approval_workflow_id: string;
+  execution_id: string | null;
+  tool_name: string;
+  summary?: string | null;
+  tool_args: Record<string, any>;
+  agent_reasoning: string | null;
+  status: ApprovalRequestStatus;
+  requested_at: string;
+  resolved_at: string | null;
+  expires_at: string | null;
+  approver_comment: string | null;
+  managed_agent_name?: string | null;
+  webhook_posted_at?: string | null;
+  webhook_error?: string | null;
+  is_question?: boolean;
+  question?: string | null;
+  question_options?: string[] | null;
+  allow_free_text?: boolean;
+}
+
+/**
+ * Optional payload carried on an approve/decline decision.
+ *
+ * Server-side precedence: `answer_text` > `selected_option` > `comment`.
+ */
+export interface ApprovalDecisionOptions {
+  comment?: string | null;
+  selected_option?: string | null;
+  answer_text?: string | null;
+}

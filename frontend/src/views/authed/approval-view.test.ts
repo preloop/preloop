@@ -38,6 +38,19 @@ describe('ApprovalView', () => {
     };
   }
 
+  function questionRequest(overrides: Record<string, unknown> = {}) {
+    return pendingRequest({
+      tool_name: 'ask_user',
+      tool_args: { question: 'Which colour?' },
+      summary: 'Which colour?',
+      is_question: true,
+      question: 'Which colour?',
+      question_options: ['blue', 'green'],
+      allow_free_text: true,
+      ...overrides,
+    });
+  }
+
   function createFetchStub(
     opts: {
       request?: Record<string, unknown> | null;
@@ -185,5 +198,156 @@ describe('ApprovalView', () => {
       .getCalls()
       .find((c) => String(c.args[0]).includes('/approve'));
     expect(approveCall, 'expected a POST to /approve').to.exist;
+  });
+
+  describe('agent questions', () => {
+    async function renderQuestion(overrides: Record<string, unknown> = {}) {
+      fetchStub = createFetchStub({ request: questionRequest(overrides) });
+      const element = (await fixture(
+        html`<approval-view .requestId=${'req-1'}></approval-view>`
+      )) as ApprovalView;
+
+      await waitUntil(() => !(element as any).loading, 'still loading');
+      await element.updateComplete;
+
+      const panel = element.shadowRoot?.querySelector(
+        'question-answer-panel'
+      ) as any;
+      expect(panel, 'expected a question-answer-panel').to.exist;
+      await panel.updateComplete;
+      return { element, panel };
+    }
+
+    function bodyOf(call: sinon.SinonSpyCall) {
+      return JSON.parse(String((call.args[1] as RequestInit).body));
+    }
+
+    it('renders option buttons and the answer field for a question', async () => {
+      const { element, panel } = await renderQuestion();
+
+      expect(element.shadowRoot?.textContent).to.contain('Agent Question');
+      expect(panel.shadowRoot.textContent).to.contain('Which colour?');
+
+      const options = panel.shadowRoot.querySelectorAll('.question-option');
+      expect(options.length).to.equal(2);
+      expect(options[0].textContent.trim()).to.equal('blue');
+      expect(options[1].textContent.trim()).to.equal('green');
+      expect(panel.shadowRoot.querySelector('.answer-input')).to.exist;
+
+      // The plain approve/decline + comment UI is hidden for questions.
+      expect(element.shadowRoot?.querySelector('.actions')).to.not.exist;
+      expect(element.shadowRoot?.querySelector('.comment-section')).to.not
+        .exist;
+    });
+
+    it('submits selected_option when an option is clicked', async () => {
+      const { element, panel } = await renderQuestion();
+
+      const options = panel.shadowRoot.querySelectorAll('.question-option');
+      options[1].click();
+      await waitUntil(
+        () =>
+          fetchStub
+            .getCalls()
+            .some((c) => String(c.args[0]).includes('/approve')),
+        'no approve call'
+      );
+      await element.updateComplete;
+
+      const approveCall = fetchStub
+        .getCalls()
+        .find((c) => String(c.args[0]).includes('/approve'))!;
+      const body = bodyOf(approveCall);
+      expect(body.approved).to.be.true;
+      expect(body.selected_option).to.equal('green');
+      expect(body.answer_text).to.be.undefined;
+    });
+
+    it('submits answer_text when free text is sent', async () => {
+      const { element, panel } = await renderQuestion();
+
+      const textarea = panel.shadowRoot.querySelector('.answer-input') as any;
+      textarea.value = 'teal';
+      textarea.dispatchEvent(
+        new CustomEvent('sl-input', { bubbles: true, composed: true })
+      );
+      await panel.updateComplete;
+
+      const send = panel.shadowRoot.querySelector(
+        '.send-answer'
+      ) as HTMLElement;
+      send.click();
+      await waitUntil(
+        () =>
+          fetchStub
+            .getCalls()
+            .some((c) => String(c.args[0]).includes('/approve')),
+        'no approve call'
+      );
+      await element.updateComplete;
+
+      const body = bodyOf(
+        fetchStub
+          .getCalls()
+          .find((c) => String(c.args[0]).includes('/approve'))!
+      );
+      expect(body.approved).to.be.true;
+      expect(body.answer_text).to.equal('teal');
+      expect(body.selected_option).to.be.undefined;
+    });
+
+    it('hides the answer field when free text is not allowed', async () => {
+      const { panel } = await renderQuestion({ allow_free_text: false });
+
+      expect(panel.shadowRoot.querySelector('.answer-input')).to.not.exist;
+      expect(
+        panel.shadowRoot.querySelectorAll('.question-option').length
+      ).to.equal(2);
+    });
+
+    it('declines the request when the question is dismissed', async () => {
+      const { element, panel } = await renderQuestion();
+
+      const dismiss = panel.shadowRoot.querySelector(
+        '.dismiss-question'
+      ) as HTMLElement;
+      dismiss.click();
+      await waitUntil(
+        () =>
+          fetchStub
+            .getCalls()
+            .some((c) => String(c.args[0]).includes('/decline')),
+        'no decline call'
+      );
+      await element.updateComplete;
+
+      const body = bodyOf(
+        fetchStub
+          .getCalls()
+          .find((c) => String(c.args[0]).includes('/decline'))!
+      );
+      expect(body.approved).to.be.false;
+      await waitUntil(
+        () => (element as any).approvalRequest?.status === 'declined',
+        'request was not marked declined'
+      );
+    });
+
+    it('renders the normal approve/decline UI when question fields are absent', async () => {
+      fetchStub = createFetchStub({ request: pendingRequest() });
+      const element = (await fixture(
+        html`<approval-view .requestId=${'req-1'}></approval-view>`
+      )) as ApprovalView;
+
+      await waitUntil(() => !(element as any).loading, 'still loading');
+      await element.updateComplete;
+
+      expect(element.shadowRoot?.querySelector('question-answer-panel')).to.not
+        .exist;
+      expect(element.shadowRoot?.querySelector('.comment-section')).to.exist;
+      expect(
+        element.shadowRoot?.querySelectorAll('.actions sl-button').length
+      ).to.equal(2);
+    });
   });
 });

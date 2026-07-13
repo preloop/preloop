@@ -274,3 +274,80 @@ class TestRequestResolvedPayload:
         )
 
         assert payload["aps"]["badge"] == 0
+
+
+class TestQuestionPayloads:
+    """`ask_user` questions must be pushed as QUESTIONS, not approvals.
+
+    Clients branch on `is_question` / the aps category to show option buttons
+    and an inline dictated answer instead of Approve/Decline.
+    """
+
+    def _question_payload(self, options=None, allow_free_text=True):
+        from preloop.services.push_notifications.notification_payloads import (
+            NotificationPayloadBuilder,
+        )
+
+        return NotificationPayloadBuilder.new_approval_request(
+            request_id="req-1",
+            tool_name="ask_user",
+            tool_args={
+                "is_question": True,
+                "question": "Which rollout color?",
+                "options": options if options is not None else ["blue", "green"],
+                "allow_free_text": allow_free_text,
+            },
+            summary="Which rollout color?",
+        )
+
+    def test_question_uses_question_category_and_title(self):
+        payload = self._question_payload()
+        assert payload["aps"]["category"] == "QUESTION_2_OPTIONS"
+        assert payload["aps"]["alert"]["title"] == "Agent question"
+        assert payload["aps"]["alert"]["body"] == "Which rollout color?"
+
+    def test_question_carries_options_and_free_text_flag(self):
+        payload = self._question_payload()
+        assert payload["is_question"] is True
+        assert payload["question_options"] == ["blue", "green"]
+        assert payload["allow_free_text"] is True
+        assert payload["type"] == "question"
+        # Android/FCM reads the same fields from the data block.
+        assert payload["data"]["question_options"] == ["blue", "green"]
+        assert payload["data"]["is_question"] is True
+
+    def test_option_arity_selects_category(self):
+        assert self._question_payload(["a", "b", "c"])["aps"]["category"] == (
+            "QUESTION_3_OPTIONS"
+        )
+        assert self._question_payload(["a", "b", "c", "d"])["aps"]["category"] == (
+            "QUESTION_4_OPTIONS"
+        )
+        # iOS shows at most 4 actions: beyond that clients open the app or use
+        # the inline text answer.
+        assert (
+            self._question_payload(["a", "b", "c", "d", "e"])["aps"]["category"]
+            == "QUESTION_REQUEST"
+        )
+        # Free-text-only question (no options).
+        assert self._question_payload([])["aps"]["category"] == "QUESTION_REQUEST"
+
+    def test_free_text_disabled_is_reported(self):
+        payload = self._question_payload(allow_free_text=False)
+        assert payload["allow_free_text"] is False
+
+    def test_approval_payload_unchanged(self):
+        from preloop.services.push_notifications.notification_payloads import (
+            NotificationPayloadBuilder,
+        )
+
+        payload = NotificationPayloadBuilder.new_approval_request(
+            request_id="req-2",
+            tool_name="Bash",
+            tool_args={"command": "rm -rf /tmp/x"},
+        )
+        assert payload["aps"]["category"] == "APPROVAL_REQUEST"
+        assert payload["aps"]["alert"]["title"] == "New Approval Request"
+        assert payload["type"] == "new_approval_request"
+        assert "is_question" not in payload
+        assert "question_options" not in payload

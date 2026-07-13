@@ -38,8 +38,17 @@ spec:
           command:
             - preloop-sync
             - worker
+            {{- if .tasks }}
             - "--tasks"
             - {{ if kindIs "slice" .tasks }}{{ join "," .tasks | quote }}{{ else }}{{ .tasks | quote }}{{ end }}
+            {{- else if .excludeTasks }}
+            {{- /* The tasks stream uses WORKQUEUE retention: consumer subject
+                   filters must not overlap. A pool with no allowlist must
+                   therefore EXCLUDE whatever a dedicated pool filters, instead
+                   of subscribing to the preloop.sync.tasks.* wildcard. */}}
+            - "--exclude-tasks"
+            - {{ if kindIs "slice" .excludeTasks }}{{ join "," .excludeTasks | quote }}{{ else }}{{ .excludeTasks | quote }}{{ end }}
+            {{- end }}
           securityContext:
             {{- toYaml $.Values.securityContext | nindent 12 }}
           image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag | default $.Chart.AppVersion }}"

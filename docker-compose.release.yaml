@@ -71,7 +71,19 @@ services:
       ACCESS_TOKEN_EXPIRE_MINUTES: 60
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       PRELOOP_SERVICE_ROLE: api
+      # Public origin this instance is reached at. Used for approval links,
+      # QR pairing and CORS. Set by scripts/install-oss.sh (PRELOOP_URL).
+      PRELOOP_URL: ${PRELOOP_URL:-http://localhost:3000}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
       FLOW_EXECUTION_WORKER_ENABLED: ${FLOW_EXECUTION_WORKER_ENABLED:-false}
+      # SMTP — required for approval emails, invitations and password resets.
+      # Configure interactively via scripts/install-oss.sh or edit .env.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-Preloop}
     ports:
       - "8000:8000"
     command: python -m preloop.server
@@ -96,6 +108,8 @@ services:
       ACCESS_TOKEN_EXPIRE_MINUTES: 60
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       PRELOOP_SERVICE_ROLE: gateway
+      PRELOOP_URL: ${PRELOOP_URL:-http://localhost:3000}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
     ports:
       - "8001:8000"
     command: python -m preloop.server
@@ -137,7 +151,20 @@ services:
       ACCESS_TOKEN_EXPIRE_MINUTES: 60
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       FLOW_EXECUTION_WORKER_ENABLED: ${FLOW_EXECUTION_WORKER_ENABLED:-false}
-    command: preloop-sync worker
+      PRELOOP_URL: ${PRELOOP_URL:-http://localhost:3000}
+      # SMTP — required for approval emails, invitations and password resets.
+      # Configure interactively via scripts/install-oss.sh or edit .env.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-Preloop}
+    # The dedicated flow-worker below filters execute_flow /
+    # resume_flow_execution off the WORKQUEUE stream; consumer filters must
+    # not overlap, so this pool enumerates everything else instead of using
+    # the `preloop.sync.tasks.*` wildcard.
+    command: preloop-sync worker --exclude-tasks execute_flow,resume_flow_execution
 
   flow-worker:
     image: ghcr.io/preloop/preloop:${PRELOOP_VERSION:-latest}

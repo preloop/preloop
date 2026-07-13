@@ -1,7 +1,10 @@
-import { LitElement, html, css } from 'lit';
+import { html, css } from 'lit';
 import { customElement, state, property } from 'lit/decorators.js';
 import { AuthedElement } from '../../api';
+import type { ApprovalDecisionOptions, ApprovalRequest } from '../../types';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
+import '../../components/question-answer-panel';
+import type { QuestionAnswerDetail } from '../../components/question-answer-panel';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
@@ -10,25 +13,6 @@ import '@shoelace-style/shoelace/dist/components/textarea/textarea.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/divider/divider.js';
-
-interface ApprovalRequest {
-  id: string;
-  account_id: string;
-  tool_configuration_id: string;
-  approval_workflow_id: string;
-  execution_id: string | null;
-  tool_name: string;
-  summary: string | null;
-  tool_args: Record<string, any>;
-  agent_reasoning: string | null;
-  status: 'pending' | 'approved' | 'declined' | 'expired' | 'cancelled';
-  requested_at: string;
-  resolved_at: string | null;
-  expires_at: string | null;
-  approver_comment: string | null;
-  webhook_posted_at: string | null;
-  webhook_error: string | null;
-}
 
 @customElement('approval-view')
 export class ApprovalView extends AuthedElement {
@@ -265,92 +249,102 @@ export class ApprovalView extends AuthedElement {
     }
   }
 
-  private async handleApprove() {
+  /** True when the request is an agent question (`ask_user`), not a tool call. */
+  private get isQuestion(): boolean {
+    return this.approvalRequest?.is_question === true;
+  }
+
+  private get questionText(): string {
+    const request = this.approvalRequest;
+    if (!request) return '';
+    return request.question || request.summary || request.tool_name;
+  }
+
+  private async submitDecision(
+    action: 'approve' | 'decline',
+    options: ApprovalDecisionOptions,
+    successMessage: string
+  ) {
     if (!this.approvalRequest) return;
 
     this.submitting = true;
     this.actionResult = null;
 
+    const body: Record<string, unknown> = {
+      approved: action === 'approve',
+      comment: options.comment || null,
+    };
+    if (options.selected_option) {
+      body.selected_option = options.selected_option;
+    }
+    if (options.answer_text) {
+      body.answer_text = options.answer_text;
+    }
+
     try {
       const response = await fetch(
-        `/api/v1/approval-requests/${this.requestId}/approve`,
+        `/api/v1/approval-requests/${this.requestId}/${action}`,
         {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${localStorage.getItem('accessToken')}`,
           },
-          body: JSON.stringify({
-            approved: true,
-            comment: this.comment || null,
-          }),
+          body: JSON.stringify(body),
         }
       );
 
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.detail || 'Failed to approve request');
+        throw new Error(error.detail || `Failed to ${action} request`);
       }
 
       const updated = await response.json();
       this.approvalRequest = updated;
-      this.actionResult = {
-        type: 'success',
-        message: 'Request approved successfully!',
-      };
+      this.actionResult = { type: 'success', message: successMessage };
       this.comment = '';
     } catch (err: any) {
       this.actionResult = {
         type: 'error',
-        message: err.message || 'Failed to approve request',
+        message: err.message || `Failed to ${action} request`,
       };
     } finally {
       this.submitting = false;
     }
   }
 
+  private async handleApprove() {
+    await this.submitDecision(
+      'approve',
+      { comment: this.comment },
+      'Request approved successfully!'
+    );
+  }
+
   private async handleDecline() {
-    if (!this.approvalRequest) return;
+    await this.submitDecision(
+      'decline',
+      { comment: this.comment },
+      'Request declined.'
+    );
+  }
 
-    this.submitting = true;
-    this.actionResult = null;
+  /** An answered question is submitted as an approve with the answer attached. */
+  private async handleQuestionAnswer(e: CustomEvent<QuestionAnswerDetail>) {
+    const { selectedOption, answerText } = e.detail;
+    await this.submitDecision(
+      'approve',
+      {
+        selected_option: selectedOption ?? null,
+        answer_text: answerText ?? null,
+      },
+      'Answer sent to the agent.'
+    );
+  }
 
-    try {
-      const response = await fetch(
-        `/api/v1/approval-requests/${this.requestId}/decline`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${localStorage.getItem('accessToken')}`,
-          },
-          body: JSON.stringify({
-            approved: false,
-            comment: this.comment || null,
-          }),
-        }
-      );
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to decline request');
-      }
-
-      const updated = await response.json();
-      this.approvalRequest = updated;
-      this.actionResult = {
-        type: 'success',
-        message: 'Request declined.',
-      };
-      this.comment = '';
-    } catch (err: any) {
-      this.actionResult = {
-        type: 'error',
-        message: err.message || 'Failed to decline request',
-      };
-    } finally {
-      this.submitting = false;
-    }
+  /** Dismissing a question declines it, exactly as the mobile apps do. */
+  private async handleQuestionDismiss() {
+    await this.submitDecision('decline', {}, 'Question dismissed.');
   }
 
   private formatDate(dateStr: string): string {
@@ -437,11 +431,15 @@ export class ApprovalView extends AuthedElement {
 
     const toolArgs = this.formatToolArgs(this.approvalRequest.tool_args);
 
+    const isQuestion = this.isQuestion;
+
     return html`
       <div class="header">
         <h1>
-          <sl-icon name="shield-check"></sl-icon>
-          Tool Execution Approval
+          <sl-icon
+            name=${isQuestion ? 'chat-left-quote' : 'shield-check'}
+          ></sl-icon>
+          ${isQuestion ? 'Agent Question' : 'Tool Execution Approval'}
           <sl-badge
             variant=${this.getStatusVariant(this.approvalRequest.status)}
             class="status-badge"
@@ -449,7 +447,13 @@ export class ApprovalView extends AuthedElement {
             ${displayStatus}
           </sl-badge>
         </h1>
-        <p>Review and approve or decline this tool execution request</p>
+        <p>
+          ${
+            isQuestion
+              ? 'The agent is waiting on your answer before it continues'
+              : 'Review and approve or decline this tool execution request'
+          }
+        </p>
       </div>
 
       ${
@@ -479,13 +483,41 @@ export class ApprovalView extends AuthedElement {
 
       <sl-card>
         ${
-          this.approvalRequest.summary
+          isQuestion && isPending
+            ? html`
+                <div class="content-section">
+                  <question-answer-panel
+                    .question=${this.questionText}
+                    .options=${this.approvalRequest.question_options ?? []}
+                    .allowFreeText=${
+                      this.approvalRequest.allow_free_text === true
+                    }
+                    .submitting=${this.submitting}
+                    @question-answer=${this.handleQuestionAnswer}
+                    @question-dismiss=${this.handleQuestionDismiss}
+                  ></question-answer-panel>
+                </div>
+              `
+            : ''
+        }
+        ${
+          this.approvalRequest.summary && !isQuestion
             ? html`
                 <div class="content-section">
                   <h2>Request</h2>
                   <div class="reasoning-text">
                     ${this.approvalRequest.summary}
                   </div>
+                </div>
+              `
+            : ''
+        }
+        ${
+          isQuestion && !isPending
+            ? html`
+                <div class="content-section">
+                  <h2>Question</h2>
+                  <div class="reasoning-text">${this.questionText}</div>
                 </div>
               `
             : ''
@@ -591,7 +623,7 @@ export class ApprovalView extends AuthedElement {
             : ''
         }
         ${
-          isPending
+          isPending && !isQuestion
             ? html`
                 <sl-divider></sl-divider>
 
@@ -635,8 +667,11 @@ export class ApprovalView extends AuthedElement {
 
         <div class="metadata">
           <sl-icon name="info-circle"></sl-icon>
-          This approval request was generated by an automated agent and requires
-          human review before the tool can be executed.
+          ${
+            isQuestion
+              ? 'An automated agent asked this question and is paused until it gets an answer.'
+              : 'This approval request was generated by an automated agent and requires human review before the tool can be executed.'
+          }
         </div>
       </sl-card>
     `;
