@@ -20,6 +20,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -980,5 +981,73 @@ func TestRecoverDeferredGatewayValidationFailure_SkipsRollbackWhenThrottled(t *t
 	}
 	if strings.Contains(rendered, "Restored") {
 		t.Fatalf("expected no restore to run for throttled outcome, got %q", rendered)
+	}
+}
+
+func TestIsUpstreamBillingValidationError(t *testing.T) {
+	if isUpstreamBillingValidationError(nil) {
+		t.Fatal("nil must not be a billing error")
+	}
+	// DeepSeek answers an empty wallet with 402.
+	if !isUpstreamBillingValidationError(&api.APIError{
+		StatusCode: http.StatusPaymentRequired,
+		Body:       `{"error":{"message":"Insufficient Balance"}}`,
+	}) {
+		t.Fatal("402 must be classified as an upstream billing error")
+	}
+	// OpenAI answers an exhausted quota with 429 + insufficient_quota, so the
+	// body has to be consulted too.
+	if !isUpstreamBillingValidationError(errors.New(
+		"API error (status 429): insufficient_quota",
+	)) {
+		t.Fatal("insufficient_quota must be classified as an upstream billing error")
+	}
+	// A genuine gateway/config failure must stay a failure.
+	if isUpstreamBillingValidationError(&api.APIError{
+		StatusCode: http.StatusUnauthorized,
+		Body:       "invalid api key",
+	}) {
+		t.Fatal("401 must not be classified as an upstream billing error")
+	}
+}
+
+// An agent whose gateway wiring is provably correct must not be downgraded to
+// "MCP proxy only" just because the operator's provider account is out of
+// credit: the probe reached the provider, which is the whole point.
+func TestLiveValidationStatusGatewayVerified(t *testing.T) {
+	cases := []struct {
+		status string
+		want   bool
+	}{
+		{"throttled", true},
+		{"upstream_unavailable", true},
+		{"failed", false},
+		{"passed", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		got := liveValidationStatusGatewayVerified(
+			map[string]interface{}{"live_validation_status": tc.status},
+		)
+		if got != tc.want {
+			t.Fatalf("status %q: gateway-verified = %v, want %v", tc.status, got, tc.want)
+		}
+	}
+	if liveValidationStatusGatewayVerified(nil) {
+		t.Fatal("nil validation result must not be gateway-verified")
+	}
+}
+
+func TestLiveValidationUpstreamNote(t *testing.T) {
+	note := liveValidationUpstreamNote(
+		map[string]interface{}{"live_validation_status": "upstream_unavailable"},
+	)
+	if !strings.Contains(note, "billing") {
+		t.Fatalf("expected a billing explanation, got %q", note)
+	}
+	if liveValidationUpstreamNote(
+		map[string]interface{}{"live_validation_status": "failed"},
+	) != "" {
+		t.Fatal("a hard failure has no upstream note")
 	}
 }

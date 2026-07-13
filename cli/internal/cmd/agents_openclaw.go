@@ -634,20 +634,20 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	}
 
 	var liveValidationErr error
-	liveValidationThrottled := false
+	liveValidationGatewayVerified := false
 	if requestedLiveValidation {
 		liveOutcome, err := runManagedAgentLiveValidation(client, agent, validationResult)
 		if liveOutcome != nil && len(liveOutcome.ValidationResult) > 0 {
 			validationResult = liveOutcome.ValidationResult
 		}
-		liveValidationThrottled = liveValidationStatusThrottled(validationResult)
+		liveValidationGatewayVerified = liveValidationStatusGatewayVerified(validationResult)
 		if liveOutcome != nil && liveOutcome.Attempted {
-			// A throttled probe is inconclusive, not a failure: the static
-			// config checks passed and the gateway config stays in place, so
-			// persist "validated" and let live_validation_status carry the
-			// "throttled" detail.
+			// A probe the upstream provider refused (rate limit, billing) is
+			// inconclusive, not a failure: the static config checks passed and
+			// the gateway config stays in place, so persist "validated" and let
+			// live_validation_status carry the detail.
 			validationStatus := "validated"
-			if !liveOutcome.Passed && !liveValidationThrottled {
+			if !liveOutcome.Passed && !liveValidationGatewayVerified {
 				validationStatus = "validation_failed"
 			}
 			if _, persistErr := validateManagedEnrollmentRecord(
@@ -664,17 +664,19 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 			liveValidationErr = err
 		}
 	}
-	if liveValidationErr != nil && liveValidationThrottled {
-		// A 429 proves the durable credential authenticated at the gateway and
-		// the request reached the upstream provider — the wiring works, the
-		// provider is just rate-limited right now. Rolling back the gateway
-		// config here would discard a working onboarding over a transient
-		// condition (and re-running onboarding to "fix" it only sends more
-		// probes into the same rate limiter).
+	if liveValidationErr != nil && liveValidationGatewayVerified {
+		// A 429 (or a billing refusal) proves the durable credential
+		// authenticated at the gateway and the request reached the upstream
+		// provider — the wiring works, the provider just declined to serve this
+		// probe. Rolling back the gateway config here would discard a working
+		// onboarding over a condition that has nothing to do with it (and
+		// re-running onboarding to "fix" it only sends more probes into the
+		// same rate limiter / empty wallet).
 		quotedName := shellQuoteAgentName(resolveAgentDisplayName(agent))
 		fmt.Fprintf(
 			output,
-			"  Note: the upstream provider rate-limited the live validation probe; keeping the Preloop gateway configuration in place.\n",
+			"  Note: %s; keeping the Preloop gateway configuration in place.\n",
+			liveValidationUpstreamNote(validationResult),
 		) //nolint:errcheck
 		fmt.Fprintf(
 			output,
@@ -781,8 +783,8 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		// live-validate failure" semantics. Print a clear warning with a
 		// recovery hint and continue.
 		warningLabel := "failed"
-		if liveValidationThrottled {
-			warningLabel = "throttled by the upstream provider"
+		if liveValidationGatewayVerified {
+			warningLabel = "inconclusive — " + liveValidationUpstreamNote(validationResult)
 		}
 		fmt.Printf("  Warning: live validation %s: %v\n", warningLabel, liveValidationErr)
 		fmt.Printf(

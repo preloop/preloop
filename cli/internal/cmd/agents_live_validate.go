@@ -267,6 +267,8 @@ func runGatewayLiveValidation(
 		liveValidationStatus = "passed"
 	} else if isUpstreamRateLimitedValidationError(requestErr) {
 		liveValidationStatus = "throttled"
+	} else if isUpstreamBillingValidationError(requestErr) {
+		liveValidationStatus = "upstream_unavailable"
 	}
 	result := mergeStringMaps(validationResult, map[string]interface{}{
 		"live_validation_attempted":      true,
@@ -280,8 +282,11 @@ func runGatewayLiveValidation(
 		"live_validation_runtime_source": runtimePrincipalIDForAgent(agent),
 		"live_validation_endpoint":       endpointKey,
 	})
-	if liveValidationStatus == "throttled" {
+	switch liveValidationStatus {
+	case "throttled":
 		result["live_validation_failure_reason"] = "upstream_rate_limited"
+	case "upstream_unavailable":
+		result["live_validation_failure_reason"] = "upstream_billing"
 	}
 	if apiKeyID != "" {
 		result["live_validation_api_key_id"] = apiKeyID
@@ -339,6 +344,32 @@ func isUpstreamRateLimitedValidationError(err error) bool {
 		strings.Contains(message, "status 429")
 }
 
+// isUpstreamBillingValidationError reports whether the probe was refused by the
+// upstream provider for billing/quota reasons (an empty DeepSeek wallet, an
+// exhausted OpenAI quota, ...). Like a 429, this proves the request travelled
+// the whole path — Preloop authenticated it, resolved the model and reached the
+// provider — so it says nothing bad about the gateway wiring. It is the
+// operator's provider account that needs attention, not their onboarding.
+func isUpstreamBillingValidationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Trust the typed status when we have one: 402 is unambiguous.
+	var apiErr *api.APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusPaymentRequired {
+		return true
+	}
+	// Providers are inconsistent about the status they attach to "you are out of
+	// money" (DeepSeek uses 402, OpenAI 429 + insufficient_quota), so also match
+	// the well-known bodies.
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "insufficient balance") ||
+		strings.Contains(message, "insufficient_quota") ||
+		strings.Contains(message, "exceeded your current quota") ||
+		strings.Contains(message, "billing_not_active") ||
+		strings.Contains(message, "credit balance is too low")
+}
+
 // liveValidationThrottleBackoffSchedule returns the waits between probe
 // retries when the upstream provider rate-limits the live-validation
 // request. Two short retries cover the common transient case (a burst of
@@ -386,6 +417,41 @@ func liveValidationStatusThrottled(validationResult map[string]interface{}) bool
 	}
 	status, _ := validationResult["live_validation_status"].(string)
 	return status == "throttled"
+}
+
+// liveValidationStatusGatewayVerified reports whether the probe reached the
+// upstream provider and was refused *there* — rate-limited, or rejected for
+// billing/quota. Either way the gateway plumbing is proven: the durable
+// credential authenticated, the model alias resolved, and the request left
+// Preloop. Callers must not roll back the gateway configuration or downgrade
+// the agent to "MCP proxy only" over these, or a correctly onboarded agent gets
+// reported as half-configured because the operator's provider wallet is empty.
+func liveValidationStatusGatewayVerified(validationResult map[string]interface{}) bool {
+	if validationResult == nil {
+		return false
+	}
+	status, _ := validationResult["live_validation_status"].(string)
+	return status == "throttled" || status == "upstream_unavailable"
+}
+
+// liveValidationUpstreamNote explains an upstream-side refusal to the operator,
+// or returns "" when the outcome was not one.
+func liveValidationUpstreamNote(validationResult map[string]interface{}) string {
+	if validationResult == nil {
+		return ""
+	}
+	status, _ := validationResult["live_validation_status"].(string)
+	switch status {
+	case "throttled":
+		return "the upstream provider rate-limited the live validation probe"
+	case "upstream_unavailable":
+		return "the upstream provider rejected the live validation probe (billing or quota)"
+	}
+	return ""
+}
+
+func liveValidationOutcomeGatewayVerified(outcome *managedLiveValidationOutcome) bool {
+	return outcome != nil && liveValidationStatusGatewayVerified(outcome.ValidationResult)
 }
 
 func liveValidationOutcomeThrottled(outcome *managedLiveValidationOutcome) bool {
@@ -1160,10 +1226,11 @@ func recoverDeferredGatewayValidationFailure(
 	if result.Err == nil {
 		return
 	}
-	if liveValidationOutcomeThrottled(result.Outcome) {
+	if note := liveValidationUpstreamNote(result.Outcome.ValidationResult); note != "" {
 		fmt.Fprintf(
 			output,
-			"      Note: the upstream provider rate-limited the live validation probe; keeping the Preloop gateway configuration in place. Re-verify with: preloop agents validate %s --live\n",
+			"      Note: %s; keeping the Preloop gateway configuration in place. Re-verify with: preloop agents validate %s --live\n",
+			note,
 			shellQuoteAgentName(resolveAgentDisplayName(result.Agent)),
 		) //nolint:errcheck
 		return
@@ -1229,13 +1296,14 @@ func persistDeferredLiveValidationResult(
 	if enrollmentID == "" {
 		return
 	}
-	// A throttled probe is inconclusive, not a failure: the static config
-	// checks passed and the gateway config stays in place, so persist
-	// "validated" and let live_validation_status carry the "throttled" detail.
+	// A probe the upstream provider refused (rate limit, billing) is
+	// inconclusive, not a failure: the static config checks passed and the
+	// gateway config stays in place, so persist "validated" and let
+	// live_validation_status carry the detail.
 	status := "validated"
 	if result.Outcome.Attempted &&
 		!result.Outcome.Passed &&
-		!liveValidationOutcomeThrottled(result.Outcome) {
+		!liveValidationOutcomeGatewayVerified(result.Outcome) {
 		status = "validation_failed"
 	}
 	_, _ = validateManagedEnrollmentRecord(
@@ -1303,8 +1371,11 @@ func printDeferredLiveValidationLine(
 	if result.Err != nil {
 		status, _ := result.Outcome.ValidationResult["live_validation_status"].(string)
 		label := "failed"
-		if status == "throttled" {
+		switch status {
+		case "throttled":
 			label = "throttled"
+		case "upstream_unavailable":
+			label = "inconclusive (upstream provider refused)"
 		}
 		fmt.Fprintf(
 			output,

@@ -222,9 +222,12 @@ def _managed_config_gateway_configured(managed_config: dict) -> bool:
 def _live_validation_disables_gateway(validation: dict) -> bool:
     """Return True when live validation results invalidate gateway onboarding."""
     live_validation_status = str(validation.get("live_validation_status") or "").strip()
-    # "throttled" is deliberately NOT treated as failed: an upstream 429 proves
-    # the credential authenticated at the gateway and the request reached the
-    # provider, so the gateway wiring works even though the probe was rejected.
+    # "throttled" and "upstream_unavailable" are deliberately NOT treated as
+    # failed: an upstream 429, or a refusal for billing/quota, proves the
+    # credential authenticated at the gateway and the request reached the
+    # provider. The wiring works even though the probe was rejected, so the
+    # agent must not be downgraded to "mcp_proxy_only" over an empty wallet at
+    # the provider.
     live_validation_failed = live_validation_status == "failed"
     live_validation_missing_gateway = (
         live_validation_status == "not_run"
