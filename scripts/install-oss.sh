@@ -37,7 +37,30 @@ SMTP_FROM="${SMTP_FROM:-}"
 SMTP_FROM_NAME="${SMTP_FROM_NAME:-Preloop}"
 PRELOOP_SKIP_SMTP="${PRELOOP_SKIP_SMTP:-}"
 
+# First user + signup lockdown. Setting username AND password runs this
+# unattended; PRELOOP_SKIP_ADMIN=1 keeps signups open and asks nothing.
+PRELOOP_ADMIN_USERNAME="${PRELOOP_ADMIN_USERNAME:-}"
+PRELOOP_ADMIN_EMAIL="${PRELOOP_ADMIN_EMAIL:-}"
+PRELOOP_ADMIN_PASSWORD="${PRELOOP_ADMIN_PASSWORD:-}"
+PRELOOP_SKIP_ADMIN="${PRELOOP_SKIP_ADMIN:-}"
+CREATE_ADMIN=0
+
 DEFAULT_URL="http://localhost:3000"
+
+# Replace (or append) a single KEY=value line in the install's .env.
+set_env_value() {
+  key="$1"
+  value="$2"
+  env_file="${INSTALL_DIR}/.env"
+  tmp_file="${env_file}.set"
+  if [ -f "$env_file" ]; then
+    grep -v "^${key}=" "$env_file" > "$tmp_file" || true
+  else
+    : > "$tmp_file"
+  fi
+  echo "${key}=${value}" >> "$tmp_file"
+  mv "$tmp_file" "$env_file"
+}
 
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -134,6 +157,125 @@ prompt_tls_email() {
   PRELOOP_TLS_EMAIL="$answer"
 }
 
+# A fresh public instance with open signup is a land-grab risk: whoever finds it
+# first can register. Offer to create the operator's account now and close
+# signup, so the instance is never reachable-and-open.
+prompt_admin() {
+  if [ -n "$PRELOOP_SKIP_ADMIN" ]; then
+    return
+  fi
+  if [ -n "$PRELOOP_ADMIN_USERNAME" ] && [ -n "$PRELOOP_ADMIN_PASSWORD" ]; then
+    CREATE_ADMIN=1
+    return
+  fi
+  # Only ever bootstrap a brand-new install; a re-run/upgrade already has users.
+  if [ -n "$PREVIOUS_VERSION" ] || ! has_tty; then
+    return
+  fi
+
+  printf '\nAnyone who can reach this instance can sign up unless you close registration.\n' > /dev/tty
+  printf 'Create the first user now and disable public signups? [Y/n]: ' > /dev/tty
+  read -r answer < /dev/tty || answer=""
+  case "$answer" in
+    n | N | no | NO)
+      printf 'Leaving signups OPEN. Create the first user in the browser, then set\n' > /dev/tty
+      printf 'REGISTRATION_ENABLED=false in %s/.env and re-run docker compose up -d.\n' "$INSTALL_DIR" > /dev/tty
+      return
+      ;;
+  esac
+
+  printf 'Admin username: ' > /dev/tty
+  read -r PRELOOP_ADMIN_USERNAME < /dev/tty || PRELOOP_ADMIN_USERNAME=""
+  if [ -z "$PRELOOP_ADMIN_USERNAME" ]; then
+    printf 'No username given; leaving signups open.\n' > /dev/tty
+    return
+  fi
+  printf 'Admin email: ' > /dev/tty
+  read -r PRELOOP_ADMIN_EMAIL < /dev/tty || PRELOOP_ADMIN_EMAIL=""
+
+  # Read the password twice, without echo where the shell supports it. A typo
+  # here is unrecoverable without SMTP: there is no password-reset mail.
+  while :; do
+    if (stty -echo 2>/dev/null < /dev/tty); then
+      printf 'Admin password (min 8 chars, hidden): ' > /dev/tty
+      read -r PRELOOP_ADMIN_PASSWORD < /dev/tty || PRELOOP_ADMIN_PASSWORD=""
+      printf '\nConfirm password: ' > /dev/tty
+      read -r admin_password_confirm < /dev/tty || admin_password_confirm=""
+      stty echo < /dev/tty 2>/dev/null || true
+      printf '\n' > /dev/tty
+    else
+      printf 'Admin password (min 8 chars): ' > /dev/tty
+      read -r PRELOOP_ADMIN_PASSWORD < /dev/tty || PRELOOP_ADMIN_PASSWORD=""
+      admin_password_confirm="$PRELOOP_ADMIN_PASSWORD"
+    fi
+
+    if [ "${#PRELOOP_ADMIN_PASSWORD}" -lt 8 ]; then
+      printf 'Password must be at least 8 characters.\n' > /dev/tty
+      continue
+    fi
+    if [ "$PRELOOP_ADMIN_PASSWORD" != "$admin_password_confirm" ]; then
+      printf 'Passwords did not match.\n' > /dev/tty
+      continue
+    fi
+    break
+  done
+
+  CREATE_ADMIN=1
+}
+
+# `up -d` returns as soon as containers are created, which is earlier than the
+# api container being able to run a command. Give it a bounded grace period.
+wait_for_api() {
+  i=0
+  while [ "$i" -lt 30 ]; do
+    if (
+      cd "$INSTALL_DIR"
+      # shellcheck disable=SC2086
+      docker compose $COMPOSE_ARGS exec -T api true
+    ) >/dev/null 2>&1; then
+      return 0
+    fi
+    i=$((i + 1))
+    sleep 2
+  done
+  return 1
+}
+
+# Create the operator's account, then close registration. In this order on
+# purpose: if user creation fails we leave signup open rather than locking the
+# operator out of their own instance.
+create_admin_user() {
+  echo ""
+  echo "Creating the first user ..."
+  admin_status=0
+  (
+    cd "$INSTALL_DIR"
+    # shellcheck disable=SC2086
+    docker compose $COMPOSE_ARGS exec -T \
+      -e PRELOOP_ADMIN_USERNAME="$PRELOOP_ADMIN_USERNAME" \
+      -e PRELOOP_ADMIN_EMAIL="$PRELOOP_ADMIN_EMAIL" \
+      -e PRELOOP_ADMIN_PASSWORD="$PRELOOP_ADMIN_PASSWORD" \
+      api python scripts/create_first_user.py
+  ) || admin_status=$?
+
+  if [ "$admin_status" -ne 0 ]; then
+    echo "  WARNING: could not create the first user."
+    echo "  Signups stay ENABLED so you can register at ${PRELOOP_URL}."
+    echo "  Afterwards, set REGISTRATION_ENABLED=false in ${INSTALL_DIR}/.env"
+    echo "  and re-run: docker compose ${COMPOSE_ARGS} up -d api"
+    return 1
+  fi
+
+  set_env_value REGISTRATION_ENABLED false
+  (
+    cd "$INSTALL_DIR"
+    # shellcheck disable=SC2086
+    docker compose $COMPOSE_ARGS up -d api > /dev/null 2>&1
+  ) || true
+  echo "Public signups are DISABLED. Invite teammates from the console."
+  return 0
+}
+
 # Email is how approvals, invitations and password resets reach people. Ask
 # once, up front; skip silently when unattended or already configured.
 prompt_smtp() {
@@ -210,6 +352,58 @@ is_public_hostname() {
     *.*) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+# A CAA record on any parent zone can forbid Let's Encrypt from issuing at all,
+# no matter how correct the DNS and firewall are. The cloud providers' ephemeral
+# hostnames do exactly this (googleusercontent.com publishes `issue "pki.goog"`),
+# so a cert for one of those machine-generated names can NEVER be obtained.
+# Catching it here turns ten minutes of certbot debugging into one honest line.
+#
+# Prints the offending zone on stdout and returns 1 when issuance is impossible;
+# returns 0 when allowed OR when we cannot tell (never block on a failed lookup).
+
+# CAA records for one domain, one per line. Uses dig when present and falls back
+# to DNS-over-HTTPS, because a stock cloud image has curl but no dig — which is
+# exactly the machine this check exists to protect.
+caa_records() {
+  domain="$1"
+  if command -v dig >/dev/null 2>&1; then
+    dig +short CAA "$domain" 2>/dev/null
+    return 0
+  fi
+  # Split the JSON into one object per line, keep the CAA answers (type 257),
+  # print their rdata. The question/authority sections are filtered out by the
+  # type match, so a domain with no CAA yields nothing.
+  curl -fsS --max-time 5 "https://dns.google/resolve?name=${domain}&type=257" 2>/dev/null \
+    | tr '}' '\n' \
+    | grep '"type":[[:space:]]*257' \
+    | sed -n 's/.*"data":[[:space:]]*"\(.*\)".*/\1/p'
+}
+
+caa_forbids_letsencrypt() {
+  host="$1"
+
+  domain="$host"
+  while [ -n "$domain" ]; do
+    case "$domain" in
+      *.*) ;;
+      *) break ;;   # single label: stop before querying the TLD
+    esac
+
+    records="$(caa_records "$domain")"
+    if [ -n "$records" ]; then
+      # The closest zone with any CAA record set is authoritative for issuance;
+      # parents above it are not consulted.
+      if printf '%s' "$records" | grep -q 'issue[a-z]*[[:space:]]*"[^"]*letsencrypt\.org'; then
+        return 0
+      fi
+      printf '%s' "$domain"
+      return 1
+    fi
+    domain="${domain#*.}"
+  done
+  return 0
 }
 
 write_tls_assets() {
@@ -364,6 +558,9 @@ issue_certificate() {
     echo "Common causes:"
     echo "  - ${host} does not resolve to this machine's public IP"
     echo "  - port 80 is blocked by a firewall or already in use"
+    echo "  - a CAA record on the domain forbids Let's Encrypt from issuing"
+    echo "    (check: dig CAA ${host}; cloud-provider hostnames such as"
+    echo "     *.googleusercontent.com can never be certified — use your own domain)"
     echo "  - Let's Encrypt rate limits (retry with PRELOOP_TLS_STAGING=1)"
     echo "Fix the cause and re-run:"
     echo "  cd ${INSTALL_DIR} && docker compose -f docker-compose.yaml -f docker-compose.tls.yaml run --rm --entrypoint certbot certbot certonly --webroot -w /var/www/certbot -d ${host} --agree-tos"
@@ -412,16 +609,40 @@ fi
 # upgrade cannot leave the proxy/certbot containers orphaned (still holding
 # ports 80/443) while compose manages only the plain stack.
 WANT_TLS=0
+# Serve on port 80 through the bundled proxy even when there is no certificate,
+# so the instance is still reachable at the URL the user typed.
+HTTP_PROXY_ONLY=0
 if [ "$SCHEME" = "https" ] && [ -z "$PRELOOP_SKIP_TLS" ]; then
-  if is_public_hostname "$HOST"; then
-    WANT_TLS=1
-  else
+  if ! is_public_hostname "$HOST"; then
     echo "PRELOOP_URL is https but '${HOST}' is not a public DNS name;" >&2
     echo "skipping certificate issuance (bring your own TLS)." >&2
+  elif caa_zone="$(caa_forbids_letsencrypt "$HOST")"; then
+    WANT_TLS=1
+  else
+    # Not a transient failure: no CA that Let's Encrypt controls can ever sign
+    # for this name, so retrying or fixing DNS/firewall will not help.
+    echo ""
+    echo "Cannot obtain a TLS certificate for ${HOST}."
+    echo "The DNS zone '${caa_zone}' publishes a CAA record that forbids Let's"
+    echo "Encrypt from issuing certificates for it. This is permanent — it is not"
+    echo "a DNS, firewall or rate-limit problem, and re-running will not fix it."
+    echo ""
+    echo "Cloud providers set this on their machine-generated hostnames"
+    echo "(*.googleusercontent.com, *.compute.amazonaws.com, ...). To serve"
+    echo "Preloop over HTTPS, point a domain you control at this machine and"
+    echo "re-run with PRELOOP_URL=https://your-domain."
+    echo ""
+    echo "Continuing over plain HTTP at http://${HOST} — usable for evaluation,"
+    echo "but do not put real credentials or agent traffic through it."
+    echo ""
+    PRELOOP_URL="http://${HOST}"
+    SCHEME="http"
+    HTTP_PROXY_ONLY=1
   fi
 fi
 
 prompt_smtp
+prompt_admin
 
 if [ ! -f "${INSTALL_DIR}/.env" ]; then
   cat > "${INSTALL_DIR}/.env" <<EOF
@@ -430,9 +651,12 @@ SECRET_KEY=$(generate_secret)
 POSTGRES_PASSWORD=$(generate_secret)
 PRELOOP_URL=${PRELOOP_URL}
 ALLOWED_ORIGINS=${PRELOOP_URL}
+# Public signup. Turned off after the first user is created; set to true to
+# reopen registration, then run 'docker compose up -d api'.
+REGISTRATION_ENABLED=true
 # Email (approval requests, invitations, password resets). Leave SMTP_HOST
 # empty to run without email; re-run the installer or edit these values, then
-# `docker compose up -d` to apply.
+# run 'docker compose up -d' to apply.
 SMTP_HOST=${SMTP_HOST}
 SMTP_PORT=${SMTP_PORT}
 SMTP_USERNAME=${SMTP_USERNAME}
@@ -467,21 +691,39 @@ else
   mv "$tmp_env" "${INSTALL_DIR}/.env"
 fi
 
-COMPOSE_ARGS="-f docker-compose.yaml"
+# Carry REGISTRATION_ENABLED into the API. Kept in a script-owned overlay rather
+# than relying on the released compose file, so signup lockdown works even on
+# releases whose compose file predates the setting.
+write_auth_overlay() {
+  cat > "${INSTALL_DIR}/docker-compose.auth.yaml" <<'EOF'
+services:
+  api:
+    environment:
+      REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-true}
+EOF
+}
+
+write_auth_overlay
+COMPOSE_ARGS="-f docker-compose.yaml -f docker-compose.auth.yaml"
 if [ "$WANT_TLS" -eq 1 ]; then
   prompt_tls_email
   write_tls_assets "$HOST"
-  COMPOSE_ARGS="-f docker-compose.yaml -f docker-compose.tls.yaml"
+  COMPOSE_ARGS="-f docker-compose.yaml -f docker-compose.auth.yaml -f docker-compose.tls.yaml"
+elif [ "$HTTP_PROXY_ONLY" -eq 1 ]; then
+  # Same proxy, HTTP server block only: the console answers on port 80 at the
+  # hostname the user gave, we just never ask for a certificate.
+  write_tls_assets "$HOST"
+  COMPOSE_ARGS="-f docker-compose.yaml -f docker-compose.auth.yaml -f docker-compose.tls.yaml"
 elif [ -n "$PRELOOP_TLS_ENABLED" ] && [ -f "${INSTALL_DIR}/docker-compose.tls.yaml" ]; then
   # TLS was configured previously but this run did not ask for it (e.g. an
   # upgrade run without PRELOOP_URL). Keep managing the proxy/certbot services
   # rather than orphaning them.
   echo "Keeping the existing TLS proxy (set PRELOOP_SKIP_TLS=1 to stop using it)."
-  COMPOSE_ARGS="-f docker-compose.yaml -f docker-compose.tls.yaml"
+  COMPOSE_ARGS="-f docker-compose.yaml -f docker-compose.auth.yaml -f docker-compose.tls.yaml"
 fi
 
 # Record what this install is, so the next run reproduces the same topology.
-if [ "$WANT_TLS" -eq 1 ] || [ "$COMPOSE_ARGS" != "-f docker-compose.yaml" ]; then
+if [ "$WANT_TLS" -eq 1 ] || [ "$HTTP_PROXY_ONLY" -eq 1 ] || [ -n "$PRELOOP_TLS_ENABLED" ]; then
   grep -v '^PRELOOP_TLS_ENABLED=' "${INSTALL_DIR}/.env" > "${INSTALL_DIR}/.env.tls" || true
   echo "PRELOOP_TLS_ENABLED=1" >> "${INSTALL_DIR}/.env.tls"
   mv "${INSTALL_DIR}/.env.tls" "${INSTALL_DIR}/.env"
@@ -525,6 +767,14 @@ if [ "$WANT_TLS" -eq 1 ] && [ "$compose_status" -eq 0 ]; then
   issue_certificate "$HOST" || tls_status=$?
 fi
 
+admin_created=0
+if [ "$CREATE_ADMIN" -eq 1 ] && [ "$compose_status" -eq 0 ]; then
+  wait_for_api
+  if create_admin_user; then
+    admin_created=1
+  fi
+fi
+
 echo ""
 echo "Preloop OSS ${VERSION} is starting in ${INSTALL_DIR}"
 if [ "$WANT_TLS" -eq 1 ] && [ "$tls_status" -eq 0 ]; then
@@ -535,7 +785,11 @@ else
 fi
 echo ""
 echo "Next steps:"
-echo "  1. Open ${PRELOOP_URL} and create the first user"
+if [ "$admin_created" -eq 1 ]; then
+  echo "  1. Open ${PRELOOP_URL} and sign in as '${PRELOOP_ADMIN_USERNAME}'"
+else
+  echo "  1. Open ${PRELOOP_URL} and create the first user"
+fi
 echo "  2. Install the CLI (if you haven't):"
 echo "       curl -fsSL https://preloop.ai/install/cli | sh"
 echo "  3. Connect the CLI to THIS instance (not preloop.ai):"

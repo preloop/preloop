@@ -75,6 +75,9 @@ services:
       # QR pairing and CORS. Set by scripts/install-oss.sh (PRELOOP_URL).
       PRELOOP_URL: ${PRELOOP_URL:-http://localhost:3000}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
+      # Public signup. Set false to close registration (invite-only); the
+      # install script does this once the first user exists.
+      REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-true}
       FLOW_EXECUTION_WORKER_ENABLED: ${FLOW_EXECUTION_WORKER_ENABLED:-false}
       # SMTP — required for approval emails, invitations and password resets.
       # Configure interactively via scripts/install-oss.sh or edit .env.
@@ -196,6 +199,10 @@ services:
     ports:
       - "3000:80"
     environment:
+      # Without API_URL the image falls back to http://localhost:8000, which
+      # inside this container is the console itself — every /api call 502s and
+      # nobody can even log in.
+      API_URL: http://api:8000
       GATEWAY_URL: http://gateway:8000
 
 volumes:

@@ -2,6 +2,13 @@ server {
     listen 80;
     server_name localhost;
 
+    # Every backend below is proxied through a variable (proxy_pass $var), which
+    # makes nginx resolve the host at request time instead of at startup — and
+    # that needs an explicit resolver. Without it every /api and gateway request
+    # fails with "no resolver defined". 127.0.0.11 is Docker's embedded DNS;
+    # override with NGINX_RESOLVER when running outside Docker's default bridge.
+    resolver ${NGINX_RESOLVER} ipv6=off valid=30s;
+
     # Security headers
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-XSS-Protection "1; mode=block" always;

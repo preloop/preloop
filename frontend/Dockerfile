@@ -26,6 +26,9 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 # Environment variables for API configuration
 ENV API_URL=http://localhost:8000
 ENV MOCK_API=false
+# DNS for the variable proxy_pass targets. Docker's embedded resolver; override
+# when this image runs somewhere without it.
+ENV NGINX_RESOLVER=127.0.0.11
 
 # Expose port
 EXPOSE 80
