@@ -69,11 +69,11 @@ export const VS_PAGE_META: Record<string, VsPageMeta> = {
   },
   litellm: {
     competitor: 'LiteLLM',
-    title: 'Preloop vs LiteLLM — Full Control Plane vs LLM Proxy',
+    title: 'Preloop vs LiteLLM — Agent Control Plane vs AI Gateway',
     description:
-      'LiteLLM alternative: LLM gateway with policies, MCP firewall, human approvals, runtime observability, and audit. Open-source LLM proxy with approvals and agent governance.',
+      'LiteLLM AI Gateway alternative: model gateway plus MCP firewall, human approvals, session observability, cost reconciliation, and audit. LiteLLM governs model traffic; Preloop governs agents.',
     keywords:
-      'LiteLLM alternative, LLM gateway with policies, open-source LLM proxy with approvals, AI model gateway open source, AI agent control plane, MCP firewall, AI agent governance, Claude Code governance, Codex CLI governance, Cursor agent security, AI agent audit trail',
+      'LiteLLM alternative, LiteLLM AI gateway alternative, LLM gateway with approvals, open-source LLM proxy with policies, AI model gateway open source, AI agent control plane, MCP firewall, MCP gateway with approvals, AI agent governance, AI cost reconciliation, Claude Code governance, Codex CLI governance, Cursor agent security, AI agent audit trail',
   },
   runlayer: {
     competitor: 'Runlayer',

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**Breaking / upgrade notes:** PostgreSQL **15 or newer is now required** — the
+budget spend-bucket migration recreates a unique constraint with
+`NULLS NOT DISTINCT` (PG 15+ syntax) so account-level buckets accumulate
+instead of inserting one row per request. Deployments on PG 13/14 must upgrade
+Postgres before running `alembic upgrade head` (the failed migration rolls
+back cleanly, but the upgrade will not proceed). The stack has shipped
+`pgvector/pgvector:pg16` since 0.9.x; this only affects external/managed
+databases pinned to older majors. The same migration also deduplicates
+existing spend rows (staging observed ~69k → ~4.5k) and requires no manual
+action.
+
 ### Added
 
 - **Flow orchestration on sync workers**: Optional `FLOW_EXECUTION_WORKER_ENABLED` runs `FlowExecutionOrchestrator` on a dedicated JetStream worker pool (`execute_flow` / `resume_flow_execution`) with DB claim/heartbeat leases, ack-after-claim, periodic stale-claim reclaim, SIGTERM drain/redispatch, and API-side recovery gated when the flag is on. Helm pool `flow-execution` and compose `flow-worker` service included.

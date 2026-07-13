@@ -117,6 +117,25 @@ def update_chart(plan: ReleasePlan) -> Path:
     return path
 
 
+def update_cli_version(plan: ReleasePlan) -> Path:
+    """Update the CLI's hardcoded fallback version.
+
+    Release builds inject the real version via ldflags, but `go run` /
+    from-source builds report this constant — it drifted to 0.9.0 while the
+    stack was on 0.10.0.
+    """
+    path = ROOT_DIR / "cli" / "internal" / "version" / "check.go"
+    text = read_text(path)
+    updated = replace_once(
+        text,
+        r'^\tVersion = ".*"$',
+        f'\tVersion = "{plan.version}"',
+        path,
+    )
+    write_text(path, updated)
+    return path
+
+
 def update_readme(plan: ReleasePlan) -> Path:
     """Keep versioned examples aligned with the release."""
     path = ROOT_DIR / "README.md"
@@ -563,6 +582,7 @@ def main() -> int:
         update_frontend_package(plan),
         update_frontend_lockfile(plan),
         update_chart(plan),
+        update_cli_version(plan),
         update_readme(plan),
     ]
 

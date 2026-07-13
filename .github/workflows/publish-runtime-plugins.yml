@@ -1,0 +1,138 @@
+# Publishes the standalone runtime plugins:
+#   - @preloop-ai/openclaw-plugin  -> npm   (tag: openclaw-plugin-vX.Y.Z)
+#   - preloop-hermes-plugin        -> PyPI  (tag: hermes-plugin-vX.Y.Z)
+#
+# Each plugin's package manifest and marketplace metadata file must carry the
+# tag's version (lockstep per plugin, per runtime-plugins/PUBLISHING.md).
+# Manual rehearsal: workflow_dispatch with dry_run=true builds and verifies
+# without publishing.
+#
+# Required repo secrets (environment: release):
+#   NPM_TOKEN          - npm automation token with publish rights
+#   PLUGINS_PYPI_TOKEN - PyPI token scoped to preloop-hermes-plugin
+#
+# NOT automated here: the ClawHub marketplace publish for the OpenClaw plugin
+# (`clawhub package publish`) — it needs interactive auth and provenance
+# flags; follow runtime-plugins/PUBLISHING.md after the npm publish succeeds.
+
+name: Publish Runtime Plugins
+
+on:
+  push:
+    tags:
+      - 'openclaw-plugin-v*'
+      - 'hermes-plugin-v*'
+  workflow_dispatch:
+    inputs:
+      plugin:
+        description: 'Which plugin to build/publish'
+        type: choice
+        options: [openclaw, hermes, both]
+        default: both
+      dry_run:
+        description: 'Build and verify without publishing'
+        type: boolean
+        default: true
+
+jobs:
+  verify:
+    name: Tests & version checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run runtime plugin tests
+        run: |
+          pip install pytest
+          pytest runtime-plugins/tests -q
+
+      - name: Check per-plugin manifest lockstep (and tag match)
+        run: |
+          set -euo pipefail
+          NPM_VERSION=$(python3 -c "import json; print(json.load(open('runtime-plugins/openclaw-preloop/package.json'))['version'])")
+          CLAW_VERSION=$(python3 -c "import json; print(json.load(open('runtime-plugins/openclaw-preloop/openclaw.plugin.json'))['version'])")
+          PY_VERSION=$(python3 -c "import tomllib; print(tomllib.load(open('runtime-plugins/hermes-preloop/pyproject.toml','rb'))['project']['version'])")
+          HERMES_META_VERSION=$(python3 -c "import json; print(json.load(open('runtime-plugins/hermes-preloop/preloop-plugin.json'))['version'])")
+          echo "openclaw: npm=$NPM_VERSION plugin.json=$CLAW_VERSION | hermes: pypi=$PY_VERSION preloop-plugin.json=$HERMES_META_VERSION"
+          test "$NPM_VERSION" = "$CLAW_VERSION" || { echo "::error::openclaw package.json vs openclaw.plugin.json version mismatch"; exit 1; }
+          test "$PY_VERSION" = "$HERMES_META_VERSION" || { echo "::error::hermes pyproject vs preloop-plugin.json version mismatch"; exit 1; }
+          case "${GITHUB_REF_NAME}" in
+            openclaw-plugin-v*)
+              TAG_VERSION="${GITHUB_REF_NAME#openclaw-plugin-v}"
+              test "$NPM_VERSION" = "$TAG_VERSION" || { echo "::error::tag $TAG_VERSION != openclaw plugin version $NPM_VERSION"; exit 1; }
+              ;;
+            hermes-plugin-v*)
+              TAG_VERSION="${GITHUB_REF_NAME#hermes-plugin-v}"
+              test "$PY_VERSION" = "$TAG_VERSION" || { echo "::error::tag $TAG_VERSION != hermes plugin version $PY_VERSION"; exit 1; }
+              ;;
+          esac
+
+  publish-openclaw:
+    name: Publish @preloop-ai/openclaw-plugin (npm)
+    needs: verify
+    if: >-
+      startsWith(github.ref_name, 'openclaw-plugin-v') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.plugin == 'openclaw' || inputs.plugin == 'both'))
+    runs-on: ubuntu-latest
+    environment: release
+    defaults:
+      run:
+        working-directory: runtime-plugins/openclaw-preloop
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Build
+        run: |
+          npm ci
+          npm run build
+          npm pack --dry-run
+
+      - name: Publish
+        if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: ClawHub reminder
+        run: |
+          echo "::notice::npm publish done. ClawHub publish is manual — see runtime-plugins/PUBLISHING.md (clawhub package publish with provenance flags)."
+
+  publish-hermes:
+    name: Publish preloop-hermes-plugin (PyPI)
+    needs: verify
+    if: >-
+      startsWith(github.ref_name, 'hermes-plugin-v') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.plugin == 'hermes' || inputs.plugin == 'both'))
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build
+        working-directory: runtime-plugins/hermes-preloop
+        run: |
+          pip install build twine
+          python -m build
+          twine check dist/*
+
+      - name: Publish
+        if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PLUGINS_PYPI_TOKEN }}
+          packages-dir: runtime-plugins/hermes-preloop/dist/
