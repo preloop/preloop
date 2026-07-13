@@ -12518,6 +12518,7 @@ components:
           description: 'Device platform: ''ios'' or ''android'''
         token:
           type: string
+          minLength: 1
           title: Token
           description: Device push notification token
         device_name:

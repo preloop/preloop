@@ -4,7 +4,7 @@ import uuid
 from typing import Optional, List, Dict
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class NotificationPreferencesBase(BaseModel):
@@ -49,10 +49,21 @@ class MobileDeviceRegistration(BaseModel):
     """Schema for registering a mobile device."""
 
     platform: str = Field(..., description="Device platform: 'ios' or 'android'")
-    token: str = Field(..., description="Device push notification token")
+    # A blank token is silently accepted by APNs registration but then fails
+    # every send with 400 MissingDeviceToken — reject it at the door.
+    token: str = Field(..., min_length=1, description="Device push notification token")
     device_name: Optional[str] = Field(
         None, description="Optional device name for API key"
     )
+
+    @field_validator("token")
+    @classmethod
+    def validate_token(cls, value: str) -> str:
+        """Reject blank/whitespace-only push tokens."""
+        token = value.strip()
+        if not token:
+            raise ValueError("Device push token must not be empty")
+        return token
 
 
 class QRCodeResponse(BaseModel):
