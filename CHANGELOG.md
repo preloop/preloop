@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0-rc.0] - 2026-07-13
+
 **Breaking / upgrade notes:** PostgreSQL **15 or newer is now required** — the
 budget spend-bucket migration recreates a unique constraint with
 `NULLS NOT DISTINCT` (PG 15+ syntax) so account-level buckets accumulate
