@@ -64,6 +64,23 @@ console:
       cpu: "200m"
       memory: "256Mi"
 
+# Privacy-friendly web analytics (e.g. Plausible, Umami). When enabled, the
+# console nginx injects the tracking snippet into every HTML page at serve
+# time (sub_filter), so analytics stay runtime-configurable per environment —
+# no frontend image rebuild needed. Custom conversion events fired by the
+# frontend (window.plausible) are queued by the injected stub until the
+# script loads, and are silent no-ops when analytics is disabled.
+analytics:
+  enabled: false
+  # Site identifier registered in the analytics platform (Plausible data-domain).
+  domain: ""
+  # Tracker script URL, e.g. https://traffic.example.com/js/script.js
+  scriptUrl: ""
+  # Escape hatch for platforms that need a different snippet (e.g. Matomo):
+  # raw HTML injected before </head> instead of the Plausible-style script tag.
+  # Must not contain single quotes (nginx sub_filter delimiter).
+  customSnippet: ""
+
 # Image pull secrets
 imagePullSecrets: []
 

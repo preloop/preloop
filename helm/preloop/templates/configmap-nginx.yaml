@@ -20,6 +20,20 @@ data:
         # Root directory for static files
         root /usr/share/nginx/html;
         index index.html;
+{{- if .Values.analytics.enabled }}
+
+        # Web analytics: inject the tracking snippet into every HTML response
+        # at serve time. Runtime-configurable per environment via values —
+        # see the `analytics` block in values.yaml. The inline stub queues
+        # custom events (window.plausible) fired before the script loads.
+        {{- if .Values.analytics.customSnippet }}
+        sub_filter '</head>' '{{ .Values.analytics.customSnippet }}</head>';
+        {{- else }}
+        sub_filter '</head>' '<script>window.plausible=window.plausible||function(){(window.plausible.q=window.plausible.q||[]).push(arguments)}</script><script defer data-domain="{{ .Values.analytics.domain }}" src="{{ .Values.analytics.scriptUrl }}"></script></head>';
+        {{- end }}
+        sub_filter_once on;
+        sub_filter_types text/html;
+{{- end }}
 
         # API proxy configuration
         location /api/ {

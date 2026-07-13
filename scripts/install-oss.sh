@@ -72,6 +72,36 @@ PY
   fi
 }
 
+# Load the settings of an existing install so a re-run UPGRADES it instead of
+# silently reconfiguring it: prior values become the defaults for every prompt
+# and for anything not overridden on this run.
+PREVIOUS_VERSION=""
+PRELOOP_TLS_ENABLED=""
+load_existing_env() {
+  env_file="${INSTALL_DIR}/.env"
+  [ -f "$env_file" ] || return 0
+
+  PREVIOUS_VERSION="$(env_value PRELOOP_VERSION "$env_file")"
+  PRELOOP_TLS_ENABLED="$(env_value PRELOOP_TLS_ENABLED "$env_file")"
+
+  # Existing values win over the built-in defaults, but NOT over anything the
+  # caller explicitly passed in the environment on this run.
+  [ -n "$PRELOOP_URL" ] || PRELOOP_URL="$(env_value PRELOOP_URL "$env_file")"
+  [ -n "$SMTP_HOST" ] || SMTP_HOST="$(env_value SMTP_HOST "$env_file")"
+  [ -n "$SMTP_USERNAME" ] || SMTP_USERNAME="$(env_value SMTP_USERNAME "$env_file")"
+  [ -n "$SMTP_PASSWORD" ] || SMTP_PASSWORD="$(env_value SMTP_PASSWORD "$env_file")"
+  [ -n "$SMTP_FROM" ] || SMTP_FROM="$(env_value SMTP_FROM "$env_file")"
+  existing_port="$(env_value SMTP_PORT "$env_file")"
+  [ -z "$existing_port" ] || SMTP_PORT="$existing_port"
+  existing_from_name="$(env_value SMTP_FROM_NAME "$env_file")"
+  [ -z "$existing_from_name" ] || SMTP_FROM_NAME="$existing_from_name"
+}
+
+env_value() {
+  # last assignment wins, value may contain '='
+  sed -n "s/^$1=//p" "$2" 2>/dev/null | tail -n 1
+}
+
 # True only when a real terminal is attached. `curl ... | sh` leaves stdin as
 # the pipe, so prompts must go through /dev/tty — but /dev/tty merely EXISTING
 # is not enough (in CI / cloud-init it opens and then fails), so probe it.
@@ -79,7 +109,9 @@ has_tty() {
   { : < /dev/tty; } 2>/dev/null
 }
 
-# Ask for the public URL, falling back to the default when unattended.
+# Ask for the public URL. On an existing install the current URL is already
+# loaded into PRELOOP_URL, so a re-run keeps it (a plain `curl | sh` upgrade
+# must never silently reset a public instance back to localhost).
 prompt_url() {
   if [ -n "$PRELOOP_URL" ]; then
     return
@@ -281,16 +313,18 @@ services:
       - ./certbot/www:/var/www/certbot
     entrypoint: >-
       sh -c "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done"
-EOF
 
-  # The console listens on the host only through the proxy now; keep 3000 for
-  # local debugging but bind it to loopback.
-  cat > "${INSTALL_DIR}/docker-compose.override.yaml" <<'EOF'
-services:
+  # Public traffic reaches the console through the TLS proxy; keep 3000 for
+  # local debugging only.
   console:
     ports: !override
       - "127.0.0.1:3000:80"
 EOF
+
+  # Remove a docker-compose.override.yaml written by older installers: compose
+  # loads that file IMPLICITLY, so it would keep applying (binding the console
+  # to loopback) even on a run that does not use the TLS overlay.
+  rm -f "${INSTALL_DIR}/docker-compose.override.yaml"
 }
 
 issue_certificate() {
@@ -355,6 +389,14 @@ TAG="v${VERSION}"
 COMPOSE_URL="https://github.com/${PRELOOP_REPO}/releases/download/${TAG}/docker-compose.release.yaml"
 
 mkdir -p "$INSTALL_DIR"
+load_existing_env
+
+if [ -n "$PREVIOUS_VERSION" ] && [ "$PREVIOUS_VERSION" != "$VERSION" ]; then
+  echo "Upgrading Preloop ${PREVIOUS_VERSION} -> ${VERSION} in ${INSTALL_DIR}"
+elif [ -n "$PREVIOUS_VERSION" ]; then
+  echo "Re-applying Preloop ${VERSION} in ${INSTALL_DIR}"
+fi
+
 curl -fsSL "$COMPOSE_URL" -o "${INSTALL_DIR}/docker-compose.yaml"
 
 prompt_url
@@ -366,6 +408,9 @@ if [ -z "$SCHEME" ] || [ -z "$HOST" ]; then
   exit 1
 fi
 
+# An instance that was installed WITH TLS keeps TLS on every later run, so an
+# upgrade cannot leave the proxy/certbot containers orphaned (still holding
+# ports 80/443) while compose manages only the plain stack.
 WANT_TLS=0
 if [ "$SCHEME" = "https" ] && [ -z "$PRELOOP_SKIP_TLS" ]; then
   if is_public_hostname "$HOST"; then
@@ -427,13 +472,52 @@ if [ "$WANT_TLS" -eq 1 ]; then
   prompt_tls_email
   write_tls_assets "$HOST"
   COMPOSE_ARGS="-f docker-compose.yaml -f docker-compose.tls.yaml"
+elif [ -n "$PRELOOP_TLS_ENABLED" ] && [ -f "${INSTALL_DIR}/docker-compose.tls.yaml" ]; then
+  # TLS was configured previously but this run did not ask for it (e.g. an
+  # upgrade run without PRELOOP_URL). Keep managing the proxy/certbot services
+  # rather than orphaning them.
+  echo "Keeping the existing TLS proxy (set PRELOOP_SKIP_TLS=1 to stop using it)."
+  COMPOSE_ARGS="-f docker-compose.yaml -f docker-compose.tls.yaml"
+fi
+
+# Record what this install is, so the next run reproduces the same topology.
+if [ "$WANT_TLS" -eq 1 ] || [ "$COMPOSE_ARGS" != "-f docker-compose.yaml" ]; then
+  grep -v '^PRELOOP_TLS_ENABLED=' "${INSTALL_DIR}/.env" > "${INSTALL_DIR}/.env.tls" || true
+  echo "PRELOOP_TLS_ENABLED=1" >> "${INSTALL_DIR}/.env.tls"
+  mv "${INSTALL_DIR}/.env.tls" "${INSTALL_DIR}/.env"
+fi
+
+# Back up the database before an upgrade touches the schema. Migrations run
+# automatically (the `migrate` service runs `alembic upgrade head`), and some
+# are irreversible, so a pre-upgrade dump is the cheap safety net.
+if [ -n "$PREVIOUS_VERSION" ] && [ "$PREVIOUS_VERSION" != "$VERSION" ]; then
+  backup_dir="${INSTALL_DIR}/backups"
+  mkdir -p "$backup_dir"
+  backup_file="${backup_dir}/preloop-${PREVIOUS_VERSION}-$(date +%Y%m%d%H%M%S).sql"
+  echo "Backing up the database before upgrading ..."
+  if (
+    cd "$INSTALL_DIR"
+    # shellcheck disable=SC2086
+    docker compose $COMPOSE_ARGS exec -T postgres \
+      pg_dump -U postgres preloop
+  ) > "$backup_file" 2>/dev/null; then
+    echo "  saved ${backup_file}"
+  else
+    rm -f "$backup_file"
+    echo "  WARNING: backup failed (is the old stack running?). Continuing;"
+    echo "  stop now with Ctrl-C if you want to back up manually first."
+  fi
 fi
 
 compose_status=0
 (
   cd "$INSTALL_DIR"
+  # Pull first so an upgrade fails BEFORE tearing down the running stack, and
+  # --remove-orphans drops containers for services a new version deleted.
   # shellcheck disable=SC2086
-  docker compose $COMPOSE_ARGS up -d
+  docker compose $COMPOSE_ARGS pull --quiet 2>/dev/null || true
+  # shellcheck disable=SC2086
+  docker compose $COMPOSE_ARGS up -d --remove-orphans
 ) || compose_status=$?
 
 tls_status=0

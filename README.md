@@ -239,6 +239,16 @@ curl -fsSL https://preloop.ai/install/oss | \
 
 To install a pre-release (e.g. a release candidate), pin the version: `curl -fsSL https://preloop.ai/install/oss | PRELOOP_VERSION=0.11.0-rc.1 sh` (the same works for the CLI installer).
 
+#### Upgrading
+
+Re-run the same install command — it upgrades in place:
+
+```bash
+curl -fsSL https://preloop.ai/install/oss | sh
+```
+
+The installer detects the existing install and keeps its configuration (public URL, TLS setup, SMTP credentials, `SECRET_KEY`, database password), pulls the new images, **dumps the database to `~/.preloop-oss/backups/` first**, applies schema migrations automatically (the `migrate` service runs `alembic upgrade head`), and removes containers for services a new version dropped. Setting an environment variable overrides that one setting; everything else is preserved.
+
 For Kubernetes/prod-like deployments, use the Helm chart in [`helm/preloop`](helm/preloop) and connect the CLI with `preloop login --url https://your-preloop.example.com`.
 
 ### Release smoke test
