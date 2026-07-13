@@ -25,9 +25,9 @@ describe('RegisterView', () => {
       social: { twitter: '', linkedin: '', instagram: '' },
     };
 
-    // Stub fetch before each test
-    fetchStub = sinon.stub(window, 'fetch');
     element = await fixture(html`<register-view></register-view>`);
+    // Stub fetch after initial render so startup requests don't wedge WTR.
+    fetchStub = sinon.stub(window, 'fetch');
   });
 
   afterEach(() => {
