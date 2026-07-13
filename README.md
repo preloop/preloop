@@ -237,13 +237,13 @@ curl -fsSL https://preloop.ai/install/oss | \
 
 **Email is not optional in practice**: approval requests, invitations and password resets are delivered by email, so an instance without SMTP cannot notify approvers. Everything the installer writes lives in `~/.preloop-oss/.env` — edit it and run `docker compose up -d` to change any setting later.
 
-To install a pre-release (e.g. a release candidate), pin the version: `curl -fsSL https://preloop.ai/install/oss | PRELOOP_VERSION=0.11.0-rc.0 sh` (the same works for the CLI installer).
+To install a pre-release (e.g. a release candidate), pin the version: `curl -fsSL https://preloop.ai/install/oss | PRELOOP_VERSION=0.11.0-rc.1 sh` (the same works for the CLI installer).
 
 For Kubernetes/prod-like deployments, use the Helm chart in [`helm/preloop`](helm/preloop) and connect the CLI with `preloop login --url https://your-preloop.example.com`.
 
 ### Release smoke test
 
-Every tagged release is verified automatically before it is published: the `verify-oss-install` job in the release workflow runs [`scripts/release_smoke_test.sh`](scripts/release_smoke_test.sh), which boots `docker-compose.release.yaml` with the tagged images, checks API/gateway/console health, exercises first-user sign-up and login, and fails if any service restart-loops. You can run the same script locally with `PRELOOP_VERSION=0.11.0-rc.0 ./scripts/release_smoke_test.sh`.
+Every tagged release is verified automatically before it is published: the `verify-oss-install` job in the release workflow runs [`scripts/release_smoke_test.sh`](scripts/release_smoke_test.sh), which boots `docker-compose.release.yaml` with the tagged images, checks API/gateway/console health, exercises first-user sign-up and login, and fails if any service restart-loops. You can run the same script locally with `PRELOOP_VERSION=0.11.0-rc.1 ./scripts/release_smoke_test.sh`.
 
 For hosted trials, additionally verify that the public URL loads the console, `/api/v1/health` responds, first-user sign-in or sign-up works, `preloop agents discover` can target the public URL, one gateway model call appears in the UI, and one MCP policy event appears in the audit timeline.
 
