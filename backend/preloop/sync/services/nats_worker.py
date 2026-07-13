@@ -31,10 +31,12 @@ class PreloopSyncNatsWorker:
         nats_url: str,
         queue_name: str,
         tasks_allowlist: Optional[List[str]] = None,
+        tasks_excludelist: Optional[List[str]] = None,
     ):
         self.nats_url = nats_url
         self.queue_name = queue_name
         self.tasks_allowlist = tasks_allowlist or []
+        self.tasks_excludelist = tasks_excludelist or []
         self.nc: NATSClient = None
         self.js = None
         self.subs: List[Tuple[str, nats.aio.client.Subscription]] = []
@@ -44,6 +46,74 @@ class PreloopSyncNatsWorker:
         self._inflight: Set[asyncio.Task] = set()
         self._reclaim_task: Optional[asyncio.Task] = None
         self._pull_tasks: List[asyncio.Task] = []
+
+    async def _remove_conflicting_wildcard_consumer(
+        self, subjects_to_subscribe: List[str]
+    ) -> None:
+        """Delete the legacy wildcard consumer when using filtered subjects.
+
+        Upgrade path: before dedicated pools existed, the default worker
+        subscribed to `preloop.sync.tasks.*` and left a DURABLE consumer on the
+        stream. On a workqueue stream that wildcard overlaps every filtered
+        consumer, so once a pool starts filtering, all of its subscriptions are
+        rejected with `filtered consumer not unique on workqueue stream` and
+        the worker cannot start. The stale consumer outlives the process, so
+        upgrading alone would not clear it — remove it explicitly.
+
+        No-op when this worker IS the wildcard subscriber.
+        """
+        wildcard_subject = "preloop.sync.tasks.*"
+        if wildcard_subject in subjects_to_subscribe:
+            return
+
+        legacy_durable = f"{self.queue_name}_preloop-sync-tasks-all"
+        try:
+            await self.js.consumer_info("tasks", legacy_durable)
+        except Exception:
+            return  # not present: nothing to clean up
+
+        try:
+            await self.js.delete_consumer("tasks", legacy_durable)
+            logger.warning(
+                "Removed legacy wildcard consumer '%s': it overlaps the filtered "
+                "consumers this worker needs (workqueue streams require "
+                "non-overlapping subject filters).",
+                legacy_durable,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to remove legacy wildcard consumer '%s'; filtered "
+                "subscriptions will fail until it is deleted.",
+                legacy_durable,
+            )
+
+    def _subjects_to_subscribe(self) -> List[str]:
+        """Return the NATS subjects this worker should consume.
+
+        The ``tasks`` stream uses WORKQUEUE retention: consumer subject
+        filters may not overlap. So a worker that EXCLUDES tasks (because a
+        dedicated pool handles them) must enumerate the remaining subjects
+        explicitly — subscribing to the `preloop.sync.tasks.*` wildcard would
+        overlap the dedicated pool's filtered consumers and NATS would reject
+        them with `filtered consumer not unique on workqueue stream`.
+        """
+        from preloop.sync.tasks import DISPATCHABLE_TASKS
+
+        if self.tasks_allowlist:
+            names = list(self.tasks_allowlist)
+        elif self.tasks_excludelist:
+            excluded = set(self.tasks_excludelist)
+            names = [task for task in DISPATCHABLE_TASKS if task not in excluded]
+            unknown = excluded - set(DISPATCHABLE_TASKS)
+            if unknown:
+                logger.warning(
+                    "Ignoring unknown task(s) in exclude list: %s",
+                    ", ".join(sorted(unknown)),
+                )
+        else:
+            return ["preloop.sync.tasks.*"]
+
+        return [f"preloop.sync.tasks.{name}" for name in names]
 
     @property
     def handles_flow_orchestration(self) -> bool:
@@ -117,16 +187,13 @@ class PreloopSyncNatsWorker:
             logger.error("Cannot start listening, NATS client not connected.")
             return
 
-        subjects_to_subscribe = []
-        if self.tasks_allowlist:
-            for task_name in self.tasks_allowlist:
-                subjects_to_subscribe.append(f"preloop.sync.tasks.{task_name}")
-        else:
-            subjects_to_subscribe.append("preloop.sync.tasks.*")
+        subjects_to_subscribe = self._subjects_to_subscribe()
 
         logger.info(
             f"Worker '{self.connection_name}' subscribing to subjects: {subjects_to_subscribe}"
         )
+
+        await self._remove_conflicting_wildcard_consumer(subjects_to_subscribe)
 
         for subject in subjects_to_subscribe:
             try:
@@ -268,6 +335,18 @@ class PreloopSyncNatsWorker:
                     import sentry_sdk
 
                     sentry_sdk.capture_exception(e)
+
+        if not self.subs:
+            # Every subscription failed. Without this guard the gather() below
+            # returns immediately, main() completes, and the container exits 0
+            # into a restart loop with no obvious cause (this is exactly how
+            # the workqueue filter-overlap bug presented).
+            raise RuntimeError(
+                "NATS worker subscribed to no subjects "
+                f"({subjects_to_subscribe}); refusing to run idle. "
+                "On a workqueue stream, consumer filters must not overlap: "
+                "a pool that excludes tasks must not use the wildcard."
+            )
 
         self._pull_tasks = []
         for _, sub in self.subs:
@@ -467,7 +546,10 @@ async def _run_boot_recovery(tasks_allowlist: Optional[List[str]]) -> None:
         )
 
 
-async def main(tasks_allowlist: Optional[List[str]] = None):
+async def main(
+    tasks_allowlist: Optional[List[str]] = None,
+    tasks_excludelist: Optional[List[str]] = None,
+):
     # Get NATS_URL directly from environment variables
     nats_server_url = os.getenv("NATS_URL", "nats://localhost:4222")
 
@@ -493,6 +575,7 @@ async def main(tasks_allowlist: Optional[List[str]] = None):
         nats_url=nats_server_url,
         queue_name=queue,
         tasks_allowlist=tasks_allowlist,
+        tasks_excludelist=tasks_excludelist,
     )
 
     loop = asyncio.get_running_loop()

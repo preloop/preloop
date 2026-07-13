@@ -128,13 +128,13 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
 
         # Debug logging for metrics updates
         if "tool_calls_count" in update_data or "total_tokens" in update_data:
-            logger.info(
+            logger.debug(
                 f"CRUD update - Setting metrics on FlowExecution {db_obj.id}: "
                 f"tool_calls_count={update_data.get('tool_calls_count')}, "
                 f"total_tokens={update_data.get('total_tokens')}, "
                 f"estimated_cost={update_data.get('estimated_cost')}"
             )
-            logger.info(
+            logger.debug(
                 f"Current DB values before update: tool_calls_count={db_obj.tool_calls_count}, "
                 f"total_tokens={db_obj.total_tokens}, estimated_cost={db_obj.estimated_cost}"
             )
@@ -146,7 +146,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
 
         # Debug logging after flush
         if "tool_calls_count" in update_data or "total_tokens" in update_data:
-            logger.info(
+            logger.debug(
                 f"After flush: tool_calls_count={db_obj.tool_calls_count}, "
                 f"total_tokens={db_obj.total_tokens}, estimated_cost={db_obj.estimated_cost}"
             )

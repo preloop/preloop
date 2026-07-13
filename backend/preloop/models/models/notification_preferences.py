@@ -119,7 +119,16 @@ class NotificationPreferences(Base):
         Args:
             platform: Device platform ('ios' or 'android').
             token: Device push notification token.
+
+        Raises:
+            ValueError: If the token is blank. Storing an empty token makes
+                every later push fail with APNs 400 MissingDeviceToken while
+                the account still *looks* push-enabled.
         """
+        token = (token or "").strip()
+        if not token:
+            raise ValueError("Device push token must not be empty")
+
         if self.mobile_device_tokens is None:
             self.mobile_device_tokens = []
 

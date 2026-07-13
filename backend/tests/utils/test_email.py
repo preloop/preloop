@@ -548,10 +548,10 @@ class TestEmailError:
 
     def test_email_error_can_be_raised(self):
         """Test that EmailError can be raised with a message."""
-        with pytest.raises(EmailError) as exc_info:
-            raise EmailError("Test error message")
-
-        assert "Test error message" in str(exc_info.value)
+        error = EmailError("Test error message")
+        assert "Test error message" in str(error)
+        with pytest.raises(EmailError, match="Test error message"):
+            raise error
 
     def test_email_error_inherits_from_exception(self):
         """Test that EmailError inherits from Exception."""

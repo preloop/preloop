@@ -1455,14 +1455,19 @@ class JiraTracker(BaseTracker):
 
     def register_webhook(
         self,
-        db: Session,
-        project: Project,
-        webhook_url: str,
-        secret: str,
+        db: Optional[Session] = None,
+        project: Optional[Project] = None,
+        webhook_url: Optional[str] = None,
+        secret: Optional[str] = None,
         events: Optional[List[str]] = None,
     ) -> bool:
         """Register a webhook for the Jira project."""
         if not self.jira_client:
+            return False
+        if db is None or project is None or not webhook_url or not secret:
+            logger.error(
+                "Jira webhook registration requires db, project, URL, and secret."
+            )
             return False
 
         existing_webhook = crud_webhook.get_by_project_id(db, project_id=project.id)
@@ -1650,10 +1655,15 @@ class JiraTracker(BaseTracker):
                 f"Unexpected error registering webhook for {project.identifier}: {str(e)}"
             )
 
-    def unregister_webhook(self, db: Session, webhook: Webhook) -> bool:
+    def unregister_webhook(
+        self, db: Optional[Session] = None, webhook: Optional[Webhook] = None
+    ) -> bool:
         """Unregister a webhook for a project using the database record."""
         if not self.jira_client:
             logger.error("Jira client not initialized. Cannot unregister webhook.")
+            return False
+        if db is None or webhook is None:
+            logger.error("Jira webhook unregistration requires db and webhook.")
             return False
 
         try:
@@ -1872,7 +1882,9 @@ class JiraTracker(BaseTracker):
             )
             return False
 
-    def get_webhooks(self) -> List[Dict[str, Any]]:
+    def get_webhooks(
+        self, organization_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """
         Get all webhooks for the tracker.
 

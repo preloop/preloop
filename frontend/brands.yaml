@@ -26,16 +26,16 @@ brands:
 
     landing:
       meta:
-        title: "Preloop: The Policy Engine for AI Agents | MCP Firewall, Human Approvals, Audit Trail"
-        og_title: "Preloop: The Safety Layer for AI Agents"
-        description: "Define policies for AI agents & tools. Allow, deny, or require approval for any action based on context. Full visibility and audit trail for every AI operation. Works with OpenClaw, Claude Code, Cursor, and any MCP-compatible agent."
-        og_description: "AI agents are powerful but risky. Preloop lets you define exactly what they can do, what they cannot do, and what requires human approval."
-        extended_description: "Define policies for AI agents & tools. Allow, deny, or require approval for any action based on context. Full visibility and audit trail for every AI operation. Works with OpenClaw, Claude Code, Cursor, and any MCP-compatible agent."
-        keywords: "Preloop, AI agent firewall, AI safety policies, AI agent permissions, MCP proxy, OpenClaw safety, Claude Code policies, AI agent audit trail, production safety for AI, MCP, Model Context Protocol"
+        title: "Preloop — The Open-Source AI Agent Control Plane"
+        og_title: "Preloop: the open-source control plane for OpenClaw, Hermes, Claude Code, Codex CLI, Cursor, and any MCP agent"
+        description: "Preloop is the open-source AI agent control plane. One command onboards OpenClaw, Hermes, Claude Code, Codex CLI, Cursor, Gemini CLI, and any MCP-compatible agent, then routes their tool calls through the Preloop MCP Firewall and their model traffic through the Preloop Gateway — with human approvals, budgets, runtime observability, and audit trails across your whole fleet."
+        og_description: "Onboard existing agents with `preloop agents discover`. Govern tool access with the MCP Firewall, route model traffic with budgets and attribution, approve sensitive actions from mobile or Slack, and keep searchable runtime evidence. Open source. Self-hostable."
+        extended_description: "Preloop is the open-source AI agent control plane. It combines an MCP firewall for tool access, an AI model gateway for cost and attribution, policy-as-code with CEL, human-in-the-loop approvals (mobile, watch, Slack, Mattermost), runtime session observability, and audit trails — in a single self-hostable platform. The `preloop agents discover` command imports compatible local agent configs and transparently rewrites Claude Code, Codex CLI, Cursor, Gemini CLI, Hermes, OpenClaw, and OpenCode to route through Preloop without SDK changes."
+        keywords: "AI agent control plane, open source AI agent control plane, MCP firewall, MCP gateway, AI agent governance, AI agent security, AI model gateway, LLM gateway self-hosted, AI agent observability, AI agent guardrails, human in the loop AI, AI agent approval workflow, Claude Code governance, Codex CLI governance, Cursor agent security, Gemini CLI governance, Hermes Agent governance, OpenClaw governance, OpenCode governance, AI agent audit trail, Preloop, MCP, Model Context Protocol"
 
       hero:
-        title: "The <span class=\"gradient-product\">Safety Layer</span> for AI Agents"
-        lead: "Control what AI agents can do, and what requires human approval."
+        title: "The Open Source Control Plane for <span class=\"gradient-product\">AI Agents</span>"
+        lead: "See them, govern them, cut their cost."
         cta_primary: "Sign In"
         cta_primary_url: "/login"
         image: "/assets/screenshots/quickstart/dark/agent_bubble.png"

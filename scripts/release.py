@@ -140,7 +140,7 @@ def update_readme(plan: ReleasePlan) -> Path:
     """Keep versioned examples aligned with the release."""
     path = ROOT_DIR / "README.md"
     text = read_text(path)
-    updated, count = re.subn(
+    updated, _ = re.subn(
         r"PRELOOP_VERSION=[^\s]+",
         f"PRELOOP_VERSION={plan.version}",
         text,

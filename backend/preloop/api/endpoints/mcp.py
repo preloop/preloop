@@ -775,13 +775,17 @@ async def update_issue(
                 f"Data inconsistency after update: Project or Organization missing for issue {issue.id}"
             )
             # Fallback response data
-            project_name = "Error: Missing Project"
-            org_name = "Error: Missing Organization"
-            project_slug = "error"
+            project_name, org_name, project_slug = (
+                "Error: Missing Project",
+                "Error: Missing Organization",
+                "error",
+            )
         else:
-            project_name = project.name
-            org_name = organization.name
-            project_slug = project.slug
+            project_name, org_name, project_slug = (
+                project.name,
+                organization.name,
+                project.slug,
+            )
 
         meta_data = issue_obj.meta_data or {}
         labels_list = (
@@ -2639,7 +2643,7 @@ async def update_comment(
 
         if platform == "github":
             # Track which comment type was actually used for logging
-            actual_comment_type = None
+            updated_comment_type = None
 
             # Pre-check: If resolved is requested with body but no comment_type,
             # we need to determine the type upfront to avoid partial success
@@ -2681,7 +2685,6 @@ async def update_comment(
                                 )
                             elif response.status_code == 200:
                                 # It's a review comment - proceed
-                                actual_comment_type = "review_comment"
                                 logger.info(
                                     f"Pre-check: comment {comment_id} is a review_comment"
                                 )
@@ -2706,7 +2709,7 @@ async def update_comment(
                         )
                         result_url = update_result.get("html_url")
                         actions_taken.append("body updated")
-                        actual_comment_type = "issue_comment"
+                        updated_comment_type = "issue_comment"
                         logger.info(f"Successfully updated issue comment {comment_id}")
                     except Exception as e:
                         error_msg = str(e)
@@ -2719,6 +2722,7 @@ async def update_comment(
                 else:
                     # Try review_comment first
                     logger.info(f"Updating GitHub review comment {comment_id}")
+                    detected_comment_type = "review_comment"
                     try:
                         update_result = await tracker_client.update_review_comment(
                             comment_id=comment_id,
@@ -2726,7 +2730,6 @@ async def update_comment(
                         )
                         result_url = update_result.get("html_url")
                         actions_taken.append("body updated")
-                        actual_comment_type = "review_comment"
                         logger.info(f"Successfully updated review comment {comment_id}")
                     except Exception as e:
                         error_msg = str(e)
@@ -2752,7 +2755,7 @@ async def update_comment(
                                 )
                                 result_url = update_result.get("html_url")
                                 actions_taken.append("body updated")
-                                actual_comment_type = "issue_comment"
+                                detected_comment_type = "issue_comment"
                                 logger.info(
                                     f"Successfully updated issue comment {comment_id}"
                                 )
@@ -2767,6 +2770,7 @@ async def update_comment(
                                 raise
                         else:
                             raise
+                    updated_comment_type = detected_comment_type
 
             # Resolve/unresolve thread if requested
             if resolved is not None:
@@ -2774,7 +2778,7 @@ async def update_comment(
                 # Note: explicit comment_type="issue_comment" + resolved is validated upfront.
                 # This check handles the auto-detect fallback case where we updated an
                 # issue comment but the caller also requested resolution.
-                if body is not None and actual_comment_type == "issue_comment":
+                if body is not None and updated_comment_type == "issue_comment":
                     raise HTTPException(
                         status_code=400,
                         detail="Thread resolution is not supported for issue comments "

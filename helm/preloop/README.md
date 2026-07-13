@@ -188,6 +188,25 @@ sentry:
   dsn: "YOUR_SENTRY_DSN"
 ```
 
+#### Web Analytics
+
+Privacy-friendly web analytics (Plausible-compatible) can be enabled per
+environment without rebuilding the console image: the console nginx injects
+the tracking snippet into every HTML page at serve time.
+
+```yaml
+analytics:
+  enabled: true
+  domain: "example.com"                                # site id (data-domain)
+  scriptUrl: "https://plausible.example.com/js/script.js"
+```
+
+The frontend fires conversion events (`Signup`, `Signup Click`, `Demo Click`,
+`Install Copy`) through `window.plausible`; register them as custom-event
+goals in your analytics platform to measure conversions. For non-Plausible
+platforms, set `analytics.customSnippet` to a raw HTML snippet instead
+(injected before `</head>`; must not contain single quotes).
+
 ## Configuration
 
 ### PostgreSQL with PGVector

@@ -64,6 +64,7 @@ import type {
   ModelPriceOverrideUpdate,
   SpeechToTextResponse,
   TextToSpeechRequest,
+  ApprovalDecisionOptions,
 } from './types';
 
 // Global refresh promise to prevent concurrent refresh requests
@@ -3129,16 +3130,46 @@ export async function listApprovalRequests(params?: {
   return response.json();
 }
 
+/**
+ * Build the JSON body for an approve/decline decision.
+ *
+ * Accepts either a bare comment string (legacy call sites) or an options object
+ * that can also carry a question answer (`selected_option` / `answer_text`).
+ * Answer fields are only serialized when present so older backends keep seeing
+ * the exact payload they saw before.
+ */
+export function buildApprovalDecisionBody(
+  approved: boolean,
+  commentOrOptions?: string | ApprovalDecisionOptions | null
+): Record<string, unknown> {
+  const options: ApprovalDecisionOptions =
+    typeof commentOrOptions === 'string' || commentOrOptions == null
+      ? { comment: commentOrOptions ?? null }
+      : commentOrOptions;
+
+  const body: Record<string, unknown> = {
+    approved,
+    comment: options.comment || null,
+  };
+  if (options.selected_option != null && options.selected_option !== '') {
+    body.selected_option = options.selected_option;
+  }
+  if (options.answer_text != null && options.answer_text !== '') {
+    body.answer_text = options.answer_text;
+  }
+  return body;
+}
+
 export async function approveRequest(
   requestId: string,
-  comment?: string
+  commentOrOptions?: string | ApprovalDecisionOptions
 ): Promise<any> {
   const response = await fetchWithAuth(
     `/api/v1/approval-requests/${requestId}/approve`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ approved: true, comment: comment || null }),
+      body: JSON.stringify(buildApprovalDecisionBody(true, commentOrOptions)),
     }
   );
   if (!response.ok) {
@@ -3152,14 +3183,14 @@ export async function approveRequest(
 
 export async function declineRequest(
   requestId: string,
-  comment?: string
+  commentOrOptions?: string | ApprovalDecisionOptions
 ): Promise<any> {
   const response = await fetchWithAuth(
     `/api/v1/approval-requests/${requestId}/decline`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ approved: false, comment: comment || null }),
+      body: JSON.stringify(buildApprovalDecisionBody(false, commentOrOptions)),
     }
   );
   if (!response.ok) {

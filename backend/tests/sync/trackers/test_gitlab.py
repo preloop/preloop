@@ -279,6 +279,42 @@ class TestGitLabTracker(unittest.IsolatedAsyncioTestCase):
 
 
 class TestGitLabTrackerWebhooks(unittest.IsolatedAsyncioTestCase):
+    @patch("preloop.sync.trackers.gitlab.logger.error")
+    @patch("preloop.sync.trackers.gitlab.gitlab.Gitlab")
+    async def test_get_webhooks_requires_organization_identifier(
+        self, mock_gitlab_constructor, mock_logger_error
+    ):
+        mock_gl_instance = MagicMock()
+        mock_gitlab_constructor.return_value = mock_gl_instance
+        mock_gl_instance.auth.return_value = None
+
+        tracker = GitLabTracker("tracker-1", "api-key", {})
+
+        webhooks = await tracker.get_webhooks()
+
+        self.assertEqual(webhooks, [])
+        mock_logger_error.assert_called_once_with(
+            "GitLab webhook listing requires an organization identifier."
+        )
+
+    @patch("preloop.sync.trackers.gitlab.logger.error")
+    @patch("preloop.sync.trackers.gitlab.gitlab.Gitlab")
+    async def test_unregister_webhook_requires_db_and_webhook(
+        self, mock_gitlab_constructor, mock_logger_error
+    ):
+        mock_gl_instance = MagicMock()
+        mock_gitlab_constructor.return_value = mock_gl_instance
+        mock_gl_instance.auth.return_value = None
+
+        tracker = GitLabTracker("tracker-1", "api-key", {})
+
+        result = await tracker.unregister_webhook(db=None, webhook=None)
+
+        self.assertFalse(result)
+        mock_logger_error.assert_called_once_with(
+            "GitLab webhook unregistration requires db and webhook."
+        )
+
     @patch("preloop.sync.trackers.gitlab.crud_webhook")
     @patch("preloop.sync.trackers.gitlab.gitlab.Gitlab")
     async def test_register_group_webhook_success(

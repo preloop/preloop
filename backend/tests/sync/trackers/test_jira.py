@@ -59,6 +59,23 @@ class TestJiraTrackerWebhooks(unittest.IsolatedAsyncioTestCase):
         self.mock_jira_client._session.post.assert_called_once()
         self.mock_crud_webhook.create.assert_called_once()
 
+    @patch("preloop.sync.trackers.jira.logger.error")
+    async def test_register_webhook_requires_all_arguments(self, mock_logger_error):
+        """Test registration fails fast when required args are missing."""
+        result = self.tracker.register_webhook(
+            db=None,
+            project=None,
+            webhook_url=None,
+            secret=None,
+        )
+
+        self.assertFalse(result)
+        mock_logger_error.assert_called_once_with(
+            "Jira webhook registration requires db, project, URL, and secret."
+        )
+        self.mock_jira_client._session.post.assert_not_called()
+        self.mock_crud_webhook.get_by_project_id.assert_not_called()
+
     async def test_register_webhook_already_in_db(self):
         """Test webhook registration is skipped if already in DB."""
         self.mock_crud_webhook.get_by_project_id.return_value = Webhook(
@@ -98,6 +115,18 @@ class TestJiraTrackerWebhooks(unittest.IsolatedAsyncioTestCase):
         self.mock_crud_webhook.remove.assert_called_once_with(
             self.mock_db_session, id="wh-db-id"
         )
+
+    @patch("preloop.sync.trackers.jira.logger.error")
+    async def test_unregister_webhook_requires_db_and_webhook(self, mock_logger_error):
+        """Test unregistration fails fast when required args are missing."""
+        result = self.tracker.unregister_webhook(db=None, webhook=None)
+
+        self.assertFalse(result)
+        mock_logger_error.assert_called_once_with(
+            "Jira webhook unregistration requires db and webhook."
+        )
+        self.mock_jira_client._session.delete.assert_not_called()
+        self.mock_crud_webhook.remove.assert_not_called()
 
     async def test_unregister_webhook_not_in_jira(self):
         """Test unregistration when webhook is in DB but not in Jira (404)."""

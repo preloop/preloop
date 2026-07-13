@@ -154,7 +154,7 @@ class TestToolCondition:
 
     def test_condition_actions(self):
         """Test all condition actions."""
-        for action in ConditionAction:
+        for action in tuple(ConditionAction):
             condition = ToolCondition(expression="true", action=action)
             assert condition.action == action.value
 

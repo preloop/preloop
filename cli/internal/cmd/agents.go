@@ -722,10 +722,24 @@ func promptToOnboardCandidates(
 		// discover-driven path); callers whose enrollment prompts interactively
 		// pass askApprovals=false so the user is only asked once.
 		approvals := false
-		if askApprovals && !autoApprove && !nonInteractiveAutoConfirm() {
-			approvals, err = promptForApprovalsOptIn(bufferedReader, writer, agent)
-			if err != nil {
-				return fmt.Errorf("failed to read approvals confirmation: %w", err)
+		if askApprovals {
+			if autoApprove || nonInteractiveAutoConfirm() {
+				// --yes / non-interactive accepts the prompt's default answer
+				// (Yes) for supported agents — previously it silently skipped
+				// the hook, so `onboard --all -y` onboarded without approvals.
+				approvals = isApprovalHookSupportedAgent(agent)
+				if approvals {
+					fmt.Fprintf(
+						writer,
+						"Routing %s's native tool calls through Preloop approvals (accepted default; offboard and re-onboard to remove the hook).\n",
+						resolveAgentDisplayName(agent),
+					)
+				}
+			} else {
+				approvals, err = promptForApprovalsOptIn(bufferedReader, writer, agent)
+				if err != nil {
+					return fmt.Errorf("failed to read approvals confirmation: %w", err)
+				}
 			}
 		}
 		if err := enroll(agent, approvals); err != nil {

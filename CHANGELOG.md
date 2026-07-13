@@ -7,6 +7,107 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-07-13
+
+### Overview — 0.11.0 since 0.10.0
+
+Where 0.10.0 turned Preloop into an agent control plane, **0.11.0 makes it
+trustworthy to run**: the money is counted correctly, the control channel stays
+up, agents can ask you questions instead of only asking permission, and the
+self-hosted install is something you can actually put on the public internet.
+This rolls up everything in 0.11.0-rc.0 and 0.11.0-rc.1; the highlights:
+
+- **Token and cost accounting you can audit.** Streaming requests recorded zero
+  tokens unless the client happened to opt in — the gateway now always requests
+  usage from upstream, estimates when a provider withholds it, and still records
+  a row when the client disconnects mid-stream. Prices come from a vendored,
+  versioned catalog (`scripts/update_model_prices.py`) instead of whatever
+  litellm version happened to be installed, with live lookup for models it has
+  never seen. Overrides are resolved through one code path (with currency and
+  FX support), cache-read and reasoning tokens are first-class columns, and
+  historical rows can be repriced retroactively. Unpriced usage is now visible
+  rather than silently summing to zero.
+- **Agent questions, not just approvals.** The new `ask_user` tool lets an agent
+  ask you a real question — multiple choice, free text, or both — routed through
+  the same approval, notification, and audit pipeline. It is answerable from the
+  Console, the iPhone, and the Apple Watch (standalone, with dictation and
+  spoken summaries, so an answer never requires reaching for your phone).
+- **Agent Control that stays connected.** Durable managed-agent credentials were
+  rejected by the control WebSocket, and the CLI wired the control channel with
+  a token that expired after two hours — together these took OpenClaw and Hermes
+  offline shortly after every onboard. Both are fixed, and a rejected control
+  connection now logs why instead of a bare 403.
+- **A self-hosted install that survives contact with the internet.** The OSS
+  installer now asks for the instance's public URL, provisions a Let's Encrypt
+  certificate, configures SMTP, creates the first user, closes public signup,
+  and upgrades an existing instance in place (with a database backup taken
+  first) instead of half-reconfiguring it.
+- **Hardening.** A dozen security fixes, including refresh tokens being accepted
+  as access tokens, an unauthenticated debug endpoint that echoed credentials,
+  MCP firewall and approval checks that failed *open* on error, and tracker
+  credentials stored in plaintext.
+
+**Upgrade notes:** PostgreSQL **15+ is now required** (see 0.11.0-rc.0). Run
+`alembic upgrade head`; the budget spend-bucket migration deduplicates existing
+rows automatically.
+
+### Fixed
+
+- **Agent Control died two hours after every onboard**: the CLI wrote the
+  short-lived runtime *session* token (120-minute expiry) into the runtime
+  plugin's control config, while every other integration got the 365-day durable
+  managed-agent credential. The control channel has no token refresh, so OpenClaw
+  and Hermes silently dropped offline once it expired and only came back after a
+  re-onboard. The control config now carries the durable credential, and the
+  helper takes the credential rather than a bare token so a short-lived one
+  cannot be wired in again. A rejected control WebSocket also logs the reason —
+  previously a pre-accept close surfaced as a bare `403` with no explanation
+  anywhere.
+- **Self-hosted console could not reach its own API**: the released compose file
+  never set `API_URL` on the console container, so it fell back to the image
+  default `http://localhost:8000` — which inside that container is the console
+  itself. Every `/api` call returned 502 and nobody could log in to a fresh OSS
+  install. The nginx template also proxies through a variable without declaring a
+  resolver, which fails for *any* hostname; both are fixed, and the release smoke
+  test now exercises the console → API path a browser actually uses instead of
+  only hitting the API directly.
+- **Installer attempted impossible certificates**: hostnames under
+  `*.googleusercontent.com` (and similar cloud-provider names) publish a CAA
+  record that forbids Let's Encrypt from ever issuing for them. The installer now
+  detects this before running certbot, explains that it is permanent rather than
+  a DNS or firewall problem, and continues over plain HTTP at the given hostname
+  instead of leaving a broken `https://` URL behind. The CAA check works on a
+  stock cloud image (no `dig` required).
+- **Installer wrote a mangled `.env`**: an unquoted heredoc executed the
+  backticks in a comment, which both corrupted the comment and printed a stray
+  `no configuration file provided: not found` error during install.
+
+### Added
+
+- **Install-time first user and signup lockdown**: the OSS installer offers to
+  create the operator's account and disable public registration, so a freshly
+  exposed instance is never reachable-and-open to whoever finds it first. Driven
+  interactively or unattended via `PRELOOP_ADMIN_USERNAME` / `PRELOOP_ADMIN_EMAIL`
+  / `PRELOOP_ADMIN_PASSWORD` (`PRELOOP_SKIP_ADMIN=1` opts out). The new
+  `scripts/create_first_user.py` performs the same account setup as signup —
+  owner role, default approval workflow — with the email pre-verified, since a
+  fresh install has no SMTP to send a verification mail. The user is created
+  *before* registration is closed, so a failure leaves signup open rather than
+  locking the operator out.
+- **Watch agent status stays fresh**: the watch fetched Agent Control state once
+  per launch, so an agent that came back online still showed "plugin offline"
+  indefinitely (`onAppear` does not re-fire across wrist raises). It now refreshes
+  when the app becomes active, refreshes stale data on appear, polls while the
+  agent list is on screen, and offers an explicit Refresh control with a
+  last-updated line. A failed refresh keeps the last known agents instead of
+  blanking the list.
+
+## [0.11.0-rc.1] - 2026-07-13
+
+- **Answer agent questions from the web console**: `ask_user` requests now render as questions in the Console approvals list and on the single-approval page — one button per offered option plus a free-text answer box when the agent allows it (Dismiss declines the question). Previously the web UI could only approve or decline them.
+
+## [0.11.0-rc.0] - 2026-07-13
+
 **Breaking / upgrade notes:** PostgreSQL **15 or newer is now required** — the
 budget spend-bucket migration recreates a unique constraint with
 `NULLS NOT DISTINCT` (PG 15+ syntax) so account-level buckets accumulate
@@ -20,6 +121,9 @@ action.
 
 ### Added
 
+- **OSS installer upgrades in place**: re-running the install command now upgrades an existing instance instead of half-reconfiguring it. Previously a bare `curl … | sh` re-run reset a public instance's `PRELOOP_URL` back to `localhost` (wiping the configured origin and CORS), left the TLS proxy/certbot containers orphaned while compose managed only the plain stack, and kept applying a `docker-compose.override.yaml` that compose loads implicitly. The installer now loads the existing `.env` as the baseline (URL, SMTP, TLS state, secrets all preserved), announces the version change, dumps the database to `~/.preloop-oss/backups/` before migrations run, pulls images before recreating containers, and passes `--remove-orphans` so services dropped by a new version are cleaned up. Certificate issuance stays idempotent (an existing certificate is never re-requested, avoiding Let's Encrypt rate limits).
+- **OSS installer: public URL, automatic HTTPS and SMTP setup**: `install-oss.sh` now asks for (or takes from the environment) the instance's public URL and SMTP credentials. A public `https://` URL provisions a Let's Encrypt certificate with certbot — an nginx proxy terminates TLS in front of the stack, HTTP is served first so ACME can complete, and a sidecar renews every 12 hours. Certificates are only requested for public DNS names (`localhost`, bare IPs and `.local` are skipped); `PRELOOP_TLS_STAGING=1`, `PRELOOP_SKIP_TLS=1` and `PRELOOP_SKIP_SMTP=1` cover rehearsals, external TLS termination and unattended installs. `PRELOOP_URL`/`ALLOWED_ORIGINS` and the `SMTP_*` variables are now actually passed to the API and worker containers (previously they were unreachable from compose, so self-hosted instances could not send approval emails at all).
+- **Question-aware push notifications**: `ask_user` requests are now pushed as questions rather than approvals — the payload carries `is_question`, `question`, `question_options`, and `allow_free_text`, the title reads "Agent question", and the APNs category is set per option count (`QUESTION_2_OPTIONS` … `QUESTION_4_OPTIONS`, or `QUESTION_REQUEST` for free-text-only / more than four options, since iOS notification categories are static and cap at four actions). Mobile clients use this to offer one-tap option buttons and a dictated inline answer straight from the notification. Approval payloads are unchanged.
 - **Flow orchestration on sync workers**: Optional `FLOW_EXECUTION_WORKER_ENABLED` runs `FlowExecutionOrchestrator` on a dedicated JetStream worker pool (`execute_flow` / `resume_flow_execution`) with DB claim/heartbeat leases, ack-after-claim, periodic stale-claim reclaim, SIGTERM drain/redispatch, and API-side recovery gated when the flag is on. Helm pool `flow-execution` and compose `flow-worker` service included.
 - **Durable Agent Control command persistence**: Operator commands are stored before delivery, with ack/delivery scoped to the target managed agent, batched redelivery marks, and enum CHECK constraints for command status / cost provenance markers.
 - **Per-agent native-tool approval workflow**: Operators can pin an approval workflow on a managed agent from the Console agent detail view (Tools & Governance → Native tool approvals). The pin is stored in subject governance as `approval_workflow_id` and takes precedence over the account default when `POST /api/v1/agents/permission-check` resolves a workflow. Governance updates reject workflow IDs that are invalid or not in the account.
@@ -45,6 +149,10 @@ action.
 
 ### Fixed
 
+- **Sync workers crash-looped when the dedicated flow pool was enabled**: the `tasks` JetStream stream uses WORKQUEUE retention, where consumer subject filters must not overlap — but the default worker subscribed to the `preloop.sync.tasks.*` wildcard while the new flow-execution pool filtered `execute_flow` / `resume_flow_execution`, so NATS rejected every flow-worker subscription (`filtered consumer not unique on workqueue stream`), the worker ended up with no subscriptions, and the container exited 0 into a restart loop (caught by the 0.11.0-rc.0 release smoke test). Worker pools now partition the stream: `preloop-sync worker --exclude-tasks <names>` enumerates the remaining subjects instead of using the wildcard (compose and the Helm default pool both set it), the worker refuses to start with zero subscriptions instead of exiting silently, and on upgrade it deletes the stale durable wildcard consumer that would otherwise keep blocking the filtered ones.
+- **Agent Control WebSocket rejected durable credentials (endless 403 reconnect loop)**: managed-agent credentials are minted without a runtime-session binding, but both API-key auth layers hard-required a live bound session — every runtime plugin (OpenClaw, Hermes) enrolled after sessions became lazy was rejected on connect and the Console/mobile showed the agents offline forever. Runtime bearer auth now resolves — and reopens if ended — the agent's identity session (`allow_stale_runtime_session` on the shared API-key validator), so control connections survive re-onboarding, operator "end session", and session expiry.
+- **Native-tool permission checks 500ed on the per-agent workflow pin**: the pin lookup bound the JSON path as `VARCHAR` (`json #>> character varying` has no operator), so `POST /api/v1/agents/permission-check` failed for every account and the client hook fail-closed denied all native tool calls. Rewritten with `json_extract_path_text` and covered by a real-database regression test (the previous tests mocked the DB and never executed the SQL).
+- **`preloop agents onboard --yes` silently skipped native-tool approvals**: `-y` now accepts the approvals prompt's default (Yes) for supported agents (Claude Code, Codex CLI, Cursor) instead of onboarding without the hook.
 - **Gateway cost summary on zero traffic**: Aggregations use `one_or_none()` with zero defaults so empty windows no longer 500 the cost summary / accounting health APIs.
 - **Repricing commit batching**: Historical usage repricing commits in page-sized batches instead of once per row, avoiding partial multi-commit windows on crash.
 - **Tracker credential backfill isolation**: Each tracker migrates in its own DB session so a single failure cannot poison later candidates.

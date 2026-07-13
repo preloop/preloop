@@ -122,13 +122,11 @@ async def get_version_info(
             logger.debug(
                 "Optional authentication failed for /version endpoint (token provided but invalid/inactive)."
             )
-            pass  # Keep account_id as None
         except Exception as e:
             # Log unexpected errors but don't fail the request
             logger.error(
                 f"Unexpected error during optional auth in /version: {e}", exc_info=True
             )
-            pass  # Keep account_id as None
 
     # Log the client version information
     log_entry = ClientVersionLog(

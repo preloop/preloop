@@ -4,6 +4,7 @@ import { Router } from '@vaadin/router';
 import { post, getFeatures } from '../../api';
 import { formStyles } from '../../styles/form-styles';
 import { getBrandConfig } from '../../brand-config';
+import { trackGoal } from '../../services/web-analytics';
 
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -108,6 +109,9 @@ export class RegisterView extends LitElement {
       if (registerResult && registerResult.error) {
         throw new Error(registerResult.error);
       }
+
+      // Completed registration is the primary conversion goal.
+      trackGoal('Signup');
 
       // Signup is card-free (T2 paywall move): no Stripe checkout here.
       // Premium features request the card in-product via the upgrade modal.

@@ -8,6 +8,7 @@ import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '../../components/logo-component';
+import { trackGoal } from '../../services/web-analytics';
 
 const OAUTH_PROVIDER_CONFIG: Record<string, { label: string; icon: string }> = {
   github: { label: 'GitHub', icon: 'github' },
@@ -121,6 +122,8 @@ export class LoginView extends LitElement {
       localStorage.setItem('accessToken', data.access_token);
       this.error = '';
       this.successMessage = '';
+      // Returning-user conversion: distinguishes sign-ins from new signups.
+      trackGoal('Login');
       window.dispatchEvent(
         new CustomEvent('auth-change', { bubbles: true, composed: true })
       );

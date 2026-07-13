@@ -2,6 +2,7 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { ideSetupStyles } from '../styles/ide-setup-styles';
+import { trackGoal } from '../services/web-analytics';
 
 export interface IdeConfig {
   ide: string;
@@ -77,6 +78,7 @@ export class IdeSetupTabs extends LitElement {
       const code = pre.querySelector('code');
       if (code) {
         navigator.clipboard.writeText(code.innerText).then(() => {
+          trackGoal('Install Copy', { variant: `setup:${this._activeTab}` });
           const originalHTML = button.innerHTML;
           button.innerHTML =
             '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-check" viewBox="0 0 16 16"><path d="M10.97 4.97a.75.75 0 0 1 1.07 1.05l-3.99 4.99a.75.75 0 0 1-1.08.02L4.324 8.384a.75.75 0 1 1 1.06-1.06l2.094 2.093 3.473-4.425a.267.267 0 0 1 .02-.022z"/></svg>';

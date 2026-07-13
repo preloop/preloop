@@ -71,7 +71,22 @@ services:
       ACCESS_TOKEN_EXPIRE_MINUTES: 60
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       PRELOOP_SERVICE_ROLE: api
+      # Public origin this instance is reached at. Used for approval links,
+      # QR pairing and CORS. Set by scripts/install-oss.sh (PRELOOP_URL).
+      PRELOOP_URL: ${PRELOOP_URL:-http://localhost:3000}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
+      # Public signup. Set false to close registration (invite-only); the
+      # install script does this once the first user exists.
+      REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-true}
       FLOW_EXECUTION_WORKER_ENABLED: ${FLOW_EXECUTION_WORKER_ENABLED:-false}
+      # SMTP — required for approval emails, invitations and password resets.
+      # Configure interactively via scripts/install-oss.sh or edit .env.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-Preloop}
     ports:
       - "8000:8000"
     command: python -m preloop.server
@@ -96,6 +111,8 @@ services:
       ACCESS_TOKEN_EXPIRE_MINUTES: 60
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       PRELOOP_SERVICE_ROLE: gateway
+      PRELOOP_URL: ${PRELOOP_URL:-http://localhost:3000}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
     ports:
       - "8001:8000"
     command: python -m preloop.server
@@ -137,7 +154,20 @@ services:
       ACCESS_TOKEN_EXPIRE_MINUTES: 60
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       FLOW_EXECUTION_WORKER_ENABLED: ${FLOW_EXECUTION_WORKER_ENABLED:-false}
-    command: preloop-sync worker
+      PRELOOP_URL: ${PRELOOP_URL:-http://localhost:3000}
+      # SMTP — required for approval emails, invitations and password resets.
+      # Configure interactively via scripts/install-oss.sh or edit .env.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-Preloop}
+    # The dedicated flow-worker below filters execute_flow /
+    # resume_flow_execution off the WORKQUEUE stream; consumer filters must
+    # not overlap, so this pool enumerates everything else instead of using
+    # the `preloop.sync.tasks.*` wildcard.
+    command: preloop-sync worker --exclude-tasks execute_flow,resume_flow_execution
 
   flow-worker:
     image: ghcr.io/preloop/preloop:${PRELOOP_VERSION:-latest}
@@ -169,6 +199,10 @@ services:
     ports:
       - "3000:80"
     environment:
+      # Without API_URL the image falls back to http://localhost:8000, which
+      # inside this container is the console itself — every /api call 502s and
+      # nobody can even log in.
+      API_URL: http://api:8000
       GATEWAY_URL: http://gateway:8000
 
 volumes:

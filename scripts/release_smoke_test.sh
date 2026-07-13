@@ -130,6 +130,15 @@ if wait_for_http "$CONSOLE_URL/" 60 "Console"; then
   pass "Console responds"
 fi
 
+# The browser reaches the API *through* the console, not on port 8000. A console
+# that serves its static bundle but cannot proxy /api is a dead install — you
+# cannot even log in — so check the path the browser actually uses.
+if wait_for_http "$CONSOLE_URL/api/v1/health" 60 "Console -> API proxy"; then
+  pass "Console proxies /api to the API"
+else
+  fail "Console cannot reach the API (check API_URL and the nginx resolver)"
+fi
+
 # ---------------------------------------------------------------------------
 # First-user sign-up and login (end-to-end API + DB path)
 # ---------------------------------------------------------------------------

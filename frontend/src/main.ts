@@ -24,6 +24,7 @@ import './components/lit-app.ts';
 import { Theme, DEFAULT_THEME } from './theme';
 import { unifiedWebSocketManager } from './services/unified-websocket-manager';
 import { activityTracker } from './services/activity-tracker';
+import { recordPathChange } from './services/web-analytics';
 import { router } from './router';
 
 function applyTheme(theme: Theme) {
@@ -80,6 +81,9 @@ function trackCurrentPage() {
   if (currentPath !== lastTrackedPath) {
     lastTrackedPath = currentPath;
     activityTracker.trackPageView(currentPath);
+    // Remember the previous SPA route so web-analytics conversion events
+    // can attribute which page led to the conversion (prev_path prop).
+    recordPathChange(currentPath);
     console.debug('Tracked page view:', currentPath);
   }
 }

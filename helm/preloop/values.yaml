@@ -13,10 +13,15 @@ worker:
   # -- Defines a list of worker pools to be deployed.
   # Each pool can have its own replica count and a list of allowed tasks.
   pools:
-    # -- The default worker pool, which runs all tasks.
+    # -- The default worker pool. It runs every task EXCEPT the ones a
+    # dedicated pool filters: the `tasks` JetStream stream uses workqueue
+    # retention, where consumer subject filters may not overlap, so this pool
+    # must not use the `preloop.sync.tasks.*` wildcard while the
+    # flow-execution pool below filters execute_flow / resume_flow_execution.
     - name: default
       replicaCount: 1
-      tasks: "" # Empty string means all tasks
+      tasks: "" # Empty string means "all tasks not excluded below"
+      excludeTasks: "execute_flow,resume_flow_execution"
     # -- Dedicated pool for long-running flow orchestration (claim + heartbeat).
     # Prefer this over the default pool when FLOW_EXECUTION_WORKER_ENABLED=true.
     - name: flow-execution
@@ -58,6 +63,23 @@ console:
     limits:
       cpu: "200m"
       memory: "256Mi"
+
+# Privacy-friendly web analytics (e.g. Plausible, Umami). When enabled, the
+# console nginx injects the tracking snippet into every HTML page at serve
+# time (sub_filter), so analytics stay runtime-configurable per environment —
+# no frontend image rebuild needed. Custom conversion events fired by the
+# frontend (window.plausible) are queued by the injected stub until the
+# script loads, and are silent no-ops when analytics is disabled.
+analytics:
+  enabled: false
+  # Site identifier registered in the analytics platform (Plausible data-domain).
+  domain: ""
+  # Tracker script URL, e.g. https://traffic.example.com/js/script.js
+  scriptUrl: ""
+  # Escape hatch for platforms that need a different snippet (e.g. Matomo):
+  # raw HTML injected before </head> instead of the Plausible-style script tag.
+  # Must not contain single quotes (nginx sub_filter delimiter).
+  customSnippet: ""
 
 # Image pull secrets
 imagePullSecrets: []

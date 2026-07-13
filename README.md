@@ -221,11 +221,39 @@ preloop agents discover
 
 The console is at `http://localhost:3000` — create the first user there or let `preloop login` walk you through it. You can also set the instance URL via the environment (`PRELOOP_URL=http://localhost:8000 preloop login`); the CLI stores it in `~/.preloop/config.yaml`, so every later command targets your instance. Without `--url` or `PRELOOP_URL`, the CLI defaults to `https://preloop.ai`.
 
+#### Public deployments: HTTPS and email
+
+The installer asks for the public URL of the instance and for SMTP settings, or takes them from the environment. Give it a public `https://` URL and it provisions a TLS certificate with Let's Encrypt (certbot) automatically, putting an nginx proxy in front of the stack and renewing the certificate every 12 hours:
+
+```bash
+curl -fsSL https://preloop.ai/install/oss | \
+  PRELOOP_URL=https://preloop.example.com \
+  PRELOOP_TLS_EMAIL=ops@example.com \
+  SMTP_HOST=smtp.example.com SMTP_USERNAME=preloop@example.com \
+  SMTP_PASSWORD=... SMTP_FROM=preloop@example.com sh
+```
+
+`preloop.example.com` must already resolve to the machine, and ports 80/443 must be free. Certificates are only requested for public DNS names — `localhost`, bare IPs and `.local` hosts are left on plain HTTP. Useful knobs: `PRELOOP_TLS_STAGING=1` (rehearse against the Let's Encrypt staging CA), `PRELOOP_SKIP_TLS=1` (keep the https URL but terminate TLS yourself, e.g. behind a load balancer), `PRELOOP_SKIP_SMTP=1` (never prompt for email).
+
+**Email is not optional in practice**: approval requests, invitations and password resets are delivered by email, so an instance without SMTP cannot notify approvers. Everything the installer writes lives in `~/.preloop-oss/.env` — edit it and run `docker compose up -d` to change any setting later.
+
+To install a pre-release (e.g. a release candidate), pin the version: `curl -fsSL https://preloop.ai/install/oss | PRELOOP_VERSION=0.11.0 sh` (the same works for the CLI installer).
+
+#### Upgrading
+
+Re-run the same install command — it upgrades in place:
+
+```bash
+curl -fsSL https://preloop.ai/install/oss | sh
+```
+
+The installer detects the existing install and keeps its configuration (public URL, TLS setup, SMTP credentials, `SECRET_KEY`, database password), pulls the new images, **dumps the database to `~/.preloop-oss/backups/` first**, applies schema migrations automatically (the `migrate` service runs `alembic upgrade head`), and removes containers for services a new version dropped. Setting an environment variable overrides that one setting; everything else is preserved.
+
 For Kubernetes/prod-like deployments, use the Helm chart in [`helm/preloop`](helm/preloop) and connect the CLI with `preloop login --url https://your-preloop.example.com`.
 
 ### Release smoke test
 
-Every tagged release is verified automatically before it is published: the `verify-oss-install` job in the release workflow runs [`scripts/release_smoke_test.sh`](scripts/release_smoke_test.sh), which boots `docker-compose.release.yaml` with the tagged images, checks API/gateway/console health, exercises first-user sign-up and login, and fails if any service restart-loops. You can run the same script locally with `PRELOOP_VERSION=0.10.0 ./scripts/release_smoke_test.sh`.
+Every tagged release is verified automatically before it is published: the `verify-oss-install` job in the release workflow runs [`scripts/release_smoke_test.sh`](scripts/release_smoke_test.sh), which boots `docker-compose.release.yaml` with the tagged images, checks API/gateway/console health, exercises first-user sign-up and login, and fails if any service restart-loops. You can run the same script locally with `PRELOOP_VERSION=0.11.0 ./scripts/release_smoke_test.sh`.
 
 For hosted trials, additionally verify that the public URL loads the console, `/api/v1/health` responds, first-user sign-in or sign-up works, `preloop agents discover` can target the public URL, one gateway model call appears in the UI, and one MCP policy event appears in the audit timeline.
 

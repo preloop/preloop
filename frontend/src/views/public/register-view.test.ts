@@ -26,7 +26,7 @@ describe('RegisterView', () => {
     };
 
     element = await fixture(html`<register-view></register-view>`);
-    // Stub fetch before each test
+    // Stub fetch after initial render so startup requests don't wedge WTR.
     fetchStub = sinon.stub(window, 'fetch');
   });
 

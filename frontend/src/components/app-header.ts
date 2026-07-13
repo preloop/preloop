@@ -3,6 +3,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { Router } from '@vaadin/router';
 import { getUserProfile, getFeatures } from '../api';
 import { getBrandConfig, isSaaS } from '../brand-config';
+import { trackGoal } from '../services/web-analytics';
 
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/icon-button/icon-button.js';
@@ -128,6 +129,7 @@ export class AppHeader extends LitElement {
     this.isMenuOpen = false; // Close mobile menu
     // Signup is card-free (T2 paywall move): every signup door leads to
     // /register. Pricing keeps checkout as the deliberate upgrade path.
+    trackGoal('Signup Click', { location: 'header' });
     Router.go('/register');
   }
 

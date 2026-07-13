@@ -5,6 +5,28 @@ from preloop.sync.scanner.core import scan_tracker
 from datetime import datetime
 from typing import Any, Optional, Union
 
+# Every task name a worker may be dispatched (one NATS subject each:
+# ``preloop.sync.tasks.<name>``).
+#
+# The ``tasks`` JetStream stream uses WORKQUEUE retention, where consumer
+# subject filters must NOT overlap. A worker pool that excludes some tasks
+# therefore cannot subscribe to the `preloop.sync.tasks.*` wildcard — it has
+# to enumerate the subjects it wants, which is what this registry is for.
+# Add new dispatchable tasks here or a dedicated pool will silently never
+# receive them.
+DISPATCHABLE_TASKS: tuple[str, ...] = (
+    "scan_tracker_task",
+    "poll_tracker",
+    "notify_admins",
+    "process_webhook_event",
+    "cleanup_tracker_webhooks",
+    "reprice_gateway_usage_task",
+    "ingest_provider_billing",
+    "send_optimization_digest",
+    "execute_flow",
+    "resume_flow_execution",
+)
+
 
 async def scan_tracker_task(
     tracker_id: Union[int, str],
@@ -76,7 +98,7 @@ def notify_admins(
     admin_email = settings.product_team_email
     if admin_email:
         # Include instance URL in email subject
-        email_subject = f"{subject}"
+        email_subject = f"{instance_prefix}{subject}"
         send_email(admin_email, email_subject, message, message_html)
 
     # Send Slack notification if webhook is configured

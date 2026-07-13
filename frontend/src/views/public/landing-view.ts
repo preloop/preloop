@@ -6,6 +6,7 @@ import landingStyles from '../../styles/landing.css?inline';
 import './../../components/news-capsule';
 import './../../components/ide-setup-tabs';
 import { getIdeConfigs } from '../../utils/ide-configs';
+import { trackGoal } from '../../services/web-analytics';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/carousel/carousel.js';
 import '@shoelace-style/shoelace/dist/components/carousel-item/carousel-item.js';
@@ -236,7 +237,13 @@ export class LandingView extends LitElement {
     e.preventDefault();
     // Signup is card-free (T2 paywall move): every signup door leads to
     // /register. Pricing keeps checkout as the deliberate upgrade path.
+    trackGoal('Signup Click', { location: 'landing' });
     window.location.href = '/register';
+  }
+
+  private _handleSecondaryCta() {
+    // href navigation proceeds normally; this only records the goal.
+    trackGoal('Demo Click', { location: 'landing' });
   }
 
   private async _loadContent() {
@@ -710,6 +717,13 @@ export class LandingView extends LitElement {
       }
     }
     this._heroInstallCopied = true;
+    // Which install command was copied: the active hero tab (e.g. "Install
+    // the CLI" vs "Install the full stack"), so CLI and OSS interest can be
+    // distinguished in the analytics goal breakdown.
+    const activeTab = this._heroInstallTabs[this._heroInstallActiveTab];
+    trackGoal('Install Copy', {
+      variant: activeTab?.label ?? 'default',
+    });
     window.setTimeout(() => {
       this._heroInstallCopied = false;
     }, 2000);
@@ -823,6 +837,7 @@ export class LandingView extends LitElement {
                                   ? '_blank'
                                   : '_self'
                               }
+                              @click=${this._handleSecondaryCta}
                               >${this._ctaSecondary}</sl-button
                             >`
                           : ''
@@ -1516,6 +1531,7 @@ export class LandingView extends LitElement {
                         variant="text"
                         size="large"
                         href="/request-demo"
+                        @click=${this._handleSecondaryCta}
                         >Request a Demo</sl-button
                       >
                     </div>
