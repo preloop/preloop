@@ -17,7 +17,7 @@ import logging
 import uuid
 from typing import Any, Optional, Tuple
 
-from sqlalchemy import String, and_, cast, select
+from sqlalchemy import String, and_, cast, func, select
 from sqlalchemy.exc import IntegrityError
 
 from preloop.models import models
@@ -36,19 +36,29 @@ AGENT_TOOL_SOURCE = "agent"
 AGENT_TOOL_APPROVALS_WORKFLOW_NAME = "Agent Tool Approvals"
 
 
-def _managed_agent_approval_workflow_json_path(managed_agent_id: uuid.UUID) -> str:
-    """Build a Postgres ``#>>`` path for a managed-agent workflow pin.
+def _managed_agent_approval_workflow_pin(managed_agent_id: uuid.UUID):
+    """SQL expression extracting a managed-agent workflow pin as text.
 
-    Always coerce to ``uuid.UUID`` first so path segments cannot contain
-    commas or braces that would alter the JSON-path structure. Callers must
-    not copy this pattern with free-form strings.
+    Uses ``json_extract_path_text(meta_data, ...)`` with one text argument
+    per path segment. Do NOT use ``meta_data.op("#>>")(<python string>)``
+    here: the path binds as VARCHAR while ``#>>`` requires ``text[]``, which
+    raises ``operator does not exist: json #>> character varying`` at
+    runtime (mock-based tests never execute the SQL, so only a real
+    database catches it). Coerces to ``uuid.UUID`` first so the segment is
+    always a well-formed UUID string.
     """
     agent_uuid = (
         managed_agent_id
         if isinstance(managed_agent_id, uuid.UUID)
         else uuid.UUID(str(managed_agent_id))
     )
-    return f"{{subject_governance,managed_agents,{agent_uuid},approval_workflow_id}}"
+    return func.json_extract_path_text(
+        models.Account.meta_data,
+        "subject_governance",
+        "managed_agents",
+        str(agent_uuid),
+        "approval_workflow_id",
+    )
 
 
 async def _fetch_agent_tool_approvals_workflow(
@@ -81,11 +91,9 @@ async def _resolve_agent_configured_workflow(
     the JSON path (avoids Postgres cast failures on invalid pins). Python
     still validates the pin so we can warn on malformed UUIDs.
     """
-    # Extract the pin as text via Postgres #>> so the join compares plain
-    # UUID strings (JSON -> / CAST can leave quoted JSON scalar text).
-    pinned_workflow_id = models.Account.meta_data.op("#>>")(
-        _managed_agent_approval_workflow_json_path(managed_agent_id)
-    )
+    # Extract the pin as unquoted text so the join compares plain UUID
+    # strings (JSON -> / CAST can leave quoted JSON scalar text).
+    pinned_workflow_id = _managed_agent_approval_workflow_pin(managed_agent_id)
 
     result = await db.execute(
         select(models.Account, models.ApprovalWorkflow)

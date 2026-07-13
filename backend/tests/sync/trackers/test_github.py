@@ -486,6 +486,46 @@ class TestGitHubTrackerDeleteRequest(unittest.IsolatedAsyncioTestCase):
 
 @pytest.mark.asyncio
 class TestGitHubTrackerWebhooks(unittest.IsolatedAsyncioTestCase):
+    @patch("preloop.sync.trackers.github.logger.error")
+    async def test_register_webhook_requires_all_arguments(self, mock_logger_error):
+        tracker = GitHubTracker(str(uuid4()), "api-key", {})
+
+        result = await tracker.register_webhook(
+            db=None,
+            organization=None,
+            webhook_url=None,
+            secret=None,
+        )
+
+        self.assertFalse(result)
+        mock_logger_error.assert_called_once_with(
+            "GitHub webhook registration requires db, organization, URL, and secret."
+        )
+
+    @patch("preloop.sync.trackers.github.logger.error")
+    async def test_unregister_webhook_requires_db_and_webhook(self, mock_logger_error):
+        tracker = GitHubTracker(str(uuid4()), "api-key", {})
+
+        result = await tracker.unregister_webhook(db=None, webhook=None)
+
+        self.assertFalse(result)
+        mock_logger_error.assert_called_once_with(
+            "GitHub webhook unregistration requires db and webhook."
+        )
+
+    @patch("preloop.sync.trackers.github.logger.error")
+    async def test_get_webhooks_requires_organization_identifier(
+        self, mock_logger_error
+    ):
+        tracker = GitHubTracker(str(uuid4()), "api-key", {})
+
+        webhooks = await tracker.get_webhooks()
+
+        self.assertEqual(webhooks, [])
+        mock_logger_error.assert_called_once_with(
+            "GitHub webhook listing requires an organization identifier."
+        )
+
     @patch("preloop.sync.trackers.github.GitHubTracker.get_projects")
     @patch("preloop.sync.trackers.github.GitHubTracker._make_request")
     async def test_get_webhooks(self, mock_make_request, mock_get_projects):

@@ -45,6 +45,9 @@ action.
 
 ### Fixed
 
+- **Agent Control WebSocket rejected durable credentials (endless 403 reconnect loop)**: managed-agent credentials are minted without a runtime-session binding, but both API-key auth layers hard-required a live bound session — every runtime plugin (OpenClaw, Hermes) enrolled after sessions became lazy was rejected on connect and the Console/mobile showed the agents offline forever. Runtime bearer auth now resolves — and reopens if ended — the agent's identity session (`allow_stale_runtime_session` on the shared API-key validator), so control connections survive re-onboarding, operator "end session", and session expiry.
+- **Native-tool permission checks 500ed on the per-agent workflow pin**: the pin lookup bound the JSON path as `VARCHAR` (`json #>> character varying` has no operator), so `POST /api/v1/agents/permission-check` failed for every account and the client hook fail-closed denied all native tool calls. Rewritten with `json_extract_path_text` and covered by a real-database regression test (the previous tests mocked the DB and never executed the SQL).
+- **`preloop agents onboard --yes` silently skipped native-tool approvals**: `-y` now accepts the approvals prompt's default (Yes) for supported agents (Claude Code, Codex CLI, Cursor) instead of onboarding without the hook.
 - **Gateway cost summary on zero traffic**: Aggregations use `one_or_none()` with zero defaults so empty windows no longer 500 the cost summary / accounting health APIs.
 - **Repricing commit batching**: Historical usage repricing commits in page-sized batches instead of once per row, avoiding partial multi-commit windows on crash.
 - **Tracker credential backfill isolation**: Each tracker migrates in its own DB session so a single failure cannot poison later candidates.

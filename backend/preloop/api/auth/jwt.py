@@ -115,8 +115,17 @@ def _managed_agent_for_api_key(
     )
 
 
-def _authenticate_with_api_key(session: Any, api_key: Any) -> User:
-    """Validate an API key and return its active owner."""
+def _authenticate_with_api_key(
+    session: Any, api_key: Any, *, allow_stale_runtime_session: bool = False
+) -> User:
+    """Validate an API key and return its active owner.
+
+    ``allow_stale_runtime_session`` is for DURABLE managed-agent credentials
+    (Agent Control WebSocket, native-tool permission checks): they outlive
+    runtime sessions by design, so a missing or ended session binding must
+    not reject the credential — callers resolve/reopen the agent's identity
+    session instead.
+    """
     if not api_key:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -146,13 +155,17 @@ def _authenticate_with_api_key(session: Any, api_key: Any) -> User:
             account_id=api_key.account_id,
             runtime_session_id=runtime_session_id,
         )
-        if runtime_session is None:
+        if runtime_session is None and not allow_stale_runtime_session:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid runtime session token",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        if runtime_session.ended_at is not None:
+        if (
+            runtime_session is not None
+            and runtime_session.ended_at is not None
+            and not allow_stale_runtime_session
+        ):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Runtime session has ended",
@@ -218,36 +231,70 @@ def authenticate_runtime_bearer_token(
         )
 
     api_key = crud_api_key.get_by_key(session, key=token)
-    user = _authenticate_with_api_key(session, api_key)
+    user = _authenticate_with_api_key(
+        session, api_key, allow_stale_runtime_session=True
+    )
 
     context_data = (
         api_key.context_data if isinstance(api_key.context_data, dict) else {}
     )
     runtime_session_id = _runtime_session_id_from_api_key(api_key)
     managed_agent_id = context_data.get("managed_agent_id")
-    if runtime_session_id is None or not managed_agent_id:
+    if not managed_agent_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Runtime bearer token is not bound to a managed agent",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    runtime_session = crud_runtime_session.get_account_session(
-        session,
-        account_id=api_key.account_id,
-        runtime_session_id=runtime_session_id,
-    )
     managed_agent = crud_managed_agent.get_for_account(
         session,
         account_id=api_key.account_id,
         agent_id=managed_agent_id,
     )
-    if runtime_session is None or managed_agent is None:
+    if managed_agent is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Runtime bearer token binding is invalid",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    runtime_session = None
+    if runtime_session_id is not None:
+        runtime_session = crud_runtime_session.get_account_session(
+            session,
+            account_id=api_key.account_id,
+            runtime_session_id=runtime_session_id,
+        )
+        if runtime_session is not None and runtime_session.ended_at is not None:
+            # The bound session ended (operator action / expiry); fall through
+            # to the identity-session resolution below rather than rejecting
+            # a durable credential.
+            runtime_session = None
+    if runtime_session is None:
+        # Durable managed-agent credentials are minted WITHOUT a session
+        # binding (mirrors the loose resolution in agent_permission.py).
+        # A long-lived Agent Control connection must survive session churn:
+        # resolve — and reopen if ended — the agent's own identity session
+        # instead of rejecting the plugin, which previously produced an
+        # endless 403 reconnect loop for every credential minted after
+        # sessions became lazy.
+        principal = context_data.get("runtime_principal")
+        principal = principal if isinstance(principal, dict) else {}
+        now = datetime.now(UTC)
+        runtime_session = crud_runtime_session.upsert_by_source(
+            session,
+            account_id=api_key.account_id,
+            session_source_type=managed_agent.session_source_type,
+            session_source_id=managed_agent.session_source_id,
+            runtime_principal_type=principal.get("type"),
+            runtime_principal_id=principal.get("id"),
+            runtime_principal_name=principal.get("name"),
+            started_at=now,
+            last_activity_at=now,
+            reopen_if_ended=True,
+        )
+        session.commit()
     if (
         enforce_current_binding
         and managed_agent.runtime_session_id is not None
