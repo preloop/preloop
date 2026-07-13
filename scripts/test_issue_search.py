@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 
 import requests
 
@@ -7,9 +8,18 @@ import requests
 base_url = "http://localhost:8000/api/v1"
 
 # Authenticate and get a token
+username = os.environ.get("PRELOOP_USERNAME")
+password = os.environ.get("PRELOOP_PASSWORD")
+
+if not username or not password:
+    print(
+        "Missing credentials. Set PRELOOP_USERNAME and PRELOOP_PASSWORD environment variables."
+    )
+    raise SystemExit(1)
+
 print("Authenticating...")
 auth_response = requests.post(
-    f"{base_url}/auth/token", data={"username": "admin", "password": "admin"}
+    f"{base_url}/auth/token", data={"username": username, "password": password}
 )
 
 if auth_response.status_code != 200:
