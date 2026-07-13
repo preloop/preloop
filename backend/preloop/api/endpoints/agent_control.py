@@ -742,6 +742,15 @@ async def managed_agent_control_websocket(
             enforce_current_binding=False,
         )
     except HTTPException as exc:
+        # Starlette collapses a pre-accept close into a bare 403 handshake
+        # failure, so the reason never reaches the agent's logs. Log it here or
+        # the operator has no way to tell an expired credential from a revoked
+        # one.
+        logger.warning(
+            "Agent control websocket rejected: %s (token prefix=%s)",
+            exc.detail,
+            token[:12],
+        )
         await websocket.close(code=1008, reason=str(exc.detail))
         return
 

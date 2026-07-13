@@ -703,14 +703,17 @@ func TestApplyManagedAgentControlConfigAddsRuntimeMetadata(t *testing.T) {
 	updated, err := applyManagedAgentControlConfig(
 		plan,
 		"http://localhost:8000",
-		"durable-token",
+		&managedAgentCredentialCreateResponse{
+			Credential: managedAgentCredentialSummary{ID: "cred-123", Name: "octavia-mcp"},
+			Token:      "durable-token",
+		},
 		&managedAgentSummary{ID: "agent-123"},
-		&managedAgentCredentialSummary{ID: "cred-123", Name: "octavia-mcp"},
 		&runtimeSessionTokenResponse{
 			RuntimeSessionID:  "session-123",
 			SessionSourceType: "openclaw",
 			SessionSourceID:   "octavia-session",
 			SessionReference:  agent.ConfigPath,
+			Token:             "flow_short_lived_runtime_token",
 		},
 	)
 	if err != nil {
@@ -726,6 +729,11 @@ func TestApplyManagedAgentControlConfigAddsRuntimeMetadata(t *testing.T) {
 	)
 	if control["control_ws_url"] != "ws://localhost:8000/api/v1/agents/control/ws" {
 		t.Fatalf("unexpected control URL: %#v", control)
+	}
+	// The control channel has no token refresh: it must carry the durable
+	// credential, never the short-lived runtime session token.
+	if control["bearer_token"] != "durable-token" {
+		t.Fatalf("expected durable credential as control bearer token, got %#v", control["bearer_token"])
 	}
 	if control["managed_agent_id"] != "agent-123" ||
 		control["credential_id"] != "cred-123" ||

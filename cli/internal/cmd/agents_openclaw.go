@@ -523,9 +523,8 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	plan, err = applyManagedAgentControlConfig(
 		plan,
 		baseURL,
-		runtimeSession.Token,
+		credentialResp,
 		managedAgent,
-		&credentialResp.Credential,
 		runtimeSession,
 	)
 	if err != nil {
@@ -3326,23 +3325,35 @@ func buildManagedAgentControlConfig(
 	return control
 }
 
+// applyManagedAgentControlConfig writes the Agent Control block for a runtime
+// that supports it. It takes the durable credential rather than a bare token on
+// purpose: the control channel is a long-lived daemon connection with no token
+// refresh, so wiring it with a short-lived runtime session token silently takes
+// the agent offline once that token expires.
 func applyManagedAgentControlConfig(
 	plan managedMCPEnrollmentPlan,
 	baseURL string,
-	token string,
+	credential *managedAgentCredentialCreateResponse,
 	managedAgent *managedAgentSummary,
-	credential *managedAgentCredentialSummary,
 	runtimeSession *runtimeSessionTokenResponse,
 ) (managedMCPEnrollmentPlan, error) {
 	if !supportsAgentControlChannel(plan.Agent) {
 		return plan, nil
+	}
+	var (
+		token             string
+		credentialSummary *managedAgentCredentialSummary
+	)
+	if credential != nil {
+		token = credential.Token
+		credentialSummary = &credential.Credential
 	}
 	control := buildManagedAgentControlConfig(
 		plan.Agent,
 		baseURL,
 		token,
 		managedAgent,
-		credential,
+		credentialSummary,
 		runtimeSession,
 	)
 	applyAgentControlConfigToDocument(plan.Agent, plan.ManagedDocument, control)
