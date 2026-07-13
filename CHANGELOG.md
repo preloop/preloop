@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-07-13
+
 ### Overview — 0.11.0 since 0.10.0
 
 Where 0.10.0 turned Preloop into an agent control plane, **0.11.0 makes it
