@@ -994,8 +994,13 @@ class GitLabTracker(BaseTracker):
         """Delete a webhook."""
         raise NotImplementedError
 
-    async def get_webhooks(self, organization_id: str) -> List[Dict[str, Any]]:
+    async def get_webhooks(
+        self, organization_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """Get webhooks for an organization."""
+        if not organization_id:
+            logger.error("GitLab webhook listing requires an organization identifier.")
+            return []
         raise NotImplementedError
 
     async def is_webhook_registered(self, webhook: "Webhook") -> bool:
@@ -1110,8 +1115,13 @@ class GitLabTracker(BaseTracker):
             else:
                 results["failed"] += 1
 
-    async def unregister_webhook(self, db: Session, webhook: Webhook) -> bool:
+    async def unregister_webhook(
+        self, db: Optional[Session] = None, webhook: Optional[Webhook] = None
+    ) -> bool:
         """Unregister a webhook."""
+        if db is None or webhook is None:
+            logger.error("GitLab webhook unregistration requires db and webhook.")
+            return False
         try:
             if webhook.project:
                 project = await self._make_request(

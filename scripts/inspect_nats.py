@@ -32,7 +32,7 @@ except ImportError:
         "Please ensure that the script is run from the root of the project "
         "and the project is installed in editable mode (e.g., 'pip install -e .')."
     )
-    exit(1)
+    raise SystemExit(1)
 
 
 async def inspect_queue():

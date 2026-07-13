@@ -215,7 +215,7 @@ class TestTokenError:
     def test_token_error_message(self):
         """Test that TokenError preserves error message."""
         error_message = "Custom error message"
-        with pytest.raises(TokenError) as exc_info:
-            raise TokenError(error_message)
-
-        assert str(exc_info.value) == error_message
+        error = TokenError(error_message)
+        assert str(error) == error_message
+        with pytest.raises(TokenError, match=error_message):
+            raise error

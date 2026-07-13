@@ -1312,11 +1312,21 @@ class GitHubTracker(BaseTracker):
         return processed_issues
 
     async def register_webhook(
-        self, db: Session, organization: Organization, webhook_url: str, secret: str
+        self,
+        db: Optional[Session] = None,
+        organization: Optional[Organization] = None,
+        webhook_url: Optional[str] = None,
+        secret: Optional[str] = None,
     ) -> bool:
         """
         Register a webhook for the given GitHub organization.
         """
+        if db is None or organization is None or not webhook_url or not secret:
+            logger.error(
+                "GitHub webhook registration requires db, organization, URL, and secret."
+            )
+            return False
+
         org_identifier = organization.identifier
         if org_identifier == "personal":
             logger.info(
@@ -1427,7 +1437,9 @@ class GitHubTracker(BaseTracker):
             )
             return False
 
-    async def unregister_webhook(self, db: Session, webhook: Webhook) -> bool:
+    async def unregister_webhook(
+        self, db: Optional[Session] = None, webhook: Optional[Webhook] = None
+    ) -> bool:
         """
         Unregister a webhook for the given GitHub organization.
 
@@ -1438,6 +1450,10 @@ class GitHubTracker(BaseTracker):
         Returns:
             True if unregistration was successful, False otherwise.
         """
+        if db is None or webhook is None:
+            logger.error("GitHub webhook unregistration requires db and webhook.")
+            return False
+
         org_identifier = None
         if webhook.organization:
             org_identifier = webhook.organization.identifier
@@ -1730,10 +1746,16 @@ class GitHubTracker(BaseTracker):
                 return False
             raise
 
-    async def get_webhooks(self, organization_id: str) -> List[Dict[str, Any]]:
+    async def get_webhooks(
+        self, organization_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """
         Get all webhooks for a specific organization's repositories.
         """
+        if not organization_id:
+            logger.error("GitHub webhook listing requires an organization identifier.")
+            return []
+
         all_webhooks = []
         repos = await self.get_projects(organization_id)
         for repo in repos:

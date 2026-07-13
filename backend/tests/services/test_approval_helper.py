@@ -84,7 +84,6 @@ class TestRequireApprovalNoConfig:
         """Test that missing tool configuration allows execution."""
         mock_db = create_mock_db_session()
         # Mock database query to return no config
-        mock_db = create_mock_db_session()
         mock_result = MagicMock()
         mock_result.scalar_one_or_none = MagicMock(return_value=None)
         mock_db.execute = AsyncMock(return_value=mock_result)
@@ -110,7 +109,6 @@ class TestRequireApprovalNoConfig:
         # Set approval_workflow_id to None (no approval required)
         tool_config.approval_workflow_id = None
 
-        mock_db = create_mock_db_session()
         mock_result = MagicMock()
         mock_result.scalar_one_or_none = MagicMock(return_value=tool_config)
         mock_db.execute = AsyncMock(return_value=mock_result)
@@ -136,7 +134,6 @@ class TestRequireApprovalNoConfig:
         # Explicitly set approval_workflow_id to None (no approval required)
         tool_config.approval_workflow_id = None
 
-        mock_db = create_mock_db_session()
         mock_result = MagicMock()
         mock_result.scalar_one_or_none = MagicMock(return_value=tool_config)
         mock_db.execute = AsyncMock(return_value=mock_result)

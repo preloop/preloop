@@ -83,11 +83,12 @@ class TestModelGatewayAPIError:
         assert err.error_type == "custom_type"
 
     def test_raisable(self):
-        with pytest.raises(ModelGatewayAPIError) as exc_info:
-            raise ModelGatewayAPIError(
-                provider="gemini", status_code=404, message="missing"
-            )
-        assert exc_info.value.status_code == 404
+        err = ModelGatewayAPIError(
+            provider="gemini", status_code=404, message="missing"
+        )
+        assert err.status_code == 404
+        with pytest.raises(ModelGatewayAPIError, match="missing"):
+            raise err
 
     def test_to_payload_gemini(self):
         err = ModelGatewayAPIError(provider="gemini", status_code=403, message="nope")

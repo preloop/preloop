@@ -15,7 +15,7 @@ auth_response = requests.post(
 if auth_response.status_code != 200:
     print(f"Authentication failed: {auth_response.status_code}")
     print(auth_response.text)
-    exit(1)
+    raise SystemExit(1)
 
 token_data = auth_response.json()
 access_token = token_data.get("access_token")
