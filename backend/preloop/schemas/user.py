@@ -55,6 +55,22 @@ class AdminUserUpdate(BaseModel):
     is_active: Optional[bool] = None
 
 
+class AdminUserRoleResponse(BaseModel):
+    """Response schema for role data attached to admin user responses."""
+
+    id: UUID
+    name: str
+    description: Optional[str] = None
+    team_name: Optional[str] = None
+
+    @field_serializer("id")
+    def serialize_uuid(self, value: UUID) -> str:
+        """Serialize UUID to string for JSON response."""
+        return str(value)
+
+    model_config = ConfigDict(from_attributes=True, title="AdminUserRoleResponse")
+
+
 class UserPasswordUpdate(BaseModel):
     """Schema for updating user password."""
 
@@ -77,8 +93,8 @@ class AdminUserResponse(BaseModel):
     last_login: Optional[datetime]
     created_at: datetime
     updated_at: datetime
-    roles: Optional[List[dict]] = None
-    inherited_roles: Optional[List[dict]] = None
+    roles: Optional[List[AdminUserRoleResponse]] = None
+    inherited_roles: Optional[List[AdminUserRoleResponse]] = None
 
     @field_serializer("id", "account_id")
     def serialize_uuid(self, value: UUID) -> str:

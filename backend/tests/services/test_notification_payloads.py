@@ -34,6 +34,31 @@ class TestNewApprovalRequestPayload:
         assert payload["tool_name"] == "create_issue"
         assert payload["priority"] == "medium"
 
+    def test_summary_becomes_notification_body(self):
+        """Plain-language summary is the primary body; tool name is subtitle."""
+        payload = NotificationPayloadBuilder.new_approval_request(
+            request_id="test-id",
+            tool_name="force_push",
+            summary="Allow the coding agent to force-push branch main?",
+            tool_args={"branch": "main"},
+            agent_reasoning="Need to update prod",
+        )
+
+        assert (
+            payload["aps"]["alert"]["body"]
+            == "Allow the coding agent to force-push branch main?"
+        )
+        assert payload["aps"]["alert"]["subtitle"] == "Force Push"
+        assert payload["summary"] == "Allow the coding agent to force-push branch main?"
+        assert (
+            payload["data"]["body"]
+            == "Allow the coding agent to force-push branch main?"
+        )
+        assert (
+            payload["data"]["summary"]
+            == "Allow the coding agent to force-push branch main?"
+        )
+
     def test_urgent_priority_notification(self):
         """Test urgent priority produces correct alert and sound."""
         payload = NotificationPayloadBuilder.new_approval_request(

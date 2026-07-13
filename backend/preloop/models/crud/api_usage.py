@@ -514,7 +514,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
 
         Caps the result set at ``limit`` to avoid unbounded memory use for
         accounts with very large histories. Callers that need full aggregates
-        over huge windows should use SQL aggregations instead.
+        over huge windows should use ``get_statistics_for_user`` instead.
         """
         query = (
             db.query(ApiUsage)
@@ -535,6 +535,118 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             .limit(limit)
             .all()
         )
+
+    def get_statistics_for_user(
+        self,
+        db: Session,
+        *,
+        username: str,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        account_id: Optional[str] = None,
+        endpoint_limit: int = 50,
+    ) -> Dict[str, Any]:
+        """Aggregate API usage statistics for a user via SQL GROUP BY.
+
+        When neither ``start_date`` nor ``end_date`` is provided, defaults to
+        the last 30 days (inclusive of ``now - 30 days``). Prefer this over
+        ``get_for_user_filtered`` for stats endpoints — it never loads raw
+        rows into Python.
+
+        Args:
+            db: Database session.
+            username: Username whose usage to aggregate.
+            start_date: Inclusive lower bound on ``timestamp``.
+            end_date: Inclusive upper bound on ``timestamp``.
+            account_id: Optional account scope via the user's account.
+            endpoint_limit: Max endpoints in ``requests_by_endpoint``
+                (top N by count DESC). Defaults to 50.
+
+        Returns:
+            Dict with ``total_requests``, ``requests_by_date``,
+            ``issues_created``, ``issues_updated``, ``issues_closed``,
+            and ``requests_by_endpoint``.
+        """
+        if start_date is None and end_date is None:
+            start_date = datetime.now(timezone.utc) - timedelta(days=30)
+
+        base_filter = [
+            User.username == username,
+        ]
+        if start_date is not None:
+            base_filter.append(ApiUsage.timestamp >= start_date)
+        if end_date is not None:
+            base_filter.append(ApiUsage.timestamp <= end_date)
+        if account_id is not None:
+            base_filter.append(User.account_id == account_id)
+
+        totals_row = (
+            db.query(
+                func.count(ApiUsage.id).label("total_requests"),
+                func.coalesce(
+                    func.sum(
+                        case((ApiUsage.action_type == "create_issue", 1), else_=0)
+                    ),
+                    0,
+                ).label("issues_created"),
+                func.coalesce(
+                    func.sum(
+                        case((ApiUsage.action_type == "update_issue", 1), else_=0)
+                    ),
+                    0,
+                ).label("issues_updated"),
+                func.coalesce(
+                    func.sum(case((ApiUsage.action_type == "close_issue", 1), else_=0)),
+                    0,
+                ).label("issues_closed"),
+            )
+            .join(User, ApiUsage.user_id == User.id)
+            .filter(*base_filter)
+            .one()
+        )
+
+        day_bucket = func.date_trunc("day", ApiUsage.timestamp)
+        by_date_rows = (
+            db.query(
+                day_bucket.label("day"),
+                func.count(ApiUsage.id).label("request_count"),
+            )
+            .join(User, ApiUsage.user_id == User.id)
+            .filter(*base_filter)
+            .group_by(day_bucket)
+            .order_by(day_bucket.asc())
+            .all()
+        )
+        requests_by_date: Dict[str, int] = {
+            row.day.date().isoformat(): int(row.request_count or 0)
+            for row in by_date_rows
+            if row.day is not None
+        }
+
+        by_endpoint_rows = (
+            db.query(
+                ApiUsage.endpoint,
+                func.count(ApiUsage.id).label("request_count"),
+            )
+            .join(User, ApiUsage.user_id == User.id)
+            .filter(*base_filter)
+            .group_by(ApiUsage.endpoint)
+            .order_by(func.count(ApiUsage.id).desc())
+            .limit(endpoint_limit)
+            .all()
+        )
+        requests_by_endpoint: Dict[str, int] = {
+            row.endpoint: int(row.request_count or 0) for row in by_endpoint_rows
+        }
+
+        return {
+            "total_requests": int(totals_row.total_requests or 0),
+            "requests_by_date": requests_by_date,
+            "issues_created": int(totals_row.issues_created or 0),
+            "issues_updated": int(totals_row.issues_updated or 0),
+            "issues_closed": int(totals_row.issues_closed or 0),
+            "requests_by_endpoint": requests_by_endpoint,
+        }
 
     def get_gateway_usage_summary(
         self,

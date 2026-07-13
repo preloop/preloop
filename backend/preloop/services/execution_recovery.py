@@ -30,12 +30,26 @@ class ExecutionRecoveryService:
         """
         Find and resume monitoring for executions that were running when pod restarted.
 
+        When ``FLOW_EXECUTION_WORKER_ENABLED`` is true, re-publishes JetStream
+        tasks instead of starting orchestrators in-process.
+
         Args:
             db: Database session
 
         Returns:
             Number of executions recovered
         """
+        from preloop.services.flow_execution_dispatcher import (
+            claim_stale_after_seconds,
+            flow_execution_worker_enabled,
+        )
+
+        if flow_execution_worker_enabled():
+            return await self._redispatch_stale_executions(
+                db,
+                stale_after_seconds=claim_stale_after_seconds(),
+            )
+
         logger.info("Checking for orphaned flow executions to recover...")
 
         # Find all executions that are in RUNNING/STARTING/INITIALIZING/PENDING state
@@ -82,13 +96,79 @@ class ExecutionRecoveryService:
         )
         return recovered_count
 
+    async def _redispatch_stale_executions(
+        self,
+        db: Session,
+        *,
+        stale_after_seconds: int,
+    ) -> int:
+        """Re-publish execute/resume tasks for unclaimed or stale-claim executions."""
+        from preloop.services.flow_execution_dispatcher import (
+            dispatch_execute,
+            dispatch_resume,
+        )
+
+        logger.info(
+            "Worker-mode recovery: listing stale/unclaimed active flow executions "
+            "(stale_after=%ss)...",
+            stale_after_seconds,
+        )
+        candidates = crud_flow_execution.list_stale_or_unclaimed_active(
+            db,
+            stale_after_seconds=stale_after_seconds,
+            limit=500,
+        )
+        if not candidates:
+            logger.info("No stale/unclaimed executions to re-dispatch")
+            return 0
+
+        semaphore = asyncio.Semaphore(20)
+
+        async def dispatch_candidate(execution: models.FlowExecution) -> bool:
+            try:
+                async with semaphore:
+                    if execution.agent_session_reference:
+                        ok = await dispatch_resume(execution.id)
+                    else:
+                        ok = await dispatch_execute(execution.id)
+                    if ok:
+                        logger.info(
+                            "Re-dispatched %s for execution %s (status=%s)",
+                            "resume_flow_execution"
+                            if execution.agent_session_reference
+                            else "execute_flow",
+                            execution.id,
+                            execution.status,
+                        )
+                    return bool(ok)
+            except Exception as e:
+                logger.error(
+                    "Failed to re-dispatch execution %s: %s",
+                    execution.id,
+                    e,
+                    exc_info=True,
+                )
+                return False
+
+        results = await asyncio.gather(
+            *(dispatch_candidate(execution) for execution in candidates)
+        )
+        dispatched = sum(1 for ok in results if ok)
+
+        logger.info(
+            "Worker-mode recovery dispatched %s/%s execution(s)",
+            dispatched,
+            len(candidates),
+        )
+        return dispatched
+
     async def _resume_execution_monitoring(
         self,
         db: Session,
         execution: models.FlowExecution,
         nats_client,
     ):
-        """Resume monitoring for a specific execution."""
+        """Resume monitoring for a specific execution (legacy in-process path)."""
         logger.info(
             f"Resuming monitoring for execution {execution.id} "
             f"(status: {execution.status}, agent_session: {execution.agent_session_reference})"
@@ -220,37 +300,11 @@ class ExecutionRecoveryService:
             orchestrator.flow = orchestrator.execution_log.flow
 
             try:
-                flow = orchestrator.flow
-
-                # Recreate the concrete agent executor so resumed monitoring uses
-                # the same Docker/Kubernetes detection as the original run.
-                from preloop.agents import create_agent_executor
-
-                agent_executor = create_agent_executor(
-                    flow.agent_type, {"agent_config": flow.agent_config or {}}
+                from preloop.services.flow_execution_runner import (
+                    resume_existing_execution,
                 )
 
-                # Resume monitoring
-                agent_result = await orchestrator._monitor_agent_execution(
-                    session_reference, agent_executor
-                )
-
-                # Update with final results
-                from datetime import datetime, timezone
-
-                final_status = agent_result.get("status", "FAILED")
-                await orchestrator._update_execution_log(
-                    status=final_status,
-                    model_output_summary=agent_result.get("output_summary"),
-                    error_message=agent_result.get("error_message"),
-                    actions_taken_summary=agent_result.get("actions_taken"),
-                    mcp_usage_logs=agent_result.get("mcp_usage_logs"),
-                    end_time=datetime.now(timezone.utc),
-                )
-
-                logger.info(
-                    f"Resumed execution {orchestrator.execution_log.id} completed with status {final_status}"
-                )
+                await resume_existing_execution(orchestrator, session_reference)
             finally:
                 db.close()
 

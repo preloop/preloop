@@ -2,6 +2,7 @@ import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 import './register-view';
 import { RegisterView } from './register-view';
+import { invalidateApiCaches } from '../../api';
 
 describe('RegisterView', () => {
   let element: RegisterView;
@@ -34,6 +35,7 @@ describe('RegisterView', () => {
     fetchStub.restore();
     // Clean up BRAND_CONFIG
     delete (window as any).BRAND_CONFIG;
+    invalidateApiCaches();
   });
 
   it('should render the registration form', () => {

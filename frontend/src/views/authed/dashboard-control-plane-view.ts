@@ -24,7 +24,6 @@ import {
   getAccountRuntimeSessions,
   getBudgetPolicies,
   BudgetPolicy,
-  getApiUsageStats,
   getFlowExecutions,
   getFlows,
   getIssueCount,
@@ -87,10 +86,6 @@ interface Tracker {
   type: string;
 }
 
-interface ApiUsage {
-  total_requests: number;
-}
-
 interface MCPServer {
   id: string;
   name: string;
@@ -114,6 +109,7 @@ interface ApprovalRequest {
   status: string;
   requested_at: string;
   resolved_at?: string | null;
+  expires_at?: string | null;
 }
 
 interface UsageSessionSubject {
@@ -157,7 +153,6 @@ export class DashboardView extends AuthedElement {
   @state() private gatewayInteractions: GatewayUsageSearchResultItem[] = [];
   @state() private auditGroups: AuditGroup[] = [];
   @state() private trackers: Tracker[] = [];
-  @state() private apiUsage: ApiUsage | null = null;
   @state() private totalIssues = 0;
   @state() private mcpServers: MCPServer[] = [];
   @state() private tools: Tool[] = [];
@@ -892,6 +887,16 @@ export class DashboardView extends AuthedElement {
         background: var(--sl-color-neutral-0);
       }
 
+      /* Failed flows: visible but calm — accent border only, no red wash */
+      .item-card.failed-execution {
+        background: var(--sl-color-neutral-50);
+        border-left-color: #ff5d5d;
+      }
+      .item-card.failed-execution .item-error {
+        color: #ff5d5d;
+        font-style: normal;
+      }
+
       @media (max-width: 1200px) {
         .column-layout.dashboard {
           grid-template-columns: 1fr;
@@ -947,10 +952,6 @@ export class DashboardView extends AuthedElement {
     this.loadDismissedState();
     this.loadCachedDashboardData();
     void this.fetchDashboardData();
-    void this.fetchBudgetSummary();
-    void this.fetchActiveAgentsData();
-    void this.fetchFeatures();
-    void this.fetchAdminStatus();
     this.connectRealtime();
   }
 
@@ -969,9 +970,11 @@ export class DashboardView extends AuthedElement {
       const res = await getFeatures();
       this.computeFeatureEnabled = !!res.features?.['compute'];
       this.isEnterprise = Array.isArray(res.plugins) && res.plugins.length > 0;
+      return res;
     } catch {
       this.computeFeatureEnabled = false;
       this.isEnterprise = false;
+      return null;
     }
   }
 
@@ -1020,7 +1023,6 @@ export class DashboardView extends AuthedElement {
       this.gatewayInteractions = data.gatewayInteractions || [];
       this.auditGroups = data.auditGroups || [];
       this.trackers = data.trackers || [];
-      this.apiUsage = data.apiUsage;
       this.totalIssues = data.totalIssues || 0;
       this.mcpServers = data.mcpServers || [];
       this.tools = data.tools || [];
@@ -1070,7 +1072,6 @@ export class DashboardView extends AuthedElement {
         gatewayInteractions: this.gatewayInteractions,
         auditGroups: this.auditGroups,
         trackers: this.trackers,
-        apiUsage: this.apiUsage,
         totalIssues: this.totalIssues,
         mcpServers: this.mcpServers,
         tools: this.tools,
@@ -1181,41 +1182,81 @@ export class DashboardView extends AuthedElement {
     this.refreshTimer = window.setTimeout(() => {
       this.refreshTimer = null;
       void this.fetchDashboardData({ preserveLoadingState: true });
-      void this.fetchBudgetSummary();
-      void this.fetchActiveAgentsData();
     }, 250);
+  }
+
+  private getGatewayStartDate(): string {
+    const now = new Date();
+    if (this.gatewayTimeRange === 'day') {
+      const d = new Date(now);
+      d.setDate(d.getDate() - 1);
+      return d.toISOString();
+    }
+    if (this.gatewayTimeRange === 'week') {
+      const d = new Date(now);
+      d.setDate(d.getDate() - 7);
+      return d.toISOString();
+    }
+    if (this.gatewayTimeRange === 'year') {
+      const d = new Date(now);
+      d.setFullYear(d.getFullYear() - 1);
+      return d.toISOString();
+    }
+    const d = new Date(now);
+    d.setMonth(d.getMonth() - 1);
+    return d.toISOString();
+  }
+
+  private getActiveAgentsStartDate(): string | undefined {
+    const now = new Date();
+    if (this.activeAgentsTimeRange === '5m') {
+      const d = new Date(now);
+      d.setMinutes(d.getMinutes() - 5);
+      return d.toISOString();
+    }
+    if (this.activeAgentsTimeRange === '1h') {
+      const d = new Date(now);
+      d.setHours(d.getHours() - 1);
+      return d.toISOString();
+    }
+    if (this.activeAgentsTimeRange === '1d') {
+      const d = new Date(now);
+      d.setDate(d.getDate() - 1);
+      return d.toISOString();
+    }
+    if (this.activeAgentsTimeRange === '1w') {
+      const d = new Date(now);
+      d.setDate(d.getDate() - 7);
+      return d.toISOString();
+    }
+    if (this.activeAgentsTimeRange === '1mo') {
+      const d = new Date(now);
+      d.setMonth(d.getMonth() - 1);
+      return d.toISOString();
+    }
+    return undefined;
+  }
+
+  private applyAgentsList(
+    managedAgents: Awaited<ReturnType<typeof getAccountAgents>>
+  ): void {
+    this.managedAgents = managedAgents.items || [];
+    this.budgetAgents = this.managedAgents;
+    this.totalAgentsCount = managedAgents.total ?? this.managedAgents.length;
+    if (this.managedAgents.length > 0 && !this.welcomeCardDismissed) {
+      this.dismissWelcomeCard();
+    }
   }
 
   private async fetchActiveAgentsData() {
     this.fetchingActiveAgents = true;
     try {
-      const now = new Date();
-      let startDateStr = '';
-
-      if (this.activeAgentsTimeRange === '5m') {
-        const d = new Date(now);
-        d.setMinutes(d.getMinutes() - 5);
-        startDateStr = d.toISOString();
-      } else if (this.activeAgentsTimeRange === '1h') {
-        const d = new Date(now);
-        d.setHours(d.getHours() - 1);
-        startDateStr = d.toISOString();
-      } else if (this.activeAgentsTimeRange === '1d') {
-        const d = new Date(now);
-        d.setDate(d.getDate() - 1);
-        startDateStr = d.toISOString();
-      } else if (this.activeAgentsTimeRange === '1w') {
-        const d = new Date(now);
-        d.setDate(d.getDate() - 7);
-        startDateStr = d.toISOString();
-      } else if (this.activeAgentsTimeRange === '1mo') {
-        const d = new Date(now);
-        d.setMonth(d.getMonth() - 1);
-        startDateStr = d.toISOString();
-      }
-
-      const runtimeSessionsParams: any = { status: 'all', limit: 100 };
-      const agentsParams: any = { status: 'all', limit: 100 };
+      const startDateStr = this.getActiveAgentsStartDate();
+      const runtimeSessionsParams: {
+        status: 'all';
+        limit: number;
+        startDate?: string;
+      } = { status: 'all', limit: 100 };
       if (startDateStr) {
         runtimeSessionsParams.startDate = startDateStr;
       }
@@ -1225,18 +1266,18 @@ export class DashboardView extends AuthedElement {
           getAccountRuntimeSessions(runtimeSessionsParams),
           { items: [] } as Awaited<ReturnType<typeof getAccountRuntimeSessions>>
         ),
-        this.catchWith403Handling(getAccountAgents(agentsParams), {
-          items: [],
-        } as Awaited<ReturnType<typeof getAccountAgents>>),
+        this.catchWith403Handling(
+          getAccountAgents({ status: 'all', limit: 100 }),
+          {
+            items: [],
+          } as Awaited<ReturnType<typeof getAccountAgents>>
+        ),
       ]);
 
       this.runtimeSessions = runtimeSessions.items || [];
       this.totalRuntimeSessionsCount =
         runtimeSessions.total ?? this.runtimeSessions.length;
-      this.managedAgents = managedAgents.items || [];
-      if (this.managedAgents.length > 0 && !this.welcomeCardDismissed) {
-        this.dismissWelcomeCard();
-      }
+      this.applyAgentsList(managedAgents);
       this.saveDashboardCache();
     } catch (error) {
       console.error('Failed to load active agents data', error);
@@ -1251,81 +1292,55 @@ export class DashboardView extends AuthedElement {
     this.budgetPolicies = event.detail.policies;
   }
 
-  private async fetchBudgetSummary() {
+  private async fetchBudgetSummary(
+    options: {
+      sharedGatewaySummary?: AccountGatewayUsageSummaryResponse | null;
+      sharedAgents?: Awaited<ReturnType<typeof getAccountAgents>> | null;
+      features?: Awaited<ReturnType<typeof getFeatures>> | null;
+    } = {}
+  ) {
     this.fetchingBudget = true;
     try {
-      const [budgetSummary, budgetAgents] = await Promise.all([
-        getAccountGatewayUsageSummary({
-          startDate: this.getBudgetStartDate(this.budgetTimeRange),
-          includeBreakdown: false,
-        }).catch(() => null),
-        getAccountAgents({ status: 'all', limit: 100 }).catch(() => ({
-          items: [] as ManagedAgentSummary[],
-        })),
+      const budgetStartDate = this.getBudgetStartDate(this.budgetTimeRange);
+      const canReuseGatewaySummary =
+        options.sharedGatewaySummary != null &&
+        this.gatewayTimeRange === this.budgetTimeRange;
+
+      const [budgetSummary, budgetAgents, featuresRes] = await Promise.all([
+        canReuseGatewaySummary
+          ? Promise.resolve(options.sharedGatewaySummary!)
+          : getAccountGatewayUsageSummary({
+              startDate: budgetStartDate,
+              includeBreakdown: false,
+            }).catch(() => null),
+        options.sharedAgents
+          ? Promise.resolve(options.sharedAgents)
+          : this.managedAgents.length > 0
+            ? Promise.resolve({
+                items: this.managedAgents,
+                total: this.totalAgentsCount,
+              } as Awaited<ReturnType<typeof getAccountAgents>>)
+            : getAccountAgents({ status: 'all', limit: 100 }).catch(() => ({
+                items: [] as ManagedAgentSummary[],
+                total: 0,
+              })),
+        options.features !== undefined
+          ? Promise.resolve(options.features)
+          : getFeatures().catch(() => null),
       ]);
-      const featuresRes = await fetchWithAuth('/api/v1/features')
-        .then((r) => (r.ok ? r.json() : null))
-        .catch(() => null);
+
       const billingEnabled = featuresRes?.features?.billing === true;
       const policies = billingEnabled
         ? await getBudgetPolicies().catch(() => [] as BudgetPolicy[])
         : [];
+
       this.budgetSummary = budgetSummary;
       this.budgetPolicies = Array.isArray(policies) ? policies : [];
       this.budgetAgents = budgetAgents.items || [];
-
-      const periods = new Set(
-        this.budgetPolicies.map((policy) => policy.period || 'monthly')
-      );
-      periods.add(this.timeRangeToBudgetPeriod(this.budgetTimeRange));
-
-      const periodSummaries = await Promise.all(
-        Array.from(periods).map(async (period) => {
-          const summary = await getAccountGatewayUsageSummary({
-            startDate: this.getBudgetPolicyStartDate(period),
-            includeBreakdown: false,
-          }).catch(() => null);
-          return [period, summary] as const;
-        })
-      );
-      const nextSummaries = new Map<
-        string,
-        AccountGatewayUsageSummaryResponse
-      >();
-      for (const [period, summary] of periodSummaries) {
-        if (summary) {
-          nextSummaries.set(period, summary);
-        }
-      }
-      this.budgetSummariesByPeriod = nextSummaries;
-
-      const managedAgentPolicies = this.budgetPolicies.filter(
-        (policy) => policy.subject_type === 'managed_agent'
-      );
-      const policySummaries = await Promise.all(
-        managedAgentPolicies.map(async (policy) => {
-          const agent = this.getManagedAgentBySourceId(policy.subject_id);
-          if (!agent?.session_source_id) {
-            return [policy.id, null] as const;
-          }
-          const summary = await getAccountGatewayUsageSummary({
-            startDate: this.getBudgetPolicyStartDate(policy.period),
-            runtimePrincipalId: agent.session_source_id,
-            includeBreakdown: false,
-          }).catch(() => null);
-          return [policy.id, summary] as const;
-        })
-      );
-      const nextPolicySummaries = new Map<
-        string,
-        AccountGatewayUsageSummaryResponse
-      >();
-      for (const [policyId, summary] of policySummaries) {
-        if (summary) {
-          nextPolicySummaries.set(policyId, summary);
-        }
-      }
-      this.budgetPolicySummaries = nextPolicySummaries;
+      // Prefer a single selected-window summary; policy.current_spend_usd
+      // (from getBudgetPolicies) drives per-policy spend in the card.
+      this.budgetSummariesByPeriod = new Map();
+      this.budgetPolicySummaries = new Map();
       this.saveDashboardCache();
     } finally {
       this.fetchingBudget = false;
@@ -1356,10 +1371,11 @@ export class DashboardView extends AuthedElement {
     }
     this.refreshInFlight = true;
 
-    // Set individual loading flags to true
     this.fetchingGatewaySummary = true;
     this.fetchingRecentExecutions = true;
     this.fetchingApprovals = true;
+    this.fetchingActiveAgents = true;
+    this.fetchingBudget = true;
     this.fetchingAudit = true;
     this.fetchingMCPAndTools = true;
 
@@ -1368,112 +1384,142 @@ export class DashboardView extends AuthedElement {
     }
     this.error = null;
 
-    const now = new Date();
-    let startDateStr = '';
+    const startDateStr = this.getGatewayStartDate();
 
-    if (this.gatewayTimeRange === 'day') {
-      const d = new Date(now);
-      d.setDate(d.getDate() - 1);
-      startDateStr = d.toISOString();
-    } else if (this.gatewayTimeRange === 'week') {
-      const d = new Date(now);
-      d.setDate(d.getDate() - 7);
-      startDateStr = d.toISOString();
-    } else if (this.gatewayTimeRange === 'month') {
-      const d = new Date(now);
-      d.setMonth(d.getMonth() - 1);
-      startDateStr = d.toISOString();
-    } else if (this.gatewayTimeRange === 'year') {
-      const d = new Date(now);
-      d.setFullYear(d.getFullYear() - 1);
-      startDateStr = d.toISOString();
+    try {
+      // Wave 1 (above-the-fold): gateway metrics, budget, recent executions,
+      // active agents, approvals, features/admin — each unique resource once.
+      const agentsPromise = this.catchWith403Handling(
+        getAccountAgents({ status: 'all', limit: 100 }),
+        {
+          items: [],
+          total: 0,
+        } as Awaited<ReturnType<typeof getAccountAgents>>
+      );
+      const gatewaySummaryPromise = this.catchWith403Handling(
+        getAccountGatewayUsageSummary({
+          startDate: startDateStr,
+          includeBreakdown: false,
+        }),
+        null
+      );
+      const featuresPromise = this.fetchFeatures();
+      const adminPromise = this.fetchAdminStatus();
+
+      const [
+        gatewaySummary,
+        gatewayInteractions,
+        flows,
+        flowExecutions,
+        pendingApprovals,
+        allApprovalRequests,
+        runtimeSessions,
+        managedAgents,
+        featuresRes,
+      ] = await Promise.all([
+        gatewaySummaryPromise,
+        this.catchWith403Handling(getAccountGatewayUsageSearch({ limit: 12 }), {
+          items: [],
+        } as Awaited<ReturnType<typeof getAccountGatewayUsageSearch>>),
+        this.catchWith403Handling(getFlows(), [] as any[]),
+        this.catchWith403Handling(
+          getFlowExecutions({ limit: 10 }),
+          [] as FlowExecution[]
+        ),
+        this.catchWith403Handling(this.fetchApprovalRequests('pending', 3), []),
+        this.catchWith403Handling(
+          this.fetchApprovalRequests(undefined, 100),
+          []
+        ),
+        this.catchWith403Handling(
+          getAccountRuntimeSessions({
+            status: 'all',
+            limit: 100,
+            startDate: this.getActiveAgentsStartDate(),
+          }),
+          {
+            items: [],
+          } as Awaited<ReturnType<typeof getAccountRuntimeSessions>>
+        ),
+        agentsPromise,
+        featuresPromise,
+      ]);
+      await adminPromise;
+
+      this.gatewaySummary = gatewaySummary;
+      this.gatewayInteractions = gatewayInteractions.items || [];
+      this.fetchingGatewaySummary = false;
+
+      this.hasFlows = (flows || []).length > 0;
+      this.totalFlowsCount = (flows || []).length;
+      const sortedFlowExecutions = [...(flowExecutions || [])].sort(
+        (left, right) =>
+          new Date(right.start_time).getTime() -
+          new Date(left.start_time).getTime()
+      );
+      this.flowExecutionsCount = sortedFlowExecutions.length;
+      this.failedExecutionsCount = sortedFlowExecutions.filter(
+        (execution) => execution.status === 'FAILED'
+      ).length;
+      this.succeededFlowExecutionsCount = sortedFlowExecutions.filter(
+        (execution) =>
+          execution.status === 'SUCCEEDED' || execution.status === 'COMPLETED'
+      ).length;
+      this.recentFlowExecutions = sortedFlowExecutions.slice(0, 5);
+      this.fetchingRecentExecutions = false;
+
+      this.pendingApprovals = pendingApprovals.filter((approval) =>
+        this.isUnexpiredPendingApproval(approval)
+      );
+      this.calculateApprovalStats(allApprovalRequests);
+      this.fetchingApprovals = false;
+
+      this.runtimeSessions = runtimeSessions.items || [];
+      this.totalRuntimeSessionsCount =
+        runtimeSessions.total ?? this.runtimeSessions.length;
+      this.applyAgentsList(managedAgents);
+      this.fetchingActiveAgents = false;
+
+      await this.fetchBudgetSummary({
+        sharedGatewaySummary: gatewaySummary,
+        sharedAgents: managedAgents,
+        features: featuresRes,
+      });
+
+      this.lastUpdatedAt = new Date().toISOString();
+      this.loading = false;
+      this.saveDashboardCache();
+
+      // Wave 2: audit / tools / trackers / models — does not block first paint
+      void this.fetchSecondaryDashboardData(startDateStr);
+    } catch (error) {
+      console.error(
+        'Failed to complete background loading of overview dashboard',
+        error
+      );
+      this.error = 'Failed to load some overview dashboard data.';
+      this.fetchingGatewaySummary = false;
+      this.fetchingRecentExecutions = false;
+      this.fetchingApprovals = false;
+      this.fetchingActiveAgents = false;
+      this.fetchingBudget = false;
+      this.fetchingAudit = false;
+      this.fetchingMCPAndTools = false;
+      this.loading = false;
+    } finally {
+      this.refreshInFlight = false;
     }
+  }
 
-    const p1 = (async () => {
-      try {
-        const [gatewaySummary, gatewayInteractions] = await Promise.all([
-          this.catchWith403Handling(
-            getAccountGatewayUsageSummary({ startDate: startDateStr }),
-            null
-          ),
-          this.catchWith403Handling(
-            getAccountGatewayUsageSearch({ limit: 12 }),
-            {
-              items: [],
-            } as Awaited<ReturnType<typeof getAccountGatewayUsageSearch>>
-          ),
-        ]);
-        this.gatewaySummary = gatewaySummary;
-        this.gatewayInteractions = gatewayInteractions.items || [];
-        if (!this.budgetSummary) {
-          this.budgetSummary = gatewaySummary; // initialize if null
-        }
-      } catch (error) {
-        console.error('Failed to load gateway summary data', error);
-      } finally {
-        this.fetchingGatewaySummary = false;
-      }
-    })();
+  private async fetchSecondaryDashboardData(gatewayStartDate: string) {
+    this.fetchingAudit = true;
+    this.fetchingMCPAndTools = true;
 
-    const p2 = (async () => {
-      try {
-        const [flows, flowExecutions] = await Promise.all([
-          this.catchWith403Handling(getFlows(), [] as any[]),
-          this.catchWith403Handling(
-            getFlowExecutions({ limit: 10 }),
-            [] as FlowExecution[]
-          ),
-        ]);
-        this.hasFlows = (flows || []).length > 0;
-        this.totalFlowsCount = (flows || []).length;
-        const sortedFlowExecutions = [...(flowExecutions || [])].sort(
-          (left, right) =>
-            new Date(right.start_time).getTime() -
-            new Date(left.start_time).getTime()
-        );
-        this.flowExecutionsCount = sortedFlowExecutions.length;
-        this.failedExecutionsCount = sortedFlowExecutions.filter(
-          (execution) => execution.status === 'FAILED'
-        ).length;
-        this.succeededFlowExecutionsCount = sortedFlowExecutions.filter(
-          (execution) =>
-            execution.status === 'SUCCEEDED' || execution.status === 'COMPLETED'
-        ).length;
-        this.recentFlowExecutions = sortedFlowExecutions.slice(0, 5);
-      } catch (error) {
-        console.error('Failed to load flow executions data', error);
-      } finally {
-        this.fetchingRecentExecutions = false;
-      }
-    })();
-
-    const p3 = (async () => {
-      try {
-        const [pendingApprovals, allApprovalRequests] = await Promise.all([
-          this.catchWith403Handling(
-            this.fetchApprovalRequests('pending', 3),
-            []
-          ),
-          this.catchWith403Handling(
-            this.fetchApprovalRequests(undefined, 100),
-            []
-          ),
-        ]);
-        this.pendingApprovals = pendingApprovals;
-        this.calculateApprovalStats(allApprovalRequests);
-      } catch (error) {
-        console.error('Failed to load approvals data', error);
-      } finally {
-        this.fetchingApprovals = false;
-      }
-    })();
-
-    const p4 = (async () => {
+    const pAudit = (async () => {
       try {
         const [
           audit,
           trackers,
-          apiUsage,
           issueCount,
           toolCallsStats,
           failedToolCallsStats,
@@ -1483,7 +1529,6 @@ export class DashboardView extends AuthedElement {
             total: 0,
           }),
           this.catchWith403Handling(getTrackers(), [] as Tracker[]),
-          this.catchWith403Handling(getApiUsageStats(), null),
           this.catchWith403Handling(getIssueCount(), { total_issues: 0 }),
           this.catchWith403Handling(
             fetchWithAuth(
@@ -1500,7 +1545,6 @@ export class DashboardView extends AuthedElement {
         ]);
         this.auditGroups = audit.groups || [];
         this.trackers = trackers;
-        this.apiUsage = apiUsage;
         this.totalIssues = issueCount.total_issues;
         this.toolCallsCount = toolCallsStats?.total || 0;
         this.failedToolCallsCount = failedToolCallsStats?.total || 0;
@@ -1511,34 +1555,29 @@ export class DashboardView extends AuthedElement {
       }
     })();
 
-    const p5 = (async () => {
+    const pTools = (async () => {
       try {
-        const [mcpServers, tools, aiModels, users, totalAgentsStats] =
-          await Promise.all([
-            this.catchWith403Handling(getMCPServers(), [] as MCPServer[]),
-            this.catchWith403Handling(getTools(), [] as Tool[]),
-            this.catchWith403Handling(getAIModels(), []),
-            this.catchWith403Handling(
-              isSaaS()
-                ? getUsers()
-                : Promise.resolve({
-                    users: [],
-                    total: 0,
-                    skip: 0,
-                    limit: 0,
-                  }),
-              {
-                users: [],
-                total: 0,
-                skip: 0,
-                limit: 0,
-              }
-            ),
-            this.catchWith403Handling(
-              getAccountAgents({ status: 'all', limit: 1 }),
-              { total: 0 }
-            ),
-          ]);
+        const [mcpServers, tools, aiModels, users] = await Promise.all([
+          this.catchWith403Handling(getMCPServers(), [] as MCPServer[]),
+          this.catchWith403Handling(getTools(), [] as Tool[]),
+          this.catchWith403Handling(getAIModels(), []),
+          this.catchWith403Handling(
+            isSaaS()
+              ? getUsers()
+              : Promise.resolve({
+                  users: [],
+                  total: 0,
+                  skip: 0,
+                  limit: 0,
+                }),
+            {
+              users: [],
+              total: 0,
+              skip: 0,
+              limit: 0,
+            }
+          ),
+        ]);
         this.mcpServers = mcpServers;
         this.tools = tools;
         this.aiModels = aiModels || [];
@@ -1557,7 +1596,6 @@ export class DashboardView extends AuthedElement {
           ? users.users.filter((u: { is_active?: boolean }) => u.is_active)
               .length
           : 0;
-        this.totalAgentsCount = totalAgentsStats?.total || 0;
       } catch (error) {
         console.error('Failed to load MCP and tools data', error);
       } finally {
@@ -1565,20 +1603,39 @@ export class DashboardView extends AuthedElement {
       }
     })();
 
-    try {
-      await Promise.all([p1, p2, p3, p4, p5]);
-      this.lastUpdatedAt = new Date().toISOString();
-      this.saveDashboardCache();
-    } catch (error) {
-      console.error(
-        'Failed to complete background loading of overview dashboard',
-        error
-      );
-      this.error = 'Failed to load some overview dashboard data.';
-    } finally {
-      this.loading = false;
-      this.refreshInFlight = false;
-    }
+    // Top models need breakdown; upgrade the light summary once without
+    // blocking above-the-fold metrics/budget.
+    const pTopModels = (async () => {
+      try {
+        const detailed = await this.catchWith403Handling(
+          getAccountGatewayUsageSummary({
+            startDate: gatewayStartDate,
+            includeBreakdown: true,
+          }),
+          null
+        );
+        if (detailed) {
+          this.gatewaySummary = detailed;
+          if (
+            this.gatewayTimeRange === this.budgetTimeRange &&
+            this.budgetSummary
+          ) {
+            this.budgetSummary = {
+              ...this.budgetSummary,
+              usage_by_model: detailed.usage_by_model,
+              usage_by_flow: detailed.usage_by_flow,
+              usage_by_session: detailed.usage_by_session,
+              requests_by_day: detailed.requests_by_day,
+            };
+          }
+        }
+      } catch (error) {
+        console.error('Failed to load gateway breakdown for top models', error);
+      }
+    })();
+
+    await Promise.all([pAudit, pTools, pTopModels]);
+    this.saveDashboardCache();
   }
 
   private async fetchAuditExceptions(): Promise<GroupedAuditResponse> {
@@ -1611,6 +1668,16 @@ export class DashboardView extends AuthedElement {
       throw new Error('Failed to fetch approval requests');
     }
     return response.json();
+  }
+
+  private isUnexpiredPendingApproval(approval: ApprovalRequest): boolean {
+    if (approval.status !== 'pending') {
+      return false;
+    }
+    if (!approval.expires_at) {
+      return true;
+    }
+    return parseUTCDate(approval.expires_at).getTime() > Date.now();
   }
 
   private calculateApprovalStats(requests: ApprovalRequest[]): void {
@@ -2025,6 +2092,22 @@ export class DashboardView extends AuthedElement {
       return `${deltaHours}h ago`;
     }
     return `${Math.round(deltaHours / 24)}d ago`;
+  }
+
+  private formatLastUpdatedLabel(): string {
+    if (this.lastUpdatedAt) {
+      return this.formatRelativeTime(this.lastUpdatedAt);
+    }
+    if (
+      this.loading ||
+      this.fetchingGatewaySummary ||
+      this.fetchingRecentExecutions ||
+      this.fetchingBudget ||
+      this.fetchingActiveAgents
+    ) {
+      return 'Loading…';
+    }
+    return 'Never';
   }
 
   private getStatusColor(status: string): string {
@@ -2573,7 +2656,7 @@ export class DashboardView extends AuthedElement {
           Recent Flow Executions
           ${
             this.failedFlowExecutions.length > 0
-              ? html`<sl-badge variant="danger" pulse
+              ? html`<sl-badge variant="danger"
                   >${this.failedFlowExecutions.length} failed</sl-badge
                 >`
               : ''
@@ -2602,7 +2685,7 @@ export class DashboardView extends AuthedElement {
                       (exec) => html`
                         <div
                           class="item-card ${
-                            exec.status === 'FAILED' ? 'danger' : ''
+                            exec.status === 'FAILED' ? 'failed-execution' : ''
                           }"
                         >
                           <div class="item-info">
@@ -2669,7 +2752,7 @@ export class DashboardView extends AuthedElement {
       <budget-health-card
         .summary=${this.budgetSummary}
         .policies=${this.budgetPolicies}
-        .agents=${[...this.managedAgents, ...this.budgetAgents]}
+        .agents=${this.managedAgents.length > 0 ? this.managedAgents : this.budgetAgents}
         .loading=${this.fetchingBudget}
         .timeRange=${this.budgetTimeRange}
         .showRangeSelector=${true}
@@ -3883,7 +3966,7 @@ export class DashboardView extends AuthedElement {
             : nothing
         }
         <div class="updated-at">
-          Last updated ${this.formatRelativeTime(this.lastUpdatedAt)}
+          Last updated ${this.formatLastUpdatedLabel()}
         </div>
         ${this.renderWelcomeCard()}
       </div>

@@ -6,7 +6,7 @@ import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any, Optional
 
-from sqlalchemy import and_, case, func, or_
+from sqlalchemy import and_, case, func, or_, tuple_
 from sqlalchemy.orm import Session
 
 from ..models.api_usage import ApiUsage
@@ -88,6 +88,171 @@ def _latest_gateway_usage_for_principal(
     return q.order_by(ApiUsage.timestamp.desc(), ApiUsage.id.desc()).first()
 
 
+def _empty_usage_aggregate() -> dict[str, Any]:
+    """Return a zeroed principal usage aggregate."""
+    return {
+        "session_count": 0,
+        "total_requests": 0,
+        "successful_requests": 0,
+        "failed_requests": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "estimated_cost": 0.0,
+        "latest_model_alias": None,
+        "latest_provider_name": None,
+        "last_request_at": None,
+    }
+
+
+def _usage_aggregates_for_principals(
+    db: Session,
+    *,
+    account_id: str,
+    principals: list[tuple[str, str]],
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Return principal-scoped usage totals for many agents in few queries.
+
+    Args:
+        db: Active database session.
+        account_id: Account that owns the usage and sessions.
+        principals: ``(runtime_principal_type, runtime_principal_id)`` pairs.
+        start_date: Optional inclusive lower bound for sessions and usage.
+        end_date: Optional inclusive upper bound for sessions and usage.
+
+    Returns:
+        Mapping from principal tuple to the same aggregate shape produced by
+        :func:`_usage_aggregate_for_principal`.
+    """
+    unique_principals = list(dict.fromkeys(principals))
+    if not unique_principals:
+        return {}
+
+    results = {principal: _empty_usage_aggregate() for principal in unique_principals}
+    principal_filter = tuple_(
+        RuntimeSession.runtime_principal_type,
+        RuntimeSession.runtime_principal_id,
+    ).in_(unique_principals)
+
+    session_count_q = (
+        db.query(
+            RuntimeSession.runtime_principal_type,
+            RuntimeSession.runtime_principal_id,
+            func.count(RuntimeSession.id).label("session_count"),
+        )
+        .filter(
+            RuntimeSession.account_id == account_id,
+            principal_filter,
+        )
+        .group_by(
+            RuntimeSession.runtime_principal_type,
+            RuntimeSession.runtime_principal_id,
+        )
+    )
+    if start_date:
+        session_count_q = session_count_q.filter(
+            RuntimeSession.started_at >= start_date
+        )
+    if end_date:
+        session_count_q = session_count_q.filter(RuntimeSession.started_at <= end_date)
+    for row in session_count_q.all():
+        key = (row.runtime_principal_type, row.runtime_principal_id)
+        if key in results:
+            results[key]["session_count"] = int(row.session_count or 0)
+
+    usage_principal_filter = tuple_(
+        ApiUsage.runtime_principal_type,
+        ApiUsage.runtime_principal_id,
+    ).in_(unique_principals)
+    usage_q = (
+        db.query(
+            ApiUsage.runtime_principal_type,
+            ApiUsage.runtime_principal_id,
+            func.count(ApiUsage.id).label("request_count"),
+            func.coalesce(
+                func.sum(case((ApiUsage.status_code < 400, 1), else_=0)), 0
+            ).label("success_count"),
+            func.coalesce(
+                func.sum(case((ApiUsage.status_code >= 400, 1), else_=0)), 0
+            ).label("error_count"),
+            func.coalesce(func.sum(ApiUsage.prompt_tokens), 0).label("prompt_tokens"),
+            func.coalesce(func.sum(ApiUsage.completion_tokens), 0).label(
+                "completion_tokens"
+            ),
+            func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
+            func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
+                "estimated_cost"
+            ),
+        )
+        .filter(
+            ApiUsage.account_id == account_id,
+            ApiUsage.action_type == "model_gateway",
+            usage_principal_filter,
+        )
+        .group_by(
+            ApiUsage.runtime_principal_type,
+            ApiUsage.runtime_principal_id,
+        )
+    )
+    if start_date:
+        usage_q = usage_q.filter(ApiUsage.timestamp >= start_date)
+    if end_date:
+        usage_q = usage_q.filter(ApiUsage.timestamp <= end_date)
+    for row in usage_q.all():
+        key = (row.runtime_principal_type, row.runtime_principal_id)
+        if key not in results:
+            continue
+        results[key].update(
+            {
+                "total_requests": int(row.request_count or 0),
+                "successful_requests": int(row.success_count or 0),
+                "failed_requests": int(row.error_count or 0),
+                "prompt_tokens": int(row.prompt_tokens or 0),
+                "completion_tokens": int(row.completion_tokens or 0),
+                "total_tokens": int(row.total_tokens or 0),
+                "estimated_cost": float(row.estimated_cost or 0.0),
+            }
+        )
+
+    latest_base = db.query(
+        ApiUsage.runtime_principal_type,
+        ApiUsage.runtime_principal_id,
+        ApiUsage.model_alias.label("latest_model_alias"),
+        ApiUsage.provider_name.label("latest_provider_name"),
+        ApiUsage.timestamp.label("last_request_at"),
+        func.row_number()
+        .over(
+            partition_by=(
+                ApiUsage.runtime_principal_type,
+                ApiUsage.runtime_principal_id,
+            ),
+            order_by=(ApiUsage.timestamp.desc(), ApiUsage.id.desc()),
+        )
+        .label("rn"),
+    ).filter(
+        ApiUsage.account_id == account_id,
+        ApiUsage.action_type == "model_gateway",
+        usage_principal_filter,
+    )
+    if start_date:
+        latest_base = latest_base.filter(ApiUsage.timestamp >= start_date)
+    if end_date:
+        latest_base = latest_base.filter(ApiUsage.timestamp <= end_date)
+    latest_subq = latest_base.subquery()
+    latest_rows = db.query(latest_subq).filter(latest_subq.c.rn == 1).all()
+    for row in latest_rows:
+        key = (row.runtime_principal_type, row.runtime_principal_id)
+        if key not in results:
+            continue
+        results[key]["latest_model_alias"] = row.latest_model_alias
+        results[key]["latest_provider_name"] = row.latest_provider_name
+        results[key]["last_request_at"] = row.last_request_at
+
+    return results
+
+
 def _usage_aggregate_for_principal(
     db: Session,
     *,
@@ -98,70 +263,14 @@ def _usage_aggregate_for_principal(
     end_date: Optional[datetime] = None,
 ) -> dict[str, Any]:
     """Return principal-scoped usage totals across all runtime sessions."""
-    session_count_q = db.query(func.count(RuntimeSession.id)).filter(
-        RuntimeSession.account_id == account_id,
-        RuntimeSession.runtime_principal_type == principal_type,
-        RuntimeSession.runtime_principal_id == principal_id,
-    )
-    if start_date:
-        session_count_q = session_count_q.filter(
-            RuntimeSession.started_at >= start_date
-        )
-    if end_date:
-        session_count_q = session_count_q.filter(RuntimeSession.started_at <= end_date)
-    session_count = session_count_q.scalar() or 0
-
-    usage_q = db.query(
-        func.count(ApiUsage.id).label("request_count"),
-        func.coalesce(
-            func.sum(case((ApiUsage.status_code < 400, 1), else_=0)), 0
-        ).label("success_count"),
-        func.coalesce(
-            func.sum(case((ApiUsage.status_code >= 400, 1), else_=0)), 0
-        ).label("error_count"),
-        func.coalesce(func.sum(ApiUsage.prompt_tokens), 0).label("prompt_tokens"),
-        func.coalesce(func.sum(ApiUsage.completion_tokens), 0).label(
-            "completion_tokens"
-        ),
-        func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
-        func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label("estimated_cost"),
-        func.max(ApiUsage.timestamp).label("last_request_at"),
-    ).filter(
-        ApiUsage.account_id == account_id,
-        ApiUsage.action_type == "model_gateway",
-        ApiUsage.runtime_principal_type == principal_type,
-        ApiUsage.runtime_principal_id == principal_id,
-    )
-    if start_date:
-        usage_q = usage_q.filter(ApiUsage.timestamp >= start_date)
-    if end_date:
-        usage_q = usage_q.filter(ApiUsage.timestamp <= end_date)
-    usage_row = usage_q.one()
-
-    latest_usage = _latest_gateway_usage_for_principal(
+    aggregates = _usage_aggregates_for_principals(
         db,
         account_id=account_id,
-        principal_type=principal_type,
-        principal_id=principal_id,
+        principals=[(principal_type, principal_id)],
         start_date=start_date,
         end_date=end_date,
     )
-
-    return {
-        "session_count": int(session_count or 0),
-        "total_requests": int(usage_row.request_count or 0),
-        "successful_requests": int(usage_row.success_count or 0),
-        "failed_requests": int(usage_row.error_count or 0),
-        "prompt_tokens": int(usage_row.prompt_tokens or 0),
-        "completion_tokens": int(usage_row.completion_tokens or 0),
-        "total_tokens": int(usage_row.total_tokens or 0),
-        "estimated_cost": float(usage_row.estimated_cost or 0.0),
-        "latest_model_alias": latest_usage.latest_model_alias if latest_usage else None,
-        "latest_provider_name": latest_usage.latest_provider_name
-        if latest_usage
-        else None,
-        "last_request_at": latest_usage.last_request_at if latest_usage else None,
-    }
+    return aggregates.get((principal_type, principal_id), _empty_usage_aggregate())
 
 
 class CRUDManagedAgent(CRUDBase[ManagedAgent]):
@@ -567,14 +676,17 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             .all()
         )
 
+        principals = [(row.session_source_type, row.session_source_id) for row in rows]
+        aggregates = _usage_aggregates_for_principals(
+            db, account_id=account_id, principals=principals
+        )
+
         items = []
         for row in rows:
             summary = self._row_to_summary(row)
-            aggregate = _usage_aggregate_for_principal(
-                db,
-                account_id=account_id,
-                principal_type=row.session_source_type,
-                principal_id=row.session_source_id,
+            aggregate = aggregates.get(
+                (row.session_source_type, row.session_source_id),
+                _empty_usage_aggregate(),
             )
             summary["total_requests"] = aggregate["total_requests"]
             summary["estimated_cost"] = aggregate["estimated_cost"]

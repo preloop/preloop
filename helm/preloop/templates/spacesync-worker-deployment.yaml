@@ -30,6 +30,9 @@ spec:
       serviceAccountName: {{ include "preloop.serviceAccountName" $ }}
       securityContext:
         {{- toYaml $.Values.podSecurityContext | nindent 8 }}
+      {{- if and (eq .name "flow-execution") $.Values.flowExecution.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ $.Values.flowExecution.terminationGracePeriodSeconds }}
+      {{- end }}
       containers:
         - name: preloop-sync-worker-{{ .name }}
           command:
@@ -112,6 +115,16 @@ spec:
             {{- end }}
             - name: NATS_URL
               value: {{ $.Values.nats.url | default (printf "nats://%s-nats:4222" $.Release.Name) }}
+            - name: FLOW_EXECUTION_WORKER_ENABLED
+              value: {{ $.Values.flowExecution.workerEnabled | default false | quote }}
+            - name: FLOW_EXECUTION_CLAIM_STALE_SECONDS
+              value: {{ $.Values.flowExecution.claimStaleSeconds | default 120 | quote }}
+            - name: FLOW_EXECUTION_RECLAIM_INTERVAL_SECONDS
+              value: {{ $.Values.flowExecution.reclaimIntervalSeconds | default 30 | quote }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
             {{- if $.Values.sentry.enabled }}
             - name: SENTRY_DSN
               valueFrom:

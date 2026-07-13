@@ -17,6 +17,11 @@ worker:
     - name: default
       replicaCount: 1
       tasks: "" # Empty string means all tasks
+    # -- Dedicated pool for long-running flow orchestration (claim + heartbeat).
+    # Prefer this over the default pool when FLOW_EXECUTION_WORKER_ENABLED=true.
+    - name: flow-execution
+      replicaCount: 1
+      tasks: "execute_flow,resume_flow_execution"
     # -- An example of a specialized worker pool for polling tasks.
     # - name: polling
     #   replicaCount: 2
@@ -29,6 +34,17 @@ worker:
     limits:
       cpu: "2"
       memory: "2Gi"
+
+# Flow orchestration: when true, API/webhook create PENDING rows and publish
+# execute_flow / resume_flow_execution to JetStream instead of asyncio.create_task.
+flowExecution:
+  workerEnabled: false
+  claimStaleSeconds: 120
+  # Periodic re-dispatch of stale/unclaimed actives (deploy handoff).
+  reclaimIntervalSeconds: 30
+  # Long enough to stop fetches, cancel in-flight monitors, and re-dispatch
+  # owned claims — not to wait for agent Jobs to finish.
+  terminationGracePeriodSeconds: 90
 
 console:
   repository: ghcr.io/preloop/console
@@ -87,6 +103,9 @@ ingress:
 
 # API server resources
 api:
+  # When unset, falls back to top-level replicaCount.
+  # Staging/prod set this to 2 independently of gateway/console.
+  replicaCount: null
   resources:
     requests:
       cpu: "500m"

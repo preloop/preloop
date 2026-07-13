@@ -706,7 +706,9 @@ export class RuntimeSessionsView extends LitElement {
         this.selectedSessionId = this.sessions.items[0]?.id ?? null;
         this.syncUrl();
       }
-      await this.loadDetail(isSoftRefresh);
+      // Paint the session list immediately. Detail/activity/events are owned by
+      // <preloop-session-observer> and load after selection — do not block the
+      // list on getAccountRuntimeSessionDetail.
     } catch (error) {
       console.error('Failed to load sessions:', error);
       if (!isSoftRefresh) {
@@ -960,7 +962,8 @@ export class RuntimeSessionsView extends LitElement {
   private selectSession(sessionId: string) {
     this.selectedSessionId = sessionId;
     this.syncUrl();
-    void this.loadDetail();
+    // Observer loads activity/events for the selection; avoid a duplicate
+    // parent getAccountRuntimeSessionDetail fetch.
   }
 
   private formatNumber(value: number | null | undefined): string {

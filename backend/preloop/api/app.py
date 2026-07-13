@@ -323,11 +323,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Recover orphaned flow executions (skip in testing mode)
     recovery_service = None
     if not is_testing and is_api_role:
+        from preloop.services.flow_execution_dispatcher import (
+            flow_execution_worker_enabled,
+        )
         from preloop.services.execution_recovery import get_recovery_service
 
-        # Skip recovery if disabled (useful for debugging startup issues)
-        skip_recovery = os.getenv("SKIP_EXECUTION_RECOVERY", "false").lower() == "true"
-        if skip_recovery:
+        # When flow orchestration runs on sync workers, API must not start
+        # in-process orchestrators (unsafe with multiple API replicas).
+        # Workers re-dispatch stale claims on boot instead.
+        skip_recovery = (
+            os.getenv("SKIP_EXECUTION_RECOVERY", "false").lower() == "true"
+            or flow_execution_worker_enabled()
+        )
+        if flow_execution_worker_enabled():
+            logger.info(
+                "Skipping API execution recovery "
+                "(FLOW_EXECUTION_WORKER_ENABLED=true; workers own orchestration)"
+            )
+        elif skip_recovery:
             logger.warning("Skipping execution recovery (SKIP_EXECUTION_RECOVERY=true)")
         else:
             recovery_service = get_recovery_service()

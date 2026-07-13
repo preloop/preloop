@@ -71,6 +71,7 @@ services:
       ACCESS_TOKEN_EXPIRE_MINUTES: 60
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       PRELOOP_SERVICE_ROLE: api
+      FLOW_EXECUTION_WORKER_ENABLED: ${FLOW_EXECUTION_WORKER_ENABLED:-false}
     ports:
       - "8000:8000"
     command: python -m preloop.server
@@ -135,7 +136,29 @@ services:
       JWT_ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: 60
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      FLOW_EXECUTION_WORKER_ENABLED: ${FLOW_EXECUTION_WORKER_ENABLED:-false}
     command: preloop-sync worker
+
+  flow-worker:
+    image: ghcr.io/preloop/preloop:${PRELOOP_VERSION:-latest}
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres/preloop
+      NATS_URL: nats://nats:4222
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+      JWT_ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: 60
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      FLOW_EXECUTION_WORKER_ENABLED: ${FLOW_EXECUTION_WORKER_ENABLED:-true}
+      HOSTNAME: flow-worker
+    command: ["preloop-sync", "worker", "--tasks", "execute_flow,resume_flow_execution"]
 
   console:
     image: ghcr.io/preloop/console:${PRELOOP_VERSION:-latest}

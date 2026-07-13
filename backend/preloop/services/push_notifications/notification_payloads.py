@@ -56,6 +56,7 @@ class NotificationPayloadBuilder:
         expires_at: Optional[datetime] = None,
         agent_reasoning: Optional[str] = None,
         tool_args: Optional[Dict[str, Any]] = None,
+        summary: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Build payload for new approval request.
 
@@ -68,6 +69,7 @@ class NotificationPayloadBuilder:
             expires_at: Request expiration time.
             agent_reasoning: Agent's explanation (truncated to 100 chars).
             tool_args: Tool arguments to show in notification body.
+            summary: Plain-language ask shown as the notification body when set.
 
         Returns:
             APNs payload dictionary.
@@ -88,43 +90,50 @@ class NotificationPayloadBuilder:
 
         # Format tool name nicely
         tool_display = tool_name.replace("_", " ").title()
+        ask_text = (summary or "").strip() or None
 
-        # Build body with tool args for context
-        body_parts = []
+        if ask_text:
+            # Summary is the primary ask; tool name stays as subtitle context.
+            subtitle = tool_display
+            body = ask_text if len(ask_text) <= 220 else ask_text[:217] + "..."
+        else:
+            subtitle = tool_display
+            # Build body with tool args for context
+            body_parts = []
 
-        # Add key tool args (limit to fit notification)
-        if tool_args:
-            # Prioritize important args, limit total length
-            arg_strs = []
-            total_len = 0
-            for key, value in tool_args.items():
-                # Skip internal/long args
-                if key.startswith("_") or key in ["content", "body", "message"]:
-                    continue
-                # Format value (truncate if too long)
-                val_str = str(value)
-                if len(val_str) > 50:
-                    val_str = val_str[:47] + "..."
-                arg_str = f"{key}: {val_str}"
-                if total_len + len(arg_str) > 150:
-                    break
-                arg_strs.append(arg_str)
-                total_len += len(arg_str) + 2
-            if arg_strs:
-                body_parts.append(" | ".join(arg_strs))
+            # Add key tool args (limit to fit notification)
+            if tool_args:
+                # Prioritize important args, limit total length
+                arg_strs = []
+                total_len = 0
+                for key, value in tool_args.items():
+                    # Skip internal/long args
+                    if key.startswith("_") or key in ["content", "body", "message"]:
+                        continue
+                    # Format value (truncate if too long)
+                    val_str = str(value)
+                    if len(val_str) > 50:
+                        val_str = val_str[:47] + "..."
+                    arg_str = f"{key}: {val_str}"
+                    if total_len + len(arg_str) > 150:
+                        break
+                    arg_strs.append(arg_str)
+                    total_len += len(arg_str) + 2
+                if arg_strs:
+                    body_parts.append(" | ".join(arg_strs))
 
-        # Add reasoning if no args or space remaining
-        if agent_reasoning and len(" ".join(body_parts)) < 100:
-            reasoning_preview = agent_reasoning[:80]
-            if len(agent_reasoning) > 80:
-                reasoning_preview += "..."
-            body_parts.append(reasoning_preview)
+            # Add reasoning if no args or space remaining
+            if agent_reasoning and len(" ".join(body_parts)) < 100:
+                reasoning_preview = agent_reasoning[:80]
+                if len(agent_reasoning) > 80:
+                    reasoning_preview += "..."
+                body_parts.append(reasoning_preview)
 
-        # Fallback if no context
-        if not body_parts:
-            body_parts.append(f"AI agent needs approval for {tool_display}")
+            # Fallback if no context
+            if not body_parts:
+                body_parts.append(f"AI agent needs approval for {tool_display}")
 
-        body = "\n".join(body_parts) if len(body_parts) > 1 else body_parts[0]
+            body = "\n".join(body_parts) if len(body_parts) > 1 else body_parts[0]
 
         # Custom data for app routing (used by both iOS and Android)
         custom_data = {
@@ -133,6 +142,8 @@ class NotificationPayloadBuilder:
             "tool_name": tool_name,
             "priority": priority,
         }
+        if ask_text:
+            custom_data["summary"] = ask_text
         if expires_at:
             custom_data["expires_at"] = expires_at.isoformat()
 
@@ -140,7 +151,7 @@ class NotificationPayloadBuilder:
             "aps": {
                 "alert": {
                     "title": title,
-                    "subtitle": tool_display,
+                    "subtitle": subtitle,
                     "body": body,
                 },
                 "sound": sound,
@@ -152,8 +163,13 @@ class NotificationPayloadBuilder:
             },
             # Custom data at top level for iOS backward compatibility
             **custom_data,
-            # Data block for Android/FCM deep-linking
-            "data": custom_data,
+            # Data block for Android/FCM deep-linking (include title/body for
+            # data-only display paths)
+            "data": {
+                **custom_data,
+                "title": title,
+                "body": body,
+            },
         }
 
         return payload

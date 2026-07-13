@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from typing import Optional, TYPE_CHECKING
 
-from sqlalchemy import String, DateTime, Text, ForeignKey, Enum as SQLEnum
+from sqlalchemy import String, DateTime, Text, ForeignKey, Enum as SQLEnum, Index
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -36,6 +36,15 @@ class ApprovalRequest(Base):
     """
 
     __tablename__ = "approval_request"
+    __table_args__ = (
+        Index(
+            "ix_approval_request_account_status_requested",
+            "account_id",
+            "status",
+            "requested_at",
+            postgresql_ops={"requested_at": "DESC"},
+        ),
+    )
 
     account_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -110,6 +119,12 @@ class ApprovalRequest(Base):
         Text,
         nullable=True,
         comment="Agent's reasoning for the tool call",
+    )
+
+    summary: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+        comment="User-facing plain-language ask for this approval",
     )
 
     tool_result: Mapped[Optional[dict]] = mapped_column(

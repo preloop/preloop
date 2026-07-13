@@ -65,6 +65,7 @@ def get_cost_summary(
         start_date=start_date,
         end_date=end_date,
         runtime_principal_id=runtime_principal_id,
+        include_breakdown=True,
         exclude_retries=exclude_retries,
     )
     return CostAnalyticsSummaryResponse(

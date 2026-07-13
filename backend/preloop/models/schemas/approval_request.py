@@ -17,6 +17,10 @@ class ApprovalRequestBase(BaseModel):
     agent_reasoning: Optional[str] = Field(
         None, description="Agent's reasoning for the tool call"
     )
+    summary: Optional[str] = Field(
+        None,
+        description="User-facing plain-language ask (LLM or ask_user question)",
+    )
     execution_id: Optional[str] = Field(
         None, description="Flow execution ID (if applicable)"
     )
@@ -35,10 +39,12 @@ class ApprovalRequestUpdate(BaseModel):
     """Schema for updating an approval request."""
 
     status: Optional[str] = None
+    summary: Optional[str] = None
     approver_comment: Optional[str] = None
     resolved_at: Optional[datetime] = None
     webhook_posted_at: Optional[datetime] = None
     webhook_error: Optional[str] = None
+    approval_workflow_id: Optional[UUID] = None
     # AI decision tracking fields
     decided_by_ai: Optional[bool] = None
     ai_model: Optional[str] = None

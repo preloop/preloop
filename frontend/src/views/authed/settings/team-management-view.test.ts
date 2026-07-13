@@ -1,6 +1,7 @@
 import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
+import { invalidateApiCaches } from '../../../api';
 import './team-management-view';
 import type { TeamManagementView } from './team-management-view';
 
@@ -68,6 +69,7 @@ describe('TeamManagementView', () => {
   };
 
   beforeEach(() => {
+    invalidateApiCaches();
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
   });
@@ -75,6 +77,7 @@ describe('TeamManagementView', () => {
   afterEach(() => {
     fetchStub?.restore();
     localStorage.clear();
+    invalidateApiCaches();
   });
 
   it('shows the not-available message when feature is disabled', async () => {

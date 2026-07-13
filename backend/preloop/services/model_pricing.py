@@ -191,7 +191,7 @@ def _estimate_litellm_cost(
                     ),
                     6,
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 - litellm cost functions raise various types
                 logger.debug(
                     "LiteLLM detailed pricing unavailable for model candidate %s",
                     candidate,
@@ -204,7 +204,7 @@ def _estimate_litellm_cost(
                 completion_tokens=completion_tokens,
             )
             return round(float(prompt_cost or 0.0) + float(completion_cost or 0.0), 6)
-        except Exception:
+        except Exception:  # noqa: BLE001 - litellm cost functions raise various types
             logger.debug(
                 "LiteLLM pricing unavailable for model candidate %s",
                 candidate,

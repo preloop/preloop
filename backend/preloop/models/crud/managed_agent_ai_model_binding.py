@@ -27,22 +27,61 @@ class CRUDManagedAgentAIModelBinding(CRUDBase[ManagedAgentAIModelBinding]):
         include_inactive: bool = False,
     ) -> list[ManagedAgentAIModelBinding]:
         """Return bindings for one managed agent."""
+        return self.list_for_agents(
+            db,
+            account_id=account_id,
+            agent_ids=[str(agent_id)],
+            include_inactive=include_inactive,
+        ).get(str(agent_id), [])
+
+    def list_for_agents(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        agent_ids: list[str],
+        include_inactive: bool = False,
+    ) -> dict[str, list[ManagedAgentAIModelBinding]]:
+        """Return bindings for many managed agents in one query.
+
+        Args:
+            db: Active database session.
+            account_id: Owning account identifier.
+            agent_ids: Managed agent ids to load bindings for.
+            include_inactive: When True, include inactive bindings.
+
+        Returns:
+            Mapping from agent id string to that agent's bindings, ordered the
+            same way as :meth:`list_for_agent`.
+        """
+        normalized_ids = [str(agent_id) for agent_id in agent_ids]
+        if not normalized_ids:
+            return {}
+
         query = (
             db.query(self.model)
             .options(joinedload(self.model.ai_model))
             .filter(
                 self.model.account_id == account_id,
-                self.model.managed_agent_id == agent_id,
+                self.model.managed_agent_id.in_(normalized_ids),
             )
         )
         if not include_inactive:
             query = query.filter(self.model.status != "inactive")
-        return query.order_by(
+        rows = query.order_by(
+            self.model.managed_agent_id.asc(),
             self.model.is_primary.desc(),
             self.model.config_key.asc(),
             self.model.gateway_alias.asc(),
             self.model.last_seen_at.desc(),
         ).all()
+
+        result: dict[str, list[ManagedAgentAIModelBinding]] = {
+            agent_id: [] for agent_id in normalized_ids
+        }
+        for row in rows:
+            result.setdefault(str(row.managed_agent_id), []).append(row)
+        return result
 
     def replace_for_agent(
         self,

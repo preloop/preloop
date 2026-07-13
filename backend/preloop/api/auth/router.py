@@ -1451,6 +1451,10 @@ def get_api_usage(
 ) -> ApiUsageStatistics:
     """Get API usage statistics for the current user.
 
+    Aggregates in SQL (not in Python). When neither date is provided, the
+    window defaults to the last 30 days. Endpoint breakdown is capped to
+    the top 50 endpoints by request count.
+
     Args:
         start_date: Optional start date for filtering.
         end_date: Optional end date for filtering.
@@ -1459,50 +1463,13 @@ def get_api_usage(
     Returns:
         API usage statistics.
     """
-    session = db
-
-    # Get usage entries using CRUD layer
-    usage_entries = crud_api_usage.get_for_user_filtered(
-        session,
+    stats = crud_api_usage.get_statistics_for_user(
+        db,
         username=current_user.username,
         start_date=start_date,
         end_date=end_date,
     )
-
-    # Calculate statistics
-    total_requests = len(usage_entries)
-
-    # Group by date
-    requests_by_date = {}
-    for entry in usage_entries:
-        date_str = entry.timestamp.strftime("%Y-%m-%d")
-        requests_by_date[date_str] = requests_by_date.get(date_str, 0) + 1
-
-    # Count issue actions
-    issues_created = sum(
-        1 for entry in usage_entries if entry.action_type == "create_issue"
-    )
-    issues_updated = sum(
-        1 for entry in usage_entries if entry.action_type == "update_issue"
-    )
-    issues_closed = sum(
-        1 for entry in usage_entries if entry.action_type == "close_issue"
-    )
-
-    # Group by endpoint
-    requests_by_endpoint = {}
-    for entry in usage_entries:
-        endpoint = entry.endpoint
-        requests_by_endpoint[endpoint] = requests_by_endpoint.get(endpoint, 0) + 1
-
-    return ApiUsageStatistics(
-        total_requests=total_requests,
-        requests_by_date=requests_by_date,
-        issues_created=issues_created,
-        issues_updated=issues_updated,
-        issues_closed=issues_closed,
-        requests_by_endpoint=requests_by_endpoint,
-    )
+    return ApiUsageStatistics(**stats)
 
 
 async def authenticate_user(

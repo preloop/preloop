@@ -3,6 +3,7 @@ import sinon from 'sinon';
 import '../../components/view-header.ts';
 import './cost-view.ts';
 import type { CostView } from './cost-view';
+import { invalidateApiCaches } from '../../api';
 
 describe('CostView', () => {
   let fetchStub: sinon.SinonStub;
@@ -106,6 +107,8 @@ describe('CostView', () => {
   afterEach(() => {
     fetchStub.restore();
     localStorage.clear();
+    sessionStorage.clear();
+    invalidateApiCaches();
   });
 
   it('renders accessible cost metrics and tables after load', async () => {

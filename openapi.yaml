@@ -572,10 +572,12 @@ paths:
       tags:
       - Auth
       summary: Get Api Usage
-      description: "Get API usage statistics for the current user.\n\nArgs:\n    start_date:\
-        \ Optional start date for filtering.\n    end_date: Optional end date for\
-        \ filtering.\n    current_user: The current authenticated user.\n\nReturns:\n\
-        \    API usage statistics."
+      description: "Get API usage statistics for the current user.\n\nAggregates in\
+        \ SQL (not in Python). When neither date is provided, the\nwindow defaults\
+        \ to the last 30 days. Endpoint breakdown is capped to\nthe top 50 endpoints\
+        \ by request count.\n\nArgs:\n    start_date: Optional start date for filtering.\n\
+        \    end_date: Optional end date for filtering.\n    current_user: The current\
+        \ authenticated user.\n\nReturns:\n    API usage statistics."
       operationId: get_api_usage_api_v1_auth_api_usage_get
       security:
       - OAuth2PasswordBearer: []
@@ -726,8 +728,16 @@ paths:
         required: false
         schema:
           type: boolean
+          description: When true, include per-model/flow/session/tool/day breakdowns.
+            Default true preserves the historical response shape for API clients;
+            lightweight card callers (Overview/Agents) should pass false. Prefer /cost/summary
+            for full cost analytics.
           default: true
           title: Include Breakdown
+        description: When true, include per-model/flow/session/tool/day breakdowns.
+          Default true preserves the historical response shape for API clients; lightweight
+          card callers (Overview/Agents) should pass false. Prefer /cost/summary for
+          full cost analytics.
       responses:
         '200':
           description: Successful Response
@@ -8391,6 +8401,12 @@ components:
           - type: 'null'
           title: Agent Reasoning
           description: Agent's reasoning for the tool call
+        summary:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Summary
+          description: User-facing plain-language ask (LLM or ask_user question)
         execution_id:
           anyOf:
           - type: string

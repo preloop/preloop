@@ -79,9 +79,11 @@ export function formatUTCDateTime(dateTimeString: string): string {
  * @param dateTimeString - Datetime string from backend
  * @returns Relative time string
  */
-export function formatRelativeTime(dateTimeString: string): string {
+export function formatRelativeTime(
+  dateTimeString: string,
+  now: Date = new Date()
+): string {
   const date = parseUTCDate(dateTimeString);
-  const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   const diffMins = Math.floor(diffMs / 60000);
   const diffHours = Math.floor(diffMs / 3600000);
@@ -91,6 +93,29 @@ export function formatRelativeTime(dateTimeString: string): string {
   if (diffMins < 60) return `${diffMins}m ago`;
   if (diffHours < 24) return `${diffHours}h ago`;
   if (diffDays < 7) return `${diffDays}d ago`;
+  return date.toLocaleDateString();
+}
+
+/**
+ * Calculates relative time until a future datetime (e.g., "in 2m", "in 3h").
+ *
+ * @param dateTimeString - Datetime string from backend
+ * @returns Relative future time string
+ */
+export function formatFutureRelativeTime(
+  dateTimeString: string,
+  now: Date = new Date()
+): string {
+  const date = parseUTCDate(dateTimeString);
+  const diffMs = date.getTime() - now.getTime();
+  const diffMins = Math.ceil(diffMs / 60000);
+  const diffHours = Math.ceil(diffMs / 3600000);
+  const diffDays = Math.ceil(diffMs / 86400000);
+
+  if (diffMins <= 0) return 'expired';
+  if (diffMins < 60) return `in ${diffMins}m`;
+  if (diffHours < 24) return `in ${diffHours}h`;
+  if (diffDays < 7) return `in ${diffDays}d`;
   return date.toLocaleDateString();
 }
 

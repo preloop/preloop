@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -27,6 +27,12 @@ class RuntimeSession(Base):
             "session_source_type",
             "session_source_id",
             name="uq_runtime_session_account_source",
+        ),
+        Index(
+            "ix_runtime_session_account_last_activity",
+            "account_id",
+            "last_activity_at",
+            postgresql_ops={"last_activity_at": "DESC"},
         ),
     )
 

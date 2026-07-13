@@ -133,6 +133,11 @@
             </div>
 
             <div id="content" style="display: none;">
+                <div class="info-item" id="summary-section" style="display: none; margin-bottom: 1.5rem;">
+                    <div class="info-label">Request</div>
+                    <div class="info-value" id="summary" style="font-size: 1.1rem; line-height: 1.5;"></div>
+                </div>
+
                 <div class="info-grid">
                     <div class="info-item">
                         <div class="info-label">Status</div>
@@ -232,6 +237,11 @@
             document.getElementById('tool-name').textContent = approvalData.tool_name;
             document.getElementById('requested-at').textContent = new Date(approvalData.requested_at).toLocaleString();
             document.getElementById('tool-args').textContent = formatToolArgs(approvalData.tool_args);
+
+            if (approvalData.summary) {
+                document.getElementById('summary-section').style.display = 'block';
+                document.getElementById('summary').textContent = approvalData.summary;
+            }
 
             // Show reasoning if available
             if (approvalData.agent_reasoning) {

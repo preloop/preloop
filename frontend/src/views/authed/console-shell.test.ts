@@ -1,6 +1,7 @@
 import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
+import { invalidateApiCaches } from '../../api';
 import './console-shell';
 import type { ConsoleShell } from './console-shell';
 
@@ -42,6 +43,7 @@ describe('ConsoleShell', () => {
   let matchMediaStub: sinon.SinonStub;
 
   beforeEach(() => {
+    invalidateApiCaches();
     (window as any).BRAND_CONFIG = {
       name: 'Preloop',
       domain: 'preloop.ai',
@@ -74,7 +76,7 @@ describe('ConsoleShell', () => {
     // Stub getFeatures (fetchPublic) and _checkTrackers (fetch with auth)
     fetchStub.callsFake(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
-      if (url === '/api/v1/features') {
+      if (url.endsWith('/api/v1/features')) {
         return new Response(
           JSON.stringify({
             plugins: [],
@@ -83,7 +85,7 @@ describe('ConsoleShell', () => {
           { status: 200, headers: { 'Content-Type': 'application/json' } }
         );
       }
-      if (url === '/api/v1/auth/users/me') {
+      if (url.endsWith('/api/v1/auth/users/me')) {
         // permissions: null => RBAC inactive, so nav stays unrestricted in tests
         return new Response(
           JSON.stringify({
@@ -95,7 +97,7 @@ describe('ConsoleShell', () => {
           { status: 200, headers: { 'Content-Type': 'application/json' } }
         );
       }
-      if (url === '/api/v1/trackers') {
+      if (url.endsWith('/api/v1/trackers')) {
         return new Response(JSON.stringify([]), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
@@ -125,6 +127,7 @@ describe('ConsoleShell', () => {
     matchMediaStub?.restore();
     localStorage.clear();
     delete (window as any).BRAND_CONFIG;
+    invalidateApiCaches();
   });
 
   it('renders the component', async () => {
@@ -253,9 +256,10 @@ describe('ConsoleShell', () => {
   });
 
   it('shows All events under Audit when audit_logs is enabled', async () => {
+    invalidateApiCaches();
     fetchStub.callsFake(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
-      if (url === '/api/v1/features') {
+      if (url.endsWith('/api/v1/features')) {
         return new Response(
           JSON.stringify({
             plugins: [],
@@ -264,7 +268,7 @@ describe('ConsoleShell', () => {
           { status: 200, headers: { 'Content-Type': 'application/json' } }
         );
       }
-      if (url === '/api/v1/auth/users/me') {
+      if (url.endsWith('/api/v1/auth/users/me')) {
         return new Response(
           JSON.stringify({
             username: 'test',

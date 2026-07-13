@@ -485,8 +485,10 @@ export class PreloopSessionObserver extends LitElement {
   private async loadSessions(
     options: { preserveSelection?: boolean; soft?: boolean } = {}
   ): Promise<void> {
+    // Parent views often pass `.sessions` — reuse them and skip a second list
+    // fetch (events still load on selection).
     if (this.sessions) {
-      this.applySessions(this.sessions);
+      this.applySessions(this.sessions, options.preserveSelection ?? true);
       return;
     }
     if (!options.soft) this.loading = true;
@@ -535,7 +537,10 @@ export class PreloopSessionObserver extends LitElement {
         ? requested
         : this.observedSessions[0]?.id || null;
     if (nextActive && nextActive !== this.activeSessionId) {
-      void this.selectSession(nextActive);
+      // Stagger heavy event/activity loads so the session list can paint first.
+      requestAnimationFrame(() => {
+        void this.selectSession(nextActive);
+      });
     } else if (!nextActive) {
       this.activeSessionId = null;
     }

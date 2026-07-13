@@ -72,6 +72,66 @@ const CANVAS_CARD_HALF_WIDTH = 160;
 const CANVAS_CARD_HALF_HEIGHT = 118;
 const CANVAS_CARD_GAP = 48;
 
+// Account-wide gateway totals on the Agents canvas — OK if briefly stale.
+// Cache in sessionStorage and refresh in the background so agent list paint
+// never waits on the summary endpoint.
+const GATEWAY_SUMMARY_CACHE_TTL_MS = 90_000;
+const GATEWAY_SUMMARY_CACHE_KEY = 'preloop.agents.gateway_summary.v1';
+
+type CachedGatewaySummary = {
+  cachedAt: number;
+  data: AccountGatewayUsageSummaryResponse;
+};
+
+function readCachedGatewaySummary(options?: {
+  allowStale?: boolean;
+}): AccountGatewayUsageSummaryResponse | null {
+  try {
+    const raw = sessionStorage.getItem(GATEWAY_SUMMARY_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as CachedGatewaySummary;
+    if (!parsed?.data || typeof parsed.cachedAt !== 'number') {
+      return null;
+    }
+    const isStale = Date.now() - parsed.cachedAt > GATEWAY_SUMMARY_CACHE_TTL_MS;
+    // Stale-while-revalidate: still paint expired cache while a background
+    // refresh runs (callers pass allowStale for first paint).
+    if (isStale && !options?.allowStale) {
+      return null;
+    }
+    return parsed.data;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedGatewaySummary(
+  data: AccountGatewayUsageSummaryResponse
+): void {
+  try {
+    const payload: CachedGatewaySummary = { cachedAt: Date.now(), data };
+    sessionStorage.setItem(GATEWAY_SUMMARY_CACHE_KEY, JSON.stringify(payload));
+  } catch {
+    // ignore quota / private-mode failures
+  }
+}
+
+function gatewaySummaryDays(
+  summary: AccountGatewayUsageSummaryResponse
+): number {
+  // Prefer timeseries length when present; otherwise derive from the period
+  // window so include_breakdown=false still yields a sensible tokens/day.
+  if (summary.requests_by_day?.length > 0) {
+    return summary.requests_by_day.length;
+  }
+  const start = Date.parse(summary.period_start);
+  const end = Date.parse(summary.period_end);
+  if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+    return Math.max(1, Math.ceil((end - start) / (24 * 60 * 60 * 1000)));
+  }
+  return 1;
+}
+
 @customElement('agents-view')
 export class AgentsView extends LitElement {
   @state() private agents: AccountManagedAgentListResponse | null = null;
@@ -702,10 +762,17 @@ export class AgentsView extends LitElement {
       console.warn('Failed to parse saved canvas positions', e);
     }
 
+    // Hydrate gateway totals from cache immediately (including stale); network
+    // refresh runs after the agent list paints.
+    if (!this.gatewaySummary) {
+      const cached = readCachedGatewaySummary({ allowStale: true });
+      if (cached) {
+        this.gatewaySummary = cached;
+      }
+    }
+
     void this.loadAgents();
     void this.fetchAdminStatus();
-    void this.fetchFeatures();
-    void this.fetchAIModels();
     this.connectRealtime();
     requestAnimationFrame(() => {
       this.resizeObserver.observe(this);
@@ -722,22 +789,17 @@ export class AgentsView extends LitElement {
     }
   }
 
-  private async fetchFeatures() {
+  private async refreshGatewaySummary(): Promise<void> {
     try {
-      const res = await getFeatures();
-      this.computeFeatureEnabled = !!res.features?.['compute'];
-      this.isEnterprise = Array.isArray(res.plugins) && res.plugins.length > 0;
-    } catch {
-      this.computeFeatureEnabled = false;
-      this.isEnterprise = false;
-    }
-  }
-
-  private async fetchAIModels() {
-    try {
-      this.aiModels = await getAIModels();
-    } catch {
-      this.aiModels = [];
+      // Agents canvas only shows totals (tokens + tokens/day) — skip heavy
+      // model/session/tool breakdowns.
+      const gatewayData = await getAccountGatewayUsageSummary({
+        includeBreakdown: false,
+      });
+      this.gatewaySummary = gatewayData;
+      writeCachedGatewaySummary(gatewayData);
+    } catch (error) {
+      console.error('Failed to refresh gateway usage summary:', error);
     }
   }
 
@@ -885,23 +947,18 @@ export class AgentsView extends LitElement {
     }
 
     try {
-      // Parallel fetch
-      const [
-        agentsData,
-        gatewayData,
-        flowsData,
-        modelsData,
-        featuresData,
-        users,
-      ] = await Promise.all([
-        getAccountAgents(params),
-        getAccountGatewayUsageSummary(),
-        getFlows(),
-        getAIModels().catch(() => [] as AIModel[]),
-        getFeatures().catch(() => ({ features: {} })),
-        this.fetchUsers().catch(() => []),
-      ]);
+      // Agent list first — gateway summary is refreshed separately so it never
+      // blocks first paint (cached value may already be showing).
+      const [agentsData, flowsData, modelsData, featuresData, users] =
+        await Promise.all([
+          getAccountAgents(params),
+          getFlows(),
+          getAIModels().catch(() => [] as AIModel[]),
+          getFeatures().catch(() => ({ features: {}, plugins: [] })),
+          this.fetchUsers().catch(() => []),
+        ]);
       this.aiModels = modelsData;
+      void this.refreshGatewaySummary();
 
       // Handle custom local empty case for dummy filter
       if (params.agentKind === '__none__') {
@@ -930,8 +987,11 @@ export class AgentsView extends LitElement {
 
       this.agents = agentsData;
       this.previousAgentCount = agentsData.items.length;
-      this.gatewaySummary = gatewayData;
       this.featureFlags = featuresData?.features || {};
+      this.computeFeatureEnabled = !!this.featureFlags['compute'];
+      this.isEnterprise =
+        Array.isArray((featuresData as { plugins?: unknown[] })?.plugins) &&
+        ((featuresData as { plugins?: unknown[] }).plugins?.length ?? 0) > 0;
       this.availableUsers = users;
 
       if (!this.hasAutoOpenedOnboarding && this.previousAgentCount === 0) {
@@ -2893,15 +2953,10 @@ export class AgentsView extends LitElement {
                           >
                             ${this.gatewaySummary.token_usage.total_tokens.toLocaleString()}
                             Tokens ·
-                            ${
-                              this.gatewaySummary.requests_by_day?.length > 0
-                                ? (
-                                    this.gatewaySummary.token_usage
-                                      .total_tokens /
-                                    this.gatewaySummary.requests_by_day.length
-                                  ).toFixed(0)
-                                : '0'
-                            }
+                            ${(
+                              this.gatewaySummary.token_usage.total_tokens /
+                              gatewaySummaryDays(this.gatewaySummary)
+                            ).toFixed(0)}
                             / day
                           </div>
                         `

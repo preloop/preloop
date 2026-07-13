@@ -2,6 +2,7 @@ import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
 import '../../../components/view-header.ts';
+import { invalidateApiCaches } from '../../../api';
 import './profile-view';
 import type { ProfileView } from './profile-view';
 
@@ -46,6 +47,7 @@ describe('ProfileView', () => {
   }
 
   beforeEach(() => {
+    invalidateApiCaches();
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
   });
@@ -53,6 +55,7 @@ describe('ProfileView', () => {
   afterEach(() => {
     fetchStub?.restore();
     localStorage.clear();
+    invalidateApiCaches();
   });
 
   it('renders the profile header', async () => {

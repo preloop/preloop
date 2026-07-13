@@ -1,6 +1,7 @@
 import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
+import { invalidateApiCaches } from '../../../api';
 import './invitation-management-view';
 import type { InvitationManagementView } from './invitation-management-view';
 
@@ -63,6 +64,7 @@ describe('InvitationManagementView', () => {
   };
 
   beforeEach(() => {
+    invalidateApiCaches();
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
   });
@@ -70,6 +72,7 @@ describe('InvitationManagementView', () => {
   afterEach(() => {
     fetchStub?.restore();
     localStorage.clear();
+    invalidateApiCaches();
   });
 
   it('shows the not-available message when feature is disabled', async () => {

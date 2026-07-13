@@ -4,6 +4,7 @@ import sinon from 'sinon';
 import '../../components/view-header.ts';
 import './flows-view';
 import type { FlowsView } from './flows-view';
+import { invalidateApiCaches } from '../../api';
 
 describe('FlowsView', () => {
   let fetchStub: sinon.SinonStub;
@@ -48,6 +49,7 @@ describe('FlowsView', () => {
   afterEach(() => {
     fetchStub?.restore();
     localStorage.clear();
+    invalidateApiCaches();
   });
 
   it('renders the flow list view', async () => {
@@ -102,7 +104,28 @@ describe('FlowsView', () => {
     const flowsGrid = element.shadowRoot?.querySelector('.flows-grid');
     expect(flowsGrid).to.exist;
     const flowCards = element.shadowRoot?.querySelectorAll('.flow-card');
-    expect(flowCards.length).to.equal(1);
+    expect(flowCards?.length).to.equal(1);
+  });
+
+  it('does not fetch presets on initial load when flows already exist', async () => {
+    const mockFlows = [
+      { id: 'flow-1', name: 'Test Flow', description: 'A test flow' },
+    ];
+    fetchStub = createFetchStub(mockFlows, [
+      { id: 'preset-1', name: 'Preset' },
+    ]);
+    const element = (await fixture(
+      html`<flows-view></flows-view>`
+    )) as FlowsView;
+
+    await waitUntil(
+      () => !(element as any).isLoading,
+      'Flows view did not finish loading'
+    );
+    await element.updateComplete;
+
+    const urls = fetchStub.getCalls().map((c) => String(c.args[0]));
+    expect(urls.some((u) => u.includes('/api/v1/flows/presets'))).to.be.false;
   });
 
   it('stubs fetch for flows API', async () => {

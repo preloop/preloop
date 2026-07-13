@@ -223,6 +223,11 @@ export class FlowsView extends LitElement {
   private presets: Flow[] = [];
 
   @state()
+  private presetsLoading = false;
+
+  private presetsLoaded = false;
+
+  @state()
   private executions: FlowExecution[] = [];
 
   @state()
@@ -267,16 +272,15 @@ export class FlowsView extends LitElement {
   async loadData() {
     this.isLoading = true;
     try {
-      const [flows, presets, executions] = await Promise.all([
+      // Defer /flows/presets (~38KB) until the presets UI is shown.
+      const [flows, executions] = await Promise.all([
         getFlows(),
-        getFlowPresets(),
         getFlowExecutions({
           limit: 20,
           status: ['PENDING', 'INITIALIZING', 'STARTING', 'RUNNING'],
         }),
       ]);
       this.flows = flows;
-      this.presets = this.sortPresets(presets);
       this.executions = executions;
 
       if (this.flows.length === 0) {
@@ -285,8 +289,28 @@ export class FlowsView extends LitElement {
         this.showPresets = false;
       }
       this.hasInitializedPresetVisibility = true;
+
+      if (this.showPresets) {
+        void this.ensurePresetsLoaded();
+      }
     } finally {
       this.isLoading = false;
+    }
+  }
+
+  private async ensurePresetsLoaded(): Promise<void> {
+    if (this.presetsLoaded || this.presetsLoading) {
+      return;
+    }
+    this.presetsLoading = true;
+    try {
+      const presets = await getFlowPresets();
+      this.presets = this.sortPresets(presets);
+      this.presetsLoaded = true;
+    } catch (error) {
+      console.error('Failed to load flow presets:', error);
+    } finally {
+      this.presetsLoading = false;
     }
   }
 
@@ -443,11 +467,13 @@ export class FlowsView extends LitElement {
           </div>
           ${
             this.showPresets
-              ? html`
-                  <div class="presets-grid">
-                    ${this.presets.map((preset) => this.renderPresetCard(preset))}
-                  </div>
-                `
+              ? this.presetsLoading && this.presets.length === 0
+                ? html`<div class="presets-collapsed">Loading presets...</div>`
+                : html`
+                    <div class="presets-grid">
+                      ${this.presets.map((preset) => this.renderPresetCard(preset))}
+                    </div>
+                  `
               : html`<div class="presets-collapsed">
                   Presets are hidden. Use "Show presets" to explore starter
                   workflows.
@@ -645,7 +671,8 @@ export class FlowsView extends LitElement {
 
   async removePreset(presetId: string) {
     await deleteFlow(presetId);
-    this.presets = await getFlowPresets();
+    this.presetsLoaded = false;
+    await this.ensurePresetsLoaded();
   }
 
   async deleteFlowHandler(flowId: string, flowName: string) {
@@ -669,6 +696,9 @@ export class FlowsView extends LitElement {
 
   private togglePresets() {
     this.showPresets = !this.showPresets;
+    if (this.showPresets) {
+      void this.ensurePresetsLoaded();
+    }
   }
 
   private truncateDescription(description: string): string {

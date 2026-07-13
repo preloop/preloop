@@ -9,17 +9,17 @@ describe('RuntimeSessionsView', () => {
   let fetchStub: sinon.SinonStub;
   let wsStub: sinon.SinonStub;
 
-  function getDeepText(el: Element | null | undefined): string {
+  function getDeepText(el: Element | ShadowRoot | null | undefined): string {
     if (!el) return '';
     let text = el.textContent || '';
-    if (el.shadowRoot) {
+    if (el instanceof Element && el.shadowRoot) {
       text += ' ' + getDeepText(el.shadowRoot);
     }
     const children = Array.from(el.children);
     for (const child of children) {
       text += ' ' + getDeepText(child);
     }
-    if (el.shadowRoot) {
+    if (el instanceof Element && el.shadowRoot) {
       const shadowChildren = Array.from(el.shadowRoot.children);
       for (const child of shadowChildren) {
         text += ' ' + getDeepText(child);
@@ -478,36 +478,49 @@ describe('RuntimeSessionsView', () => {
     window.history.replaceState({}, '', '/console/runtime-sessions');
   });
 
-  it('renders runtime session list and selected session detail', async () => {
+  it('renders runtime session list without blocking on session detail', async () => {
     const element = (await fixture(
       html`<runtime-sessions-view></runtime-sessions-view>`
     )) as RuntimeSessionsView;
 
     await waitUntil(
-      () => !(element as any).loading && !(element as any).detailLoading,
+      () => !(element as any).loading,
       'Runtime sessions view did not finish loading'
     );
     await element.updateComplete;
 
     const content = getDeepText(element).replace(/\s+/g, ' ');
     expect(content).to.contain('Claude Workspace');
-    expect(content).to.contain('anthropic/claude-sonnet-4');
 
     const listCall = fetchStub
       .getCalls()
       .find((call) =>
         String(call.args[0]).startsWith('/api/v1/runtime-sessions?')
       );
-    const detailCall = fetchStub
-      .getCalls()
-      .find((call) =>
-        String(call.args[0]).startsWith(
-          '/api/v1/runtime-sessions/runtime-session-1'
-        )
+    // Parent no longer fetches detail on list load — observer owns events.
+    const detailCall = fetchStub.getCalls().find((call) => {
+      const url = String(call.args[0]);
+      return (
+        url.startsWith('/api/v1/runtime-sessions/runtime-session-1') &&
+        !url.includes('/gateway-events') &&
+        !url.includes('/activity') &&
+        !url.includes('/requests')
       );
+    });
 
     expect(listCall).to.not.equal(undefined);
-    expect(detailCall).to.not.equal(undefined);
+    expect(detailCall).to.equal(undefined);
+
+    await waitUntil(() => {
+      const obs = element.shadowRoot?.querySelector(
+        'preloop-session-observer'
+      ) as any;
+      return (
+        obs?.activeSessionId === 'runtime-session-1' && !obs?.loadingSessionId
+      );
+    }, 'Observer did not finish loading selected session events');
+
+    expect(content).to.contain('anthropic/claude-sonnet-4');
   });
 
   it('shows flow-backed session content from execution gateway events', async () => {
@@ -516,7 +529,7 @@ describe('RuntimeSessionsView', () => {
     )) as RuntimeSessionsView;
 
     await waitUntil(
-      () => !(element as any).loading && !(element as any).detailLoading,
+      () => !(element as any).loading,
       'Runtime sessions view did not finish loading'
     );
 
@@ -533,7 +546,7 @@ describe('RuntimeSessionsView', () => {
         'preloop-session-observer'
       ) as any;
       return (
-        (element as any).detail?.session?.id === 'runtime-session-2' &&
+        (element as any).selectedSessionId === 'runtime-session-2' &&
         obs?.activeSessionId === 'runtime-session-2' &&
         !obs?.loadingSessionId
       );

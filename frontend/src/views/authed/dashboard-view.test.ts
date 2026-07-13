@@ -16,7 +16,6 @@ describe('DashboardView', () => {
   let gatewaySearchResponse: any;
   let auditResponse: any;
   let trackersResponse: any;
-  let apiUsageResponse: any;
   let apiKeysResponse: any;
   let issueCountResponse: any;
   let mcpServersResponse: any;
@@ -231,7 +230,6 @@ describe('DashboardView', () => {
       { id: 'tracker-2', name: 'Jira', type: 'jira' },
     ];
     apiKeysResponse = [];
-    apiUsageResponse = { total_requests: 321 };
     issueCountResponse = { total_issues: 27 };
     mcpServersResponse = [
       {
@@ -347,6 +345,7 @@ describe('DashboardView', () => {
         period: 'monthly',
         hard_limit_usd: 25,
         soft_limit_usd: 20,
+        current_spend_usd: 4.2,
         notify_on_soft: true,
         notify_on_hard: true,
         notification_emails: null,
@@ -397,12 +396,18 @@ describe('DashboardView', () => {
           return json(trackersResponse);
         }
 
-        if (url === '/api/v1/auth/api-usage') {
-          return json(apiUsageResponse);
-        }
-
         if (url === '/api/v1/auth/api-keys') {
           return json(apiKeysResponse);
+        }
+
+        if (url === '/api/v1/auth/users/me') {
+          return json({
+            username: 'tester',
+            email: 'tester@example.com',
+            email_verified: true,
+            is_superuser: false,
+            permissions: null,
+          });
         }
 
         if (url === '/api/v1/issue-count') {
@@ -472,7 +477,10 @@ describe('DashboardView', () => {
   it('renders the merged overview dashboard with legacy and control-plane cards', async () => {
     const element = await mountDashboard();
     await waitUntil(
-      () => !element['loading'],
+      () =>
+        !element['loading'] &&
+        !element['fetchingAudit'] &&
+        !element['fetchingMCPAndTools'],
       'dashboard did not finish loading'
     );
     await element.updateComplete;
@@ -492,7 +500,9 @@ describe('DashboardView', () => {
       () =>
         !element['loading'] &&
         !element['fetchingActiveAgents'] &&
-        !element['fetchingBudget'],
+        !element['fetchingBudget'] &&
+        !element['fetchingAudit'] &&
+        !element['fetchingMCPAndTools'],
       'dashboard did not finish loading'
     );
 
@@ -505,7 +515,17 @@ describe('DashboardView', () => {
         url.startsWith('/api/v1/account/gateway-usage/summary')
       )
     ).to.be.true;
-    expect(urls.some((url) => url.startsWith('/api/v1/agents'))).to.be.true;
+    expect(
+      urls.filter((url) =>
+        url.startsWith('/api/v1/account/gateway-usage/summary')
+      ).length
+    ).to.be.at.most(2);
+    expect(urls.some((url) => url.includes('include_breakdown=false'))).to.be
+      .true;
+    expect(
+      urls.filter((url) => url.startsWith('/api/v1/agents')).length
+    ).to.equal(1);
+    expect(urls.some((url) => url === '/api/v1/auth/api-usage')).to.be.false;
     expect(urls.some((url) => url.startsWith('/api/v1/audit-logs/grouped'))).to
       .be.true;
     expect(urls).to.include('/api/v1/trackers');
@@ -515,6 +535,17 @@ describe('DashboardView', () => {
     expect(urls).to.include('/api/v1/flows/executions?limit=10');
     expect(urls.some((url) => url.startsWith('/api/v1/approval-requests'))).to
       .be.true;
+
+    const updatedAt = element.shadowRoot?.querySelector('.updated-at');
+    expect(updatedAt?.textContent || '').to.match(/Last updated (just now|\d)/);
+    expect(updatedAt?.textContent || '').to.not.contain('Never');
+    expect(updatedAt?.textContent || '').to.not.contain('Loading');
+
+    const failedRow = element.shadowRoot?.querySelector(
+      '.item-card.failed-execution'
+    );
+    expect(failedRow).to.exist;
+    expect(element.shadowRoot?.querySelector('.item-card.danger')).to.not.exist;
   });
 
   it('hides exception cards when there is nothing actionable to show', async () => {
@@ -529,7 +560,10 @@ describe('DashboardView', () => {
 
     const element = await mountDashboard();
     await waitUntil(
-      () => !element['loading'],
+      () =>
+        !element['loading'] &&
+        !element['fetchingAudit'] &&
+        !element['fetchingMCPAndTools'],
       'dashboard did not finish loading'
     );
     await element.updateComplete;
@@ -545,7 +579,9 @@ describe('DashboardView', () => {
       () =>
         !element['loading'] &&
         !element['fetchingActiveAgents'] &&
-        !element['fetchingBudget'],
+        !element['fetchingBudget'] &&
+        !element['fetchingAudit'] &&
+        !element['fetchingMCPAndTools'],
       'dashboard did not finish loading'
     );
     await element.updateComplete;
@@ -611,7 +647,9 @@ describe('DashboardView', () => {
       () =>
         !element['loading'] &&
         !element['fetchingActiveAgents'] &&
-        !element['fetchingBudget'],
+        !element['fetchingBudget'] &&
+        !element['fetchingAudit'] &&
+        !element['fetchingMCPAndTools'],
       'dashboard did not finish loading'
     );
     await element.updateComplete;
@@ -631,7 +669,9 @@ describe('DashboardView', () => {
       () =>
         !element['loading'] &&
         !element['fetchingActiveAgents'] &&
-        !element['fetchingBudget'],
+        !element['fetchingBudget'] &&
+        !element['fetchingAudit'] &&
+        !element['fetchingMCPAndTools'],
       'dashboard did not finish loading'
     );
     await element.updateComplete;
@@ -718,7 +758,9 @@ describe('DashboardView', () => {
       () =>
         !element['loading'] &&
         !element['fetchingActiveAgents'] &&
-        !element['fetchingBudget'],
+        !element['fetchingBudget'] &&
+        !element['fetchingAudit'] &&
+        !element['fetchingMCPAndTools'],
       'dashboard did not finish loading'
     );
     await element.updateComplete;
@@ -764,7 +806,9 @@ describe('DashboardView', () => {
       () =>
         !element['loading'] &&
         !element['fetchingActiveAgents'] &&
-        !element['fetchingBudget'],
+        !element['fetchingBudget'] &&
+        !element['fetchingAudit'] &&
+        !element['fetchingMCPAndTools'],
       'dashboard did not finish loading'
     );
     await element.updateComplete;
@@ -807,7 +851,9 @@ describe('DashboardView', () => {
       () =>
         !element['loading'] &&
         !element['fetchingActiveAgents'] &&
-        !element['fetchingBudget'],
+        !element['fetchingBudget'] &&
+        !element['fetchingAudit'] &&
+        !element['fetchingMCPAndTools'],
       'dashboard did not finish loading'
     );
     await element.updateComplete;

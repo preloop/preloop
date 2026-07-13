@@ -454,7 +454,11 @@ export class ApiUsageView extends LitElement {
 
       const searchQuery = this.searchQuery.trim();
       const [summary, searchResults] = await Promise.all([
-        getAccountGatewayUsageSummary(params),
+        getAccountGatewayUsageSummary({
+          ...params,
+          // This view renders model/flow/session/day breakdowns.
+          includeBreakdown: true,
+        }),
         getAccountGatewayUsageSearch({
           ...params,
           query: searchQuery || undefined,

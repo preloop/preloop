@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Flow orchestration on sync workers**: Optional `FLOW_EXECUTION_WORKER_ENABLED` runs `FlowExecutionOrchestrator` on a dedicated JetStream worker pool (`execute_flow` / `resume_flow_execution`) with DB claim/heartbeat leases, ack-after-claim, periodic stale-claim reclaim, SIGTERM drain/redispatch, and API-side recovery gated when the flag is on. Helm pool `flow-execution` and compose `flow-worker` service included.
 - **Durable Agent Control command persistence**: Operator commands are stored before delivery, with ack/delivery scoped to the target managed agent, batched redelivery marks, and enum CHECK constraints for command status / cost provenance markers.
 - **Per-agent native-tool approval workflow**: Operators can pin an approval workflow on a managed agent from the Console agent detail view (Tools & Governance → Native tool approvals). The pin is stored in subject governance as `approval_workflow_id` and takes precedence over the account default when `POST /api/v1/agents/permission-check` resolves a workflow. Governance updates reject workflow IDs that are invalid or not in the account.
 - **Default approval-workflow backfill**: The API startup repair pass now also seeds the account-default workflow (owner as approver) for active accounts that have none, covering signup-seed background tasks lost to restarts or transient failures.
@@ -23,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Gateway summary opt-in for light cards**: Console Overview/Agents pass
+  `include_breakdown=false` on `GET /api/v1/account/gateway-usage/summary` for
+  faster first paint. The API default remains `true` so external consumers keep
+  the historical full-breakdown response when the query param is omitted.
 - **Default workflow owner resolution**: Seeding the account-default approval workflow prefers `Account.primary_user_id` over the oldest user in the account.
 - **Live gateway validation throttling**: Upstream HTTP 429 during live validation is treated as proof the gateway credential and wiring work; onboarding no longer rolls back gateway config for throttled probes (hard `failed` still does).
 - **CLI approvals list**: `preloop approvals list` table output now shows type, mode, default flag, approver summary, and timeout instead of the outdated tool-pattern / auto-approve / active columns.

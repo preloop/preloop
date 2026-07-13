@@ -32,11 +32,13 @@ class TestApprovalRequestBase:
             tool_name="create_issue",
             tool_args={"project": "PROJ", "title": "Test"},
             agent_reasoning="User requested issue creation",
+            summary="Allow creating issue Test in PROJ?",
             execution_id="exec-123",
         )
         assert request.tool_name == "create_issue"
         assert request.tool_args == {"project": "PROJ", "title": "Test"}
         assert request.agent_reasoning == "User requested issue creation"
+        assert request.summary == "Allow creating issue Test in PROJ?"
         assert request.execution_id == "exec-123"
 
     def test_tool_name_required(self):
@@ -114,6 +116,11 @@ class TestApprovalRequestUpdate:
         assert update.resolved_at is None
         assert update.webhook_posted_at is None
         assert update.webhook_error is None
+
+    def test_update_summary(self):
+        """Test updating summary field."""
+        update = ApprovalRequestUpdate(summary="Allow the agent to force-push?")
+        assert update.summary == "Allow the agent to force-push?"
 
     def test_update_status(self):
         """Test updating status."""

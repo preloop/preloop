@@ -378,6 +378,78 @@ class FlowTriggerService:
         finally:
             orchestrator_db.close()
 
+    async def _start_flow_execution(
+        self,
+        flow: Flow,
+        event_data: Dict[str, Any],
+        nats_client,
+        *,
+        retry_of_execution_id: Optional[uuid.UUID] = None,
+        test_mode: bool = False,
+        precreated_execution: Any = None,
+    ) -> Any:
+        """Create (or reuse) a PENDING execution and hand it to a worker or local task.
+
+        When ``FLOW_EXECUTION_WORKER_ENABLED`` is true, publishes ``execute_flow``.
+        Otherwise falls back to ``asyncio.create_task`` in-process.
+        """
+        from preloop.services.flow_execution_dispatcher import (
+            dispatch_execute,
+            flow_execution_worker_enabled,
+        )
+        from preloop.services.flow_execution_runner import run_existing_execution
+        from preloop.services.flow_orchestrator import _make_json_serializable
+
+        if precreated_execution is not None:
+            execution = precreated_execution
+            execution_id = execution.id
+        else:
+            trigger_details = _make_json_serializable(
+                dict(event_data) if event_data else {}
+            )
+            if test_mode:
+                trigger_details["test_mode"] = True
+            execution_data = FlowExecutionCreate(
+                flow_id=flow.id
+                if isinstance(flow.id, uuid.UUID)
+                else uuid.UUID(str(flow.id)),
+                status="PENDING",
+                trigger_event_details=trigger_details,
+                retry_of_execution_id=retry_of_execution_id,
+            )
+            execution = crud_flow_execution.create(self.db, obj_in=execution_data)
+            self.db.commit()
+            self.db.refresh(execution)
+            execution_id = execution.id
+            logger.info("Created flow execution: %s", execution_id)
+
+        async def _local_run() -> None:
+            orchestrator_db = self._create_orchestrator_session()
+            try:
+                exec_row = crud_flow_execution.get(orchestrator_db, id=execution_id)
+                if not exec_row:
+                    raise ValueError(f"Failed to load execution {execution_id}")
+                flow_id = flow.id
+                if isinstance(flow_id, str):
+                    flow_id = uuid.UUID(flow_id)
+                orchestrator = FlowExecutionOrchestrator(
+                    orchestrator_db,
+                    flow_id=flow_id,
+                    trigger_event_data=exec_row.trigger_event_details or event_data,
+                    nats_client=nats_client,
+                )
+                orchestrator.execution_log = exec_row
+                await run_existing_execution(orchestrator)
+            finally:
+                orchestrator_db.close()
+
+        if flow_execution_worker_enabled():
+            await dispatch_execute(execution_id)
+        else:
+            asyncio.create_task(_local_run())
+
+        return execution
+
     def _matches_trigger_config(self, flow: Flow, event_data: Dict[str, Any]) -> bool:
         """
         Check if the event matches the flow's trigger_config (if specified).
@@ -661,16 +733,11 @@ class FlowTriggerService:
                     logger.info(
                         f"Triggering flow '{flow.name}' ({flow.id}) for event {event_type}"
                     )
-                    # Launch orchestrator using a fresh DB session so it isn't tied
-                    # to the request lifecycle (webhooks close the request session
-                    # immediately after returning a response).
                     event_copy = dict(event_data)
-                    asyncio.create_task(
-                        self._run_orchestrator_with_session(
-                            flow=flow,
-                            event_data=event_copy,
-                            nats_client=nats_client,
-                        )
+                    await self._start_flow_execution(
+                        flow=flow,
+                        event_data=event_copy,
+                        nats_client=nats_client,
                     )
                     logger.info(f"Flow '{flow.name}' ({flow.id}) execution initiated")
                 except Exception as e:
@@ -729,6 +796,10 @@ class FlowTriggerService:
             trigger_details.update(trigger_event_data)
         trigger_details["test_mode"] = test_mode
 
+        from preloop.services.flow_orchestrator import _make_json_serializable
+
+        trigger_details = _make_json_serializable(trigger_details)
+
         execution_data = FlowExecutionCreate(
             flow_id=flow_id,
             status="PENDING",
@@ -745,125 +816,30 @@ class FlowTriggerService:
 
         logger.info(f"Created flow execution: {execution_id}")
 
-        # Get NATS client
+        # Get NATS client (needed for local fallback path)
         nats_client = await get_nats_client()
 
-        # Create a new database session for the orchestrator to avoid session conflicts
-        from preloop.models.db.session import get_db_session
+        await self._start_flow_execution(
+            flow=flow,
+            event_data=trigger_details,
+            nats_client=nats_client,
+            precreated_execution=execution,
+        )
 
-        # Get new session for orchestrator
-        orchestrator_db = next(get_db_session())
-
-        try:
-            # Get the execution in the new session using CRUD layer
-            exec_in_new_session = crud_flow_execution.get(
-                orchestrator_db, id=execution_id
-            )
-
-            if not exec_in_new_session:
-                raise ValueError(
-                    f"Failed to retrieve execution {execution_id} in new session"
-                )
-
-            orchestrator = FlowExecutionOrchestrator(
-                orchestrator_db,
-                flow_id=uuid.UUID(flow.id) if isinstance(flow.id, str) else flow.id,
-                trigger_event_data=trigger_details,
-                nats_client=nats_client,
-            )
-
-            # Set the pre-created execution log
-            orchestrator.execution_log = exec_in_new_session
-
-            # Start execution in background (skip execution log creation since we already have it)
-            asyncio.create_task(self._run_orchestrator_without_creation(orchestrator))
-
-            # Return the execution info
-            return {
-                "id": str(execution_id),
-                "status": execution_status,
-                "flow_id": flow_id_str,
-            }
-        except Exception as e:
-            logger.error(f"Failed to start orchestrator: {e}", exc_info=True)
-            orchestrator_db.close()
-            raise
+        return {
+            "id": str(execution_id),
+            "status": execution_status,
+            "flow_id": flow_id_str,
+        }
 
     async def _run_orchestrator_without_creation(self, orchestrator):
-        """Run orchestrator starting from stage 2 (skip execution log creation)."""
+        """Deprecated local path; prefer ``run_existing_execution``."""
+        from preloop.services.flow_execution_runner import run_existing_execution
+
         try:
-            # Retrieve flow details first (needed for account_id in messages)
-            orchestrator._get_flow_details()
-
-            # Publish execution_started event for UI notification
-            await orchestrator._publish_update(
-                "execution_started",
-                {
-                    "status": "PENDING",
-                    "flow_id": str(orchestrator.flow_id),
-                    "flow_name": orchestrator.flow.name if orchestrator.flow else None,
-                },
-            )
-
-            await orchestrator._update_execution_log(status="INITIALIZING")
-
-            # Stage 3: Prepare execution context
-            execution_context = await orchestrator._prepare_execution_context()
-
-            # Store resolved prompt
-            await orchestrator._update_execution_log(
-                status="RUNNING",
-                resolved_input_prompt=execution_context["prompt"],
-            )
-
-            # Stage 4: Start agent session (returns session reference and executor)
-            session_reference, agent_executor = await orchestrator._start_agent_session(
-                execution_context
-            )
-
-            # Update with session reference
-            await orchestrator._update_execution_log(
-                status="RUNNING",
-                agent_session_reference=session_reference,
-            )
-
-            # Stage 5: Monitor agent execution (pass the executor to avoid creating duplicate)
-            agent_result = await orchestrator._monitor_agent_execution(
-                session_reference, agent_executor
-            )
-
-            # Update with final results
-            from datetime import datetime, timezone
-
-            final_status = agent_result.get("status", "FAILED")
-            await orchestrator._update_execution_log(
-                status=final_status,
-                model_output_summary=agent_result.get("output_summary"),
-                error_message=agent_result.get("error_message"),
-                actions_taken_summary=agent_result.get("actions_taken"),
-                mcp_usage_logs=agent_result.get("mcp_usage_logs"),
-                end_time=datetime.now(timezone.utc),
-            )
-
-            logger.info(f"Flow execution completed: {orchestrator.execution_log.id}")
-
-        except Exception as e:
-            logger.error(f"Flow execution failed: {e}", exc_info=True)
-            from datetime import datetime, timezone
-
-            if orchestrator.execution_log:
-                try:
-                    await orchestrator._update_execution_log(
-                        status="FAILED",
-                        error_message=str(e),
-                        end_time=datetime.now(timezone.utc),
-                    )
-                except Exception as update_error:
-                    logger.error(f"Failed to update execution log: {update_error}")
+            await run_existing_execution(orchestrator)
         finally:
             orchestrator._cleanup_temporary_api_token()
-            # Close the database session to prevent connection leaks
-            # The session was created in trigger_flow() and passed to the orchestrator
             if orchestrator.db:
                 try:
                     orchestrator.db.close()

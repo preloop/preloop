@@ -1,7 +1,11 @@
 import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { AuthedElement } from '../../api';
-import { parseUTCDate } from '../../utils/date';
+import {
+  formatFutureRelativeTime,
+  formatRelativeTime,
+  parseUTCDate,
+} from '../../utils/date';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -24,6 +28,7 @@ interface ApprovalRequest {
   approval_workflow_id: string;
   execution_id: string | null;
   tool_name: string;
+  summary: string | null;
   tool_args: Record<string, any>;
   agent_reasoning: string | null;
   status: 'pending' | 'approved' | 'declined' | 'expired' | 'cancelled';
@@ -274,6 +279,7 @@ export class ApprovalsView extends AuthedElement {
         approval_workflow_id: message.approval_workflow_id || '',
         execution_id: message.execution_id || null,
         tool_name: message.tool_name,
+        summary: message.summary || null,
         tool_args: message.tool_args || {},
         agent_reasoning: message.agent_reasoning || null,
         status: 'pending',
@@ -282,6 +288,10 @@ export class ApprovalsView extends AuthedElement {
         expires_at: message.expires_at || null,
         approver_comment: null,
       };
+
+      if (!this.isUnexpiredPendingRequest(newApproval)) {
+        return;
+      }
 
       // Add to the beginning of the list
       this.approvalRequests = [newApproval, ...this.approvalRequests];
@@ -326,11 +336,13 @@ export class ApprovalsView extends AuthedElement {
       const data = await this.fetchData('/api/v1/approval-requests?limit=100');
       if (data && Array.isArray(data)) {
         // Sort by requested_at descending (most recent first)
-        this.approvalRequests = data.sort(
-          (a, b) =>
-            new Date(b.requested_at).getTime() -
-            new Date(a.requested_at).getTime()
-        );
+        this.approvalRequests = data
+          .map((request) => this.normalizeApprovalRequest(request))
+          .sort(
+            (a, b) =>
+              parseUTCDate(b.requested_at).getTime() -
+              parseUTCDate(a.requested_at).getTime()
+          );
         this.applyFilters();
         this.calculateStats();
       }
@@ -403,6 +415,7 @@ export class ApprovalsView extends AuthedElement {
       filtered = filtered.filter(
         (r) =>
           r.tool_name.toLowerCase().includes(query) ||
+          r.summary?.toLowerCase().includes(query) ||
           r.execution_id?.toLowerCase().includes(query) ||
           r.agent_reasoning?.toLowerCase().includes(query) ||
           JSON.stringify(r.tool_args).toLowerCase().includes(query)
@@ -418,18 +431,35 @@ export class ApprovalsView extends AuthedElement {
   }
 
   private formatDate(dateStr: string): string {
-    const date = parseUTCDate(dateStr);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMs / 3600000);
-    const diffDays = Math.floor(diffMs / 86400000);
+    return formatRelativeTime(dateStr);
+  }
 
-    if (diffMins < 1) return 'just now';
-    if (diffMins < 60) return `${diffMins}m ago`;
-    if (diffHours < 24) return `${diffHours}h ago`;
-    if (diffDays < 7) return `${diffDays}d ago`;
-    return date.toLocaleDateString();
+  private formatExpiryDate(dateStr: string): string {
+    return formatFutureRelativeTime(dateStr);
+  }
+
+  private isUnexpiredPendingRequest(request: ApprovalRequest): boolean {
+    if (request.status !== 'pending') {
+      return false;
+    }
+    if (!request.expires_at) {
+      return true;
+    }
+    return parseUTCDate(request.expires_at).getTime() > Date.now();
+  }
+
+  private normalizeApprovalRequest(request: ApprovalRequest): ApprovalRequest {
+    if (
+      request.status !== 'pending' ||
+      this.isUnexpiredPendingRequest(request)
+    ) {
+      return request;
+    }
+    return {
+      ...request,
+      status: 'expired',
+      resolved_at: request.resolved_at || request.expires_at,
+    };
   }
 
   private formatFullDate(dateStr: string): string {
@@ -662,7 +692,19 @@ export class ApprovalsView extends AuthedElement {
                           <div class="approval-info">
                             <div class="approval-tool">
                               <sl-icon name="tools"></sl-icon>
-                              <code>${request.tool_name}</code>
+                              ${
+                                request.summary
+                                  ? html`<span
+                                      style="font-weight: 500; max-width: 520px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                                      title=${request.summary}
+                                      >${
+                                        request.summary.length > 120
+                                          ? `${request.summary.substring(0, 120)}…`
+                                          : request.summary
+                                      }</span
+                                    >`
+                                  : html`<code>${request.tool_name}</code>`
+                              }
                               <sl-tag
                                 size="small"
                                 variant=${this.getStatusVariant(request.status)}
@@ -678,6 +720,22 @@ export class ApprovalsView extends AuthedElement {
                                 }
                               </sl-tag>
                             </div>
+                            ${
+                              request.summary
+                                ? html`
+                                    <div
+                                      class="approval-meta"
+                                      style="margin-top: 2px;"
+                                    >
+                                      <span class="approval-meta-item">
+                                        <code style="font-size: 0.8em;"
+                                          >${request.tool_name}</code
+                                        >
+                                      </span>
+                                    </div>
+                                  `
+                                : ''
+                            }
                             <div class="approval-meta">
                               <sl-tooltip
                                 content=${this.formatFullDate(
@@ -736,7 +794,9 @@ export class ApprovalsView extends AuthedElement {
                                         >
                                           <sl-icon name="hourglass"></sl-icon>
                                           Expires
-                                          ${this.formatDate(request.expires_at)}
+                                          ${this.formatExpiryDate(
+                                            request.expires_at
+                                          )}
                                         </span>
                                       </sl-tooltip>
                                     `
@@ -744,7 +804,7 @@ export class ApprovalsView extends AuthedElement {
                               }
                             </div>
                             ${
-                              request.agent_reasoning
+                              !request.summary && request.agent_reasoning
                                 ? html`
                                     <div
                                       style="font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-700); margin-top: var(--sl-spacing-2x-small); font-style: italic; max-width: 600px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
