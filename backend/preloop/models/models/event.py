@@ -30,9 +30,15 @@ class Event(Base):
         User Session Events:
           - session_start: WebSocket connection established
           - session_end: WebSocket disconnection
+          - session_hello: Rich device/attribution blob sent once per session
           - page_view: User navigated to a page
           - action: User performed an action (click, form submit, etc.)
           - conversion: User completed a conversion event
+
+        Check-in Events (written by the EE growth plugin; ``fingerprint``
+        holds the instance uuid / CLI client id as the correlation key):
+          - instance_check_in: A tracked OSS/EE instance version check
+          - cli_check_in: A tracked CLI install version check
 
         System Events:
           - flow_execution_started: Flow execution initiated
@@ -115,6 +121,26 @@ class Event(Base):
     )
     user_agent: Mapped[Optional[str]] = mapped_column(
         String(512), nullable=True, comment="Browser user agent string"
+    )
+
+    # Analytics enrichment (populated by the EE growth plugin; NULL on OSS)
+    visitor_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
+        index=True,
+        comment="Client-generated visitor id (see Visitor model)",
+    )
+    client_type: Mapped[Optional[str]] = mapped_column(
+        String(20),
+        nullable=True,
+        index=True,
+        comment="web | mobile_web | ios | android | cli | oss_instance | api | system",
+    )
+    browser: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True, comment="Browser family parsed from user agent"
+    )
+    os: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True, comment="Operating system parsed from user agent"
     )
 
     # Geolocation (populated from IP for session_start)

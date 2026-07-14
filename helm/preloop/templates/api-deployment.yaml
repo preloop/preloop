@@ -129,6 +129,15 @@ spec:
             {{- end }}
             - name: PROFILING_ENABLED
               value: {{ .Values.profiling.enabled | quote }}
+            {{- if .Values.geoip.enabled }}
+            - name: PRELOOP_GEOIP_DB_PATH
+              value: {{ .Values.geoip.dbPath | quote }}
+            - name: PRELOOP_GEOIP_AUTO_DOWNLOAD
+              value: {{ .Values.geoip.autoDownload | quote }}
+            {{- else }}
+            - name: PRELOOP_GEOIP_AUTO_DOWNLOAD
+              value: "false"
+            {{- end }}
             - name: STRIPE_SECRET_KEY
               value: {{ .Values.stripe.secretKey | quote }}
             - name: STRIPE_WEBHOOK_SECRET
@@ -274,6 +283,10 @@ spec:
             - name: profiling-storage
               mountPath: /tmp/profiling
             {{- end }}
+            {{- if .Values.geoip.enabled }}
+            - name: geoip-storage
+              mountPath: {{ dir .Values.geoip.dbPath }}
+            {{- end }}
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
           livenessProbe:
@@ -299,6 +312,15 @@ spec:
         - name: profiling-storage
           persistentVolumeClaim:
             claimName: {{ include "preloop.fullname" . }}-profiling
+      {{- end }}
+      {{- if .Values.geoip.enabled }}
+        - name: geoip-storage
+          {{- if .Values.geoip.storage.pvc.create }}
+          persistentVolumeClaim:
+            claimName: {{ include "preloop.fullname" . }}-geoip
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
       {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

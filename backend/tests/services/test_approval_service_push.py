@@ -252,6 +252,122 @@ class TestSendPushNotification:
                 # Both tokens should be marked for removal
                 assert result["invalid_tokens_removed"] == 2
 
+    async def test_send_push_notification_prunes_blank_ios_token(
+        self,
+        approval_service,
+        sample_approval_request,
+        sample_approval_workflow,
+        mock_apns_service,
+    ):
+        """Legacy blank tokens are pruned without calling APNs."""
+        user_id_1, _user_id_2 = sample_approval_workflow.approver_user_ids
+
+        def mock_run_in_executor(executor, func):
+            import asyncio
+
+            future = asyncio.Future()
+            future.set_result(([user_id_1], [(user_id_1, "   ")], []))
+            return future
+
+        with patch(
+            "preloop.services.push_notifications.get_apns_service",
+            return_value=mock_apns_service,
+        ):
+            with patch("asyncio.get_event_loop") as mock_get_loop:
+                mock_loop = MagicMock()
+                mock_loop.run_in_executor = mock_run_in_executor
+                mock_get_loop.return_value = mock_loop
+
+                result = await approval_service._send_push_notification(
+                    sample_approval_request, sample_approval_workflow
+                )
+
+                assert result["success"] is True
+                assert result["sent"] == 0
+                assert result["failed"] == 0
+                assert result["invalid_tokens_removed"] == 1
+                assert result["failure_details"] == [
+                    {
+                        "platform": "ios",
+                        "token": "<blank>",
+                        "status_code": 400,
+                        "reason": "MissingDeviceToken",
+                        "pruned": True,
+                    }
+                ]
+                mock_apns_service.send_notification.assert_not_called()
+
+    async def test_send_push_notification_partial_failure_alert_includes_reason(
+        self,
+        approval_service,
+        sample_approval_request,
+        sample_approval_workflow,
+        mock_apns_service,
+    ):
+        """Admin alert includes masked token and provider reason for real failures."""
+        user_id_1, user_id_2 = sample_approval_workflow.approver_user_ids
+        mock_apns_service.send_notification = AsyncMock(
+            side_effect=[
+                (True, 200, None),
+                (False, 500, "InternalServerError"),
+            ]
+        )
+
+        def mock_run_in_executor(executor, func):
+            import asyncio
+
+            future = asyncio.Future()
+            future.set_result(
+                (
+                    [user_id_1, user_id_2],
+                    [(user_id_1, "a" * 64), (user_id_2, "b" * 64)],
+                    [],
+                )
+            )
+            return future
+
+        task_publisher = AsyncMock()
+
+        with patch(
+            "preloop.services.push_notifications.get_apns_service",
+            return_value=mock_apns_service,
+        ):
+            with patch(
+                "preloop.services.approval_service.get_task_publisher",
+                new=AsyncMock(return_value=task_publisher),
+            ):
+                with patch("asyncio.get_event_loop") as mock_get_loop:
+                    mock_loop = MagicMock()
+                    mock_loop.run_in_executor = mock_run_in_executor
+                    mock_get_loop.return_value = mock_loop
+
+                    result = await approval_service._send_push_notification(
+                        sample_approval_request, sample_approval_workflow
+                    )
+
+        assert result["success"] is False
+        assert result["sent"] == 1
+        assert result["failed"] == 1
+        assert result["invalid_tokens_removed"] == 0
+        assert result["error"] == "InternalServerError"
+        assert result["failure_details"] == [
+            {
+                "platform": "ios",
+                "token": "bbbbbbbb...bbbb",
+                "status_code": 500,
+                "reason": "InternalServerError",
+                "pruned": False,
+            }
+        ]
+        task_publisher.publish_task.assert_awaited_once()
+        publish_kwargs = task_publisher.publish_task.await_args.kwargs
+        assert publish_kwargs["subject"] == "Push Notification Delivery Failed"
+        assert "Sent: 1, Failed: 1" in publish_kwargs["message"]
+        assert (
+            "ios token=bbbbbbbb...bbbb status=500 reason=InternalServerError"
+            in publish_kwargs["message"]
+        )
+
     async def test_send_notifications_triggers_push(
         self,
         approval_service,

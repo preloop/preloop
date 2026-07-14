@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/preloop/preloop/cli/internal/telemetry"
 	"github.com/preloop/preloop/cli/internal/version"
 )
 
@@ -43,6 +44,10 @@ Authentication priority: --token flag > PRELOOP_TOKEN env var > ~/.preloop/confi
 API URL priority:        --url flag   > PRELOOP_URL env var   > ~/.preloop/config.yaml`,
 
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		// Count top-level command-category usage locally (names only, never
+		// arguments); merged into the daily check-in and reset on success.
+		telemetry.Increment(topLevelCommandName(cmd))
+
 		// Check for updates on each invocation (cached daily)
 		if err := version.CheckForUpdate(); err != nil {
 			// Silently ignore update check errors
@@ -51,6 +56,18 @@ API URL priority:        --url flag   > PRELOOP_URL env var   > ~/.preloop/confi
 			}
 		}
 	},
+}
+
+// topLevelCommandName resolves the first-level subcommand a run belongs to
+// (e.g. "agents" for `preloop agents list`), or "" for the bare root.
+func topLevelCommandName(cmd *cobra.Command) string {
+	if cmd == nil || !cmd.HasParent() {
+		return ""
+	}
+	for cmd.HasParent() && cmd.Parent().HasParent() {
+		cmd = cmd.Parent()
+	}
+	return cmd.Name()
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.

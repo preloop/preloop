@@ -387,6 +387,21 @@ profiling:
       # Size of the PVC
       size: 1Gi
 
+# Local GeoIP database for analytics enrichment (EE growth plugin).
+# When enabled, a PVC is mounted on the API pods and the plugin downloads /
+# refreshes the freely licensed DB-IP City Lite database (CC BY 4.0,
+# MaxMind-format) on startup. IP lookups happen locally — client IPs never
+# leave the server. Operators may pre-place a GeoLite2 database at dbPath.
+geoip:
+  enabled: false
+  autoDownload: true
+  dbPath: /var/lib/preloop/geoip/dbip-city-lite.mmdb
+  storage:
+    pvc:
+      create: true
+      storageClassName: ""
+      size: 1Gi
+
 # NATS configuration
 nats:
   enabled: true

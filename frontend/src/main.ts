@@ -25,6 +25,7 @@ import { Theme, DEFAULT_THEME } from './theme';
 import { unifiedWebSocketManager } from './services/unified-websocket-manager';
 import { activityTracker } from './services/activity-tracker';
 import { recordPathChange } from './services/web-analytics';
+import { captureAttribution } from './services/attribution';
 import { router } from './router';
 
 function applyTheme(theme: Theme) {
@@ -66,6 +67,10 @@ window
 // Initialize unified WebSocket connection
 // This establishes a persistent connection that survives page navigation
 unifiedWebSocketManager.connect();
+
+// Capture first-touch attribution (entry page, referrer, UTM) before any
+// navigation happens; sent with the analytics session hello.
+captureAttribution();
 
 // Initialize activity tracking
 activityTracker.initializeAutoTracking();

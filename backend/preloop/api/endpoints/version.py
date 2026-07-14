@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 from typing import Annotated, Optional
 
@@ -13,8 +14,13 @@ from preloop.config import (
     settings,
 )  # Import constants directly
 from preloop.models.crud import crud_audit_log
-from preloop.api.auth import get_current_user  # Remove oauth2_scheme import
-from preloop.schemas.version import VersionInfo
+from preloop.api.auth import get_current_active_user, get_current_user
+from preloop.models.models import User
+from preloop.schemas.version import ClientVersionInfo, VersionInfo, VersionStatus
+from preloop.services.instance_service import (
+    get_local_update_status,
+    is_telemetry_disabled,
+)
 from preloop.utils import get_client_ip
 from preloop.models.db.session import (
     get_db_session,
@@ -154,11 +160,67 @@ async def get_version_info(
         client_version_header=x_client_version,
     )
 
+    update_status = get_local_update_status()
+
     return VersionInfo(
         server_version=SERVER_VERSION,
         min_client_version=MIN_CLIENT_VERSION,
         max_client_version=MAX_CLIENT_VERSION,
-        latest_version=SERVER_VERSION,
+        latest_version=update_status.get("latest_version") or SERVER_VERSION,
         min_version=MIN_CLIENT_VERSION,
         download_url="https://preloop.ai/install/cli",
+        update_available=bool(update_status.get("update_available")),
+        clients=_client_version_contracts(),
+    )
+
+
+def _client_version_contracts() -> dict[str, ClientVersionInfo]:
+    """Per-platform native-app update contracts from deploy-time env vars."""
+    contracts: dict[str, ClientVersionInfo] = {}
+    ios_latest = os.environ.get("IOS_LATEST_VERSION", "").strip()
+    android_latest = os.environ.get("ANDROID_LATEST_VERSION", "").strip()
+    if ios_latest:
+        contracts["ios"] = ClientVersionInfo(
+            min_version=os.environ.get("IOS_MIN_VERSION", "").strip(),
+            latest_version=ios_latest,
+            store_url=os.environ.get(
+                "IOS_APP_STORE_URL",
+                "https://apps.apple.com/app/preloop/id6757803021",
+            ),
+        )
+    if android_latest:
+        contracts["android"] = ClientVersionInfo(
+            min_version=os.environ.get("ANDROID_MIN_VERSION", "").strip(),
+            latest_version=android_latest,
+            store_url=os.environ.get(
+                "ANDROID_PLAY_STORE_URL",
+                "https://play.google.com/store/apps/details?id=ai.spacecode.preloop",
+            ),
+        )
+    return contracts
+
+
+@router.get("/version/status", response_model=VersionStatus)
+async def get_version_status(
+    current_user: User = Depends(get_current_active_user),
+):
+    """Update status for this installation (admins only).
+
+    Drives the console's "a newer Preloop is available" banner for
+    self-hosted administrators. Reflects the instance's own daily version
+    check; reports no update when telemetry is disabled or no check has
+    completed.
+    """
+    if not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    status = get_local_update_status()
+    return VersionStatus(
+        version=SERVER_VERSION,
+        update_available=bool(status.get("update_available")),
+        latest_version=status.get("latest_version"),
+        update_url=status.get("update_url"),
+        changelog_url=status.get("changelog_url"),
+        checked_at=status.get("checked_at"),
+        telemetry_enabled=not is_telemetry_disabled(),
     )

@@ -10,6 +10,7 @@
  */
 
 import { MessageRouter } from './message-router';
+import { getVisitorId } from './visitor-id';
 
 export enum ConnectionState {
   DISCONNECTED = 'disconnected',
@@ -119,10 +120,11 @@ export class UnifiedWebSocketManager {
       const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
       const host = window.location.host;
 
-      // Build URL with fingerprint only (no token in URL)
+      // Build URL with anonymous identifiers only (no token in URL)
       const params = new URLSearchParams();
       const fingerprint = await this.getBrowserFingerprint();
       params.append('fingerprint', fingerprint);
+      params.append('visitor_id', getVisitorId());
 
       const url = `${protocol}://${host}/api/v1/ws/unified?${params.toString()}`;
 
