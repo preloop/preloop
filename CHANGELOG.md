@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+Add missing create_first_user.py script
+
 ## [0.11.0] - 2026-07-13
 
 ### Overview — 0.11.0 since 0.10.0
