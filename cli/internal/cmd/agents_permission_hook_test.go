@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestNormalizePermissionSource(t *testing.T) {
@@ -61,7 +62,7 @@ func TestBuildPermissionRequestClaudeCodeHonorsConfig(t *testing.T) {
 		"tool_name":"Bash",
 		"tool_input":{"command":"npm run test:unit","description":"run unit tests"}
 	}`)
-	req, err := buildPermissionRequest(permissionSourceClaudeCode, raw)
+	req, err := buildPermissionRequest(permissionSourceClaudeCode, raw, permissionHookCredential{})
 	if err != nil {
 		t.Fatalf("buildPermissionRequest: %v", err)
 	}
@@ -81,7 +82,7 @@ func TestBuildPermissionRequestClaudeCodeHonorsConfig(t *testing.T) {
 
 func TestBuildPermissionRequestCodexOmitsClientDecision(t *testing.T) {
 	raw := []byte(`{"session_id":"s","cwd":"/w","tool_name":"Bash","tool_input":{"command":"ls"}}`)
-	req, err := buildPermissionRequest(permissionSourceCodexCLI, raw)
+	req, err := buildPermissionRequest(permissionSourceCodexCLI, raw, permissionHookCredential{})
 	if err != nil {
 		t.Fatalf("buildPermissionRequest: %v", err)
 	}
@@ -94,8 +95,8 @@ func TestBuildPermissionRequestCodexOmitsClientDecision(t *testing.T) {
 }
 
 func TestBuildPermissionRequestCursorShellAndMCP(t *testing.T) {
-	shell := []byte(`{"command":"rm -rf /tmp/x","cwd":"/w","conversation_id":"c-1"}`)
-	req, err := buildPermissionRequest(permissionSourceCursor, shell)
+	shell := []byte(`{"command":"rm -rf /tmp/x","cwd":"/w","conversation_id":"c-1","sandbox":false}`)
+	req, err := buildPermissionRequest(permissionSourceCursor, shell, permissionHookCredential{})
 	if err != nil {
 		t.Fatalf("buildPermissionRequest shell: %v", err)
 	}
@@ -108,9 +109,12 @@ func TestBuildPermissionRequestCursorShellAndMCP(t *testing.T) {
 	if req.SessionID != "c-1" {
 		t.Errorf("expected conversation_id as session, got %q", req.SessionID)
 	}
+	if req.ClientDecision != "ask" {
+		t.Errorf("non-allowlisted non-sandbox shell should ask, got %q", req.ClientDecision)
+	}
 
 	mcp := []byte(`{"tool_name":"search","tool_input":"{\"q\":\"hi\"}","url":"https://x","conversation_id":"c-2"}`)
-	req, err = buildPermissionRequest(permissionSourceCursor, mcp)
+	req, err = buildPermissionRequest(permissionSourceCursor, mcp, permissionHookCredential{})
 	if err != nil {
 		t.Fatalf("buildPermissionRequest mcp: %v", err)
 	}
@@ -119,6 +123,9 @@ func TestBuildPermissionRequestCursorShellAndMCP(t *testing.T) {
 	}
 	if req.ToolInput["q"] != "hi" {
 		t.Errorf("expected decoded tool_input, got %v", req.ToolInput)
+	}
+	if req.ClientDecision != "ask" {
+		t.Errorf("third-party MCP should ask, got %q", req.ClientDecision)
 	}
 }
 
@@ -296,11 +303,14 @@ func TestInstallRemoveApprovalHooksClaudeCode(t *testing.T) {
 		t.Errorf("our hook was not installed: %v", pre)
 	}
 
-	// Credential file written with token.
+	// Credential file written with token and timeout.
 	credPath := filepath.Join(home, ".preloop", "agents", runtimePrincipalIDForAgent(agent), permissionHookCredentialFileName)
 	credDoc := readJSONDoc(t, credPath)
 	if credDoc["token"] != "agt_x" || credDoc["source"] != permissionSourceClaudeCode {
 		t.Errorf("credential file wrong: %v", credDoc)
+	}
+	if timeout, ok := credDoc["timeout_seconds"].(float64); !ok || timeout <= 0 {
+		t.Errorf("expected timeout_seconds in credential, got %v", credDoc["timeout_seconds"])
 	}
 
 	// Idempotent: re-install should not duplicate our entry.
@@ -460,4 +470,139 @@ func indexOf(s, sub string) int {
 		}
 	}
 	return -1
+}
+
+func TestPermissionCheckTimeoutFor(t *testing.T) {
+	t.Parallel()
+
+	got := permissionCheckTimeoutFor(permissionHookCredential{TimeoutSeconds: 600})
+	want := 600*time.Second + permissionCheckHTTPHeadroom
+	if got != want {
+		t.Fatalf("timeout = %v, want %v", got, want)
+	}
+
+	got = permissionCheckTimeoutFor(permissionHookCredential{})
+	want = time.Duration(defaultApprovalHookTimeoutSeconds)*time.Second + permissionCheckHTTPHeadroom
+	if got != want {
+		t.Fatalf("default timeout = %v, want %v", got, want)
+	}
+}
+
+func TestBuildPermissionRequestCursorAllowlistAndSandbox(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	policyPath := filepath.Join(dir, "permissions.json")
+	if err := os.WriteFile(policyPath, []byte(`{
+		"terminalAllowlist": ["git", "npm:install*"],
+		"mcpAllowlist": ["github:*"]
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cred := permissionHookCredential{
+		BaseURL:     "https://preloop.ai",
+		PolicyPaths: []string{policyPath},
+	}
+
+	cases := []struct {
+		name     string
+		raw      string
+		wantTool string
+		wantDec  string
+	}{
+		{
+			name:     "allowlisted shell",
+			raw:      `{"command":"git status","sandbox":false}`,
+			wantTool: "Shell",
+			wantDec:  "allow",
+		},
+		{
+			name:     "non-allowlisted shell asks",
+			raw:      `{"command":"rm -rf /tmp/x","sandbox":false}`,
+			wantTool: "Shell",
+			wantDec:  "ask",
+		},
+		{
+			name:     "sandboxed shell allows",
+			raw:      `{"command":"rm -rf /tmp/x","sandbox":true}`,
+			wantTool: "Shell",
+			wantDec:  "allow",
+		},
+		{
+			name:     "allowlisted mcp",
+			raw:      `{"tool_name":"list_issues","server_name":"github","tool_input":{}}`,
+			wantTool: "list_issues",
+			wantDec:  "allow",
+		},
+		{
+			name:     "preloop mcp allows",
+			raw:      `{"tool_name":"search","url":"https://preloop.ai/mcp","tool_input":{}}`,
+			wantTool: "search",
+			wantDec:  "allow",
+		},
+		{
+			name:     "third party mcp asks",
+			raw:      `{"tool_name":"delete","server_name":"other","url":"https://example.com","tool_input":{}}`,
+			wantTool: "delete",
+			wantDec:  "ask",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			req, err := buildPermissionRequest(permissionSourceCursor, []byte(tc.raw), cred)
+			if err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			if req.ToolName != tc.wantTool {
+				t.Fatalf("tool = %q, want %q", req.ToolName, tc.wantTool)
+			}
+			if req.ClientDecision != tc.wantDec {
+				t.Fatalf("client_decision = %q, want %q", req.ClientDecision, tc.wantDec)
+			}
+		})
+	}
+}
+
+func TestEvaluateClaudePermissionPolicySafeTools(t *testing.T) {
+	t.Parallel()
+
+	policy := claudePermissionPolicy{}
+	if got := evaluateClaudePermissionPolicy(policy, "", "Grep", nil); got != "allow" {
+		t.Fatalf("Grep = %q, want allow", got)
+	}
+	if got := evaluateClaudePermissionPolicy(policy, "", "Read", nil); got != "allow" {
+		t.Fatalf("Read = %q, want allow", got)
+	}
+	if got := evaluateClaudePermissionPolicy(policy, "", "Bash", map[string]interface{}{"command": "ls"}); got != "ask" {
+		t.Fatalf("Bash = %q, want ask", got)
+	}
+
+	policy.Allow = []string{"Bash"}
+	if got := evaluateClaudePermissionPolicy(policy, "", "Bash", map[string]interface{}{"command": "ls"}); got != "allow" {
+		t.Fatalf("allowed Bash = %q, want allow", got)
+	}
+
+	policy = claudePermissionPolicy{Deny: []string{"Grep"}}
+	if got := evaluateClaudePermissionPolicy(policy, "", "Grep", nil); got != "deny" {
+		t.Fatalf("denied Grep = %q, want deny", got)
+	}
+}
+
+func TestMatchCursorTerminalAllowlist(t *testing.T) {
+	t.Parallel()
+
+	allow := []string{"git", "npm:install*"}
+	if !matchCursorTerminalAllowlist(allow, "git status") {
+		t.Fatal("expected git status to match")
+	}
+	if !matchCursorTerminalAllowlist(allow, "npm install express") {
+		t.Fatal("expected npm install express to match")
+	}
+	if matchCursorTerminalAllowlist(allow, "rm -rf /") {
+		t.Fatal("did not expect rm to match")
+	}
 }

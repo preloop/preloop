@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/preloop/preloop/cli/internal/api"
 	"github.com/preloop/preloop/cli/internal/config"
 )
 
@@ -19,9 +20,9 @@ const permissionHookCredentialFileName = "permission_hook.json"
 // so install is idempotent and offboard removes only our entries.
 const permissionHookCommandMarker = "agents permission-hook"
 
-// approvalHookTimeoutSeconds bounds how long the agent waits for our hook to
-// return. It must exceed the backend's human-approval window (~300s).
-const approvalHookTimeoutSeconds = 300
+// approvalHookTimeoutSeconds is the legacy fallback name kept for callers that
+// still reference a constant; prefer resolveApprovalHookTimeoutSeconds().
+const approvalHookTimeoutSeconds = defaultApprovalHookTimeoutSeconds
 
 // permissionSourceForAgent maps a discovered agent to its permission-check
 // source, or "" if the agent is not supported by the local hook adapters.
@@ -119,6 +120,73 @@ func approvalHookCommand(source string) string {
 	return fmt.Sprintf("%s agents permission-hook --source %s", preloopExecutableForHooks(), source)
 }
 
+// resolveApprovalHookTimeoutSeconds returns the account default workflow
+// timeout when reachable, otherwise defaultApprovalHookTimeoutSeconds.
+func resolveApprovalHookTimeoutSeconds() int {
+	client, err := api.NewClient(FlagToken, FlagURL)
+	if err != nil || !client.IsAuthenticated() {
+		return defaultApprovalHookTimeoutSeconds
+	}
+	var policies []ApprovalWorkflow
+	if err := client.Get(approvalPoliciesPath, &policies); err != nil {
+		return defaultApprovalHookTimeoutSeconds
+	}
+	for _, policy := range policies {
+		if policy.IsDefault && policy.TimeoutSeconds > 0 {
+			return policy.TimeoutSeconds
+		}
+	}
+	for _, policy := range policies {
+		if policy.TimeoutSeconds > 0 {
+			return policy.TimeoutSeconds
+		}
+	}
+	return defaultApprovalHookTimeoutSeconds
+}
+
+// discoverAgentPolicyPaths returns native policy file paths for the agent
+// source so onboard can record them and the hook can re-read them later.
+func discoverAgentPolicyPaths(source string, workspaceRoot string) []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	switch source {
+	case permissionSourceCursor:
+		roots := []string{}
+		if workspaceRoot != "" {
+			roots = append(roots, workspaceRoot)
+		}
+		if cwd, cwdErr := os.Getwd(); cwdErr == nil && cwd != "" {
+			roots = append(roots, cwd)
+		}
+		return discoverCursorPermissionPolicyPaths(roots)
+	case permissionSourceClaudeCode:
+		return []string{
+			filepath.Join(home, ".claude", "settings.json"),
+			filepath.Join(home, ".claude", "settings.local.json"),
+		}
+	case permissionSourceCodexCLI:
+		return []string{filepath.Join(home, ".codex", "config.toml")}
+	default:
+		return nil
+	}
+}
+
+func workspaceRootForAgent(agent AgentConfig) string {
+	if cwd, err := os.Getwd(); err == nil && strings.TrimSpace(cwd) != "" {
+		return cwd
+	}
+	if strings.TrimSpace(agent.ConfigPath) == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(agent.ConfigPath)
+	if err != nil {
+		return ""
+	}
+	return filepath.Dir(abs)
+}
+
 // installApprovalHooks writes the per-agent credential file and registers the
 // native pre-tool hook for the agent. It is idempotent: re-running replaces our
 // existing entries rather than duplicating them.
@@ -131,7 +199,13 @@ func installApprovalHooks(agent AgentConfig, baseURL, token string, out io.Write
 		return fmt.Errorf("cannot install approval hook without a durable credential token")
 	}
 
-	if err := writePermissionHookCredential(agent, source, baseURL, token); err != nil {
+	timeoutSeconds := resolveApprovalHookTimeoutSeconds()
+	workspaceRoot := workspaceRootForAgent(agent)
+	policyPaths := discoverAgentPolicyPaths(source, workspaceRoot)
+
+	if err := writePermissionHookCredential(
+		agent, source, baseURL, token, timeoutSeconds, policyPaths, workspaceRoot,
+	); err != nil {
 		return err
 	}
 
@@ -143,12 +217,12 @@ func installApprovalHooks(agent AgentConfig, baseURL, token string, out io.Write
 
 	switch source {
 	case permissionSourceClaudeCode:
-		if err := upsertNestedCommandHook(configPath, "PreToolUse", "*", command, approvalHookTimeoutSeconds); err != nil {
+		if err := upsertNestedCommandHook(configPath, "PreToolUse", "*", command, timeoutSeconds); err != nil {
 			return err
 		}
 	case permissionSourceCodexCLI:
 		// Codex's hooks.json uses the same nested matcher/hooks shape as Claude.
-		if err := upsertNestedCommandHook(configPath, "PermissionRequest", "*", command, approvalHookTimeoutSeconds); err != nil {
+		if err := upsertNestedCommandHook(configPath, "PermissionRequest", "*", command, timeoutSeconds); err != nil {
 			return err
 		}
 	case permissionSourceCursor:
@@ -156,19 +230,52 @@ func installApprovalHooks(agent AgentConfig, baseURL, token string, out io.Write
 			configPath,
 			[]string{"beforeShellExecution", "beforeMCPExecution"},
 			command,
-			approvalHookTimeoutSeconds,
+			timeoutSeconds,
 		); err != nil {
 			return err
 		}
 	}
 
 	if out != nil {
-		fmt.Fprintf(out, "  Mobile approvals: installed %s hook (%s)\n", source, configPath) //nolint:errcheck
+		fmt.Fprintf(out, "  Mobile approvals: installed %s hook (%s)\n", source, configPath)                                                //nolint:errcheck
+		fmt.Fprintf(out, "  Approval wait timeout: %ds (re-run onboard --approvals after changing the workflow timeout)\n", timeoutSeconds) //nolint:errcheck
+		printAgentPolicySummary(out, source, policyPaths)
 		if source == permissionSourceCursor {
 			fmt.Fprintln(out, "  Note: Cursor reliably enforces only DENY from a hook; an allow may be overridden by Cursor's in-app allowlist.") //nolint:errcheck
 		}
 	}
 	return nil
+}
+
+func printAgentPolicySummary(out io.Writer, source string, policyPaths []string) {
+	if out == nil {
+		return
+	}
+	switch source {
+	case permissionSourceCursor:
+		policy, err := loadCursorPermissionPolicy(policyPaths)
+		if err != nil {
+			fmt.Fprintf(out, "  Mobile approvals: failed to load Cursor policy: %v\n", err) //nolint:errcheck
+			return
+		}
+		fmt.Fprintln(out, "  Mobile approvals: loaded Cursor policy") //nolint:errcheck
+		for _, line := range summarizeCursorPermissionPolicy(policy, policyPaths) {
+			fmt.Fprintf(out, "    %s\n", line) //nolint:errcheck
+		}
+	case permissionSourceClaudeCode:
+		policy, err := loadClaudePermissionPolicy()
+		if err != nil {
+			fmt.Fprintf(out, "  Mobile approvals: failed to load Claude policy: %v\n", err) //nolint:errcheck
+			return
+		}
+		fmt.Fprintln(out, "  Mobile approvals: loaded Claude Code policy")      //nolint:errcheck
+		fmt.Fprintf(out, "    allow: %d, deny: %d, ask: %d, defaultMode: %s\n", //nolint:errcheck
+			len(policy.Allow), len(policy.Deny), len(policy.Ask),
+			firstNonEmptyString(policy.DefaultMode, "(unset)"),
+		)
+	case permissionSourceCodexCLI:
+		fmt.Fprintln(out, "  Mobile approvals: Codex PermissionRequest only fires for would-prompt calls") //nolint:errcheck
+	}
 }
 
 // removeApprovalHooks removes our hook entries and the per-agent credential
@@ -213,7 +320,13 @@ func removeApprovalHooks(agent AgentConfig, out io.Writer) error {
 	return nil
 }
 
-func writePermissionHookCredential(agent AgentConfig, source, baseURL, token string) error {
+func writePermissionHookCredential(
+	agent AgentConfig,
+	source, baseURL, token string,
+	timeoutSeconds int,
+	policyPaths []string,
+	workspaceRoot string,
+) error {
 	path, err := permissionHookCredentialPath(agent)
 	if err != nil {
 		return err
@@ -225,12 +338,18 @@ func writePermissionHookCredential(agent AgentConfig, source, baseURL, token str
 	if resolvedBase == "" {
 		resolvedBase = config.DefaultAPIURL
 	}
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = defaultApprovalHookTimeoutSeconds
+	}
 	cred := permissionHookCredential{
 		BaseURL:          resolvedBase,
 		Token:            token,
 		Source:           source,
 		RuntimePrincipal: runtimePrincipalIDForAgent(agent),
 		ConfigPath:       agent.ConfigPath,
+		TimeoutSeconds:   timeoutSeconds,
+		PolicyPaths:      policyPaths,
+		WorkspaceRoot:    workspaceRoot,
 	}
 	data, err := json.MarshalIndent(cred, "", "  ")
 	if err != nil {

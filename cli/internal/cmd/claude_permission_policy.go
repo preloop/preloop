@@ -88,7 +88,8 @@ func readClaudeSettingsDocument(path string) (claudeSettingsDocument, bool, erro
 //  3. a matching ask rule     -> ask (takes precedence over allow)
 //  4. acceptEdits mode + edit tool -> allow
 //  5. a matching allow rule   -> allow
-//  6. otherwise               -> ask (the default "would prompt" case)
+//  6. safe read/search tools  -> allow (Claude's practical default)
+//  7. otherwise               -> ask (the default "would prompt" case)
 func evaluateClaudePermissionPolicy(
 	policy claudePermissionPolicy,
 	mode string,
@@ -112,6 +113,9 @@ func evaluateClaudePermissionPolicy(
 		return "allow"
 	}
 	if matchAnyClaudeRule(policy.Allow, toolName, toolInput) {
+		return "allow"
+	}
+	if isClaudeSafeReadTool(toolName) {
 		return "allow"
 	}
 	return "ask"
@@ -203,6 +207,17 @@ func claudeRuleTarget(toolName string, toolInput map[string]interface{}) string 
 func isClaudeEditTool(toolName string) bool {
 	switch strings.ToLower(strings.TrimSpace(toolName)) {
 	case "edit", "write", "multiedit", "notebookedit":
+		return true
+	default:
+		return false
+	}
+}
+
+// isClaudeSafeReadTool reports tools Claude Code typically auto-allows without
+// prompting (read/search/list). Explicit deny/ask rules still win above.
+func isClaudeSafeReadTool(toolName string) bool {
+	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	case "read", "grep", "glob", "ls", "notebookread", "search", "semanticsearch":
 		return true
 	default:
 		return false
