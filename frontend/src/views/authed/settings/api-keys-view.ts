@@ -636,7 +636,11 @@ export class ApiKeysView extends LitElement {
     };
 
     return html`
-      <view-header headerText="API Keys" width="narrow">
+      <view-header
+        headerText="API Keys"
+        description='Credentials for the gateway and MCP endpoints. Keys labeled "Managed Agent" were minted automatically when an agent was onboarded.'
+        width="narrow"
+      >
         <div slot="main-column">
           <sl-button
             variant="primary"

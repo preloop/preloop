@@ -3511,7 +3511,11 @@ export class AgentsView extends LitElement {
         </sl-dialog>
 
         <div class="content-bounds">
-          <view-header headerText="Agents" width="extra-wide">
+          <view-header
+            headerText="Agents"
+            description="Agents connected to Preloop — their gateway credentials, MCP access, and live status. Onboard agents you already run with the CLI, or deploy new ones."
+            width="extra-wide"
+          >
             <div
               slot="main-column"
               style="display: flex; gap: var(--sl-spacing-small); align-items: center;"
@@ -3534,13 +3538,6 @@ export class AgentsView extends LitElement {
               </sl-button>
             </div>
           </view-header>
-
-          <div
-            style="color: var(--sl-color-neutral-500); font-size: 0.9rem; margin-top: -12px; margin-bottom: var(--sl-spacing-large);"
-          >
-            Connections, telemetry, and live sessions managed by the Preloop
-            gateway
-          </div>
 
           <div class="agents-toolbar">
             <form class="filters" @submit=${this.handleSearchSubmit}>

@@ -137,8 +137,11 @@ describe('AgentsView', () => {
 
     const text = el.shadowRoot?.textContent || '';
     expect(text).to.contain('Claude Code Workspace');
-    expect(text).to.contain(
-      'Connections, telemetry, and live sessions managed by the Preloop'
+
+    // The section description renders inside the shared view-header.
+    const header = el.shadowRoot?.querySelector('view-header');
+    expect(header?.getAttribute('description')).to.contain(
+      'Onboard agents you already run with the CLI, or deploy new ones.'
     );
 
     const agentNode = el.shadowRoot?.querySelector('.agent-node');
