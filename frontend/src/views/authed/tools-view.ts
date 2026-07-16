@@ -226,6 +226,12 @@ export class ToolsView extends LitElement {
         font-size: var(--sl-font-size-small);
       }
 
+      .unavailable-note {
+        margin-top: var(--sl-spacing-x-small);
+        color: var(--sl-color-neutral-500);
+        font-size: var(--sl-font-size-small);
+      }
+
       .summary-table td {
         padding: 0;
         vertical-align: middle;
@@ -1640,7 +1646,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
         <div class="summary-table-wrapper">
           <table class="summary-table">
             <tr>
-              ${statCell('Total toolss', stats.total, 'all')}
+              ${statCell('Total tools', stats.total, 'all')}
               ${statCell('Available', stats.available, 'available')}
               ${statCell('Unavailable', stats.unavailable, 'unavailable', {
                 muted: stats.unavailable === 0,
@@ -1675,6 +1681,17 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
               ${statCell('No approval', stats.noApproval, 'no_approval')}
             </tr>
           </table>
+          ${
+            stats.unavailable > 0
+              ? html`<div class="unavailable-note">
+                  ${
+                    stats.unavailableReasons.length > 0
+                      ? stats.unavailableReasons.join('; ')
+                      : `${stats.unavailable} tool${stats.unavailable === 1 ? ' is' : 's are'} unavailable until a tracker is connected.`
+                  }
+                </div>`
+              : ''
+          }
           ${0 ? this._renderToolUsageStatsPanel() : ''}
         </div>
 
@@ -1904,7 +1921,11 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
       this._getStarterPolicyDiffChanges('remove');
 
     return html`
-      <view-header headerText="Tools" width="extra-wide">
+      <view-header
+        headerText="Tools"
+        description="Every MCP tool your agents can call, routed through Preloop's firewall. Enable or disable tools, set policy rules, and require human approval for sensitive calls."
+        width="extra-wide"
+      >
         <div slot="main-column">
           <sl-dropdown>
             <sl-button slot="trigger" size="small" variant="primary" caret>
