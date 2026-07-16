@@ -46,6 +46,7 @@ func TestCoerceToolInput(t *testing.T) {
 func TestBuildPermissionRequestClaudeCodeHonorsConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	overrideManagedSettingsPath(t, filepath.Join(t.TempDir(), "absent.json"))
 	claudeDir := filepath.Join(home, ".claude")
 	if err := os.MkdirAll(claudeDir, 0700); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -190,6 +191,7 @@ func TestResolvePermissionDecisionFailDefault(t *testing.T) {
 func TestResolvePermissionDecisionClientFallbackAllow(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	overrideManagedSettingsPath(t, filepath.Join(t.TempDir(), "absent.json"))
 	claudeDir := filepath.Join(home, ".claude")
 	if err := os.MkdirAll(claudeDir, 0700); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -590,6 +592,217 @@ func TestEvaluateClaudePermissionPolicySafeTools(t *testing.T) {
 	if got := evaluateClaudePermissionPolicy(policy, "", "Grep", nil); got != "deny" {
 		t.Fatalf("denied Grep = %q, want deny", got)
 	}
+}
+
+func boolPtr(v bool) *bool { return &v }
+
+func TestBuildPermissionRequestClaudeProjectSettings(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	overrideManagedSettingsPath(t, filepath.Join(t.TempDir(), "absent.json"))
+
+	// User settings have no rules; the allow rule lives in the project's
+	// .claude/settings.json under the session cwd carried by the hook event.
+	project := t.TempDir()
+	projectClaude := filepath.Join(project, ".claude")
+	if err := os.MkdirAll(projectClaude, 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	settings := `{"permissions":{"allow":["Bash(npm run test:*)"],"deny":["Bash(npm publish:*)"]}}`
+	if err := os.WriteFile(filepath.Join(projectClaude, "settings.json"), []byte(settings), 0644); err != nil {
+		t.Fatalf("write project settings: %v", err)
+	}
+
+	build := func(command string) permissionCheckRequest {
+		t.Helper()
+		raw := []byte(`{"cwd":` + jsonString(project) + `,"tool_name":"Bash","tool_input":{"command":` + jsonString(command) + `}}`)
+		req, err := buildPermissionRequest(permissionSourceClaudeCode, raw, permissionHookCredential{})
+		if err != nil {
+			t.Fatalf("buildPermissionRequest: %v", err)
+		}
+		return req
+	}
+
+	if req := build("npm run test -- --watch"); req.ClientDecision != "allow" {
+		t.Errorf("project allow rule ignored, client_decision = %q", req.ClientDecision)
+	}
+	if req := build("npm publish --tag latest"); req.ClientDecision != "deny" {
+		t.Errorf("project deny rule ignored, client_decision = %q", req.ClientDecision)
+	}
+	if req := build("terraform apply"); req.ClientDecision != "ask" {
+		t.Errorf("unmatched command should ask, client_decision = %q", req.ClientDecision)
+	}
+}
+
+func TestBuildPermissionRequestClaudeManagedDenyWins(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	managedPath := filepath.Join(t.TempDir(), "managed-settings.json")
+	overrideManagedSettingsPath(t, managedPath)
+
+	claudeDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(claudeDir, 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	userSettings := `{"permissions":{"allow":["Bash(curl:*)"]}}`
+	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(userSettings), 0644); err != nil {
+		t.Fatalf("write user settings: %v", err)
+	}
+	managed := `{"permissions":{"deny":["Bash(curl:*)"]}}`
+	if err := os.WriteFile(managedPath, []byte(managed), 0644); err != nil {
+		t.Fatalf("write managed settings: %v", err)
+	}
+
+	raw := []byte(`{"tool_name":"Bash","tool_input":{"command":"curl https://example.com"}}`)
+	req, err := buildPermissionRequest(permissionSourceClaudeCode, raw, permissionHookCredential{})
+	if err != nil {
+		t.Fatalf("buildPermissionRequest: %v", err)
+	}
+	if req.ClientDecision != "deny" {
+		t.Errorf("managed deny should beat user allow, client_decision = %q", req.ClientDecision)
+	}
+}
+
+func TestClaudeSafeReadBashFallback(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	overrideManagedSettingsPath(t, filepath.Join(t.TempDir(), "absent.json"))
+
+	build := func(command string, cred permissionHookCredential) permissionCheckRequest {
+		t.Helper()
+		raw := []byte(`{"tool_name":"Bash","tool_input":{"command":` + jsonString(command) + `}}`)
+		req, err := buildPermissionRequest(permissionSourceClaudeCode, raw, cred)
+		if err != nil {
+			t.Fatalf("buildPermissionRequest: %v", err)
+		}
+		return req
+	}
+
+	// With no configured rules, read-only Bash commands are auto-allowed...
+	if req := build("git status", permissionHookCredential{}); req.ClientDecision != "allow" {
+		t.Errorf("safe-read Bash should auto-allow, got %q", req.ClientDecision)
+	}
+	// ...but mutating or chained commands still escalate.
+	if req := build("git status && git push", permissionHookCredential{}); req.ClientDecision != "ask" {
+		t.Errorf("chained command should ask, got %q", req.ClientDecision)
+	}
+	if req := build("git push", permissionHookCredential{}); req.ClientDecision != "ask" {
+		t.Errorf("mutating command should ask, got %q", req.ClientDecision)
+	}
+	// The credential file can switch the fallback off.
+	off := permissionHookCredential{SafeReadAutoAllow: boolPtr(false)}
+	if req := build("git status", off); req.ClientDecision != "ask" {
+		t.Errorf("disabled safe-read should ask, got %q", req.ClientDecision)
+	}
+
+	// A configured deny rule wins over the safe-read fallback.
+	claudeDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(claudeDir, 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	settings := `{"permissions":{"deny":["Bash(git status:*)"]}}`
+	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(settings), 0644); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	if req := build("git status", permissionHookCredential{}); req.ClientDecision != "deny" {
+		t.Errorf("deny rule should beat safe-read fallback, got %q", req.ClientDecision)
+	}
+}
+
+func TestCursorSafeReadAutoAllow(t *testing.T) {
+	// No permissions.json anywhere (the common case): safe reads auto-allow,
+	// everything else still asks.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	build := func(raw string, cred permissionHookCredential) permissionCheckRequest {
+		t.Helper()
+		req, err := buildPermissionRequest(permissionSourceCursor, []byte(raw), cred)
+		if err != nil {
+			t.Fatalf("buildPermissionRequest: %v", err)
+		}
+		return req
+	}
+
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"plain ls allows", `{"command":"ls","sandbox":false}`, "allow"},
+		{"git status allows", `{"command":"git status","sandbox":false}`, "allow"},
+		{"safe pipeline allows", `{"command":"cat foo | grep bar | wc -l","sandbox":false}`, "allow"},
+		{"chained injection asks", `{"command":"ls; rm -rf /","sandbox":false}`, "ask"},
+		{"redirect asks", `{"command":"cat foo > bar","sandbox":false}`, "ask"},
+		{"and-chain asks", `{"command":"git status && git push","sandbox":false}`, "ask"},
+		{"mutating command asks", `{"command":"rm -rf /tmp/x","sandbox":false}`, "ask"},
+		// An MCP tool carrying a "command"-shaped input must not ride the
+		// shell safe-read fallback.
+		{"mcp with command field asks", `{"tool_name":"run","server_name":"other","tool_input":{"command":"ls"}}`, "ask"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if req := build(tc.raw, permissionHookCredential{}); req.ClientDecision != tc.want {
+				t.Errorf("client_decision = %q, want %q", req.ClientDecision, tc.want)
+			}
+		})
+	}
+
+	// safe_read_auto_allow: false in the credential disables the fallback.
+	off := permissionHookCredential{SafeReadAutoAllow: boolPtr(false)}
+	if req := build(`{"command":"ls","sandbox":false}`, off); req.ClientDecision != "ask" {
+		t.Errorf("disabled safe-read should ask, got %q", req.ClientDecision)
+	}
+}
+
+func TestFailureDecisionReasonsAreActionable(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Missing credential: the deny reason must say what is missing and how to
+	// repair or disable the hook. Codex is used because it never computes a
+	// client decision, so the failure path is always taken.
+	raw := []byte(`{"tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/x"}}`)
+	decision := resolvePermissionDecision(permissionSourceCodexCLI, raw, false)
+	if decision.Behavior != "deny" {
+		t.Fatalf("expected fail-closed deny, got %q", decision.Behavior)
+	}
+	for _, want := range []string{
+		"no Preloop credential found",
+		"preloop agents onboard \"Codex CLI\" --approvals",
+		filepath.Join(home, ".codex", "hooks.json"),
+	} {
+		if !containsOne(decision.Reason, want) {
+			t.Errorf("missing-credential reason lacks %q:\n%s", want, decision.Reason)
+		}
+	}
+
+	// Unreachable Preloop: the deny reason must include the URL, the error,
+	// and the same remediation.
+	writeTestPermissionCredential(t, home, "codex-agent", permissionHookCredential{
+		BaseURL: "http://127.0.0.1:1",
+		Token:   "agt_test",
+		Source:  permissionSourceCodexCLI,
+	})
+	decision = resolvePermissionDecision(permissionSourceCodexCLI, raw, false)
+	if decision.Behavior != "deny" {
+		t.Fatalf("expected fail-closed deny, got %q", decision.Behavior)
+	}
+	for _, want := range []string{
+		"could not reach Preloop at http://127.0.0.1:1" + permissionCheckPath,
+		"Failing closed",
+		"preloop agents onboard \"Codex CLI\" --approvals",
+		filepath.Join(home, ".codex", "hooks.json"),
+	} {
+		if !containsOne(decision.Reason, want) {
+			t.Errorf("unreachable reason lacks %q:\n%s", want, decision.Reason)
+		}
+	}
+}
+
+func jsonString(s string) string {
+	data, _ := json.Marshal(s)
+	return string(data)
 }
 
 func TestMatchCursorTerminalAllowlist(t *testing.T) {

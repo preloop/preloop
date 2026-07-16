@@ -663,6 +663,10 @@ def get_user_from_token_if_valid_sync(token: str, db_session: Any) -> Optional[U
         if user and user.is_active:
             return user
 
+    except HTTPException as e:
+        # Raised by _authenticate_with_api_key with the concrete rejection
+        # reason (inactive key, expired key, deleted/suspended managed agent).
+        logger.info("Token rejected in get_user_from_token_if_valid: %s", e.detail)
     except JWTError as e:
         logger.debug("Token validation failed in get_user_from_token_if_valid: %s", e)
     except Exception as e:

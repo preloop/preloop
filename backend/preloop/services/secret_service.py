@@ -530,6 +530,35 @@ class SecretService:
             + ANTHROPIC_CLAUDE_CODE_REFRESH_SKEW_MS
         )
 
+    def _lock_and_reload_oauth_payload(
+        self,
+        db: Session,
+        secret_ref: SecretReference,
+        fallback: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Serialize OAuth refreshes on the secret row across workers.
+
+        Provider refresh tokens are single-use: two gateway workers refreshing
+        concurrently burn the same token, and the provider's reuse detection
+        can invalidate the whole grant. Lock the row (released on the commit
+        that persists the rotated bundle), then re-read — if another worker
+        already rotated the bundle while we waited, callers must use its
+        result instead of refreshing again.
+        """
+        locked = (
+            db.query(SecretReference)
+            .filter(SecretReference.id == secret_ref.id)
+            .with_for_update()
+            .one_or_none()
+        )
+        if locked is None or not locked.encrypted_value:
+            return fallback
+        try:
+            payload = json.loads(decrypt_value(locked.encrypted_value))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return fallback
+        return payload if isinstance(payload, dict) else fallback
+
     def _refresh_openai_codex_ai_model_credentials(
         self,
         ai_model: AIModel,
@@ -537,6 +566,17 @@ class SecretService:
         *,
         db: Optional[Session] = None,
     ) -> Dict[str, Any]:
+        if (
+            db is not None
+            and ai_model.credentials_secret is not None
+            and ai_model.credentials_secret.backend_type == LOCAL_ENCRYPTED_BACKEND
+        ):
+            payload = self._lock_and_reload_oauth_payload(
+                db, ai_model.credentials_secret, payload
+            )
+            if not self._openai_codex_refresh_required(payload):
+                return payload
+
         refresh_token = str(payload.get("refresh") or "").strip()
         if not refresh_token:
             return payload
@@ -606,6 +646,17 @@ class SecretService:
         *,
         db: Optional[Session] = None,
     ) -> Dict[str, Any]:
+        if (
+            db is not None
+            and ai_model.credentials_secret is not None
+            and ai_model.credentials_secret.backend_type == LOCAL_ENCRYPTED_BACKEND
+        ):
+            payload = self._lock_and_reload_oauth_payload(
+                db, ai_model.credentials_secret, payload
+            )
+            if not self._anthropic_claude_code_refresh_required(payload):
+                return payload
+
         refresh_token = str(payload.get("refresh") or "").strip()
         if not refresh_token:
             return payload

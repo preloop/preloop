@@ -5,10 +5,12 @@ import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
+import '@shoelace-style/shoelace/dist/components/details/details.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
+import '@shoelace-style/shoelace/dist/components/switch/switch.js';
 import '@shoelace-style/shoelace/dist/components/textarea/textarea.js';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import '../../components/governance-rule-set-editor.ts';
@@ -163,6 +165,7 @@ export class AgentDetailView extends LitElement {
     tool_rules: {},
     tool_enabled_overrides: {},
     approval_workflow_id: null,
+    native_tool_approvals: null,
   };
 
   @state()
@@ -1093,6 +1096,7 @@ export class AgentDetailView extends LitElement {
         tool_rules: serializeScopedToolRules(this.scopedToolRules),
         tool_enabled_overrides: this.toolEnabledOverrides,
         approval_workflow_id: this.governance.approval_workflow_id ?? null,
+        native_tool_approvals: this.governance.native_tool_approvals ?? null,
       };
       const response = await updateAgentGovernance(this.agentId, config);
       this.governance = response.config;
@@ -1122,6 +1126,18 @@ export class AgentDetailView extends LitElement {
     this.governance = {
       ...this.governance,
       approval_workflow_id: workflowId,
+    };
+    void this.saveGovernance();
+  }
+
+  private saveNativeToolApprovalsToggle(enforce: boolean): void {
+    const next: 'off' | null = enforce ? null : 'off';
+    if ((this.governance.native_tool_approvals ?? null) === next) {
+      return;
+    }
+    this.governance = {
+      ...this.governance,
+      native_tool_approvals: next,
     };
     void this.saveGovernance();
   }
@@ -1273,7 +1289,7 @@ export class AgentDetailView extends LitElement {
     }
     if (
       !window.confirm(
-        `Remove ${this.agent.display_name} from the managed agents list? This only removes the Preloop registry record.`
+        `Remove ${this.agent.display_name} from the managed agents list?\n\nThis also revokes the agent's Preloop credentials: if this agent is still onboarded on a machine, its gateway and MCP access will stop working until you run \`preloop agents onboard\` again. To disconnect cleanly, run \`preloop agents offboard\` on that machine instead.`
       )
     ) {
       return;
@@ -2637,49 +2653,132 @@ export class AgentDetailView extends LitElement {
 
                         <div
                           class="stat-card"
-                          style="display: flex; align-items: center; justify-content: space-between; gap: var(--sl-spacing-medium); flex-shrink: 0; margin-bottom: var(--sl-spacing-medium);"
+                          style="display: flex; flex-direction: column; gap: var(--sl-spacing-small); flex-shrink: 0; margin-bottom: var(--sl-spacing-medium);"
                         >
-                          <div>
-                            <div
-                              class="stat-label"
-                              style="display: flex; align-items: center; gap: 6px;"
-                            >
-                              <sl-icon name="shield-lock"></sl-icon>
-                              Native tool approvals
+                          <div
+                            style="display: flex; align-items: center; justify-content: space-between; gap: var(--sl-spacing-medium);"
+                          >
+                            <div>
+                              <div
+                                class="stat-label"
+                                style="display: flex; align-items: center; gap: 6px;"
+                              >
+                                <sl-icon name="shield-lock"></sl-icon>
+                                Native tool approvals
+                              </div>
+                              <div class="meta-line">
+                                Approval workflow used when this agent's native
+                                tool calls (e.g. shell commands, file edits)
+                                require human approval.
+                              </div>
                             </div>
-                            <div class="meta-line">
-                              Approval workflow used when this agent's native
-                              tool calls (e.g. shell commands, file edits)
-                              require human approval.
+                            <div
+                              style="display: flex; align-items: center; gap: var(--sl-spacing-medium); flex-shrink: 0;"
+                            >
+                              <sl-switch
+                                id="agent-native-tool-approvals-switch"
+                                size="small"
+                                ?checked=${
+                                  this.governance.native_tool_approvals !==
+                                  'off'
+                                }
+                                @sl-change=${(e: Event) => {
+                                  this.saveNativeToolApprovalsToggle(
+                                    (e.target as HTMLInputElement).checked
+                                  );
+                                }}
+                              >
+                                Require approval for native tool calls
+                              </sl-switch>
+                              <sl-select
+                                id="agent-approval-workflow-select"
+                                size="small"
+                                hoist
+                                style=${
+                                  this.governance.native_tool_approvals ===
+                                  'off'
+                                    ? 'min-width: 280px; opacity: 0.5;'
+                                    : 'min-width: 280px;'
+                                }
+                                ?disabled=${
+                                  this.governance.native_tool_approvals ===
+                                  'off'
+                                }
+                                .value=${
+                                  this.governance.approval_workflow_id ?? ''
+                                }
+                                @sl-change=${(e: Event) => {
+                                  const value = (e.target as HTMLSelectElement)
+                                    .value;
+                                  this.saveApprovalWorkflowSelection(
+                                    value || null
+                                  );
+                                }}
+                              >
+                                <sl-option value=""
+                                  >Account default workflow</sl-option
+                                >
+                                ${this.approvalWorkflows.map(
+                                  (workflow: any) => html`
+                                    <sl-option value=${workflow.id}>
+                                      ${workflow.name}${
+                                        workflow.is_default
+                                          ? ' (account default)'
+                                          : ''
+                                      }
+                                    </sl-option>
+                                  `
+                                )}
+                              </sl-select>
                             </div>
                           </div>
-                          <sl-select
-                            id="agent-approval-workflow-select"
-                            size="small"
-                            hoist
-                            style="min-width: 280px;"
-                            .value=${this.governance.approval_workflow_id ?? ''}
-                            @sl-change=${(e: Event) => {
-                              const value = (e.target as HTMLSelectElement)
-                                .value;
-                              this.saveApprovalWorkflowSelection(value || null);
-                            }}
-                          >
-                            <sl-option value=""
-                              >Account default workflow</sl-option
-                            >
-                            ${this.approvalWorkflows.map(
-                              (workflow: any) => html`
-                                <sl-option value=${workflow.id}>
-                                  ${workflow.name}${
-                                    workflow.is_default
-                                      ? ' (account default)'
-                                      : ''
-                                  }
-                                </sl-option>
-                              `
-                            )}
-                          </sl-select>
+                          ${
+                            this.governance.native_tool_approvals === 'off'
+                              ? html`
+                                  <sl-alert
+                                    id="agent-native-tool-approvals-off-note"
+                                    variant="warning"
+                                    open
+                                  >
+                                    <sl-icon
+                                      slot="icon"
+                                      name="exclamation-triangle"
+                                    ></sl-icon>
+                                    Approvals are bypassed server-side: Preloop
+                                    now auto-allows this agent's escalated tool
+                                    calls. The local hook installed at
+                                    onboarding still adds a network round-trip
+                                    to Preloop on every tool call.
+                                    <sl-details
+                                      summary="How to fully disable the hook locally"
+                                      style="margin-top: var(--sl-spacing-small);"
+                                    >
+                                      <div class="meta-line">
+                                        Re-onboard without approvals:
+                                        <code
+                                          >preloop agents offboard
+                                          &lt;agent&gt;</code
+                                        >
+                                        then
+                                        <code
+                                          >preloop agents onboard
+                                          &lt;agent&gt;</code
+                                        >
+                                        without <code>--approvals</code>. Or
+                                        remove the hook entry by hand: delete
+                                        the Preloop PreToolUse entry from
+                                        <code>~/.claude/settings.json</code>
+                                        (Claude Code), or the Preloop entries in
+                                        <code>~/.cursor/hooks.json</code>
+                                        (Cursor) /
+                                        <code>~/.codex/hooks.json</code> (Codex
+                                        CLI).
+                                      </div>
+                                    </sl-details>
+                                  </sl-alert>
+                                `
+                              : nothing
+                          }
                         </div>
 
                         <tools-editor-component

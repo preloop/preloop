@@ -315,6 +315,121 @@ func isPreloopMCPTool(event map[string]interface{}, toolName, baseURL string) bo
 	return host != "" && strings.EqualFold(host, baseParsed.Host)
 }
 
+// safeReadShellCommands are leading tokens that are obviously non-mutating
+// regardless of arguments (redirections and command chaining are rejected
+// before this list is consulted). env, find, and git need argument checks and
+// are handled in isSafeReadPipelineStage instead.
+var safeReadShellCommands = map[string]bool{
+	"ls":       true,
+	"pwd":      true,
+	"cat":      true,
+	"head":     true,
+	"tail":     true,
+	"less":     true,
+	"wc":       true,
+	"echo":     true,
+	"which":    true,
+	"whoami":   true,
+	"printenv": true,
+	"grep":     true,
+	"rg":       true,
+	"stat":     true,
+	"file":     true,
+	"du":       true,
+	"df":       true,
+	"uname":    true,
+	"date":     true,
+}
+
+// isSafeReadShellCommand reports whether a shell command consists solely of
+// obviously read-only commands — either a single safe command or a plain "|"
+// pipeline whose every stage leads with a safe command. Anything that could
+// chain or hide a mutation (";", "&&", "||", "&", redirections, backticks,
+// "$(", "<(", newlines) is rejected outright. The parse is deliberately
+// conservative: when in ANY doubt, return false and let the call escalate.
+func isSafeReadShellCommand(command string) bool {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return false
+	}
+	// Reject chaining/redirection metacharacters. "&" covers "&&" and
+	// backgrounding; "<" covers "<(" process substitution; "$(" and backticks
+	// cover command substitution. "||" survives these checks but produces an
+	// empty pipeline stage below, which is rejected.
+	for _, meta := range []string{";", "&", ">", "<", "`", "$(", "\n", "\r"} {
+		if strings.Contains(command, meta) {
+			return false
+		}
+	}
+	for _, stage := range strings.Split(command, "|") {
+		if !isSafeReadPipelineStage(stage) {
+			return false
+		}
+	}
+	return true
+}
+
+// isSafeReadPipelineStage checks one pipeline stage against the built-in
+// read-only allowlist.
+func isSafeReadPipelineStage(stage string) bool {
+	fields := strings.Fields(stage)
+	if len(fields) == 0 {
+		return false
+	}
+	head, args := fields[0], fields[1:]
+	switch head {
+	case "env":
+		// "env" alone prints the environment; with args it runs a command.
+		return len(args) == 0
+	case "find":
+		// find is read-only unless asked to act on matches.
+		for _, arg := range args {
+			switch arg {
+			case "-delete", "-exec", "-execdir", "-ok", "-okdir":
+				return false
+			}
+		}
+		return true
+	case "git":
+		return isSafeReadGitArgs(args)
+	default:
+		return safeReadShellCommands[head]
+	}
+}
+
+// isSafeReadGitArgs allows only the read-only git subcommands: status, log,
+// diff, show, and branch listing ("git branch" with only dash-flags, none of
+// the mutating ones). "--output" flags are rejected because they write files.
+func isSafeReadGitArgs(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "status", "log", "diff", "show":
+		for _, arg := range args[1:] {
+			if strings.HasPrefix(arg, "--output") {
+				return false
+			}
+		}
+		return true
+	case "branch":
+		for _, arg := range args[1:] {
+			if !strings.HasPrefix(arg, "-") {
+				return false
+			}
+			switch arg {
+			case "-d", "-D", "-m", "-M", "-c", "-C", "-f", "--force",
+				"--delete", "--move", "--copy", "--edit-description",
+				"--set-upstream-to", "--unset-upstream", "-u", "-t", "--track":
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
 func globMatchFold(pattern, s string) bool {
 	return globMatch(strings.ToLower(pattern), strings.ToLower(s))
 }
@@ -356,6 +471,8 @@ func summarizeCursorPermissionPolicy(policy cursorPermissionPolicy, paths []stri
 		fmt.Sprintf("policy files: %d readable of %d discovered", existing, len(paths)),
 		fmt.Sprintf("terminalAllowlist: %d entries", len(policy.TerminalAllowlist)),
 		fmt.Sprintf("mcpAllowlist: %d entries", len(policy.MCPAllowlist)),
+		"built-in safe-read allowlist: read-only shell commands (ls, cat, git status, ...)",
+		"auto-allow without approval (disable via safe_read_auto_allow in permission_hook.json)",
 	}
 	if existing == 0 {
 		lines = append(lines,

@@ -1255,6 +1255,121 @@ def test_account_agent_delete_removes_registry_record(client, db_session, test_u
     assert after_response.json()["total"] == 0
 
 
+def test_account_agent_delete_scopes_credential_revocation(
+    client, db_session, test_user
+):
+    """Deleting one agent must not revoke sibling agents' durable credentials.
+
+    Several registry entries can share one runtime principal (repeated
+    onboards of the same local agent). A principal-wide sweep used to
+    deactivate the *surviving* agent's durable gateway/MCP credential too,
+    breaking an onboarded Claude Code the day after a console cleanup.
+    """
+    from preloop.models.crud import crud_api_key
+
+    token_response = client.post(
+        "/api/v1/auth/runtime-sessions/token",
+        json={
+            "session_source_type": "claude_code",
+            "session_source_id": "shared-principal-host",
+            "runtime_principal_name": "Claude Code",
+        },
+    )
+    assert token_response.status_code == 201
+
+    list_response = client.get("/api/v1/agents")
+    assert list_response.status_code == 200
+    live_agent_id = list_response.json()["items"][0]["id"]
+
+    credential_response = client.post(
+        f"/api/v1/agents/{live_agent_id}/credentials",
+        json={
+            "name": "durable-gateway-credential",
+            "expires_in_days": 365,
+            "scopes": ["mcp:read", "mcp:write"],
+        },
+    )
+    assert credential_response.status_code == 201
+    durable_token = credential_response.json()["token"]
+
+    # A second registry entry with its own principal (another enrollment).
+    stale_agent = crud_managed_agent.upsert_from_runtime_session(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=None,
+        session_source_type="claude_code",
+        session_source_id="stale-duplicate-host",
+        display_name="Claude Code (stale duplicate)",
+    )
+    db_session.flush()
+
+    # Legacy key carrying only the stale agent's principal, with no
+    # managed-agent binding (as minted by older CLI versions).
+    legacy_key, _legacy_token = crud_api_key.create_runtime_key(
+        db_session,
+        name="legacy principal-only key",
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        context_data={
+            "runtime_principal": {
+                "type": "claude_code",
+                "id": "stale-duplicate-host",
+            }
+        },
+    )
+
+    delete_response = client.delete(f"/api/v1/agents/{stale_agent.id}")
+    assert delete_response.status_code == 200
+
+    # The live agent's durable credential must still authenticate.
+    durable_key = crud_api_key.get_by_key(db_session, key=durable_token)
+    assert durable_key is not None
+    db_session.refresh(durable_key)
+    assert durable_key.is_active is True
+
+    # Legacy unbound keys carrying the deleted agent's principal are swept.
+    db_session.refresh(legacy_key)
+    assert legacy_key.is_active is False
+
+
+def test_account_agent_delete_revokes_own_credentials(client, db_session, test_user):
+    """Deleting an agent still revokes that agent's own durable credentials."""
+    from preloop.models.crud import crud_api_key
+
+    token_response = client.post(
+        "/api/v1/auth/runtime-sessions/token",
+        json={
+            "session_source_type": "claude_code",
+            "session_source_id": "revoke-own-credentials-host",
+            "runtime_principal_name": "Claude Code",
+        },
+    )
+    assert token_response.status_code == 201
+
+    list_response = client.get("/api/v1/agents")
+    assert list_response.status_code == 200
+    agent_id = list_response.json()["items"][0]["id"]
+
+    credential_response = client.post(
+        f"/api/v1/agents/{agent_id}/credentials",
+        json={
+            "name": "durable-gateway-credential",
+            "expires_in_days": 365,
+            "scopes": ["mcp:read", "mcp:write"],
+        },
+    )
+    assert credential_response.status_code == 201
+    durable_token = credential_response.json()["token"]
+
+    delete_response = client.delete(f"/api/v1/agents/{agent_id}")
+    assert delete_response.status_code == 200
+
+    durable_key = crud_api_key.get_by_key(db_session, key=durable_token)
+    assert durable_key is not None
+    db_session.refresh(durable_key)
+    assert durable_key.is_active is False
+
+
 def test_account_agent_governance_round_trip(client, db_session, test_user):
     token_response = client.post(
         "/api/v1/auth/runtime-sessions/token",
@@ -1367,6 +1482,63 @@ def test_account_agent_governance_approval_workflow(client, db_session, test_use
     )
     assert clear_response.status_code == 200
     assert clear_response.json()["config"]["approval_workflow_id"] is None
+
+
+def test_account_agent_governance_native_tool_approvals(client, db_session, test_user):
+    """Operators can switch native tool-call approvals off per agent; absent
+    means enforce and invalid values are rejected."""
+    token_response = client.post(
+        "/api/v1/auth/runtime-sessions/token",
+        json={
+            "session_source_type": "claude_code",
+            "session_source_id": "claude-native-approvals-toggle",
+            "runtime_principal_name": "Toggle Agent",
+        },
+    )
+    assert token_response.status_code == 201
+
+    list_response = client.get("/api/v1/agents")
+    assert list_response.status_code == 200
+    agent_id = list_response.json()["items"][0]["id"]
+
+    # Absent by default (approvals enforced).
+    get_response = client.get(f"/api/v1/agents/{agent_id}/governance")
+    assert get_response.status_code == 200
+    assert get_response.json()["config"]["native_tool_approvals"] is None
+
+    # Values outside enforce/off are rejected by schema validation.
+    invalid_response = client.put(
+        f"/api/v1/agents/{agent_id}/governance",
+        json={"native_tool_approvals": "sometimes"},
+    )
+    assert invalid_response.status_code == 422
+
+    # Switching approvals off persists.
+    off_response = client.put(
+        f"/api/v1/agents/{agent_id}/governance",
+        json={"native_tool_approvals": "off"},
+    )
+    assert off_response.status_code == 200
+    assert off_response.json()["config"]["native_tool_approvals"] == "off"
+
+    verify_response = client.get(f"/api/v1/agents/{agent_id}/governance")
+    assert verify_response.status_code == 200
+    assert verify_response.json()["config"]["native_tool_approvals"] == "off"
+
+    # Explicit enforce and clearing both re-enable approvals.
+    enforce_response = client.put(
+        f"/api/v1/agents/{agent_id}/governance",
+        json={"native_tool_approvals": "enforce"},
+    )
+    assert enforce_response.status_code == 200
+    assert enforce_response.json()["config"]["native_tool_approvals"] == "enforce"
+
+    clear_response = client.put(
+        f"/api/v1/agents/{agent_id}/governance",
+        json={"native_tool_approvals": None},
+    )
+    assert clear_response.status_code == 200
+    assert clear_response.json()["config"]["native_tool_approvals"] is None
 
 
 def test_account_agent_enrollment_validate_and_restore(client, db_session, test_user):

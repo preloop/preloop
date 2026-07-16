@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy.exc import IntegrityError
@@ -13,6 +13,7 @@ from preloop.services.agent_permission_service import (
     AGENT_TOOL_APPROVALS_WORKFLOW_NAME,
     _managed_agent_approval_workflow_pin,
     _resolve_workflow,
+    request_agent_permission,
 )
 from preloop.services.approval_workflow_service import DEFAULT_APPROVAL_TYPE
 
@@ -164,6 +165,170 @@ def test_managed_agent_approval_workflow_pin_rejects_unsafe_segments() -> None:
         pass
     else:
         raise AssertionError("expected ValueError for non-UUID path segment")
+
+
+@pytest.mark.asyncio
+async def test_request_agent_permission_disabled_short_circuits_allow() -> None:
+    """native_tool_approvals="off" → immediate allow, no approval row created.
+
+    The switch only affects escalated (ask) calls; the immediate allow carries
+    the documented reason and no ApprovalRequest is created or notified.
+    """
+    db = AsyncMock()
+    setting_result = MagicMock()
+    setting_result.scalar.return_value = "off"
+    db.execute = AsyncMock(return_value=setting_result)
+
+    with (
+        patch(
+            "preloop.services.agent_permission_service.get_async_db_session"
+        ) as mock_get_session,
+        patch("preloop.services.approval_service.ApprovalService") as mock_service_cls,
+    ):
+        mock_get_session.return_value.__aenter__.return_value = db
+
+        decision, reason, request_id = await request_agent_permission(
+            base_url="http://localhost",
+            account_id=str(uuid.uuid4()),
+            user_id=uuid.uuid4(),
+            managed_agent_id=uuid.uuid4(),
+            runtime_session_id=None,
+            managed_agent_name="Claude Code",
+            source="claude_code",
+            tool_name="Bash",
+            tool_input={"command": "ls"},
+            agent_reasoning=None,
+            client_decision=None,
+        )
+
+    assert decision == "allow"
+    assert reason == "Native tool approvals are disabled for this agent in Preloop"
+    assert request_id is None
+    # Only the governance lookup ran; no ApprovalRequest was created.
+    mock_service_cls.assert_not_called()
+    db.add.assert_not_called()
+    assert db.execute.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_request_agent_permission_absent_setting_runs_approval_path() -> None:
+    """No native_tool_approvals setting → the normal approval path still runs."""
+    account_id = str(uuid.uuid4())
+    managed_agent_id = uuid.uuid4()
+    default_workflow = models.ApprovalWorkflow(
+        id=uuid.uuid4(),
+        account_id=account_id,
+        name="Default Approval Workflow",
+        approval_type=DEFAULT_APPROVAL_TYPE,
+        is_default=True,
+        timeout_seconds=300,
+    )
+    account = MagicMock()
+    account.meta_data = {}
+
+    # 1) governance setting lookup (absent), 2) account+pin outerjoin,
+    # 3) account-default workflow lookup.
+    setting_result = MagicMock()
+    setting_result.scalar.return_value = None
+    account_and_workflow = MagicMock()
+    account_and_workflow.first.return_value = (account, None)
+    default_result = MagicMock()
+    default_result.scalars.return_value.first.return_value = default_workflow
+
+    db = AsyncMock()
+    db.execute = AsyncMock(
+        side_effect=[setting_result, account_and_workflow, default_result]
+    )
+
+    tool_config = MagicMock()
+    tool_config.id = uuid.uuid4()
+
+    approval = MagicMock()
+    approval.id = uuid.uuid4()
+    approval.status = "approved"
+    approval.approver_comment = "Looks safe"
+
+    with (
+        patch(
+            "preloop.services.agent_permission_service.get_async_db_session"
+        ) as mock_get_session,
+        patch("preloop.services.approval_service.ApprovalService") as mock_service_cls,
+        patch(
+            "preloop.models.crud.tool_configuration."
+            "get_tool_config_by_name_and_source_async",
+            new=AsyncMock(return_value=tool_config),
+        ),
+    ):
+        mock_get_session.return_value.__aenter__.return_value = db
+        mock_service = AsyncMock()
+        mock_service.create_and_notify = AsyncMock(return_value=approval)
+        mock_service_cls.return_value = mock_service
+
+        decision, reason, request_id = await request_agent_permission(
+            base_url="http://localhost",
+            account_id=account_id,
+            user_id=uuid.uuid4(),
+            managed_agent_id=managed_agent_id,
+            runtime_session_id=None,
+            managed_agent_name="Claude Code",
+            source="claude_code",
+            tool_name="Bash",
+            tool_input={"command": "ls"},
+            agent_reasoning=None,
+            client_decision=None,
+        )
+
+    assert decision == "allow"
+    assert reason == "Looks safe"
+    assert request_id == str(approval.id)
+    mock_service.create_and_notify.assert_awaited_once()
+
+
+def test_native_tool_approvals_setting_reads_on_real_database(db_session, test_user):
+    """The native_tool_approvals extraction executes on real Postgres.
+
+    Same regression class as the workflow-pin test below: mock-based tests
+    never execute the JSON path SQL, so run the exact select shape used by
+    ``_native_tool_approvals_disabled`` against the actual database.
+    """
+    import uuid as uuid_module
+
+    from sqlalchemy import select
+
+    from preloop.models import models
+    from preloop.models.crud import crud_account
+    from preloop.services.agent_permission_service import (
+        _managed_agent_governance_field,
+    )
+
+    agent_id = uuid_module.uuid4()
+    account = crud_account.get(db_session, id=test_user.account_id)
+    meta = dict(account.meta_data or {})
+    meta["subject_governance"] = {
+        "managed_agents": {str(agent_id): {"native_tool_approvals": "off"}}
+    }
+    crud_account.update(db_session, db_obj=account, obj_in={"meta_data": meta})
+
+    value = db_session.execute(
+        select(_managed_agent_governance_field(agent_id, "native_tool_approvals"))
+        .select_from(models.Account)
+        .where(models.Account.id == test_user.account_id)
+        .limit(1)
+    ).scalar()
+    assert value == "off"
+
+    # Agents without the setting read as NULL (approvals enforced).
+    other_value = db_session.execute(
+        select(
+            _managed_agent_governance_field(
+                uuid_module.uuid4(), "native_tool_approvals"
+            )
+        )
+        .select_from(models.Account)
+        .where(models.Account.id == test_user.account_id)
+        .limit(1)
+    ).scalar()
+    assert other_value is None
 
 
 def test_workflow_pin_join_executes_on_real_database(db_session, test_user):

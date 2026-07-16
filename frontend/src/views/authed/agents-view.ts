@@ -2102,7 +2102,7 @@ export class AgentsView extends LitElement {
   private async removeAgent(agent: ManagedAgentSummary): Promise<void> {
     if (
       !window.confirm(
-        `Remove ${agent.display_name} from the managed agents list? This only removes the Preloop registry record.`
+        `Remove ${agent.display_name} from the managed agents list?\n\nThis also revokes the agent's Preloop credentials: if this agent is still onboarded on a machine, its gateway and MCP access will stop working until you run \`preloop agents onboard\` again. To disconnect cleanly, run \`preloop agents offboard\` on that machine instead.`
       )
     )
       return;

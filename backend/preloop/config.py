@@ -75,8 +75,13 @@ class SecuritySettings(BaseModel):
         description="Fernet encryption key for sensitive data (32 url-safe base64-encoded bytes). "
         "Generate with: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'",
     )
+    # NOTE: Access-token TTL is actually enforced in preloop/api/auth/jwt.py,
+    # which reads the ACCESS_TOKEN_EXPIRE_MINUTES env var directly (default
+    # 1440 = 24h). This setting mirrors that default for documentation and
+    # future consumers; changing it here alone does NOT change live token
+    # lifetimes.
     token_expire_minutes: int = Field(
-        30, description="Token expiration time in minutes"
+        1440, description="Access token expiration time in minutes (24h default)"
     )
     algorithm: str = Field("HS256", description="JWT algorithm")
 
@@ -469,7 +474,9 @@ class Settings(BaseSettings):
         security = SecuritySettings(
             secret_key=secret_key,
             encryption_key=os.getenv("SECURITY__ENCRYPTION_KEY", ""),
-            token_expire_minutes=int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30")),
+            # Keep in sync with preloop/api/auth/jwt.py, the actual consumer
+            # of ACCESS_TOKEN_EXPIRE_MINUTES (env default 1440 there too).
+            token_expire_minutes=int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440")),
             algorithm=os.getenv("JWT_ALGORITHM", "HS256"),
         )
 

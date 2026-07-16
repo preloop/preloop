@@ -5,6 +5,31 @@ requiring the Preloop CLI on the target machine. The CLI can still provision
 Agent Control config, but marketplace installation and runtime verification
 must work from the agent runtime alone.
 
+## Preferred Path: Manual GitLab CI Jobs
+
+The enterprise repo pipeline (preloop-ee `.gitlab-ci.yml`) has manual publish
+jobs mirroring `publish:langchain-preloop`:
+
+- `publish:openclaw-plugin` — builds and publishes `@preloop-ai/openclaw-plugin`
+  to npm (requires the `OPENCLAW_NPM_TOKEN` CI variable). ClawHub publication
+  remains a manual follow-up (see below) because `clawhub login` is interactive.
+- `publish:hermes-plugin` — builds and publishes `preloop-hermes-plugin` to
+  PyPI (requires the `HERMES_PYPI_TOKEN` CI variable).
+
+Both jobs fail fast if the package version and its plugin manifest version
+disagree, or if the version is already on the registry. Release flow:
+
+1. Bump the versions (see Release Preconditions below) in the preloop repo.
+2. Land the preloop submodule bump on preloop-ee `main`.
+3. On that pipeline, trigger the manual publish job(s) from the `deploy` stage.
+4. For OpenClaw, run the ClawHub publish steps below as a follow-up.
+
+Plugin versions are decoupled from platform releases (a platform `0.11.x` tag
+does not publish plugins); trigger these jobs whenever plugin changes land.
+
+The sections below remain valid as the local/manual fallback and document the
+ClawHub steps and smoke tests.
+
 ## Release Preconditions
 
 - Bump matching versions in:

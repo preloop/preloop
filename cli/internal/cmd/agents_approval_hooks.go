@@ -162,10 +162,17 @@ func discoverAgentPolicyPaths(source string, workspaceRoot string) []string {
 		}
 		return discoverCursorPermissionPolicyPaths(roots)
 	case permissionSourceClaudeCode:
-		return []string{
+		paths := []string{
 			filepath.Join(home, ".claude", "settings.json"),
 			filepath.Join(home, ".claude", "settings.local.json"),
 		}
+		if workspaceRoot != "" {
+			paths = append(paths,
+				filepath.Join(workspaceRoot, ".claude", "settings.json"),
+				filepath.Join(workspaceRoot, ".claude", "settings.local.json"),
+			)
+		}
+		return append(paths, claudeManagedSettingsPath())
 	case permissionSourceCodexCLI:
 		return []string{filepath.Join(home, ".codex", "config.toml")}
 	default:
@@ -239,7 +246,7 @@ func installApprovalHooks(agent AgentConfig, baseURL, token string, out io.Write
 	if out != nil {
 		fmt.Fprintf(out, "  Mobile approvals: installed %s hook (%s)\n", source, configPath)                                                //nolint:errcheck
 		fmt.Fprintf(out, "  Approval wait timeout: %ds (re-run onboard --approvals after changing the workflow timeout)\n", timeoutSeconds) //nolint:errcheck
-		printAgentPolicySummary(out, source, policyPaths)
+		printAgentPolicySummary(out, source, policyPaths, workspaceRoot)
 		if source == permissionSourceCursor {
 			fmt.Fprintln(out, "  Note: Cursor reliably enforces only DENY from a hook; an allow may be overridden by Cursor's in-app allowlist.") //nolint:errcheck
 		}
@@ -247,7 +254,7 @@ func installApprovalHooks(agent AgentConfig, baseURL, token string, out io.Write
 	return nil
 }
 
-func printAgentPolicySummary(out io.Writer, source string, policyPaths []string) {
+func printAgentPolicySummary(out io.Writer, source string, policyPaths []string, workspaceRoot string) {
 	if out == nil {
 		return
 	}
@@ -263,7 +270,7 @@ func printAgentPolicySummary(out io.Writer, source string, policyPaths []string)
 			fmt.Fprintf(out, "    %s\n", line) //nolint:errcheck
 		}
 	case permissionSourceClaudeCode:
-		policy, err := loadClaudePermissionPolicy()
+		policy, err := loadClaudePermissionPolicy(workspaceRoot)
 		if err != nil {
 			fmt.Fprintf(out, "  Mobile approvals: failed to load Claude policy: %v\n", err) //nolint:errcheck
 			return
@@ -341,6 +348,7 @@ func writePermissionHookCredential(
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = defaultApprovalHookTimeoutSeconds
 	}
+	safeReadAutoAllow := true
 	cred := permissionHookCredential{
 		BaseURL:          resolvedBase,
 		Token:            token,
@@ -350,6 +358,9 @@ func writePermissionHookCredential(
 		TimeoutSeconds:   timeoutSeconds,
 		PolicyPaths:      policyPaths,
 		WorkspaceRoot:    workspaceRoot,
+		// Auto-allow obviously read-only shell commands (ls, git status, ...)
+		// instead of escalating them; users can flip this to false by hand.
+		SafeReadAutoAllow: &safeReadAutoAllow,
 	}
 	data, err := json.MarshalIndent(cred, "", "  ")
 	if err != nil {

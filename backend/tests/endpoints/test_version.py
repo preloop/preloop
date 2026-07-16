@@ -87,8 +87,16 @@ class TestVersionEndpoint:
         )
         assert response.status_code == 200
 
-    def test_get_version_includes_cli_update_contract(self, client: TestClient):
+    def test_get_version_includes_cli_update_contract(
+        self, client: TestClient, monkeypatch
+    ):
         """The response must carry the keys the CLI update check parses."""
+        from preloop.api.endpoints import version as version_module
+
+        # Isolate from the instance's own recorded update check (local/dev
+        # databases carry real check rows that flip latest_version).
+        monkeypatch.setattr(version_module, "get_local_update_status", lambda: {})
+
         response = client.get("/api/v1/version")
         assert response.status_code == 200
         data = response.json()
@@ -116,7 +124,7 @@ class TestVersionEndpoint:
         )
         monkeypatch.setattr(crud_audit_log, "log_action", fake_log_action)
         monkeypatch.setattr(
-            version_module, "get_session_factory", lambda: (lambda: audit_session)
+            version_module, "get_session_factory", lambda: lambda: audit_session
         )
 
         response = client.get(
@@ -157,7 +165,13 @@ class TestVersionEndpoint:
 class TestVersionUpdateFields:
     """New update-prompt fields on GET /api/v1/version."""
 
-    def test_defaults_without_check_or_env(self, client: TestClient):
+    def test_defaults_without_check_or_env(self, client: TestClient, monkeypatch):
+        from preloop.api.endpoints import version as version_module
+
+        # "Without check" must hold even when the local/dev database carries a
+        # real update-check row — isolate from instance state.
+        monkeypatch.setattr(version_module, "get_local_update_status", lambda: {})
+
         response = client.get("/api/v1/version")
         assert response.status_code == 200
         data = response.json()

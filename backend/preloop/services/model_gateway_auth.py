@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 import time
 from typing import Optional
 
@@ -17,6 +18,8 @@ from preloop.models.crud.oauth_mcp_token import crud_oauth_mcp_access_token
 from preloop.models.models.api_key import ApiKey
 from preloop.models.models.oauth_mcp_token import OAuthMCPAccessToken
 from preloop.models.models.user import User
+
+logger = logging.getLogger(__name__)
 
 # Explicit empty bearer for synthetic gateway contexts that already have a
 # resolved ``User`` (internal replay/optimization). ``authenticate_bearer_token``
@@ -69,6 +72,27 @@ async def authenticate_bearer_token(
             if managed_agent is not None and managed_agent.lifecycle_state != "active":
                 return None
         return ModelGatewayAuthContext(token=token, user=user, api_key=api_key)
+
+    # Not a valid user token. If it maps to a known API key, log WHY it was
+    # rejected — a revoked durable agent credential (e.g. the managed agent
+    # was deleted or suspended) otherwise surfaces only as a generic 401 and
+    # is very hard to diagnose in the field.
+    rejected_key = crud_api_key.get_by_key(db, key=token)
+    if rejected_key is not None:
+        if not rejected_key.is_active:
+            reason = "key is deactivated (agent deleted/suspended or offboarded)"
+        elif rejected_key.is_expired:
+            reason = "key is expired"
+        else:
+            reason = "key binding is invalid (managed agent missing or inactive)"
+        logger.warning(
+            "Model gateway rejected API key %s (%s): %s — re-run "
+            "`preloop agents onboard` to mint a fresh credential",
+            rejected_key.key_prefix,
+            rejected_key.name,
+            reason,
+        )
+        return None
 
     oauth_token = crud_oauth_mcp_access_token.get_by_token(db, token=token)
     if not oauth_token or oauth_token.is_revoked:

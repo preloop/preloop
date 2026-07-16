@@ -77,6 +77,18 @@ type permissionHookCredential struct {
 	TimeoutSeconds   int      `json:"timeout_seconds,omitempty"`
 	PolicyPaths      []string `json:"policy_paths,omitempty"`
 	WorkspaceRoot    string   `json:"workspace_root,omitempty"`
+	// SafeReadAutoAllow gates the built-in read-only shell command allowlist
+	// (isSafeReadShellCommand) that auto-allows would-ask calls like "ls" or
+	// "git status". Written by onboarding; a missing field means enabled so
+	// pre-existing credential files keep the fatigue fix.
+	SafeReadAutoAllow *bool `json:"safe_read_auto_allow,omitempty"`
+}
+
+// safeReadAutoAllowEnabled reports whether the built-in read-only command
+// allowlist should auto-allow would-ask shell calls. Defaults to true when the
+// credential does not carry the field (including the no-credential fallback).
+func (cred permissionHookCredential) safeReadAutoAllowEnabled() bool {
+	return cred.SafeReadAutoAllow == nil || *cred.SafeReadAutoAllow
 }
 
 var agentsPermissionHookCmd = &cobra.Command{
@@ -149,7 +161,11 @@ func resolvePermissionDecision(source string, raw []byte, failOpen bool) hookDec
 		// Re-evaluate with empty cred for Cursor (still honors sandbox/allowlist
 		// from local policy files) before falling back.
 		req, _ = buildPermissionRequest(source, raw, permissionHookCredential{})
-		return clientFallbackDecision(req, failOpen, "no Preloop credential available for the approval hook")
+		return clientFallbackDecision(req, failOpen, fmt.Sprintf(
+			"no Preloop credential found for %s (expected under ~/.preloop/agents/). Failing closed. %s",
+			permissionSourceDisplayName(source),
+			permissionHookRemediation(source),
+		))
 	}
 
 	// Rebuild with credential so Cursor can detect Preloop MCP by base URL and
@@ -172,7 +188,12 @@ func resolvePermissionDecision(source string, raw []byte, failOpen bool) hookDec
 
 	resp, err := callPermissionCheck(baseURL, cred.Token, req, permissionCheckTimeoutFor(cred))
 	if err != nil {
-		return clientFallbackDecision(req, failOpen, fmt.Sprintf("Preloop approval check failed: %v", err))
+		return clientFallbackDecision(req, failOpen, fmt.Sprintf(
+			"could not reach Preloop at %s: %v. Failing closed. %s",
+			strings.TrimRight(baseURL, "/")+permissionCheckPath,
+			err,
+			permissionHookRemediation(source),
+		))
 	}
 
 	behavior := "deny"
@@ -228,6 +249,37 @@ func failureDecision(failOpen bool, reason string) hookDecision {
 	}
 }
 
+// permissionSourceDisplayName maps a permission source onto the agent name the
+// onboard/offboard commands accept, for actionable error messages.
+func permissionSourceDisplayName(source string) string {
+	switch source {
+	case permissionSourceClaudeCode:
+		return "Claude Code"
+	case permissionSourceCodexCLI:
+		return "Codex CLI"
+	case permissionSourceCursor:
+		return "Cursor"
+	default:
+		return source
+	}
+}
+
+// permissionHookRemediation tells the user exactly how to repair the approval
+// hook or disable it, for use in fail-closed deny reasons.
+func permissionHookRemediation(source string) string {
+	remediation := fmt.Sprintf(
+		"Re-run `preloop agents onboard %q --approvals` to repair it",
+		permissionSourceDisplayName(source),
+	)
+	if configPath, err := approvalHookConfigPath(source); err == nil {
+		remediation += fmt.Sprintf(
+			", or remove the Preloop hook from %s to disable approvals",
+			configPath,
+		)
+	}
+	return remediation + "."
+}
+
 // buildPermissionRequest maps an agent-specific stdin event onto the shared
 // permission-check request. cred is optional but lets Cursor detect Preloop MCP
 // by base URL and prefer onboarded policy paths.
@@ -253,7 +305,7 @@ func buildPermissionRequest(
 		req.ToolInput = coerceToolInput(event["tool_input"])
 		// Claude's PreToolUse fires on *every* call, so we honor the user's own
 		// config and only escalate the would-ask cases to Preloop.
-		req.ClientDecision = claudePermissionClientDecision(event, req.ToolName, req.ToolInput)
+		req.ClientDecision = claudePermissionClientDecision(event, req, cred)
 	case permissionSourceCodexCLI:
 		req.ToolName = firstStringField(event, "tool_name")
 		req.ToolInput = coerceToolInput(event["tool_input"])
@@ -302,29 +354,52 @@ func cursorPermissionClientDecision(
 	if err != nil {
 		return "ask"
 	}
-	return evaluateCursorPermissionPolicy(
+	decision := evaluateCursorPermissionPolicy(
 		policy,
 		req.ToolName,
 		req.ToolInput,
 		event,
 		cred.BaseURL,
 	)
+	// Cursor keeps its real allowlist in IDE state, so an absent/empty
+	// permissions.json would otherwise turn every "ls" into a blocking
+	// approval. Auto-allow obviously read-only shell commands unless
+	// onboarding disabled it. Shell calls only — an MCP tool_input may carry
+	// an unrelated "command" field.
+	if decision == "ask" && cred.safeReadAutoAllowEnabled() &&
+		strings.EqualFold(strings.TrimSpace(req.ToolName), "Shell") {
+		if command := stringField(req.ToolInput, "command"); isSafeReadShellCommand(command) {
+			return "allow"
+		}
+	}
+	return decision
 }
 
 // claudePermissionClientDecision computes the client_decision Claude Code's own
-// config would reach for this call. Errors loading the policy fall back to
-// "ask" (escalate), which is the safe choice.
+// config would reach for this call, merging user, project (from the hook
+// event's cwd), and enterprise managed settings. Errors loading the policy fall
+// back to "ask" (escalate), which is the safe choice.
 func claudePermissionClientDecision(
 	event map[string]interface{},
-	toolName string,
-	toolInput map[string]interface{},
+	req permissionCheckRequest,
+	cred permissionHookCredential,
 ) string {
-	policy, err := loadClaudePermissionPolicy()
+	policy, err := loadClaudePermissionPolicy(req.Cwd)
 	if err != nil {
 		return "ask"
 	}
 	mode := firstStringField(event, "permission_mode")
-	return evaluateClaudePermissionPolicy(policy, mode, toolName, toolInput)
+	decision := evaluateClaudePermissionPolicy(policy, mode, req.ToolName, req.ToolInput)
+	// Claude already auto-allows safe-read TOOLS; this extends the same
+	// philosophy to read-only Bash commands, but only when no configured rule
+	// matched and the call would otherwise escalate.
+	if decision == "ask" && cred.safeReadAutoAllowEnabled() &&
+		strings.EqualFold(strings.TrimSpace(req.ToolName), "Bash") {
+		if command := stringField(req.ToolInput, "command"); isSafeReadShellCommand(command) {
+			return "allow"
+		}
+	}
+	return decision
 }
 
 // coerceToolInput normalizes a hook event's tool_input into an object map.

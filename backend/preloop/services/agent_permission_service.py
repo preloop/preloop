@@ -22,6 +22,7 @@ from sqlalchemy.exc import IntegrityError
 
 from preloop.models import models
 from preloop.models.db.session import get_async_db_session
+from preloop.schemas.subject_governance import NATIVE_TOOL_APPROVALS_OFF
 from preloop.services.approval_workflow_service import DEFAULT_APPROVAL_TYPE
 from preloop.services.subject_governance import (
     SUBJECT_TYPE_MANAGED_AGENTS,
@@ -36,8 +37,8 @@ AGENT_TOOL_SOURCE = "agent"
 AGENT_TOOL_APPROVALS_WORKFLOW_NAME = "Agent Tool Approvals"
 
 
-def _managed_agent_approval_workflow_pin(managed_agent_id: uuid.UUID):
-    """SQL expression extracting a managed-agent workflow pin as text.
+def _managed_agent_governance_field(managed_agent_id: uuid.UUID, field: str):
+    """SQL expression extracting a managed-agent governance field as text.
 
     Uses ``json_extract_path_text(meta_data, ...)`` with one text argument
     per path segment. Do NOT use ``meta_data.op("#>>")(<python string>)``
@@ -57,8 +58,34 @@ def _managed_agent_approval_workflow_pin(managed_agent_id: uuid.UUID):
         "subject_governance",
         "managed_agents",
         str(agent_uuid),
-        "approval_workflow_id",
+        field,
     )
+
+
+def _managed_agent_approval_workflow_pin(managed_agent_id: uuid.UUID):
+    """SQL expression extracting a managed-agent workflow pin as text."""
+    return _managed_agent_governance_field(managed_agent_id, "approval_workflow_id")
+
+
+async def _native_tool_approvals_disabled(
+    db: Any, account_id: str, managed_agent_id: uuid.UUID
+) -> bool:
+    """Return True when native tool approvals are switched off for this agent.
+
+    Reads ``Account.meta_data.subject_governance.managed_agents.<agent_id>.
+    native_tool_approvals``; any value other than ``"off"`` (including an
+    absent field) means approvals are enforced.
+    """
+    result = await db.execute(
+        select(
+            _managed_agent_governance_field(managed_agent_id, "native_tool_approvals")
+        )
+        .select_from(models.Account)
+        .where(models.Account.id == account_id)
+        .limit(1)
+    )
+    setting = result.scalar()
+    return (str(setting or "")).strip().lower() == NATIVE_TOOL_APPROVALS_OFF
 
 
 async def _fetch_agent_tool_approvals_workflow(
@@ -258,6 +285,12 @@ async def request_agent_permission(
     is honored immediately. Otherwise an approval request is created, human
     approvers are notified, and this function polls until decided or timed out.
 
+    Escalation can be disabled per agent: when the managed agent's
+    subject-governance config sets ``native_tool_approvals`` to ``"off"``,
+    escalated (ask) calls are allowed immediately without creating an
+    approval request. Explicit client ``allow``/``deny`` decisions are
+    unaffected by that switch.
+
     Args:
         base_url: Preloop base URL for approval links and notifications.
         account_id: Owning account id.
@@ -287,6 +320,22 @@ async def request_agent_permission(
     from preloop.models.crud.approval_request import get_approval_request_async
 
     async with get_async_db_session() as db:
+        if managed_agent_id is not None and await _native_tool_approvals_disabled(
+            db, account_id, managed_agent_id
+        ):
+            logger.info(
+                "Native tool approvals are disabled for managed agent %s "
+                "(account %s); auto-allowing tool %s without an approval request",
+                managed_agent_id,
+                account_id,
+                tool_name,
+            )
+            return (
+                "allow",
+                "Native tool approvals are disabled for this agent in Preloop",
+                None,
+            )
+
         workflow = await _resolve_workflow(
             db, account_id, user_id, managed_agent_id=managed_agent_id
         )

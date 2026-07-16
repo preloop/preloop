@@ -130,7 +130,13 @@ export class LoginView extends LitElement {
       const redirectPath = localStorage.getItem('loginRedirect');
       if (redirectPath) {
         localStorage.removeItem('loginRedirect');
-        Router.go(redirectPath);
+        if (redirectPath.startsWith('/admin')) {
+          // The admin dashboard is a separate SPA that the console's
+          // client-side router cannot reach; do a hard navigation.
+          window.location.href = redirectPath;
+        } else {
+          Router.go(redirectPath);
+        }
       } else {
         Router.go('/console');
       }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -29,19 +30,57 @@ type claudeSettingsDocument struct {
 	} `json:"permissions"`
 }
 
-// loadClaudePermissionPolicy reads ~/.claude/settings.json and, when present,
-// ~/.claude/settings.local.json, merging them into a single policy. The local
-// file takes precedence for defaultMode and its rules are unioned in. A missing
-// settings file is not an error — it simply yields an empty policy (everything
-// escalates to "ask").
-func loadClaudePermissionPolicy() (claudePermissionPolicy, error) {
+// claudeManagedSettingsPath returns the enterprise managed-settings file Claude
+// Code consults on this platform. It is a package variable so tests can point
+// it at a temp file.
+var claudeManagedSettingsPath = func() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "/Library/Application Support/ClaudeCode/managed-settings.json"
+	case "windows":
+		return `C:\ProgramData\ClaudeCode\managed-settings.json`
+	default:
+		return "/etc/claude-code/managed-settings.json"
+	}
+}
+
+// claudeSettingsPaths returns every settings file Claude Code merges for the
+// given session cwd, ordered lowest-precedence first: user, user local,
+// project, project local, managed (enterprise). Reading in this order lets a
+// simple last-writer-wins loop implement the defaultMode precedence
+// managed > project local > project > user local > user.
+func claudeSettingsPaths(cwd string) ([]string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return claudePermissionPolicy{}, fmt.Errorf("failed to resolve home directory: %w", err)
+		return nil, fmt.Errorf("failed to resolve home directory: %w", err)
+	}
+	paths := []string{
+		filepath.Join(home, ".claude", "settings.json"),
+		filepath.Join(home, ".claude", "settings.local.json"),
+	}
+	if cwd = strings.TrimSpace(cwd); cwd != "" {
+		paths = append(paths,
+			filepath.Join(cwd, ".claude", "settings.json"),
+			filepath.Join(cwd, ".claude", "settings.local.json"),
+		)
+	}
+	return append(paths, claudeManagedSettingsPath()), nil
+}
+
+// loadClaudePermissionPolicy reads every settings file Claude Code would merge
+// for a session running in cwd (user, user local, project, project local, and
+// enterprise managed settings) into a single policy. Allow/deny/ask lists are
+// unioned across all files — deny is evaluated first at decision time, so a
+// managed or project deny always wins regardless of merge order. defaultMode
+// is last-writer-wins in ascending precedence order (managed wins). A missing
+// settings file is not an error — it simply contributes nothing.
+func loadClaudePermissionPolicy(cwd string) (claudePermissionPolicy, error) {
+	paths, err := claudeSettingsPaths(cwd)
+	if err != nil {
+		return claudePermissionPolicy{}, err
 	}
 	policy := claudePermissionPolicy{}
-	for _, name := range []string{"settings.json", "settings.local.json"} {
-		path := filepath.Join(home, ".claude", name)
+	for _, path := range paths {
 		doc, ok, err := readClaudeSettingsDocument(path)
 		if err != nil {
 			return claudePermissionPolicy{}, err
@@ -145,7 +184,52 @@ func matchClaudePermissionRule(rule, toolName string, toolInput map[string]inter
 		return true
 	}
 	target := claudeRuleTarget(toolName, toolInput)
+	if strings.EqualFold(strings.TrimSpace(ruleTool), "Bash") {
+		return matchClaudeBashSpecifier(specifier, target)
+	}
 	return globMatch(specifier, target)
+}
+
+// matchClaudeBashSpecifier implements Claude Code's Bash rule semantics:
+//
+//   - "Bash(foo)"    — exact match: the command must equal "foo".
+//   - "Bash(foo:*)"  — prefix match: the trailing ":*" is Claude Code's
+//     prefix-match marker, NOT a literal colon + glob. It matches the command
+//     "foo" itself or "foo" continued at a token boundary.
+//   - "Bash(git *)"  — legacy space-style glob, preserved for backwards compat
+//     with rules users already wrote against our earlier matcher.
+func matchClaudeBashSpecifier(specifier, command string) bool {
+	if strings.HasSuffix(specifier, ":*") {
+		return matchClaudeBashPrefix(strings.TrimSuffix(specifier, ":*"), command)
+	}
+	return globMatch(specifier, command)
+}
+
+// matchClaudeBashPrefix reports whether command matches the "Bash(prefix:*)"
+// prefix rule. Semantics decision: the prefix match is token-wise, not raw
+// byte-wise. The command matches when it equals the prefix exactly, or starts
+// with the prefix followed by a token boundary — a space (new argument, e.g.
+// "npm run test -- --watch") or a colon (script-name continuation, e.g.
+// "npm run test:unit" under "Bash(npm run test:*)"). A raw continuation of the
+// last word ("npm run testx") does NOT match: it is a different command word,
+// and treating it as a match would let "Bash(git:*)" cover "github ...".
+func matchClaudeBashPrefix(prefix, command string) bool {
+	if prefix == "" {
+		// "Bash(:*)" degenerates to match-everything, same as "Bash(*)".
+		return true
+	}
+	if command == prefix {
+		return true
+	}
+	if !strings.HasPrefix(command, prefix) {
+		return false
+	}
+	switch command[len(prefix)] {
+	case ' ', ':':
+		return true
+	default:
+		return false
+	}
 }
 
 // splitClaudePermissionRule parses "Tool(specifier)" into its parts. The second
