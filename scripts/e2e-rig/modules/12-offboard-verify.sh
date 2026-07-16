@@ -25,17 +25,32 @@ import riglib
 
 url = riglib.env("RIG_URL").rstrip("/")
 state = riglib.load_state("custom-agent.json")
-if not state:
-    riglib.log("no custom agent recorded; nothing to clean up")
-else:
-    token = riglib.user_token(url, riglib.load_creds())
-    aid, cid = state["agent_id"], state["credential_id"]
-    s, b = riglib.api_request(
-        f"{url}/api/v1/agents/{aid}/credentials/{cid}", "DELETE", token
+token = riglib.user_token(url, riglib.load_creds())
+name = (state or {}).get("display_name", "Research Agent (e2e)")
+matches = [
+    a for a in riglib.list_agents(url, token) if a.get("display_name") == name
+]
+if not matches:
+    riglib.log("no custom agent found; nothing to clean up")
+for agent in matches:
+    aid = agent["id"]
+    s, creds_list = riglib.api_request(
+        f"{url}/api/v1/agents/{aid}/credentials", token=token
     )
-    riglib.log(f"revoke credential: {s}")
-    s, b = riglib.api_request(f"{url}/api/v1/agents/{aid}", "DELETE", token)
-    riglib.log(f"delete custom agent: {s}")
+    items = (
+        creds_list.get("items") or creds_list.get("credentials") or []
+        if isinstance(creds_list, dict)
+        else creds_list or []
+    )
+    for cred in items:
+        s, _ = riglib.api_request(
+            f"{url}/api/v1/agents/{aid}/credentials/{cred['id']}",
+            "DELETE",
+            token,
+        )
+        riglib.log(f"revoke credential {cred['id']}: {s}")
+    s, _ = riglib.api_request(f"{url}/api/v1/agents/{aid}", "DELETE", token)
+    riglib.log(f"delete custom agent {aid}: {s}")
 PY
 
 # 3. Final snapshot.

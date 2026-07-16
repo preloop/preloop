@@ -38,8 +38,9 @@ def main() -> None:
     try:
         # Token passed via env (exported off-screen would still echo; instead
         # export it in a hidden pre-step: type only the reference on screen).
-        child.send(f"export PRELOOP_USER_TOKEN='{token}' HISTFILE=\n\r")
+        child.send(f"export PRELOOP_USER_TOKEN='{token}' HISTFILE=\r")
         child.expect_exact(capture.PROMPT.encode())
+        capture.clear_buffer(child)
         rec.reset()  # the export never appears in the saved cast
         time.sleep(0.8)
 
@@ -72,11 +73,8 @@ def main() -> None:
         riglib.log(f"cast: {CAST}\nvideo: {MP4}")
 
     # The agent must exist server-side regardless of the session outcome.
-    status, body = riglib.api_request(f"{URL}/api/v1/agents", token=token)
-    agents = body.get("agents", body) if isinstance(body, dict) else body
-    match = [
-        a for a in (agents or []) if a.get("display_name") == "Research Agent (e2e)"
-    ]
+    agents = riglib.list_agents(URL, token)
+    match = [a for a in agents if a.get("display_name") == "Research Agent (e2e)"]
     if not match:
         raise SystemExit("custom agent not found in /api/v1/agents after onboarding")
     riglib.log(f"custom agent registered: {match[0].get('id')}")

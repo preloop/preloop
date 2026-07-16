@@ -42,7 +42,14 @@ def request(
     if token:
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    ctx = ssl.create_default_context()
+    # TLS verification stays ON; certifi (optional) covers Pythons that ship
+    # without a usable system CA bundle for urllib.
+    try:
+        import certifi
+
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        ctx = ssl.create_default_context()
     try:
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
             return resp.status, json.loads(resp.read().decode() or "null")

@@ -52,3 +52,9 @@ rig_ssh 'for b in claude opencode codex; do
              printf "%s: NOT INSTALLED\n" "$b"
            fi
          done' | tee -a "$LOG"
+
+# Fresh installs above may have created config files (e.g. the codex marker)
+# that the module-02 baseline predates. Refresh the baseline — nothing is
+# onboarded at this point, so it is still the pre-onboarding state that
+# module 12 must restore to.
+rig_snapshot "baseline"

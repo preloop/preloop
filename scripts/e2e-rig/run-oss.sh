@@ -10,7 +10,7 @@
 #     --host root@<vm> --url https://<name>.nip.io \
 #     --release 0.11.1 --cli-version 0.11.1 \
 #     [--headless] [--run-dir DIR] [--from NN] [--until NN] [--only NN,NN]
-#     [--keep-going] [--purge-certs]
+#     [--keep-going] [--purge-certs] [--no-video]
 #
 # Module exit codes: 0 = pass, 3 = skip (recorded), other = fail.
 
@@ -31,6 +31,7 @@ FROM="01"
 UNTIL="12"
 ONLY=""
 KEEP_GOING=0
+NO_VIDEO=0
 
 usage() { grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 
@@ -47,6 +48,7 @@ while [ $# -gt 0 ]; do
     --only) ONLY="$2"; shift 2 ;;
     --keep-going) KEEP_GOING=1; shift ;;
     --purge-certs) RIG_PURGE_CERTS=1; shift ;;
+    --no-video) NO_VIDEO=1; shift ;;
     -h|--help) usage ;;
     *) rig_die "unknown argument: $1" ;;
   esac
@@ -93,9 +95,10 @@ if [ ! -f "$CREDS" ]; then
 import json, secrets, sys
 suffix = secrets.token_hex(3)
 creds = {
-    "username": f"e2e-{suffix}",
-    "email": f"e2e-{suffix}@example.com",
-    "password": secrets.token_urlsafe(12) + "aA1",
+    # Username must be alphanumeric (registration validation).
+    "username": f"e2e{suffix}",
+    "email": f"e2e{suffix}@example.com",
+    "password": secrets.token_hex(10) + "aA1",
 }
 with open(sys.argv[1], "w") as fh:
     json.dump(creds, fh, indent=2)
@@ -106,10 +109,10 @@ fi
 SUMMARY="$RIG_RUN_DIR/run-summary.json"
 if [ ! -f "$SUMMARY" ]; then
   "$RIG_PYTHON" - "$SUMMARY" "$RIG_HOST" "$RIG_URL" "$RIG_RELEASE" "$RIG_CLI_VERSION" <<'PY'
-import json, sys, datetime
+import json, sys, datetime, os
 path, host, url, release, cli = sys.argv[1:6]
 json.dump({
-    "run_id": path.rstrip("/").split("/")[-1],
+    "run_id": os.path.basename(os.path.dirname(os.path.abspath(path))),
     "host": host, "url": url, "release": release, "cli_version": cli,
     "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     "steps": [], "result": "running",
@@ -195,9 +198,11 @@ for entry in "${MODULES[@]}"; do
   rig_log "=== [$id] $name ==="
   start=$SECONDS
   status=0
+  # pipefail makes the pipeline carry the module's exit code (tee is always
+  # 0); the || stops set -e from killing the orchestrator on skip/fail.
   case "$script" in
-    *.py) "$RIG_PYTHON" "$script" 2>&1 | tee "$log"; status=${PIPESTATUS[0]} ;;
-    *.sh) bash "$script" 2>&1 | tee "$log"; status=${PIPESTATUS[0]} ;;
+    *.py) "$RIG_PYTHON" "$script" 2>&1 | tee "$log" || status=$? ;;
+    *.sh) bash "$script" 2>&1 | tee "$log" || status=$? ;;
   esac
   dur=$((SECONDS - start))
 
@@ -218,5 +223,14 @@ for entry in "${MODULES[@]}"; do
 done
 
 finalize "$overall"
+
+# One continuous documentation video for the whole run (skip with --no-video).
+if [ "$NO_VIDEO" -ne 1 ]; then
+  rig_log "compositing the full-run video ..."
+  export RIG_STEP_NOTES_FILE="$RIG_RUN_DIR/state/notes-video.txt"
+  "$RIG_PYTHON" "$HERE/lib/compose_video.py" \
+    || rig_log "WARNING: full-run video compositing failed (artifacts intact)"
+fi
+
 rig_log "run complete: $overall — summary: $SUMMARY"
 [ "$overall" = "pass" ]

@@ -8,6 +8,7 @@ API token for the CLI + API modules.
 
 from __future__ import annotations
 
+import re
 import sys
 import time
 from pathlib import Path
@@ -23,7 +24,7 @@ STATE = riglib.run_dir() / "state" / "browser-state.json"
 
 
 def register(page, creds) -> str:
-    """Try to register; returns 'registered' or 'exists'."""
+    """Try to register; returns 'registered', 'needs-login' or 'exists'."""
     page.goto(f"{URL}/register", wait_until="networkidle")
     browserlib.screenshot(page, "07-register-form")
     browserlib.fill_sl_input(page, "username", creds["username"])
@@ -31,20 +32,21 @@ def register(page, creds) -> str:
     browserlib.fill_sl_input(page, "password", creds["password"])
     time.sleep(0.5)
     page.locator("sl-button[type=submit]").first.click()
+
+    # Success auto-logs-in and lands on /console (or a pending redirect);
+    # if auto-login fails the app falls back to /login?registered=true.
     try:
-        page.wait_for_url("**/console**", timeout=20000)
-        return "registered"
+        page.wait_for_url(re.compile(r"/(console|welcome|login)"), timeout=25000)
     except Exception:
-        pass
-    try:
-        page.wait_for_url("**/welcome**", timeout=5000)
-        return "registered"
-    except Exception:
-        body = page.inner_text("body")
-        if "already" in body.lower() or "exists" in body.lower():
+        # Still on /register: look for the validation error (get_by_text
+        # pierces Lit shadow DOM, inner_text('body') does not).
+        if page.get_by_text("already registered").count() > 0:
             return "exists"
         browserlib.screenshot(page, "07-register-stuck")
-        raise SystemExit(f"registration did not reach console/welcome: {page.url}")
+        raise SystemExit(f"registration did not navigate: {page.url}")
+    if "/login" in page.url:
+        return "needs-login"
+    return "registered"
 
 
 def login(page, creds) -> None:
@@ -66,6 +68,9 @@ def main() -> None:
         if outcome == "exists":
             riglib.note("user already exists (resumed run) — logging in instead")
             login(page, creds)
+        elif outcome == "needs-login":
+            riglib.note("registered; auto-login fell back to the sign-in page")
+            login(page, creds)
 
         # Land on the console proper and let it render for the recording.
         if "/console" not in page.url:
@@ -80,6 +85,7 @@ def main() -> None:
         browser.close()
         if video:
             riglib.log(f"browser video: {video}")
+            riglib.save_state("video-07.json", {"path": str(video)})
 
     # Mint an API token for the CLI/API modules and stash it with the creds.
     token = riglib.user_token(URL, creds)

@@ -20,13 +20,18 @@ LOG="$RIG_RUN_DIR/logs/05-install.txt"
 rig_log "installing Preloop OSS ${RIG_RELEASE} at ${RIG_URL} (installer: $INSTALLER_URL)"
 
 # ssh without -t => no tty on the VM => the installer never prompts.
+# Run with bash, not sh: on Debian sh is dash, where has_tty()'s
+# `: < /dev/tty` redirect failure is FATAL for the special builtin when no
+# controlling tty exists, killing unattended TLS installs that leave
+# PRELOOP_TLS_EMAIL unset (installer bug — report upstream). bash degrades
+# gracefully and has_tty simply returns false.
 set +e
 rig_ssh "curl -fsSL '$INSTALLER_URL' -o /tmp/preloop-install-oss.sh &&
          PRELOOP_VERSION='$RIG_RELEASE' \
          PRELOOP_URL='$RIG_URL' \
          PRELOOP_SKIP_SMTP=1 \
          PRELOOP_SKIP_ADMIN=1 \
-         sh /tmp/preloop-install-oss.sh" 2>&1 | tee "$LOG"
+         bash /tmp/preloop-install-oss.sh" 2>&1 | tee "$LOG"
 status=${PIPESTATUS[0]}
 set -e
 [ "$status" -eq 0 ] || rig_die "installer exited $status (see $LOG)"
