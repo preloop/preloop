@@ -395,9 +395,10 @@ export class FlowsView extends LitElement {
         <div class="main-column">
           <div class="proxy-notice">
             <div class="proxy-notice-text">
-              Automate your workflows by creating intelligent agents that
-              respond to issue tracker events or external webhooks. Get started
-              by exploring the presets below, or create a new flow from scratch.
+              Event-driven agent runs. A flow starts an agent when something
+              happens — a new issue, a webhook — and stops it when the run
+              completes. Get started by exploring the presets below, or create a
+              new flow from scratch.
             </div>
           </div>
 
