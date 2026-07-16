@@ -180,7 +180,14 @@ export class WelcomeView extends LitElement {
             </a>
           </div>
           <div class="form-container">
-            <div class="error-message">${this._error}</div>
+            <div class="error-message">
+              ${
+                this._email
+                  ? this._error
+                  : html`Could not retrieve your details. Try signing in at
+                      <a href="/login">/login</a>, or contact support.`
+              }
+            </div>
           </div>
         </div>
       `;

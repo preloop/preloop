@@ -27,6 +27,9 @@ export class LoginView extends LitElement {
   @state()
   private oauthProviders: string[] = [];
 
+  @state()
+  private registrationEnabled = true;
+
   static styles = [
     formStyles,
     css`
@@ -101,8 +104,11 @@ export class LoginView extends LitElement {
       const features = await getFeatures();
       const providers = features.features['oauth_providers'];
       this.oauthProviders = Array.isArray(providers) ? providers : [];
+      this.registrationEnabled = features.features['registration'] !== false;
     } catch (error) {
       this.oauthProviders = [];
+      // Fail open, matching the /register route guard.
+      this.registrationEnabled = true;
     }
   }
 
@@ -217,8 +223,12 @@ export class LoginView extends LitElement {
               >
             </div>
             <div class="form-links">
-              <a href="/forgot-password">Forgot Password?</a> &middot;
-              <a href="/register">Create Account</a>
+              <a href="/forgot-password">Forgot Password?</a>
+              ${
+                this.registrationEnabled
+                  ? html` &middot; <a href="/register">Create Account</a>`
+                  : nothing
+              }
             </div>
           </form>
         </div>
