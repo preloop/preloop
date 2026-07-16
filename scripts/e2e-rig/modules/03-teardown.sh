@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Module 03 — tear down the existing Preloop instance.
+#
+# Archives .env + compose overlays FIRST (so reinstall parameters are known),
+# then `docker compose down --volumes --remove-orphans`, then removes old
+# preloop images. Let's Encrypt certs are preserved by default (LE rate
+# limits: ~5 duplicate certs/week) — pass --purge-certs to the entrypoint to
+# delete them too. Idempotent: a VM with nothing installed passes.
+
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/common.sh"
+
+ARCHIVE="$RIG_RUN_DIR/instance-archive"
+mkdir -p "$ARCHIVE"
+
+if rig_ssh "[ -d $RIG_INSTANCE_DIR ]"; then
+  rig_log "archiving $RIG_INSTANCE_DIR config to $ARCHIVE"
+  rig_ssh "cd $RIG_INSTANCE_DIR && tar czf - .env *.yaml tls 2>/dev/null || true" \
+    > "$ARCHIVE/preloop-oss-config.tar.gz"
+  # A redacted .env copy for quick reading (secrets stay in the tarball only).
+  rig_ssh "sed 's/\(SECRET_KEY\|POSTGRES_PASSWORD\|SMTP_PASSWORD\)=.*/\1=<redacted>/' $RIG_INSTANCE_DIR/.env 2>/dev/null" \
+    > "$ARCHIVE/env-redacted.txt" || true
+
+  rig_log "bringing the stack down (volumes removed)"
+  rig_ssh "cd $RIG_INSTANCE_DIR
+           $(rig_compose_args_remote)
+           docker compose \$COMPOSE_ARGS down --volumes --remove-orphans" \
+    | tee "$RIG_RUN_DIR/logs/03-compose-down.txt" || rig_note "compose down reported errors (continuing)"
+else
+  rig_note "$RIG_INSTANCE_DIR not present; checking for stray containers"
+fi
+
+# Belt and braces: kill anything left in the compose project + its volumes.
+rig_ssh '
+  left=$(docker ps -aq --filter "label=com.docker.compose.project=preloop-oss")
+  if [ -n "$left" ]; then docker rm -f $left; fi
+  vols=$(docker volume ls -q --filter "label=com.docker.compose.project=preloop-oss")
+  if [ -n "$vols" ]; then docker volume rm $vols; fi
+  true
+' | tee -a "$RIG_RUN_DIR/logs/03-compose-down.txt"
+
+if [ "${RIG_PURGE_CERTS:-0}" = "1" ]; then
+  rig_ssh "rm -rf $RIG_INSTANCE_DIR/certbot"
+  rig_note "purged Let's Encrypt material (fresh issuance on next install)"
+else
+  rig_note "preserved $RIG_INSTANCE_DIR/certbot (existing cert will be reused)"
+fi
+
+# Reclaim disk: the VM is small and each release is ~2GB of images.
+rig_ssh 'docker image prune -f >/dev/null 2>&1;
+         docker images "ghcr.io/preloop/*" --format "{{.Repository}}:{{.Tag}}" |
+         while read -r img; do docker rmi "$img" >/dev/null 2>&1 || true; done;
+         df -h / | tail -1' | tee -a "$RIG_RUN_DIR/logs/03-compose-down.txt"
+
+remaining=$(rig_ssh 'docker ps --format "{{.Names}}" | grep -c "^preloop-oss" || true')
+[ "${remaining:-0}" = "0" ] || rig_die "containers still running after teardown"
+rig_note "instance torn down; volumes removed; config archived"
