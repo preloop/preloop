@@ -51,6 +51,15 @@ export class TrackerList extends LitElement {
     );
   }
 
+  private _handleAddTracker() {
+    this.dispatchEvent(
+      new CustomEvent('tracker-add-request', {
+        bubbles: true,
+        composed: true,
+      })
+    );
+  }
+
   private async _handleTrackerDeleted(event: CustomEvent) {
     const { id } = event.detail;
     try {
@@ -81,6 +90,20 @@ export class TrackerList extends LitElement {
       align-items: center;
       height: 100px;
     }
+
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: var(--sl-spacing-medium);
+      padding: var(--sl-spacing-2x-large) var(--sl-spacing-large);
+      text-align: center;
+      color: var(--sl-color-neutral-500);
+    }
+
+    .empty-state sl-icon {
+      font-size: 2rem;
+    }
   `;
 
   render() {
@@ -95,6 +118,22 @@ export class TrackerList extends LitElement {
         <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
         <strong>Error:</strong> ${this.error}
       </sl-alert>`;
+    }
+
+    if (this.trackers.length === 0) {
+      return html`
+        <div class="empty-state">
+          <sl-icon name="link-45deg"></sl-icon>
+          <div>
+            No trackers connected. Connect GitHub, GitLab, or Jira to give flows
+            their triggers and agents their issue-tracking tools.
+          </div>
+          <sl-button variant="primary" @click=${this._handleAddTracker}>
+            <sl-icon slot="prefix" name="plus-lg"></sl-icon>
+            Add New Tracker
+          </sl-button>
+        </div>
+      `;
     }
 
     return html`

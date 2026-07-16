@@ -99,6 +99,10 @@ export class PreloopSessionObserver extends LitElement {
   @property({ type: String })
   selectedSessionId: string | null = null;
 
+  /** Optional override for the sidebar's no-sessions message. */
+  @property({ type: String })
+  emptyText = '';
+
   @state()
   private observedSessions: ObservedSession[] = [];
 
@@ -1390,6 +1394,9 @@ export class PreloopSessionObserver extends LitElement {
                   <session-list-panel
                     .sessions=${this.filteredSessions}
                     .activeSessionId=${this.activeSessionId}
+                    .emptyText=${
+                      this.observedSessions.length === 0 ? this.emptyText : ''
+                    }
                     @session-selected=${(event: CustomEvent) =>
                       this.selectSession(event.detail.sessionId)}
                   ></session-list-panel>

@@ -1094,12 +1094,27 @@ export class RuntimeSessionsView extends LitElement {
     }
   }
 
+  private hasActiveFilters(): boolean {
+    return (
+      this.selectedRange !== 'last-30' ||
+      this.searchQuery !== '' ||
+      this.sessionSourceType !== 'all' ||
+      this.status !== 'all'
+    );
+  }
+
+  private emptySessionsText(): string {
+    return this.hasActiveFilters()
+      ? 'No sessions matched the current filters.'
+      : 'No sessions yet. A session is recorded automatically the first time an onboarded agent makes a model or tool call through the gateway. Onboard an agent from the Agents page to see your first one.';
+  }
+
   private renderSessionList() {
     if (!this.sessions || this.sessions.items.length === 0) {
       return html`
         <div class="empty-state">
           <sl-icon name="collection"></sl-icon>
-          <div>No sessions matched the current filters.</div>
+          <div>${this.emptySessionsText()}</div>
         </div>
       `;
     }
@@ -1869,7 +1884,11 @@ export class RuntimeSessionsView extends LitElement {
 
   render() {
     return html`
-      <view-header headerText="Sessions" width="extra-wide"></view-header>
+      <view-header
+        headerText="Sessions"
+        description="Everything your agents did, as it happened — prompts, responses, tool calls, and cost per session. Follow live or replay later."
+        width="extra-wide"
+      ></view-header>
       <div class="dashboard extra-wide">
         <div class="main-column">
           <div class="page">
@@ -1972,6 +1991,7 @@ export class RuntimeSessionsView extends LitElement {
                       <preloop-session-observer
                         scope="account"
                         .sessions=${this.sessions?.items || []}
+                        .emptyText=${this.emptySessionsText()}
                         .selectedSessionId=${this.selectedSessionId}
                         layout="full"
                         defaultReplayMode="timeline"

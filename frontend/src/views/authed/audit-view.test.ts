@@ -276,6 +276,43 @@ describe('AuditView', () => {
     localStorage.clear();
   });
 
+  it('shows a first-run empty state when no audit events exist', async () => {
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.startsWith('/api/v1/audit-logs/grouped?')) {
+        return new Response(
+          JSON.stringify({ groups: [], total: 0, skip: 0, limit: 50 }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response('[]', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    const element = document.createElement('audit-view') as AuditView;
+    document.body.appendChild(element);
+
+    await waitUntil(
+      () => !(element as any)._loading,
+      'Audit view did not finish loading'
+    );
+    await element.updateComplete;
+
+    const content = (element.shadowRoot?.textContent || '').replace(
+      /\s+/g,
+      ' '
+    );
+    expect(content).to.contain('No audit events yet.');
+    expect(content).to.contain(
+      'Governed tool calls, approvals, and policy decisions are recorded here'
+    );
+    expect(content).to.not.contain('matching your filters');
+
+    element.remove();
+  });
+
   it('renders expandable runtime session events and API token attribution', async () => {
     const element = document.createElement('audit-view') as AuditView;
     document.body.appendChild(element);

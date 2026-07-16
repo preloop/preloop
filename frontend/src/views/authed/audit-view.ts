@@ -855,7 +855,11 @@ export class AuditView extends AuthedElement {
 
   render() {
     return html`
-      <view-header headerText="Audit Timeline" width="wide">
+      <view-header
+        headerText="Audit Timeline"
+        description="The permanent record of governed activity: tool calls, approvals, and policy decisions, with outcomes and timestamps."
+        width="wide"
+      >
         <sl-badge slot="title-prefix" pill variant="neutral"
           >${this._total} events</sl-badge
         >
@@ -889,7 +893,9 @@ export class AuditView extends AuthedElement {
                         </div>`
                       : this._groups.length === 0
                         ? html`<div class="empty-state">
-                            No audit events found matching your filters.
+                            No audit events yet. Governed tool calls, approvals,
+                            and policy decisions are recorded here as your
+                            agents work.
                           </div>`
                         : html`
                             <div class="timeline">
