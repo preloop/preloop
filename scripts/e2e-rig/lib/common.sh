@@ -44,6 +44,7 @@ rig_skip() {
 rig_ssh() {
   # Every remote command carries the telemetry opt-out so CLI/installer runs
   # on the target host never emit adoption telemetry.
+  # Note: rig_ssh expects a single command string, not multiple args.
   ssh -o BatchMode=yes -o ConnectTimeout=15 "$RIG_HOST" \
     "export PRELOOP_DISABLE_TELEMETRY=true; $*"
 }

@@ -52,6 +52,46 @@ class TestTelemetryOptOut:
 
             assert instance_service.is_telemetry_disabled() is True
 
+    def test_is_telemetry_disabled_with_t_value(self):
+        """Telemetry should be disabled with 't' (aligned with the Go CLI)."""
+        with patch.dict("os.environ", {"PRELOOP_DISABLE_TELEMETRY": "t"}):
+            import importlib
+            import preloop.services.instance_service as instance_service
+
+            importlib.reload(instance_service)
+
+            assert instance_service.is_telemetry_disabled() is True
+
+    def test_is_telemetry_disabled_with_uppercase_t_value(self):
+        """Telemetry should be disabled with 'T' (case-insensitive)."""
+        with patch.dict("os.environ", {"PRELOOP_DISABLE_TELEMETRY": "T"}):
+            import importlib
+            import preloop.services.instance_service as instance_service
+
+            importlib.reload(instance_service)
+
+            assert instance_service.is_telemetry_disabled() is True
+
+    def test_is_telemetry_disabled_with_whitespace_padded_value(self):
+        """Telemetry should be disabled with a whitespace-padded value."""
+        with patch.dict("os.environ", {"PRELOOP_DISABLE_TELEMETRY": "  true  "}):
+            import importlib
+            import preloop.services.instance_service as instance_service
+
+            importlib.reload(instance_service)
+
+            assert instance_service.is_telemetry_disabled() is True
+
+    def test_is_telemetry_disabled_legacy_env_with_t_value(self):
+        """DISABLE_VERSION_CHECK should accept the same truthy set."""
+        with patch.dict("os.environ", {"DISABLE_VERSION_CHECK": " T "}, clear=False):
+            import importlib
+            import preloop.services.instance_service as instance_service
+
+            importlib.reload(instance_service)
+
+            assert instance_service.is_telemetry_disabled() is True
+
     def test_telemetry_enabled_by_default(self):
         """Telemetry should be enabled when env vars are not set."""
         with patch.dict("os.environ", {}, clear=True):

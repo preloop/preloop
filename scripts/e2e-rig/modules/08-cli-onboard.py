@@ -30,8 +30,13 @@ def ssh(cmd: str, check: bool = True) -> subprocess.CompletedProcess:
     # Telemetry opt-out on every remote command: test runs must never
     # pollute adoption data (standing rule, see scripts/e2e-rig/README.md).
     return subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", HOST,
-         f"export PRELOOP_DISABLE_TELEMETRY=true; {cmd}"],
+        [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            HOST,
+            f"export PRELOOP_DISABLE_TELEMETRY=true; {cmd}",
+        ],
         capture_output=True,
         text=True,
         check=check,

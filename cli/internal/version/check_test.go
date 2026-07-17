@@ -177,8 +177,13 @@ func TestForceCheckRefusesWhenTelemetryDisabled(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv(telemetry.DisableVersionCheckEnv, "yes")
 
-	if _, err := ForceCheck(); err == nil {
+	_, err := ForceCheck()
+	if err == nil {
 		t.Fatal("ForceCheck must return an error when telemetry is disabled")
+	}
+	if !strings.Contains(err.Error(), telemetry.DisableTelemetryEnv) {
+		t.Errorf("error must name the env var %s, got: %v",
+			telemetry.DisableTelemetryEnv, err)
 	}
 	if requests != 0 {
 		t.Fatalf("expected no HTTP calls with telemetry disabled, got %d", requests)
