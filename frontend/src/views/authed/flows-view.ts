@@ -368,7 +368,11 @@ export class FlowsView extends LitElement {
   render() {
     if (this.isLoading) {
       return html`
-        <view-header headerText="Flows" width="extra-wide"></view-header>
+        <view-header
+          headerText="Flows"
+          description="Event-driven agent runs. A flow starts an agent when something happens — a new issue, a webhook — and stops it when the run completes."
+          width="extra-wide"
+        ></view-header>
         <div style="display: flex; justify-content: center; padding: 48px;">
           <sl-spinner style="font-size: 3rem;"></sl-spinner>
         </div>
@@ -380,7 +384,11 @@ export class FlowsView extends LitElement {
     );
 
     return html`
-      <view-header headerText="Flows" width="extra-wide">
+      <view-header
+        headerText="Flows"
+        description="Event-driven agent runs. A flow starts an agent when something happens — a new issue, a webhook — and stops it when the run completes."
+        width="extra-wide"
+      >
         <div slot="main-column">
           <sl-button
             variant="primary"
@@ -393,15 +401,6 @@ export class FlowsView extends LitElement {
       </view-header>
       <div class="column-layout extra-wide">
         <div class="main-column">
-          <div class="proxy-notice">
-            <div class="proxy-notice-text">
-              Event-driven agent runs. A flow starts an agent when something
-              happens — a new issue, a webhook — and stops it when the run
-              completes. Get started by exploring the presets below, or create a
-              new flow from scratch.
-            </div>
-          </div>
-
           ${
             activeExecutions.length > 0
               ? html`

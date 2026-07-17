@@ -185,6 +185,52 @@ describe('AgentsView', () => {
     }
   });
 
+  it('skips the agents API call and renders empty when all kinds are hidden', async () => {
+    // Hiding every kind means nothing can match — the view must not fall back
+    // to a sentinel agent_kind value; it should not call the agents API at all.
+    localStorage.setItem(
+      'preloopAgentKindsHidden',
+      JSON.stringify([
+        'openclaw',
+        'opencode',
+        'claude_code',
+        'claude_desktop',
+        'codex',
+        'gemini_cli',
+        'hermes',
+        'cursor',
+        'windsurf',
+        'desktop_agent',
+        'custom',
+        'flows',
+      ])
+    );
+    localStorage.setItem('preloop.agents.view_mode', 'cards');
+
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+
+    // Cards mode has no spinner; the empty-state renders once loading is done.
+    await waitUntil(() => !!el.shadowRoot?.querySelector('.empty-state'));
+
+    const agentUrls = fetchStub
+      .getCalls()
+      .map((call) =>
+        typeof call.args[0] === 'string'
+          ? call.args[0]
+          : call.args[0].toString()
+      )
+      .filter((url: string) => url.startsWith('/api/v1/agents'));
+    expect(agentUrls).to.have.length(0);
+
+    const agentNodes = el.shadowRoot?.querySelectorAll('.agent-node');
+    expect(agentNodes?.length ?? 0).to.equal(0);
+    const emptyState = el.shadowRoot?.querySelector('.empty-state');
+    expect(emptyState).to.exist;
+    expect(emptyState?.textContent).to.contain(
+      'No agents or flows found matching your query.'
+    );
+  });
+
   it('keeps kinds added after a legacy saved filter visible (claude_desktop)', async () => {
     // A selected-list persisted before claude_desktop existed must not hide it.
     localStorage.setItem(

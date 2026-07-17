@@ -921,6 +921,7 @@ export class AgentsView extends LitElement {
     const allAgentKindsSelected = AVAILABLE_AGENT_KINDS.every(
       (k) => k.value === 'flows' || selectedAgentKinds.includes(k.value)
     );
+    let skipAgentsFetch = false;
     if (allAgentKindsSelected) {
       // Send no kind filter so the backend returns everything — including
       // agent kinds this UI does not know about yet. Sending an explicit
@@ -928,7 +929,9 @@ export class AgentsView extends LitElement {
     } else if (selectedAgentKinds.length > 0) {
       params.agentKind = selectedAgentKinds.join(',');
     } else {
-      params.agentKind = '__none__'; // Send a dummy value so no agents match this request
+      // Every agent kind is hidden — nothing can match, so skip the agents
+      // API call entirely and render the filtered-empty state locally.
+      skipAgentsFetch = true;
     }
     // We handle the 'flows' display separately in frontend
     const includeFlows = this.agentKinds.includes('flows');
@@ -984,9 +987,21 @@ export class AgentsView extends LitElement {
     try {
       // Agent list first — gateway summary is refreshed separately so it never
       // blocks first paint (cached value may already be showing).
+      const emptyAgentsData: AccountManagedAgentListResponse = {
+        query: params.query ?? null,
+        agent_kind: null,
+        last_seen_after: params.lastSeenAfter ?? null,
+        status: 'all',
+        total: 0,
+        limit: params.limit ?? 50,
+        offset: 0,
+        items: [],
+      };
       const [agentsData, flowsData, modelsData, featuresData, users] =
         await Promise.all([
-          getAccountAgents(params),
+          skipAgentsFetch
+            ? Promise.resolve(emptyAgentsData)
+            : getAccountAgents(params),
           getFlows(),
           getAIModels().catch(() => [] as AIModel[]),
           getFeatures().catch(() => ({ features: {}, plugins: [] })),
@@ -994,12 +1009,6 @@ export class AgentsView extends LitElement {
         ]);
       this.aiModels = modelsData;
       void this.refreshGatewaySummary();
-
-      // Handle custom local empty case for dummy filter
-      if (params.agentKind === '__none__') {
-        agentsData.items = [];
-        agentsData.total = 0;
-      }
 
       // Check if a new agent was registered while the dialog is open
       if (
