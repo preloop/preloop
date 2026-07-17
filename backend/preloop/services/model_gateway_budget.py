@@ -29,6 +29,28 @@ from preloop.services.subject_governance import (
 )
 
 
+def is_built_in_hosted_model(ai_model: AIModel) -> bool:
+    """True when a model is a deployment-provided (operator-paid) hosted model.
+
+    Built-in hosted models are marked ``hosted`` in their metadata, or are
+    system-wide (no owning account) gateway-enabled models. Account-owned
+    models running on the user's own provider keys (BYOK) are never hosted.
+
+    Args:
+        ai_model: The model to classify.
+
+    Returns:
+        Whether the model's compute is paid by the deployment operator.
+    """
+    meta_data = ai_model.meta_data if isinstance(ai_model.meta_data, dict) else {}
+    if bool(meta_data.get("hosted")):
+        return True
+    gateway_config = (
+        meta_data.get("gateway") if isinstance(meta_data.get("gateway"), dict) else {}
+    )
+    return ai_model.account_id is None and bool(gateway_config.get("enabled"))
+
+
 def _default_estimated_output_tokens() -> int:
     return max(1, int(settings.billing_budget_default_estimated_output_tokens))
 
@@ -305,15 +327,7 @@ class ModelGatewayBudgetService:
 
     @staticmethod
     def _is_built_in_hosted_model(ai_model: AIModel) -> bool:
-        meta_data = ai_model.meta_data if isinstance(ai_model.meta_data, dict) else {}
-        if bool(meta_data.get("hosted")):
-            return True
-        gateway_config = (
-            meta_data.get("gateway")
-            if isinstance(meta_data.get("gateway"), dict)
-            else {}
-        )
-        return ai_model.account_id is None and bool(gateway_config.get("enabled"))
+        return is_built_in_hosted_model(ai_model)
 
     @staticmethod
     def _normalize_budget_config(

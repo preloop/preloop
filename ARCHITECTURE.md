@@ -200,7 +200,7 @@ Enterprise feature-flagged subviews (via `plugins/billing/`):
 *   **Purpose:** Turn model usage telemetry into explainable spend, enforceable budgets, and optimization guidance.
 *   **Canonical Ledger:** `ApiUsage` remains the source of truth for model call tokens, estimated cost, provider, model, runtime principal, API key, flow, managed agent, and runtime-session attribution.
 *   **Accounting Self-Check:** `GET /api/v1/cost/health` verifies the accounting chain end-to-end per account over a lookback window (gateway traffic seen → streaming requests record tokens → costs priced → provider-reported usage share → audit events present), so silent accounting breakage (like streaming rows recording 0 tokens) is caught immediately instead of weeks later.
-*   **OSS API Surface:** Core endpoints should provide aggregate summaries, grouped breakdowns, raw usage drill-downs, and budget-health alerts derived from gateway account/flow limits. Enterprise billing plugin endpoints provide budget policy CRUD, enforcement, model price override CRUD, and runtime-session optimization recommendations behind feature flags.
+*   **OSS API Surface:** Core endpoints should provide aggregate summaries, grouped breakdowns, raw usage drill-downs, and budget-health alerts derived from gateway account/flow limits. Core endpoints also provide runtime-session optimization recommendations, one-click apply, and replay verification (`preloop/api/endpoints/session_optimization.py`), with hosted-model analysis gateable via the `preloop.services.optimization_gating` authorizer hook. Enterprise billing plugin endpoints provide budget policy CRUD, enforcement, and model price override CRUD behind feature flags.
 *   **OSS UX Boundary:** Open source should answer "how much was spent?", "who or what spent it?", and "which budget applies?" with enough drill-down to inspect the related session timeline.
 *   **Enterprise UX Boundary:** Enterprise should answer "why was it spent?", "was it worth it?", and "how could it be optimized?" at scale with LLM-assisted reviews, anomaly detection, forecasting, showback/chargeback, credits/promotions, exports, and workflow automation.
 *   **Default AI Model Use:** Enterprise session-value analysis should call the account's default AI model through the Preloop Gateway, producing an auditable meta-usage record for the evaluation itself. The analysis should reference redacted session summaries, gateway events, tool calls, approvals, and final outcomes rather than unrestricted raw prompts.
@@ -594,7 +594,7 @@ The system is designed to be containerized using Docker, enabling easy deploymen
 - [ ] Session management and token revocation
 - [ ] Regular security audits and dependency updates
 
-> **Enterprise Security**: Preloop Cloud and Preloop Enterprise add RBAC, comprehensive audit logging, and advanced session optimization capabilities. Contact sales@preloop.ai for more information.
+> **Enterprise Security**: Preloop Cloud and Preloop Enterprise add RBAC and comprehensive audit logging. Contact sales@preloop.ai for more information.
 
 ### Redaction Policy
 
@@ -634,7 +634,7 @@ Single WebSocket connection per client with pub/sub message routing:
 - Easy to add new message types/topics
 - Clear separation of concerns
 
-> **Enterprise Features**: Preloop Cloud and Preloop Enterprise add RBAC, advanced session optimization capabilities and approval workflows with quorum, escalations and AI gates. Contact sales@preloop.ai for more information.
+> **Enterprise Features**: Preloop Cloud and Preloop Enterprise add RBAC and approval workflows with quorum, escalations and AI gates. Contact sales@preloop.ai for more information.
 
 ## Event-Driven Agentic Flows
 

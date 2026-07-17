@@ -5612,6 +5612,159 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/billing/cost/runtime-sessions/{runtime_session_id}/optimizations:
+    post:
+      tags:
+      - Session Optimization
+      - Session Optimization
+      summary: Optimize Account Runtime Session
+      description: Suggest cost and context optimizations for one runtime session.
+      operationId: optimize_account_runtime_session_api_v1_billing_cost_runtime_sessions__runtime_session_id__optimizations_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: runtime_session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Runtime Session Id
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/RuntimeSessionOptimizationRequest'
+              - type: 'null'
+              title: Request
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeSessionOptimizationResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/billing/cost/runtime-sessions/{runtime_session_id}/optimizations/apply:
+    post:
+      tags:
+      - Session Optimization
+      - Session Optimization
+      summary: Apply Account Runtime Session Optimization
+      description: 'Apply one optimization suggestion action for a runtime session.
+
+
+        Applying writes governance/budget configuration only — it spends no model
+
+        budget — so it is never gated behind an entitlement.'
+      operationId: apply_account_runtime_session_optimization_api_v1_billing_cost_runtime_sessions__runtime_session_id__optimizations_apply_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: runtime_session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Runtime Session Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuntimeSessionOptimizationApplyRequest'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeSessionOptimizationAppliedAction'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/billing/cost/runtime-sessions/{runtime_session_id}/replay:
+    post:
+      tags:
+      - Session Optimization
+      - Session Optimization
+      summary: Replay Account Runtime Session
+      description: 'Verify a candidate optimization''s savings by re-executing a stored
+        request.
+
+
+        Re-runs the session''s stored request with and without the candidate applied,
+
+        under a hard spend cap, and records the exact deterministic input-token delta
+
+        together with the noise-banded end-to-end delta. Requires explicit consent.'
+      operationId: replay_account_runtime_session_api_v1_billing_cost_runtime_sessions__runtime_session_id__replay_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: runtime_session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Runtime Session Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuntimeSessionReplayRequest'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeSessionReplayResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/billing/cost/runtime-sessions/{runtime_session_id}/optimizations/actions:
+    get:
+      tags:
+      - Session Optimization
+      - Session Optimization
+      summary: List Account Runtime Session Optimization Actions
+      description: List applied optimization actions and their measured outcomes.
+      operationId: list_account_runtime_session_optimization_actions_api_v1_billing_cost_runtime_sessions__runtime_session_id__optimizations_actions_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: runtime_session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Runtime Session Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeSessionOptimizationActionListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/ai-models/providers/{provider}/available-models:
     get:
       tags:
@@ -13531,6 +13684,384 @@ components:
       - summary
       title: RuntimeSessionInteractionSummary
       description: Generated or locally derived summary for one gateway interaction.
+    RuntimeSessionOptimizationActionListResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/RuntimeSessionOptimizationAppliedAction'
+          type: array
+          title: Items
+      type: object
+      title: RuntimeSessionOptimizationActionListResponse
+      description: Applied optimization actions for one runtime session.
+    RuntimeSessionOptimizationActionSpec:
+      properties:
+        type:
+          type: string
+          title: Type
+        params:
+          additionalProperties: true
+          type: object
+          title: Params
+      type: object
+      required:
+      - type
+      title: RuntimeSessionOptimizationActionSpec
+      description: 'Machine-applicable action attached to one optimization suggestion.
+
+
+        Supported types: ``scope_tools`` (disable unused tools via subject-scoped
+
+        governance), ``set_budget`` (create a scoped budget policy),
+
+        ``enable_compression`` / ``cap_tool_results`` (subject-scoped context
+
+        optimization transforms), ``manage_output_filter`` (open the output-filter
+
+        UI to drop unused bulky tool-result fields; ``params``: ``server_name``,
+
+        ``tool_name``, ``suggested_fields``, ``managed_agent_id``), and
+
+        ``open_events`` (client-side replay deep-link to evidence events).'
+    RuntimeSessionOptimizationAppliedAction:
+      properties:
+        id:
+          type: string
+          title: Id
+        runtime_session_id:
+          type: string
+          title: Runtime Session Id
+        suggestion_id:
+          type: string
+          title: Suggestion Id
+        suggestion_title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Suggestion Title
+        action_type:
+          type: string
+          title: Action Type
+        params:
+          additionalProperties: true
+          type: object
+          title: Params
+        status:
+          type: string
+          title: Status
+          default: applied
+        applied_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Applied By
+        applied_at:
+          type: string
+          format: date-time
+          title: Applied At
+        result:
+          additionalProperties: true
+          type: object
+          title: Result
+        baseline:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Baseline
+        outcome:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Outcome
+      type: object
+      required:
+      - id
+      - runtime_session_id
+      - suggestion_id
+      - action_type
+      - applied_at
+      title: RuntimeSessionOptimizationAppliedAction
+      description: One applied optimization action, with measured outcome when available.
+    RuntimeSessionOptimizationApplyRequest:
+      properties:
+        suggestion_id:
+          type: string
+          title: Suggestion Id
+        suggestion_title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Suggestion Title
+        action:
+          $ref: '#/components/schemas/RuntimeSessionOptimizationActionSpec'
+      type: object
+      required:
+      - suggestion_id
+      - action
+      title: RuntimeSessionOptimizationApplyRequest
+      description: Request payload to apply one suggestion's action server-side.
+    RuntimeSessionOptimizationRequest:
+      properties:
+        model_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Id
+        event_ids:
+          items:
+            type: string
+          type: array
+          title: Event Ids
+        source_kinds:
+          items:
+            type: string
+          type: array
+          title: Source Kinds
+        from_index:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: From Index
+        to_index:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: To Index
+        regenerate:
+          type: boolean
+          title: Regenerate
+          default: false
+        cache_only:
+          type: boolean
+          title: Cache Only
+          default: false
+      type: object
+      title: RuntimeSessionOptimizationRequest
+      description: Generation controls for runtime-session optimization suggestions.
+    RuntimeSessionOptimizationResponse:
+      properties:
+        generated_by:
+          type: string
+          title: Generated By
+          default: local
+        cache_miss:
+          type: boolean
+          title: Cache Miss
+          default: false
+        fast_model_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Fast Model Name
+        model_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Id
+        model_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Name
+        token_usage:
+          $ref: '#/components/schemas/GatewayTokenUsage'
+        estimated_optimization_cost:
+          type: number
+          title: Estimated Optimization Cost
+          default: 0.0
+        generated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Generated At
+        from_cache:
+          type: boolean
+          title: From Cache
+          default: false
+        llm_skipped_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Llm Skipped Reason
+        waste_score:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Waste Score
+        potential_savings_tokens:
+          type: integer
+          title: Potential Savings Tokens
+          default: 0
+        potential_savings_usd:
+          type: number
+          title: Potential Savings Usd
+          default: 0.0
+        analyzed_scope_total_tokens:
+          type: integer
+          title: Analyzed Scope Total Tokens
+          default: 0
+        analyzed_scope_estimated_cost:
+          type: number
+          title: Analyzed Scope Estimated Cost
+          default: 0.0
+        context_profile:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Context Profile
+        suggestions:
+          items:
+            $ref: '#/components/schemas/RuntimeSessionOptimizationSuggestion'
+          type: array
+          title: Suggestions
+      type: object
+      title: RuntimeSessionOptimizationResponse
+      description: Optimization suggestions for a runtime session.
+    RuntimeSessionOptimizationSuggestion:
+      properties:
+        id:
+          type: string
+          title: Id
+        title:
+          type: string
+          title: Title
+        description:
+          type: string
+          title: Description
+        expected_savings_tokens:
+          type: integer
+          title: Expected Savings Tokens
+          default: 0
+        expected_savings_usd:
+          type: number
+          title: Expected Savings Usd
+          default: 0.0
+        confidence:
+          type: string
+          title: Confidence
+          default: medium
+        action_label:
+          type: string
+          title: Action Label
+        evidence:
+          items:
+            type: string
+          type: array
+          title: Evidence
+        evidence_event_ids:
+          items:
+            type: string
+          type: array
+          title: Evidence Event Ids
+        action:
+          anyOf:
+          - $ref: '#/components/schemas/RuntimeSessionOptimizationActionSpec'
+          - type: 'null'
+      type: object
+      required:
+      - id
+      - title
+      - description
+      - action_label
+      title: RuntimeSessionOptimizationSuggestion
+      description: One actionable optimization suggestion for a runtime session.
+    RuntimeSessionReplayCandidate:
+      properties:
+        removed_tool_names:
+          items:
+            type: string
+          type: array
+          title: Removed Tool Names
+        filtered_output_fields:
+          additionalProperties:
+            items:
+              type: string
+            type: array
+          type: object
+          title: Filtered Output Fields
+      type: object
+      title: RuntimeSessionReplayCandidate
+      description: The candidate optimization to measure by re-execution replay.
+    RuntimeSessionReplayRequest:
+      properties:
+        candidate:
+          $ref: '#/components/schemas/RuntimeSessionReplayCandidate'
+        suggestion_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Suggestion Id
+        consented:
+          type: boolean
+          title: Consented
+          default: false
+        n_runs:
+          type: integer
+          maximum: 10.0
+          minimum: 1.0
+          title: N Runs
+          default: 3
+      type: object
+      title: RuntimeSessionReplayRequest
+      description: Request to verify a candidate's savings by replaying a stored request.
+    RuntimeSessionReplayResponse:
+      properties:
+        id:
+          type: string
+          title: Id
+        runtime_session_id:
+          type: string
+          title: Runtime Session Id
+        status:
+          type: string
+          title: Status
+        input_delta_tokens:
+          type: integer
+          title: Input Delta Tokens
+        input_pct_saved:
+          type: number
+          title: Input Pct Saved
+        end_to_end_delta_median:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: End To End Delta Median
+        end_to_end_delta_low:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: End To End Delta Low
+        end_to_end_delta_high:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: End To End Delta High
+        inconclusive:
+          type: boolean
+          title: Inconclusive
+        cost_spent:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Cost Spent
+        n_runs:
+          type: integer
+          title: N Runs
+      type: object
+      required:
+      - id
+      - runtime_session_id
+      - status
+      - input_delta_tokens
+      - input_pct_saved
+      - inconclusive
+      - n_runs
+      title: RuntimeSessionReplayResponse
+      description: 'Outcome of a replay: the exact input delta plus the banded end-to-end.'
     RuntimeSessionRequestItem:
       properties:
         id:
