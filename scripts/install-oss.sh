@@ -128,8 +128,14 @@ env_value() {
 # True only when a real terminal is attached. `curl ... | sh` leaves stdin as
 # the pipe, so prompts must go through /dev/tty — but /dev/tty merely EXISTING
 # is not enough (in CI / cloud-init it opens and then fails), so probe it.
+# The probe must run in a subshell: `:` is a POSIX special builtin, and a
+# failed redirection on a special builtin is FATAL under sh implementations
+# like dash — a bare `{ : < /dev/tty; }` kills the whole script the moment
+# there is no controlling tty, which is exactly the unattended case. The
+# subshell contains the failure and turns it into a plain non-zero status.
 has_tty() {
-  { : < /dev/tty; } 2>/dev/null
+  [ -e /dev/tty ] || return 1
+  ( : < /dev/tty; ) 2>/dev/null
 }
 
 # Ask for the public URL. On an existing install the current URL is already
@@ -274,6 +280,48 @@ create_admin_user() {
   ) || true
   echo "Public signups are DISABLED. Invite teammates from the console."
   return 0
+}
+
+# REGISTRATION_ENABLED=false means "this instance already has its first user;
+# stay invite-only". That is a property of the DATABASE, not of the .env file:
+# when the database was recreated (e.g. `docker compose down --volumes`, a
+# teardown, a lost data volume) while .env survived, the inherited false would
+# produce an instance with zero users that nobody can ever sign in to. So when
+# the flag is false, verify the claim against the database and reopen signup
+# if it verifiably has no users; the normal lockdown (create_admin_user, or
+# the operator after their first browser signup) closes it again afterwards.
+# On any doubt — api not reachable, query fails, count unreadable — the flag
+# is left untouched: a flaky upgrade must never reopen a locked-down instance.
+reset_registration_if_fresh_db() {
+  if [ "$(env_value REGISTRATION_ENABLED "${INSTALL_DIR}/.env")" != "false" ]; then
+    return 0
+  fi
+  # The api container starts only after migrations complete, so once it
+  # answers, the user table exists and the count below is authoritative.
+  wait_for_api || return 0
+  user_count="$(
+    cd "$INSTALL_DIR"
+    # shellcheck disable=SC2086
+    docker compose $COMPOSE_ARGS exec -T postgres \
+      psql -U postgres -d preloop -tAc 'SELECT count(*) FROM "user"' 2>/dev/null \
+      | tr -d '[:space:]'
+  )" || user_count=""
+  if [ "$user_count" != "0" ]; then
+    return 0
+  fi
+  echo ""
+  echo "The existing configuration disables public signup, but the database is"
+  echo "fresh (no users): re-enabling registration so the first user can sign up."
+  set_env_value REGISTRATION_ENABLED true
+  (
+    cd "$INSTALL_DIR"
+    # shellcheck disable=SC2086
+    docker compose $COMPOSE_ARGS up -d api > /dev/null 2>&1
+  ) || {
+    echo "  WARNING: could not restart the API container;" >&2
+    echo "  REGISTRATION_ENABLED=true may not be applied. Run manually:" >&2
+    echo "  cd ${INSTALL_DIR} && docker compose ${COMPOSE_ARGS} up -d api" >&2
+  }
 }
 
 # Email is how approvals, invitations and password resets reach people. Ask
@@ -521,10 +569,27 @@ EOF
   rm -f "${INSTALL_DIR}/docker-compose.override.yaml"
 }
 
+# Switch the proxy to the HTTPS server block and (re)load it. Must run on
+# EVERY install where a usable certificate exists — freshly issued or reused —
+# because write_tls_assets always resets tls/active.conf to the HTTP-only
+# bootstrap config; skipping this on the reuse path leaves a certified
+# instance serving plain HTTP.
+activate_https() {
+  host="$1"
+  cp "${INSTALL_DIR}/tls/https.conf" "${INSTALL_DIR}/tls/active.conf"
+  (
+    cd "$INSTALL_DIR"
+    docker compose -f docker-compose.yaml -f docker-compose.tls.yaml up -d proxy certbot
+    docker compose -f docker-compose.yaml -f docker-compose.tls.yaml exec -T proxy nginx -s reload 2>/dev/null || true
+  )
+  echo "TLS is active for https://${host}"
+}
+
 issue_certificate() {
   host="$1"
   if [ -f "${INSTALL_DIR}/certbot/conf/live/${host}/fullchain.pem" ]; then
     echo "TLS certificate for ${host} already present; skipping issuance."
+    activate_https "$host"
     return 0
   fi
 
@@ -567,14 +632,7 @@ issue_certificate() {
     return 1
   fi
 
-  # Swap the proxy to the TLS server block.
-  cp "${INSTALL_DIR}/tls/https.conf" "${INSTALL_DIR}/tls/active.conf"
-  (
-    cd "$INSTALL_DIR"
-    docker compose -f docker-compose.yaml -f docker-compose.tls.yaml up -d proxy certbot
-    docker compose -f docker-compose.yaml -f docker-compose.tls.yaml exec -T proxy nginx -s reload 2>/dev/null || true
-  )
-  echo "TLS is active for https://${host}"
+  activate_https "$host"
   return 0
 }
 
@@ -765,6 +823,12 @@ compose_status=0
 tls_status=0
 if [ "$WANT_TLS" -eq 1 ] && [ "$compose_status" -eq 0 ]; then
   issue_certificate "$HOST" || tls_status=$?
+fi
+
+# Before any first-user handling: an inherited REGISTRATION_ENABLED=false over
+# a fresh database would lock everyone out (see reset_registration_if_fresh_db).
+if [ "$compose_status" -eq 0 ]; then
+  reset_registration_if_fresh_db
 fi
 
 admin_created=0
