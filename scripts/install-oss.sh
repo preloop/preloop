@@ -317,7 +317,11 @@ reset_registration_if_fresh_db() {
     cd "$INSTALL_DIR"
     # shellcheck disable=SC2086
     docker compose $COMPOSE_ARGS up -d api > /dev/null 2>&1
-  ) || true
+  ) || {
+    echo "  WARNING: could not restart the API container;" >&2
+    echo "  REGISTRATION_ENABLED=true may not be applied. Run manually:" >&2
+    echo "  cd ${INSTALL_DIR} && docker compose ${COMPOSE_ARGS} up -d api" >&2
+  }
 }
 
 # Email is how approvals, invitations and password resets reach people. Ask
