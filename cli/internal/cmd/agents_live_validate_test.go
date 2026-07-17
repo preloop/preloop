@@ -1051,3 +1051,177 @@ func TestLiveValidationUpstreamNote(t *testing.T) {
 		t.Fatal("a hard failure has no upstream note")
 	}
 }
+
+// TestBuildAnthropicMessagesLiveValidationPayload_SentinelFirstSystemBlock
+// pins the probe's request shape to what Anthropic's subscription-OAuth
+// validation accepts: the FIRST system block must be exactly the Claude
+// Code sentinel string, on its own block. A probe without it can never
+// pass on an OAuth-backed model (Anthropic rejects it with a disguised
+// 429 rate_limit_error), which is how a fully broken gateway got reported
+// as merely "throttled".
+func TestBuildAnthropicMessagesLiveValidationPayload_SentinelFirstSystemBlock(t *testing.T) {
+	body := decodeBuilderPayload(t, buildAnthropicMessagesLiveValidationPayload(
+		"anthropic/claude-opus-4-6",
+		"Welcome to Preloop. Validation token: preloop-validation-9.",
+	))
+	system, ok := body["system"].([]interface{})
+	if !ok || len(system) == 0 {
+		t.Fatalf("expected system to be a non-empty array of blocks, got %#v", body["system"])
+	}
+	first, _ := system[0].(map[string]interface{})
+	if first["type"] != "text" {
+		t.Fatalf("expected first system block type 'text', got %#v", first)
+	}
+	if first["text"] != claudeCodeSystemSentinel {
+		t.Fatalf(
+			"first system block must be exactly the Claude Code sentinel, got %#v",
+			first["text"],
+		)
+	}
+	// The user message still carries the validation token for usage search.
+	messages, _ := body["messages"].([]interface{})
+	if len(messages) != 1 {
+		t.Fatalf("expected a single user message, got %#v", body["messages"])
+	}
+	if _, ok := body["max_tokens"]; !ok {
+		t.Fatalf("Anthropic /messages requires max_tokens; got body=%#v", body)
+	}
+}
+
+// TestDeferredLiveValidationPersistStatus proves failed and inconclusive
+// probes are never persisted as "validated": the silent-failure mode where
+// a 100%-failing agent showed "Live check pending" forever.
+func TestDeferredLiveValidationPersistStatus(t *testing.T) {
+	cases := []struct {
+		name    string
+		outcome *managedLiveValidationOutcome
+		want    string
+	}{
+		{
+			name: "passed",
+			outcome: &managedLiveValidationOutcome{
+				Attempted: true,
+				Passed:    true,
+				ValidationResult: map[string]interface{}{
+					"live_validation_status": "passed",
+				},
+			},
+			want: "validated",
+		},
+		{
+			name: "throttled is inconclusive, not validated",
+			outcome: &managedLiveValidationOutcome{
+				Attempted: true,
+				Passed:    false,
+				ValidationResult: map[string]interface{}{
+					"live_validation_status": "throttled",
+				},
+			},
+			want: "validation_inconclusive",
+		},
+		{
+			name: "upstream billing refusal is inconclusive",
+			outcome: &managedLiveValidationOutcome{
+				Attempted: true,
+				Passed:    false,
+				ValidationResult: map[string]interface{}{
+					"live_validation_status": "upstream_unavailable",
+				},
+			},
+			want: "validation_inconclusive",
+		},
+		{
+			name: "hard failure",
+			outcome: &managedLiveValidationOutcome{
+				Attempted: true,
+				Passed:    false,
+				ValidationResult: map[string]interface{}{
+					"live_validation_status": "failed",
+				},
+			},
+			want: "validation_failed",
+		},
+		{
+			name:    "not attempted stays validated",
+			outcome: &managedLiveValidationOutcome{Attempted: false},
+			want:    "validated",
+		},
+	}
+	for _, tc := range cases {
+		if got := deferredLiveValidationPersistStatus(tc.outcome); got != tc.want {
+			t.Fatalf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestApplyLiveValidationOutcomesToSummary proves a throttled/failed live
+// validation is surfaced in the batch summary Reason column instead of the
+// silent "onboarded  -" row.
+func TestApplyLiveValidationOutcomesToSummary(t *testing.T) {
+	claude := AgentConfig{Name: "Claude Code"}
+	opencode := AgentConfig{Name: "OpenCode"}
+	outcomes := []agentOnboardingOutcome{
+		{Agent: claude, Status: agentOnboardingStatusOnboarded},
+		{Agent: opencode, Status: agentOnboardingStatusOnboarded},
+	}
+	applyLiveValidationOutcomesToSummary(outcomes, []deferredLiveValidationResult{
+		{
+			Agent: claude,
+			Outcome: &managedLiveValidationOutcome{
+				Attempted: true,
+				Passed:    false,
+				ValidationResult: map[string]interface{}{
+					"live_validation_status": "throttled",
+				},
+			},
+			Err: errors.New("API error (status 429): rate_limit_error"),
+		},
+		{
+			Agent: opencode,
+			Outcome: &managedLiveValidationOutcome{
+				Attempted: true,
+				Passed:    true,
+				ValidationResult: map[string]interface{}{
+					"live_validation_status": "passed",
+				},
+			},
+		},
+	})
+	if outcomes[0].Reason == "" {
+		t.Fatal("throttled validation must populate the summary Reason column")
+	}
+	if !strings.Contains(outcomes[0].Reason, "unverified") {
+		t.Fatalf("throttled reason should say traffic is unverified, got %q", outcomes[0].Reason)
+	}
+	if !strings.Contains(outcomes[0].Reason, "preloop agents validate") {
+		t.Fatalf("reason should include the re-verify command, got %q", outcomes[0].Reason)
+	}
+	if outcomes[1].Reason != "" {
+		t.Fatalf("passed validation must not add a Reason, got %q", outcomes[1].Reason)
+	}
+}
+
+// TestLiveValidationSummaryReason_FailureIncludesDetail pins the hard-failure
+// wording: the first line of the probe error must reach the summary.
+func TestLiveValidationSummaryReason_FailureIncludesDetail(t *testing.T) {
+	reason := liveValidationSummaryReason(deferredLiveValidationResult{
+		Agent: AgentConfig{Name: "Claude Code"},
+		Outcome: &managedLiveValidationOutcome{
+			Attempted: true,
+			Passed:    false,
+			ValidationResult: map[string]interface{}{
+				"live_validation_status": "failed",
+			},
+		},
+		Err: errors.New("HTTP 404: Requested model not found\nmore detail"),
+	})
+	if !strings.Contains(reason, "live validation failed") {
+		t.Fatalf("expected failure wording, got %q", reason)
+	}
+	if !strings.Contains(reason, "Requested model not found") {
+		t.Fatalf("expected first error line in reason, got %q", reason)
+	}
+	if strings.Contains(reason, "more detail") {
+		t.Fatalf("reason must stay one line, got %q", reason)
+	}
+}

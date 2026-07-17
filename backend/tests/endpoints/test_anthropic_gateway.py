@@ -218,3 +218,41 @@ def test_messages_endpoint_denies_when_account_budget_exceeded(
         assert "account monthly limit reached" in body["error"]["message"]
         assert body["error"]["type"] == "permission_error"
         mock_completion.assert_not_called()
+
+
+def test_messages_endpoint_forwards_anthropic_headers_to_service(
+    app, client, test_user
+):
+    """anthropic-version/-beta headers must reach the service.
+
+    The subscription-OAuth passthrough forwards them upstream so client
+    beta surfaces (e.g. prompt caching) survive the gateway.
+    """
+    app.dependency_overrides[get_anthropic_gateway_auth_context] = lambda: (
+        ModelGatewayAuthContext(token="runtime-token", user=test_user)
+    )
+
+    with patch(
+        "preloop.api.endpoints.anthropic_gateway.OpenAIGatewayService"
+    ) as mock_service_cls:
+        mock_service = MagicMock()
+        mock_service.create_message.return_value = {"type": "message"}
+        mock_service_cls.return_value = mock_service
+        response = client.post(
+            "/anthropic/v1/messages",
+            headers={
+                "x-api-key": "ignored",
+                "anthropic-version": "2023-06-01",
+                "anthropic-beta": "prompt-caching-2024-07-31",
+            },
+            json={
+                "model": "anthropic/claude-sonnet-4-5",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "max_tokens": 16,
+            },
+        )
+
+    assert response.status_code == 200
+    call_kwargs = mock_service.create_message.call_args.kwargs
+    assert call_kwargs["anthropic_version"] == "2023-06-01"
+    assert call_kwargs["anthropic_beta"] == "prompt-caching-2024-07-31"

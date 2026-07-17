@@ -15,6 +15,7 @@ from typing import Any, Dict, Iterator, List, Optional, Protocol
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
+import httpx
 import litellm
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import SQLAlchemyError
@@ -44,6 +45,7 @@ from preloop.services.context_optimization import (
     sanitize_tool_choice,
     strip_disabled_tools,
     subject_governance_affects_gateway_context,
+    tool_choice_named_tool,
     tool_definition_name,
 )
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
@@ -89,6 +91,19 @@ _PROVIDER_PREFIX: Dict[str, str] = {
 logger = logging.getLogger(__name__)
 _RUNTIME_SESSION_ACTIVITY_TOUCH_MIN_INTERVAL = timedelta(seconds=30)
 _RUNTIME_SESSION_SUMMARY_REFRESH_EVERY_REQUESTS = 10
+
+# Anthropic subscription-OAuth passthrough. Anthropic validates
+# subscription-OAuth (Claude Code Pro/Max) requests structurally: the first
+# ``system`` block must be exactly the Claude Code sentinel string, and
+# violations are rejected with a disguised 429 ``rate_limit_error``. The
+# litellm transcode path joins system blocks into a single string and drops
+# ``cache_control``, which destroys that structure — so OAuth-backed
+# Anthropic-protocol traffic is forwarded verbatim instead (see
+# ``_anthropic_oauth_passthrough_token``).
+ANTHROPIC_OAUTH_PASSTHROUGH_BASE_URL = "https://api.anthropic.com"
+ANTHROPIC_OAUTH_BETA_FLAG = "oauth-2025-04-20"
+ANTHROPIC_DEFAULT_API_VERSION = "2023-06-01"
+_ANTHROPIC_PASSTHROUGH_TIMEOUT_SECONDS = 600
 
 
 def _supports_ambient_provider_credentials(ai_model: AIModel) -> bool:
@@ -656,7 +671,13 @@ class OpenAIGatewayService:
             )
             raise
 
-    def create_message(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def create_message(
+        self,
+        payload: Dict[str, Any],
+        *,
+        anthropic_version: Optional[str] = None,
+        anthropic_beta: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Handle Anthropic Messages API-compatible requests."""
         if payload.get("stream"):
             raise ModelGatewayAPIError(
@@ -702,30 +723,58 @@ class OpenAIGatewayService:
                 request_payload=payload,
                 endpoint_kind="anthropic_messages",
             )
-            response = self._call_litellm(
-                model,
-                messages=messages,
-                payload=payload,
-                provider="anthropic",
-            )
-            response_dict = self._response_to_dict(response)
-            assistant_text = self._extract_assistant_text(response_dict)
-            usage = self._normalize_usage(
-                response_dict.get("usage"),
-                prompt_key="prompt_tokens",
-                completion_key="completion_tokens",
-                output_names=("completion_tokens", "output_tokens"),
-            )
-            response_payload = self._build_anthropic_message_payload(
-                response_id=response_dict.get("id", f"msg_{int(time.time())}"),
-                model_name=payload.get("model")
-                or resolve_ai_model_runtime(model).model_gateway_model_alias,
-                assistant_text=assistant_text,
-                stop_reason=self._to_anthropic_stop_reason(
-                    self._extract_finish_reason(response_dict)
-                ),
-                usage=usage,
-            )
+            oauth_token = self._anthropic_oauth_passthrough_token(model)
+            if oauth_token is not None:
+                # Subscription-OAuth: forward the client's Anthropic-native
+                # payload verbatim (system blocks, cache_control, betas) —
+                # the litellm transcode destroys the structure Anthropic
+                # validates on OAuth traffic. See the passthrough section.
+                url, headers, body = self._prepare_anthropic_passthrough(
+                    ai_model=model,
+                    payload=payload,
+                    oauth_token=oauth_token,
+                    anthropic_version=anthropic_version,
+                    anthropic_beta=anthropic_beta,
+                    stream=False,
+                )
+                response_payload = self._anthropic_oauth_passthrough_complete(
+                    url=url, headers=headers, body=body
+                )
+                upstream_usage = (
+                    response_payload.get("usage")
+                    if isinstance(response_payload.get("usage"), dict)
+                    else {}
+                )
+                response_dict = {
+                    "id": response_payload.get("id"),
+                    "choices": [{"finish_reason": response_payload.get("stop_reason")}],
+                    "usage": upstream_usage,
+                }
+            else:
+                response = self._call_litellm(
+                    model,
+                    messages=messages,
+                    payload=payload,
+                    provider="anthropic",
+                )
+                response_dict = self._response_to_dict(response)
+                assistant_text = self._extract_assistant_text(response_dict)
+                usage = self._normalize_usage(
+                    response_dict.get("usage"),
+                    prompt_key="prompt_tokens",
+                    completion_key="completion_tokens",
+                    output_names=("completion_tokens", "output_tokens"),
+                )
+                response_payload = self._build_anthropic_message_payload(
+                    response_id=response_dict.get("id", f"msg_{int(time.time())}"),
+                    model_name=payload.get("model")
+                    or resolve_ai_model_runtime(model).model_gateway_model_alias,
+                    assistant_text=assistant_text,
+                    stop_reason=self._to_anthropic_stop_reason(
+                        self._extract_finish_reason(response_dict)
+                    ),
+                    usage=usage,
+                )
             self._record_gateway_request(
                 endpoint="/anthropic/v1/messages",
                 method="POST",
@@ -757,7 +806,13 @@ class OpenAIGatewayService:
             )
             raise
 
-    def stream_message(self, payload: Dict[str, Any]) -> Iterator[str]:
+    def stream_message(
+        self,
+        payload: Dict[str, Any],
+        *,
+        anthropic_version: Optional[str] = None,
+        anthropic_beta: Optional[str] = None,
+    ) -> Iterator[str]:
         """Handle streaming Anthropic Messages API-compatible requests."""
         model = self._resolve_requested_model(
             payload.get("model"), provider="anthropic"
@@ -790,6 +845,7 @@ class OpenAIGatewayService:
                 message=detail,
             )
 
+        passthrough_connection: Optional[tuple[httpx.Client, httpx.Response]] = None
         try:
             self._emit_gateway_request_started(
                 ai_model=model,
@@ -797,13 +853,29 @@ class OpenAIGatewayService:
                 request_payload=payload,
                 endpoint_kind="anthropic_messages_stream",
             )
-            upstream_stream = self._call_litellm(
-                model,
-                messages=messages,
-                payload=payload,
-                stream=True,
-                provider="anthropic",
-            )
+            oauth_token = self._anthropic_oauth_passthrough_token(model)
+            if oauth_token is not None:
+                # Subscription-OAuth: relay the Anthropic-native SSE stream
+                # verbatim; see the passthrough section for rationale.
+                url, headers, body = self._prepare_anthropic_passthrough(
+                    ai_model=model,
+                    payload=payload,
+                    oauth_token=oauth_token,
+                    anthropic_version=anthropic_version,
+                    anthropic_beta=anthropic_beta,
+                    stream=True,
+                )
+                passthrough_connection = self._open_anthropic_oauth_passthrough_stream(
+                    url=url, headers=headers, body=body
+                )
+            else:
+                upstream_stream = self._call_litellm(
+                    model,
+                    messages=messages,
+                    payload=payload,
+                    stream=True,
+                    provider="anthropic",
+                )
         except ModelGatewayAPIError as exc:
             self._record_gateway_request(
                 endpoint="/anthropic/v1/messages",
@@ -820,6 +892,17 @@ class OpenAIGatewayService:
                 request_payload=payload,
             )
             raise
+
+        if passthrough_connection is not None:
+            upstream_client, upstream_response = passthrough_connection
+            return self._anthropic_passthrough_event_stream(
+                upstream_client,
+                upstream_response,
+                ai_model=model,
+                payload=payload,
+                budget_result=budget_result,
+                started_at=started_at,
+            )
 
         requested_model = (
             payload.get("model")
@@ -2754,6 +2837,471 @@ class OpenAIGatewayService:
                 "total_tokens": usage["total_tokens"],
             },
         }
+
+    # ------------------------------------------------------------------
+    # Anthropic subscription-OAuth passthrough.
+    #
+    # Rationale (0.12.2): Anthropic enforces that subscription-OAuth
+    # requests carry the Claude Code sentinel as the *entire first system
+    # block* (exact match) and rejects violations with a disguised 429
+    # ``rate_limit_error``. The litellm path re-serializes the request
+    # through OpenAI chat format: system blocks are joined with "\n",
+    # ``cache_control`` markers are dropped, and the client's
+    # ``anthropic-beta`` header is discarded — exactly the failing shape.
+    # litellm's ``completion()`` cannot carry the Anthropic-native request
+    # faithfully (its adapter rebuilds message/system blocks), so this
+    # branch forwards the client's original JSON directly with httpx at
+    # the one point where fidelity matters, while budget preflight,
+    # governance tool-stripping, attribution, and usage recording keep
+    # running exactly as on the litellm path.
+    # ------------------------------------------------------------------
+    def _anthropic_oauth_passthrough_token(self, ai_model: AIModel) -> Optional[str]:
+        """Resolve the Claude Code subscription-OAuth token for ``ai_model``.
+
+        Args:
+            ai_model: The resolved gateway model for the request.
+
+        Returns:
+            The OAuth access token when the model authenticates upstream with
+            the Claude Code subscription-OAuth credential type; ``None`` for
+            API-key/ambient credentials (those keep using the litellm path).
+
+        Raises:
+            ModelGatewayAPIError: When the stored OAuth credential exists but
+                could not be refreshed.
+        """
+        if (ai_model.provider_name or "").strip().lower() != "anthropic":
+            return None
+        self._last_upstream_credential_type = None
+        try:
+            resolved = get_secret_service().resolve_ai_model_credentials(
+                ai_model,
+                db=self.db,
+                allow_refresh=True,
+            )
+        except CredentialRefreshError as exc:
+            status_code = 401
+            if exc.status_code is not None and exc.status_code >= 500:
+                status_code = 502
+            raise ModelGatewayAPIError(
+                provider="anthropic",
+                status_code=status_code,
+                message=(
+                    "Model credentials could not be refreshed. "
+                    "Reconnect this managed agent or update the model credentials."
+                ),
+                code=exc.code,
+            ) from exc
+        if (
+            resolved is not None
+            and resolved.credential_type == ANTHROPIC_CLAUDE_CODE_OAUTH_CREDENTIAL_TYPE
+            and bool(resolved.value)
+        ):
+            self._last_upstream_credential_type = "oauth"
+            return str(resolved.value)
+        return None
+
+    def _strip_anthropic_passthrough_tools(
+        self, payload: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Apply governance tool-stripping without touching anything else.
+
+        Only the ``tools`` array (and a dangling ``tool_choice``) may change;
+        ``system`` blocks, message content, and every ``cache_control``
+        marker are forwarded verbatim so the upstream's structural
+        validation and prompt caching stay intact. Message-level context
+        optimization is intentionally NOT applied on this path: rewriting
+        blocks would break byte-fidelity and destroy the cache prefix.
+
+        Args:
+            payload: The original Anthropic-protocol request payload.
+
+        Returns:
+            The payload, replaced with a shallow-copied variant only when
+            governance actually stripped a tool.
+        """
+        self._last_context_optimization = None
+        if not self.auth_context.api_key:
+            return payload
+        try:
+            raw_tools = payload.get("tools")
+            if not isinstance(raw_tools, list) or not raw_tools:
+                return payload
+            meta_data = get_cached_account_meta_data(
+                self.db, str(self.auth_context.user.account_id)
+            )
+            if meta_data is None:
+                return payload
+            subject_context = build_subject_context_from_api_key(
+                self.auth_context.api_key
+            )
+            if not subject_governance_affects_gateway_context(
+                meta_data,
+                subject_context=subject_context,
+                has_tools=True,
+            ):
+                return payload
+            kept_tools, removed_names = strip_disabled_tools(
+                raw_tools,
+                meta_data=meta_data,
+                subject_context=subject_context,
+            )
+            if not removed_names:
+                return payload
+            optimized: Dict[str, Any] = {**payload, "tools": kept_tools}
+            if not kept_tools:
+                optimized.pop("tools", None)
+                optimized.pop("tool_choice", None)
+            elif tool_choice_named_tool(optimized.get("tool_choice")) in set(
+                removed_names
+            ):
+                # Anthropic shape: a forced {"type": "tool", "name": ...}
+                # naming a stripped tool would 400 upstream; fall back to auto.
+                optimized["tool_choice"] = {"type": "auto"}
+            self._last_context_optimization = ContextOptimizationStats(
+                stripped_tools=removed_names
+            )
+            return optimized
+        except Exception:
+            logger.warning(
+                "Anthropic passthrough governance strip failed; "
+                "forwarding request unchanged",
+                exc_info=True,
+            )
+            self._last_context_optimization = None
+            return payload
+
+    def _prepare_anthropic_passthrough(
+        self,
+        *,
+        ai_model: AIModel,
+        payload: Dict[str, Any],
+        oauth_token: str,
+        anthropic_version: Optional[str],
+        anthropic_beta: Optional[str],
+        stream: bool,
+    ) -> tuple[str, Dict[str, str], Dict[str, Any]]:
+        """Build the outbound URL, headers, and body for the OAuth passthrough.
+
+        The body is a shallow copy of the client payload: ``system``,
+        ``messages``, ``tools`` and all nested ``cache_control`` blocks are
+        the client's own objects, forwarded untouched. Only ``model`` (the
+        account model's upstream identifier) and ``stream`` are set by
+        Preloop.
+
+        Args:
+            ai_model: The resolved gateway model.
+            payload: Original Anthropic-protocol request payload
+                (post governance tool-strip).
+            oauth_token: The Claude Code subscription-OAuth access token.
+            anthropic_version: The client's ``anthropic-version`` header.
+            anthropic_beta: The client's ``anthropic-beta`` header, merged
+                with the OAuth beta flag (client flags preserved so e.g.
+                prompt-caching betas survive).
+            stream: Whether the upstream call streams.
+
+        Returns:
+            Tuple of (url, headers, body).
+        """
+        original_tools = payload.get("tools")
+        payload = self._strip_anthropic_passthrough_tools(payload)
+        self._capture_tools_meta(original_tools)
+
+        body: Dict[str, Any] = dict(payload)
+        body["model"] = ai_model.model_identifier
+        body["stream"] = bool(stream)
+
+        base_url = (
+            str(ai_model.api_endpoint).rstrip("/")
+            if ai_model.api_endpoint
+            else ANTHROPIC_OAUTH_PASSTHROUGH_BASE_URL
+        )
+        url = f"{base_url}/v1/messages"
+
+        beta_flags = [ANTHROPIC_OAUTH_BETA_FLAG]
+        for flag in (anthropic_beta or "").split(","):
+            flag = flag.strip()
+            if flag and flag not in beta_flags:
+                beta_flags.append(flag)
+        headers = {
+            "content-type": "application/json",
+            "accept": "text/event-stream" if stream else "application/json",
+            "authorization": f"Bearer {oauth_token}",
+            "anthropic-version": (anthropic_version or "").strip()
+            or ANTHROPIC_DEFAULT_API_VERSION,
+            "anthropic-beta": ",".join(beta_flags),
+            "anthropic-client-platform": "claude-code",
+        }
+        return url, headers, body
+
+    @staticmethod
+    def _anthropic_passthrough_upstream_error(
+        status_code: int, body_text: str
+    ) -> ModelGatewayAPIError:
+        """Map an upstream Anthropic error body to a gateway error."""
+        try:
+            status_code = int(status_code)
+        except (TypeError, ValueError):
+            status_code = 502
+        if status_code < 400 or status_code > 599:
+            status_code = 502
+        message = (body_text or "").strip() or "Anthropic upstream error"
+        error_type: Optional[str] = None
+        try:
+            parsed = json.loads(body_text)
+            error = parsed.get("error") if isinstance(parsed, dict) else None
+            if isinstance(error, dict):
+                message = str(error.get("message") or message)
+                raw_type = error.get("type")
+                error_type = str(raw_type) if raw_type else None
+        except (TypeError, ValueError):
+            pass
+        return ModelGatewayAPIError(
+            provider="anthropic",
+            status_code=status_code,
+            message=message,
+            error_type=error_type,
+        )
+
+    def _anthropic_oauth_passthrough_complete(
+        self, *, url: str, headers: Dict[str, str], body: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Execute a non-streaming passthrough request.
+
+        Args:
+            url: Upstream messages URL.
+            headers: Outbound headers (auth + merged beta flags).
+            body: The faithful Anthropic-native request body.
+
+        Returns:
+            The upstream response JSON, returned to the client verbatim.
+
+        Raises:
+            ModelGatewayAPIError: On transport failure or upstream >=400.
+        """
+        try:
+            response = httpx.post(
+                url,
+                headers=headers,
+                json=body,
+                timeout=_ANTHROPIC_PASSTHROUGH_TIMEOUT_SECONDS,
+            )
+        except httpx.HTTPError as exc:
+            raise ModelGatewayAPIError(
+                provider="anthropic",
+                status_code=502,
+                message=f"Gateway upstream error: {exc}",
+            ) from exc
+        if response.status_code >= 400:
+            raise self._anthropic_passthrough_upstream_error(
+                response.status_code, response.text
+            )
+        try:
+            response_payload = response.json()
+        except ValueError as exc:
+            raise ModelGatewayAPIError(
+                provider="anthropic",
+                status_code=502,
+                message="Gateway upstream error: invalid JSON from upstream",
+            ) from exc
+        if not isinstance(response_payload, dict):
+            raise ModelGatewayAPIError(
+                provider="anthropic",
+                status_code=502,
+                message="Gateway upstream error: unexpected upstream response shape",
+            )
+        return response_payload
+
+    def _open_anthropic_oauth_passthrough_stream(
+        self, *, url: str, headers: Dict[str, str], body: Dict[str, Any]
+    ) -> tuple[httpx.Client, httpx.Response]:
+        """Open a streaming passthrough request, eagerly checking the status.
+
+        The connection is opened before the response generator is handed to
+        the ASGI layer so upstream auth/validation errors surface as normal
+        gateway errors (and get recorded) instead of dying mid-stream.
+
+        Returns:
+            Tuple of (client, response); the caller owns closing both.
+
+        Raises:
+            ModelGatewayAPIError: On transport failure or upstream >=400.
+        """
+        client = httpx.Client(timeout=_ANTHROPIC_PASSTHROUGH_TIMEOUT_SECONDS)
+        try:
+            request = client.build_request("POST", url, headers=headers, json=body)
+            response = client.send(request, stream=True)
+        except httpx.HTTPError as exc:
+            client.close()
+            raise ModelGatewayAPIError(
+                provider="anthropic",
+                status_code=502,
+                message=f"Gateway upstream error: {exc}",
+            ) from exc
+        if response.status_code >= 400:
+            try:
+                body_text = response.read().decode("utf-8", errors="replace")
+            except Exception:
+                body_text = ""
+            finally:
+                response.close()
+                client.close()
+            raise self._anthropic_passthrough_upstream_error(
+                response.status_code, body_text
+            )
+        return client, response
+
+    def _anthropic_passthrough_event_stream(
+        self,
+        upstream_client: httpx.Client,
+        upstream_response: httpx.Response,
+        *,
+        ai_model: AIModel,
+        payload: Dict[str, Any],
+        budget_result: Optional[BudgetCheckResult],
+        started_at: float,
+    ) -> Iterator[str]:
+        """Relay upstream SSE verbatim while accumulating usage for accounting.
+
+        Chunks are yielded exactly as received (Claude Code consumes
+        Anthropic-native SSE directly). A line parser watches the ``data:``
+        events on the side to collect the response id, usage (including
+        cache token breakdown), stop reason, and assistant text for the
+        usage record — mirroring what the litellm stream path records.
+        """
+        requested_model = payload.get("model")
+
+        def _consume_sse_line(
+            line: str,
+            state: Dict[str, Any],
+        ) -> None:
+            line = line.strip()
+            if not line.startswith("data:"):
+                return
+            try:
+                event = json.loads(line[len("data:") :].strip())
+            except ValueError:
+                return
+            if not isinstance(event, dict):
+                return
+            event_type = event.get("type")
+            if event_type == "message_start":
+                message = event.get("message")
+                if isinstance(message, dict):
+                    if message.get("id"):
+                        state["response_id"] = message["id"]
+                    if isinstance(message.get("usage"), dict):
+                        state["usage"] = self._merge_usage_dicts(
+                            state["usage"], message["usage"]
+                        )
+            elif event_type == "message_delta":
+                delta = event.get("delta")
+                if isinstance(delta, dict) and delta.get("stop_reason"):
+                    state["stop_reason"] = delta["stop_reason"]
+                if isinstance(event.get("usage"), dict):
+                    state["usage"] = self._merge_usage_dicts(
+                        state["usage"], event["usage"]
+                    )
+            elif event_type == "content_block_delta":
+                delta = event.get("delta")
+                if (
+                    isinstance(delta, dict)
+                    and delta.get("type") == "text_delta"
+                    and isinstance(delta.get("text"), str)
+                ):
+                    state["text_parts"].append(delta["text"])
+
+        def event_stream() -> Iterator[str]:
+            state: Dict[str, Any] = {
+                "response_id": None,
+                "stop_reason": None,
+                "usage": {},
+                "text_parts": [],
+            }
+            buffer = ""
+            recorded = False
+            try:
+                for chunk in upstream_response.iter_text():
+                    if not chunk:
+                        continue
+                    yield chunk
+                    buffer += chunk
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        _consume_sse_line(line, state)
+                if buffer:
+                    _consume_sse_line(buffer, state)
+
+                response_id = state["response_id"] or f"msg_{int(time.time())}"
+                normalized_usage = self._normalize_usage(
+                    state["usage"],
+                    prompt_key="input_tokens",
+                    completion_key="output_tokens",
+                    output_names=("output_tokens", "completion_tokens"),
+                )
+                accumulated_text = "".join(state["text_parts"])
+                response_payload = self._build_anthropic_message_payload(
+                    response_id=response_id,
+                    model_name=requested_model,
+                    assistant_text=accumulated_text,
+                    stop_reason=state["stop_reason"],
+                    usage=normalized_usage,
+                )
+                self._record_gateway_request(
+                    endpoint="/anthropic/v1/messages",
+                    method="POST",
+                    status_code=200,
+                    duration=time.perf_counter() - started_at,
+                    ai_model=ai_model,
+                    requested_model=requested_model,
+                    response_payload=response_payload,
+                    upstream_response={
+                        "id": response_id,
+                        "choices": [{"finish_reason": state["stop_reason"]}],
+                        "usage": state["usage"],
+                    },
+                    endpoint_kind="anthropic_messages_stream",
+                    budget_result=budget_result,
+                    request_payload=payload,
+                    accumulated_output_text=accumulated_text,
+                )
+                recorded = True
+            except Exception as exc:
+                if not recorded:
+                    self._record_gateway_request(
+                        endpoint="/anthropic/v1/messages",
+                        method="POST",
+                        status_code=502,
+                        duration=time.perf_counter() - started_at,
+                        ai_model=ai_model,
+                        requested_model=requested_model,
+                        response_payload=None,
+                        upstream_response=None,
+                        endpoint_kind="anthropic_messages_stream",
+                        budget_result=budget_result,
+                        error_detail=str(exc),
+                        request_payload=payload,
+                    )
+                    recorded = True
+                raise
+            finally:
+                # GeneratorExit (client disconnect) bypasses the except above;
+                # bill already-consumed upstream tokens best-effort.
+                if not recorded:
+                    self._record_stream_abort(
+                        endpoint="/anthropic/v1/messages",
+                        endpoint_kind="anthropic_messages_stream",
+                        started_at=started_at,
+                        ai_model=ai_model,
+                        payload=payload,
+                        usage_details=state["usage"],
+                        budget_result=budget_result,
+                        accumulated_output_text="".join(state["text_parts"]),
+                    )
+                upstream_response.close()
+                upstream_client.close()
+
+        return event_stream()
 
     def _build_completion_kwargs(
         self,

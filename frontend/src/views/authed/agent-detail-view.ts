@@ -909,6 +909,13 @@ export class AgentDetailView extends LitElement {
     if (this.agent.live_validation_status === 'passed') return 'Live validated';
     if (this.agent.live_validation_status === 'failed')
       return 'Live check failed';
+    // The upstream provider refused the probe (rate limit / billing): the
+    // gateway plumbing is proven but model traffic is UNVERIFIED. Never
+    // present this as a check that is still in flight.
+    if (this.agent.live_validation_status === 'throttled')
+      return 'Live check throttled — unverified';
+    if (this.agent.live_validation_status === 'upstream_unavailable')
+      return 'Upstream refused — unverified';
     // ``not_run`` means the CLI was never invoked with ``--live-validate`` —
     // it's an opt-in step, not a check that's currently in flight.
     if (this.agent.live_validation_status === 'not_run')

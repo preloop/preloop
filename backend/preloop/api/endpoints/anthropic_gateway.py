@@ -61,8 +61,15 @@ def create_message(
     auth_context: ModelGatewayAuthContext = Depends(get_anthropic_gateway_auth_context),
     budget_enforcer: Any = Depends(get_budget_enforcer),
     x_preloop_session_id: Optional[str] = Header(None, alias="X-Preloop-Session-Id"),
+    anthropic_version: Optional[str] = Header(None, alias="anthropic-version"),
+    anthropic_beta: Optional[str] = Header(None, alias="anthropic-beta"),
 ) -> Any:
-    """Create an Anthropic-compatible message."""
+    """Create an Anthropic-compatible message.
+
+    The ``anthropic-version`` and ``anthropic-beta`` headers are forwarded to
+    the service so the subscription-OAuth passthrough can preserve the
+    client's requested API surface (e.g. prompt-caching betas) upstream.
+    """
     service = OpenAIGatewayService(
         db,
         auth_context,
@@ -71,7 +78,15 @@ def create_message(
     )
     if payload.get("stream"):
         return StreamingResponse(
-            service.stream_message(payload),
+            service.stream_message(
+                payload,
+                anthropic_version=anthropic_version,
+                anthropic_beta=anthropic_beta,
+            ),
             media_type="text/event-stream",
         )
-    return service.create_message(payload)
+    return service.create_message(
+        payload,
+        anthropic_version=anthropic_version,
+        anthropic_beta=anthropic_beta,
+    )

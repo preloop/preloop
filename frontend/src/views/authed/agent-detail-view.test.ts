@@ -453,6 +453,39 @@ describe('AgentDetailView', () => {
     expect(wrongModelLink).to.not.exist;
   });
 
+  it('labels a throttled live check as unverified instead of pending', async () => {
+    const element = await fixture<AgentDetailView>(
+      html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+    );
+
+    await waitUntil(
+      () => !(element as any).loading && (element as any).agent !== null,
+      'Agent detail view did not finish loading'
+    );
+
+    // The CLI persisted an upstream-refused probe: the gateway plumbing is
+    // proven but model traffic is unverified. The badge must say so — the
+    // old fallthrough rendered an eternal "Live check pending".
+    (element as any).agent = {
+      ...(element as any).agent,
+      live_validation_passed: false,
+      live_validation_status: 'throttled',
+    };
+    await element.updateComplete;
+
+    const content = getDeepText(element).replace(/\s+/g, ' ');
+    expect(content).to.contain('Live check throttled — unverified');
+    expect(content).to.not.contain('Live check pending');
+    expect((element as any).getLiveValidationVariant()).to.equal('warning');
+
+    (element as any).agent = {
+      ...(element as any).agent,
+      live_validation_status: 'upstream_unavailable',
+    };
+    await element.updateComplete;
+    expect(getDeepText(element)).to.contain('Upstream refused — unverified');
+  });
+
   it('lets the user pick the approval workflow for native tool approvals', async () => {
     const element = await fixture<AgentDetailView>(
       html`<agent-detail-view agentId="agent-1"></agent-detail-view>`

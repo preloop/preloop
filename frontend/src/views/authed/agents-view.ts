@@ -1812,7 +1812,9 @@ export class AgentsView extends LitElement {
     if (agent.live_validation_status === 'passed') return 'Live validated';
     if (agent.live_validation_status === 'failed') return 'Live check failed';
     if (agent.live_validation_status === 'throttled')
-      return 'Live check throttled';
+      return 'Live check throttled — unverified';
+    if (agent.live_validation_status === 'upstream_unavailable')
+      return 'Upstream refused — unverified';
     // ``not_run`` means the CLI was never invoked with ``--live-validate`` —
     // it's an opt-in step, not a check that's currently in flight.
     if (agent.live_validation_status === 'not_run') return 'Live check not run';
