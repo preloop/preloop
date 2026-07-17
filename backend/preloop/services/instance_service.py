@@ -27,17 +27,22 @@ DISABLE_TELEMETRY_ENV = "PRELOOP_DISABLE_TELEMETRY"
 DISABLE_VERSION_CHECK_ENV = "DISABLE_VERSION_CHECK"
 
 
+# Truthy values for the opt-out variables: true/1/t/yes, case-insensitive,
+# surrounding whitespace ignored. Must stay aligned with the Go CLI's parsing
+# in cli/internal/telemetry/optout.go — one variable, one parsing rule.
+_TRUTHY_VALUES = ("true", "1", "t", "yes")
+
+
 def is_telemetry_disabled() -> bool:
     """Check if telemetry is disabled via environment variables.
 
     Accepts both PRELOOP_DISABLE_TELEMETRY and DISABLE_VERSION_CHECK for
     backwards compatibility with documentation.
     """
-    return os.getenv(DISABLE_TELEMETRY_ENV, "").lower() in (
-        "true",
-        "1",
-        "yes",
-    ) or os.getenv(DISABLE_VERSION_CHECK_ENV, "").lower() in ("true", "1", "yes")
+    return (
+        os.getenv(DISABLE_TELEMETRY_ENV, "").strip().lower() in _TRUTHY_VALUES
+        or os.getenv(DISABLE_VERSION_CHECK_ENV, "").strip().lower() in _TRUTHY_VALUES
+    )
 
 
 # Version check interval (default: 24 hours)

@@ -10,6 +10,11 @@ set -euo pipefail
 RIG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export RIG_DIR
 
+# STANDING RULE: the rig always sets PRELOOP_DISABLE_TELEMETRY so test runs
+# never pollute funnel/adoption data. Exported here for every module (local
+# CLI/tool invocations) and injected into every remote command by rig_ssh.
+export PRELOOP_DISABLE_TELEMETRY=true
+
 rig_log() {
   printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"
 }
@@ -37,7 +42,11 @@ rig_skip() {
 # for credentials) and timeouts are uniform. Remote command is a single string
 # run by the login shell.
 rig_ssh() {
-  ssh -o BatchMode=yes -o ConnectTimeout=15 "$RIG_HOST" "$@"
+  # Every remote command carries the telemetry opt-out so CLI/installer runs
+  # on the target host never emit adoption telemetry.
+  # Note: rig_ssh expects a single command string, not multiple args.
+  ssh -o BatchMode=yes -o ConnectTimeout=15 "$RIG_HOST" \
+    "export PRELOOP_DISABLE_TELEMETRY=true; $*"
 }
 
 rig_scp_from() {
@@ -131,5 +140,6 @@ rig_compose_args_remote() {
 COMPOSE_ARGS="-f docker-compose.yaml"
 [ -f docker-compose.auth.yaml ] && COMPOSE_ARGS="$COMPOSE_ARGS -f docker-compose.auth.yaml"
 [ -f docker-compose.tls.yaml ] && COMPOSE_ARGS="$COMPOSE_ARGS -f docker-compose.tls.yaml"
+[ -f docker-compose.rig-telemetry.yaml ] && COMPOSE_ARGS="$COMPOSE_ARGS -f docker-compose.rig-telemetry.yaml"
 EOF
 }

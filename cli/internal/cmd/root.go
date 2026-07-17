@@ -41,7 +41,11 @@ Use this CLI to:
 Get started by running 'preloop login --token <your-token>' to authenticate.
 
 Authentication priority: --token flag > PRELOOP_TOKEN env var > ~/.preloop/config.yaml
-API URL priority:        --url flag   > PRELOOP_URL env var   > ~/.preloop/config.yaml`,
+API URL priority:        --url flag   > PRELOOP_URL env var   > ~/.preloop/config.yaml
+
+Set PRELOOP_DISABLE_TELEMETRY=true to disable all adoption telemetry (the
+daily version check-in and conversion events). Update notifications are
+suppressed too, as they depend on the check-in response.`,
 
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		// Count top-level command-category usage locally (names only, never

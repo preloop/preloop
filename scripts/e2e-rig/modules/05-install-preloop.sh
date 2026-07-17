@@ -31,6 +31,7 @@ rig_log "installing Preloop OSS ${RIG_RELEASE} at ${RIG_URL} (installer: $INSTAL
 # gracefully and has_tty simply returns false.
 set +e
 rig_ssh "curl -fsSL '$INSTALLER_URL' -o /tmp/preloop-install-oss.sh &&
+         PRELOOP_DISABLE_TELEMETRY=true \
          PRELOOP_VERSION='$RIG_RELEASE' \
          PRELOOP_URL='$RIG_URL' \
          PRELOOP_SKIP_SMTP=1 \
@@ -39,6 +40,29 @@ rig_ssh "curl -fsSL '$INSTALLER_URL' -o /tmp/preloop-install-oss.sh &&
 status=${PIPESTATUS[0]}
 set -e
 [ "$status" -eq 0 ] || rig_die "installer exited $status (see $LOG)"
+
+# Server-side phone-home off: the test instance must never show up in
+# adoption data. The var goes into the instance .env, and — because the
+# pinned release's compose file may not map it into the api container — a
+# small rig overlay injects it into the api service (the only role that
+# phones home; see backend/preloop/services/instance_service.py).
+# rig_compose_args_remote picks the overlay up for all later compose calls.
+rig_ssh "
+  set -e
+  cd $RIG_INSTANCE_DIR
+  grep -q '^PRELOOP_DISABLE_TELEMETRY=' .env 2>/dev/null \
+    || printf 'PRELOOP_DISABLE_TELEMETRY=true\n' >> .env
+  printf '%s\n' \
+    '# Written by the e2e rig: test instances must not send adoption telemetry.' \
+    'services:' \
+    '  api:' \
+    '    environment:' \
+    '      PRELOOP_DISABLE_TELEMETRY: \${PRELOOP_DISABLE_TELEMETRY:-true}' \
+    > docker-compose.rig-telemetry.yaml
+  $(rig_compose_args_remote)
+  docker compose \$COMPOSE_ARGS up -d api
+" | tee -a "$LOG"
+rig_note "telemetry opt-out applied: PRELOOP_DISABLE_TELEMETRY=true in instance .env + api overlay"
 
 # TODO(remove-after-#65): installer workaround — HTTPS fixup for the
 # pre-existing-cert path described above. PR #65 (approved, unmerged) makes

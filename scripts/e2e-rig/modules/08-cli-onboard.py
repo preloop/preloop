@@ -27,8 +27,16 @@ CLI_CONFIG_FILE = "$HOME/.preloop/config.yaml"
 
 
 def ssh(cmd: str, check: bool = True) -> subprocess.CompletedProcess:
+    # Telemetry opt-out on every remote command: test runs must never
+    # pollute adoption data (standing rule, see scripts/e2e-rig/README.md).
     return subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", HOST, cmd],
+        [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            HOST,
+            f"export PRELOOP_DISABLE_TELEMETRY=true; {cmd}",
+        ],
         capture_output=True,
         text=True,
         check=check,
@@ -83,6 +91,7 @@ def main() -> None:
         installer = (
             f"curl -fsSL https://github.com/preloop/preloop/releases/download/"
             f"v{CLI_VERSION}/install-cli.sh -o /tmp/install-cli.sh && "
+            f"PRELOOP_DISABLE_TELEMETRY=true "
             f"PRELOOP_VERSION={CLI_VERSION} PRELOOP_URL={URL} sh /tmp/install-cli.sh"
         )
         # The installer prompts to sign in; we decline — the login was staged

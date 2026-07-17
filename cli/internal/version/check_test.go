@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/preloop/preloop/cli/internal/telemetry"
 )
 
 func TestTokenFingerprint(t *testing.T) {
@@ -129,6 +131,62 @@ func TestFetchVersionInfoFallsBackToLegacyEndpoint(t *testing.T) {
 	}
 	if len(paths) != 2 || !strings.HasSuffix(paths[1], LegacyVersionPath) {
 		t.Errorf("expected rich attempt then legacy fallback, got %v", paths)
+	}
+}
+
+func TestCheckForUpdateSkipsWhenTelemetryDisabled(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			requests++
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"latest_version": "9.9.9",
+			})
+		}))
+	defer server.Close()
+
+	oldOrigin := VersionCheckOrigin
+	VersionCheckOrigin = server.URL
+	defer func() { VersionCheckOrigin = oldOrigin }()
+
+	// Fresh HOME: without the opt-out this would be a first run, which
+	// checks in immediately — the strictest possible setting.
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(telemetry.DisableTelemetryEnv, "true")
+
+	if err := CheckForUpdate(); err != nil {
+		t.Fatalf("CheckForUpdate must be a silent no-op when disabled: %v", err)
+	}
+	if requests != 0 {
+		t.Fatalf("expected no HTTP calls with telemetry disabled, got %d", requests)
+	}
+}
+
+func TestForceCheckRefusesWhenTelemetryDisabled(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			requests++
+		}))
+	defer server.Close()
+
+	oldOrigin := VersionCheckOrigin
+	VersionCheckOrigin = server.URL
+	defer func() { VersionCheckOrigin = oldOrigin }()
+
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(telemetry.DisableVersionCheckEnv, "yes")
+
+	_, err := ForceCheck()
+	if err == nil {
+		t.Fatal("ForceCheck must return an error when telemetry is disabled")
+	}
+	if !strings.Contains(err.Error(), telemetry.DisableTelemetryEnv) {
+		t.Errorf("error must name the env var %s, got: %v",
+			telemetry.DisableTelemetryEnv, err)
+	}
+	if requests != 0 {
+		t.Fatalf("expected no HTTP calls with telemetry disabled, got %d", requests)
 	}
 }
 

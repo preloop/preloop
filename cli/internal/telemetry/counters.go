@@ -49,6 +49,9 @@ func Load() map[string]int {
 // Increment bumps the counter for a command category. Failures are silent —
 // telemetry must never affect CLI behavior.
 func Increment(category string) {
+	if Disabled() {
+		return
+	}
 	if category == "" {
 		return
 	}

@@ -88,7 +88,15 @@ type VersionInfo struct {
 // CheckForUpdate checks for a new version if a day has passed since the last
 // check. A brand-new install (client id created this run) checks immediately
 // so first-run adoption is visible without waiting a day.
+//
+// When telemetry is disabled (PRELOOP_DISABLE_TELEMETRY / DISABLE_VERSION_CHECK)
+// no check-in POST happens at all; update notifications are suppressed as a
+// consequence, since they are derived from the check-in response. Scripted
+// and test runs must leave zero footprint in adoption data.
 func CheckForUpdate() error {
+	if telemetry.Disabled() {
+		return nil
+	}
 	_, firstRun, _ := config.GetOrCreateClientIDWithNew()
 	if !firstRun && !shouldCheck() {
 		return nil
@@ -326,7 +334,15 @@ func displayUpdatePrompt(info *VersionInfo) {
 }
 
 // ForceCheck forces a version check regardless of the last check time.
+// Even a forced check respects the telemetry opt-out: the check-in POST is
+// the telemetry, so there is no way to check without emitting it.
 func ForceCheck() (*VersionInfo, error) {
+	if telemetry.Disabled() {
+		return nil, fmt.Errorf(
+			"update check skipped: telemetry disabled via %s",
+			telemetry.DisableTelemetryEnv,
+		)
+	}
 	info, err := fetchVersionInfo()
 	if err != nil {
 		return nil, err

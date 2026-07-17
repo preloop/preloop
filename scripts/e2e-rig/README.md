@@ -14,6 +14,10 @@ real pty with pexpect into asciicast v2 and rendered with agg + ffmpeg
 (never vhs — it stalls), and every run is stitched into one continuous
 `<run-id>-oss-full-run.mp4` with per-step title cards.
 
+The rig always sets `PRELOOP_DISABLE_TELEMETRY=true` — locally, on every ssh
+command, in the CLI installer invocation, and in the installed instance's
+`.env` — to keep test runs out of adoption data.
+
 Relationship to the release smoke test: CI's release gate
 (`scripts/release_smoke_test.sh`, run by `.github/workflows/release.yml`)
 verifies that a tagged release installs and comes up healthy. This rig is
