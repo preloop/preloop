@@ -272,6 +272,8 @@ def _payload_total_tokens(payload: dict[str, Any]) -> int:
         if value is not None:
             return int(value)
     except (TypeError, ValueError):
+        # Unparseable total_tokens (provider quirk): fall through to the
+        # prompt+completion sum below instead of dropping the event.
         pass
     return _payload_prompt_tokens(payload) + _payload_completion_tokens(payload)
 

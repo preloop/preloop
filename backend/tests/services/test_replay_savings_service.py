@@ -339,15 +339,16 @@ def test_gateway_non_budget_errors_become_clean_upstream_failures():
 
 
 def test_build_gateway_reexecute_prices_actual_usage_with_model(monkeypatch):
-    import preloop.services.replay_savings_service as svc
-
     seen: dict[str, Any] = {}
 
     def fake_estimate(ai_model: Any, **kwargs: Any) -> float:
         seen.update(kwargs)
         return 0.0123
 
-    monkeypatch.setattr(svc, "estimate_ai_model_usage_cost", fake_estimate)
+    monkeypatch.setattr(
+        "preloop.services.replay_savings_service.estimate_ai_model_usage_cost",
+        fake_estimate,
+    )
     gateway = _FakeGateway(
         {"total_tokens": 42, "prompt_tokens": 30, "completion_tokens": 12}
     )
@@ -360,15 +361,16 @@ def test_build_gateway_reexecute_prices_actual_usage_with_model(monkeypatch):
 
 
 def test_payload_cost_estimator_uses_pricing_and_max_tokens(monkeypatch):
-    import preloop.services.replay_savings_service as svc
-
     seen: dict[str, Any] = {}
 
     def fake_estimate(ai_model: Any, **kwargs: Any) -> float:
         seen.update(kwargs)
         return 0.2
 
-    monkeypatch.setattr(svc, "estimate_ai_model_usage_cost", fake_estimate)
+    monkeypatch.setattr(
+        "preloop.services.replay_savings_service.estimate_ai_model_usage_cost",
+        fake_estimate,
+    )
     estimate = build_payload_cost_estimator(SimpleNamespace())
     cost = estimate({"model": "m", "messages": [], "max_tokens": 256})
     assert cost == pytest.approx(0.2)
@@ -377,9 +379,10 @@ def test_payload_cost_estimator_uses_pricing_and_max_tokens(monkeypatch):
 
 
 def test_payload_cost_estimator_falls_back_when_unpriced(monkeypatch):
-    import preloop.services.replay_savings_service as svc
-
-    monkeypatch.setattr(svc, "estimate_ai_model_usage_cost", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "preloop.services.replay_savings_service.estimate_ai_model_usage_cost",
+        lambda *a, **k: None,
+    )
     estimate = build_payload_cost_estimator(SimpleNamespace(), fallback_per_run=0.07)
     assert estimate({"model": "m", "messages": []}) == pytest.approx(0.07)
 

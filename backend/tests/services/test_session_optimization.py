@@ -1072,6 +1072,97 @@ def test_parse_optimization_model_response_strips_markdown_fence(
     assert estimated_cost >= 0.0
 
 
+def test_parse_optimization_model_response_handles_fence_without_newline(
+    mock_fast_model,
+) -> None:
+    """A fence glued to the JSON ('```json{...}') must parse, not IndexError."""
+    service = SessionOptimizationService(MagicMock())
+    payload = {
+        "suggestions": [
+            {
+                "id": "cache-tools",
+                "title": "Cache tool schemas",
+                "description": "Repeated schemas dominate prompt size.",
+            }
+        ]
+    }
+    suggestions, token_usage, _ = service._parse_optimization_model_response(
+        mock_fast_model,
+        {
+            "choices": [
+                {"message": {"content": "```json" + json.dumps(payload) + "```"}}
+            ],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 20,
+                "total_tokens": 30,
+            },
+        },
+    )
+
+    assert suggestions[0].id == "cache-tools"
+    assert token_usage.total_tokens == 30
+
+
+@patch("preloop.services.session_optimization.crud_ai_model.get_default_active_model")
+@patch.object(SessionOptimizationService, "_create_gateway_service")
+def test_no_newline_fenced_empty_suggestions_degrade_to_local_fallback(
+    mock_create_gateway,
+    mock_get_default_model,
+    db_session,
+    test_user,
+    mock_fast_model,
+) -> None:
+    """The pathological '```json{"suggestions":[]}' payload must not raise.
+
+    Regression: the fence stripper used ``raw.split("\\n", 1)[1]``, which
+    raised IndexError when the fenced payload contained no newline at all.
+    The service must degrade to deterministic local suggestions instead.
+    """
+    mock_get_default_model.return_value = mock_fast_model
+    gateway = MagicMock()
+    gateway.create_chat_completion.return_value = {
+        "choices": [{"message": {"content": '```json{"suggestions":[]}'}}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+    mock_create_gateway.return_value = gateway
+
+    runtime_session = _create_runtime_session(
+        db_session, test_user, source_id="workspace-fence-no-newline"
+    )
+    db_session.commit()
+    crud_api_usage.log_gateway_request(
+        db_session,
+        endpoint="/openai/v1/chat/completions",
+        method="POST",
+        status_code=200,
+        duration=0.1,
+        user_id=str(test_user.id),
+        account_id=str(test_user.account_id),
+        runtime_session_id=str(runtime_session.id),
+        model_alias="openai/gpt-test",
+        provider_name="openai",
+        prompt_tokens=900,
+        completion_tokens=100,
+        total_tokens=1000,
+        estimated_cost=0.5,
+    )
+
+    account = crud_account.get(db_session, id=test_user.account_id)
+    assert account is not None
+    result = SessionOptimizationService(
+        db_session
+    ).get_account_session_optimization_suggestions(
+        account=account,
+        runtime_session_id=str(runtime_session.id),
+        request=RuntimeSessionOptimizationRequest(),
+        current_user=test_user,
+    )
+
+    assert result.generated_by == "local"
+    assert result.suggestions[0].id == "trim-context"
+
+
 def test_local_response_includes_waste_score_and_actions(db_session, test_user) -> None:
     """Grounded local responses must expose waste score and action contracts."""
     from datetime import timedelta

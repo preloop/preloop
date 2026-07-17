@@ -21,8 +21,11 @@ import copy
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
 
+from sqlalchemy.orm import Session
+
+from preloop.models.models.account import Account
 from preloop.models.models.ai_model import AIModel
 from preloop.services.optimization_gating import authorize_analysis_model
 from preloop.services.replay_harness import (
@@ -560,8 +563,33 @@ def _default_budget_headroom(db: Any, account_id: Any) -> Optional[float]:
     return remaining_account_budget_headroom(db, account_id)
 
 
+class GatewayBudgetEnforcer(Protocol):
+    """Structural type for the injected gateway budget enforcer.
+
+    Replay never calls the enforcer itself; it forwards it to
+    ``OpenAIGatewayService``, whose pre-call budget check invokes exactly one
+    method (see ``OpenAIGatewayService._check_budget``). The OSS default is
+    ``preloop.api.deps.NoopBudgetEnforcer``; billing plugins override it.
+    ``auth_context`` stays ``Any``: its concrete type lives in
+    ``preloop.services.model_gateway_auth``, which is imported lazily below
+    to keep this module import-light.
+    """
+
+    def enforce_or_raise(
+        self,
+        db: Session,
+        auth_context: Any,
+        ai_model: AIModel,
+        payload: dict[str, Any],
+    ) -> Any:
+        """Raise when the pending gateway call would breach a hard limit."""
+        ...
+
+
 def _default_gateway_factory(
-    db: Any, current_user: Any, budget_enforcer: Any = None
+    db: Session,
+    current_user: Any,
+    budget_enforcer: Optional[GatewayBudgetEnforcer] = None,
 ) -> Any:
     """Build a gateway service for replay, with session attribution suppressed.
 
@@ -594,16 +622,16 @@ def _default_gateway_factory(
 
 
 def run_session_replay(
-    db: Any,
+    db: Session,
     *,
-    account: Any,
+    account: Account,
     current_user: Any,
     runtime_session_id: str,
     candidate: dict[str, Any],
     consented: bool,
     n_runs: int = 3,
     suggestion_id: Optional[str] = None,
-    budget_enforcer: Any = None,
+    budget_enforcer: Optional[GatewayBudgetEnforcer] = None,
     gateway_factory: Optional[Callable[[], Any]] = None,
     events_loader: Optional[Callable[..., Sequence[Any]]] = None,
     ai_model_resolver: Optional[Callable[..., Optional[AIModel]]] = None,

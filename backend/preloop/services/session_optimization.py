@@ -247,7 +247,10 @@ class SessionOptimizationService:
                 if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
                     raise
                 llm_skipped_reason = LLM_SKIPPED_MODEL_ERROR
-                logger.info(
+                # Warning, not info: reaching this path means the configured
+                # model produced unusable output (or the call failed), which
+                # is a model-quality signal worth monitoring.
+                logger.warning(
                     "Falling back to local runtime-session optimizations",
                     exc_info=True,
                 )
@@ -1316,7 +1319,14 @@ class SessionOptimizationService:
         message = choices[0].get("message", {}) if choices else {}
         raw = (message.get("content") or "{}").strip()
         if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1]
+            fence_line, _, rest = raw.partition("\n")
+            if rest:
+                raw = rest
+            else:
+                # Single-line fenced payload (e.g. '```json{...}'): there is
+                # no fence line to drop, so strip the backticks and optional
+                # language tag glued to the JSON instead.
+                raw = fence_line.lstrip("`").removeprefix("json")
             raw = raw.rsplit("```", 1)[0]
         parsed = json.loads(raw)
         raw_suggestions = (
