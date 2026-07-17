@@ -438,6 +438,8 @@ func printAgentOnboardingSummary(w io.Writer, outcomes []agentOnboardingOutcome)
 	}
 	fmt.Fprintln(w, "\nOnboarding summary:") //nolint:errcheck
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	fmt.Fprintf(tw, "  Agent\tStatus\tReason\n") //nolint:errcheck
+	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
 	missingExecutable := false
 	for _, outcome := range outcomes {
 		reason := outcome.Reason
