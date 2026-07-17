@@ -275,10 +275,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # Check if test data initialization is enabled
         if os.getenv("INIT_TEST_DATA", "false").lower() == "true" and is_api_role:
             logger.info("Initializing test data...")
-            # Import and run the test data initialization script
-            from scripts.init_test_data import main as init_data_main  # type: ignore
+            # Await the coroutine directly: the CLI wrapper (main) calls
+            # asyncio.run(), which raises inside this already-running lifespan
+            # loop. Schema setup is the INIT_DB branch's job (or the caller's,
+            # e.g. CI's init_db.py); seeding legitimately assumes it happened.
+            from scripts.init_test_data import create_test_data  # type: ignore
 
-            init_data_main()
+            await create_test_data()
             logger.info("Test data initialization complete.")
         elif os.getenv("INIT_TEST_DATA", "false").lower() == "true":
             logger.info("Skipping test data initialization for %s role.", service_role)
