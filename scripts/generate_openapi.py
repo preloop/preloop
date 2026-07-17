@@ -35,6 +35,16 @@ def generate_openapi_schema() -> None:
     app = create_app()  # Create the app instance using the factory
     openapi_schema = app.openapi()
 
+    # Stamp the spec version from the repo's VERSION file — the single source
+    # of truth the release script maintains. The app's own __version__ resolves
+    # via importlib.metadata and is environment-dependent (editable installs,
+    # pre-commit hook venvs, or a same-named PyPI distribution can all win),
+    # which made this file regenerate differently in every environment.
+    version_file = Path(__file__).resolve().parents[1] / "VERSION"
+    repo_version = version_file.read_text(encoding="utf-8").strip()
+    if repo_version:
+        openapi_schema.setdefault("info", {})["version"] = repo_version
+
     output_paths = [project_root / "openapi.yaml"]
 
     for output_path in output_paths:
