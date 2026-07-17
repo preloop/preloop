@@ -830,7 +830,8 @@ func promptToOnboardDiscoveredAgents(
 		}
 	}
 	if deferLiveValidate && len(enrolled) > 0 {
-		runDeferredLiveValidationsParallel(client, enrolled, os.Stdout)
+		liveResults := runDeferredLiveValidationsParallel(client, enrolled, os.Stdout)
+		applyLiveValidationOutcomesToSummary(outcomes, liveResults)
 	}
 	printAgentOnboardingSummary(os.Stdout, outcomes)
 	return agentOnboardingSummaryError(outcomes)
@@ -1222,7 +1223,8 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 			}
 		}
 		if deferLiveValidate && len(enrolled) > 0 {
-			runDeferredLiveValidationsParallel(client, enrolled, os.Stdout)
+			liveResults := runDeferredLiveValidationsParallel(client, enrolled, os.Stdout)
+			applyLiveValidationOutcomesToSummary(outcomes, liveResults)
 		}
 		printAgentOnboardingSummary(os.Stdout, outcomes)
 		return agentOnboardingSummaryError(outcomes)

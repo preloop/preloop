@@ -989,16 +989,34 @@ func buildChatCompletionsLiveValidationPayload(modelAlias, prompt string) map[st
 	}
 }
 
+// claudeCodeSystemSentinel is the exact system prompt Claude Code itself
+// sends as its FIRST system block on every request. Anthropic validates
+// subscription-OAuth (Pro/Max) requests structurally: the first system
+// block must equal this string exactly, and violations are rejected with
+// a disguised 429 “rate_limit_error“. The probe must mirror native
+// traffic — a probe without it can never pass on an OAuth-backed model
+// and would misreport a healthy gateway as throttled.
+const claudeCodeSystemSentinel = "You are Claude Code, Anthropic's official CLI for Claude."
+
 // buildAnthropicMessagesLiveValidationPayload assembles a one-shot probe
 // for the “/anthropic/v1/messages“ gateway endpoint. Anthropic strictly
 // requires “max_tokens“ (no default) and a non-empty “messages“ array;
 // we keep the message minimal and put the validation token in the user
 // content so the gateway-usage search can locate the request after it has
 // been logged.
+//
+// The probe carries the Claude Code sentinel as its first (and only)
+// system block so it travels the exact request shape the agent's native
+// traffic uses — including the gateway's subscription-OAuth passthrough
+// and Anthropic's structural validation of OAuth requests. For API-key
+// models the extra system block is a harmless system prompt.
 func buildAnthropicMessagesLiveValidationPayload(modelAlias, prompt string) map[string]interface{} {
 	return map[string]interface{}{
 		"model":      modelAlias,
 		"max_tokens": 32,
+		"system": []map[string]interface{}{
+			{"type": "text", "text": claudeCodeSystemSentinel},
+		},
 		"messages": []map[string]interface{}{
 			{
 				"role": "user",
@@ -1296,23 +1314,33 @@ func persistDeferredLiveValidationResult(
 	if enrollmentID == "" {
 		return
 	}
-	// A probe the upstream provider refused (rate limit, billing) is
-	// inconclusive, not a failure: the static config checks passed and the
-	// gateway config stays in place, so persist "validated" and let
-	// live_validation_status carry the detail.
-	status := "validated"
-	if result.Outcome.Attempted &&
-		!result.Outcome.Passed &&
-		!liveValidationOutcomeGatewayVerified(result.Outcome) {
-		status = "validation_failed"
-	}
 	_, _ = validateManagedEnrollmentRecord(
 		client,
 		result.Agent,
 		enrollmentID,
 		result.Outcome.ValidationResult,
-		status,
+		deferredLiveValidationPersistStatus(result.Outcome),
 	)
+}
+
+// deferredLiveValidationPersistStatus maps a live-validation outcome onto the
+// enrollment status persisted in the control plane.
+//
+// A probe the upstream provider refused (rate limit, billing) is
+// inconclusive, not a failure: the static config checks passed and the
+// gateway config stays in place. But it is not "validated" either —
+// persisting that made a 100%-failing agent look healthy forever ("Live
+// check pending"). Persist the honest terminal state and let
+// live_validation_status / live_validation_error carry the detail the
+// console surfaces.
+func deferredLiveValidationPersistStatus(outcome *managedLiveValidationOutcome) string {
+	if outcome == nil || !outcome.Attempted || outcome.Passed {
+		return "validated"
+	}
+	if liveValidationOutcomeGatewayVerified(outcome) {
+		return "validation_inconclusive"
+	}
+	return "validation_failed"
 }
 
 // resolveDeferredEnrollmentID finds the cli_managed_config enrollment ID
@@ -1398,6 +1426,64 @@ func printDeferredLiveValidationLine(
 		name,
 		result.Duration.Milliseconds(),
 	)
+}
+
+// applyLiveValidationOutcomesToSummary folds deferred live-validation
+// results back into the batch onboarding outcomes so the final summary
+// table never prints a bare "onboarded  -" row for an agent whose model
+// traffic is unverified. The onboarding Status is left untouched (the
+// enrollment itself succeeded); only the Reason column gains the
+// validation outcome and the re-verify command.
+func applyLiveValidationOutcomesToSummary(
+	outcomes []agentOnboardingOutcome,
+	results []deferredLiveValidationResult,
+) {
+	for _, result := range results {
+		reason := liveValidationSummaryReason(result)
+		if reason == "" {
+			continue
+		}
+		name := resolveAgentDisplayName(result.Agent)
+		for i := range outcomes {
+			if resolveAgentDisplayName(outcomes[i].Agent) != name {
+				continue
+			}
+			if outcomes[i].Reason == "" {
+				outcomes[i].Reason = reason
+			} else {
+				outcomes[i].Reason += "; " + reason
+			}
+			break
+		}
+	}
+}
+
+// liveValidationSummaryReason renders the one-line summary Reason for an
+// attempted-but-not-passed live validation, or "" when there is nothing to
+// warn about (passed, skipped, or unsupported).
+func liveValidationSummaryReason(result deferredLiveValidationResult) string {
+	if result.Outcome == nil || !result.Outcome.Attempted || result.Outcome.Passed {
+		return ""
+	}
+	revalidate := fmt.Sprintf(
+		"re-verify with: preloop agents validate %s --live",
+		shellQuoteAgentName(resolveAgentDisplayName(result.Agent)),
+	)
+	status, _ := result.Outcome.ValidationResult["live_validation_status"].(string)
+	switch status {
+	case "throttled":
+		return "live validation throttled — model traffic unverified; " + revalidate
+	case "upstream_unavailable":
+		return "live validation inconclusive (upstream billing/quota); " + revalidate
+	}
+	detail := ""
+	if result.Err != nil {
+		detail = ": " + firstErrorLine(result.Err)
+	} else if message, _ := result.Outcome.ValidationResult["live_validation_error"].(string); message != "" {
+		message, _, _ = strings.Cut(message, "\n")
+		detail = ": " + strings.TrimSpace(message)
+	}
+	return "live validation failed" + detail + "; " + revalidate
 }
 
 func shellQuoteAgentName(name string) string {
