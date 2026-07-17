@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+"""Minimal self-contained research agent driven through the Preloop gateway.
+
+Registers itself as a custom managed agent (POST /api/v1/agents), mints a
+durable gateway credential (POST /api/v1/agents/{id}/credentials), then runs
+one short research session with plain OpenAI-compatible HTTP calls against
+the instance's gateway (/openai/v1). Standard library only — no SDKs.
+
+Usage:
+    PRELOOP_USER_TOKEN=<user jwt> python research_agent.py \
+        --url https://preloop.example --name "Research Agent (e2e)" \
+        [--question "..."] [--state-out state.json]
+
+Exit codes: 0 success, 3 skipped (no model available via the gateway).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import ssl
+import sys
+import urllib.error
+import urllib.request
+
+SKIP_EXIT = 3
+
+# --- output redaction -------------------------------------------------------
+# Error responses can echo request context (Authorization header material,
+# submitted payloads). Never print a raw body on failure — always mask
+# token-like substrings and truncate. Kept in sync with lib/riglib.redact
+# (this script is deliberately standalone, stdlib-only).
+_REDACT_PATTERNS = [
+    # Bearer credentials, wherever they appear.
+    re.compile(r"(?i)\bbearer\b[ \t]*[A-Za-z0-9._~+/=-]{4,}"),
+    # JWTs (three dot-separated base64url segments starting with eyJ).
+    re.compile(r"\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\b"),
+    # Long opaque token-ish strings.
+    re.compile(r"\b[A-Za-z0-9_-]{32,}\b"),
+]
+# Values of sensitive JSON keys (FastAPI validation errors echo the input).
+_SENSITIVE_JSON_KEY = re.compile(
+    r'(?i)("(?:password|token|access_token|refresh_token|secret|api_key|'
+    r'authorization)"\s*:\s*")[^"]*(")'
+)
+
+
+def redact(body: object, limit: int = 400) -> str:
+    """Return a failure-safe excerpt of a response body: token-like
+    substrings and sensitive JSON values masked, length capped."""
+    text = body if isinstance(body, str) else json.dumps(body)
+    text = _SENSITIVE_JSON_KEY.sub(r"\1***\2", text)
+    for pattern in _REDACT_PATTERNS:
+        text = pattern.sub("***", text)
+    if len(text) > limit:
+        text = f"{text[:limit]}... [{len(text) - limit} chars truncated]"
+    return text
+
+
+def request(
+    url: str,
+    method: str = "GET",
+    token: str | None = None,
+    payload: dict | None = None,
+    timeout: int = 120,
+):
+    headers = {"Accept": "application/json"}
+    data = None
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(payload).encode()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    # TLS verification stays ON; certifi (optional) covers Pythons that ship
+    # without a usable system CA bundle for urllib.
+    try:
+        import certifi
+
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        ctx = ssl.create_default_context()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+            return resp.status, json.loads(resp.read().decode() or "null")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode()
+        try:
+            return exc.code, json.loads(body)
+        except json.JSONDecodeError:
+            return exc.code, body
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--url", required=True)
+    ap.add_argument("--name", default="Research Agent (e2e)")
+    ap.add_argument(
+        "--question",
+        default="In two sentences: what is an AI agent control plane?",
+    )
+    ap.add_argument("--state-out", default=None)
+    args = ap.parse_args()
+    base = args.url.rstrip("/")
+
+    user_token = os.environ.get("PRELOOP_USER_TOKEN")
+    if not user_token:
+        sys.exit("PRELOOP_USER_TOKEN env var is required")
+
+    print(f"[1/4] registering custom agent {args.name!r} ...")
+    status, agent = request(
+        f"{base}/api/v1/agents",
+        "POST",
+        user_token,
+        {"display_name": args.name, "description": "e2e rig research agent"},
+    )
+    if status not in (200, 201):
+        sys.exit(f"agent registration failed ({status}): {redact(agent)}")
+    agent_id = agent["id"]
+    print(f"      agent_id={agent_id}")
+
+    print("[2/4] minting a gateway credential ...")
+    status, cred = request(
+        f"{base}/api/v1/agents/{agent_id}/credentials",
+        "POST",
+        user_token,
+        {"name": "e2e-rig-session", "expires_in_days": 1},
+    )
+    if status not in (200, 201):
+        sys.exit(f"credential creation failed ({status}): {redact(cred)}")
+    gw_token = cred["token"]
+    credential_id = cred["credential"]["id"]
+    print(f"      credential={credential_id} (token withheld from output)")
+
+    if args.state_out:
+        with open(args.state_out, "w") as fh:
+            json.dump(
+                {
+                    "agent_id": agent_id,
+                    "credential_id": credential_id,
+                    "display_name": args.name,
+                },
+                fh,
+                indent=2,
+            )
+
+    print("[3/4] listing models available through the gateway ...")
+    status, models = request(f"{base}/openai/v1/models", token=gw_token)
+    if status != 200:
+        sys.exit(f"gateway /models failed ({status}): {redact(models)}")
+    model_ids = [m["id"] for m in models.get("data", [])]
+    print(f"      models: {model_ids or '(none)'}")
+    if not model_ids:
+        print(
+            "SKIP: no model is available via the gateway "
+            "(no AI model configured in this account yet)"
+        )
+        sys.exit(SKIP_EXIT)
+
+    model = model_ids[0]
+    print(f"[4/4] research session via gateway model {model!r} ...")
+    status, completion = request(
+        f"{base}/openai/v1/chat/completions",
+        "POST",
+        gw_token,
+        {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "You are a concise research assistant."},
+                {"role": "user", "content": args.question},
+            ],
+            "max_tokens": 200,
+        },
+    )
+    if status != 200:
+        sys.exit(f"gateway chat completion failed ({status}): {redact(completion)}")
+    answer = completion["choices"][0]["message"]["content"]
+    usage = completion.get("usage", {})
+    print("----- agent answer -----")
+    print(answer.strip())
+    print("------------------------")
+    print(f"usage: {usage}")
+    print("session complete: traffic flowed through the Preloop gateway.")
+
+
+if __name__ == "__main__":
+    main()

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Recorded end-to-end lifecycle rig (`scripts/e2e-rig/`): drives the full
+  offboard → teardown → reinstall → onboard → verify → offboard cycle of an
+  OSS instance on a real VM, records every browser and terminal step, and
+  asserts each agent's model/MCP config is restored after offboarding. The
+  deep, recorded complement to CI's release smoke test
+  (`scripts/release_smoke_test.sh`); see `scripts/e2e-rig/README.md`.
+
 ## [0.11.1] - 2026-07-14
 
 ### Fixed
