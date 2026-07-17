@@ -40,6 +40,11 @@ rig_ssh '
   true
 ' | tee -a "$RIG_RUN_DIR/logs/03-compose-down.txt"
 
+# TODO(remove-after-#65): installer workaround — PR #65 (approved, unmerged)
+# adds reset_registration_if_fresh_db() so a preserved .env no longer bricks
+# first-user signup; once a release ships with it this deletion can be
+# reduced to whatever "genuinely fresh install" still requires.
+#
 # Remove the instance config so the next install is genuinely fresh: a
 # preserved .env keeps REGISTRATION_ENABLED=false (and old secrets) while the
 # database is gone, which would brick the first-user signup. Secrets are

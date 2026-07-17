@@ -19,12 +19,44 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import ssl
 import sys
 import urllib.error
 import urllib.request
 
 SKIP_EXIT = 3
+
+# --- output redaction -------------------------------------------------------
+# Error responses can echo request context (Authorization header material,
+# submitted payloads). Never print a raw body on failure — always mask
+# token-like substrings and truncate. Kept in sync with lib/riglib.redact
+# (this script is deliberately standalone, stdlib-only).
+_REDACT_PATTERNS = [
+    # Bearer credentials, wherever they appear.
+    re.compile(r"(?i)\bbearer\b[ \t]*[A-Za-z0-9._~+/=-]{4,}"),
+    # JWTs (three dot-separated base64url segments starting with eyJ).
+    re.compile(r"\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\b"),
+    # Long opaque token-ish strings.
+    re.compile(r"\b[A-Za-z0-9_-]{32,}\b"),
+]
+# Values of sensitive JSON keys (FastAPI validation errors echo the input).
+_SENSITIVE_JSON_KEY = re.compile(
+    r'(?i)("(?:password|token|access_token|refresh_token|secret|api_key|'
+    r'authorization)"\s*:\s*")[^"]*(")'
+)
+
+
+def redact(body: object, limit: int = 400) -> str:
+    """Return a failure-safe excerpt of a response body: token-like
+    substrings and sensitive JSON values masked, length capped."""
+    text = body if isinstance(body, str) else json.dumps(body)
+    text = _SENSITIVE_JSON_KEY.sub(r"\1***\2", text)
+    for pattern in _REDACT_PATTERNS:
+        text = pattern.sub("***", text)
+    if len(text) > limit:
+        text = f"{text[:limit]}... [{len(text) - limit} chars truncated]"
+    return text
 
 
 def request(
@@ -85,7 +117,7 @@ def main() -> None:
         {"display_name": args.name, "description": "e2e rig research agent"},
     )
     if status not in (200, 201):
-        sys.exit(f"agent registration failed ({status}): {agent}")
+        sys.exit(f"agent registration failed ({status}): {redact(agent)}")
     agent_id = agent["id"]
     print(f"      agent_id={agent_id}")
 
@@ -97,7 +129,7 @@ def main() -> None:
         {"name": "e2e-rig-session", "expires_in_days": 1},
     )
     if status not in (200, 201):
-        sys.exit(f"credential creation failed ({status}): {cred}")
+        sys.exit(f"credential creation failed ({status}): {redact(cred)}")
     gw_token = cred["token"]
     credential_id = cred["credential"]["id"]
     print(f"      credential={credential_id} (token withheld from output)")
@@ -117,7 +149,7 @@ def main() -> None:
     print("[3/4] listing models available through the gateway ...")
     status, models = request(f"{base}/openai/v1/models", token=gw_token)
     if status != 200:
-        sys.exit(f"gateway /models failed ({status}): {models}")
+        sys.exit(f"gateway /models failed ({status}): {redact(models)}")
     model_ids = [m["id"] for m in models.get("data", [])]
     print(f"      models: {model_ids or '(none)'}")
     if not model_ids:
@@ -143,7 +175,7 @@ def main() -> None:
         },
     )
     if status != 200:
-        sys.exit(f"gateway chat completion failed ({status}): {completion}")
+        sys.exit(f"gateway chat completion failed ({status}): {redact(completion)}")
     answer = completion["choices"][0]["message"]["content"]
     usage = completion.get("usage", {})
     print("----- agent answer -----")

@@ -19,6 +19,10 @@ LOG="$RIG_RUN_DIR/logs/05-install.txt"
 
 rig_log "installing Preloop OSS ${RIG_RELEASE} at ${RIG_URL} (installer: $INSTALLER_URL)"
 
+# TODO(remove-after-#65): installer workaround — run with bash instead of sh.
+# PR #65 (approved, unmerged) fixes has_tty() under dash; once a release ships
+# with it, drop the bash indirection and use the documented `sh` invocation.
+#
 # ssh without -t => no tty on the VM => the installer never prompts.
 # Run with bash, not sh: on Debian sh is dash, where has_tty()'s
 # `: < /dev/tty` redirect failure is FATAL for the special builtin when no
@@ -36,7 +40,10 @@ status=${PIPESTATUS[0]}
 set -e
 [ "$status" -eq 0 ] || rig_die "installer exited $status (see $LOG)"
 
-# HTTPS fixup for the pre-existing-cert path described above.
+# TODO(remove-after-#65): installer workaround — HTTPS fixup for the
+# pre-existing-cert path described above. PR #65 (approved, unmerged) makes
+# the installer activate HTTPS itself on cert reuse; drop this whole block
+# once a release ships with it.
 host_part="${RIG_URL#https://}"
 host_part="${host_part%%/*}"
 rig_ssh "

@@ -14,6 +14,13 @@ real pty with pexpect into asciicast v2 and rendered with agg + ffmpeg
 (never vhs — it stalls), and every run is stitched into one continuous
 `<run-id>-oss-full-run.mp4` with per-step title cards.
 
+Relationship to the release smoke test: CI's release gate
+(`scripts/release_smoke_test.sh`, run by `.github/workflows/release.yml`)
+verifies that a tagged release installs and comes up healthy. This rig is
+the deep, recorded complement — the full lifecycle including agent
+onboarding/offboarding and the restore assertion — run manually against a
+real VM before/after a release.
+
 ## Usage
 
 ```bash
@@ -42,6 +49,9 @@ Options for `run-oss.sh`:
 Module exit codes: `0` pass, `3` skip (recorded with a note), anything else
 fails the run.
 
+Unit tests for the pure-python pieces (snapshot diff semantics, output
+redaction) live in `tests/` — run them with `pytest scripts/e2e-rig/tests`.
+
 ## Requirements
 
 - macOS (or Linux) driver machine with: `agg`, `ffmpeg` (brew), and a Python
@@ -63,7 +73,7 @@ fails the run.
 | 05 | install the pinned OSS release via the release's own `install-oss.sh`, TLS up | `logs/05-*` |
 | 06 | poll `https://…/api/v1/health` with TLS verification ON, console + gateway reachable | `state/health.json` |
 | 07 | recorded browser first-user signup, session + API token kept | `browser-videos/`, `screenshots/07-*` |
-| 08 | recorded pty over ssh: pinned CLI install, `login --token`, `agents discover --yes` | `casts/08-*` |
+| 08 | recorded pty over ssh: pinned CLI install, staged login verified with `auth status`, `agents discover --yes` | `casts/08-*` |
 | 09 | recorded browser: every onboarded agent visible + active on `/console/agents` | `screenshots/09-*` |
 | 10 | register custom agent via API, mint gateway credential, run `research_agent.py` session through `/openai/v1` (recorded locally) | `casts/10-*`, `state/custom-agent.json` |
 | 11 | optimize scene — probes the endpoint; SKIPs with a note on 0.11.x (feature lands in OSS 0.12.0/T2) | `screenshots/11-*` when present |
@@ -92,19 +102,30 @@ unified diffs into `diffs/`.
 - The rig never touches agent auth/credential state on the VM (`~/.claude`
   auth, opencode auth, API keys). Snapshots are read-only; the only writes to
   agent configs are done by `preloop agents onboard/offboard` themselves.
-- The CLI login token is staged in a mode-600 file over ssh and referenced as
-  `$(cat …)` so it never appears in the recording; it is removed afterwards.
+- The CLI login is staged out-of-band: the token travels only over the ssh
+  stdin stream into `install -m 600 /dev/stdin ~/.preloop/config.yaml` (the
+  CLI's own login persistence target), so it never appears in any command
+  line, environment, recording, or `ps` listing on either machine. The
+  recorded scene verifies the login with `preloop auth status`.
+- Failure output from API helpers is redacted (bearer/JWT/token-like strings
+  and sensitive JSON values masked, bodies truncated) — see `redact()` in
+  `lib/riglib.py` and `research_agent.py`.
 - Let's Encrypt certs are preserved across teardowns by default (duplicate
   issuance is rate-limited to ~5/week).
 
 ## Known product findings baked into the rig
 
+The three installer findings below are fixed by PR #65 (approved, not yet in
+a release). Each corresponding workaround in the rig is marked with a
+`# TODO(remove-after-#65)` comment — grep for it once a release ships with
+the fix.
+
 - installer: unattended TLS install dies under dash when no tty exists
   (`has_tty`'s `/dev/tty` redirect is fatal for a special builtin) — the rig
-  runs the installer with bash. Report upstream.
+  runs the installer with bash.
 - installer: re-install with an existing cert leaves `tls/active.conf`
   HTTP-only (`issue_certificate` early-returns before the https swap) — the
-  rig applies a fixup and notes it. Report upstream.
+  rig applies a fixup and notes it.
 - installer/teardown interplay: a preserved `.env` keeps
   `REGISTRATION_ENABLED=false` while the DB is gone — the rig deletes the
   instance config at teardown so a fresh install opens signup again.

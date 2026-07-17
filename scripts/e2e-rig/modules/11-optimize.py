@@ -20,7 +20,12 @@ import riglib  # noqa: E402
 
 URL = riglib.env("RIG_URL").rstrip("/")
 STATE = riglib.run_dir() / "state" / "browser-state.json"
-PROBE_SESSION = "00000000-0000-0000-0000-000000000000"
+
+# The RFC 4122 nil UUID: a syntactically valid session id that can never
+# belong to a real runtime session. Used ONLY to probe whether the optimize
+# route is mounted at all (route absent => generic FastAPI 404 "Not Found";
+# route present => any session-aware response for this id).
+NIL_UUID_PROBE_SESSION_ID = "00000000-0000-0000-0000-000000000000"
 
 
 def feature_present(token: str) -> bool:
@@ -28,12 +33,13 @@ def feature_present(token: str) -> bool:
     body {"detail": "Not Found"}; with the route mounted, any other status
     (402/403/422) or a session-specific 404 message means it exists."""
     status, body = riglib.api_request(
-        f"{URL}/api/v1/billing/cost/runtime-sessions/{PROBE_SESSION}/optimizations",
+        f"{URL}/api/v1/billing/cost/runtime-sessions/"
+        f"{NIL_UUID_PROBE_SESSION_ID}/optimizations",
         method="POST",
         token=token,
         payload={},
     )
-    riglib.log(f"probe status={status} body={body}")
+    riglib.log(f"probe status={status} body={riglib.redact(body)}")
     if status == 404 and isinstance(body, dict) and body.get("detail") == "Not Found":
         return False
     return True

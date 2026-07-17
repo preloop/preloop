@@ -22,7 +22,8 @@ CLI_VERSION = riglib.env("RIG_CLI_VERSION")
 
 CAST = riglib.run_dir() / "casts" / "08-cli-onboard.cast"
 MP4 = riglib.run_dir() / "casts" / "08-cli-onboard.mp4"
-TOKEN_FILE = "/root/.preloop-e2e-token"  # noqa: S105 - path, not a secret
+# The CLI's own login persistence target (see cli/internal/config/config.go).
+CLI_CONFIG_FILE = "$HOME/.preloop/config.yaml"
 
 
 def ssh(cmd: str, check: bool = True) -> subprocess.CompletedProcess:
@@ -34,22 +35,46 @@ def ssh(cmd: str, check: bool = True) -> subprocess.CompletedProcess:
     )
 
 
-def main() -> None:
-    creds = riglib.load_creds()
-    token = creds.get("api_token")
-    if not token:
-        raise SystemExit("no api_token in creds.json — run module 07 first")
-    # Tokens expire (60 min); mint a fresh one so a slow run cannot go stale.
-    token = riglib.user_token(URL, creds)
+def stage_cli_login(token: str) -> None:
+    """Persist the CLI login on the VM without the token ever appearing in
+    any argv, environment, recording, or `ps` output.
 
-    # Stage the token on the VM outside the recording so it never appears on
-    # screen or in the cast. Removed again before the module exits.
+    `preloop login --token <t>` would put the token on the preloop process's
+    command line (visible in the VM's process listing while it runs), and the
+    released CLI has no stdin/env path for token login. Its token login only
+    writes ~/.preloop/config.yaml (config.SetTokens), so write that file
+    directly: the token travels exclusively over the ssh stdin stream into
+    `install -m 600 /dev/stdin` — the remote command string contains no
+    secret. The recorded scene then runs `preloop auth status`, which
+    verifies the stored login against the server on camera.
+    """
+    config_yaml = (
+        f"access_token: {json.dumps(token)}\n"
+        f'refresh_token: ""\n'
+        f"api_url: {json.dumps(URL)}\n"
+    )
     subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", HOST, f"umask 077; cat > {TOKEN_FILE}"],
-        input=token,
+        [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            HOST,
+            "umask 077; mkdir -p ~/.preloop && "
+            f'install -m 600 /dev/stdin "{CLI_CONFIG_FILE}"',
+        ],
+        input=config_yaml,
         text=True,
         check=True,
     )
+
+
+def main() -> None:
+    creds = riglib.load_creds()
+    if not creds.get("api_token"):
+        raise SystemExit("no api_token in creds.json — run module 07 first")
+    # Tokens expire (60 min); mint a fresh one so a slow run cannot go stale.
+    token = riglib.user_token(URL, creds)
+    stage_cli_login(token)
 
     CAST.parent.mkdir(parents=True, exist_ok=True)
     rec = capture.CastRecorder(CAST)
@@ -60,8 +85,8 @@ def main() -> None:
             f"v{CLI_VERSION}/install-cli.sh -o /tmp/install-cli.sh && "
             f"PRELOOP_VERSION={CLI_VERSION} PRELOOP_URL={URL} sh /tmp/install-cli.sh"
         )
-        # The installer prompts to sign in; we decline and log in explicitly
-        # with a token on the next line (OAuth needs a browser).
+        # The installer prompts to sign in; we decline — the login was staged
+        # out-of-band (see stage_cli_login) so no secret enters the recording.
         capture.run_command(
             child,
             rec,
@@ -75,11 +100,12 @@ def main() -> None:
         )
         time.sleep(1.0)
 
+        # Verify the staged login on camera (server round-trip, no secrets).
         capture.run_command(
             child,
             rec,
-            f'preloop login --url {URL} --token "$(cat {TOKEN_FILE})"',
-            mark="login",
+            "preloop auth status",
+            mark="auth_status",
             timeout=60,
         )
         time.sleep(1.0)
@@ -106,9 +132,8 @@ def main() -> None:
         time.sleep(2.0)
         rec.mark("end")
         child.sendline("exit")
-        child.close()
     finally:
-        ssh(f"rm -f {TOKEN_FILE}", check=False)
+        child.close()
 
     rec.compress_idle(cap=2.5)
     rec.save()

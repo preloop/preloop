@@ -9,24 +9,30 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/common.sh"
 TIMEOUT="${RIG_HEALTH_TIMEOUT:-300}"
 deadline=$((SECONDS + TIMEOUT))
 
+# Each poll retries transient failures itself (connection refused while the
+# stack is still coming up, transient 5xx) so a single flaky attempt cannot
+# waste a whole interval; --max-time caps the attempt group, and the outer
+# deadline still bounds the total wait.
+CURL_RETRY=(--retry 2 --retry-connrefused --max-time 10)
+
 rig_log "polling $RIG_URL/api/v1/health (timeout ${TIMEOUT}s, TLS verify on)"
 while :; do
-  if body=$(curl -fsS --max-time 10 "$RIG_URL/api/v1/health" 2>/dev/null); then
+  if body=$(curl -fsS "${CURL_RETRY[@]}" "$RIG_URL/api/v1/health" 2>/dev/null); then
     rig_log "health: $body"
     echo "$body" > "$RIG_RUN_DIR/state/health.json"
     break
   fi
-  [ $SECONDS -lt $deadline ] || rig_die "instance not healthy after ${TIMEOUT}s"
+  [ "$SECONDS" -lt "$deadline" ] || rig_die "instance not healthy after ${TIMEOUT}s"
   sleep 5
 done
 
 # Console must serve the SPA over the same origin.
-code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$RIG_URL/")
+code=$(curl -s -o /dev/null -w '%{http_code}' "${CURL_RETRY[@]}" "$RIG_URL/")
 [ "$code" = "200" ] || rig_die "console returned HTTP $code at $RIG_URL/"
 
 # Gateway surface must be reachable through the same origin (401 without a
 # token is the healthy signal; 404 would mean the proxy route is missing).
-gcode=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$RIG_URL/openai/v1/models")
+gcode=$(curl -s -o /dev/null -w '%{http_code}' "${CURL_RETRY[@]}" "$RIG_URL/openai/v1/models")
 case "$gcode" in
   401|403) rig_log "gateway surface answers ($gcode without token) — OK" ;;
   *) rig_note "WARNING: $RIG_URL/openai/v1/models returned $gcode (expected 401)" ;;
