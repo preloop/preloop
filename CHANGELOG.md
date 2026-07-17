@@ -15,6 +15,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   asserts each agent's model/MCP config is restored after offboarding. The
   deep, recorded complement to CI's release smoke test
   (`scripts/release_smoke_test.sh`); see `scripts/e2e-rig/README.md`.
+- **Session optimization, one-click apply, and replay verification are now
+  open source.** The full value loop moved from the proprietary billing plugin
+  into the core backend: evidence-grounded waste findings for a runtime
+  session (`POST /api/v1/billing/cost/runtime-sessions/{id}/optimizations`),
+  one-click apply of suggested governance/budget actions (`.../optimizations/apply`,
+  `GET .../optimizations/actions`), and consent-gated replay verification of a
+  candidate's savings (`.../replay`) — all powered by your own model keys
+  (BYOK). New service modules: `preloop.services.session_optimization`,
+  `preloop.services.context_analysis`, `preloop.services.replay_savings_service`,
+  `preloop.services.replay_harness`, `preloop.services.savings_measurement`,
+  and `preloop.services.budget_headroom` (account hard-cap headroom for the
+  replay feasibility precheck).
+- **Analysis-model authorizer extension point**
+  (`preloop.services.optimization_gating`): deployments that meter built-in
+  hosted models (operator-paid compute) can register an authorizer consulted
+  before any LLM-powered analysis runs. The open-source default allows all
+  models; deterministic analysis and BYOK models are never gated.
+- The `optimization_result_viewed` audit event is now emitted by the core
+  optimize endpoint in every edition, so deployments can measure when users
+  first see their own waste number.
 
 ## [0.11.1] - 2026-07-14
 

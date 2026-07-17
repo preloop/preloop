@@ -46,6 +46,7 @@ from preloop.api.endpoints import (
     public_approval,
     roles,
     search as search_router,
+    session_optimization,
     tools,
     trackers,
     version,
@@ -913,6 +914,12 @@ def create_app() -> FastAPI:
             cost.router,
             prefix="/api/v1",
             tags=["Cost Analytics"],
+            dependencies=[Depends(get_current_active_user)],
+        )
+        app.include_router(
+            session_optimization.router,
+            prefix="/api/v1",
+            tags=["Session Optimization"],
             dependencies=[Depends(get_current_active_user)],
         )
         # Public AI models endpoints (no auth required)
