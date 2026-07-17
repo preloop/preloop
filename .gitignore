@@ -83,3 +83,6 @@ plans/
 node_modules
 runtime-plugins/**/dist/
 .gstack/
+
+# Claude
+.claude/

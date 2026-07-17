@@ -9,6 +9,15 @@ from sqlalchemy.orm import Session
 from .base import CRUDBase
 from ..models.instance import Instance
 
+# Columns accepted by get_all_paginated's sort_by parameter.
+INSTANCE_SORT_FIELDS = (
+    "last_seen",
+    "first_seen",
+    "version",
+    "edition",
+    "country",
+)
+
 
 class CRUDInstance(CRUDBase[Instance]):
     """CRUD operations for Instance model."""
@@ -100,15 +109,20 @@ class CRUDInstance(CRUDBase[Instance]):
         *,
         active_only: bool = False,
         edition: Optional[str] = None,
+        sort_by: str = "last_seen",
+        sort_order: str = "desc",
         skip: int = 0,
         limit: int = 100,
     ) -> List[Instance]:
-        """Get all instances with optional filters.
+        """Get all instances with optional filters and server-side sorting.
 
         Args:
             db: Database session
             active_only: Whether to only return active instances
             edition: Edition to filter by
+            sort_by: One of INSTANCE_SORT_FIELDS. Unknown values fall back
+                to last_seen.
+            sort_order: "asc" or "desc" (default). NULL sort keys always last.
             skip: Number of records to skip
             limit: Maximum number of records to return
 
@@ -120,7 +134,15 @@ class CRUDInstance(CRUDBase[Instance]):
             query = query.filter(Instance.is_active == True)  # noqa: E712
         if edition:
             query = query.filter(Instance.edition == edition)
-        return query.order_by(Instance.last_seen.desc()).offset(skip).limit(limit).all()
+
+        if sort_by not in INSTANCE_SORT_FIELDS:
+            sort_by = "last_seen"
+        sort_col = getattr(Instance, sort_by)
+        ordering = sort_col.asc() if sort_order == "asc" else sort_col.desc()
+        if sort_by == "country":  # only nullable sort column
+            ordering = ordering.nulls_last()
+        # Stable tiebreaker so pagination never duplicates/skips rows.
+        return query.order_by(ordering, Instance.id).offset(skip).limit(limit).all()
 
     def count_total(self, db: Session) -> int:
         """Count total instances.

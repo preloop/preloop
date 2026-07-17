@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "preloop-hermes-plugin"
-version = "0.1.0"
+version = "0.1.1"
 description = "Preloop exposure and Agent Control plugin for Hermes"
 readme = "README.md"
 requires-python = ">=3.11"

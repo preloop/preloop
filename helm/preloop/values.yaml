@@ -212,6 +212,14 @@ environment:
   preloopUrl: "https://preloop.ai"
   debug: false
   modelGatewayCaptureContent: true
+  # Set true ONLY on the hosted preloop.ai deployment: it is the version-check
+  # tracker itself, so it must never persist update state or show the console
+  # "update available" banner (rendered as PRELOOP_HOSTED=1 on the API).
+  hosted: false
+  # GitHub repo ("owner/name") whose latest release the hosted version-check
+  # endpoint reports to self-hosted instances (PRELOOP_RELEASES_REPO). Leave
+  # empty on self-hosted installs.
+  releasesRepo: ""
   # Cap glibc malloc arenas for the Python services (api/gateway). Without a
   # cap, glibc creates up to 8 arenas per core; on many-core nodes with
   # transparent huge pages set to [always] this inflates RSS by hundreds of
