@@ -24,8 +24,9 @@ const (
 // Note: when telemetry is disabled the CLI performs no version check at all,
 // so local update notifications are suppressed too — the notification is a
 // by-product of the check-in response and there is no offline source for it.
-// This is deliberate: the variable exists for scripted/test runs that must
-// leave zero footprint in adoption data.
+// This is deliberate: the variable exists for scripted/test runs and
+// internal installs that must never appear in instance tracking or
+// adoption funnels.
 func Disabled() bool {
 	return envTruthy(os.Getenv(DisableTelemetryEnv)) ||
 		envTruthy(os.Getenv(DisableVersionCheckEnv))

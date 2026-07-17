@@ -15,7 +15,7 @@ from typing import Optional
 
 import httpx
 
-from preloop import __version__
+from preloop.config import SERVER_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +26,9 @@ VERSION_CHECK_URL = "https://preloop.ai/api/v1/version"
 DISABLE_TELEMETRY_ENV = "PRELOOP_DISABLE_TELEMETRY"
 DISABLE_VERSION_CHECK_ENV = "DISABLE_VERSION_CHECK"
 
+# Set on the hosted preloop.ai deployment itself: it IS the version-check
+# tracker, so it must never show itself an "update available" banner.
+HOSTED_ENV = "PRELOOP_HOSTED"
 
 # Truthy values for the opt-out variables: true/1/t/yes, case-insensitive,
 # surrounding whitespace ignored. Must stay aligned with the Go CLI's parsing
@@ -43,6 +46,49 @@ def is_telemetry_disabled() -> bool:
         os.getenv(DISABLE_TELEMETRY_ENV, "").strip().lower() in _TRUTHY_VALUES
         or os.getenv(DISABLE_VERSION_CHECK_ENV, "").strip().lower() in _TRUTHY_VALUES
     )
+
+
+def is_hosted_instance() -> bool:
+    """True when this deployment is the hosted preloop.ai service itself."""
+    return os.getenv(HOSTED_ENV, "").strip().lower() in _TRUTHY_VALUES
+
+
+def _parse_semver(value: object) -> Optional[tuple]:
+    """Parse a dotted version into an int tuple; None when unparseable.
+
+    Accepts an optional leading ``v`` and ignores pre-release/build suffixes
+    on each component (``1.0.0-rc1`` -> ``(1, 0, 0)``). Anything without
+    numeric components (or not a string) is unparseable.
+    """
+    if not isinstance(value, str):
+        return None
+    v = value.strip().lstrip("v")
+    if not v:
+        return None
+    parts = []
+    for part in v.split("."):
+        head = part.split("-")[0].split("+")[0]
+        if not head.isdigit():
+            return None
+        parts.append(int(head))
+    return tuple(parts)
+
+
+def is_newer_version(candidate: object, current: str) -> bool:
+    """True only when ``candidate`` is a valid version STRICTLY newer.
+
+    Unparseable candidates (or currents) are never "newer" — a garbage or
+    hardcoded latest-version value from the tracker must not light up the
+    update banner.
+    """
+    parsed_candidate = _parse_semver(candidate)
+    parsed_current = _parse_semver(current)
+    if parsed_candidate is None or parsed_current is None:
+        return False
+    width = max(len(parsed_candidate), len(parsed_current))
+    parsed_candidate += (0,) * (width - len(parsed_candidate))
+    parsed_current += (0,) * (width - len(parsed_current))
+    return parsed_candidate > parsed_current
 
 
 # Version check interval (default: 24 hours)
@@ -74,11 +120,12 @@ def get_or_create_instance() -> Optional["Instance"]:
 
             if instance:
                 # Update version if it changed
-                if instance.version != __version__:
+                if instance.version != SERVER_VERSION:
                     logger.info(
-                        f"Updating instance version from {instance.version} to {__version__}"
+                        f"Updating instance version from {instance.version} "
+                        f"to {SERVER_VERSION}"
                     )
-                    instance.version = __version__
+                    instance.version = SERVER_VERSION
                     instance.last_seen = datetime.now(timezone.utc)
                     db.commit()
                     db.refresh(instance)
@@ -88,7 +135,7 @@ def get_or_create_instance() -> Optional["Instance"]:
             edition = "enterprise" if _is_enterprise() else "oss"
             instance = Instance(
                 instance_uuid=uuid.uuid4(),
-                version=__version__,
+                version=SERVER_VERSION,
                 edition=edition,
                 first_seen=datetime.now(timezone.utc),
                 last_seen=datetime.now(timezone.utc),
@@ -182,9 +229,22 @@ def _persist_version_check_result(data: dict) -> None:
     Written to ``Instance.metadata_["version_check"]`` so the update status
     survives restarts and can be read by ``GET /api/v1/version`` for the
     admin update banner.
+
+    The hosted preloop.ai deployment never persists update state (it IS the
+    tracker), and the persisted ``update_available`` is recomputed locally:
+    a "latest" version that is not strictly newer than this server's own
+    version must never be stored as an available update.
     """
+    if is_hosted_instance():
+        return
+
     from preloop.models.db.session import get_db_session
     from preloop.models.models import Instance
+
+    latest_version = data.get("current_version")
+    update_available = bool(data.get("update_available")) and is_newer_version(
+        latest_version, SERVER_VERSION
+    )
 
     try:
         db = next(get_db_session())
@@ -195,8 +255,8 @@ def _persist_version_check_result(data: dict) -> None:
             row.metadata_ = {
                 **(row.metadata_ or {}),
                 "version_check": {
-                    "latest_version": data.get("current_version"),
-                    "update_available": bool(data.get("update_available")),
+                    "latest_version": latest_version,
+                    "update_available": update_available,
                     "update_url": data.get("update_url"),
                     "changelog_url": data.get("changelog_url"),
                     "checked_at": datetime.now(timezone.utc).isoformat(),
@@ -224,7 +284,8 @@ def get_local_update_status() -> dict:
         "changelog_url": None,
         "checked_at": None,
     }
-    if is_telemetry_disabled():
+    if is_telemetry_disabled() or is_hosted_instance():
+        # Hosted preloop.ai IS the update tracker: never surface a banner.
         return empty
     from preloop.models.db.session import get_db_session
     from preloop.models.models import Instance
@@ -236,7 +297,14 @@ def get_local_update_status() -> dict:
             if row is None or not row.metadata_:
                 return empty
             check = row.metadata_.get("version_check") or {}
-            return {**empty, **check}
+            status = {**empty, **check}
+            # Never trust the persisted boolean: recompute against this
+            # server's version so a stale/bogus "latest" (e.g. a hardcoded
+            # 1.0.0 from an old tracker deploy) cannot show an update.
+            status["update_available"] = is_newer_version(
+                status.get("latest_version"), SERVER_VERSION
+            )
+            return status
         finally:
             db.close()
     except Exception as e:

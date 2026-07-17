@@ -10,6 +10,16 @@ from sqlalchemy.orm import Session
 from ..models.cli_client import CliClient
 from .base import CRUDBase
 
+# Columns accepted by get_all_paginated's sort_by parameter ("version" and
+# "os" map to the cli_version/os columns).
+CLI_CLIENT_SORT_FIELDS = (
+    "last_seen",
+    "first_seen",
+    "version",
+    "os",
+    "country",
+)
+
 
 class CRUDCliClient(CRUDBase[CliClient]):
     """CRUD operations for CLI clients (version-check telemetry)."""
@@ -24,16 +34,21 @@ class CRUDCliClient(CRUDBase[CliClient]):
         *,
         preloop_url: Optional[str] = None,
         active_within_days: Optional[int] = None,
+        sort_by: str = "last_seen",
+        sort_order: str = "desc",
         skip: int = 0,
         limit: int = 100,
     ) -> List[CliClient]:
-        """List clients, most recently seen first.
+        """List clients with server-side sorting (default: most recent first).
 
         Args:
             db: Database session
             preloop_url: Filter to clients configured against one server URL.
             active_within_days: Only clients whose last version check is
                 within this many days.
+            sort_by: One of CLI_CLIENT_SORT_FIELDS. Unknown values fall back
+                to last_seen.
+            sort_order: "asc" or "desc" (default). NULL sort keys always last.
             skip: Number of records to skip.
             limit: Maximum number of records to return.
         """
@@ -43,9 +58,19 @@ class CRUDCliClient(CRUDBase[CliClient]):
         if active_within_days is not None:
             cutoff = datetime.now(timezone.utc) - timedelta(days=active_within_days)
             query = query.filter(CliClient.last_seen >= cutoff)
-        return (
-            query.order_by(CliClient.last_seen.desc()).offset(skip).limit(limit).all()
+
+        if sort_by not in CLI_CLIENT_SORT_FIELDS:
+            sort_by = "last_seen"
+        sort_col = (
+            CliClient.cli_version
+            if sort_by == "version"
+            else getattr(CliClient, sort_by)
         )
+        ordering = sort_col.asc() if sort_order == "asc" else sort_col.desc()
+        if sort_by in ("os", "country"):  # nullable sort columns
+            ordering = ordering.nulls_last()
+        # Stable tiebreaker so pagination never duplicates/skips rows.
+        return query.order_by(ordering, CliClient.id).offset(skip).limit(limit).all()
 
     def get_with_coordinates(self, db: Session) -> List[CliClient]:
         """Clients that have lat/lon coordinates (for the admin map)."""

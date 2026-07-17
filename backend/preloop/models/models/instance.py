@@ -117,7 +117,6 @@ class Instance(Base):
         index=True,
         comment="Whether instance is considered active",
     )
-
     # Additional metadata
     metadata_: Mapped[Optional[Dict[str, Any]]] = mapped_column(
         "metadata",

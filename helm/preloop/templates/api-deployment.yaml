@@ -66,6 +66,14 @@ spec:
             - name: SKIP_EXECUTION_RECOVERY
               value: "true"
             {{- end }}
+            {{- if .Values.environment.hosted }}
+            - name: PRELOOP_HOSTED
+              value: "1"
+            {{- end }}
+            {{- if .Values.environment.releasesRepo }}
+            - name: PRELOOP_RELEASES_REPO
+              value: {{ .Values.environment.releasesRepo | quote }}
+            {{- end }}
             - name: SECRET_KEY
               valueFrom:
                 secretKeyRef:

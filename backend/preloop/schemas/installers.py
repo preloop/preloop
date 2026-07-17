@@ -16,6 +16,12 @@ class InstallerDownloadStats(BaseModel):
     """Summary statistics for installer script downloads and CLI activity."""
 
     audit_enabled: bool
+    # Account UUID whose audit log stores installer_download events
+    # (the INSTALLER_AUDIT_ACCOUNT_ID setting; superuser-only endpoint).
+    audit_account_id: str | None = None
+    # When auditing is disabled: the calling admin's own account id, offered
+    # as a copy-paste candidate for INSTALLER_AUDIT_ACCOUNT_ID.
+    suggested_account_id: str | None = None
     days: int
     total_downloads: int
     downloads_last_24h: int
