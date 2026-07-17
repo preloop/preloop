@@ -71,7 +71,7 @@ def run_browser_scene(token: str) -> None:
         context = browserlib.new_context(browser, storage_state=str(STATE))
         page = context.new_page()
         page.goto(
-            f"{URL}/console/runtime-sessions/{session_id}",
+            f"{URL}/console/runtime-sessions?sessionId={session_id}",
             wait_until="networkidle",
         )
         time.sleep(2)

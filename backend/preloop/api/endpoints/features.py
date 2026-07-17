@@ -29,4 +29,11 @@ def get_features() -> Dict[str, Any]:
     # Add config-based feature flags
     result["features"]["registration"] = settings.registration_enabled
 
+    # Session optimization ships in the open-source core (0.12.0): the
+    # capability is always present, so the console must always show it.
+    # Deployments that meter hosted-model analysis gate at request time via
+    # the optimization_gating authorizer (402), never by hiding the UI.
+    # setdefault so a plugin that already set the flag keeps its value.
+    result["features"].setdefault("session_optimization", True)
+
     return result
