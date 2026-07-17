@@ -1890,6 +1890,51 @@ class ApprovalService:
         sent_count = 0
         failed_count = 0
         invalid_tokens = []
+        failure_details: List[Dict[str, Any]] = []
+
+        def _mask_device_token(token: str) -> str:
+            """Return a short, non-sensitive token identifier for logs/emails."""
+            cleaned = (token or "").strip()
+            if not cleaned:
+                return "<blank>"
+            if len(cleaned) <= 12:
+                return cleaned
+            return f"{cleaned[:8]}...{cleaned[-4:]}"
+
+        def _record_failure(
+            *,
+            platform: str,
+            token: str,
+            reason: str,
+            status_code: Optional[int] = None,
+            pruned: bool = False,
+        ) -> None:
+            failure_details.append(
+                {
+                    "platform": platform,
+                    "token": _mask_device_token(token),
+                    "status_code": status_code,
+                    "reason": reason,
+                    "pruned": pruned,
+                }
+            )
+
+        def _is_prunable_apns_failure(
+            *, token: str, status_code: int, error_reason: Optional[str]
+        ) -> bool:
+            cleaned = (token or "").strip()
+            reason = (error_reason or "").strip()
+            return (
+                not cleaned
+                or status_code == 410
+                or reason
+                in {
+                    "BadDeviceToken",
+                    "DeviceTokenNotForTopic",
+                    "MissingDeviceToken",
+                    "Unregistered",
+                }
+            )
 
         # Extract notification details for FCM
         notification_title = (
@@ -1904,6 +1949,22 @@ class ApprovalService:
 
         # Send to iOS devices
         for user_id, token in ios_tokens:
+            token = (token or "").strip()
+            if not token:
+                logger.warning(
+                    "Skipping blank iOS push token for approval %s (user=%s)",
+                    approval_request.id,
+                    user_id,
+                )
+                invalid_tokens.append((user_id, token, "ios"))
+                _record_failure(
+                    platform="ios",
+                    token=token,
+                    status_code=400,
+                    reason="MissingDeviceToken",
+                    pruned=True,
+                )
+                continue
             try:
                 if apns_service:
                     # Use native APNs (enterprise mode with credentials)
@@ -1917,12 +1978,29 @@ class ApprovalService:
 
                     if success:
                         sent_count += 1
-                    elif status_code == 410:
-                        # Token is no longer valid
+                    elif _is_prunable_apns_failure(
+                        token=token,
+                        status_code=status_code,
+                        error_reason=error_reason,
+                    ):
+                        # Token is no longer valid or was stored blank/invalid.
                         invalid_tokens.append((user_id, token, "ios"))
+                        _record_failure(
+                            platform="ios",
+                            token=token,
+                            status_code=status_code,
+                            reason=error_reason or "unknown_apns_error",
+                            pruned=True,
+                        )
                     else:
                         logger.warning(
                             f"APNs notification failed: status={status_code}, reason={error_reason}"
+                        )
+                        _record_failure(
+                            platform="ios",
+                            token=token,
+                            status_code=status_code,
+                            reason=error_reason or "unknown_apns_error",
                         )
                         failed_count += 1
                 else:
@@ -1940,16 +2018,37 @@ class ApprovalService:
                         sent_count += 1
                     else:
                         logger.warning(f"iOS push proxy failed: {result.get('error')}")
+                        _record_failure(
+                            platform="ios",
+                            token=token,
+                            reason=result.get("error") or "push_proxy_error",
+                        )
                         failed_count += 1
 
             except Exception as e:
                 logger.error(
                     f"iOS push notification error for token {token[:8]}...: {e}"
                 )
+                _record_failure(platform="ios", token=token, reason=str(e))
                 failed_count += 1
 
         # Send to Android devices
         for user_id, token in android_tokens:
+            token = (token or "").strip()
+            if not token:
+                logger.warning(
+                    "Skipping blank Android push token for approval %s (user=%s)",
+                    approval_request.id,
+                    user_id,
+                )
+                invalid_tokens.append((user_id, token, "android"))
+                _record_failure(
+                    platform="android",
+                    token=token,
+                    reason="BlankDeviceToken",
+                    pruned=True,
+                )
+                continue
             try:
                 if fcm_available:
                     # Use native FCM (enterprise mode with credentials)
@@ -1966,9 +2065,20 @@ class ApprovalService:
                     elif result.get("invalid_token"):
                         # Token is no longer valid
                         invalid_tokens.append((user_id, token, "android"))
+                        _record_failure(
+                            platform="android",
+                            token=token,
+                            reason=result.get("error") or "invalid_token",
+                            pruned=True,
+                        )
                     else:
                         logger.warning(
                             f"FCM notification failed: {result.get('error')}"
+                        )
+                        _record_failure(
+                            platform="android",
+                            token=token,
+                            reason=result.get("error") or "unknown_fcm_error",
                         )
                         failed_count += 1
                 else:
@@ -1988,12 +2098,18 @@ class ApprovalService:
                         logger.warning(
                             f"Android push proxy failed: {result.get('error')}"
                         )
+                        _record_failure(
+                            platform="android",
+                            token=token,
+                            reason=result.get("error") or "push_proxy_error",
+                        )
                         failed_count += 1
 
             except Exception as e:
                 logger.error(
                     f"Android push notification error for token {token[:8]}...: {e}"
                 )
+                _record_failure(platform="android", token=token, reason=str(e))
                 failed_count += 1
 
         # Remove invalid tokens in background
@@ -2025,6 +2141,22 @@ class ApprovalService:
             try:
                 task_publisher = await get_task_publisher()
                 if task_publisher:
+                    failure_lines = [
+                        (
+                            f"- {detail['platform']} token={detail['token']} "
+                            f"status={detail['status_code']} "
+                            if detail.get("status_code") is not None
+                            else f"- {detail['platform']} token={detail['token']} "
+                        )
+                        + f"reason={detail['reason']}"
+                        + (" (token pruned)" if detail.get("pruned") else "")
+                        for detail in failure_details
+                        if not detail.get("pruned")
+                    ]
+                    if not failure_lines:
+                        failure_lines = [
+                            "- Non-prunable failures occurred, but no per-device details were captured."
+                        ]
                     await task_publisher.publish_task(
                         "notify_admins",
                         subject="Push Notification Delivery Failed",
@@ -2033,18 +2165,34 @@ class ApprovalService:
                             f"Request ID: {approval_request.id}\n"
                             f"Tool: {approval_request.tool_name}\n"
                             f"Sent: {sent_count}, Failed: {failed_count}\n"
-                            f"iOS devices: {len(ios_tokens)}, Android devices: {len(android_tokens)}\n\n"
-                            f"Please check APNs/FCM configuration and device token validity."
+                            f"iOS devices: {len(ios_tokens)}, Android devices: {len(android_tokens)}\n"
+                            f"Invalid tokens pruned: {len(invalid_tokens)}\n\n"
+                            f"Failure details:\n"
+                            f"{chr(10).join(failure_lines)}\n\n"
+                            f"Other devices may still have received the notification."
                         ),
                     )
             except Exception as e:
                 logger.error(f"Failed to notify admins about push failure: {e}")
+
+        error_summary = None
+        if failed_count > 0:
+            error_summary = (
+                "; ".join(
+                    detail["reason"]
+                    for detail in failure_details
+                    if not detail.get("pruned") and detail.get("reason")
+                )
+                or "Push delivery failed"
+            )
 
         return {
             "success": failed_count == 0,
             "sent": sent_count,
             "failed": failed_count,
             "invalid_tokens_removed": len(invalid_tokens),
+            "failure_details": failure_details,
+            "error": error_summary,
         }
 
     async def wait_for_approval(

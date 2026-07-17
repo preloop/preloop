@@ -21,6 +21,7 @@ import (
 
 	"github.com/preloop/preloop/cli/internal/api"
 	"github.com/preloop/preloop/cli/internal/config"
+	"github.com/preloop/preloop/cli/internal/telemetry"
 	"github.com/preloop/preloop/cli/internal/version"
 )
 
@@ -266,6 +267,8 @@ func runTokenLogin(token string) error {
 	}
 	fmt.Printf("  API URL: %s\n", apiURL)
 
+	telemetry.SendConversion(apiURL, token, version.Version, "Login")
+
 	return nil
 }
 
@@ -446,7 +449,20 @@ func finishOAuthLogin(baseURL, code, redirectURI string) error {
 	}
 	fmt.Printf("API URL: %s\n", baseURL)
 
+	telemetry.SendConversion(
+		baseURL, tokenResp.AccessToken, version.Version, conversionEventName(),
+	)
+
 	return nil
+}
+
+// conversionEventName maps the current auth flow to its analytics conversion
+// (names match the web funnel goals byte-for-byte).
+func conversionEventName() string {
+	if signupRequested {
+		return "Signup"
+	}
+	return "Login"
 }
 
 func stdinIsTerminal() bool {

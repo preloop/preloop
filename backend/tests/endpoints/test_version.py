@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 
@@ -85,8 +87,16 @@ class TestVersionEndpoint:
         )
         assert response.status_code == 200
 
-    def test_get_version_includes_cli_update_contract(self, client: TestClient):
+    def test_get_version_includes_cli_update_contract(
+        self, client: TestClient, monkeypatch
+    ):
         """The response must carry the keys the CLI update check parses."""
+        from preloop.api.endpoints import version as version_module
+
+        # Isolate from the instance's own recorded update check (local/dev
+        # databases carry real check rows that flip latest_version).
+        monkeypatch.setattr(version_module, "get_local_update_status", lambda: {})
+
         response = client.get("/api/v1/version")
         assert response.status_code == 200
         data = response.json()
@@ -114,7 +124,7 @@ class TestVersionEndpoint:
         )
         monkeypatch.setattr(crud_audit_log, "log_action", fake_log_action)
         monkeypatch.setattr(
-            version_module, "get_session_factory", lambda: (lambda: audit_session)
+            version_module, "get_session_factory", lambda: lambda: audit_session
         )
 
         response = client.get(
@@ -150,3 +160,155 @@ class TestVersionEndpoint:
         )
         assert response.status_code == 200
         assert recorded == {}
+
+
+class TestVersionUpdateFields:
+    """New update-prompt fields on GET /api/v1/version."""
+
+    def test_defaults_without_check_or_env(self, client: TestClient, monkeypatch):
+        from preloop.api.endpoints import version as version_module
+
+        # "Without check" must hold even when the local/dev database carries a
+        # real update-check row — isolate from instance state.
+        monkeypatch.setattr(version_module, "get_local_update_status", lambda: {})
+
+        response = client.get("/api/v1/version")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["update_available"] is False
+        assert data["clients"] == {}
+
+    def test_clients_block_from_env(self, client: TestClient, monkeypatch):
+        monkeypatch.setenv("IOS_LATEST_VERSION", "1.4.0")
+        monkeypatch.setenv("IOS_MIN_VERSION", "1.2.0")
+        monkeypatch.setenv("ANDROID_LATEST_VERSION", "1.3.0")
+        response = client.get("/api/v1/version")
+        data = response.json()
+        assert data["clients"]["ios"]["latest_version"] == "1.4.0"
+        assert data["clients"]["ios"]["min_version"] == "1.2.0"
+        assert data["clients"]["ios"]["store_url"].startswith("https://apps.apple.com")
+        assert data["clients"]["android"]["latest_version"] == "1.3.0"
+        assert data["clients"]["android"]["store_url"].startswith(
+            "https://play.google.com"
+        )
+
+    def test_latest_version_reflects_persisted_check(
+        self, client: TestClient, monkeypatch
+    ):
+        from preloop.api.endpoints import version as version_module
+
+        monkeypatch.setattr(
+            version_module,
+            "get_local_update_status",
+            lambda: {
+                "update_available": True,
+                "latest_version": "9.9.9",
+                "update_url": "https://docs.preloop.ai/upgrade",
+                "changelog_url": None,
+                "checked_at": "2026-07-13T00:00:00+00:00",
+            },
+        )
+        data = client.get("/api/v1/version").json()
+        assert data["update_available"] is True
+        assert data["latest_version"] == "9.9.9"
+
+
+class TestVersionStatusEndpoint:
+    """GET /api/v1/version/status (superuser-only update banner feed)."""
+
+    def _status_result(self):
+        return {
+            "update_available": True,
+            "latest_version": "9.9.9",
+            "update_url": "https://docs.preloop.ai/upgrade",
+            "changelog_url": "https://docs.preloop.ai/changelog/9.9.9",
+            "checked_at": "2026-07-13T00:00:00+00:00",
+        }
+
+    def test_requires_superuser(self, db_session, monkeypatch):
+        import asyncio
+
+        from fastapi import HTTPException
+
+        from preloop.api.endpoints import version as version_module
+        from preloop.models.crud import crud_account, crud_user
+
+        account = crud_account.create(
+            db_session, obj_in={"organization_name": "VS Org", "is_active": True}
+        )
+        user = crud_user.create(
+            db_session,
+            obj_in={
+                "account_id": account.id,
+                "email": "vs-user@example.com",
+                "username": "vs-user",
+                "is_active": True,
+                "email_verified": True,
+                "hashed_password": "x",
+                "user_source": "local",
+                "is_superuser": False,
+            },
+        )
+        db_session.flush()
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(version_module.get_version_status(current_user=user))
+        assert exc.value.status_code == 403
+
+    def test_superuser_gets_status(self, db_session, monkeypatch):
+        import asyncio
+
+        from preloop.api.endpoints import version as version_module
+        from preloop.models.crud import crud_account, crud_user
+
+        monkeypatch.setattr(
+            version_module, "get_local_update_status", self._status_result
+        )
+        account = crud_account.create(
+            db_session, obj_in={"organization_name": "VS Org 2", "is_active": True}
+        )
+        superuser = crud_user.create(
+            db_session,
+            obj_in={
+                "account_id": account.id,
+                "email": "vs-admin@example.com",
+                "username": "vs-admin",
+                "is_active": True,
+                "email_verified": True,
+                "hashed_password": "x",
+                "user_source": "local",
+                "is_superuser": True,
+            },
+        )
+        db_session.flush()
+        result = asyncio.run(version_module.get_version_status(current_user=superuser))
+        assert result.update_available is True
+        assert result.latest_version == "9.9.9"
+        assert result.telemetry_enabled is True
+
+    def test_telemetry_disabled_reports_no_update(self, db_session, monkeypatch):
+        import asyncio
+
+        from preloop.api.endpoints import version as version_module
+        from preloop.models.crud import crud_account, crud_user
+
+        monkeypatch.setenv("PRELOOP_DISABLE_TELEMETRY", "true")
+        account = crud_account.create(
+            db_session, obj_in={"organization_name": "VS Org 3", "is_active": True}
+        )
+        superuser = crud_user.create(
+            db_session,
+            obj_in={
+                "account_id": account.id,
+                "email": "vs-admin3@example.com",
+                "username": "vs-admin3",
+                "is_active": True,
+                "email_verified": True,
+                "hashed_password": "x",
+                "user_source": "local",
+                "is_superuser": True,
+            },
+        )
+        db_session.flush()
+        result = asyncio.run(version_module.get_version_status(current_user=superuser))
+        assert result.update_available is False
+        assert result.telemetry_enabled is False

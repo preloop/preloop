@@ -35,6 +35,23 @@ data:
         sub_filter_types text/html;
 {{- end }}
 
+        # Blocking native-tool approval checks wait for a human decision.
+        # Exact match must precede the generic /api/ block so the long timeout
+        # applies only to this endpoint (default CLI wait is 1800s + headroom).
+        location = /api/v1/agents/permission-check {
+            set $api_backend "http://{{ include "preloop.fullname" . }}-api:80";
+
+            proxy_pass $api_backend;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_connect_timeout 10s;
+            proxy_send_timeout 1860s;
+            proxy_read_timeout 1860s;
+        }
+
         # API proxy configuration
         location /api/ {
             # Proxy to Preloop backend service

@@ -26,10 +26,14 @@ const (
 	permissionSourceCursor     = "cursor"
 )
 
-// permissionCheckTimeout bounds the blocking call to the Preloop endpoint,
-// which itself waits up to ~300s for a human decision. We add headroom so the
-// server-side timeout (deny-on-expiry) fires before our HTTP client gives up.
-const permissionCheckTimeout = 310 * time.Second
+// defaultApprovalHookTimeoutSeconds is used when onboarding could not resolve
+// the account's default approval-workflow timeout. It must stay aligned with
+// the nginx permission-check proxy_read_timeout.
+const defaultApprovalHookTimeoutSeconds = 1800
+
+// permissionCheckHTTPHeadroom is added on top of the workflow timeout so the
+// server-side deny-on-expiry fires before the HTTP client gives up.
+const permissionCheckHTTPHeadroom = 15 * time.Second
 
 // permissionCheckPath is the validated backend endpoint that resolves a native
 // tool-permission prompt into an allow/deny decision (blocking for human
@@ -65,11 +69,26 @@ type hookDecision struct {
 // permissionHookCredential is the small per-agent file written at onboarding
 // time so the hook can authenticate without re-deriving the durable token.
 type permissionHookCredential struct {
-	BaseURL          string `json:"base_url"`
-	Token            string `json:"token"`
-	Source           string `json:"source"`
-	RuntimePrincipal string `json:"runtime_principal,omitempty"`
-	ConfigPath       string `json:"config_path,omitempty"`
+	BaseURL          string   `json:"base_url"`
+	Token            string   `json:"token"`
+	Source           string   `json:"source"`
+	RuntimePrincipal string   `json:"runtime_principal,omitempty"`
+	ConfigPath       string   `json:"config_path,omitempty"`
+	TimeoutSeconds   int      `json:"timeout_seconds,omitempty"`
+	PolicyPaths      []string `json:"policy_paths,omitempty"`
+	WorkspaceRoot    string   `json:"workspace_root,omitempty"`
+	// SafeReadAutoAllow gates the built-in read-only shell command allowlist
+	// (isSafeReadShellCommand) that auto-allows would-ask calls like "ls" or
+	// "git status". Written by onboarding; a missing field means enabled so
+	// pre-existing credential files keep the fatigue fix.
+	SafeReadAutoAllow *bool `json:"safe_read_auto_allow,omitempty"`
+}
+
+// safeReadAutoAllowEnabled reports whether the built-in read-only command
+// allowlist should auto-allow would-ask shell calls. Defaults to true when the
+// credential does not carry the field (including the no-credential fallback).
+func (cred permissionHookCredential) safeReadAutoAllowEnabled() bool {
+	return cred.SafeReadAutoAllow == nil || *cred.SafeReadAutoAllow
 }
 
 var agentsPermissionHookCmd = &cobra.Command{
@@ -129,7 +148,7 @@ func mustFlagString(cmd *cobra.Command, name string) string {
 // except that a call the client's own config would auto-allow/deny is honored
 // locally even if Preloop is unreachable.
 func resolvePermissionDecision(source string, raw []byte, failOpen bool) hookDecision {
-	req, err := buildPermissionRequest(source, raw)
+	req, err := buildPermissionRequest(source, raw, permissionHookCredential{})
 	if err != nil {
 		return failureDecision(failOpen, err.Error())
 	}
@@ -139,7 +158,27 @@ func resolvePermissionDecision(source string, raw []byte, failOpen bool) hookDec
 
 	cred, err := resolvePermissionHookCredential(source)
 	if err != nil || strings.TrimSpace(cred.Token) == "" {
-		return clientFallbackDecision(req, failOpen, "no Preloop credential available for the approval hook")
+		// Re-evaluate with empty cred for Cursor (still honors sandbox/allowlist
+		// from local policy files) before falling back.
+		req, _ = buildPermissionRequest(source, raw, permissionHookCredential{})
+		return clientFallbackDecision(req, failOpen, fmt.Sprintf(
+			"no Preloop credential found for %s (expected under ~/.preloop/agents/). Failing closed. %s",
+			permissionSourceDisplayName(source),
+			permissionHookRemediation(source),
+		))
+	}
+
+	// Rebuild with credential so Cursor can detect Preloop MCP by base URL and
+	// prefer onboarded policy paths when present.
+	req, err = buildPermissionRequest(source, raw, cred)
+	if err != nil {
+		return failureDecision(failOpen, err.Error())
+	}
+
+	// Honor the agent's own policy locally — no round-trip for allow/deny.
+	switch strings.ToLower(strings.TrimSpace(req.ClientDecision)) {
+	case "allow", "deny":
+		return clientFallbackDecision(req, failOpen, "")
 	}
 
 	baseURL := strings.TrimSpace(cred.BaseURL)
@@ -147,9 +186,14 @@ func resolvePermissionDecision(source string, raw []byte, failOpen bool) hookDec
 		baseURL = config.DefaultAPIURL
 	}
 
-	resp, err := callPermissionCheck(baseURL, cred.Token, req)
+	resp, err := callPermissionCheck(baseURL, cred.Token, req, permissionCheckTimeoutFor(cred))
 	if err != nil {
-		return clientFallbackDecision(req, failOpen, fmt.Sprintf("Preloop approval check failed: %v", err))
+		return clientFallbackDecision(req, failOpen, fmt.Sprintf(
+			"could not reach Preloop at %s: %v. Failing closed. %s",
+			strings.TrimRight(baseURL, "/")+permissionCheckPath,
+			err,
+			permissionHookRemediation(source),
+		))
 	}
 
 	behavior := "deny"
@@ -165,6 +209,16 @@ func resolvePermissionDecision(source string, raw []byte, failOpen bool) hookDec
 		}
 	}
 	return hookDecision{Behavior: behavior, Reason: reason}
+}
+
+// permissionCheckTimeoutFor returns the HTTP client timeout for a blocking
+// permission-check call: workflow timeout + headroom.
+func permissionCheckTimeoutFor(cred permissionHookCredential) time.Duration {
+	seconds := cred.TimeoutSeconds
+	if seconds <= 0 {
+		seconds = defaultApprovalHookTimeoutSeconds
+	}
+	return time.Duration(seconds)*time.Second + permissionCheckHTTPHeadroom
 }
 
 // clientFallbackDecision honors the client's own auto-allow/auto-deny even when
@@ -195,9 +249,45 @@ func failureDecision(failOpen bool, reason string) hookDecision {
 	}
 }
 
+// permissionSourceDisplayName maps a permission source onto the agent name the
+// onboard/offboard commands accept, for actionable error messages.
+func permissionSourceDisplayName(source string) string {
+	switch source {
+	case permissionSourceClaudeCode:
+		return "Claude Code"
+	case permissionSourceCodexCLI:
+		return "Codex CLI"
+	case permissionSourceCursor:
+		return "Cursor"
+	default:
+		return source
+	}
+}
+
+// permissionHookRemediation tells the user exactly how to repair the approval
+// hook or disable it, for use in fail-closed deny reasons.
+func permissionHookRemediation(source string) string {
+	remediation := fmt.Sprintf(
+		"Re-run `preloop agents onboard %q --approvals` to repair it",
+		permissionSourceDisplayName(source),
+	)
+	if configPath, err := approvalHookConfigPath(source); err == nil {
+		remediation += fmt.Sprintf(
+			", or remove the Preloop hook from %s to disable approvals",
+			configPath,
+		)
+	}
+	return remediation + "."
+}
+
 // buildPermissionRequest maps an agent-specific stdin event onto the shared
-// permission-check request.
-func buildPermissionRequest(source string, raw []byte) (permissionCheckRequest, error) {
+// permission-check request. cred is optional but lets Cursor detect Preloop MCP
+// by base URL and prefer onboarded policy paths.
+func buildPermissionRequest(
+	source string,
+	raw []byte,
+	cred permissionHookCredential,
+) (permissionCheckRequest, error) {
 	var event map[string]interface{}
 	if len(bytes.TrimSpace(raw)) > 0 {
 		if err := json.Unmarshal(raw, &event); err != nil {
@@ -215,7 +305,7 @@ func buildPermissionRequest(source string, raw []byte) (permissionCheckRequest, 
 		req.ToolInput = coerceToolInput(event["tool_input"])
 		// Claude's PreToolUse fires on *every* call, so we honor the user's own
 		// config and only escalate the would-ask cases to Preloop.
-		req.ClientDecision = claudePermissionClientDecision(event, req.ToolName, req.ToolInput)
+		req.ClientDecision = claudePermissionClientDecision(event, req, cred)
 	case permissionSourceCodexCLI:
 		req.ToolName = firstStringField(event, "tool_name")
 		req.ToolInput = coerceToolInput(event["tool_input"])
@@ -231,8 +321,10 @@ func buildPermissionRequest(source string, raw []byte) (permissionCheckRequest, 
 			req.ToolName = "Shell"
 			req.ToolInput = map[string]interface{}{"command": command}
 		}
-		// Cursor's before* hooks only fire for would-prompt calls, so we treat
-		// everything as "ask" (omit client_decision).
+		// Cursor before* hooks fire on every shell/MCP call; evaluate the
+		// agent's native permissions.json (+ sandbox) so only would-prompt
+		// calls escalate to Preloop.
+		req.ClientDecision = cursorPermissionClientDecision(event, req, cred)
 	}
 
 	req.AgentReasoning = firstNonEmptyString(
@@ -242,20 +334,72 @@ func buildPermissionRequest(source string, raw []byte) (permissionCheckRequest, 
 	return req, nil
 }
 
+// cursorPermissionClientDecision computes allow/ask from Cursor's permissions
+// files and the hook event (sandbox, MCP URL). Errors loading policy fall
+// through to "ask".
+func cursorPermissionClientDecision(
+	event map[string]interface{},
+	req permissionCheckRequest,
+	cred permissionHookCredential,
+) string {
+	roots := workspaceRootsFromEvent(event)
+	if cred.WorkspaceRoot != "" {
+		roots = append([]string{cred.WorkspaceRoot}, roots...)
+	}
+	paths := cred.PolicyPaths
+	if len(paths) == 0 {
+		paths = discoverCursorPermissionPolicyPaths(roots)
+	}
+	policy, err := loadCursorPermissionPolicy(paths)
+	if err != nil {
+		return "ask"
+	}
+	decision := evaluateCursorPermissionPolicy(
+		policy,
+		req.ToolName,
+		req.ToolInput,
+		event,
+		cred.BaseURL,
+	)
+	// Cursor keeps its real allowlist in IDE state, so an absent/empty
+	// permissions.json would otherwise turn every "ls" into a blocking
+	// approval. Auto-allow obviously read-only shell commands unless
+	// onboarding disabled it. Shell calls only — an MCP tool_input may carry
+	// an unrelated "command" field.
+	if decision == "ask" && cred.safeReadAutoAllowEnabled() &&
+		strings.EqualFold(strings.TrimSpace(req.ToolName), "Shell") {
+		if command := stringField(req.ToolInput, "command"); isSafeReadShellCommand(command) {
+			return "allow"
+		}
+	}
+	return decision
+}
+
 // claudePermissionClientDecision computes the client_decision Claude Code's own
-// config would reach for this call. Errors loading the policy fall back to
-// "ask" (escalate), which is the safe choice.
+// config would reach for this call, merging user, project (from the hook
+// event's cwd), and enterprise managed settings. Errors loading the policy fall
+// back to "ask" (escalate), which is the safe choice.
 func claudePermissionClientDecision(
 	event map[string]interface{},
-	toolName string,
-	toolInput map[string]interface{},
+	req permissionCheckRequest,
+	cred permissionHookCredential,
 ) string {
-	policy, err := loadClaudePermissionPolicy()
+	policy, err := loadClaudePermissionPolicy(req.Cwd)
 	if err != nil {
 		return "ask"
 	}
 	mode := firstStringField(event, "permission_mode")
-	return evaluateClaudePermissionPolicy(policy, mode, toolName, toolInput)
+	decision := evaluateClaudePermissionPolicy(policy, mode, req.ToolName, req.ToolInput)
+	// Claude already auto-allows safe-read TOOLS; this extends the same
+	// philosophy to read-only Bash commands, but only when no configured rule
+	// matched and the call would otherwise escalate.
+	if decision == "ask" && cred.safeReadAutoAllowEnabled() &&
+		strings.EqualFold(strings.TrimSpace(req.ToolName), "Bash") {
+		if command := stringField(req.ToolInput, "command"); isSafeReadShellCommand(command) {
+			return "allow"
+		}
+	}
+	return decision
 }
 
 // coerceToolInput normalizes a hook event's tool_input into an object map.
@@ -296,7 +440,11 @@ func firstStringField(event map[string]interface{}, keys ...string) string {
 // callPermissionCheck POSTs the request to the permission-check endpoint with a
 // long timeout (the endpoint blocks for human approval). A dedicated client is
 // used because the shared api.Client enforces a short 30s timeout.
-func callPermissionCheck(baseURL, token string, req permissionCheckRequest) (permissionCheckResponse, error) {
+func callPermissionCheck(
+	baseURL, token string,
+	req permissionCheckRequest,
+	timeout time.Duration,
+) (permissionCheckResponse, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return permissionCheckResponse{}, fmt.Errorf("failed to encode request: %w", err)
@@ -311,7 +459,10 @@ func callPermissionCheck(baseURL, token string, req permissionCheckRequest) (per
 	version.SetClientIdentityHeaders(httpReq.Header)
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 
-	client := &http.Client{Timeout: permissionCheckTimeout}
+	if timeout <= 0 {
+		timeout = permissionCheckTimeoutFor(permissionHookCredential{})
+	}
+	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return permissionCheckResponse{}, fmt.Errorf("request failed: %w", err)

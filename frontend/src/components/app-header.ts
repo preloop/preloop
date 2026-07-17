@@ -241,6 +241,7 @@ export class AppHeader extends LitElement {
                             <sl-button
                               variant="primary"
                               @click=${this.handleSignup}
+                              data-track="cta_get_started_header"
                               >Sign Up</sl-button
                             >
                           `

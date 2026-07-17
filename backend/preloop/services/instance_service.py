@@ -153,6 +153,9 @@ async def send_version_check(instance: "Instance") -> bool:
                         f"Update available: {data.get('current_version')} "
                         f"(you have {instance.version})"
                     )
+                # Persist the result so the web UI (and /api/v1/version) can
+                # surface an update banner to admins between checks.
+                _persist_version_check_result(data)
                 return True
             else:
                 logger.debug(
@@ -166,6 +169,74 @@ async def send_version_check(instance: "Instance") -> bool:
     except Exception as e:
         logger.debug(f"Version check failed: {e}")
         return False
+
+
+def _persist_version_check_result(data: dict) -> None:
+    """Store the version-check response on the local instance record.
+
+    Written to ``Instance.metadata_["version_check"]`` so the update status
+    survives restarts and can be read by ``GET /api/v1/version`` for the
+    admin update banner.
+    """
+    from preloop.models.db.session import get_db_session
+    from preloop.models.models import Instance
+
+    try:
+        db = next(get_db_session())
+        try:
+            row = db.query(Instance).first()
+            if row is None:
+                return
+            row.metadata_ = {
+                **(row.metadata_ or {}),
+                "version_check": {
+                    "latest_version": data.get("current_version"),
+                    "update_available": bool(data.get("update_available")),
+                    "update_url": data.get("update_url"),
+                    "changelog_url": data.get("changelog_url"),
+                    "checked_at": datetime.now(timezone.utc).isoformat(),
+                },
+            }
+            db.commit()
+        finally:
+            db.close()
+    except Exception as e:
+        logger.debug(f"Could not persist version check result: {e}")
+
+
+def get_local_update_status() -> dict:
+    """Read the persisted update status for this installation.
+
+    Returns:
+        Dict with ``update_available`` (bool), ``latest_version``,
+        ``update_url``, ``changelog_url``, ``checked_at`` — all falsy/None
+        when telemetry is disabled or no check has completed yet.
+    """
+    empty = {
+        "update_available": False,
+        "latest_version": None,
+        "update_url": None,
+        "changelog_url": None,
+        "checked_at": None,
+    }
+    if is_telemetry_disabled():
+        return empty
+    from preloop.models.db.session import get_db_session
+    from preloop.models.models import Instance
+
+    try:
+        db = next(get_db_session())
+        try:
+            row = db.query(Instance).first()
+            if row is None or not row.metadata_:
+                return empty
+            check = row.metadata_.get("version_check") or {}
+            return {**empty, **check}
+        finally:
+            db.close()
+    except Exception as e:
+        logger.debug(f"Could not read version check status: {e}")
+        return empty
 
 
 async def register_instance() -> None:

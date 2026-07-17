@@ -58,6 +58,7 @@ import '../views/authed/agent-detail-view';
 import '../views/authed/onboarding-view';
 import './app-header';
 import './app-footer';
+import './update-banner';
 import { unifiedWebSocketManager } from '../services/unified-websocket-manager';
 
 @customElement('lit-app')
@@ -543,7 +544,10 @@ export class LitApp extends LitElement {
   }
 
   render() {
-    return html` <main></main> `;
+    // The banner renders empty except for superusers on outdated
+    // self-hosted instances (see update-banner.ts).
+    return html`<update-banner></update-banner>
+      <main></main> `;
   }
 
   connectWebSocket() {

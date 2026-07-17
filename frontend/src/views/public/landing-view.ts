@@ -817,12 +817,14 @@ export class LandingView extends LitElement {
                                   ? '_blank'
                                   : '_self'
                               }
+                              data-track="cta_get_started_hero"
                               >${this._ctaPrimary}</sl-button
                             >`
                           : html`<sl-button
                               variant="primary"
                               size="large"
                               @click=${this._handleSignup}
+                              data-track="cta_get_started_hero"
                               >${this._ctaPrimary}</sl-button
                             >`
                       }
@@ -838,6 +840,7 @@ export class LandingView extends LitElement {
                                   : '_self'
                               }
                               @click=${this._handleSecondaryCta}
+                              data-track="cta_demo_hero"
                               >${this._ctaSecondary}</sl-button
                             >`
                           : ''
@@ -1525,6 +1528,7 @@ export class LandingView extends LitElement {
                         variant="primary"
                         size="large"
                         @click=${this._handleSignup}
+                        data-track="cta_get_started_footer"
                         >Get Started for Free</sl-button
                       >
                       <sl-button
@@ -1532,6 +1536,7 @@ export class LandingView extends LitElement {
                         size="large"
                         href="/request-demo"
                         @click=${this._handleSecondaryCta}
+                        data-track="cta_demo_footer"
                         >Request a Demo</sl-button
                       >
                     </div>

@@ -43,6 +43,9 @@ from .user import User, UserSource
 from .permission import Permission, Role, RolePermission, UserRole, TeamRole
 from .user_invitation import UserInvitation, UserInvitationStatus
 from .event import Event
+from .visitor import Visitor
+from .identity_link import IdentityLink
+from .account_milestone import AccountMilestone
 from .instance import Instance
 from .cli_client import CliClient
 from .github_app_installation import OAuthAppInstallation, GitHubAppInstallation
@@ -123,6 +126,9 @@ __all__ = [
     "UserInvitation",
     "UserInvitationStatus",
     "Event",
+    "Visitor",
+    "IdentityLink",
+    "AccountMilestone",
     "Instance",
     "CliClient",
     "OAuthAppInstallation",

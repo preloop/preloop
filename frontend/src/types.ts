@@ -501,6 +501,12 @@ export interface SubjectGovernanceConfig {
    * (agents permission-check). Null falls back to the account default.
    */
   approval_workflow_id?: string | null;
+  /**
+   * Whether native tool-call approvals (agents permission-check) are
+   * enforced for this subject. "off" makes the server auto-allow escalated
+   * (ask) calls instead of asking a human; absent/null means "enforce".
+   */
+  native_tool_approvals?: 'enforce' | 'off' | null;
 }
 
 export interface SubjectGovernanceResponse {

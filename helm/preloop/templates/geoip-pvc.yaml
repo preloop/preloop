@@ -1,0 +1,17 @@
+{{- if and .Values.geoip.enabled .Values.geoip.storage.pvc.create }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "preloop.fullname" . }}-geoip
+  labels:
+    {{- include "preloop.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.geoip.storage.pvc.size }}
+  {{- if .Values.geoip.storage.pvc.storageClassName }}
+  storageClassName: {{ .Values.geoip.storage.pvc.storageClassName }}
+  {{- end }}
+{{- end }}

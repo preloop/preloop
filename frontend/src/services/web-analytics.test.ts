@@ -2,6 +2,7 @@ import { expect } from '@open-wc/testing';
 import sinon from 'sinon';
 
 import { trackGoal, recordPathChange } from './web-analytics';
+import { activityTracker } from './activity-tracker';
 
 type WindowWithPlausible = Window & {
   plausible?: sinon.SinonSpy;
@@ -10,14 +11,18 @@ type WindowWithPlausible = Window & {
 const win = window as unknown as WindowWithPlausible;
 
 describe('web-analytics', () => {
+  let mirrorStub: sinon.SinonStub;
+
   beforeEach(() => {
     sessionStorage.clear();
     win.plausible = sinon.spy();
+    mirrorStub = sinon.stub(activityTracker, 'trackConversion');
   });
 
   afterEach(() => {
     delete win.plausible;
     sessionStorage.clear();
+    mirrorStub.restore();
   });
 
   it('fires a plain goal event', () => {
@@ -75,6 +80,37 @@ describe('web-analytics', () => {
     trackGoal('Signup', { prev_path: '/custom' });
     expect(win.plausible!.firstCall.args[1]).to.deep.equal({
       props: { prev_path: '/custom' },
+    });
+  });
+
+  describe('first-party mirror', () => {
+    it('mirrors every goal into ActivityTracker with the same name', () => {
+      trackGoal('Install Copy', { variant: 'cli' });
+      expect(mirrorStub.calledOnce).to.be.true;
+      expect(mirrorStub.firstCall.args[0]).to.equal('Install Copy');
+      expect(mirrorStub.firstCall.args[2]).to.deep.equal({ variant: 'cli' });
+    });
+
+    it('mirrors even when the Plausible snippet is absent', () => {
+      delete win.plausible;
+      trackGoal('Signup');
+      expect(mirrorStub.calledOnce).to.be.true;
+      expect(mirrorStub.firstCall.args[0]).to.equal('Signup');
+    });
+
+    it('includes prev_path in the mirrored metadata', () => {
+      recordPathChange('/pricing');
+      recordPathChange('/register');
+      trackGoal('Signup');
+      expect(mirrorStub.firstCall.args[2]).to.deep.equal({
+        prev_path: '/pricing',
+      });
+    });
+
+    it('a throwing mirror never breaks the goal call', () => {
+      mirrorStub.throws(new Error('ws boom'));
+      expect(() => trackGoal('Signup')).to.not.throw();
+      expect(win.plausible!.calledOnce).to.be.true;
     });
   });
 });

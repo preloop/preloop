@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
+
+NATIVE_TOOL_APPROVALS_ENFORCE = "enforce"
+NATIVE_TOOL_APPROVALS_OFF = "off"
 
 
 class SubjectGovernanceConfig(BaseModel):
@@ -18,6 +21,15 @@ class SubjectGovernanceConfig(BaseModel):
             "Approval workflow that governs this subject's native tool-call "
             "approvals (agents permission-check). Falls back to the account "
             "default workflow when unset."
+        ),
+    )
+    native_tool_approvals: Optional[Literal["enforce", "off"]] = Field(
+        None,
+        description=(
+            "Whether native tool-call approvals (agents permission-check) are "
+            'enforced for this subject. "off" makes the server auto-allow '
+            "escalated (ask) calls instead of asking a human; absent/None "
+            'means "enforce".'
         ),
     )
 

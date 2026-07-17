@@ -146,9 +146,161 @@ func TestEvaluateClaudePermissionPolicy(t *testing.T) {
 	}
 }
 
+// overrideManagedSettingsPath points the enterprise managed-settings location
+// at a test-controlled path so tests never read the real system file.
+func overrideManagedSettingsPath(t *testing.T, path string) {
+	t.Helper()
+	orig := claudeManagedSettingsPath
+	claudeManagedSettingsPath = func() string { return path }
+	t.Cleanup(func() { claudeManagedSettingsPath = orig })
+}
+
+func TestMatchClaudeBashRule(t *testing.T) {
+	cases := []struct {
+		name    string
+		rule    string
+		command string
+		want    bool
+	}{
+		// Prefix rules: "Bash(foo:*)" means "starts with foo" (token-wise).
+		{"prefix matches exact command", "Bash(npm run test:*)", "npm run test", true},
+		{"prefix matches extra args", "Bash(npm run test:*)", "npm run test unit", true},
+		{"prefix matches watch flags", "Bash(npm run test:*)", "npm run test -- --watch", true},
+		{"prefix matches colon continuation", "Bash(npm run test:*)", "npm run test:unit", true},
+		{"prefix is token-wise, not byte-wise", "Bash(npm run test:*)", "npm run testx", false},
+		{"prefix does not match shorter command", "Bash(npm run test:*)", "npm run", false},
+		{"prefix does not match different command", "Bash(npm run test:*)", "npm run lint", false},
+		{"single-word prefix", "Bash(git:*)", "git push origin main", true},
+		{"single-word prefix rejects word continuation", "Bash(git:*)", "github-cli auth", false},
+		// Exact rules: no ":*", no glob.
+		{"exact rule matches", "Bash(npm run build)", "npm run build", true},
+		{"exact rule rejects suffix", "Bash(npm run build)", "npm run build:prod", false},
+		{"exact rule rejects extra args", "Bash(npm run build)", "npm run build --watch", false},
+		// Legacy space-style globs are preserved for backwards compat.
+		{"space glob matches", "Bash(git *)", "git status", true},
+		{"space glob rejects bare command", "Bash(git *)", "git", false},
+		{"space glob rejects word continuation", "Bash(git *)", "github", false},
+		// Tool-wide rule.
+		{"tool-wide rule matches anything", "Bash", "rm -rf /", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			input := map[string]interface{}{"command": tc.command}
+			if got := matchClaudePermissionRule(tc.rule, "Bash", input); got != tc.want {
+				t.Errorf("matchClaudePermissionRule(%q, Bash, %q) = %v, want %v",
+					tc.rule, tc.command, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestEvaluateClaudePermissionPolicyBashPrefixRules(t *testing.T) {
+	policy := claudePermissionPolicy{
+		Allow: []string{"Bash(npm run test:*)", "Bash(git:*)"},
+		Deny:  []string{"Bash(git push:*)"},
+	}
+	cases := []struct {
+		command string
+		want    string
+	}{
+		{"npm run test unit", "allow"},
+		{"npm run test:unit -- --watch", "allow"},
+		{"npm run testx", "ask"},
+		{"git status", "allow"},
+		// Deny-list precedence: the deny prefix rule beats the broader allow.
+		{"git push origin main", "deny"},
+		{"git push", "deny"},
+	}
+	for _, tc := range cases {
+		input := map[string]interface{}{"command": tc.command}
+		if got := evaluateClaudePermissionPolicy(policy, "", "Bash", input); got != tc.want {
+			t.Errorf("evaluate(%q) = %q, want %q", tc.command, got, tc.want)
+		}
+	}
+}
+
+func TestLoadClaudePermissionPolicyProjectAndManaged(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	project := t.TempDir()
+	managedDir := t.TempDir()
+	managedPath := filepath.Join(managedDir, "managed-settings.json")
+	overrideManagedSettingsPath(t, managedPath)
+
+	writeSettings := func(path, content string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+	writeSettings(filepath.Join(home, ".claude", "settings.json"),
+		`{"permissions":{"allow":["Bash(ls:*)"],"defaultMode":"default"}}`)
+	writeSettings(filepath.Join(home, ".claude", "settings.local.json"),
+		`{"permissions":{"allow":["Bash(pwd)"],"defaultMode":"acceptEdits"}}`)
+	writeSettings(filepath.Join(project, ".claude", "settings.json"),
+		`{"permissions":{"allow":["Bash(npm run test:*)"],"defaultMode":"plan"}}`)
+	writeSettings(filepath.Join(project, ".claude", "settings.local.json"),
+		`{"permissions":{"ask":["Bash(npm publish:*)"],"defaultMode":"bypassPermissions"}}`)
+	writeSettings(managedPath,
+		`{"permissions":{"deny":["Bash(curl:*)"],"defaultMode":"default"}}`)
+
+	policy, err := loadClaudePermissionPolicy(project)
+	if err != nil {
+		t.Fatalf("loadClaudePermissionPolicy: %v", err)
+	}
+	if len(policy.Allow) != 3 {
+		t.Errorf("expected 3 allow rules unioned across user+project, got %v", policy.Allow)
+	}
+	if len(policy.Ask) != 1 {
+		t.Errorf("expected project-local ask rule, got %v", policy.Ask)
+	}
+	if len(policy.Deny) != 1 || policy.Deny[0] != "Bash(curl:*)" {
+		t.Errorf("expected managed deny rule, got %v", policy.Deny)
+	}
+	// defaultMode precedence: managed > project local > project > user local > user.
+	if policy.DefaultMode != "default" {
+		t.Errorf("expected managed defaultMode to win, got %q", policy.DefaultMode)
+	}
+
+	// A project allow rule is honored and the managed deny always wins.
+	if got := evaluateClaudePermissionPolicy(policy, "", "Bash",
+		map[string]interface{}{"command": "npm run test unit"}); got != "allow" {
+		t.Errorf("project allow rule not honored, got %q", got)
+	}
+	if got := evaluateClaudePermissionPolicy(policy, "", "Bash",
+		map[string]interface{}{"command": "curl https://evil.example"}); got != "deny" {
+		t.Errorf("managed deny rule not honored, got %q", got)
+	}
+}
+
+func TestLoadClaudePermissionPolicyWithoutCwdSkipsProject(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	overrideManagedSettingsPath(t, filepath.Join(t.TempDir(), "absent.json"))
+	claudeDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(claudeDir, 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	settings := `{"permissions":{"allow":["Bash(ls:*)"]}}`
+	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(settings), 0644); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	policy, err := loadClaudePermissionPolicy("")
+	if err != nil {
+		t.Fatalf("loadClaudePermissionPolicy: %v", err)
+	}
+	if len(policy.Allow) != 1 {
+		t.Errorf("expected only user allow rule, got %v", policy.Allow)
+	}
+}
+
 func TestLoadClaudePermissionPolicyMergesLocal(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	overrideManagedSettingsPath(t, filepath.Join(t.TempDir(), "absent.json"))
 	claudeDir := filepath.Join(home, ".claude")
 	if err := os.MkdirAll(claudeDir, 0700); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -162,7 +314,7 @@ func TestLoadClaudePermissionPolicyMergesLocal(t *testing.T) {
 		t.Fatalf("write local settings: %v", err)
 	}
 
-	policy, err := loadClaudePermissionPolicy()
+	policy, err := loadClaudePermissionPolicy("")
 	if err != nil {
 		t.Fatalf("loadClaudePermissionPolicy: %v", err)
 	}
@@ -180,7 +332,8 @@ func TestLoadClaudePermissionPolicyMergesLocal(t *testing.T) {
 func TestLoadClaudePermissionPolicyMissingFileIsEmpty(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	policy, err := loadClaudePermissionPolicy()
+	overrideManagedSettingsPath(t, filepath.Join(t.TempDir(), "absent.json"))
+	policy, err := loadClaudePermissionPolicy("")
 	if err != nil {
 		t.Fatalf("loadClaudePermissionPolicy: %v", err)
 	}

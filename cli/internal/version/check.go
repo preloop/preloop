@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/preloop/preloop/cli/internal/config"
+	"github.com/preloop/preloop/cli/internal/telemetry"
 )
 
 // Build-time variables (set via ldflags).
@@ -84,9 +85,12 @@ type VersionInfo struct {
 	ReleaseNotes  string `json:"release_notes"`
 }
 
-// CheckForUpdate checks for a new version if a day has passed since the last check.
+// CheckForUpdate checks for a new version if a day has passed since the last
+// check. A brand-new install (client id created this run) checks immediately
+// so first-run adoption is visible without waiting a day.
 func CheckForUpdate() error {
-	if !shouldCheck() {
+	_, firstRun, _ := config.GetOrCreateClientIDWithNew()
+	if !firstRun && !shouldCheck() {
 		return nil
 	}
 
@@ -167,6 +171,10 @@ type checkInPayload struct {
 	Arch             string `json:"arch"`
 	PreloopURL       string `json:"preloop_url,omitempty"`
 	TokenFingerprint string `json:"token_fingerprint,omitempty"`
+	// Metadata carries privacy-safe extras: {"first_run": true} on the very
+	// first check-in and {"cmd_<category>": N} local command-usage counters
+	// (top-level command names only — never arguments or user data).
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 // tokenFingerprint returns a non-reversible identifier for a credential:
@@ -199,8 +207,18 @@ func buildCheckInPayload() (checkInPayload, string) {
 		Arch:    runtime.GOARCH,
 	}
 
-	if clientID, err := config.GetOrCreateClientID(); err == nil {
+	metadata := map[string]any{}
+	if clientID, created, err := config.GetOrCreateClientIDWithNew(); err == nil {
 		payload.ClientID = clientID
+		if created {
+			metadata["first_run"] = true
+		}
+	}
+	for category, count := range telemetry.Load() {
+		metadata["cmd_"+category] = count
+	}
+	if len(metadata) > 0 {
+		payload.Metadata = metadata
 	}
 
 	accessToken := ""
@@ -261,6 +279,8 @@ func fetchVersionInfo() (*VersionInfo, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
 		return nil, fmt.Errorf("failed to parse version info: %w", err)
 	}
+	// Counters were delivered with this check-in; start a fresh window.
+	telemetry.Reset()
 	return &info, nil
 }
 

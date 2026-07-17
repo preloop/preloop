@@ -96,6 +96,10 @@ from .registration_token import CRUDRegistrationToken, crud_registration_token
 from .issue_duplicate import CRUDIssueDuplicate, crud_issue_duplicate
 from .instance import CRUDInstance, crud_instance
 from .cli_client import CRUDCliClient, crud_cli_client
+from .event import CRUDEvent, crud_event
+from .visitor import CRUDVisitor, crud_visitor
+from .identity_link import CRUDIdentityLink, crud_identity_link
+from .account_milestone import CRUDAccountMilestone, crud_account_milestone
 from .oauth_app_installation import (
     CRUDOAuthAppInstallation,
     crud_oauth_app_installation,
@@ -271,6 +275,14 @@ __all__ = [
     "CRUDCliClient",
     "crud_instance",
     "crud_cli_client",
+    "CRUDEvent",
+    "crud_event",
+    "CRUDVisitor",
+    "crud_visitor",
+    "CRUDIdentityLink",
+    "crud_identity_link",
+    "CRUDAccountMilestone",
+    "crud_account_milestone",
     "CRUDOAuthAppInstallation",
     "crud_oauth_app_installation",
     "CRUDOAuthToken",

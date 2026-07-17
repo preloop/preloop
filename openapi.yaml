@@ -14052,6 +14052,17 @@ components:
           description: Approval workflow that governs this subject's native tool-call
             approvals (agents permission-check). Falls back to the account default
             workflow when unset.
+        native_tool_approvals:
+          anyOf:
+          - type: string
+            enum:
+            - enforce
+            - 'off'
+          - type: 'null'
+          title: Native Tool Approvals
+          description: Whether native tool-call approvals (agents permission-check)
+            are enforced for this subject. "off" makes the server auto-allow escalated
+            (ask) calls instead of asking a human; absent/None means "enforce".
       type: object
       title: SubjectGovernanceConfig
     SubjectGovernanceResponse:

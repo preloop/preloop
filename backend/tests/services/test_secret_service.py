@@ -403,3 +403,90 @@ def test_resolve_ai_model_credentials_marks_anthropic_oauth_refresh_failure(
     assert ai_model.credentials_secret.status == "error"
     assert ai_model.credentials_secret.meta_data["last_refresh_status_code"] == 403
     assert ai_model.credentials_secret.meta_data["last_refresh_code"] == "1010"
+
+
+def test_refresh_reuses_bundle_already_rotated_by_another_worker(
+    db_session: Session,
+):
+    """A concurrent worker's rotated bundle must be reused, not re-refreshed.
+
+    Provider OAuth refresh tokens are single-use: with multiple gateway
+    replicas, two workers seeing a stale access token at the same time used
+    to both call the provider, and the loser's reuse could invalidate the
+    whole grant. The refresh path now locks the secret row and re-reads it —
+    if it is already fresh, no upstream call may happen.
+    """
+    from preloop.utils.encryption import encrypt_value
+
+    account: Account = crud_account.create(
+        db_session,
+        obj_in={
+            "organization_name": "Claude OAuth Single Flight Org",
+            "is_active": True,
+        },
+    )
+    ai_model = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Claude OAuth Model",
+            "provider_name": "anthropic",
+            "model_identifier": "claude-fable-5",
+            "credential_type": "oauth_anthropic_claude_code",
+            "credential_payload": {
+                "access": "fresh-access",
+                "refresh": "fresh-refresh",
+                "expires": 4102444800000,  # far future
+            },
+        },
+        account_id=account.id,
+    )
+
+    service = SecretService()
+
+    def fail_if_called(refresh_token: str):
+        raise AssertionError(
+            "Upstream refresh must not run when the stored bundle is fresh"
+        )
+
+    service._refresh_anthropic_claude_code_token = fail_if_called
+
+    # Simulate the race: this worker read a stale payload before another
+    # worker rotated the bundle (the fresh one is what is now stored in DB).
+    stale_payload = {
+        "type": "oauth_anthropic_claude_code",
+        "access": "stale-access",
+        "refresh": "stale-refresh",
+        "expires": 1,
+    }
+    result = service._refresh_anthropic_claude_code_ai_model_credentials(
+        ai_model,
+        stale_payload,
+        db=db_session,
+    )
+    assert result["access"] == "fresh-access"
+    assert result["refresh"] == "fresh-refresh"
+
+    # And when the stored bundle really is stale, the refresh still runs.
+    stale_stored = {
+        "type": "oauth_anthropic_claude_code",
+        "access": "stale-access",
+        "refresh": "stale-refresh",
+        "expires": 1,
+    }
+    ai_model.credentials_secret.encrypted_value = encrypt_value(
+        json.dumps(stale_stored)
+    )
+    db_session.add(ai_model.credentials_secret)
+    db_session.flush()
+
+    service._refresh_anthropic_claude_code_token = lambda refresh_token: {
+        "access": "rotated-access",
+        "refresh": "rotated-refresh",
+        "expires": 4102444800000,
+    }
+    result = service._refresh_anthropic_claude_code_ai_model_credentials(
+        ai_model,
+        stale_stored,
+        db=db_session,
+    )
+    assert result["access"] == "rotated-access"

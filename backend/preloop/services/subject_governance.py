@@ -5,6 +5,10 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Optional
 
+from preloop.schemas.subject_governance import (
+    NATIVE_TOOL_APPROVALS_ENFORCE,
+    NATIVE_TOOL_APPROVALS_OFF,
+)
 
 SUBJECT_GOVERNANCE_KEY = "subject_governance"
 SUBJECT_TYPE_MANAGED_AGENTS = "managed_agents"
@@ -91,6 +95,15 @@ def sanitize_subject_governance_config(config: dict[str, Any]) -> dict[str, Any]
     approval_workflow_id = config.get("approval_workflow_id")
     if approval_workflow_id is not None and str(approval_workflow_id).strip():
         sanitized["approval_workflow_id"] = str(approval_workflow_id).strip()
+    sanitized["native_tool_approvals"] = None
+    native_tool_approvals = config.get("native_tool_approvals")
+    if isinstance(native_tool_approvals, str):
+        normalized_value = native_tool_approvals.strip().lower()
+        if normalized_value in (
+            NATIVE_TOOL_APPROVALS_ENFORCE,
+            NATIVE_TOOL_APPROVALS_OFF,
+        ):
+            sanitized["native_tool_approvals"] = normalized_value
     return sanitized
 
 

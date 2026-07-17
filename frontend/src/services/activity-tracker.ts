@@ -11,6 +11,8 @@ import {
   unifiedWebSocketManager,
   ConnectionState,
 } from './unified-websocket-manager';
+import { getVisitorId } from './visitor-id';
+import { getAttribution } from './attribution';
 
 export class ActivityTracker {
   private enabled = true;
@@ -18,12 +20,53 @@ export class ActivityTracker {
   private isProcessingQueue = false;
 
   constructor() {
-    // When WebSocket connects, flush queued messages
+    // When WebSocket connects, announce the session (each reconnect is a new
+    // server-side session, so the hello re-sends every time), then flush any
+    // queued messages.
     unifiedWebSocketManager.onStateChange((state) => {
       if (state === ConnectionState.CONNECTED) {
+        this.sendSessionHello();
         this.flushQueue();
       }
     });
+  }
+
+  /**
+   * Send the once-per-session device/attribution blob (`session_hello`).
+   *
+   * Carries the visitor id plus coarse device configuration (screen,
+   * languages, timezone — no canvas/audio fingerprinting) and the session's
+   * first-touch attribution. Persisted server-side into the session_start
+   * event's data by the analytics pipeline.
+   */
+  private sendSessionHello(): void {
+    if (!this.enabled) return;
+
+    const message: Record<string, any> = {
+      type: 'activity',
+      event: 'session_hello',
+      visitor_id: getVisitorId(),
+      device: {
+        screen_width: window.screen?.width,
+        screen_height: window.screen?.height,
+        pixel_ratio: window.devicePixelRatio,
+        viewport_width: window.innerWidth,
+        viewport_height: window.innerHeight,
+        languages: Array.from(navigator.languages || []).slice(0, 8),
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        platform: navigator.platform,
+        touch: (navigator.maxTouchPoints || 0) > 0,
+        device_memory: (navigator as any).deviceMemory,
+      },
+      timestamp: Date.now(),
+    };
+    const attribution = getAttribution();
+    if (attribution) {
+      message.attribution = attribution;
+    }
+    // Send directly (not queued): CONNECTED state guarantees an open socket,
+    // and a stale hello must not replay into a later session.
+    unifiedWebSocketManager.send(message);
   }
 
   /**
@@ -100,10 +143,15 @@ export class ActivityTracker {
   /**
    * Track a conversion event.
    *
-   * @param event - Conversion event name (e.g., 'signup_completed', 'subscription_started')
+   * @param event - Conversion event name (e.g., 'Signup', 'Login')
    * @param value - Optional monetary value
+   * @param metadata - Optional additional metadata (persisted to event_data)
    */
-  trackConversion(event: string, value?: number): void {
+  trackConversion(
+    event: string,
+    value?: number,
+    metadata?: Record<string, any>
+  ): void {
     if (!this.enabled) return;
 
     this.sendOrQueue({
@@ -111,6 +159,7 @@ export class ActivityTracker {
       event: 'conversion',
       conversion_event: event,
       value: value,
+      metadata: metadata || {},
       timestamp: Date.now(),
     });
   }

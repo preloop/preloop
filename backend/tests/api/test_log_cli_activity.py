@@ -32,7 +32,7 @@ def test_log_cli_activity_uses_separate_session(monkeypatch, cli_request):
         version_module.settings, "installer_audit_account_id", "acct-123"
     )
     monkeypatch.setattr(
-        version_module, "get_session_factory", lambda: (lambda: audit_session)
+        version_module, "get_session_factory", lambda: lambda: audit_session
     )
     monkeypatch.setattr(version_module.crud_audit_log, "log_action", fake_log_action)
 
@@ -74,7 +74,7 @@ def test_log_cli_activity_sqlalchemy_error_is_swallowed(monkeypatch, cli_request
         version_module.settings, "installer_audit_account_id", "acct-123"
     )
     monkeypatch.setattr(
-        version_module, "get_session_factory", lambda: (lambda: audit_session)
+        version_module, "get_session_factory", lambda: lambda: audit_session
     )
     monkeypatch.setattr(version_module.crud_audit_log, "log_action", boom)
 
@@ -92,6 +92,11 @@ def test_log_cli_activity_rollback_failure_is_logged(monkeypatch, cli_request, c
     """Rollback failures are debug-logged; version path still does not raise."""
     import logging
 
+    # configure_logging() sets propagate=False on the "preloop" logger, which
+    # keeps records from reaching caplog's root handler once any import has
+    # configured logging. Restore propagation for this assertion only.
+    monkeypatch.setattr(logging.getLogger("preloop"), "propagate", True)
+
     audit_session = MagicMock(name="audit_session")
     audit_session.rollback.side_effect = SQLAlchemyError("rollback failed")
 
@@ -102,7 +107,7 @@ def test_log_cli_activity_rollback_failure_is_logged(monkeypatch, cli_request, c
         version_module.settings, "installer_audit_account_id", "acct-123"
     )
     monkeypatch.setattr(
-        version_module, "get_session_factory", lambda: (lambda: audit_session)
+        version_module, "get_session_factory", lambda: lambda: audit_session
     )
     monkeypatch.setattr(version_module.crud_audit_log, "log_action", boom)
 

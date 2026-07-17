@@ -7,6 +7,8 @@
  * the stub is absent and calls are silent no-ops.
  */
 
+import { activityTracker } from './activity-tracker';
+
 type PlausibleFn = (
   event: string,
   options?: { props?: Record<string, string> }
@@ -43,17 +45,33 @@ function getPrevPath(): string | undefined {
  * Fire a named conversion/goal event, optionally with properties. The page
  * the visitor navigated from (within the SPA session) is attached
  * automatically as `prev_path`.
+ *
+ * Every goal is mirrored into the first-party ActivityTracker as a
+ * conversion event with the same name, so Plausible goals and the admin
+ * funnel stay aligned by construction — even when Plausible is disabled.
  */
 export function trackGoal(event: string, props?: Record<string, string>): void {
+  const prevPath = getPrevPath();
+  const merged = {
+    ...(prevPath ? { prev_path: prevPath } : {}),
+    ...props,
+  };
+
+  // First-party mirror (fires regardless of the Plausible snippet).
+  try {
+    activityTracker.trackConversion(
+      event,
+      undefined,
+      Object.keys(merged).length ? merged : undefined
+    );
+  } catch {
+    // Analytics must never break the app.
+  }
+
   const plausible = (window as unknown as { plausible?: PlausibleFn })
     .plausible;
   if (typeof plausible !== 'function') return;
   try {
-    const prevPath = getPrevPath();
-    const merged = {
-      ...(prevPath ? { prev_path: prevPath } : {}),
-      ...props,
-    };
     plausible(
       event,
       Object.keys(merged).length ? { props: merged } : undefined

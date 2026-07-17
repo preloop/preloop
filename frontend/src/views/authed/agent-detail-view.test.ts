@@ -31,101 +31,180 @@ describe('AgentDetailView', () => {
     localStorage.setItem('refreshToken', 'test-refresh-token');
 
     fetchStub = sinon.stub(window, 'fetch');
-    fetchStub.callsFake(async (input: RequestInfo | URL) => {
-      const url = typeof input === 'string' ? input : input.toString();
+    fetchStub.callsFake(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input.toString();
 
-      if (
-        url.startsWith('/api/v1/agents/agent-1') &&
-        !url.includes('/governance')
-      ) {
-        return new Response(
-          JSON.stringify({
-            agent: {
-              id: 'agent-1',
-              runtime_session_id: 'runtime-session-2',
-              display_name: 'Claude Code Workspace',
-              session_source_type: 'claude_code',
-              session_source_id: 'claude-code-agent-1',
-              session_reference: 'claude-session-2',
-              enrolled_via: 'runtime_session_token',
-              managed_mcp_servers: ['github', 'jira'],
-              lifecycle_state: 'active',
-              lifecycle_reason: null,
-              lifecycle_updated_at: '2026-03-10T10:00:00Z',
-              is_active_now: true,
-              activity_status: 'active_now',
-              last_seen_at: '2026-03-10T10:00:00Z',
-              started_at: '2026-03-10T09:00:00Z',
-              last_activity_at: '2026-03-10T10:00:00Z',
-              ended_at: null,
-              total_requests: 1,
-              estimated_cost: 0.12,
-              configured_model_alias: 'openai/gpt-5',
-              configured_model_id: 'configured-model-1',
-              latest_model_alias: 'openai/gpt-5',
-              latest_provider_name: 'openai',
-              last_request_at: '2026-03-10T09:58:00Z',
-              mcp_proxy_configured: true,
-              model_gateway_configured: true,
-              onboarding_state: 'fully_onboarded',
-              live_validation_supported: true,
-              live_validation_passed: true,
-              live_validation_status: 'passed',
-              last_validated_at: '2026-03-10T10:01:00Z',
-              owner_user_id: null,
-              owner_username: null,
-              owner_email: null,
-            },
-            aggregate: {
-              session_count: 2,
-              total_requests: 4,
-              successful_requests: 3,
-              failed_requests: 1,
-              token_usage: {
-                prompt_tokens: 300,
-                completion_tokens: 120,
-                total_tokens: 420,
+        if (
+          url.startsWith('/api/v1/agents/agent-1') &&
+          !url.includes('/governance')
+        ) {
+          return new Response(
+            JSON.stringify({
+              agent: {
+                id: 'agent-1',
+                runtime_session_id: 'runtime-session-2',
+                display_name: 'Claude Code Workspace',
+                session_source_type: 'claude_code',
+                session_source_id: 'claude-code-agent-1',
+                session_reference: 'claude-session-2',
+                enrolled_via: 'runtime_session_token',
+                managed_mcp_servers: ['github', 'jira'],
+                lifecycle_state: 'active',
+                lifecycle_reason: null,
+                lifecycle_updated_at: '2026-03-10T10:00:00Z',
+                is_active_now: true,
+                activity_status: 'active_now',
+                last_seen_at: '2026-03-10T10:00:00Z',
+                started_at: '2026-03-10T09:00:00Z',
+                last_activity_at: '2026-03-10T10:00:00Z',
+                ended_at: null,
+                total_requests: 1,
+                estimated_cost: 0.12,
+                configured_model_alias: 'openai/gpt-5',
+                configured_model_id: 'configured-model-1',
+                latest_model_alias: 'openai/gpt-5',
+                latest_provider_name: 'openai',
+                last_request_at: '2026-03-10T09:58:00Z',
+                mcp_proxy_configured: true,
+                model_gateway_configured: true,
+                onboarding_state: 'fully_onboarded',
+                live_validation_supported: true,
+                live_validation_passed: true,
+                live_validation_status: 'passed',
+                last_validated_at: '2026-03-10T10:01:00Z',
+                owner_user_id: null,
+                owner_username: null,
+                owner_email: null,
               },
-              estimated_cost: 0.57,
-              latest_model_alias: 'openai/gpt-5',
-              latest_provider_name: 'openai',
-              last_request_at: '2026-03-10T09:58:00Z',
-            },
-            usage_by_model: [
-              {
-                ai_model_id: 'model-1',
-                model_alias: 'openai/gpt-5',
-                provider_name: 'openai',
-                request_count: 4,
+              aggregate: {
+                session_count: 2,
+                total_requests: 4,
+                successful_requests: 3,
+                failed_requests: 1,
                 token_usage: {
                   prompt_tokens: 300,
                   completion_tokens: 120,
                   total_tokens: 420,
                 },
                 estimated_cost: 0.57,
+                latest_model_alias: 'openai/gpt-5',
+                latest_provider_name: 'openai',
+                last_request_at: '2026-03-10T09:58:00Z',
               },
-            ],
-            activity_by_server: [
-              {
-                server_name: 'github',
-                call_count: 2,
-                successful_calls: 2,
-                failed_calls: 0,
-                last_activity_at: '2026-03-10T10:00:00Z',
+              usage_by_model: [
+                {
+                  ai_model_id: 'model-1',
+                  model_alias: 'openai/gpt-5',
+                  provider_name: 'openai',
+                  request_count: 4,
+                  token_usage: {
+                    prompt_tokens: 300,
+                    completion_tokens: 120,
+                    total_tokens: 420,
+                  },
+                  estimated_cost: 0.57,
+                },
+              ],
+              activity_by_server: [
+                {
+                  server_name: 'github',
+                  call_count: 2,
+                  successful_calls: 2,
+                  failed_calls: 0,
+                  last_activity_at: '2026-03-10T10:00:00Z',
+                },
+              ],
+              activity_by_tool: [
+                {
+                  server_name: 'github',
+                  tool_name: 'search_issues',
+                  call_count: 2,
+                  successful_calls: 2,
+                  failed_calls: 0,
+                  last_activity_at: '2026-03-10T10:00:00Z',
+                },
+              ],
+              sessions: [
+                {
+                  id: 'runtime-session-2',
+                  session_source_type: 'claude_code',
+                  session_source_id: 'workspace-2',
+                  session_reference: null,
+                  runtime_principal_type: 'claude_code',
+                  runtime_principal_id: 'claude-code-agent-1',
+                  runtime_principal_name: 'Claude Code Workspace',
+                  started_at: '2026-03-10T09:30:00Z',
+                  last_activity_at: '2026-03-10T09:59:00Z',
+                  ended_at: null,
+                  flow_id: null,
+                  flow_name: null,
+                  flow_execution_id: null,
+                  latest_model_alias: 'openai/gpt-5',
+                  latest_provider_name: 'openai',
+                  is_active_now: true,
+                  activity_status: 'active_now',
+                  total_requests: 1,
+                  successful_requests: 1,
+                  failed_requests: 0,
+                  token_usage: {
+                    prompt_tokens: 100,
+                    completion_tokens: 20,
+                    total_tokens: 120,
+                  },
+                  estimated_cost: 0.12,
+                  last_request_at: '2026-03-10T09:59:00Z',
+                },
+              ],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+
+        if (url === '/api/v1/agents/agent-1/governance') {
+          if (init?.method === 'PUT') {
+            // Echo the submitted config back, as the real endpoint does.
+            const submitted = JSON.parse(String(init.body));
+            return new Response(
+              JSON.stringify({
+                subject_type: 'managed_agents',
+                subject_id: 'agent-1',
+                config: {
+                  allowed_models: [],
+                  model_budgets: {},
+                  tool_rules: {},
+                  ...submitted,
+                },
+              }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
+          return new Response(
+            JSON.stringify({
+              subject_type: 'managed_agents',
+              subject_id: 'agent-1',
+              config: {
+                allowed_models: ['openai/gpt-5'],
+                model_budgets: {
+                  'openai/gpt-5': { monthly_usd_limit: 25 },
+                },
+                tool_rules: {
+                  search_issues: [
+                    { action: 'allow', condition_type: 'simple' },
+                  ],
+                },
               },
-            ],
-            activity_by_tool: [
-              {
-                server_name: 'github',
-                tool_name: 'search_issues',
-                call_count: 2,
-                successful_calls: 2,
-                failed_calls: 0,
-                last_activity_at: '2026-03-10T10:00:00Z',
-              },
-            ],
-            sessions: [
-              {
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+
+        if (url === '/api/v1/runtime-sessions/runtime-session-2') {
+          return new Response(
+            JSON.stringify({
+              period_start: '2026-03-01T00:00:00Z',
+              period_end: '2026-03-10T23:59:59Z',
+              session: {
                 id: 'runtime-session-2',
                 session_source_type: 'claude_code',
                 session_source_id: 'workspace-2',
@@ -154,230 +233,174 @@ describe('AgentDetailView', () => {
                 estimated_cost: 0.12,
                 last_request_at: '2026-03-10T09:59:00Z',
               },
-            ],
-          }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } }
-        );
-      }
-
-      if (url === '/api/v1/agents/agent-1/governance') {
-        return new Response(
-          JSON.stringify({
-            subject_type: 'managed_agents',
-            subject_id: 'agent-1',
-            config: {
-              allowed_models: ['openai/gpt-5'],
-              model_budgets: {
-                'openai/gpt-5': { monthly_usd_limit: 25 },
+              usage_by_model: [],
+              interactions: {
+                period_start: '2026-03-01T00:00:00Z',
+                period_end: '2026-03-10T23:59:59Z',
+                query: null,
+                total: 0,
+                limit: 10,
+                offset: 0,
+                items: [],
               },
-              tool_rules: {
-                search_issues: [{ action: 'allow', condition_type: 'simple' }],
-              },
-            },
-          }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } }
-        );
-      }
-
-      if (url === '/api/v1/runtime-sessions/runtime-session-2') {
-        return new Response(
-          JSON.stringify({
-            period_start: '2026-03-01T00:00:00Z',
-            period_end: '2026-03-10T23:59:59Z',
-            session: {
-              id: 'runtime-session-2',
-              session_source_type: 'claude_code',
-              session_source_id: 'workspace-2',
-              session_reference: null,
-              runtime_principal_type: 'claude_code',
-              runtime_principal_id: 'claude-code-agent-1',
-              runtime_principal_name: 'Claude Code Workspace',
-              started_at: '2026-03-10T09:30:00Z',
-              last_activity_at: '2026-03-10T09:59:00Z',
-              ended_at: null,
-              flow_id: null,
-              flow_name: null,
-              flow_execution_id: null,
-              latest_model_alias: 'openai/gpt-5',
-              latest_provider_name: 'openai',
-              is_active_now: true,
-              activity_status: 'active_now',
-              total_requests: 1,
-              successful_requests: 1,
-              failed_requests: 0,
-              token_usage: {
-                prompt_tokens: 100,
-                completion_tokens: 20,
-                total_tokens: 120,
-              },
-              estimated_cost: 0.12,
-              last_request_at: '2026-03-10T09:59:00Z',
-            },
-            usage_by_model: [],
-            interactions: {
-              period_start: '2026-03-01T00:00:00Z',
-              period_end: '2026-03-10T23:59:59Z',
-              query: null,
-              total: 0,
-              limit: 10,
-              offset: 0,
-              items: [],
-            },
-            activity_timeline: [
-              {
-                activity_type: 'tool_call',
-                timestamp: '2026-03-10T09:59:00Z',
-                title: 'github / search_issues',
-                summary: 'Completed successfully',
-                status: 'success',
-                api_usage_id: null,
-                tool_name: 'search_issues',
-                server_name: 'github',
-                auth_subject_type: null,
-                api_key_id: null,
-                api_key_name: null,
-                estimated_cost: null,
-                total_tokens: null,
-              },
-            ],
-          }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } }
-        );
-      }
-
-      if (url === '/api/v1/users') {
-        return new Response(JSON.stringify({ users: [] }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-
-      if (url === '/api/v1/tools') {
-        return new Response(
-          JSON.stringify([
-            {
-              name: 'search_issues',
-              description: 'Search GitHub issues',
-              schema: {
-                properties: {
-                  query: { type: 'string' },
+              activity_timeline: [
+                {
+                  activity_type: 'tool_call',
+                  timestamp: '2026-03-10T09:59:00Z',
+                  title: 'github / search_issues',
+                  summary: 'Completed successfully',
+                  status: 'success',
+                  api_usage_id: null,
+                  tool_name: 'search_issues',
+                  server_name: 'github',
+                  auth_subject_type: null,
+                  api_key_id: null,
+                  api_key_name: null,
+                  estimated_cost: null,
+                  total_tokens: null,
                 },
-              },
-            },
-          ]),
-          { status: 200, headers: { 'Content-Type': 'application/json' } }
-        );
-      }
+              ],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
 
-      if (url === '/api/v1/approval-workflows') {
-        return new Response(
-          JSON.stringify([
-            {
-              id: 'wf-1',
-              name: 'Default Approval',
-              approval_type: 'standard',
-            },
-          ]),
-          { status: 200, headers: { 'Content-Type': 'application/json' } }
-        );
-      }
-
-      if (url === '/api/v1/features') {
-        return new Response(JSON.stringify({ features: {} }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-
-      if (url === '/api/v1/mcp-servers') {
-        return new Response(JSON.stringify([]), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-
-      if (url === '/api/v1/flows') {
-        return new Response(JSON.stringify([]), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-
-      if (
-        url.includes(
-          '/api/v1/runtime-sessions/runtime-session-2/gateway-events'
-        )
-      ) {
-        return new Response(
-          JSON.stringify({
-            logs: [
-              {
-                id: 'event-1',
-                timestamp: '2026-03-10T09:58:00Z',
-                type: 'model_gateway_call',
-                payload: {
-                  api_usage_id: 'usage-1',
-                  model_alias: 'openai/gpt-5',
-                  provider_name: 'openai',
-                  outcome: 'success',
-                  estimated_cost: 0.12,
-                  total_tokens: 120,
-                  prompt_tokens: 100,
-                  completion_tokens: 20,
-                  status_code: 200,
-                  method: 'POST',
-                  endpoint: '/openai/v1/responses',
-                },
-              },
-            ],
-          }),
-          {
+        if (url === '/api/v1/users') {
+          return new Response(JSON.stringify({ users: [] }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
-          }
-        );
-      }
+          });
+        }
 
-      if (url.includes('/api/v1/runtime-sessions/runtime-session-2/activity')) {
-        return new Response(
-          JSON.stringify({
-            items: [
+        if (url === '/api/v1/tools') {
+          return new Response(
+            JSON.stringify([
               {
-                activity_type: 'tool_call',
-                timestamp: '2026-03-10T09:59:00Z',
-                title: 'github / search_issues',
-                summary: 'Completed successfully',
-                status: 'success',
-                api_usage_id: null,
-                tool_name: 'search_issues',
-                server_name: 'github',
-                auth_subject_type: null,
-                api_key_id: null,
-                api_key_name: null,
-                estimated_cost: null,
-                total_tokens: null,
+                name: 'search_issues',
+                description: 'Search GitHub issues',
+                schema: {
+                  properties: {
+                    query: { type: 'string' },
+                  },
+                },
               },
-            ],
-          }),
-          {
+            ]),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+
+        if (url === '/api/v1/approval-workflows') {
+          return new Response(
+            JSON.stringify([
+              {
+                id: 'wf-1',
+                name: 'Default Approval',
+                approval_type: 'standard',
+              },
+            ]),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+
+        if (url === '/api/v1/features') {
+          return new Response(JSON.stringify({ features: {} }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
-          }
+          });
+        }
+
+        if (url === '/api/v1/mcp-servers') {
+          return new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        if (url === '/api/v1/flows') {
+          return new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        if (
+          url.includes(
+            '/api/v1/runtime-sessions/runtime-session-2/gateway-events'
+          )
+        ) {
+          return new Response(
+            JSON.stringify({
+              logs: [
+                {
+                  id: 'event-1',
+                  timestamp: '2026-03-10T09:58:00Z',
+                  type: 'model_gateway_call',
+                  payload: {
+                    api_usage_id: 'usage-1',
+                    model_alias: 'openai/gpt-5',
+                    provider_name: 'openai',
+                    outcome: 'success',
+                    estimated_cost: 0.12,
+                    total_tokens: 120,
+                    prompt_tokens: 100,
+                    completion_tokens: 20,
+                    status_code: 200,
+                    method: 'POST',
+                    endpoint: '/openai/v1/responses',
+                  },
+                },
+              ],
+            }),
+            {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            }
+          );
+        }
+
+        if (
+          url.includes('/api/v1/runtime-sessions/runtime-session-2/activity')
+        ) {
+          return new Response(
+            JSON.stringify({
+              items: [
+                {
+                  activity_type: 'tool_call',
+                  timestamp: '2026-03-10T09:59:00Z',
+                  title: 'github / search_issues',
+                  summary: 'Completed successfully',
+                  status: 'success',
+                  api_usage_id: null,
+                  tool_name: 'search_issues',
+                  server_name: 'github',
+                  auth_subject_type: null,
+                  api_key_id: null,
+                  api_key_name: null,
+                  estimated_cost: null,
+                  total_tokens: null,
+                },
+              ],
+            }),
+            {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            }
+          );
+        }
+
+        if (url === '/api/v1/ai-models') {
+          return new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        return new Response(
+          JSON.stringify({ detail: `Unhandled request: ${url}` }),
+          { status: 500, headers: { 'Content-Type': 'application/json' } }
         );
       }
-
-      if (url === '/api/v1/ai-models') {
-        return new Response(JSON.stringify([]), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-
-      return new Response(
-        JSON.stringify({ detail: `Unhandled request: ${url}` }),
-        { status: 500, headers: { 'Content-Type': 'application/json' } }
-      );
-    });
+    );
   });
 
   afterEach(() => {
@@ -468,5 +491,79 @@ describe('AgentDetailView', () => {
     expect(putCall).to.exist;
     const body = JSON.parse(putCall!.args[1].body);
     expect(body.approval_workflow_id).to.equal('wf-1');
+  });
+
+  it('lets the user switch native tool approvals off', async () => {
+    const element = await fixture<AgentDetailView>(
+      html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+    );
+
+    await waitUntil(
+      () => !(element as any).loading && (element as any).agent !== null,
+      'Agent detail view did not finish loading'
+    );
+
+    (element as any).activeTab = 'tools';
+    await element.updateComplete;
+
+    // Default (field absent) renders as enforced: switch on, no warning.
+    const switchEl = element.shadowRoot?.querySelector(
+      '#agent-native-tool-approvals-switch'
+    ) as any;
+    expect(switchEl).to.exist;
+    expect(switchEl.checked).to.be.true;
+    expect(
+      element.shadowRoot?.querySelector('#agent-native-tool-approvals-off-note')
+    ).to.not.exist;
+
+    // Toggling off persists native_tool_approvals="off" via the governance PUT.
+    (element as any).saveNativeToolApprovalsToggle(false);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const putCall = fetchStub
+      .getCalls()
+      .find(
+        (call) =>
+          String(call.args[0]) === '/api/v1/agents/agent-1/governance' &&
+          call.args[1]?.method === 'PUT'
+      );
+    expect(putCall).to.exist;
+    const body = JSON.parse(putCall!.args[1].body);
+    expect(body.native_tool_approvals).to.equal('off');
+
+    // The workflow select mutes and the bypass warning appears.
+    await element.updateComplete;
+    const select = element.shadowRoot?.querySelector(
+      '#agent-approval-workflow-select'
+    ) as any;
+    expect(select.disabled).to.be.true;
+    const note = element.shadowRoot?.querySelector(
+      '#agent-native-tool-approvals-off-note'
+    );
+    expect(note).to.exist;
+    const noteText = getDeepText(note).replace(/\s+/g, ' ');
+    expect(noteText).to.contain('Approvals are bypassed server-side');
+    expect(noteText).to.contain('How to fully disable the hook locally');
+
+    // Toggling back on clears the field (absent = enforce).
+    (element as any).saveNativeToolApprovalsToggle(true);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const enforcePut = fetchStub
+      .getCalls()
+      .filter(
+        (call) =>
+          String(call.args[0]) === '/api/v1/agents/agent-1/governance' &&
+          call.args[1]?.method === 'PUT'
+      )
+      .pop();
+    expect(enforcePut).to.exist;
+    const enforceBody = JSON.parse(enforcePut!.args[1].body);
+    expect(enforceBody.native_tool_approvals).to.equal(null);
+
+    await element.updateComplete;
+    expect(
+      element.shadowRoot?.querySelector('#agent-native-tool-approvals-off-note')
+    ).to.not.exist;
   });
 });

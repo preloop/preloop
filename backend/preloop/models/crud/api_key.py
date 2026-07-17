@@ -225,7 +225,15 @@ class CRUDApiKey(CRUDBase[ApiKey]):
         runtime_principal_id: str,
         commit: bool = True,
     ) -> List[ApiKey]:
-        """Deactivate runtime-scoped API keys bound to one durable principal."""
+        """Deactivate runtime-scoped API keys bound to one durable principal.
+
+        WARNING: several managed-agent registry entries can share one runtime
+        principal (repeated onboards of the same local agent), so this sweeps
+        EVERY sibling agent's keys — including durable credentials still in
+        use. For agent lifecycle changes use
+        ``deactivate_runtime_keys_for_managed_agent`` plus
+        ``deactivate_unbound_runtime_keys_for_principal`` instead.
+        """
         key_objs = (
             db.query(ApiKey)
             .filter(
@@ -235,6 +243,55 @@ class CRUDApiKey(CRUDBase[ApiKey]):
                 == str(runtime_principal_type),
                 ApiKey.context_data["runtime_principal"].op("->>")("id")
                 == str(runtime_principal_id),
+            )
+            .all()
+        )
+
+        deactivated: List[ApiKey] = []
+        for key_obj in key_objs:
+            key_obj.is_active = False
+            db.add(key_obj)
+            deactivated.append(key_obj)
+
+        if not deactivated:
+            return deactivated
+
+        if commit:
+            db.commit()
+            for key_obj in deactivated:
+                db.refresh(key_obj)
+        else:
+            db.flush()
+        return deactivated
+
+    def deactivate_unbound_runtime_keys_for_principal(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        runtime_principal_type: str,
+        runtime_principal_id: str,
+        commit: bool = True,
+    ) -> List[ApiKey]:
+        """Deactivate principal-bound runtime keys with no managed-agent link.
+
+        Several managed-agent registry entries can share one runtime principal
+        (repeated onboards of the same local agent). Keys that carry a
+        ``managed_agent_id`` must be revoked per agent via
+        ``deactivate_runtime_keys_for_managed_agent``; revoking by principal
+        alone would also kill sibling agents' durable credentials. This method
+        only sweeps legacy keys that never recorded a managed-agent binding.
+        """
+        key_objs = (
+            db.query(ApiKey)
+            .filter(
+                ApiKey.account_id == account_id,
+                ApiKey.is_active.is_(True),
+                ApiKey.context_data["runtime_principal"].op("->>")("type")
+                == str(runtime_principal_type),
+                ApiKey.context_data["runtime_principal"].op("->>")("id")
+                == str(runtime_principal_id),
+                ApiKey.context_data.op("->>")("managed_agent_id").is_(None),
             )
             .all()
         )

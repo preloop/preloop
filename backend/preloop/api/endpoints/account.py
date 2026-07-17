@@ -1923,7 +1923,17 @@ async def update_account_managed_agent(
             status_code=status.HTTP_404_NOT_FOUND, detail="Managed agent not found"
         )
     if should_revoke_runtime_access and revoke_timestamp is not None:
-        crud_api_key.deactivate_runtime_keys_for_principal(
+        # Revoke only this agent's keys (plus legacy keys with no agent
+        # binding). Several registry entries can share one runtime principal,
+        # and a principal-wide sweep would also kill sibling agents' durable
+        # credentials.
+        crud_api_key.deactivate_runtime_keys_for_managed_agent(
+            db,
+            account_id=account.id,
+            managed_agent_id=str(agent.id),
+            commit=False,
+        )
+        crud_api_key.deactivate_unbound_runtime_keys_for_principal(
             db,
             account_id=account.id,
             runtime_principal_type=agent.session_source_type,
@@ -1999,7 +2009,11 @@ async def delete_account_managed_agent(
             status_code=status.HTTP_404_NOT_FOUND, detail="Managed agent not found"
         )
 
-    crud_api_key.deactivate_runtime_keys_for_principal(
+    # Revoke only this agent's keys (plus legacy keys with no agent binding).
+    # Several registry entries can share one runtime principal (repeated
+    # onboards of the same local agent); a principal-wide sweep would also
+    # deactivate sibling agents' durable credentials.
+    crud_api_key.deactivate_unbound_runtime_keys_for_principal(
         db,
         account_id=account.id,
         runtime_principal_type=agent.session_source_type,

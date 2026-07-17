@@ -18,30 +18,38 @@ const ClientIDFile = "client_id"
 // GetOrCreateClientID returns the persistent install identifier, generating
 // and persisting a new one when absent or unreadable.
 func GetOrCreateClientID() (string, error) {
+	id, _, err := GetOrCreateClientIDWithNew()
+	return id, err
+}
+
+// GetOrCreateClientIDWithNew returns the persistent install identifier and
+// whether it was created by this call — i.e. whether this is the first run
+// of an install the installer did not pre-seed.
+func GetOrCreateClientIDWithNew() (string, bool, error) {
 	dir, err := GetConfigDir()
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	path := filepath.Join(dir, ClientIDFile)
 
 	if data, err := os.ReadFile(path); err == nil {
 		id := strings.TrimSpace(string(data))
 		if isUUID(id) {
-			return id, nil
+			return id, false, nil
 		}
 	}
 
 	id, err := newUUIDv4()
 	if err != nil {
-		return "", fmt.Errorf("failed to generate client id: %w", err)
+		return "", false, fmt.Errorf("failed to generate client id: %w", err)
 	}
 	if err := os.MkdirAll(dir, 0700); err != nil {
-		return "", err
+		return "", false, err
 	}
 	if err := os.WriteFile(path, []byte(id+"\n"), 0600); err != nil {
-		return "", err
+		return "", false, err
 	}
-	return id, nil
+	return id, true, nil
 }
 
 // newUUIDv4 generates a random RFC 4122 version-4 UUID without external deps.
