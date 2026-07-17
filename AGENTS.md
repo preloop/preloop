@@ -34,6 +34,7 @@ Use the Lit.dev framework for frontend code. If you create new web components en
 - **Docstrings**: Google-style with type annotations, document params, returns, raises
 - **Async**: Use async for I/O-bound operations, run_async utility for sync contexts
 - **Testing**: All code changes should have corresponding tests. Use red/green TDD when possible.
+- **Test telemetry**: ALL test scripts, rigs, and scripted runs must set `PRELOOP_DISABLE_TELEMETRY=true` (CLI, installers, and instance `.env`) so test traffic never pollutes funnel/adoption telemetry.
 
 ## Pre-commit Hooks
 The project uses pre-commit hooks to ensure code quality. These hooks run automatically before each commit and include:

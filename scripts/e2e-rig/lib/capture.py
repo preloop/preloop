@@ -99,13 +99,10 @@ def drain(child: pexpect.spawn) -> None:
         while True:
             if not child.read_nonblocking(4096, timeout=0):
                 break
-except pexpect.TIMEOUT:
-    pass  # Non-blocking drain: no output available (expected)
-except pexpect.EOF:
-    pass  # Child process ended (caller handles)
-        pass
+    except pexpect.TIMEOUT:
+        pass  # Non-blocking drain: no output available (expected)
     except pexpect.EOF:
-        pass
+        pass  # Child process ended (caller handles)
 
 
 def human_type(child: pexpect.spawn, text: str, cps: float = 24.0) -> None:
@@ -121,6 +118,9 @@ def spawn_shell(rec: CastRecorder, ssh_host: str | None = None) -> pexpect.spawn
     bootstrap = (
         f"export PS1='{PROMPT}' PS2='' TERM=xterm-256color; "
         "export PATH=$HOME/.local/bin:$HOME/.opencode/bin:$PATH; "
+        # Off-camera telemetry opt-out: every CLI command recorded in this
+        # shell must stay out of adoption data (rig standing rule).
+        "export PRELOOP_DISABLE_TELEMETRY=true; "
         "exec bash --norc --noprofile"
     )
     if ssh_host:

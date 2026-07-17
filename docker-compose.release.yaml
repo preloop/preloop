@@ -78,6 +78,9 @@ services:
       # Public signup. Set false to close registration (invite-only); the
       # install script does this once the first user exists.
       REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-true}
+      # Opt out of adoption telemetry (the daily version check-in to
+      # preloop.ai). Test/CI installs must always set this to true.
+      PRELOOP_DISABLE_TELEMETRY: ${PRELOOP_DISABLE_TELEMETRY:-}
       FLOW_EXECUTION_WORKER_ENABLED: ${FLOW_EXECUTION_WORKER_ENABLED:-false}
       # SMTP — required for approval emails, invitations and password resets.
       # Configure interactively via scripts/install-oss.sh or edit .env.

@@ -13,6 +13,8 @@ func useTempConfigDir(t *testing.T) string {
 	t.Setenv("PRELOOP_CONFIG_DIR", dir)
 	// Fallback for config implementations keyed off HOME.
 	t.Setenv("HOME", dir)
+	// Hermetic: a developer's telemetry opt-out must not skip Increment here.
+	clearOptOutEnv(t)
 	return dir
 }
 

@@ -22,6 +22,9 @@ const eventsBatchPath = "/api/v1/events/batch"
 // to the same server the CLI is authenticated against (same origin by
 // construction).
 func SendConversion(baseURL, accessToken, cliVersion, event string) {
+	if Disabled() {
+		return
+	}
 	if baseURL == "" || event == "" {
 		return
 	}

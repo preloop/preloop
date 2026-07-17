@@ -23,6 +23,12 @@
 
 set -eu
 
+# Standing rule: test tooling must never pollute funnel/adoption telemetry.
+# Exported for any CLI use in this shell, and written into the stack's .env
+# below so the instance's server-side phone-home is off too.
+PRELOOP_DISABLE_TELEMETRY=true
+export PRELOOP_DISABLE_TELEMETRY
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 
@@ -104,6 +110,7 @@ cat > "$WORK_DIR/.env" <<EOF
 PRELOOP_VERSION=${PRELOOP_VERSION}
 SECRET_KEY=$(generate_secret)
 POSTGRES_PASSWORD=$(generate_secret)
+PRELOOP_DISABLE_TELEMETRY=true
 EOF
 
 log "Pulling images..."
