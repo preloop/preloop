@@ -99,7 +99,10 @@ def drain(child: pexpect.spawn) -> None:
         while True:
             if not child.read_nonblocking(4096, timeout=0):
                 break
-    except pexpect.TIMEOUT:
+except pexpect.TIMEOUT:
+    pass  # Non-blocking drain: no output available (expected)
+except pexpect.EOF:
+    pass  # Child process ended (caller handles)
         pass
     except pexpect.EOF:
         pass
