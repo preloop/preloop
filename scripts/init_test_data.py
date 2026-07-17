@@ -7,6 +7,7 @@ import uuid
 from passlib.context import CryptContext
 from sqlalchemy.exc import SQLAlchemyError
 
+from preloop.models.crud import crud_role, crud_user, crud_user_role
 from preloop.models.crud.account import CRUDAccount
 from preloop.models.crud.organization import CRUDOrganization
 from preloop.models.crud.project import CRUDProject
@@ -36,31 +37,47 @@ async def create_test_data():
     crud_project = CRUDProject(Project)
 
     try:
-        # Create a test account if it doesn't exist
-        account = crud_account.get_by_email(db, email="admin@preloop.ai")
-        if account:
-            logger.info(
-                f"Account already exists: {account.username} (ID: {account.id})"
-            )
+        # Create a test admin (modern account/user split: email, username and
+        # password live on User; Account is the tenant shell — mirrors
+        # scripts/create_first_user.py, the maintained bootstrap path).
+        user = crud_user.get_by_email(db, email="admin@preloop.ai")
+        if user:
+            account = crud_account.get(db, id=user.account_id)
+            logger.info(f"Admin user already exists (account ID: {account.id})")
         else:
-            # Hash the password
-            hashed_password = pwd_context.hash("admin")
-
-            logger.info("Creating admin account...")
+            logger.info("Creating admin account and user...")
             account = crud_account.create(
                 db,
                 obj_in={
-                    "id": str(uuid.uuid4()),
-                    "username": "admin",
-                    "email": "admin@preloop.ai",
-                    "full_name": "Admin User",
-                    "hashed_password": hashed_password,
+                    "organization_name": "Admin's Organization",
                     "is_active": True,
-                    "is_superuser": True,
                     "meta_data": {"admin_account": True},
                 },
             )
-            logger.info(f"Created account: {account.username} (ID: {account.id})")
+            user = crud_user.create(
+                db,
+                obj_in={
+                    "account_id": account.id,
+                    "username": "admin",
+                    "email": "admin@preloop.ai",
+                    "hashed_password": pwd_context.hash("admin"),
+                    "full_name": "Admin User",
+                    "is_active": True,
+                    "email_verified": True,
+                    "is_superuser": True,
+                    "user_source": "local",
+                },
+            )
+            account.primary_user_id = user.id
+            db.add(account)
+            owner_role = crud_role.get_by_name(db, name="owner")
+            if owner_role:
+                crud_user_role.create(
+                    db, obj_in={"user_id": user.id, "role_id": owner_role.id}
+                )
+            db.commit()
+            db.refresh(account)
+            logger.info(f"Created admin user (account ID: {account.id})")
 
         # Create a tracker if it doesn't exist
         tracker = crud_tracker.get_for_account(db, account_id=account.id)
@@ -103,7 +120,7 @@ async def create_test_data():
                     "description": "Spacecode AI organization for testing",
                     "tracker_id": tracker.id,
                     "is_active": True,
-                    "settings": {"default_tracker": tracker.id},
+                    "settings": {"default_tracker": str(tracker.id)},
                     "meta_data": {"industry": "Technology", "size": "Startup"},
                 },
             )
@@ -111,7 +128,7 @@ async def create_test_data():
 
         # Create a project if it doesn't exist
         project = crud_project.get_by_identifier(
-            db, organization_id=org.id, identifier="astrobot"
+            db, identifier="astrobot", account_id=str(account.id)
         )
         if project:
             logger.info(f"Project already exists: {project.name} (ID: {project.id})")
