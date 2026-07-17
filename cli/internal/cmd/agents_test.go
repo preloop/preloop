@@ -1831,7 +1831,7 @@ func TestPromptToOnboardCandidates_DeclineContinuesToNextAgent(t *testing.T) {
 	}
 
 	var enrolled []AgentConfig
-	err := promptToOnboardCandidates(
+	_, err := promptToOnboardCandidates(
 		input,
 		output,
 		candidates,
@@ -1876,7 +1876,7 @@ func TestPromptToOnboardCandidates_AsksApprovalsForSupportedAgents(t *testing.T)
 	}
 
 	approvalsByAgent := map[string]bool{}
-	err := promptToOnboardCandidates(
+	_, err := promptToOnboardCandidates(
 		input,
 		output,
 		candidates,

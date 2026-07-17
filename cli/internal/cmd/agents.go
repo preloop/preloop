@@ -6,6 +6,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -54,6 +55,7 @@ type agentSpec struct {
 	Name                string
 	ConfigPaths         []string // relative to $HOME
 	DetectionPaths      []string // optional install markers relative to $HOME
+	DetectionCommands   []string // optional executables on PATH that mark an install
 	BootstrapConfigPath string   // optional synthesized config path relative to $HOME
 	Parser              func(path string) (map[string]MCPDef, error)
 }
@@ -62,7 +64,14 @@ var agentSpecs = []agentSpec{
 	{
 		Name:        "Claude Code",
 		ConfigPaths: []string{".claude/settings.json", ".claude/mcp-servers.json"},
-		Parser:      parseClaudeConfig,
+		// Fresh or lightly-used installs write only ~/.claude.json (and put
+		// the `claude` binary on PATH) before any settings.json exists, so
+		// treat both as install markers. Onboarding then bootstraps the
+		// canonical ~/.claude/settings.json.
+		DetectionPaths:      []string{".claude.json"},
+		DetectionCommands:   []string{"claude"},
+		BootstrapConfigPath: ".claude/settings.json",
+		Parser:              parseClaudeConfig,
 	},
 	{
 		Name:        "Claude Desktop",
@@ -224,6 +233,15 @@ Supported agents: Claude Code, Cursor, Windsurf, VSCode/Copilot,
                   Gemini CLI, OpenCode, Codex CLI, OpenClaw, Hermes,
                   Antigravity, Devin.
 
+When the post-scan onboarding prompts run, an error onboarding one agent does
+not stop the remaining agents; a per-agent summary (onboarded / partial /
+failed) is printed at the end. A missing agent binary downgrades that agent to
+"partial" (MCP and model routing configured, managed launcher skipped) instead
+of failing it.
+
+Exit codes: 0 when at least one attempted agent onboarded (fully or
+partially), non-zero only when every attempted agent failed.
+
 Examples:
   preloop agents discover
   preloop agents discover --json`,
@@ -239,7 +257,17 @@ credential for it, back up the local config, and add a managed Preloop MCP serve
 entry to the selected agent configuration.
 
 This is the mutating companion to 'preloop agents discover'. Use --dry-run to
-preview the planned config and account changes without writing anything.`,
+preview the planned config and account changes without writing anything.
+
+A missing agent binary does not fail onboarding: the MCP and model routing
+configuration still applies and the managed launcher step is skipped with a
+warning ("partial" onboarding).
+
+Exit codes: when onboarding multiple agents (no agent argument, or --all), an
+error for one agent does not stop the others; the command exits 0 when at
+least one attempted agent onboarded (fully or partially) and non-zero only
+when every attempted agent failed. With a single agent argument, a partial
+onboarding still exits 0.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runAgentsEnroll,
 }
@@ -342,6 +370,126 @@ type mcpServerResponse struct {
 type agentOnboardingFailure struct {
 	Agent AgentConfig
 	Err   error
+}
+
+// Batch onboarding statuses reported in the end-of-run summary. "partial"
+// means the MCP/model configuration applied but an optional step (the
+// managed launcher) was skipped, e.g. because the agent binary is missing.
+const (
+	agentOnboardingStatusOnboarded = "onboarded"
+	agentOnboardingStatusPartial   = "partial"
+	agentOnboardingStatusFailed    = "failed"
+)
+
+// agentOnboardingOutcome records how a single agent fared during a batch
+// onboarding run (the discover-driven prompt loop or `onboard` without args).
+type agentOnboardingOutcome struct {
+	Agent  AgentConfig
+	Status string
+	// Reason is a one-line explanation for partial/failed outcomes.
+	Reason string
+	// MissingExecutable is true when the outcome stems from an agent binary
+	// that could not be found on PATH (drives the WSL hint).
+	MissingExecutable bool
+}
+
+// classifyAgentOnboardingOutcome converts an enrollment result into a summary
+// outcome: nil is a full onboarding, a managedLauncherSkippedError is a
+// partial onboarding, anything else is a failure.
+func classifyAgentOnboardingOutcome(agent AgentConfig, err error) agentOnboardingOutcome {
+	if err == nil {
+		return agentOnboardingOutcome{
+			Agent:  agent,
+			Status: agentOnboardingStatusOnboarded,
+		}
+	}
+	var skipErr *managedLauncherSkippedError
+	if errors.As(err, &skipErr) {
+		return agentOnboardingOutcome{
+			Agent:             agent,
+			Status:            agentOnboardingStatusPartial,
+			Reason:            skipErr.Error(),
+			MissingExecutable: true,
+		}
+	}
+	return agentOnboardingOutcome{
+		Agent:             agent,
+		Status:            agentOnboardingStatusFailed,
+		Reason:            firstErrorLine(err),
+		MissingExecutable: errors.Is(err, exec.ErrNotFound),
+	}
+}
+
+// firstErrorLine keeps summary reasons to a single line.
+func firstErrorLine(err error) string {
+	if err == nil {
+		return ""
+	}
+	line, _, _ := strings.Cut(err.Error(), "\n")
+	return strings.TrimSpace(line)
+}
+
+// printAgentOnboardingSummary prints the per-agent summary table for a batch
+// onboarding run, plus the WSL PATH hint when a missing executable was seen
+// inside a WSL environment.
+func printAgentOnboardingSummary(w io.Writer, outcomes []agentOnboardingOutcome) {
+	if len(outcomes) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "\nOnboarding summary:") //nolint:errcheck
+	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	fmt.Fprintf(tw, "  Agent\tStatus\tReason\n") //nolint:errcheck
+	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	missingExecutable := false
+	for _, outcome := range outcomes {
+		reason := outcome.Reason
+		if reason == "" {
+			reason = "-"
+		}
+		fmt.Fprintf( //nolint:errcheck
+			tw,
+			"  %s\t%s\t%s\n",
+			resolveAgentDisplayName(outcome.Agent),
+			outcome.Status,
+			reason,
+		)
+		if outcome.MissingExecutable {
+			missingExecutable = true
+		}
+	}
+	tw.Flush() //nolint:errcheck
+	if missingExecutable {
+		if hint := wslMissingExecutableHint(); hint != "" {
+			fmt.Fprintf(w, "  Hint: %s\n", hint) //nolint:errcheck
+		}
+	}
+}
+
+// agentOnboardingSummaryError implements the batch onboarding exit-code
+// convention documented in the discover/onboard help: exit 0 when at least
+// one attempted agent onboarded (fully or partially, and trivially when
+// nothing was attempted), non-zero only when every attempted agent failed.
+func agentOnboardingSummaryError(outcomes []agentOnboardingOutcome) error {
+	if len(outcomes) == 0 {
+		return nil
+	}
+	for _, outcome := range outcomes {
+		if outcome.Status != agentOnboardingStatusFailed {
+			return nil
+		}
+	}
+	return fmt.Errorf("failed to onboard all %d attempted agent(s)", len(outcomes))
+}
+
+// ignoreLauncherSkipped converts the partial-success launcher-skip marker to
+// nil for single-agent flows: the enrollment applied and the warning has
+// already been printed, so the command must exit 0.
+func ignoreLauncherSkipped(err error) error {
+	var skipErr *managedLauncherSkippedError
+	if errors.As(err, &skipErr) {
+		return nil
+	}
+	return err
 }
 
 type flowSummaryResponse struct {
@@ -659,9 +807,8 @@ func promptToOnboardDiscoveredAgents(
 	// take ~5s) and a slow upstream for one agent never blocks subsequent
 	// agents from being touched.
 	deferLiveValidate := !skipLiveValidate
-	var enrolled []AgentConfig
-	err = promptToOnboardCandidates(os.Stdin, os.Stdout, candidates, autoApprove, true, func(agent AgentConfig, approvals bool) error {
-		enrollErr := executeManagedEnrollment(agent, managedEnrollmentOptions{
+	outcomes, err := promptToOnboardCandidates(os.Stdin, os.Stdout, candidates, autoApprove, true, func(agent AgentConfig, approvals bool) error {
+		return executeManagedEnrollment(agent, managedEnrollmentOptions{
 			Client:            client,
 			SkipConfirmation:  true,
 			LiveValidate:      true,
@@ -671,20 +818,31 @@ func promptToOnboardDiscoveredAgents(
 			Input:             os.Stdin,
 			Output:            os.Stdout,
 		})
-		if enrollErr == nil {
-			enrolled = append(enrolled, agent)
-		}
-		return enrollErr
 	})
 	if err != nil {
 		return err
 	}
+	// Fully and partially onboarded agents both have live enrollments worth
+	// validating; only failed agents are excluded.
+	var enrolled []AgentConfig
+	for _, outcome := range outcomes {
+		if outcome.Status != agentOnboardingStatusFailed {
+			enrolled = append(enrolled, outcome.Agent)
+		}
+	}
 	if deferLiveValidate && len(enrolled) > 0 {
 		runDeferredLiveValidationsParallel(client, enrolled, os.Stdout)
 	}
-	return nil
+	printAgentOnboardingSummary(os.Stdout, outcomes)
+	return agentOnboardingSummaryError(outcomes)
 }
 
+// promptToOnboardCandidates walks the candidate agents, prompting per agent
+// unless autoApprove is set, and enrolls each approved agent. An error from
+// one agent's enrollment is recorded as a failed/partial outcome and the loop
+// continues with the remaining agents; only prompt I/O failures abort the
+// loop. The returned outcomes cover every attempted agent (skipped agents are
+// not included).
 func promptToOnboardCandidates(
 	reader io.Reader,
 	writer io.Writer,
@@ -692,8 +850,9 @@ func promptToOnboardCandidates(
 	autoApprove bool,
 	askApprovals bool,
 	enroll func(agent AgentConfig, approvals bool) error,
-) error {
+) ([]agentOnboardingOutcome, error) {
 	bufferedReader := bufio.NewReader(reader)
+	var outcomes []agentOnboardingOutcome
 
 	for _, agent := range candidates {
 		if !autoApprove {
@@ -707,7 +866,7 @@ func promptToOnboardCandidates(
 				fmt.Sprintf("%s %s (%s) into managed Preloop access now? (Y/n): ", action, agent.Name, resolveAgentDisplayName(agent)),
 			)
 			if err != nil {
-				return fmt.Errorf("failed to read onboarding confirmation: %w", err)
+				return outcomes, fmt.Errorf("failed to read onboarding confirmation: %w", err)
 			}
 			if !confirmed {
 				continue
@@ -715,7 +874,7 @@ func promptToOnboardCandidates(
 		}
 		agent, err := prepareAgentForEnrollment(bufferedReader, writer, agent, autoApprove)
 		if err != nil {
-			return err
+			return outcomes, err
 		}
 		// Offer the native tool-approvals hook for supported agents when the
 		// caller's enrollment flow skips its own interactive prompts (the
@@ -738,16 +897,30 @@ func promptToOnboardCandidates(
 			} else {
 				approvals, err = promptForApprovalsOptIn(bufferedReader, writer, agent)
 				if err != nil {
-					return fmt.Errorf("failed to read approvals confirmation: %w", err)
+					return outcomes, fmt.Errorf("failed to read approvals confirmation: %w", err)
 				}
 			}
 		}
-		if err := enroll(agent, approvals); err != nil {
-			return err
+		outcome := classifyAgentOnboardingOutcome(agent, enroll(agent, approvals))
+		if outcome.Status == agentOnboardingStatusFailed {
+			// Keep the batch going: one broken agent environment must not
+			// block the remaining agents from being onboarded.
+			fmt.Fprintf( //nolint:errcheck
+				writer,
+				"  Error onboarding %s: %s\n",
+				resolveAgentDisplayName(agent),
+				outcome.Reason,
+			)
+			if outcome.MissingExecutable {
+				if hint := wslMissingExecutableHint(); hint != "" {
+					fmt.Fprintf(writer, "  %s\n", hint) //nolint:errcheck
+				}
+			}
 		}
+		outcomes = append(outcomes, outcome)
 	}
 
-	return nil
+	return outcomes, nil
 }
 
 func onboardCandidatesBestEffort(
@@ -782,6 +955,12 @@ func onboardCandidatesBestEffort(
 		agentOpts.SkipConfirmation = true
 		agentOpts.DeferLiveValidate = deferLiveValidate
 		if err := enroll(prepared, agentOpts); err != nil {
+			// A skipped managed launcher is a partial success (MCP and
+			// model routing applied); count the agent as enrolled.
+			if ignoreLauncherSkipped(err) == nil {
+				enrolled = append(enrolled, prepared)
+				continue
+			}
 			failures = append(failures, agentOnboardingFailure{
 				Agent: prepared,
 				Err:   err,
@@ -802,6 +981,7 @@ func printAgentOnboardingFailures(
 		return
 	}
 	fmt.Fprintln(writer, "\nSome agents could not be onboarded:") //nolint:errcheck
+	missingExecutable := false
 	for _, failure := range failures {
 		fmt.Fprintf( //nolint:errcheck
 			writer,
@@ -809,6 +989,14 @@ func printAgentOnboardingFailures(
 			resolveAgentDisplayName(failure.Agent),
 			failure.Err,
 		)
+		if errors.Is(failure.Err, exec.ErrNotFound) {
+			missingExecutable = true
+		}
+	}
+	if missingExecutable {
+		if hint := wslMissingExecutableHint(); hint != "" {
+			fmt.Fprintf(writer, "  %s\n", hint) //nolint:errcheck
+		}
 	}
 	fmt.Fprintln( //nolint:errcheck
 		writer,
@@ -1017,26 +1205,28 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 
-		var enrolled []AgentConfig
 		// askApprovals=false: executeManagedEnrollment prompts for the
 		// approvals hook itself when this path runs interactively.
-		err = promptToOnboardCandidates(os.Stdin, os.Stdout, candidates, autoApprove, false, func(a AgentConfig, _ bool) error {
+		outcomes, err := promptToOnboardCandidates(os.Stdin, os.Stdout, candidates, autoApprove, false, func(a AgentConfig, _ bool) error {
 			agentOpts := opts
 			agentOpts.SkipConfirmation = autoApprove
 			agentOpts.DeferLiveValidate = deferLiveValidate
-			if enrollErr := executeManagedEnrollment(a, agentOpts); enrollErr != nil {
-				return enrollErr
-			}
-			enrolled = append(enrolled, a)
-			return nil
+			return executeManagedEnrollment(a, agentOpts)
 		})
 		if err != nil {
 			return err
 		}
+		var enrolled []AgentConfig
+		for _, outcome := range outcomes {
+			if outcome.Status != agentOnboardingStatusFailed {
+				enrolled = append(enrolled, outcome.Agent)
+			}
+		}
 		if deferLiveValidate && len(enrolled) > 0 {
 			runDeferredLiveValidationsParallel(client, enrolled, os.Stdout)
 		}
-		return nil
+		printAgentOnboardingSummary(os.Stdout, outcomes)
+		return agentOnboardingSummaryError(outcomes)
 	}
 
 	agent, err := findDiscoveredAgent(discovered, args[0])
@@ -1044,7 +1234,9 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	return executeManagedEnrollment(agent, opts)
+	// A skipped managed launcher (missing agent binary) is a partial success:
+	// the warning has been printed and the command exits 0.
+	return ignoreLauncherSkipped(executeManagedEnrollment(agent, opts))
 }
 
 func ensureAgentControlOnboarding(
@@ -1078,7 +1270,7 @@ func ensureAgentControlOnboarding(
 		agentOpts.AutoApprove = true
 		agentOpts.SkipConfirmation = true
 		agentOpts.DeferLiveValidate = false
-		if err := executeManagedEnrollment(agent, agentOpts); err != nil {
+		if err := ignoreLauncherSkipped(executeManagedEnrollment(agent, agentOpts)); err != nil {
 			return err
 		}
 	}
@@ -2711,13 +2903,20 @@ func discoverAgents(w io.Writer, printWarnings bool) ([]AgentConfig, error) {
 }
 
 func detectInstalledAgent(home string, spec agentSpec) (string, bool) {
-	if strings.TrimSpace(spec.BootstrapConfigPath) == "" || len(spec.DetectionPaths) == 0 {
+	if strings.TrimSpace(spec.BootstrapConfigPath) == "" ||
+		(len(spec.DetectionPaths) == 0 && len(spec.DetectionCommands) == 0) {
 		return "", false
 	}
+	bootstrapPath := expandAgentConfigPath(home, filepath.Join(home, spec.BootstrapConfigPath))
 	for _, relativePath := range spec.DetectionPaths {
 		fullPath := expandAgentConfigPath(home, filepath.Join(home, relativePath))
 		if _, err := os.Stat(fullPath); err == nil {
-			return expandAgentConfigPath(home, filepath.Join(home, spec.BootstrapConfigPath)), true
+			return bootstrapPath, true
+		}
+	}
+	for _, command := range spec.DetectionCommands {
+		if _, err := exec.LookPath(command); err == nil {
+			return bootstrapPath, true
 		}
 	}
 	return "", false

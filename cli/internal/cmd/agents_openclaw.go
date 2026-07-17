@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -550,8 +551,18 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	if err := syncClaudeCodeManagedMCPServer(agent, baseURL, credentialResp.Token); err != nil {
 		return err
 	}
+	var launcherSkipped *managedLauncherSkippedError
 	if err := syncManagedAgentRuntimeArtifacts(agent, baseURL, credentialResp.Token); err != nil {
-		return err
+		if !errors.As(err, &launcherSkipped) {
+			return err
+		}
+		// A missing agent binary must not fail the onboarding: the MCP and
+		// model-routing configuration above already applied, so finish the
+		// enrollment, warn, and report the agent as partially onboarded.
+		fmt.Fprintf(output, "  Warning: %s\n", launcherSkipped.Error()) //nolint:errcheck
+		if hint := wslMissingExecutableHint(); hint != "" {
+			fmt.Fprintf(output, "           %s\n", hint) //nolint:errcheck
+		}
 	}
 	if opts.Approvals && isApprovalHookSupportedAgent(agent) {
 		if err := installApprovalHooks(agent, baseURL, credentialResp.Token, output); err != nil {
@@ -791,6 +802,12 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 			"           Run: preloop agents validate %s --live\n",
 			shellQuoteAgentName(resolveAgentDisplayName(agent)),
 		)
+	}
+	if launcherSkipped != nil {
+		// Surface the skip to callers as a typed marker so batch onboarding
+		// records the agent as "partial"; single-agent callers convert it to
+		// a zero exit via ignoreLauncherSkipped.
+		return launcherSkipped
 	}
 	return nil
 }
@@ -5174,6 +5191,61 @@ func isYAMLConfigPath(path string) bool {
 
 const preloopManagedLauncherMarker = "# preloop-managed-wrapper"
 
+// managedLauncherSkippedError marks an enrollment that completed every
+// MCP/model configuration step but skipped writing the managed launcher
+// because the agent executable could not be found on PATH. Callers must
+// treat it as a partial success ("partial" in onboarding summaries and exit
+// code 0), never as a failed onboarding.
+type managedLauncherSkippedError struct {
+	CommandName string
+}
+
+func (e *managedLauncherSkippedError) Error() string {
+	return fmt.Sprintf(
+		"%s binary not found in PATH — launcher skipped; MCP and model routing configured",
+		e.CommandName,
+	)
+}
+
+// Unwrap keeps errors.Is(err, exec.ErrNotFound) working so missing-executable
+// classification (e.g. the WSL hint) sees through the skip marker.
+func (e *managedLauncherSkippedError) Unwrap() error {
+	return exec.ErrNotFound
+}
+
+// wslMissingExecutableHintText explains why an agent installed on the Windows
+// side of a WSL machine is invisible to PATH lookups inside the distro.
+const wslMissingExecutableHintText = "Running under WSL: agents installed on Windows are not on the WSL PATH — " +
+	"install the agent inside WSL or add its Windows install dir to PATH."
+
+// wslMissingExecutableHint returns the WSL PATH hint when the CLI is running
+// under WSL, and "" everywhere else.
+func wslMissingExecutableHint() string {
+	if isWSLEnvironment() {
+		return wslMissingExecutableHintText
+	}
+	return ""
+}
+
+func isWSLEnvironment() bool {
+	return detectWSLEnvironment(os.Getenv, "/proc/version")
+}
+
+// detectWSLEnvironment reports whether the process appears to run inside a
+// WSL distribution: either the WSL interop environment variables are set or
+// the kernel version string mentions Microsoft.
+func detectWSLEnvironment(getenv func(string) string, procVersionPath string) bool {
+	if strings.TrimSpace(getenv("WSL_DISTRO_NAME")) != "" ||
+		strings.TrimSpace(getenv("WSL_INTEROP")) != "" {
+		return true
+	}
+	data, err := os.ReadFile(procVersionPath)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(string(data)), "microsoft")
+}
+
 func syncManagedAgentRuntimeArtifacts(agent AgentConfig, baseURL, token string) error {
 	switch strings.ToLower(strings.TrimSpace(agent.Name)) {
 	case "gemini cli":
@@ -5228,6 +5300,11 @@ func syncManagedAgentLauncher(commandName, envFileName string, exports map[strin
 	}
 	originalPath, err := resolveManagedAgentExecutablePath(commandName, launcherPath)
 	if err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			// Missing agent binary (e.g. installed Windows-side on a WSL
+			// machine): degrade gracefully instead of failing onboarding.
+			return &managedLauncherSkippedError{CommandName: commandName}
+		}
 		return fmt.Errorf("failed to locate %s executable for managed launcher: %w", commandName, err)
 	}
 	if existing, err := os.ReadFile(launcherPath); err == nil {

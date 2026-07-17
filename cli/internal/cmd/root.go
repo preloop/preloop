@@ -48,6 +48,12 @@ API URL priority:        --url flag   > PRELOOP_URL env var   > ~/.preloop/confi
 		// arguments); merged into the daily check-in and reset on success.
 		telemetry.Increment(topLevelCommandName(cmd))
 
+		// Flag parsing and argument validation have already run by the time
+		// this hook fires, so genuine usage mistakes still print the usage
+		// text. From here on any error is a runtime failure and must not
+		// dump the full usage/flags help after the error message.
+		silenceUsageForRuntimeErrors(cmd)
+
 		// Check for updates on each invocation (cached daily)
 		if err := version.CheckForUpdate(); err != nil {
 			// Silently ignore update check errors
@@ -74,6 +80,15 @@ func topLevelCommandName(cmd *cobra.Command) string {
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() error {
 	return rootCmd.Execute()
+}
+
+// silenceUsageForRuntimeErrors marks the executing command so that errors
+// returned from its Run function print only the error, not the usage/flags
+// dump. It must be called from a hook that runs after flag parsing and
+// argument validation (e.g. PersistentPreRun) so genuine flag/argument
+// errors keep printing usage.
+func silenceUsageForRuntimeErrors(cmd *cobra.Command) {
+	cmd.SilenceUsage = true
 }
 
 func init() {

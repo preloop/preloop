@@ -172,7 +172,9 @@ func runAgentsInstallRuntime(cmd *cobra.Command, args []string) error {
 		LiveValidate:     liveValidate,
 		SkipLiveValidate: skipLiveValidate,
 	}
-	return executeManagedEnrollment(agent, opts)
+	// A skipped managed launcher (missing agent binary) is a partial success:
+	// the warning has been printed and the command exits 0.
+	return ignoreLauncherSkipped(executeManagedEnrollment(agent, opts))
 }
 
 func runRuntimeInstallCommand(command []string, writer io.Writer) error {
