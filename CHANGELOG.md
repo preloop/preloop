@@ -36,6 +36,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   optimize endpoint in every edition, so deployments can measure when users
   first see their own waste number.
 
+### Fixed
+
+- **OSS installer trust repairs** (`scripts/install-oss.sh`):
+  - **Admin email is validated at the prompt.** The installer previously
+    accepted an empty admin email and only failed at the very end of the
+    install (`create_first_user.py` requires an email), leaving the operator
+    with an account that does not exist and signups silently open. The prompt
+    now loops until a plausible address is given (or first-user creation is
+    explicitly skipped), and unattended runs (`PRELOOP_ADMIN_*`) fail fast
+    before any work when the email is missing or malformed. If first-user
+    creation still fails at runtime, the installer now ends with a loud `!!!`
+    banner — what failed, that signups are still open, and the exact retry
+    commands — and exits non-zero, instead of a warning that scrolled away.
+  - **`curl | sh` stdin theft fixed.** `docker compose exec`/`run` inherited
+    the pipe sh was still reading the script from, consuming unparsed script
+    bytes and crashing the installer mid-run ("Syntax error: Unterminated
+    quoted string"). Every docker invocation now redirects stdin from
+    `/dev/null`, and the whole script is wrapped in a `main()` invoked on the
+    last line, so a partial download or stdin consumption can never execute a
+    half-parsed script.
+  - **Docker daemon preflight.** Before doing anything, the installer verifies
+    the docker CLI exists AND the daemon answers within 10 seconds
+    (`timeout 10 docker info`, with a fallback when `timeout` is absent), and
+    that Docker Compose v2 is available — with distinct, actionable messages
+    for "not installed", "daemon not running", and "daemon wedged — restart
+    Docker Desktop". Previously a hung Docker Desktop passed the binary check
+    and the install stalled forever at the first pull with no message.
+  - **Quiet, logged docker output.** Image pulls and `compose up` chatter
+    (~3,500 lines of layer-progress redraws) now go to
+    `~/.preloop-oss/install.log`; the terminal gets a few curated status lines
+    and the log path. Failures print the last log lines inline.
+
 ## [0.11.1] - 2026-07-14
 
 ### Fixed

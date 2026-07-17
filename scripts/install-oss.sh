@@ -1,11 +1,25 @@
 #!/usr/bin/env sh
 
+# Everything below is function definitions; execution starts at the single
+# `main "$@"` call on the LAST line. That structure is deliberate: this script
+# is documented to run as `curl ... | sh`, where sh parses its input
+# incrementally from a pipe. Without the main() wrapper, a truncated download
+# executes half a script, and any child process that reads stdin (docker
+# compose exec, etc.) steals unparsed script bytes from the pipe and corrupts
+# the parse mid-file ("Unterminated quoted string"). With it, nothing runs
+# until the whole script has been read. Belt and braces: every command that
+# does not need stdin also gets an explicit `< /dev/null`.
+
 set -eu
 
 PRELOOP_REPO="${PRELOOP_REPO:-preloop/preloop}"
 PRELOOP_DEFAULT_VERSION="${PRELOOP_DEFAULT_VERSION:-}"
 PRELOOP_VERSION="${PRELOOP_VERSION:-$PRELOOP_DEFAULT_VERSION}"
 INSTALL_DIR="${INSTALL_DIR:-${HOME}/.preloop-oss}"
+
+# Full docker output (pull progress, compose up chatter) goes here instead of
+# the terminal; the happy path prints a few curated lines and this path.
+LOG_FILE="${INSTALL_DIR}/install.log"
 
 # Public base URL this instance is reached at. Everything (console, API, MCP,
 # gateway) is served through one origin: the console container reverse-proxies
@@ -38,7 +52,8 @@ SMTP_FROM_NAME="${SMTP_FROM_NAME:-Preloop}"
 PRELOOP_SKIP_SMTP="${PRELOOP_SKIP_SMTP:-}"
 
 # First user + signup lockdown. Setting username AND password runs this
-# unattended; PRELOOP_SKIP_ADMIN=1 keeps signups open and asks nothing.
+# unattended (email is validated up front: create_first_user.py requires it);
+# PRELOOP_SKIP_ADMIN=1 keeps signups open and asks nothing.
 PRELOOP_ADMIN_USERNAME="${PRELOOP_ADMIN_USERNAME:-}"
 PRELOOP_ADMIN_EMAIL="${PRELOOP_ADMIN_EMAIL:-}"
 PRELOOP_ADMIN_PASSWORD="${PRELOOP_ADMIN_PASSWORD:-}"
@@ -65,6 +80,54 @@ set_env_value() {
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
     echo "Required command not found: $1" >&2
+    exit 1
+  fi
+}
+
+# Verify docker exists AND its daemon actually answers, BEFORE any other work.
+# A present binary with a wedged daemon (the classic stuck-Docker-Desktop
+# case) would otherwise sail through `command -v docker` and then hang
+# indefinitely at the first pull with no message at all. `timeout` bounds the
+# probe where available (Linux coreutils, modern macOS); without it, fall back
+# to an unbounded probe rather than skipping the check.
+docker_preflight() {
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "Docker is not installed (the 'docker' command was not found)." >&2
+    echo "  Install Docker Engine or Docker Desktop: https://docs.docker.com/get-docker/" >&2
+    echo "  then re-run this installer." >&2
+    exit 1
+  fi
+
+  probe_status=0
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 10 docker info < /dev/null >/dev/null 2>&1 || probe_status=$?
+  else
+    docker info < /dev/null >/dev/null 2>&1 || probe_status=$?
+  fi
+
+  if [ "$probe_status" -eq 124 ]; then
+    # 124 is timeout(1)'s exit code for "command still running at the deadline".
+    echo "Docker is installed but its daemon did not respond within 10 seconds." >&2
+    echo "The daemon looks WEDGED (running but unresponsive). Restart it:" >&2
+    echo "  - Docker Desktop (macOS):   killall Docker && open -a Docker" >&2
+    echo "    then wait until it reports 'running' and re-run this installer." >&2
+    echo "  - Docker Desktop (Windows): quit Docker Desktop fully and reopen it." >&2
+    echo "  - Linux:                    sudo systemctl restart docker" >&2
+    echo "Verify with: docker info" >&2
+    exit 1
+  elif [ "$probe_status" -ne 0 ]; then
+    echo "Docker is installed but the daemon is not running." >&2
+    echo "  - Docker Desktop (Mac/Windows): open Docker Desktop and wait until" >&2
+    echo "    it says 'running', then re-run this installer." >&2
+    echo "  - Linux: sudo systemctl start docker" >&2
+    echo "Verify with: docker info" >&2
+    exit 1
+  fi
+
+  if ! docker compose version < /dev/null >/dev/null 2>&1; then
+    echo "Docker Compose v2 is required (the 'docker compose' subcommand failed)." >&2
+    echo "  Upgrade Docker, or install the compose plugin:" >&2
+    echo "  https://docs.docker.com/compose/install/" >&2
     exit 1
   fi
 }
@@ -138,6 +201,17 @@ has_tty() {
   ( : < /dev/tty; ) 2>/dev/null
 }
 
+# Plausibility check only (something@something.tld, no whitespace). The goal
+# is to reject, AT THE PROMPT, values that scripts/create_first_user.py would
+# refuse after the entire install has run — not to implement RFC 5322.
+valid_email() {
+  case "$1" in
+    *[[:space:]]*) return 1 ;;
+    ?*@?*.?*) return 0 ;;
+  esac
+  return 1
+}
+
 # Ask for the public URL. On an existing install the current URL is already
 # loaded into PRELOOP_URL, so a re-run keeps it (a plain `curl | sh` upgrade
 # must never silently reset a public instance back to localhost).
@@ -171,6 +245,15 @@ prompt_admin() {
     return
   fi
   if [ -n "$PRELOOP_ADMIN_USERNAME" ] && [ -n "$PRELOOP_ADMIN_PASSWORD" ]; then
+    # Unattended path: fail fast, BEFORE the install does any work, on an
+    # email that first-user creation would reject at the very end.
+    if ! valid_email "$PRELOOP_ADMIN_EMAIL"; then
+      echo "PRELOOP_ADMIN_EMAIL must be a plausible address (name@domain.tld)" >&2
+      echo "when PRELOOP_ADMIN_USERNAME and PRELOOP_ADMIN_PASSWORD are set:" >&2
+      echo "first-user creation requires an email and would otherwise fail at" >&2
+      echo "the very end of the install. Got: '${PRELOOP_ADMIN_EMAIL}'" >&2
+      exit 1
+    fi
     CREATE_ADMIN=1
     return
   fi
@@ -196,8 +279,32 @@ prompt_admin() {
     printf 'No username given; leaving signups open.\n' > /dev/tty
     return
   fi
-  printf 'Admin email: ' > /dev/tty
-  read -r PRELOOP_ADMIN_EMAIL < /dev/tty || PRELOOP_ADMIN_EMAIL=""
+
+  # The email is REQUIRED: scripts/create_first_user.py refuses to run without
+  # one, so accepting an empty/garbled value here would only surface as a
+  # failure after the whole install. Loop until it is plausible, or the user
+  # explicitly abandons first-user creation.
+  while :; do
+    printf 'Admin email (required; type "skip" to abandon first-user creation): ' > /dev/tty
+    if ! read -r PRELOOP_ADMIN_EMAIL < /dev/tty; then
+      PRELOOP_ADMIN_EMAIL=""
+      printf '\nNo input; leaving signups open.\n' > /dev/tty
+      return
+    fi
+    case "$PRELOOP_ADMIN_EMAIL" in
+      skip | SKIP)
+        PRELOOP_ADMIN_EMAIL=""
+        printf 'Skipping first-user creation; signups stay OPEN. Create the first user\n' > /dev/tty
+        printf 'in the browser, then set REGISTRATION_ENABLED=false in %s/.env\n' "$INSTALL_DIR" > /dev/tty
+        printf 'and re-run docker compose up -d.\n' > /dev/tty
+        return
+        ;;
+    esac
+    if valid_email "$PRELOOP_ADMIN_EMAIL"; then
+      break
+    fi
+    printf 'That does not look like an email address (expected name@domain.tld).\n' > /dev/tty
+  done
 
   # Read the password twice, without echo where the shell supports it. A typo
   # here is unrecoverable without SMTP: there is no password-reset mail.
@@ -237,7 +344,7 @@ wait_for_api() {
     if (
       cd "$INSTALL_DIR"
       # shellcheck disable=SC2086
-      docker compose $COMPOSE_ARGS exec -T api true
+      docker compose $COMPOSE_ARGS exec -T api true < /dev/null
     ) >/dev/null 2>&1; then
       return 0
     fi
@@ -249,7 +356,9 @@ wait_for_api() {
 
 # Create the operator's account, then close registration. In this order on
 # purpose: if user creation fails we leave signup open rather than locking the
-# operator out of their own instance.
+# operator out of their own instance. On failure the caller prints a loud
+# banner at the very END of the install output — a warning printed here would
+# scroll away behind the next-steps footer.
 create_admin_user() {
   echo ""
   echo "Creating the first user ..."
@@ -261,14 +370,11 @@ create_admin_user() {
       -e PRELOOP_ADMIN_USERNAME="$PRELOOP_ADMIN_USERNAME" \
       -e PRELOOP_ADMIN_EMAIL="$PRELOOP_ADMIN_EMAIL" \
       -e PRELOOP_ADMIN_PASSWORD="$PRELOOP_ADMIN_PASSWORD" \
-      api python scripts/create_first_user.py
+      api python scripts/create_first_user.py < /dev/null
   ) || admin_status=$?
 
   if [ "$admin_status" -ne 0 ]; then
-    echo "  WARNING: could not create the first user."
-    echo "  Signups stay ENABLED so you can register at ${PRELOOP_URL}."
-    echo "  Afterwards, set REGISTRATION_ENABLED=false in ${INSTALL_DIR}/.env"
-    echo "  and re-run: docker compose ${COMPOSE_ARGS} up -d api"
+    echo "  WARNING: could not create the first user — details at the END of this output."
     return 1
   fi
 
@@ -276,7 +382,7 @@ create_admin_user() {
   (
     cd "$INSTALL_DIR"
     # shellcheck disable=SC2086
-    docker compose $COMPOSE_ARGS up -d api > /dev/null 2>&1
+    docker compose $COMPOSE_ARGS up -d api < /dev/null > /dev/null 2>&1
   ) || true
   echo "Public signups are DISABLED. Invite teammates from the console."
   return 0
@@ -303,7 +409,7 @@ reset_registration_if_fresh_db() {
     cd "$INSTALL_DIR"
     # shellcheck disable=SC2086
     docker compose $COMPOSE_ARGS exec -T postgres \
-      psql -U postgres -d preloop -tAc 'SELECT count(*) FROM "user"' 2>/dev/null \
+      psql -U postgres -d preloop -tAc 'SELECT count(*) FROM "user"' < /dev/null 2>/dev/null \
       | tr -d '[:space:]'
   )" || user_count=""
   if [ "$user_count" != "0" ]; then
@@ -316,7 +422,7 @@ reset_registration_if_fresh_db() {
   (
     cd "$INSTALL_DIR"
     # shellcheck disable=SC2086
-    docker compose $COMPOSE_ARGS up -d api > /dev/null 2>&1
+    docker compose $COMPOSE_ARGS up -d api < /dev/null > /dev/null 2>&1
   ) || {
     echo "  WARNING: could not restart the API container;" >&2
     echo "  REGISTRATION_ENABLED=true may not be applied. Run manually:" >&2
@@ -579,8 +685,8 @@ activate_https() {
   cp "${INSTALL_DIR}/tls/https.conf" "${INSTALL_DIR}/tls/active.conf"
   (
     cd "$INSTALL_DIR"
-    docker compose -f docker-compose.yaml -f docker-compose.tls.yaml up -d proxy certbot
-    docker compose -f docker-compose.yaml -f docker-compose.tls.yaml exec -T proxy nginx -s reload 2>/dev/null || true
+    docker compose -f docker-compose.yaml -f docker-compose.tls.yaml up -d proxy certbot < /dev/null >> "$LOG_FILE" 2>&1
+    docker compose -f docker-compose.yaml -f docker-compose.tls.yaml exec -T proxy nginx -s reload < /dev/null 2>/dev/null || true
   )
   echo "TLS is active for https://${host}"
 }
@@ -614,7 +720,7 @@ issue_certificate() {
       --entrypoint certbot certbot certonly \
       --webroot -w /var/www/certbot \
       -d "$host" $email_arg $staging_arg \
-      --agree-tos --no-eff-email --non-interactive
+      --agree-tos --no-eff-email --non-interactive < /dev/null
   ) || certbot_status=$?
 
   if [ "$certbot_status" -ne 0 ]; then
@@ -636,74 +742,91 @@ issue_certificate() {
   return 0
 }
 
-require_command curl
-require_command docker
+# Carry REGISTRATION_ENABLED into the API. Kept in a script-owned overlay rather
+# than relying on the released compose file, so signup lockdown works even on
+# releases whose compose file predates the setting.
+write_auth_overlay() {
+  cat > "${INSTALL_DIR}/docker-compose.auth.yaml" <<'EOF'
+services:
+  api:
+    environment:
+      REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-true}
+EOF
+}
 
-VERSION="$(resolve_version)"
-TAG="v${VERSION}"
-COMPOSE_URL="https://github.com/${PRELOOP_REPO}/releases/download/${TAG}/docker-compose.release.yaml"
+main() {
+  require_command curl
+  docker_preflight
 
-mkdir -p "$INSTALL_DIR"
-load_existing_env
+  VERSION="$(resolve_version)"
+  TAG="v${VERSION}"
+  COMPOSE_URL="https://github.com/${PRELOOP_REPO}/releases/download/${TAG}/docker-compose.release.yaml"
 
-if [ -n "$PREVIOUS_VERSION" ] && [ "$PREVIOUS_VERSION" != "$VERSION" ]; then
-  echo "Upgrading Preloop ${PREVIOUS_VERSION} -> ${VERSION} in ${INSTALL_DIR}"
-elif [ -n "$PREVIOUS_VERSION" ]; then
-  echo "Re-applying Preloop ${VERSION} in ${INSTALL_DIR}"
-fi
+  mkdir -p "$INSTALL_DIR"
+  # If the log file cannot be written (exotic permissions), fall back to
+  # /dev/null rather than failing the install over logging.
+  { echo "== Preloop install $(date) ==" >> "$LOG_FILE"; } 2>/dev/null \
+    || LOG_FILE=/dev/null
+  load_existing_env
 
-curl -fsSL "$COMPOSE_URL" -o "${INSTALL_DIR}/docker-compose.yaml"
-
-prompt_url
-
-SCHEME="$(url_scheme "$PRELOOP_URL")"
-HOST="$(url_host "$PRELOOP_URL")"
-if [ -z "$SCHEME" ] || [ -z "$HOST" ]; then
-  echo "PRELOOP_URL must be an absolute URL, e.g. https://preloop.example.com" >&2
-  exit 1
-fi
-
-# An instance that was installed WITH TLS keeps TLS on every later run, so an
-# upgrade cannot leave the proxy/certbot containers orphaned (still holding
-# ports 80/443) while compose manages only the plain stack.
-WANT_TLS=0
-# Serve on port 80 through the bundled proxy even when there is no certificate,
-# so the instance is still reachable at the URL the user typed.
-HTTP_PROXY_ONLY=0
-if [ "$SCHEME" = "https" ] && [ -z "$PRELOOP_SKIP_TLS" ]; then
-  if ! is_public_hostname "$HOST"; then
-    echo "PRELOOP_URL is https but '${HOST}' is not a public DNS name;" >&2
-    echo "skipping certificate issuance (bring your own TLS)." >&2
-  elif caa_zone="$(caa_forbids_letsencrypt "$HOST")"; then
-    WANT_TLS=1
-  else
-    # Not a transient failure: no CA that Let's Encrypt controls can ever sign
-    # for this name, so retrying or fixing DNS/firewall will not help.
-    echo ""
-    echo "Cannot obtain a TLS certificate for ${HOST}."
-    echo "The DNS zone '${caa_zone}' publishes a CAA record that forbids Let's"
-    echo "Encrypt from issuing certificates for it. This is permanent — it is not"
-    echo "a DNS, firewall or rate-limit problem, and re-running will not fix it."
-    echo ""
-    echo "Cloud providers set this on their machine-generated hostnames"
-    echo "(*.googleusercontent.com, *.compute.amazonaws.com, ...). To serve"
-    echo "Preloop over HTTPS, point a domain you control at this machine and"
-    echo "re-run with PRELOOP_URL=https://your-domain."
-    echo ""
-    echo "Continuing over plain HTTP at http://${HOST} — usable for evaluation,"
-    echo "but do not put real credentials or agent traffic through it."
-    echo ""
-    PRELOOP_URL="http://${HOST}"
-    SCHEME="http"
-    HTTP_PROXY_ONLY=1
+  if [ -n "$PREVIOUS_VERSION" ] && [ "$PREVIOUS_VERSION" != "$VERSION" ]; then
+    echo "Upgrading Preloop ${PREVIOUS_VERSION} -> ${VERSION} in ${INSTALL_DIR}"
+  elif [ -n "$PREVIOUS_VERSION" ]; then
+    echo "Re-applying Preloop ${VERSION} in ${INSTALL_DIR}"
   fi
-fi
 
-prompt_smtp
-prompt_admin
+  curl -fsSL "$COMPOSE_URL" -o "${INSTALL_DIR}/docker-compose.yaml"
 
-if [ ! -f "${INSTALL_DIR}/.env" ]; then
-  cat > "${INSTALL_DIR}/.env" <<EOF
+  prompt_url
+
+  SCHEME="$(url_scheme "$PRELOOP_URL")"
+  HOST="$(url_host "$PRELOOP_URL")"
+  if [ -z "$SCHEME" ] || [ -z "$HOST" ]; then
+    echo "PRELOOP_URL must be an absolute URL, e.g. https://preloop.example.com" >&2
+    exit 1
+  fi
+
+  # An instance that was installed WITH TLS keeps TLS on every later run, so an
+  # upgrade cannot leave the proxy/certbot containers orphaned (still holding
+  # ports 80/443) while compose manages only the plain stack.
+  WANT_TLS=0
+  # Serve on port 80 through the bundled proxy even when there is no certificate,
+  # so the instance is still reachable at the URL the user typed.
+  HTTP_PROXY_ONLY=0
+  if [ "$SCHEME" = "https" ] && [ -z "$PRELOOP_SKIP_TLS" ]; then
+    if ! is_public_hostname "$HOST"; then
+      echo "PRELOOP_URL is https but '${HOST}' is not a public DNS name;" >&2
+      echo "skipping certificate issuance (bring your own TLS)." >&2
+    elif caa_zone="$(caa_forbids_letsencrypt "$HOST")"; then
+      WANT_TLS=1
+    else
+      # Not a transient failure: no CA that Let's Encrypt controls can ever sign
+      # for this name, so retrying or fixing DNS/firewall will not help.
+      echo ""
+      echo "Cannot obtain a TLS certificate for ${HOST}."
+      echo "The DNS zone '${caa_zone}' publishes a CAA record that forbids Let's"
+      echo "Encrypt from issuing certificates for it. This is permanent — it is not"
+      echo "a DNS, firewall or rate-limit problem, and re-running will not fix it."
+      echo ""
+      echo "Cloud providers set this on their machine-generated hostnames"
+      echo "(*.googleusercontent.com, *.compute.amazonaws.com, ...). To serve"
+      echo "Preloop over HTTPS, point a domain you control at this machine and"
+      echo "re-run with PRELOOP_URL=https://your-domain."
+      echo ""
+      echo "Continuing over plain HTTP at http://${HOST} — usable for evaluation,"
+      echo "but do not put real credentials or agent traffic through it."
+      echo ""
+      PRELOOP_URL="http://${HOST}"
+      SCHEME="http"
+      HTTP_PROXY_ONLY=1
+    fi
+  fi
+
+  prompt_smtp
+  prompt_admin
+
+  if [ ! -f "${INSTALL_DIR}/.env" ]; then
+    cat > "${INSTALL_DIR}/.env" <<EOF
 PRELOOP_VERSION=${VERSION}
 SECRET_KEY=$(generate_secret)
 POSTGRES_PASSWORD=$(generate_secret)
@@ -722,164 +845,200 @@ SMTP_PASSWORD=${SMTP_PASSWORD}
 SMTP_FROM=${SMTP_FROM}
 SMTP_FROM_NAME=${SMTP_FROM_NAME}
 EOF
-else
-  # Keep an existing install's secrets, but refresh the public URL.
-  tmp_env="${INSTALL_DIR}/.env.tmp"
-  grep -v -e '^PRELOOP_VERSION=' -e '^PRELOOP_URL=' -e '^ALLOWED_ORIGINS=' \
-    "${INSTALL_DIR}/.env" > "$tmp_env" || true
-  {
-    echo "PRELOOP_VERSION=${VERSION}"
-    echo "PRELOOP_URL=${PRELOOP_URL}"
-    echo "ALLOWED_ORIGINS=${PRELOOP_URL}"
-  } >> "$tmp_env"
-  # Only rewrite SMTP when this run supplied it, so an existing configuration
-  # is never silently wiped.
-  if [ -n "$SMTP_HOST" ]; then
-    grep -v -e '^SMTP_' "$tmp_env" > "${tmp_env}.2" || true
-    mv "${tmp_env}.2" "$tmp_env"
+  else
+    # Keep an existing install's secrets, but refresh the public URL.
+    tmp_env="${INSTALL_DIR}/.env.tmp"
+    grep -v -e '^PRELOOP_VERSION=' -e '^PRELOOP_URL=' -e '^ALLOWED_ORIGINS=' \
+      "${INSTALL_DIR}/.env" > "$tmp_env" || true
     {
-      echo "SMTP_HOST=${SMTP_HOST}"
-      echo "SMTP_PORT=${SMTP_PORT}"
-      echo "SMTP_USERNAME=${SMTP_USERNAME}"
-      echo "SMTP_PASSWORD=${SMTP_PASSWORD}"
-      echo "SMTP_FROM=${SMTP_FROM}"
-      echo "SMTP_FROM_NAME=${SMTP_FROM_NAME}"
+      echo "PRELOOP_VERSION=${VERSION}"
+      echo "PRELOOP_URL=${PRELOOP_URL}"
+      echo "ALLOWED_ORIGINS=${PRELOOP_URL}"
     } >> "$tmp_env"
+    # Only rewrite SMTP when this run supplied it, so an existing configuration
+    # is never silently wiped.
+    if [ -n "$SMTP_HOST" ]; then
+      grep -v -e '^SMTP_' "$tmp_env" > "${tmp_env}.2" || true
+      mv "${tmp_env}.2" "$tmp_env"
+      {
+        echo "SMTP_HOST=${SMTP_HOST}"
+        echo "SMTP_PORT=${SMTP_PORT}"
+        echo "SMTP_USERNAME=${SMTP_USERNAME}"
+        echo "SMTP_PASSWORD=${SMTP_PASSWORD}"
+        echo "SMTP_FROM=${SMTP_FROM}"
+        echo "SMTP_FROM_NAME=${SMTP_FROM_NAME}"
+      } >> "$tmp_env"
+    fi
+    mv "$tmp_env" "${INSTALL_DIR}/.env"
   fi
-  mv "$tmp_env" "${INSTALL_DIR}/.env"
-fi
 
-# Carry REGISTRATION_ENABLED into the API. Kept in a script-owned overlay rather
-# than relying on the released compose file, so signup lockdown works even on
-# releases whose compose file predates the setting.
-write_auth_overlay() {
-  cat > "${INSTALL_DIR}/docker-compose.auth.yaml" <<'EOF'
-services:
-  api:
-    environment:
-      REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-true}
-EOF
+  write_auth_overlay
+  COMPOSE_ARGS="-f docker-compose.yaml -f docker-compose.auth.yaml"
+  if [ "$WANT_TLS" -eq 1 ]; then
+    prompt_tls_email
+    write_tls_assets "$HOST"
+    COMPOSE_ARGS="-f docker-compose.yaml -f docker-compose.auth.yaml -f docker-compose.tls.yaml"
+  elif [ "$HTTP_PROXY_ONLY" -eq 1 ]; then
+    # Same proxy, HTTP server block only: the console answers on port 80 at the
+    # hostname the user gave, we just never ask for a certificate.
+    write_tls_assets "$HOST"
+    COMPOSE_ARGS="-f docker-compose.yaml -f docker-compose.auth.yaml -f docker-compose.tls.yaml"
+  elif [ -n "$PRELOOP_TLS_ENABLED" ] && [ -f "${INSTALL_DIR}/docker-compose.tls.yaml" ]; then
+    # TLS was configured previously but this run did not ask for it (e.g. an
+    # upgrade run without PRELOOP_URL). Keep managing the proxy/certbot services
+    # rather than orphaning them.
+    echo "Keeping the existing TLS proxy (set PRELOOP_SKIP_TLS=1 to stop using it)."
+    COMPOSE_ARGS="-f docker-compose.yaml -f docker-compose.auth.yaml -f docker-compose.tls.yaml"
+  fi
+
+  # Record what this install is, so the next run reproduces the same topology.
+  if [ "$WANT_TLS" -eq 1 ] || [ "$HTTP_PROXY_ONLY" -eq 1 ] || [ -n "$PRELOOP_TLS_ENABLED" ]; then
+    grep -v '^PRELOOP_TLS_ENABLED=' "${INSTALL_DIR}/.env" > "${INSTALL_DIR}/.env.tls" || true
+    echo "PRELOOP_TLS_ENABLED=1" >> "${INSTALL_DIR}/.env.tls"
+    mv "${INSTALL_DIR}/.env.tls" "${INSTALL_DIR}/.env"
+  fi
+
+  # Back up the database before an upgrade touches the schema. Migrations run
+  # automatically (the `migrate` service runs `alembic upgrade head`), and some
+  # are irreversible, so a pre-upgrade dump is the cheap safety net.
+  if [ -n "$PREVIOUS_VERSION" ] && [ "$PREVIOUS_VERSION" != "$VERSION" ]; then
+    backup_dir="${INSTALL_DIR}/backups"
+    mkdir -p "$backup_dir"
+    backup_file="${backup_dir}/preloop-${PREVIOUS_VERSION}-$(date +%Y%m%d%H%M%S).sql"
+    echo "Backing up the database before upgrading ..."
+    if (
+      cd "$INSTALL_DIR"
+      # shellcheck disable=SC2086
+      docker compose $COMPOSE_ARGS exec -T postgres \
+        pg_dump -U postgres preloop < /dev/null
+    ) > "$backup_file" 2>/dev/null; then
+      echo "  saved ${backup_file}"
+    else
+      rm -f "$backup_file"
+      echo "  WARNING: backup failed (is the old stack running?). Continuing;"
+      echo "  stop now with Ctrl-C if you want to back up manually first."
+    fi
+  fi
+
+  # Docker's layer-by-layer progress output is thousands of lines that drown
+  # the few that matter; keep it in the log file and print curated status
+  # lines instead.
+  echo ""
+  echo "Pulling Preloop ${VERSION} images (a first install downloads ~2 GB) ..."
+  echo "  full docker output: ${LOG_FILE}"
+  compose_status=0
+  (
+    cd "$INSTALL_DIR"
+    # Pull first so an upgrade fails BEFORE tearing down the running stack, and
+    # --remove-orphans drops containers for services a new version deleted.
+    # shellcheck disable=SC2086
+    docker compose $COMPOSE_ARGS pull --quiet < /dev/null >> "$LOG_FILE" 2>&1 || true
+    echo "Starting containers ..."
+    # shellcheck disable=SC2086
+    docker compose $COMPOSE_ARGS up -d --remove-orphans --quiet-pull < /dev/null >> "$LOG_FILE" 2>&1
+  ) || compose_status=$?
+
+  tls_status=0
+  if [ "$WANT_TLS" -eq 1 ] && [ "$compose_status" -eq 0 ]; then
+    issue_certificate "$HOST" || tls_status=$?
+  fi
+
+  # Before any first-user handling: an inherited REGISTRATION_ENABLED=false over
+  # a fresh database would lock everyone out (see reset_registration_if_fresh_db).
+  if [ "$compose_status" -eq 0 ]; then
+    reset_registration_if_fresh_db
+  fi
+
+  admin_created=0
+  admin_failed=0
+  if [ "$CREATE_ADMIN" -eq 1 ] && [ "$compose_status" -eq 0 ]; then
+    if wait_for_api && create_admin_user; then
+      admin_created=1
+    else
+      admin_failed=1
+    fi
+  fi
+
+  echo ""
+  echo "Preloop OSS ${VERSION} is starting in ${INSTALL_DIR}"
+  if [ "$WANT_TLS" -eq 1 ] && [ "$tls_status" -eq 0 ]; then
+    echo "Console + API: ${PRELOOP_URL}"
+  else
+    echo "Console: ${PRELOOP_URL}"
+    echo "API (direct): http://localhost:8000"
+  fi
+  echo ""
+  echo "Next steps:"
+  if [ "$admin_created" -eq 1 ]; then
+    echo "  1. Open ${PRELOOP_URL} and sign in as '${PRELOOP_ADMIN_USERNAME}'"
+  else
+    echo "  1. Open ${PRELOOP_URL} and create the first user"
+  fi
+  echo "  2. Install the CLI (if you haven't):"
+  echo "       curl -fsSL https://preloop.ai/install/cli | sh"
+  echo "  3. Connect the CLI to THIS instance (not preloop.ai):"
+  echo "       preloop login --url ${PRELOOP_URL}"
+  echo "  4. Onboard your local agents:"
+  echo "       preloop agents discover"
+  echo ""
+  if [ -n "$SMTP_HOST" ]; then
+    echo "Email: sending via ${SMTP_HOST}:${SMTP_PORT} as ${SMTP_FROM}"
+  else
+    echo "Email: NOT configured — approval emails, invitations and password"
+    echo "  resets will not be delivered. To enable, set SMTP_HOST/SMTP_PORT/"
+    echo "  SMTP_USERNAME/SMTP_PASSWORD/SMTP_FROM in ${INSTALL_DIR}/.env"
+  fi
+  echo "  (change any setting: edit ${INSTALL_DIR}/.env, then re-run 'docker compose up -d')"
+  echo ""
+  echo "Full install log: ${LOG_FILE}"
+  echo "To stop it later:"
+  echo "  cd ${INSTALL_DIR} && docker compose ${COMPOSE_ARGS} down"
+
+  if [ "$compose_status" -ne 0 ]; then
+    echo ""
+    echo "Docker Compose FAILED. Last lines of ${LOG_FILE}:"
+    tail -n 15 "$LOG_FILE" 2>/dev/null || true
+    echo ""
+    echo "Inspect further with:"
+    echo "  cd ${INSTALL_DIR} && docker compose ${COMPOSE_ARGS} logs"
+    exit "$compose_status"
+  fi
+
+  # Deliberately the LAST thing printed: this failure previously hid above the
+  # footer (and behind thousands of docker lines) while the instance silently
+  # kept public signups open and the admin the user typed a password for did
+  # not exist.
+  if [ "$admin_failed" -eq 1 ]; then
+    echo ""
+    echo "!!! =================================================================="
+    echo "!!!  FIRST USER WAS NOT CREATED"
+    echo "!!! =================================================================="
+    echo "!!!"
+    echo "!!! The install itself succeeded and Preloop is running at:"
+    echo "!!!   ${PRELOOP_URL}"
+    echo "!!! but the admin account '${PRELOOP_ADMIN_USERNAME}' does NOT exist and"
+    echo "!!! public signups are still ENABLED: anyone who can reach the instance"
+    echo "!!! can register right now."
+    echo "!!!"
+    echo "!!! Fix it with either:"
+    echo "!!!  a) Open ${PRELOOP_URL} and sign up in the browser (that becomes the"
+    echo "!!!     first account), then set REGISTRATION_ENABLED=false in"
+    echo "!!!     ${INSTALL_DIR}/.env and run:"
+    echo "!!!       cd ${INSTALL_DIR} && docker compose ${COMPOSE_ARGS} up -d api"
+    echo "!!!  b) Retry from the terminal (use the password you chose):"
+    echo "!!!       cd ${INSTALL_DIR} && docker compose ${COMPOSE_ARGS} exec -T \\"
+    echo "!!!         -e PRELOOP_ADMIN_USERNAME='${PRELOOP_ADMIN_USERNAME}' \\"
+    echo "!!!         -e PRELOOP_ADMIN_EMAIL='${PRELOOP_ADMIN_EMAIL}' \\"
+    echo "!!!         -e PRELOOP_ADMIN_PASSWORD='<your password>' \\"
+    echo "!!!         api python scripts/create_first_user.py"
+    echo "!!!     then close signups as in (a)."
+    echo "!!! =================================================================="
+    exit 1
+  fi
+
+  if [ "$tls_status" -ne 0 ]; then
+    exit "$tls_status"
+  fi
 }
 
-write_auth_overlay
-COMPOSE_ARGS="-f docker-compose.yaml -f docker-compose.auth.yaml"
-if [ "$WANT_TLS" -eq 1 ]; then
-  prompt_tls_email
-  write_tls_assets "$HOST"
-  COMPOSE_ARGS="-f docker-compose.yaml -f docker-compose.auth.yaml -f docker-compose.tls.yaml"
-elif [ "$HTTP_PROXY_ONLY" -eq 1 ]; then
-  # Same proxy, HTTP server block only: the console answers on port 80 at the
-  # hostname the user gave, we just never ask for a certificate.
-  write_tls_assets "$HOST"
-  COMPOSE_ARGS="-f docker-compose.yaml -f docker-compose.auth.yaml -f docker-compose.tls.yaml"
-elif [ -n "$PRELOOP_TLS_ENABLED" ] && [ -f "${INSTALL_DIR}/docker-compose.tls.yaml" ]; then
-  # TLS was configured previously but this run did not ask for it (e.g. an
-  # upgrade run without PRELOOP_URL). Keep managing the proxy/certbot services
-  # rather than orphaning them.
-  echo "Keeping the existing TLS proxy (set PRELOOP_SKIP_TLS=1 to stop using it)."
-  COMPOSE_ARGS="-f docker-compose.yaml -f docker-compose.auth.yaml -f docker-compose.tls.yaml"
-fi
-
-# Record what this install is, so the next run reproduces the same topology.
-if [ "$WANT_TLS" -eq 1 ] || [ "$HTTP_PROXY_ONLY" -eq 1 ] || [ -n "$PRELOOP_TLS_ENABLED" ]; then
-  grep -v '^PRELOOP_TLS_ENABLED=' "${INSTALL_DIR}/.env" > "${INSTALL_DIR}/.env.tls" || true
-  echo "PRELOOP_TLS_ENABLED=1" >> "${INSTALL_DIR}/.env.tls"
-  mv "${INSTALL_DIR}/.env.tls" "${INSTALL_DIR}/.env"
-fi
-
-# Back up the database before an upgrade touches the schema. Migrations run
-# automatically (the `migrate` service runs `alembic upgrade head`), and some
-# are irreversible, so a pre-upgrade dump is the cheap safety net.
-if [ -n "$PREVIOUS_VERSION" ] && [ "$PREVIOUS_VERSION" != "$VERSION" ]; then
-  backup_dir="${INSTALL_DIR}/backups"
-  mkdir -p "$backup_dir"
-  backup_file="${backup_dir}/preloop-${PREVIOUS_VERSION}-$(date +%Y%m%d%H%M%S).sql"
-  echo "Backing up the database before upgrading ..."
-  if (
-    cd "$INSTALL_DIR"
-    # shellcheck disable=SC2086
-    docker compose $COMPOSE_ARGS exec -T postgres \
-      pg_dump -U postgres preloop
-  ) > "$backup_file" 2>/dev/null; then
-    echo "  saved ${backup_file}"
-  else
-    rm -f "$backup_file"
-    echo "  WARNING: backup failed (is the old stack running?). Continuing;"
-    echo "  stop now with Ctrl-C if you want to back up manually first."
-  fi
-fi
-
-compose_status=0
-(
-  cd "$INSTALL_DIR"
-  # Pull first so an upgrade fails BEFORE tearing down the running stack, and
-  # --remove-orphans drops containers for services a new version deleted.
-  # shellcheck disable=SC2086
-  docker compose $COMPOSE_ARGS pull --quiet 2>/dev/null || true
-  # shellcheck disable=SC2086
-  docker compose $COMPOSE_ARGS up -d --remove-orphans
-) || compose_status=$?
-
-tls_status=0
-if [ "$WANT_TLS" -eq 1 ] && [ "$compose_status" -eq 0 ]; then
-  issue_certificate "$HOST" || tls_status=$?
-fi
-
-# Before any first-user handling: an inherited REGISTRATION_ENABLED=false over
-# a fresh database would lock everyone out (see reset_registration_if_fresh_db).
-if [ "$compose_status" -eq 0 ]; then
-  reset_registration_if_fresh_db
-fi
-
-admin_created=0
-if [ "$CREATE_ADMIN" -eq 1 ] && [ "$compose_status" -eq 0 ]; then
-  wait_for_api
-  if create_admin_user; then
-    admin_created=1
-  fi
-fi
-
-echo ""
-echo "Preloop OSS ${VERSION} is starting in ${INSTALL_DIR}"
-if [ "$WANT_TLS" -eq 1 ] && [ "$tls_status" -eq 0 ]; then
-  echo "Console + API: ${PRELOOP_URL}"
-else
-  echo "Console: ${PRELOOP_URL}"
-  echo "API (direct): http://localhost:8000"
-fi
-echo ""
-echo "Next steps:"
-if [ "$admin_created" -eq 1 ]; then
-  echo "  1. Open ${PRELOOP_URL} and sign in as '${PRELOOP_ADMIN_USERNAME}'"
-else
-  echo "  1. Open ${PRELOOP_URL} and create the first user"
-fi
-echo "  2. Install the CLI (if you haven't):"
-echo "       curl -fsSL https://preloop.ai/install/cli | sh"
-echo "  3. Connect the CLI to THIS instance (not preloop.ai):"
-echo "       preloop login --url ${PRELOOP_URL}"
-echo "  4. Onboard your local agents:"
-echo "       preloop agents discover"
-echo ""
-if [ -n "$SMTP_HOST" ]; then
-  echo "Email: sending via ${SMTP_HOST}:${SMTP_PORT} as ${SMTP_FROM}"
-else
-  echo "Email: NOT configured — approval emails, invitations and password"
-  echo "  resets will not be delivered. To enable, set SMTP_HOST/SMTP_PORT/"
-  echo "  SMTP_USERNAME/SMTP_PASSWORD/SMTP_FROM in ${INSTALL_DIR}/.env"
-fi
-echo "  (change any setting: edit ${INSTALL_DIR}/.env, then re-run 'docker compose up -d')"
-echo ""
-echo "To stop it later:"
-echo "  cd ${INSTALL_DIR} && docker compose ${COMPOSE_ARGS} down"
-
-if [ "$compose_status" -ne 0 ]; then
-  echo ""
-  echo "Docker Compose failed. Inspect logs with:"
-  echo "  cd ${INSTALL_DIR} && docker compose ${COMPOSE_ARGS} logs"
-  exit "$compose_status"
-fi
-
-if [ "$tls_status" -ne 0 ]; then
-  exit "$tls_status"
-fi
+main "$@"
