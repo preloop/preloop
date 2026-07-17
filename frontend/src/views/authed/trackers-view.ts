@@ -149,7 +149,11 @@ export class TrackersView extends LitElement {
 
   render() {
     return html`
-      <view-header headerText="Trackers" width="narrow">
+      <view-header
+        headerText="Trackers"
+        description="Issue trackers connected to Preloop, like GitHub, GitLab, or Jira. Trackers give flows their triggers and agents their issue tools."
+        width="narrow"
+      >
         <div slot="main-column">
           <sl-button variant="primary" @click=${this._openAddTrackerForm}>
             <sl-icon slot="prefix" name="plus-lg"></sl-icon>
@@ -194,7 +198,10 @@ export class TrackersView extends LitElement {
                 ></add-tracker-modal>`
               : ''
           }
-          <tracker-list @tracker-edit=${this._handleTrackerEdit}></tracker-list>
+          <tracker-list
+            @tracker-edit=${this._handleTrackerEdit}
+            @tracker-add-request=${this._openAddTrackerForm}
+          ></tracker-list>
         </div>
       </div>
     `;

@@ -478,6 +478,64 @@ describe('RuntimeSessionsView', () => {
     window.history.replaceState({}, '', '/console/runtime-sessions');
   });
 
+  it('shows a first-run empty state when no sessions exist and no filters are active', async () => {
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.startsWith('/api/v1/runtime-sessions?')) {
+        return new Response(
+          JSON.stringify({
+            period_start: '2026-02-08T00:00:00Z',
+            period_end: '2026-03-09T23:59:59Z',
+            query: null,
+            session_source_type: null,
+            status: 'all',
+            total: 0,
+            limit: 50,
+            offset: 0,
+            items: [],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response('{}', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    const element = (await fixture(
+      html`<runtime-sessions-view></runtime-sessions-view>`
+    )) as RuntimeSessionsView;
+
+    await waitUntil(
+      () => !(element as any).loading,
+      'Runtime sessions view did not finish loading'
+    );
+    await element.updateComplete;
+
+    const content = getDeepText(element).replace(/\s+/g, ' ');
+    expect(content).to.contain('No sessions yet.');
+    expect(content).to.contain(
+      'Onboard an agent from the Agents page to see your first one.'
+    );
+    expect(content).to.not.contain('No sessions matched the current filters.');
+
+    // With a non-default filter active, blame the filters instead.
+    (element as any).searchQuery = 'nothing-matches-this';
+    await element.updateComplete;
+
+    await waitUntil(
+      () =>
+        getDeepText(element)
+          .replace(/\s+/g, ' ')
+          .includes('No sessions matched the current filters.'),
+      'Filtered empty-state copy did not render'
+    );
+    expect(getDeepText(element).replace(/\s+/g, ' ')).to.not.contain(
+      'No sessions yet.'
+    );
+  });
+
   it('renders runtime session list without blocking on session detail', async () => {
     const element = (await fixture(
       html`<runtime-sessions-view></runtime-sessions-view>`

@@ -14,6 +14,9 @@ export class SessionListPanel extends LitElement {
   @property({ type: String })
   activeSessionId: string | null = null;
 
+  @property({ type: String })
+  emptyText = '';
+
   static styles = css`
     :host {
       display: block;
@@ -160,7 +163,7 @@ export class SessionListPanel extends LitElement {
   render() {
     if (!this.sessions.length) {
       return html`<div class="empty">
-        No sessions recorded for this scope.
+        ${this.emptyText || 'No sessions recorded for this scope.'}
       </div>`;
     }
 

@@ -2172,7 +2172,7 @@ export class CostView extends AuthedElement {
     return html`
       <div class="page">
         <view-header
-          title="Cost Analytics"
+          headerText="Cost Analytics"
           description="Understand gateway spend by model, agent, session, flow, and API key."
         ></view-header>
 

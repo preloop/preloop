@@ -432,7 +432,11 @@ export class AIModelsView extends LitElement {
     };
 
     return html`
-      <view-header headerText="AI Models" width="narrow">
+      <view-header
+        headerText="AI Models"
+        description="The AI models your agents reach through the gateway. Each model gets a gateway alias; every call through it is metered and attributed to an agent and session."
+        width="narrow"
+      >
         <div slot="main-column">
           <sl-button variant="primary" @click=${this.openAddModelModal}>
             <sl-icon slot="prefix" name="plus-lg"></sl-icon> Add Model

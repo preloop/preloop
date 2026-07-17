@@ -1,4 +1,4 @@
-import { LitElement, html, css, unsafeCSS } from 'lit';
+import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import consoleStyles from '../styles/console-styles.css?inline';
 
@@ -6,6 +6,9 @@ import consoleStyles from '../styles/console-styles.css?inline';
 export class ViewHeader extends LitElement {
   @property({ type: String })
   headerText = '';
+
+  @property({ type: String })
+  description = '';
 
   @property({ type: String })
   width = '';
@@ -22,6 +25,11 @@ export class ViewHeader extends LitElement {
       h1 {
         margin: 0;
       }
+      .description {
+        margin: var(--sl-spacing-2x-small) 0 0;
+        color: var(--sl-color-neutral-500);
+        font-size: 0.9rem;
+      }
     `,
   ];
 
@@ -36,6 +44,11 @@ export class ViewHeader extends LitElement {
             </h1>
             <slot name="main-column"></slot>
           </div>
+          ${
+            this.description
+              ? html`<p class="description">${this.description}</p>`
+              : nothing
+          }
         </div>
       </div>
     `;

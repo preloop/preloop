@@ -968,7 +968,8 @@ agent.invoke(
                 `
           }
           <p class="wizard-copy">
-            Run these commands from the machine where your agents are installed.
+            Run these commands on the machine where your agents live. Takes
+            about two minutes.
           </p>
         </div>
 
@@ -990,13 +991,22 @@ agent.invoke(
           </div>
 
           <div class="command-step">
-            <div class="command-label">3. Discover and sync local agents</div>
+            <div class="command-label">
+              3. Discover and onboard local agents
+            </div>
             <div class="command-row">
               <code class="command-code">preloop agents discover</code>
               <sl-copy-button value="preloop agents discover"></sl-copy-button>
             </div>
           </div>
         </div>
+
+        <p class="wizard-copy">
+          The CLI lists what it finds — Claude Code, Cursor, Codex CLI,
+          OpenClaw, Gemini CLI and more — and asks before onboarding each one.
+          Onboarded agents appear on the Agents page; their first model call
+          shows up under Sessions.
+        </p>
       </div>
     `;
   }
@@ -1322,8 +1332,7 @@ agent.invoke(
                 <div class="wizard-header">
                   <h3 class="wizard-title">Deploy New Agent or Flow</h3>
                   <p class="wizard-copy">
-                    Select which type of deployment fits your automation
-                    scenario.
+                    Choose how the new agent should run.
                   </p>
                 </div>
 
@@ -1345,9 +1354,8 @@ agent.invoke(
                           Deploy Persistent Agent
                         </span>
                         <span class="wizard-option-description">
-                          Deploy a dedicated, persistent long-running agent node
-                          that stays active and ready to perform autonomous
-                          tasks.
+                          Run a long-lived agent that stays connected and picks
+                          up work continuously.
                         </span>
                       </span>
                     </div>
@@ -1370,8 +1378,8 @@ agent.invoke(
                           Configure Event-Driven Flow
                         </span>
                         <span class="wizard-option-description">
-                          Configure a short-lived agent that is provisioned on
-                          demand and decommissioned when execution completes.
+                          Start an agent when an event fires (issue created,
+                          webhook), stop it when the run completes.
                         </span>
                       </span>
                     </div>

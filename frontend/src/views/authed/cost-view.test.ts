@@ -1,4 +1,5 @@
 import { html, fixture, expect, waitUntil } from '@open-wc/testing';
+import type { LitElement } from 'lit';
 import sinon from 'sinon';
 import '../../components/view-header.ts';
 import './cost-view.ts';
@@ -139,5 +140,22 @@ describe('CostView', () => {
       '[role="status"][aria-busy="true"]'
     );
     expect(loading).to.exist;
+  });
+
+  it('renders the page title and description in the view header', async () => {
+    const element = (await fixture(html`<cost-view></cost-view>`)) as CostView;
+    await element.updateComplete;
+
+    const header = element.shadowRoot?.querySelector('view-header');
+    expect(header).to.exist;
+    await (header as LitElement).updateComplete;
+
+    const h1 = header?.shadowRoot?.querySelector('h1');
+    expect(h1?.textContent).to.contain('Cost Analytics');
+
+    const description = header?.shadowRoot?.querySelector('.description');
+    expect(description?.textContent).to.contain(
+      'Understand gateway spend by model, agent, session, flow, and API key.'
+    );
   });
 });

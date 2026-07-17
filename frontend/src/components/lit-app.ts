@@ -55,7 +55,6 @@ import '../views/authed/policies-view';
 import '../views/authed/audit-view';
 import '../views/authed/agents-view';
 import '../views/authed/agent-detail-view';
-import '../views/authed/onboarding-view';
 import './app-header';
 import './app-footer';
 import './update-banner';
@@ -470,7 +469,14 @@ export class LitApp extends LitElement {
           { path: '/runtime-sessions', component: 'runtime-sessions-view' },
           { path: '/agents', component: 'agents-view' },
           { path: '/agents/:agentId', component: 'agent-detail-view' },
-          { path: '/onboarding', component: 'onboarding-view' },
+          {
+            path: '/onboarding',
+            action: (_context, commands) => {
+              // Legacy onboarding page removed; agents onboard from the
+              // Agents page (or the dashboard get-started wizard).
+              return commands.redirect('/console/agents');
+            },
+          },
           { path: 'cost', component: 'cost-view' },
           { path: '/api-usage', component: 'api-usage-view' },
           { path: 'settings', redirect: '/console/settings/profile' },

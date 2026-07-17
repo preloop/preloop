@@ -67,6 +67,13 @@ describe('FlowsView', () => {
     const header = element.shadowRoot?.querySelector('view-header');
     expect(header).to.exist;
     expect(header?.getAttribute('headerText')).to.equal('Flows');
+
+    // The section description renders via the shared view-header prop, not an
+    // inline banner (keeps Flows consistent with the other console views).
+    expect(header?.getAttribute('description')).to.contain(
+      'Event-driven agent runs.'
+    );
+    expect(element.shadowRoot?.querySelector('.proxy-notice')).to.not.exist;
   });
 
   it('shows empty state when no flows', async () => {

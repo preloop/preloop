@@ -53,6 +53,7 @@ const AVAILABLE_AGENT_KINDS = [
   { value: 'openclaw', label: 'OpenClaw' },
   { value: 'opencode', label: 'OpenCode' },
   { value: 'claude_code', label: 'Claude Code' },
+  { value: 'claude_desktop', label: 'Claude Desktop' },
   { value: 'codex', label: 'Codex CLI' },
   { value: 'gemini_cli', label: 'Gemini CLI' },
   { value: 'hermes', label: 'Hermes' },
@@ -63,9 +64,44 @@ const AVAILABLE_AGENT_KINDS = [
   { value: 'flows', label: 'Flows' },
 ];
 
-const DEFAULT_AGENT_KINDS = AVAILABLE_AGENT_KINDS.map((k) => k.value).filter(
-  (k) => k !== 'flows'
-);
+const AGENT_KIND_VALUES = AVAILABLE_AGENT_KINDS.map((k) => k.value);
+
+const DEFAULT_AGENT_KINDS = AGENT_KIND_VALUES.filter((k) => k !== 'flows');
+
+// Filter selections persist as a *hidden* list so agent kinds added in later
+// releases stay visible by default — a kind absent from storage means
+// "unknown at save time", never "deselected by the user". (A `claude_desktop`
+// agent was once invisible because the persisted selected-list predated it.)
+const HIDDEN_AGENT_KINDS_KEY = 'preloopAgentKindsHidden';
+const LEGACY_AGENT_KINDS_KEY = 'preloopAgentKinds';
+
+function loadInitialAgentKinds(): string[] {
+  try {
+    const hidden = localStorage.getItem(HIDDEN_AGENT_KINDS_KEY);
+    if (hidden) {
+      const hiddenKinds: string[] = JSON.parse(hidden);
+      return AGENT_KIND_VALUES.filter((v) => !hiddenKinds.includes(v));
+    }
+    const legacy = localStorage.getItem(LEGACY_AGENT_KINDS_KEY);
+    if (legacy) {
+      const selected: string[] = JSON.parse(legacy);
+      // Legacy selected-list saves predate `claude_desktop`; its absence
+      // there means "unknown at save time", not "deselected by the user".
+      return AGENT_KIND_VALUES.filter(
+        (v) => selected.includes(v) || v === 'claude_desktop'
+      );
+    }
+  } catch (e) {}
+  return DEFAULT_AGENT_KINDS;
+}
+
+function persistAgentKinds(selected: string[]): void {
+  try {
+    const hidden = AGENT_KIND_VALUES.filter((v) => !selected.includes(v));
+    localStorage.setItem(HIDDEN_AGENT_KINDS_KEY, JSON.stringify(hidden));
+    localStorage.removeItem(LEGACY_AGENT_KINDS_KEY);
+  } catch (e) {}
+}
 
 const CANVAS_LAYOUT_VERSION = 'polygon-rings-v1';
 const CANVAS_CARD_HALF_WIDTH = 160;
@@ -138,13 +174,7 @@ export class AgentsView extends LitElement {
   @state() private loading = true;
   @state() private error: string | null = null;
   @state() private searchQuery = '';
-  @state() private agentKinds: string[] = (() => {
-    try {
-      const saved = localStorage.getItem('preloopAgentKinds');
-      if (saved) return JSON.parse(saved);
-    } catch (e) {}
-    return DEFAULT_AGENT_KINDS;
-  })();
+  @state() private agentKinds: string[] = loadInitialAgentKinds();
   @state() private lastSeenAfter = 'all';
   @state() private flows: any[] = [];
   @state() private aiModels: AIModel[] = [];
@@ -888,12 +918,20 @@ export class AgentsView extends LitElement {
     };
 
     const selectedAgentKinds = this.agentKinds.filter((k) => k !== 'flows');
-    if (this.agentKinds.length === AVAILABLE_AGENT_KINDS.length) {
-      // Send nothing, backend will return everything by default
+    const allAgentKindsSelected = AVAILABLE_AGENT_KINDS.every(
+      (k) => k.value === 'flows' || selectedAgentKinds.includes(k.value)
+    );
+    let skipAgentsFetch = false;
+    if (allAgentKindsSelected) {
+      // Send no kind filter so the backend returns everything — including
+      // agent kinds this UI does not know about yet. Sending an explicit
+      // allowlist here is what once made `claude_desktop` agents invisible.
     } else if (selectedAgentKinds.length > 0) {
       params.agentKind = selectedAgentKinds.join(',');
     } else {
-      params.agentKind = '__none__'; // Send a dummy value so no agents match this request
+      // Every agent kind is hidden — nothing can match, so skip the agents
+      // API call entirely and render the filtered-empty state locally.
+      skipAgentsFetch = true;
     }
     // We handle the 'flows' display separately in frontend
     const includeFlows = this.agentKinds.includes('flows');
@@ -949,9 +987,21 @@ export class AgentsView extends LitElement {
     try {
       // Agent list first — gateway summary is refreshed separately so it never
       // blocks first paint (cached value may already be showing).
+      const emptyAgentsData: AccountManagedAgentListResponse = {
+        query: params.query ?? null,
+        agent_kind: null,
+        last_seen_after: params.lastSeenAfter ?? null,
+        status: 'all',
+        total: 0,
+        limit: params.limit ?? 50,
+        offset: 0,
+        items: [],
+      };
       const [agentsData, flowsData, modelsData, featuresData, users] =
         await Promise.all([
-          getAccountAgents(params),
+          skipAgentsFetch
+            ? Promise.resolve(emptyAgentsData)
+            : getAccountAgents(params),
           getFlows(),
           getAIModels().catch(() => [] as AIModel[]),
           getFeatures().catch(() => ({ features: {}, plugins: [] })),
@@ -959,12 +1009,6 @@ export class AgentsView extends LitElement {
         ]);
       this.aiModels = modelsData;
       void this.refreshGatewaySummary();
-
-      // Handle custom local empty case for dummy filter
-      if (params.agentKind === '__none__') {
-        agentsData.items = [];
-        agentsData.total = 0;
-      }
 
       // Check if a new agent was registered while the dialog is open
       if (
@@ -1654,7 +1698,7 @@ export class AgentsView extends LitElement {
       this.agentKinds = updated;
     }
 
-    localStorage.setItem('preloopAgentKinds', JSON.stringify(this.agentKinds));
+    persistAgentKinds(this.agentKinds);
     void this.loadAgents();
   }
 
@@ -3476,7 +3520,11 @@ export class AgentsView extends LitElement {
         </sl-dialog>
 
         <div class="content-bounds">
-          <view-header headerText="Agents" width="extra-wide">
+          <view-header
+            headerText="Agents"
+            description="Agents connected to Preloop — their gateway credentials, MCP access, and live status. Onboard agents you already run with the CLI, or deploy new ones."
+            width="extra-wide"
+          >
             <div
               slot="main-column"
               style="display: flex; gap: var(--sl-spacing-small); align-items: center;"
@@ -3499,13 +3547,6 @@ export class AgentsView extends LitElement {
               </sl-button>
             </div>
           </view-header>
-
-          <div
-            style="color: var(--sl-color-neutral-500); font-size: 0.9rem; margin-top: -12px; margin-bottom: var(--sl-spacing-large);"
-          >
-            Connections, telemetry, and live sessions managed by the Preloop
-            gateway
-          </div>
 
           <div class="agents-toolbar">
             <form class="filters" @submit=${this.handleSearchSubmit}>

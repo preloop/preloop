@@ -623,7 +623,11 @@ export class ApprovalsView extends AuthedElement {
     }
 
     return html`
-      <view-header headerText="Approval Requests" width="wide">
+      <view-header
+        headerText="Approval Requests"
+        description="Tool calls that waited for a human decision — who approved, who denied, and how long it took. Choose which tools require approval in Tools."
+        width="wide"
+      >
         <sl-button href="/console/tools" size="small">
           <sl-icon slot="prefix" name="gear"></sl-icon>
           Configure Approvals

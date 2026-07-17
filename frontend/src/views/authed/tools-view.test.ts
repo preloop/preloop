@@ -125,6 +125,63 @@ describe('ToolsView (approvals + conditions)', () => {
     invalidateApiCaches();
   });
 
+  it('renders the summary stats with correct labels and an unavailable note', async () => {
+    const availableTool = {
+      name: 'example_tool',
+      description: 'Example tool',
+      source: 'builtin',
+      source_id: null,
+      source_name: 'Built-in',
+      schema: {},
+      is_enabled: true,
+      is_supported: true,
+      approval_workflow_id: null,
+      has_approval_condition: false,
+      config_id: null,
+    };
+    const unavailableTool = {
+      ...availableTool,
+      name: 'tracker_tool',
+      description: 'Needs a tracker',
+      is_supported: false,
+      unsupported_reason: 'Requires a connected tracker',
+    };
+
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/api/v1/tools')) {
+        return new Response(JSON.stringify([availableTool, unavailableTool]), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/api/v1/features')) {
+        return new Response(JSON.stringify({ features: {} }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response('[]', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    const el = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
+    await waitUntil(
+      () => el.shadowRoot?.querySelector('.summary-table') !== null,
+      'Summary table did not render'
+    );
+
+    const summary = el.shadowRoot?.querySelector('.summary-table');
+    expect(summary?.textContent).to.contain('Total tools');
+    expect(summary?.textContent).to.not.contain('toolss');
+
+    const note = el.shadowRoot?.querySelector('.unavailable-note');
+    expect(note).to.exist;
+    expect(note?.textContent).to.contain('Requires a connected tracker');
+  });
+
   it('does not create tool configuration twice when adding a rule immediately after toggling enabled', async () => {
     const element = (await fixture(
       html`<tools-view></tools-view>`

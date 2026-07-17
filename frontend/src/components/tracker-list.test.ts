@@ -81,7 +81,7 @@ describe('TrackerList', () => {
     expect(trackerItems).to.have.lengthOf(2);
   });
 
-  it('renders empty state when no trackers', async () => {
+  it('renders an informative empty state when no trackers', async () => {
     fetchStub.resolves(
       new Response(JSON.stringify([]), {
         status: 200,
@@ -94,14 +94,30 @@ describe('TrackerList', () => {
     )) as TrackerList;
 
     await waitUntil(
-      () => el.shadowRoot?.querySelector('.tracker-grid') !== null,
-      'Tracker grid did not render'
+      () => el.shadowRoot?.querySelector('.empty-state') !== null,
+      'Empty state did not render'
     );
 
     const trackerItems = el.shadowRoot?.querySelectorAll('tracker-item');
     expect(trackerItems).to.have.lengthOf(0);
-    const grid = el.shadowRoot?.querySelector('.tracker-grid');
-    expect(grid).to.exist;
+
+    const emptyState = el.shadowRoot?.querySelector('.empty-state');
+    expect(emptyState?.textContent).to.contain('No trackers connected.');
+    expect(emptyState?.textContent).to.contain(
+      'Connect GitHub, GitLab, or Jira'
+    );
+
+    // The CTA asks the parent view to open the add-tracker form.
+    const addRequested = new Promise<boolean>((resolve) => {
+      el.addEventListener('tracker-add-request', () => resolve(true), {
+        once: true,
+      });
+    });
+    const cta = emptyState?.querySelector('sl-button') as HTMLElement;
+    expect(cta).to.exist;
+    expect(cta.textContent).to.contain('Add New Tracker');
+    cta.click();
+    expect(await addRequested).to.equal(true);
   });
 
   it('renders error state when fetch fails', async () => {

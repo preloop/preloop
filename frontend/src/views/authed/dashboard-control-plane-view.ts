@@ -1128,7 +1128,12 @@ export class DashboardView extends AuthedElement {
 
   private dismissWelcomeCard(): void {
     this.welcomeCardDismissed = true;
-    localStorage.setItem('dashboard_welcome_dismissed', 'true');
+    // Only persist the dismissal once at least one agent is onboarded, so a
+    // stray click can't permanently erase onboarding guidance for a user who
+    // still has zero agents (session-only dismissal until then).
+    if (this.managedAgents.length > 0) {
+      localStorage.setItem('dashboard_welcome_dismissed', 'true');
+    }
   }
 
   private toggleGatewayMetrics(): void {
@@ -2605,9 +2610,10 @@ export class DashboardView extends AuthedElement {
           size="small"
           variant="text"
           style="position: absolute; right: 0; top: 0;"
+          aria-label="Dismiss get started"
           @click=${this.dismissWelcomeCard}
         >
-          <sl-icon name="x-lg"></sl-icon>
+          <sl-icon name="x-lg" label="Dismiss get started"></sl-icon>
         </sl-button>
 
         <img
@@ -4008,6 +4014,13 @@ export class DashboardView extends AuthedElement {
           ${
             this.showBudgetDialog
               ? html`
+                  <p
+                    style="margin: 0 0 var(--sl-spacing-medium); color: var(--sl-color-neutral-500); font-size: 0.9rem;"
+                  >
+                    Spending limits for the account or individual agents. Soft
+                    limits notify you; hard limits stop further model calls
+                    through the gateway.
+                  </p>
                   <budget-policy-editor
                     billingEnabled
                     @budget-policies-changed=${this.handleBudgetPoliciesChanged}
