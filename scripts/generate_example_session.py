@@ -301,13 +301,17 @@ def _run_logs_result() -> str:
     lines.extend(
         [
             "2026-07-18T09:16:12.771Z   FAIL  src/cart/total.test.ts",
-            "2026-07-18T09:16:12.772Z     ● cart total rounds line items to "
-            "the nearest cent",
+            (
+                "2026-07-18T09:16:12.772Z     ● cart total rounds line items "
+                "to the nearest cent"
+            ),
             "2026-07-18T09:16:12.774Z       expect(received).toBe(expected)",
             "2026-07-18T09:16:12.775Z       Expected: 1999",
             "2026-07-18T09:16:12.776Z       Received: 1998",
-            "2026-07-18T09:16:12.780Z       at Object.<anonymous> "
-            "(src/cart/total.test.ts:42:26)",
+            (
+                "2026-07-18T09:16:12.780Z       at Object.<anonymous> "
+                "(src/cart/total.test.ts:42:26)"
+            ),
             "2026-07-18T09:16:13.020Z Tests: 1 failed, 316 passed, 317 total",
             "2026-07-18T09:16:13.402Z ##[error]Process completed with exit code 1.",
         ]
