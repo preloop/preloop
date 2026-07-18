@@ -5,7 +5,12 @@ Tests use real webhook payload structures from GitLab, GitHub, and Jira.
 """
 
 import pytest
+from preloop.models.models.flow_execution import TRIGGER_SUBJECT_KEY
 from preloop.sync.event_normalizer import (
+    SUBJECT_KEY,
+    attach_trigger_subject,
+    extract_trigger_subject,
+    humanize_event_type,
     normalize_event_type,
     extract_filter_fields,
 )
@@ -16,6 +21,41 @@ from preloop.sync.webhook_payloads import (
     GITHUB_ISSUE_CLOSED,
     JIRA_ISSUE_CREATED,
 )
+
+# Standardized event envelopes (see preloop.sync.tasks) for PR/MR triggers.
+# Declared here rather than in webhook_payloads so the shared fixture module
+# stays focused on the raw webhook bodies it already provides.
+GITHUB_PULL_REQUEST_UPDATED = {
+    "source": "github",
+    "type": "pull_request_updated",
+    "tracker_id": "11111111-1111-1111-1111-111111111111",
+    "payload": {
+        "action": "synchronize",
+        "repository": {"full_name": "preloop/preloop"},
+        "pull_request": {
+            "number": 78,
+            "title": "Add subject to executions",
+            "html_url": "https://github.com/preloop/preloop/pull/78",
+            "head": {"sha": "5167595cb0a94f2e1d3c8a7b6e5f4d3c2b1a0987"},
+        },
+    },
+}
+
+GITLAB_MERGE_REQUEST_UPDATED = {
+    "source": "gitlab",
+    "type": "merge_request_updated",
+    "tracker_id": "22222222-2222-2222-2222-222222222222",
+    "payload": {
+        "object_kind": "merge_request",
+        "project": {"path_with_namespace": "acme/backend"},
+        "object_attributes": {
+            "iid": 45,
+            "title": "Tighten retries",
+            "url": "https://gitlab.com/acme/backend/-/merge_requests/45",
+            "last_commit": {"id": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"},
+        },
+    },
+}
 
 
 class TestEventNormalization:
@@ -316,3 +356,188 @@ class TestUUIDSerialization:
         serialized = serialize_uuids(data)
 
         assert serialized == data
+
+
+class TestHumanizeEventType:
+    """Test conversion of normalized event types to display labels."""
+
+    def test_known_event_type_uses_curated_label(self):
+        """Known event types map to the same labels the flow editor shows."""
+        assert humanize_event_type("pull_request_updated") == "Pull Request Updated"
+        assert humanize_event_type("merge_request_merged") == "Merge Request Merged"
+        assert humanize_event_type("push") == "Push to Repository"
+
+    def test_unknown_event_type_falls_back_to_title_case(self):
+        """Unknown/future event types still render readably, not as slugs."""
+        assert humanize_event_type("pull_request_auto_merged") == (
+            "Pull Request Auto Merged"
+        )
+
+    def test_missing_event_type_returns_empty_string(self):
+        """No event type yields an empty label rather than 'None'."""
+        assert humanize_event_type(None) == ""
+        assert humanize_event_type("") == ""
+
+
+class TestExtractTriggerSubject:
+    """Test the compact subject derived for flow execution list rows."""
+
+    def test_github_pull_request_subject(self):
+        """A GitHub PR event yields repo, number, event label and short SHA."""
+        subject = extract_trigger_subject(GITHUB_PULL_REQUEST_UPDATED)
+
+        assert subject["text"] == (
+            "preloop/preloop #78 · Pull Request Updated · 5167595c"
+        )
+        assert subject["repo"] == "preloop/preloop"
+        assert subject["reference"] == "#78"
+        assert subject["commit"] == "5167595c"
+        assert subject["url"] == "https://github.com/preloop/preloop/pull/78"
+        assert subject["title"] == "Add subject to executions"
+
+    def test_gitlab_merge_request_subject(self):
+        """A GitLab MR event uses GitLab's !N convention and last_commit."""
+        subject = extract_trigger_subject(GITLAB_MERGE_REQUEST_UPDATED)
+
+        assert subject["text"] == "acme/backend !45 · Merge Request Updated · a1b2c3d4"
+        assert subject["repo"] == "acme/backend"
+        assert subject["reference"] == "!45"
+        assert subject["commit"] == "a1b2c3d4"
+        assert subject["url"] == "https://gitlab.com/acme/backend/-/merge_requests/45"
+
+    def test_github_issue_subject_has_no_commit(self):
+        """Issue events identify by repo and number; there is no commit."""
+        subject = extract_trigger_subject(
+            {
+                "source": "github",
+                "type": "issue_opened",
+                "payload": GITHUB_ISSUE_OPENED,
+            }
+        )
+
+        assert subject["text"] == "octocat/Hello-World #1 · Issue Opened"
+        assert "commit" not in subject
+
+    def test_github_push_subject_uses_branch_and_head_commit(self):
+        """Push events identify by branch plus the head commit SHA."""
+        subject = extract_trigger_subject(
+            {
+                "source": "github",
+                "type": "push",
+                "payload": {
+                    "ref": "refs/heads/main",
+                    "repository": {"full_name": "preloop/preloop"},
+                    "head_commit": {"id": "deadbeefcafe1234"},
+                    "compare": "https://github.com/preloop/preloop/compare/a...b",
+                },
+            }
+        )
+
+        assert subject["text"] == (
+            "preloop/preloop main · Push to Repository · deadbeef"
+        )
+        assert subject["url"] == "https://github.com/preloop/preloop/compare/a...b"
+
+    def test_gitlab_push_falls_back_to_checkout_sha(self):
+        """GitLab push events carry checkout_sha rather than a head commit."""
+        subject = extract_trigger_subject(
+            {
+                "source": "gitlab",
+                "type": "push",
+                "payload": {
+                    "ref": "refs/heads/release",
+                    "project": {"path_with_namespace": "acme/backend"},
+                    "checkout_sha": "0123456789abcdef",
+                },
+            }
+        )
+
+        assert subject["text"] == "acme/backend release · Push to Repository · 01234567"
+
+    def test_jira_issue_subject_uses_issue_key(self):
+        """Jira has no repo or commit, so the issue key carries the identity."""
+        subject = extract_trigger_subject(
+            {
+                "source": "jira",
+                "type": "issue_updated",
+                "payload": JIRA_ISSUE_CREATED,
+            }
+        )
+
+        assert subject["reference"]
+        assert "Issue Updated" in subject["text"]
+        assert "commit" not in subject
+
+    def test_test_mode_overrides_event_label(self):
+        """Manually triggered runs are labelled as such."""
+        subject = extract_trigger_subject(
+            {"source": "manual", "type": None, "test_mode": True}
+        )
+
+        assert subject["text"] == "Manual Test Run"
+
+    def test_unknown_source_still_yields_event_label(self):
+        """An unrecognised trigger source degrades to the event label alone."""
+        subject = extract_trigger_subject(
+            {"source": "webhook", "type": "webhook", "payload": {}}
+        )
+
+        assert subject["text"] == "Webhook"
+
+    def test_returns_none_when_nothing_identifying(self):
+        """With no source, type or payload there is no subject to store."""
+        assert extract_trigger_subject({}) is None
+        assert extract_trigger_subject({"source": "github", "payload": {}}) is None
+
+    def test_non_dict_input_is_tolerated(self):
+        """Malformed trigger data must not raise during execution creation."""
+        assert extract_trigger_subject(None) is None
+        assert extract_trigger_subject("not a dict") is None
+
+    def test_malformed_payload_does_not_raise(self):
+        """Unexpected payload shapes degrade instead of blowing up."""
+        subject = extract_trigger_subject(
+            {
+                "source": "github",
+                "type": "pull_request_updated",
+                "payload": {"pull_request": "unexpected", "repository": None},
+            }
+        )
+
+        assert subject["text"] == "Pull Request Updated"
+
+
+class TestAttachTriggerSubject:
+    """Test persistence of the subject onto the trigger details snapshot."""
+
+    def test_attaches_subject_under_reserved_key(self):
+        """The subject is stored under the key the CRUD layer projects."""
+        details = dict(GITHUB_PULL_REQUEST_UPDATED)
+
+        attach_trigger_subject(details)
+
+        assert details[TRIGGER_SUBJECT_KEY]["text"] == (
+            "preloop/preloop #78 · Pull Request Updated · 5167595c"
+        )
+
+    def test_returns_same_object(self):
+        """Callers may use the return value or the mutated dict."""
+        details = dict(GITHUB_PULL_REQUEST_UPDATED)
+
+        assert attach_trigger_subject(details) is details
+
+    def test_no_subject_leaves_snapshot_untouched(self):
+        """Nothing identifying means no empty blob is written."""
+        details = {"source": "github", "payload": {}}
+
+        attach_trigger_subject(details)
+
+        assert TRIGGER_SUBJECT_KEY not in details
+
+    def test_non_dict_input_is_returned_unchanged(self):
+        """Guard against malformed snapshots reaching execution creation."""
+        assert attach_trigger_subject(None) is None
+
+    def test_subject_key_matches_model_constant(self):
+        """The writer and the CRUD reader must agree on the storage key."""
+        assert SUBJECT_KEY == TRIGGER_SUBJECT_KEY

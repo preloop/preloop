@@ -50,6 +50,9 @@ class ApprovalRequestUpdate(BaseModel):
     ai_model: Optional[str] = None
     ai_confidence: Optional[float] = None
     ai_reasoning: Optional[str] = None
+    # Bypass tracking (auto-approved without a human under a time-boxed bypass)
+    auto_approved_reason: Optional[str] = None
+    auto_approval_bypass_id: Optional[UUID] = None
 
 
 class ApprovalRequestResponse(ApprovalRequestBase):
@@ -77,6 +80,28 @@ class ApprovalRequestResponse(ApprovalRequestBase):
     ai_model: Optional[str] = None
     ai_confidence: Optional[float] = None
     ai_reasoning: Optional[str] = None
+    # Bypass tracking. Set when a time-boxed ApprovalBypass resolved this
+    # request instead of a human. Surfaces MUST render these distinctly and
+    # MUST NOT count them as human approvals in approval-rate stats.
+    auto_approved_reason: Optional[str] = None
+    auto_approval_bypass_id: Optional[UUID] = None
+
+    @computed_field
+    def was_bypassed(self) -> bool:
+        """True when a bypass auto-approved this request without a human."""
+        return self.auto_approved_reason is not None
+
+    @computed_field
+    def decided_by_human(self) -> bool:
+        """True only when a person actually made this decision.
+
+        The single field every statistic should filter on. A request is a human
+        decision only if it reached a terminal decided state without an AI
+        judging it and without a bypass skipping it.
+        """
+        if self.status not in ("approved", "declined"):
+            return False
+        return not self.decided_by_ai and self.auto_approved_reason is None
 
     # Computed fields for backward compatibility
     @computed_field

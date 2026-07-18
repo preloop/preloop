@@ -145,6 +145,50 @@ def _resolve_direct_ai_model_runtime(ai_model: AIModel) -> ResolvedModelRuntime:
     )
 
 
+def gateway_model_alias_candidates(ai_model: AIModel) -> set[str]:
+    """Return every alias spelling that addresses one model on the gateway.
+
+    The gateway's model resolver accepts both a model's canonical alias
+    (``anthropic/claude-opus-4-1``) and its bare provider-suffix form
+    (``claude-opus-4-1``). Governance decisions must therefore treat all of
+    those spellings as one model rather than as distinct policy keys.
+
+    Args:
+        ai_model: The already-resolved model to describe.
+
+    Returns:
+        The spellings that resolve to ``ai_model``; empty only for a model
+        that carries no identifier and no configured alias.
+    """
+    candidates: set[str] = set()
+    gateway_config = _get_gateway_config(ai_model)
+
+    if gateway_config.get("enabled"):
+        # Only resolve the full runtime for gateway models: the direct-provider
+        # branch resolves secrets, which the budget preflight must not trigger.
+        runtime_alias = resolve_ai_model_runtime(ai_model).model_gateway_model_alias
+        if runtime_alias:
+            candidates.add(runtime_alias.strip())
+
+    configured_alias = gateway_config.get("model_alias")
+    if isinstance(configured_alias, str) and configured_alias.strip():
+        candidates.add(configured_alias.strip())
+
+    model_identifier = (ai_model.model_identifier or "").strip()
+    if model_identifier:
+        candidates.add(model_identifier)
+        candidates.add(_build_default_gateway_alias(ai_model))
+
+    # The resolver's suffix match means a prefixed alias is also reachable by
+    # its bare tail, so both halves name the same model.
+    for alias in list(candidates):
+        _, separator, tail = alias.partition("/")
+        if separator and tail.strip():
+            candidates.add(tail.strip())
+
+    return {candidate for candidate in candidates if candidate}
+
+
 def resolve_ai_model_runtime(
     ai_model: AIModel, *, allow_gateway: bool = True
 ) -> ResolvedModelRuntime:

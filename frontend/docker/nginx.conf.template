@@ -224,6 +224,24 @@ server {
         try_files /resources/$1.html /index.html;
     }
 
+    # Blog index (/blog): prerender-first, same as /vs/ and /resources/. Only
+    # SaaS builds emit blog/index.html; self-hosted builds fall through to the
+    # SPA, which has no /blog route registered and redirects home.
+    location = /blog {
+        try_files /blog/index.html /index.html;
+    }
+
+    # RSS feed. Exact-match so it wins over the /blog/<slug> regex below.
+    location = /blog/feed.xml {
+        default_type application/rss+xml;
+        try_files /blog/feed.xml =404;
+    }
+
+    # Blog posts (/blog/<slug>).
+    location ~ ^/blog/([a-z0-9][a-z0-9-]*)/?$ {
+        try_files /blog/$1.html /index.html;
+    }
+
     # SPA routing - serve index.html for all non-API routes
     location / {
         try_files $uri $uri/ /index.html;

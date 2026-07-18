@@ -1197,6 +1197,58 @@ export interface ApprovalRequest {
   question?: string | null;
   question_options?: string[] | null;
   allow_free_text?: boolean;
+  /** True when an AI judged this request rather than a person. */
+  decided_by_ai?: boolean;
+  /**
+   * Set when a time-boxed bypass auto-approved this request without any human
+   * review (currently always `'bypass'`). Surfaces must render these
+   * distinctly from human decisions.
+   */
+  auto_approved_reason?: string | null;
+  auto_approval_bypass_id?: string | null;
+  /** Convenience mirror of `auto_approved_reason !== null`. */
+  was_bypassed?: boolean;
+  /**
+   * True only when a person actually made this decision. Every approval
+   * statistic must filter on this — counting bypassed calls as approvals
+   * would overstate how much human oversight actually happened.
+   */
+  decided_by_human?: boolean;
+}
+
+/** Mode of a time-boxed approval bypass. */
+export type ApprovalBypassMode = 'mute_notifications' | 'auto_approve';
+
+/**
+ * A deliberate, expiring relaxation of approval gating.
+ *
+ * `mute_notifications` silences alerts while approvals still block the agent;
+ * `auto_approve` also approves automatically and is a governance bypass.
+ */
+export interface ApprovalBypass {
+  id: string;
+  account_id: string;
+  user_id: string;
+  managed_agent_id: string | null;
+  mode: ApprovalBypassMode;
+  reason: string | null;
+  created_by_user_id: string;
+  created_via: string | null;
+  created_at: string;
+  expires_at: string;
+  revoked_at: string | null;
+  revoked_by_user_id: string | null;
+  auto_approved_count: number;
+  is_account_wide?: boolean;
+  suppresses_approvals?: boolean;
+}
+
+/** Aggregate bypass state used to drive the console warning banner. */
+export interface ApprovalBypassStatus {
+  active: boolean;
+  auto_approve_active: boolean;
+  bypasses: ApprovalBypass[];
+  soonest_expiry?: string | null;
 }
 
 /**

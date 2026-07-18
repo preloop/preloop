@@ -32,7 +32,10 @@ interface ApprovalStats {
   expired: number;
   cancelled: number;
   avgResponseTimeMinutes: number;
+  /** Percentage of HUMAN decisions that were approvals. Excludes bypassed/AI. */
   approvalRate: number;
+  /** Requests auto-approved by a time-boxed bypass, with no human review. */
+  autoApprovedByBypass: number;
 }
 
 @customElement('approvals-view')
@@ -56,6 +59,7 @@ export class ApprovalsView extends AuthedElement {
     cancelled: 0,
     avgResponseTimeMinutes: 0,
     approvalRate: 0,
+    autoApprovedByBypass: 0,
   };
 
   @state()
@@ -393,9 +397,27 @@ export class ApprovalsView extends AuthedElement {
     const avgResponseTimeMinutes =
       resolvedCount > 0 ? Math.round(totalResponseTime / resolvedCount) : 0;
 
-    // Approval rate (approved / (approved + declined))
-    const decidedCount = approved + declined;
-    const approvalRate = decidedCount > 0 ? (approved / decidedCount) * 100 : 0;
+    // Approval rate counts HUMAN decisions only. Requests auto-approved by a
+    // bypass (or decided by AI) never reached a person, so folding them in
+    // would overstate how much oversight actually happened - the opposite of
+    // what this number is for.
+    const humanApproved = requests.filter(
+      (r) =>
+        r.status === 'approved' && !r.auto_approved_reason && !r.decided_by_ai
+    ).length;
+    const humanDeclined = requests.filter(
+      (r) =>
+        r.status === 'declined' && !r.auto_approved_reason && !r.decided_by_ai
+    ).length;
+    const decidedCount = humanApproved + humanDeclined;
+    const approvalRate =
+      decidedCount > 0 ? (humanApproved / decidedCount) * 100 : 0;
+
+    // Surfaced separately so an operator can see the unsupervised volume
+    // rather than having it silently blended into "approved".
+    const autoApprovedByBypass = requests.filter(
+      (r) => !!r.auto_approved_reason
+    ).length;
 
     this.stats = {
       total,
@@ -406,6 +428,7 @@ export class ApprovalsView extends AuthedElement {
       cancelled,
       avgResponseTimeMinutes,
       approvalRate,
+      autoApprovedByBypass,
     };
   }
 
@@ -828,6 +851,21 @@ export class ApprovalsView extends AuthedElement {
                                       : request.status
                                   }
                                 </sl-tag>
+                                ${
+                                  request.auto_approved_reason
+                                    ? html`<sl-tooltip
+                                        content="Auto-approved by a time-boxed bypass. No person reviewed this call."
+                                      >
+                                        <sl-tag size="small" variant="warning">
+                                          <sl-icon
+                                            name="exclamation-triangle"
+                                            style="margin-right: 4px;"
+                                          ></sl-icon>
+                                          not reviewed
+                                        </sl-tag>
+                                      </sl-tooltip>`
+                                    : ''
+                                }
                               </div>
                               ${
                                 request.summary

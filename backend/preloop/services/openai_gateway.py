@@ -1786,9 +1786,25 @@ class OpenAIGatewayService:
                     default_gateway_model = ai_model
 
         if requested_model:
+            # Resolution must be deterministic: the resolved row decides which
+            # ai_model_id the request is billed and priced against. Two rules,
+            # in order:
+            #   1. An exact alias match always wins, regardless of position.
+            #   2. Otherwise the first provider-suffix match wins, in the stable
+            #      order given by get_all_for_account (account models before
+            #      system defaults, then oldest-first).
+            # Without (1) a suffix match on an earlier row would beat an exact
+            # match on a later one; without the stable ordering behind (2) a bare
+            # "claude-sonnet-4-5" could resolve to anthropic/... on one request
+            # and bedrock/... on the next, silently changing the price.
+            suffix_match: Optional[AIModel] = None
             for ai_model, alias in gateway_enabled_models:
-                if alias == requested_model or alias.endswith(f"/{requested_model}"):
+                if alias == requested_model:
                     return ai_model
+                if suffix_match is None and alias.endswith(f"/{requested_model}"):
+                    suffix_match = ai_model
+            if suffix_match is not None:
+                return suffix_match
             raise ModelGatewayAPIError(
                 provider=provider,
                 status_code=404,
