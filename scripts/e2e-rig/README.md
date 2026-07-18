@@ -80,8 +80,10 @@ redaction) live in `tests/` — run them with `pytest scripts/e2e-rig/tests`.
 | 08 | recorded pty over ssh: pinned CLI install, staged login verified with `auth status`, `agents discover --yes` | `casts/08-*` |
 | 09 | recorded browser: every onboarded agent visible + active on `/console/agents` | `screenshots/09-*` |
 | 10 | register custom agent via API, mint gateway credential, run `research_agent.py` session through `/openai/v1` (recorded locally) | `casts/10-*`, `state/custom-agent.json` |
-| 11 | optimize scene — probes the endpoint; SKIPs with a note on 0.11.x (feature lands in OSS 0.12.0/T2) | `screenshots/11-*` when present |
-| 12 | recorded offboard of everything + custom-agent server cleanup + per-agent snapshot diff verdict | `casts/12-*`, `diffs/report.json` |
+| 11 | wasteful session — `research_agent.py --wasteful`: 8 scripted turns, 10 advertised MCP-style tools (2 invoked), fat never-read output fields, one duplicate output, one deliberate prefix break; all grouped into one runtime session via `X-Preloop-Session-Id` | `casts/11-*`, `state/wasteful-session.json` |
+| 12 | optimize + replay-validate scene (version-gated; SKIPs pre-0.12): Optimize tab, explicit BYOK suggestion model, generate + savings estimate, consented replay VERIFY (measured input-token delta), then apply the applicable suggestions | `screenshots/12-*`, `state/optimize-validate.json` |
+| 13 | console tour — Overview, Agents (canvas+cards), agent detail, wasteful-session transcript (paused, never scrolled), Optimize results, Cost, Approvals, Models; stop metadata for the compositor | `screenshots/13-tour-*`, `state/tour-metadata.json` |
+| 14 | recorded offboard of everything + custom-agent server cleanup (both research agents) + per-agent snapshot diff verdict | `casts/14-*`, `diffs/report.json` |
 
 Then `run-summary.json` (steps, status, timings, notes) and
 `<run-id>-oss-full-run.mp4` (title cards + all footage, chronological).
@@ -90,7 +92,7 @@ Then `run-summary.json` (steps, status, timings, notes) and
 
 - `snapshots/before/` — untouched state at run start (informational diff).
 - `snapshots/baseline/` — post-offboard, post-agent-install, pre-onboarding.
-  This is what module 12 must restore to.
+  This is what module 14 must restore to.
 - `snapshots/final/` — after the final offboard.
 
 Per config file: byte-identical wins; otherwise parsed-config comparison

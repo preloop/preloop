@@ -1,6 +1,6 @@
 """Recorded final offboard: `preloop agents offboard --all` on the VM in a
 real pty, captured to an asciicast and rendered (pexpect+agg). Used by
-module 12."""
+module 14."""
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ import capture  # noqa: E402
 import riglib  # noqa: E402
 
 HOST = riglib.env("RIG_HOST")
-CAST = riglib.run_dir() / "casts" / "12-offboard.cast"
-MP4 = riglib.run_dir() / "casts" / "12-offboard.mp4"
+CAST = riglib.run_dir() / "casts" / "14-offboard.cast"
+MP4 = riglib.run_dir() / "casts" / "14-offboard.mp4"
 
 
 def main() -> None:

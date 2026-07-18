@@ -28,7 +28,7 @@ RIG_HEADLESS="${RIG_HEADLESS:-0}"
 RIG_PURGE_CERTS="${RIG_PURGE_CERTS:-0}"
 RUN_DIR=""
 FROM="01"
-UNTIL="12"
+UNTIL="14"
 ONLY=""
 KEEP_GOING=0
 NO_VIDEO=0
@@ -164,8 +164,10 @@ MODULES=(
   "08:cli-onboard"
   "09:browser-agents"
   "10:custom-agent"
-  "11:optimize"
-  "12:offboard-verify"
+  "11:wasteful-session"
+  "12:optimize-validate"
+  "13:console-tour"
+  "14:offboard-verify"
 )
 
 should_run() {
