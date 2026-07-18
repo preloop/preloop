@@ -86,5 +86,24 @@ rig_ssh "
   && rig_note "applied HTTPS fixup: installer leaves tls/active.conf HTTP-only when the cert already exists (installer bug — report upstream)" \
   || true
 
+# Console-proxy timeout fixup (report upstream): the console image's nginx
+# proxies /api with 60s send/read timeouts. LLM-backed optimize generation
+# and replay verification legitimately block longer than 60s, so the console
+# kills them with a 504 while the backend finishes (and caches) silently.
+# Raise the in-container timeouts so the recorded first-class UI flows can
+# complete. In-container only — a container recreate reverts it.
+rig_ssh "
+  set -e
+  cd $RIG_INSTANCE_DIR
+  $(rig_compose_args_remote)
+  docker compose \$COMPOSE_ARGS exec -T console sh -c \"
+    sed -i 's/proxy_send_timeout 60s;/proxy_send_timeout 300s;/; \
+            s/proxy_read_timeout 60s;/proxy_read_timeout 300s;/' \
+      /etc/nginx/conf.d/default.conf && nginx -s reload
+  \"
+" | tee -a "$LOG" \
+  && rig_note "raised console nginx /api proxy timeouts 60s->300s (product finding: LLM optimize/replay calls exceed 60s and get 504'd — report upstream)" \
+  || rig_note "WARNING: console nginx timeout fixup failed (optimize/replay UI calls >60s will 504)"
+
 rig_ssh 'docker ps --format "{{.Names}} {{.Image}} {{.Status}}"' | tee -a "$LOG"
 rig_note "release $RIG_RELEASE installed in $RIG_INSTANCE_DIR"

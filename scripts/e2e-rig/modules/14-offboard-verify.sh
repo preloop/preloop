@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Module 12 — final offboard + the offboarding assertion.
+# Module 14 — final offboard + the offboarding assertion.
 #
 # Offboards everything (recorded), removes the custom agent server-side,
 # snapshots the VM's agent configs one last time, and diffs them per agent
@@ -15,7 +15,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/common.sh"
 # 1. Recorded offboard of every enrolled agent.
 "$RIG_PYTHON" "$RIG_DIR/lib/record_offboard.py"
 
-# 2. Server-side cleanup of the custom agent (no local config involved).
+# 2. Server-side cleanup of the custom agents (no local config involved):
+#    the module-10 research agent AND the module-11 wasteful agent.
 "$RIG_PYTHON" - <<'PY'
 import os
 import sys
@@ -24,11 +25,16 @@ sys.path.insert(0, os.environ["RIG_DIR"] + "/lib")
 import riglib
 
 url = riglib.env("RIG_URL").rstrip("/")
-state = riglib.load_state("custom-agent.json")
 token = riglib.user_token(url, riglib.load_creds())
-name = (state or {}).get("display_name", "Research Agent (e2e)")
+names = set()
+for state_name, default in (
+    ("custom-agent.json", "Research Agent (e2e)"),
+    ("wasteful-agent.json", "Research Agent (wasteful)"),
+):
+    state = riglib.load_state(state_name)
+    names.add((state or {}).get("display_name", default))
 matches = [
-    a for a in riglib.list_agents(url, token) if a.get("display_name") == name
+    a for a in riglib.list_agents(url, token) if a.get("display_name") in names
 ]
 if not matches:
     riglib.log("no custom agent found; nothing to clean up")
