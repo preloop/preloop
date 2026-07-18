@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.4] - 2026-07-18
+
+### Fixed
+
+- **Push notifications were failing for every Android device.** Three defects
+  composed: the app registered a literal `fcm_unavailable_<millis>` placeholder
+  when the Firebase token fetch failed (non-blank, so it passed every backend
+  check before FCM rejected it); error classification matched substrings that
+  miss `INVALID_ARGUMENT`, so the bad token was never pruned and was retried on
+  every approval; and the token-refresh endpoint 404'd inside a log-only catch,
+  so it could never be replaced. FCM errors are now classified by type, only
+  client-side faults prune (a credential outage must not wipe every user's
+  token), the Firebase `project_id` is logged on failure, and placeholder-shaped
+  tokens are rejected at registration.
+- **The Hermes plugin gated nothing.** `pre_tool_call` was registered as `async
+  def`, but Hermes invokes plugin hooks synchronously and discards non-dict
+  results, so every tool call proceeded ungated. A synchronous bridge now spans
+  the async decision path. Unreadable configuration and non-mapping response
+  bodies were two further silent-allow paths and now block.
+- **Estimated savings could exceed the analyzed scope** (131% observed). Schema
+  tokens were already resend-aware and were then multiplied by `resend_count`
+  again, making `scope-tools` savings quadratic. Savings now roll up through a
+  deduped profile-level total, clamped to analyzed scope with a logged warning.
+- Principal-bound OAuth models are no longer auto-selected as the default. They
+  cannot serve server-side generation, so a user whose only credential was a
+  Claude Code or Codex subscription hit a server-side failure on their first
+  optimization run. The first BYOK model wins instead.
+- `release.py` now restamps `openapi.yaml`, which previously went stale on every
+  version bump and failed the lint job on each release.
+- The installer no longer breaks under Git Bash: MSYS rewrote the certbot `-w`
+  path into the Git install directory.
+
+### Added
+
+- Bundled example session on the Optimize tab, shown when an analysis yields no
+  savings. It runs the production analyzers over an in-memory transcript with
+  zero database writes, so it cannot contaminate cost or savings aggregates, and
+  is labelled as an example rather than the user's own data.
+- Admin-only push test-send that exercises the real provider path and surfaces
+  the verbatim provider error. The synthetic approval is persisted nowhere, so it
+  cannot appear in approval lists, feeds, or metrics.
+- Windows documentation: the OSS stack already ran under Docker Desktop with the
+  WSL2 backend and Windows CLI binaries already shipped on every release, but
+  neither was documented. Native Windows support is explicitly not claimed.
+- Claude Desktop discovery now resolves `%APPDATA%` on Windows via
+  `UserConfigDir`, which also picks up `~/Library/Application Support` on macOS.
+- Non-gating `windows-latest` CI job for the CLI.
+- PyPI metadata (keywords, classifiers, license, project URLs), which was
+  entirely absent, and a refreshed Helm chart description and keywords.
+
+### Changed
+
+- OpenClaw and Hermes runtime plugins to 0.2.0. ClawHub publishing is automated
+  alongside npm and guarded by a post-publish digest comparison — the two
+  registries had shipped different artifacts under the same version.
+
 ## [0.12.3] - 2026-07-18
 
 ### Fixed
