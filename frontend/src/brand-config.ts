@@ -58,6 +58,13 @@ export interface BrandHero {
   // Optional static product shot filling the right half of the hero.
   image?: string;
   image_alt?: string;
+  // Optional YouTube video/playlist URL (watch?v=...&list=... or a bare
+  // playlist URL). When set together with `image`, the hero screenshot gets a
+  // play-button overlay; clicking swaps the image in place for a
+  // youtube-nocookie.com embed. Click-to-load: no YouTube network activity
+  // happens until the visitor clicks. Absent/empty (the default) leaves the
+  // hero exactly as it is today — self-hosted instances should not set this.
+  video_playlist_url?: string;
 }
 
 export interface BrandFeature {
