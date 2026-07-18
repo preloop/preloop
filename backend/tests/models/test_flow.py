@@ -217,14 +217,8 @@ def test_get_flow_not_found(db_session: Session) -> None:
     assert retrieved_flow is None
 
 
-# def test_update_flow_not_found(db_session: Session) -> None:
-#     """Test updating a non-existent flow."""
-#     # This test is removed because update_flow now expects a db_obj.
-#     # The "not found" case for get is covered by test_get_flow_not_found.
-#     # If update_flow were to take an ID, this test would be relevant.
-#     # For now, ensuring an object exists before updating is the responsibility
-#     # of the calling code, typically by fetching it first.
-#     pass
+# update_flow now requires an existing db_obj; not-found handling is covered by
+# test_get_flow_not_found instead of a dedicated update-not-found test.
 
 
 def test_remove_flow_not_found(db_session: Session) -> None:

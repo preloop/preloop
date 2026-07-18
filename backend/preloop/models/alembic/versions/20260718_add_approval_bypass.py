@@ -15,23 +15,34 @@ Adds:
 
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import ENUM, UUID
 
 # revision identifiers, used by Alembic.
 revision = "20260718_approval_bypass"
 down_revision = "20260714_growth_analytics"
 branch_labels = None
 depends_on = None
+# Alembic reads these module globals by name; keep a local reference so static analysis
+# treats them as used.
+_ALEMBIC_IDENTIFIERS = (revision, down_revision, branch_labels, depends_on)
+assert _ALEMBIC_IDENTIFIERS, "Alembic revision metadata must be defined"
 
 
 def upgrade() -> None:
     """Create the approval_bypass table and approval-request markers."""
-    approval_bypass_mode = sa.Enum(
+    # Use postgresql.ENUM: sa.Enum ignores create_type=, which previously caused
+    # CREATE TYPE to run twice (explicit create + create_table).
+    approval_bypass_mode = ENUM(
         "mute_notifications",
         "auto_approve",
         name="approval_bypass_mode",
+        create_type=False,
     )
-    approval_bypass_mode.create(op.get_bind(), checkfirst=True)
+    ENUM(
+        "mute_notifications",
+        "auto_approve",
+        name="approval_bypass_mode",
+    ).create(op.get_bind(), checkfirst=True)
 
     op.create_table(
         "approval_bypass",
@@ -156,4 +167,4 @@ def downgrade() -> None:
     op.drop_index("ix_approval_bypass_id", table_name="approval_bypass")
     op.drop_table("approval_bypass")
 
-    sa.Enum(name="approval_bypass_mode").drop(op.get_bind(), checkfirst=True)
+    ENUM(name="approval_bypass_mode").drop(op.get_bind(), checkfirst=True)

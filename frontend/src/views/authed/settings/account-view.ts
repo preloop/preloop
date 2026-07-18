@@ -1,4 +1,4 @@
-import { LitElement, html, css, unsafeCSS, render } from 'lit';
+import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import {
   fetchWithAuth,

@@ -65,8 +65,8 @@ class ExecutionMonitor:
             try:
                 await self._task
             except asyncio.CancelledError:
+                # Expected when stop() cancels the monitor loop task.
                 pass
-        logger.info("Execution monitor stopped")
 
     async def _monitor_loop(self):
         """Main monitoring loop."""

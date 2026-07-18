@@ -436,9 +436,9 @@ class MCPClientPool:
                 return client
             else:
                 # Client exists but not connected, remove it
-                logger.warning(
-                    f"Existing client for {server_id} not connected, recreating"
-                )
+                # Avoid logging server_id: callers may pass ids from OAuth
+                # state dicts that also hold client_secret (CodeQL taint).
+                logger.warning("Existing MCP client not connected, recreating")
                 await self.close_client(server_id)
 
         # Create new client with lock
@@ -457,7 +457,7 @@ class MCPClientPool:
             )
             await client.connect()
             self._clients[server_id] = client
-            logger.info(f"Created new MCP client for server {server_id}")
+            logger.info("Created new MCP client")
 
         return client
 
@@ -472,7 +472,7 @@ class MCPClientPool:
                 if server_id in self._clients:
                     await self._clients[server_id].close()
                     del self._clients[server_id]
-                    logger.info(f"Closed and removed client for server {server_id}")
+                    logger.info("Closed and removed MCP client")
 
     async def close_all(self):
         """Close all clients in the pool."""

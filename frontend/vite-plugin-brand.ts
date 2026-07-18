@@ -1,4 +1,4 @@
-import { Plugin, IndexHtmlTransformContext } from 'vite';
+import { Plugin } from 'vite';
 import * as yaml from 'js-yaml';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -880,9 +880,6 @@ export function brandPlugin(
             '<lit-app></lit-app>',
             `<lit-app data-ssr-route="${route}"><static-view-wrapper>${slottedContent}</static-view-wrapper></lit-app>`
           );
-        } else {
-          // No SSR for other routes
-          html = html.replace('<lit-app></lit-app>', `<lit-app></lit-app>`);
         }
       }
 
@@ -919,21 +916,21 @@ async function generateSlottedContentForRoute(
     <!-- Landing-view component will read and display this content -->
 
     <!-- Hero content slots -->
-    <h1 slot="hero-title">${hero.title || ''}</h1>
-    <p slot="hero-lead">${hero.lead || ''}</p>
-    <span slot="cta-primary">${hero.cta_primary || ''}</span>
-    ${hero.cta_primary_url ? `<span slot="cta-primary-url">${hero.cta_primary_url}</span>` : ''}
-    <span slot="cta-secondary">${hero.cta_secondary || ''}</span>
-    <span slot="cta-secondary-url">${hero.cta_secondary_url || ''}</span>
-    ${(hero as any).install_command ? `<code slot="cta-install">${(hero as any).install_command}</code>` : ''}
-    ${(hero as any).install_caption ? `<span slot="cta-install-caption">${(hero as any).install_caption}</span>` : ''}
+    <h1 slot="hero-title">${escapeHtml(hero.title || '')}</h1>
+    <p slot="hero-lead">${escapeHtml(hero.lead || '')}</p>
+    <span slot="cta-primary">${escapeHtml(hero.cta_primary || '')}</span>
+    ${hero.cta_primary_url ? `<span slot="cta-primary-url">${escapeAttr(hero.cta_primary_url)}</span>` : ''}
+    <span slot="cta-secondary">${escapeHtml(hero.cta_secondary || '')}</span>
+    <span slot="cta-secondary-url">${escapeAttr(hero.cta_secondary_url || '')}</span>
+    ${(hero as any).install_command ? `<code slot="cta-install">${escapeHtml((hero as any).install_command)}</code>` : ''}
+    ${(hero as any).install_caption ? `<span slot="cta-install-caption">${escapeHtml((hero as any).install_caption)}</span>` : ''}
     ${Array.isArray((hero as any).install_tabs) && (hero as any).install_tabs.length ? `<script type="application/json" slot="cta-install-tabs">${JSON.stringify((hero as any).install_tabs).replace(/</g, '\\u003c')}</script>` : ''}
     ${(hero.trust_tags || []).length ? `<span slot="cta-install-tags">${escapeHtml((hero.trust_tags || []).join('|'))}</span>` : ''}
     ${hero.image ? `<div slot="hero-image" data-src="${escapeAttr(hero.image)}" data-alt="${escapeAttr(hero.image_alt || '')}"></div>` : ''}
     ${hero.image && (hero as any).video_playlist_url ? `<div slot="hero-video" data-url="${escapeAttr((hero as any).video_playlist_url)}"></div>` : ''}
 
     <!-- Extended description slot (only if exists) -->
-    ${meta.extended_description ? `<p slot="extended-description">${meta.extended_description}</p>` : ''}
+    ${meta.extended_description ? `<p slot="extended-description">${escapeHtml(meta.extended_description)}</p>` : ''}
 
     <!-- Features layout slot -->
     <span slot="features-layout">${config.landing?.features_layout || 'grid'}</span>
@@ -942,9 +939,9 @@ async function generateSlottedContentForRoute(
     ${features
       .map(
         (feature, idx) => `
-    <div slot="feature-${idx}" data-title="${feature.title || ''}" data-text="${feature.text || ''}" data-video="${feature.videoUrl || ''}" data-img="${feature.placeholderImg || ''}">
-      <h3>${feature.title || ''}</h3>
-      <p>${feature.text || ''}</p>
+    <div slot="feature-${idx}" data-title="${escapeAttr(feature.title || '')}" data-text="${escapeAttr(feature.text || '')}" data-video="${escapeAttr(feature.videoUrl || '')}" data-img="${escapeAttr(feature.placeholderImg || '')}">
+      <h3>${escapeHtml(feature.title || '')}</h3>
+      <p>${escapeHtml(feature.text || '')}</p>
     </div>`
       )
       .join('\n')}
@@ -953,9 +950,9 @@ async function generateSlottedContentForRoute(
     ${faqs
       .map(
         (faq, idx) => `
-    <div slot="faq-${idx}" data-q="${faq.q || ''}" data-a="${faq.a || ''}">
-      <h3>${faq.q || ''}</h3>
-      <p>${faq.a || ''}</p>
+    <div slot="faq-${idx}" data-q="${escapeAttr(faq.q || '')}" data-a="${escapeAttr(faq.a || '')}">
+      <h3>${escapeHtml(faq.q || '')}</h3>
+      <p>${escapeHtml(faq.a || '')}</p>
     </div>`
       )
       .join('\n')}

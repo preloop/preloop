@@ -2310,9 +2310,6 @@ export class AgentDetailView extends LitElement {
       return html`<div class="empty-state">Managed agent not found.</div>`;
     }
 
-    const runtimeSessionUrl = this.agent.runtime_session_id
-      ? `/console/runtime-sessions?sessionId=${encodeURIComponent(this.agent.runtime_session_id)}`
-      : null;
     const aggregate = this.aggregate;
 
     return html`

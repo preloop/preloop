@@ -513,6 +513,7 @@ If a "CURRENT ACCOUNT CONFIGURATION" block is provided below:
                                 stats["numeric_ranges"][k]["max"], num_val
                             )
                     except (TypeError, ValueError):
+                        # Argument value is not numeric; skip range tracking for this field.
                         pass
 
         lines = [f"Tool-call audit log summary ({len(logs)} total calls):\n"]

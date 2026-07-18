@@ -270,7 +270,7 @@ class TestPerformSearch:
 
         # Call function with organization_id filter
         mock_db = MagicMock()
-        result = await perform_search(
+        await perform_search(
             query="test query",
             db=mock_db,
             current_user=mock_user,
@@ -326,7 +326,7 @@ class TestPerformSearch:
 
         # Call function with organization name filter
         mock_db = MagicMock()
-        result = await perform_search(
+        await perform_search(
             query="test query",
             db=mock_db,
             current_user=mock_user,
@@ -376,7 +376,7 @@ class TestPerformSearch:
 
         # Call function with project name filter
         mock_db = MagicMock()
-        result = await perform_search(
+        await perform_search(
             query="test query",
             db=mock_db,
             current_user=mock_user,
@@ -481,7 +481,7 @@ class TestPerformSearch:
 
         # Call function with status filter
         mock_db = MagicMock()
-        result = await perform_search(
+        await perform_search(
             query="test query",
             db=mock_db,
             current_user=mock_user,

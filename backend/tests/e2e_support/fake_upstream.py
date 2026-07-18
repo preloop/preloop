@@ -112,6 +112,7 @@ def main() -> None:
     try:
         server.serve_forever()
     except KeyboardInterrupt:
+        # Graceful shutdown for manual test rig runs.
         pass
     finally:
         server.server_close()

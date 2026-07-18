@@ -736,7 +736,7 @@ async def test_send_execution_command_stop_success(
     mock_agent = MagicMock()
     mock_agent.get_logs = mocker.AsyncMock(return_value=["log line 1", "log line 2"])
     mock_agent.stop = mocker.AsyncMock()
-    mock_codex_agent_class = mocker.patch(
+    mocker.patch(
         "preloop.agents.codex.CodexAgent",
         return_value=mock_agent,
     )

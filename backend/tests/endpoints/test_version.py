@@ -1,6 +1,7 @@
 """Tests for version API endpoint."""
 
 from unittest.mock import MagicMock
+from urllib.parse import urlparse
 
 import pytest
 
@@ -186,11 +187,29 @@ class TestVersionUpdateFields:
         data = response.json()
         assert data["clients"]["ios"]["latest_version"] == "1.4.0"
         assert data["clients"]["ios"]["min_version"] == "1.2.0"
-        assert data["clients"]["ios"]["store_url"].startswith("https://apps.apple.com")
-        assert data["clients"]["android"]["latest_version"] == "1.3.0"
-        assert data["clients"]["android"]["store_url"].startswith(
-            "https://play.google.com"
+        assert (
+            data["clients"]["ios"]["store_url"]
+            == "https://apps.apple.com/app/preloop/id6757803021"
         )
+        assert data["clients"]["android"]["latest_version"] == "1.3.0"
+        assert (
+            data["clients"]["android"]["store_url"]
+            == "https://play.google.com/store/apps/details?id=ai.spacecode.preloop"
+        )
+
+    def test_clients_store_urls_reject_untrusted_hosts(
+        self, client: TestClient, monkeypatch
+    ):
+        monkeypatch.setenv("IOS_LATEST_VERSION", "1.4.0")
+        monkeypatch.setenv("ANDROID_LATEST_VERSION", "1.3.0")
+        monkeypatch.setenv("IOS_APP_STORE_URL", "https://evil.example/phish")
+        monkeypatch.setenv("ANDROID_PLAY_STORE_URL", "javascript:alert(1)")
+
+        data = client.get("/api/v1/version").json()
+        ios_host = urlparse(data["clients"]["ios"]["store_url"]).hostname
+        android_host = urlparse(data["clients"]["android"]["store_url"]).hostname
+        assert ios_host == "apps.apple.com"
+        assert android_host == "play.google.com"
 
     def test_latest_version_reflects_persisted_check(
         self, client: TestClient, monkeypatch

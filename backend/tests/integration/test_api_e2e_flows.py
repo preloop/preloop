@@ -116,7 +116,6 @@ class TestAuthE2EFlow:
         token_data = login_resp.json()
         assert "access_token" in token_data
         assert "refresh_token" in token_data
-        access_token = token_data["access_token"]
         refresh_token = token_data["refresh_token"]
 
         # 3. Token refresh

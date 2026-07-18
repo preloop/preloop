@@ -33,6 +33,7 @@ from preloop.services.prompt_resolvers import (
 from preloop.services.flow_execution_logger import FlowExecutionLogger
 from preloop.sync.event_normalizer import attach_trigger_subject
 from preloop.services.model_runtime_resolver import resolve_ai_model_runtime
+from preloop.utils.repo_urls import inject_oauth_token, tracker_host_kind
 from preloop.services.account_realtime import (
     ACCOUNT_TOPIC_AUDIT,
     ACCOUNT_TOPIC_RUNTIME_SESSIONS,
@@ -434,9 +435,8 @@ class FlowExecutionOrchestrator:
                             nats_client = getattr(request.app.state, "nats", None)
                             break
             except Exception:
+                # NATS may be unavailable when send_command is invoked outside a request.
                 pass
-
-        if not nats_client or not nats_client.is_connected:
             raise RuntimeError("NATS client not available or not connected")
 
         try:
@@ -844,7 +844,7 @@ class FlowExecutionOrchestrator:
             )
 
             logger.info(
-                "Created temporary runtime API token %s for flow execution %s "
+                "Created temporary API key record id=%s for flow execution %s "
                 "(principal_user=%s), expires at %s",
                 api_key.id,
                 self.execution_log.id if self.execution_log else None,
@@ -855,7 +855,11 @@ class FlowExecutionOrchestrator:
             return token_key, api_key.id
 
         except Exception as e:
-            logger.error(f"Failed to create temporary API token: {e}", exc_info=True)
+            logger.error(
+                "Failed to create temporary API key record: %s",
+                type(e).__name__,
+                exc_info=True,
+            )
             self.db.rollback()
             return None, None
 
@@ -868,16 +872,17 @@ class FlowExecutionOrchestrator:
             api_key = crud_api_key.deactivate(self.db, key_id=self.temporary_api_key_id)
 
             if api_key:
-                logger.info(
-                    "Deactivated temporary API token %s", self.temporary_api_key_id
-                )
+                # Log outcome only — key ids are treated as sensitive by CodeQL.
+                logger.info("Deactivated temporary API key record")
             else:
-                logger.warning(
-                    f"Temporary API token {self.temporary_api_key_id} not found for cleanup"
-                )
+                logger.warning("Temporary API key record not found for cleanup")
 
         except Exception as e:
-            logger.error(f"Failed to cleanup temporary API token: {e}", exc_info=True)
+            logger.error(
+                "Failed to cleanup temporary API key record: %s",
+                type(e).__name__,
+                exc_info=True,
+            )
             self.db.rollback()
 
     def _simple_resolve(self, placeholder: str, data: Dict[str, Any]) -> Optional[str]:
@@ -1247,21 +1252,23 @@ class FlowExecutionOrchestrator:
             if not token:
                 return repo_url
 
-            # For GitHub: https://oauth2:TOKEN@github.com/owner/repo
-            # For GitLab: https://oauth2:TOKEN@gitlab.com/owner/repo
-            if "github.com" in repo_url or tracker_type == "github":
-                if "https://" in repo_url:
-                    return repo_url.replace("https://", f"https://oauth2:{token}@")
-            elif "gitlab.com" in repo_url or tracker_type == "gitlab":
-                if "https://" in repo_url:
-                    return repo_url.replace("https://", f"https://oauth2:{token}@")
+            host_kind = tracker_host_kind(repo_url)
+            if host_kind in {"github", "gitlab"} or tracker_type in {
+                "github",
+                "gitlab",
+            }:
+                return inject_oauth_token(repo_url, token)
 
             # If we can't inject, return original URL
             logger.warning("Could not inject credentials into repository URL")
             return repo_url
 
         except Exception as e:
-            logger.error(f"Error injecting credentials: {e}", exc_info=True)
+            logger.error(
+                "Error injecting credentials: %s",
+                type(e).__name__,
+                exc_info=True,
+            )
             return repo_url
 
     async def _execute_custom_commands(self, work_dir: str) -> bool:
@@ -1358,7 +1365,8 @@ class FlowExecutionOrchestrator:
             )
             if not account_api_token:
                 logger.warning(
-                    f"Could not create temporary API token for account {self.flow.account_id}"
+                    "Could not create temporary API key record for account %s",
+                    self.flow.account_id,
                 )
 
         execution_context = {
@@ -1504,8 +1512,6 @@ class FlowExecutionOrchestrator:
                 # Check for token usage pattern: "tokens used" followed by number on next line
                 if "tokens used" in previous_line.lower():
                     # Try to extract token count from current line
-                    import re
-
                     # Pattern: number with optional commas (e.g., "1,234" or "1234")
                     token_match = re.search(r"(\d{1,3}(?:,\d{3})*)", log_line.strip())
                     if token_match:
@@ -1788,8 +1794,10 @@ class FlowExecutionOrchestrator:
                 try:
                     await self._log_streaming_task
                 except asyncio.CancelledError:
+                    # Expected after cancelling the log streaming task on timeout.
                     pass
             except asyncio.CancelledError:
+                # Task was cancelled while awaiting completion during cleanup.
                 pass
             except Exception as e:
                 logger.warning(f"Error waiting for log streaming task: {e}")

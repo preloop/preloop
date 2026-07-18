@@ -5,7 +5,12 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi import HTTPException
 
-from preloop.models.crud import crud_account, crud_ai_model, crud_api_key, crud_api_usage
+from preloop.models.crud import (
+    crud_account,
+    crud_ai_model,
+    crud_api_key,
+    crud_api_usage,
+)
 from preloop.models.crud.plan import plan as crud_plan
 from preloop.models.crud.plan import subscription as crud_subscription
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext

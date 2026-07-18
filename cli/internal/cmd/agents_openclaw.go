@@ -982,8 +982,8 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		fmt.Printf("  Agent Control runtime plugin: %s\n", agentControlPluginStatus(validationResult))
 		fmt.Printf("  Agent Control channel: %s\n", boolStatus(validationResult["control_channel_configured"]))
 	}
-	if validationResult["live_validation_status"] != nil {
-		fmt.Printf("  Live validation: %v\n", validationResult["live_validation_status"])
+	if status, ok := validationResult["live_validation_status"].(string); ok && strings.TrimSpace(status) != "" {
+		fmt.Printf("  Live validation: %s\n", status)
 	}
 	fmt.Printf("  Config updated: %s\n", agent.ConfigPath)
 	fmt.Printf("  Backup saved: %s\n", backupState.BackupPath)
@@ -1276,9 +1276,8 @@ func runCodexLiveValidation(
 	if passed {
 		result["live_validation_status"] = "passed"
 	}
-	if apiKeyID != "" {
-		result["live_validation_api_key_id"] = apiKeyID
-	}
+	// Intentionally omit api key ids from the result map so they cannot
+	// flow into validation status logging (go/clear-text-logging).
 	if searchHit != nil {
 		result["live_validation_request_logged"] = true
 		result["live_validation_api_usage_id"] = searchHit.APIUsageID
@@ -5068,6 +5067,8 @@ func managedGatewayUpstreamFingerprint(upstream *managedGatewayUpstream) string 
 	}
 	keyDigest := ""
 	if apiKey := strings.TrimSpace(upstream.APIKey); apiKey != "" {
+		// Fingerprint for config comparison only — not password storage.
+		// codeql[go/weak-sensitive-data-hashing]
 		sum := sha256.Sum256([]byte(apiKey))
 		keyDigest = hex.EncodeToString(sum[:])
 	}
@@ -5076,6 +5077,7 @@ func managedGatewayUpstreamFingerprint(upstream *managedGatewayUpstream) string 
 	if len(upstream.CredentialPayload) > 0 {
 		payloadBytes, marshalErr := json.Marshal(upstream.CredentialPayload)
 		if marshalErr == nil {
+			// codeql[go/weak-sensitive-data-hashing]
 			sum := sha256.Sum256(payloadBytes)
 			credentialDigest = hex.EncodeToString(sum[:])
 		}
@@ -5102,6 +5104,8 @@ func openClawUpstreamFingerprint(parsed *openClawParsedConfig) string {
 	}
 	keyDigest := ""
 	if apiKey := strings.TrimSpace(parsed.ProviderAPIKey); apiKey != "" {
+		// Fingerprint for config comparison only — not password storage.
+		// codeql[go/weak-sensitive-data-hashing]
 		sum := sha256.Sum256([]byte(apiKey))
 		keyDigest = hex.EncodeToString(sum[:])
 	}

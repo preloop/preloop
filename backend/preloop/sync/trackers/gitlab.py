@@ -1222,7 +1222,7 @@ class GitLabTracker(BaseTracker):
                 skip_group_webhooks = True
                 groups = []
         else:
-            groups = []
+            pass
 
         if not skip_group_webhooks:
             for group in groups:
@@ -1276,7 +1276,6 @@ class GitLabTracker(BaseTracker):
                         logger.info(
                             "Group webhooks not supported (likely GitLab CE), skipping remaining groups"
                         )
-                        skip_group_webhooks = True
                         break
                     logger.error(
                         f"Failed to list hooks for group {group.id}: {list_error}"
@@ -1414,6 +1413,7 @@ class GitLabTracker(BaseTracker):
                                 note.created_at, "%Y-%m-%dT%H:%M:%S.%fZ"
                             )
                         except ValueError:
+                            # GitLab note timestamp format varies; keep the fallback datetime.
                             pass
                     updated_at_dt = created_at_dt
 

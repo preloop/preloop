@@ -2,8 +2,7 @@
 Tests for new Jira tracker methods (get_issue and get_comments).
 """
 
-import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 from unittest import IsolatedAsyncioTestCase
 from datetime import datetime
 
@@ -295,7 +294,7 @@ class TestJiraTrackerNewMethods(IsolatedAsyncioTestCase):
 
         # Verify create request was made
         self.tracker._make_request.assert_any_call(
-            "POST", "issue", json_data={"fields": unittest.mock.ANY}
+            "POST", "issue", json_data={"fields": ANY}
         )
 
     async def test_update_issue_success(self):
@@ -374,7 +373,7 @@ class TestJiraTrackerNewMethods(IsolatedAsyncioTestCase):
 
         # Verify API call
         self.tracker._make_request.assert_called_once_with(
-            "POST", "issue/TEST-123/comment", json_data=unittest.mock.ANY
+            "POST", "issue/TEST-123/comment", json_data=ANY
         )
 
     async def test_add_relation_success(self):
@@ -390,7 +389,7 @@ class TestJiraTrackerNewMethods(IsolatedAsyncioTestCase):
 
         # Verify API call
         self.tracker._make_request.assert_called_once_with(
-            "POST", "issueLink", json_data=unittest.mock.ANY
+            "POST", "issueLink", json_data=ANY
         )
 
     async def test_search_issues_success(self):

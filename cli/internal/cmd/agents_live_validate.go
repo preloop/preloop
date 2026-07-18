@@ -288,9 +288,8 @@ func runGatewayLiveValidation(
 	case "upstream_unavailable":
 		result["live_validation_failure_reason"] = "upstream_billing"
 	}
-	if apiKeyID != "" {
-		result["live_validation_api_key_id"] = apiKeyID
-	}
+	// Intentionally omit api key ids from the result map so they cannot
+	// flow into validation status logging (go/clear-text-logging).
 	if searchHit != nil {
 		result["live_validation_request_logged"] = true
 		result["live_validation_api_usage_id"] = searchHit.APIUsageID

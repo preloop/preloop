@@ -1,4 +1,4 @@
-import { html, fixture, expect, waitUntil } from '@open-wc/testing';
+import { html, fixture, expect } from '@open-wc/testing';
 import sinon from 'sinon';
 
 import '../../../components/view-header.ts';

@@ -87,7 +87,7 @@ class TestGetRawEmbeddings:
         mock_crud.get_raw_embeddings.return_value = []
         mock_crud_class.return_value = mock_crud
 
-        result = get_raw_embeddings(
+        get_raw_embeddings(
             db=mock_db_session,
             current_user=mock_user,
             embedding_model_id="model-1",
@@ -119,7 +119,7 @@ class TestGetRawEmbeddings:
         mock_crud.get_raw_embeddings.return_value = []
         mock_crud_class.return_value = mock_crud
 
-        result = get_raw_embeddings(
+        get_raw_embeddings(
             db=mock_db_session,
             current_user=mock_user,
             embedding_model_id=None,
@@ -150,7 +150,7 @@ class TestGetRawEmbeddings:
         mock_crud.get_raw_embeddings.return_value = []
         mock_crud_class.return_value = mock_crud
 
-        result = get_raw_embeddings(
+        get_raw_embeddings(
             db=mock_db_session,
             current_user=mock_user,
             embedding_model_id=None,
@@ -179,7 +179,7 @@ class TestGetRawEmbeddings:
         mock_crud.get_raw_embeddings.return_value = []
         mock_crud_class.return_value = mock_crud
 
-        result = get_raw_embeddings(
+        get_raw_embeddings(
             db=mock_db_session,
             current_user=mock_user,
             embedding_model_id=None,
@@ -208,7 +208,7 @@ class TestGetRawEmbeddings:
         mock_crud.get_raw_embeddings.return_value = []
         mock_crud_class.return_value = mock_crud
 
-        result = get_raw_embeddings(
+        get_raw_embeddings(
             db=mock_db_session,
             current_user=mock_user,
             embedding_model_id="model-x",

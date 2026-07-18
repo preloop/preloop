@@ -87,11 +87,13 @@ def _log_tool_execution_async(
             try:
                 user_uuid = UUID(user_id)
             except (ValueError, TypeError):
+                # user_id may be a non-UUID principal id; omit it from audit metadata.
                 pass
         if execution_id:
             try:
                 execution_uuid = UUID(execution_id)
             except (ValueError, TypeError):
+                # execution_id may be a non-UUID flow id; omit it from audit metadata.
                 pass
 
         audit_service.log_tool_call_async(

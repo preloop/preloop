@@ -18,7 +18,6 @@ import '../../../components/view-header';
 import {
   getApiKey,
   getApiKeyGovernance,
-  getApiKeyActivity,
   deleteApiKey,
   updateApiKeyGovernance,
   getTools,

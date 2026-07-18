@@ -22,17 +22,20 @@ type claudeModelFamily struct {
 
 // claudeModelFamilies is ordered most- to least-capable. The order is only used
 // to make output deterministic; it implies no preference.
-// After wiring, claudePinnedModelSelection can delegate:
+var claudeModelFamilies = []claudeModelFamily{
+	{selector: "opus", envKey: "ANTHROPIC_DEFAULT_OPUS_MODEL", aliasMarkers: []string{"claude-opus", "/opus"}},
+	{selector: "sonnet", envKey: "ANTHROPIC_DEFAULT_SONNET_MODEL", aliasMarkers: []string{"claude-sonnet", "/sonnet"}},
+	{selector: "haiku", envKey: "ANTHROPIC_DEFAULT_HAIKU_MODEL", aliasMarkers: []string{"claude-haiku", "/haiku"}},
+}
+
+// claudePinnedModelSelection maps a gateway alias to the Claude Code family
+// selector and env key used for `/model` pinning.
 func claudePinnedModelSelection(modelAlias string) (string, string) {
 	family, ok := claudeFamilyForAlias(modelAlias)
 	if !ok {
 		return "", ""
 	}
 	return family.selector, family.envKey
-}
-	{selector: "opus", envKey: "ANTHROPIC_DEFAULT_OPUS_MODEL", aliasMarkers: []string{"claude-opus", "/opus"}},
-	{selector: "sonnet", envKey: "ANTHROPIC_DEFAULT_SONNET_MODEL", aliasMarkers: []string{"claude-sonnet", "/sonnet"}},
-	{selector: "haiku", envKey: "ANTHROPIC_DEFAULT_HAIKU_MODEL", aliasMarkers: []string{"claude-haiku", "/haiku"}},
 }
 
 // claudeFamilyForAlias reports which family a gateway alias belongs to.

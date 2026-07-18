@@ -250,7 +250,7 @@ async def _get_google_models(api_key: Optional[str] = None) -> List[str]:
             # Make a minimal request to validate the key
             # Use the cheapest/fastest model with minimal tokens
             model = genai.GenerativeModel("gemini-2.0-flash")
-            response = model.generate_content(
+            model.generate_content(
                 "Hi", generation_config=genai.GenerationConfig(max_output_tokens=1)
             )
 

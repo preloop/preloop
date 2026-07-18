@@ -464,7 +464,7 @@ class TestMCPCallTool:
                 new=AsyncMock(return_value=mock_result),
                 create=True,
             ) as mock_super:
-                result = await dynamic_mcp.call_tool("proxied_tool", {})
+                await dynamic_mcp.call_tool("proxied_tool", {})
 
                 # Verify internal name was used dynamically
                 safe_account_id = user_context.account_id.replace("-", "_")

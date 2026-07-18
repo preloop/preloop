@@ -1,4 +1,4 @@
-import { LitElement, html, css, PropertyValues } from 'lit';
+import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import * as api from '../api';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';

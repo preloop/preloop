@@ -129,7 +129,6 @@ def list_projects(
         ]
 
     # Apply pagination
-    total = len(accessible_projects)
     paginated_projects = accessible_projects[offset : offset + limit]
 
     # Convert datetime objects to ISO format strings

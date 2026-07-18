@@ -161,7 +161,7 @@ def test_create_ai_model_with_external_secret_reference(
     monkeypatch.setattr(
         ai_model_crud_module,
         "get_secret_service",
-        lambda: SecretService(),
+        SecretService,
     )
 
     ai_model = crud_ai_model.create_with_account(

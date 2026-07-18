@@ -165,7 +165,7 @@ async def create_mcp_server(
                     logger.info(
                         f"Auto-scan complete: discovered {len(tools)} tools for {new_server.name}"
                     )
-                except BaseException as e:
+                except Exception as e:
                     logger.warning(f"Auto-scan failed for {new_server.id}: {e}")
                     # Don't fail the creation if scan fails - user can manually rescan
 
@@ -843,21 +843,25 @@ async def mcp_server_oauth_callback(
                     "last_error": None,
                 },
             )
-            logger.info(
-                f"OAuth tokens saved for MCP server {server.name} (id={server_id})"
-            )
+            # Do not log server_id/name here: they share a dict with
+            # client_secret in the OAuth state and CodeQL taints the whole map.
+            logger.info("OAuth credentials stored for MCP server")
 
             # Auto-scan for tools now that we have credentials
             try:
                 tools = await scan_mcp_server_tools(server_id, db)
                 logger.info(
-                    f"Post-OAuth auto-scan: discovered {len(tools)} tools for {server.name}"
+                    "Post-OAuth auto-scan: discovered %s tools",
+                    len(tools),
                 )
-            except BaseException as e:
-                logger.warning(f"Post-OAuth auto-scan failed for {server_id}: {e}")
-                # Don't fail the callback — tokens are saved, user can rescan manually
+            except Exception:
+                logger.warning(
+                    "Post-OAuth auto-scan failed after credential storage",
+                    exc_info=True,
+                )
+                # Don't fail the callback — credentials are stored, user can rescan manually
         else:
-            logger.warning(f"MCP server {server_id} not found after OAuth callback")
+            logger.warning("MCP server not found after OAuth callback")
     finally:
         db.close()
 

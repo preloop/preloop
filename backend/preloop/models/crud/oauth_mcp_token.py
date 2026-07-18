@@ -16,7 +16,12 @@ from ..models.oauth_mcp_token import (
 
 
 def _hash_token(token: str) -> str:
-    """Hash a token using SHA-256."""
+    """Return a one-way fingerprint for opaque OAuth token lookup/storage.
+
+    OAuth access/refresh tokens are high-entropy secrets; this is not password
+    hashing and must stay fast for token introspection.
+    """
+    # codeql[py/weak-sensitive-data-hashing] Opaque token fingerprint, not password storage
     return hashlib.sha256(token.encode()).hexdigest()
 
 

@@ -1,4 +1,4 @@
-import { LitElement, html, css } from 'lit';
+import { html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { AuthedElement, getUserProfile } from '../../api';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';

@@ -31,7 +31,6 @@ import {
   removeAccountAgent,
   getAccountGatewayUsageSummary,
   getFlows,
-  getFlowExecutions,
   getAIModels,
   getFeatures,
   updateAccountAgent,
@@ -3089,16 +3088,12 @@ export class AgentsView extends LitElement {
                   const agent = isFlow ? null : (item as ManagedAgentSummary);
                   const flowName = isFlow ? item.name : '';
                   const flowNode = isFlow ? (item as any) : null;
-                  const liveExecs = isFlow
-                    ? item.execution_stats?.running_execs || 0
-                    : 0;
                   const totalExecs = isFlow
                     ? item.execution_stats?.total_execs || 0
                     : 0;
                   const totalSpend = isFlow
                     ? item.execution_stats?.estimated_cost || 0
                     : agent?.estimated_cost || 0;
-                  const estimatedCost = totalSpend;
                   const lastSeenFlow = isFlow
                     ? item.execution_stats?.last_seen_at
                     : null;
@@ -3127,12 +3122,6 @@ export class AgentsView extends LitElement {
                       new Date(liveActivity.lastActivityAt).getTime() <
                       2000
                   );
-                  const isGlowing =
-                    liveTotal > 0 &&
-                    liveActivity &&
-                    Date.now() -
-                      new Date(liveActivity.lastActivityAt || 0).getTime() <
-                      2000;
                   const distance = Math.max(
                     Math.sqrt(pos.x * pos.x + pos.y * pos.y),
                     1

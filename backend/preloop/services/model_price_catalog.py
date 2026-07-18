@@ -371,3 +371,13 @@ def reset_lookup_state_for_tests() -> None:
         _remote_failed_at = 0.0
         _negative_cache.clear()
         _pending_lookups.clear()
+
+
+def _module_state_for_tests() -> dict[str, Any]:
+    """Expose module cache globals for tests and static analysis."""
+    return {
+        "loaded": _loaded,
+        "remote_map": _remote_map,
+        "remote_fetched_at": _remote_fetched_at,
+        "remote_failed_at": _remote_failed_at,
+    }

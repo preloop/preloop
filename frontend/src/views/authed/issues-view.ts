@@ -1,5 +1,5 @@
 import { LitElement, html, css, unsafeCSS } from 'lit';
-import { customElement, state, property } from 'lit/decorators.js';
+import { customElement, state } from 'lit/decorators.js';
 import { when } from 'lit/directives/when.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';

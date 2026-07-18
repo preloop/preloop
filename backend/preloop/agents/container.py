@@ -11,6 +11,7 @@ from aiodocker.exceptions import DockerError
 
 from .base import AgentExecutionResult, AgentExecutor, AgentStatus
 from preloop.services.mcp_config_service import MCPConfigService
+from preloop.utils.repo_urls import inject_oauth_token, tracker_host_kind
 
 logger = logging.getLogger(__name__)
 
@@ -1329,7 +1330,9 @@ class ContainerAgentExecutor(AgentExecutor):
                 git_cmd = self._prepare_git_clone_command(execution_context)
                 if git_cmd:
                     commands.append(git_cmd)
-                    self.logger.info(f"Git clone commands added: {git_cmd[:200]}...")
+                    self.logger.info(
+                        "Git clone commands added (length=%d)", len(git_cmd)
+                    )
                 else:
                     self.logger.warning(
                         "Git clone was configured but no commands were generated. "
@@ -1498,16 +1501,17 @@ class ContainerAgentExecutor(AgentExecutor):
             )
             return repo_url
 
-        if "github.com" in repo_url or tracker_type == "github":
+        host_kind = tracker_host_kind(repo_url)
+        if host_kind == "github" or tracker_type == "github":
             self.logger.info("Injected GitHub token into URL")
-            return repo_url.replace("https://", f"https://{token}@")
-        if "gitlab" in repo_url.lower() or tracker_type == "gitlab":
+            return inject_oauth_token(repo_url, token, token_as_username=True)
+        if host_kind == "gitlab" or tracker_type == "gitlab":
             self.logger.info("Injected GitLab token into URL")
-            return repo_url.replace("https://", f"https://gitlab-ci-token:{token}@")
+            return inject_oauth_token(repo_url, token, user="gitlab-ci-token")
 
         self.logger.warning(
-            f"Could not determine tracker type for token injection. "
-            f"URL: {repo_url[:50]}..., tracker_type: {tracker_type}"
+            "Could not determine tracker type for token injection (tracker_type=%s)",
+            tracker_type,
         )
         return repo_url
 

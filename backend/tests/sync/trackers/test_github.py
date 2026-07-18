@@ -1,5 +1,4 @@
 import pytest
-import unittest
 from unittest.mock import patch, MagicMock
 from unittest import IsolatedAsyncioTestCase
 import httpx
@@ -14,7 +13,7 @@ from preloop.sync.trackers.github import GitHubTracker
 
 
 @pytest.mark.asyncio
-class TestGitHubTrackerDependencies(unittest.IsolatedAsyncioTestCase):
+class TestGitHubTrackerDependencies(IsolatedAsyncioTestCase):
     @patch("preloop.sync.trackers.github.httpx.AsyncClient.get")
     async def test_get_issues_parses_dependencies_from_body_and_comments(
         self, mock_requests_get
@@ -111,7 +110,7 @@ class TestGitHubTrackerDependencies(unittest.IsolatedAsyncioTestCase):
 
 
 @pytest.mark.asyncio
-class TestGitHubTrackerComments(unittest.IsolatedAsyncioTestCase):
+class TestGitHubTrackerComments(IsolatedAsyncioTestCase):
     @patch("preloop.sync.trackers.github.httpx.AsyncClient.get")
     async def test_get_issues_fetches_and_transforms_comments(self, mock_requests_get):
         # --- Mock API Responses ---
@@ -221,11 +220,11 @@ class TestGitHubTrackerComments(unittest.IsolatedAsyncioTestCase):
         # Verify API calls (simplified check of calls made)
         # Check that requests.get was called at least for issues and comments
         # A more specific check would involve asserting call_args_list
-        self.assertTrue(mock_requests_get.call_count >= 2)
+        self.assertGreaterEqual(mock_requests_get.call_count, 2)
 
 
 @pytest.mark.asyncio
-class TestGitHubTracker(unittest.IsolatedAsyncioTestCase):
+class TestGitHubTracker(IsolatedAsyncioTestCase):
     @patch("preloop.sync.trackers.github.httpx.AsyncClient.get")
     async def test_get_organizations(self, mock_requests_get):
         mock_user_response = MagicMock()
@@ -399,7 +398,7 @@ class TestGitHubTracker(unittest.IsolatedAsyncioTestCase):
 
 
 @pytest.mark.asyncio
-class TestGitHubTrackerRequestErrors(unittest.IsolatedAsyncioTestCase):
+class TestGitHubTrackerRequestErrors(IsolatedAsyncioTestCase):
     @patch("preloop.sync.trackers.github.httpx.AsyncClient.get")
     async def test_make_request_authentication_error(self, mock_requests_get):
         mock_response = MagicMock()
@@ -433,7 +432,7 @@ class TestGitHubTrackerRequestErrors(unittest.IsolatedAsyncioTestCase):
 
 
 @pytest.mark.asyncio
-class TestGitHubTrackerDeleteRequest(unittest.IsolatedAsyncioTestCase):
+class TestGitHubTrackerDeleteRequest(IsolatedAsyncioTestCase):
     @patch("preloop.sync.trackers.github.httpx.AsyncClient.delete")
     async def test_make_request_delete_success(self, mock_requests_delete):
         mock_response = MagicMock()
@@ -485,7 +484,7 @@ class TestGitHubTrackerDeleteRequest(unittest.IsolatedAsyncioTestCase):
 
 
 @pytest.mark.asyncio
-class TestGitHubTrackerWebhooks(unittest.IsolatedAsyncioTestCase):
+class TestGitHubTrackerWebhooks(IsolatedAsyncioTestCase):
     @patch("preloop.sync.trackers.github.logger.error")
     async def test_register_webhook_requires_all_arguments(self, mock_logger_error):
         tracker = GitHubTracker(str(uuid4()), "api-key", {})
@@ -630,7 +629,7 @@ class TestGitHubTrackerWebhooks(unittest.IsolatedAsyncioTestCase):
         mock_make_request.assert_called_with("repos/octocat/Hello-World/hooks")
 
 
-class TestGitHubTrackerPagination(unittest.IsolatedAsyncioTestCase):
+class TestGitHubTrackerPagination(IsolatedAsyncioTestCase):
     @patch("preloop.sync.trackers.github.httpx.AsyncClient.get")
     async def test_make_request_pagination(self, mock_requests_get):
         mock_response_1 = MagicMock()
@@ -657,7 +656,7 @@ class TestGitHubTrackerPagination(unittest.IsolatedAsyncioTestCase):
 
 
 @pytest.mark.asyncio
-class TestGitHubTrackerUnregisterAllWebhooks(unittest.IsolatedAsyncioTestCase):
+class TestGitHubTrackerUnregisterAllWebhooks(IsolatedAsyncioTestCase):
     @patch("preloop.sync.trackers.github.crud_project.get_for_organization")
     @patch("preloop.sync.trackers.github.crud_organization.get_multi")
     @patch("preloop.sync.trackers.github.GitHubTracker.unregister_webhook")
@@ -756,7 +755,7 @@ class TestGitHubTrackerUnregisterAllWebhooks(unittest.IsolatedAsyncioTestCase):
 
 
 @pytest.mark.asyncio
-class TestGitHubTrackerCleanupStaleWebhooks(unittest.IsolatedAsyncioTestCase):
+class TestGitHubTrackerCleanupStaleWebhooks(IsolatedAsyncioTestCase):
     @patch("preloop.sync.trackers.github.GitHubTracker._make_request_delete")
     @patch("preloop.sync.trackers.github.GitHubTracker._make_request")
     async def test_cleanup_stale_webhooks_org_hooks(
@@ -1046,7 +1045,7 @@ class TestGitHubTrackerIssueOperations(IsolatedAsyncioTestCase):
 
 
 @pytest.mark.asyncio
-class TestGitHubTrackerTokenValidation(unittest.IsolatedAsyncioTestCase):
+class TestGitHubTrackerTokenValidation(IsolatedAsyncioTestCase):
     """Tests for GitHub token permission validation."""
 
     @patch("preloop.sync.trackers.github.httpx.AsyncClient")
@@ -1130,7 +1129,7 @@ class TestGitHubTrackerTokenValidation(unittest.IsolatedAsyncioTestCase):
 
         # Assert - should not be valid
         self.assertFalse(result["valid"])
-        self.assertTrue(len(result["errors"]) > 0)
+        self.assertGreater(len(result["errors"]), 0)
 
     @patch("preloop.sync.trackers.github.httpx.AsyncClient")
     async def test_validate_token_permissions_with_org_admin_check(
@@ -1199,7 +1198,7 @@ class TestGitHubTrackerTokenValidation(unittest.IsolatedAsyncioTestCase):
 
 
 @pytest.mark.asyncio
-class TestGitHubTrackerReactions(unittest.IsolatedAsyncioTestCase):
+class TestGitHubTrackerReactions(IsolatedAsyncioTestCase):
     """Tests for reaction add/remove functionality."""
 
     @patch("preloop.sync.trackers.github.httpx.AsyncClient")
@@ -1362,7 +1361,7 @@ class TestGitHubTrackerReactions(unittest.IsolatedAsyncioTestCase):
 
 
 @pytest.mark.asyncio
-class TestGitHubTrackerPullRequestUpdates(unittest.IsolatedAsyncioTestCase):
+class TestGitHubTrackerPullRequestUpdates(IsolatedAsyncioTestCase):
     """Tests for PR update functionality including assignees/reviewers."""
 
     @patch("preloop.sync.trackers.github.httpx.AsyncClient")

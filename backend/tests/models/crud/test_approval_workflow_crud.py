@@ -300,7 +300,7 @@ def test_update_setting_as_default(crud_approval_workflow, mock_db_session):
     mock_db_session.flush = MagicMock()
 
     # Act
-    result = crud_approval_workflow.update(
+    crud_approval_workflow.update(
         mock_db_session, db_obj=mock_workflow, obj_in=update_data
     )
 

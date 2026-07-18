@@ -133,6 +133,7 @@ def _allow_permissions(mocker: Any) -> None:
             return_value=True,
         )
     except ImportError:
+        # EE RBAC plugin is optional in OSS test runs.
         pass
 
 

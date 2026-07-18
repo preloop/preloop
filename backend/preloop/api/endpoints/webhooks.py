@@ -547,7 +547,7 @@ async def receive_webhook(
             # Extract fields that are NOT part of the Issue model schema
             # These need to be handled separately or stored in meta_data
             dependencies = transformed_issue.pop("dependencies", [])
-            comments = transformed_issue.pop("comments", [])
+            transformed_issue.pop("comments", [])
 
             # Store dependencies in meta_data if present
             if dependencies and transformed_issue.get("meta_data"):

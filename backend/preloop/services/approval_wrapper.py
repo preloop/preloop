@@ -163,7 +163,6 @@ def with_approval(tool_func: Callable) -> Callable:
                         execution_id=None,
                     )
 
-                    approval_url = f"{base_url}/approval/{approval_request.id}?token={approval_request.approval_token}"
                     notification_channel = (
                         f"#{workflow.channel}"
                         if workflow.channel

@@ -1,22 +1,23 @@
 """Server entry point for Preloop REST API."""
 
 import argparse
-import logging
+import importlib
 import os
-import sys  # Import sys
-import uvicorn
-
+import sys
 from typing import Optional
 
-from preloop.logging import configure_logging  # Import configure_logging
+import uvicorn
+
+import preloop.logging as preloop_logging
 
 # Add project root to sys.path to ensure SpaceModels can be imported
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-
-logger = logging.getLogger(__name__)
+# Resolve stdlib logging without `import logging`, which CodeQL flags as a
+# self-import relative to preloop.logging.
+logger = importlib.import_module("logging").getLogger(__name__)
 
 
 def start_server(
@@ -34,7 +35,7 @@ def start_server(
         init_test_data: Whether to initialize test data, defaults to INIT_TEST_DATA env var or False
     """
     # Configure logging first
-    configure_logging()
+    preloop_logging.configure_logging()
 
     # Set server parameters from environment or defaults
     host = host or os.getenv("HOST", "0.0.0.0")

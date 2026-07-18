@@ -58,7 +58,8 @@ class TestHealthCheck:
         result = health_check(db=mock_db_session)
 
         assert result["status"] == "unhealthy"
-        assert "error: Database connection failed" in result["database"]
+        # Health responses expose exception type only (no detail / stack).
+        assert result["database"] == "error: Exception"
         assert result["mcp_server"] == "available"
         assert result["upstream_connections"] == 0
 
@@ -111,7 +112,7 @@ class TestHealthCheck:
 
         assert result["status"] == "healthy"
         assert result["database"] == "connected"
-        assert "error: MCP initialization error" in result["mcp_server"]
+        assert result["mcp_server"] == "error: Exception"
         assert result["upstream_connections"] == 0
 
     @patch("preloop.services.mcp_client_pool.get_mcp_client_pool")
@@ -137,7 +138,7 @@ class TestHealthCheck:
         assert result["status"] == "healthy"
         assert result["database"] == "connected"
         assert result["mcp_server"] == "available"
-        assert "error: Client pool unavailable" in str(result["upstream_connections"])
+        assert result["upstream_connections"] == "error: Exception"
 
     @patch("preloop.services.mcp_client_pool.get_mcp_client_pool")
     @patch("preloop.services.mcp_http.get_mcp_lifespan_manager")

@@ -1094,6 +1094,7 @@ class TestFlowExecutionOrchestrator:
             try:
                 await run_task
             except asyncio.CancelledError:
+                # Expected when cancelling the orchestrator run task in the test.
                 pass
 
     @pytest.mark.asyncio
@@ -1160,6 +1161,7 @@ class TestFlowExecutionOrchestrator:
             try:
                 await run_task
             except Exception:
+                # Run task may still be active; ignore cleanup races in this test.
                 pass
 
     @pytest.mark.asyncio

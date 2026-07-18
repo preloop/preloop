@@ -17,7 +17,7 @@ class TestToolAccessRuleCRUD:
         self, db_session: Session, account_id: uuid.UUID, tool_name: str = "test_tool"
     ) -> ToolConfiguration:
         """Create a tool configuration for testing."""
-        workflow = crud_approval_workflow.create(
+        crud_approval_workflow.create(
             db_session,
             obj_in=ApprovalWorkflowCreate(name="Test Workflow", approval_type="manual"),
             account_id=str(account_id),

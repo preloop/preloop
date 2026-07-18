@@ -339,8 +339,6 @@ def test_jira_tracker_sync(preloop_client, jira_client):
 
                         # Try to parse JSON and extract URL
                         try:
-                            import json
-
                             data = json.loads(text)
                             url = data.get("url")
                             if url:
@@ -367,7 +365,7 @@ def test_jira_tracker_sync(preloop_client, jira_client):
 
             # Test search via MCP
             print(f"🔍 Searching via MCP: {create_title}")
-            search_result = await mcp_client.search(
+            await mcp_client.search(
                 query=create_title, project=JIRA_PROJECT_ID, limit=10
             )
             print("✓ Found created issue via MCP search")
@@ -398,9 +396,7 @@ def test_jira_tracker_sync(preloop_client, jira_client):
             return created_issue_key
 
         # Run MCP tests
-        created_issue_key = run_mcp_test(
-            PRELOOP_URL, PRELOOP_API_KEY, test_mcp_operations
-        )
+        run_mcp_test(PRELOOP_URL, PRELOOP_API_KEY, test_mcp_operations)
 
         print("✓ MCP integration tests complete")
         print("\n✅ Jira tracker sync test PASSED (including MCP)")

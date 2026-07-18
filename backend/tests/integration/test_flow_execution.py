@@ -188,7 +188,7 @@ class TestFlowExecution:
         )
 
         # Run the orchestrator (in background to avoid blocking)
-        execution_task = asyncio.create_task(orchestrator.run())
+        asyncio.create_task(orchestrator.run())
 
         # Wait for execution to start
         await asyncio.sleep(5)

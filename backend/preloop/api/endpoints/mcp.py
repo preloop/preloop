@@ -94,23 +94,20 @@ def _detect_platform_from_url(url: str) -> Literal["github", "gitlab"]:
     Raises:
         ValueError: If platform cannot be determined.
     """
-    url_lower = url.lower()
+    from preloop.utils.repo_urls import tracker_host_kind
 
-    # Check for GitHub indicators (must be github.com domain)
-    if "github.com" in url_lower:
+    host_kind = tracker_host_kind(url)
+    if host_kind in ("github", "gitlab"):
+        return host_kind
+
+    # Path-based fallback for non-standard hosts (parsed path segments only).
+    path = (urlparse(url).path or "").lower()
+    path_parts = [part for part in path.split("/") if part]
+    if "pull" in path_parts:
         return "github"
-
-    # Check for GitLab indicators (gitlab.com or contains gitlab in domain)
-    if "gitlab.com" in url_lower or "gitlab." in url_lower:
+    if "merge_requests" in path_parts or "-" in path_parts:
         return "gitlab"
 
-    # Check URL structure patterns (use url_lower for consistency)
-    if "/pull/" in url_lower:
-        return "github"
-    if "/merge_requests/" in url_lower or "/-/" in url_lower:
-        return "gitlab"
-
-    # Default based on common patterns
     raise ValueError(f"Cannot determine platform from URL: {url}")
 
 
@@ -261,9 +258,8 @@ def _parse_pr_identifier(pr_identifier: str) -> Dict[str, Any]:
         try:
             result["platform"] = _detect_platform_from_url(pr_identifier)
         except ValueError:
+            # URL may not match a known tracker host; fall back to regex extraction.
             pass
-
-        # Last-resort: try to extract just the number from the URL path
         m = re.search(r"/(\d+)/?$", urlparse(normalized).path)
         if m:
             result["pr_number"] = m.group(1)
@@ -798,16 +794,6 @@ async def update_issue(
             if isinstance(meta_data, dict)
             else None
         )
-        external_url = (
-            meta_data.get("url") or issue_obj.external_url or f"/issues/{issue_obj.id}"
-        )  # Fallback URL
-
-        # Construct the key using potentially updated slug/external_id
-        final_response_key = (
-            f"{project_slug}#{issue_obj.external_id}"
-            if project_slug and issue_obj.external_id
-            else str(issue_obj.id)
-        )
 
     # Get compliance results using CRUD layer
     compliance_results = crud_issue_compliance_result.get_for_issue(
@@ -1249,12 +1235,13 @@ async def add_comment(
         try:
             platform = _detect_platform_from_url(target)
         except ValueError:
+            # Unrecognized tracker URL; continue with path-based heuristics below.
             pass
 
         # GitHub PR URL: https://github.com/owner/repo/pull/123
-        if "github.com" in target and "/pull/" in target:
+        # Use hostname-derived platform (not substring match) to avoid host confusion.
+        if platform == "github" and "/pull/" in target:
             is_pull_request = True
-            platform = "github"
             parts = target.split("/")
             if len(parts) >= 7:
                 owner = parts[3]
@@ -1310,10 +1297,8 @@ async def add_comment(
         if platform is None:
             if tracker_client.tracker_type.lower() == "github":
                 platform = "github"
-                is_pull_request = True
             elif tracker_client.tracker_type.lower() == "gitlab":
                 platform = "gitlab"
-                is_merge_request = True
 
         target_id = pr_mr_number
 
@@ -1518,10 +1503,11 @@ async def add_comment(
             try:
                 issue_platform = _detect_platform_from_url(target)
             except ValueError:
+                # Self-hosted or nonstandard issue URL; rely on later slug parsing.
                 pass
 
             # GitHub issue URL: https://github.com/owner/repo/issues/123
-            if "github.com" in target and "/issues/" in target:
+            if issue_platform == "github" and "/issues/" in target:
                 parts = target.split("/")
                 if len(parts) >= 7:
                     owner = parts[3]
@@ -2289,21 +2275,18 @@ async def create_pull_request(
     project_path = project
     platform = None
 
-    # Detect platform from URL if provided
-    if "github.com" in project.lower():
-        platform = "github"
-        # Extract owner/repo from GitHub URL
-        if "github.com/" in project:
-            parts = project.split("github.com/")[1].split("/")
-            if len(parts) >= 2:
-                project_path = f"{parts[0]}/{parts[1].rstrip('/')}"
-    elif "gitlab" in project.lower():
-        platform = "gitlab"
-        # Extract project path from GitLab URL
-        if "://" in project:
-            url_parts = project.split("://")[1].split("/")
-            if len(url_parts) >= 2:
-                project_path = "/".join(url_parts[1:]).rstrip("/")
+    # Detect platform from URL hostname (not substring match).
+    if project.startswith("http"):
+        try:
+            platform = _detect_platform_from_url(project)
+        except ValueError:
+            platform = None
+        parsed_project = urlparse(project)
+        path_parts = [p for p in parsed_project.path.split("/") if p]
+        if platform == "github" and len(path_parts) >= 2:
+            project_path = f"{path_parts[0]}/{path_parts[1]}"
+        elif platform == "gitlab" and path_parts:
+            project_path = "/".join(path_parts).rstrip("/")
 
     # Find the project in database
     from preloop.models.crud import crud_project
@@ -2549,11 +2532,11 @@ async def update_comment(
         try:
             platform = _detect_platform_from_url(target)
         except ValueError:
+            # Unrecognized tracker URL; continue with path-based heuristics below.
             pass
 
         # GitHub PR URL: https://github.com/owner/repo/pull/123
-        if "github.com" in target and "/pull/" in target:
-            platform = "github"
+        if platform == "github" and "/pull/" in target:
             parts = target.split("/")
             if len(parts) >= 7:
                 owner = parts[3]
@@ -2856,7 +2839,7 @@ async def update_comment(
                 logger.info(
                     f"Updating GitLab MR note {comment_id} for MR {pr_mr_number}"
                 )
-                update_result = await tracker_client.update_mr_note(
+                await tracker_client.update_mr_note(
                     mr_iid=pr_mr_number,
                     note_id=comment_id,
                     body=body,

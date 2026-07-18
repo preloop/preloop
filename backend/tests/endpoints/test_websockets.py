@@ -52,7 +52,7 @@ class TestUnifiedWebSocket:
         test_user: User,
     ):
         """Test WebSocket handshake with authenticated user."""
-        mock_session = self._setup_websocket_mocks(
+        self._setup_websocket_mocks(
             mock_manager, mock_get_user, mock_session_manager, test_user
         )
 
@@ -81,7 +81,7 @@ class TestUnifiedWebSocket:
         test_user: User,
     ):
         """Test WebSocket ping/pong heartbeat lifecycle."""
-        mock_session = self._setup_websocket_mocks(
+        self._setup_websocket_mocks(
             mock_manager, mock_get_user, mock_session_manager, test_user
         )
 
@@ -199,7 +199,7 @@ class TestUnifiedWebSocket:
         test_user: User,
     ):
         """Test activity tracking through WebSocket messages."""
-        mock_session = self._setup_websocket_mocks(
+        self._setup_websocket_mocks(
             mock_manager, mock_get_user, mock_session_manager, test_user
         )
 

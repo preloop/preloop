@@ -4,7 +4,6 @@ import { repeat } from 'lit/directives/repeat.js';
 import type { Tool, ApprovalWorkflow } from './tool-card';
 import type { AccessRuleSummary } from './governance-rule-set-editor';
 import type { RuleFormData } from './tool-rule-editor';
-import { fetchWithAuth } from '../api';
 import type { GatewayUsageByTool } from '../types';
 import './tool-list-item';
 

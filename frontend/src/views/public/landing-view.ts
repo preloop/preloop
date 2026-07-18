@@ -6,7 +6,6 @@ import landingStyles from '../../styles/landing.css?inline';
 import { reducedMotionStyles } from '../../styles/reduced-motion';
 import './../../components/news-capsule';
 import './../../components/ide-setup-tabs';
-import { getIdeConfigs } from '../../utils/ide-configs';
 import { trackGoal } from '../../services/web-analytics';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/carousel/carousel.js';
@@ -879,25 +878,29 @@ export class LandingView extends LitElement {
   private _getYouTubeEmbedUrl(url: string): string {
     // Convert YouTube URLs to embed format
     // Handles: youtube.com/watch?v=ID, youtu.be/ID, youtube.com/embed/ID
+    const idPattern = /^[\w-]{6,20}$/;
     try {
       const urlObj = new URL(url);
+      const host = urlObj.hostname.toLowerCase();
       let videoId = '';
 
-      if (urlObj.hostname.includes('youtu.be')) {
-        // Format: https://youtu.be/VIDEO_ID
-        videoId = urlObj.pathname.slice(1);
-      } else if (urlObj.hostname.includes('youtube.com')) {
-        // Format: https://www.youtube.com/watch?v=VIDEO_ID
-        videoId = urlObj.searchParams.get('v') || '';
-
-        // Already in embed format
+      if (host === 'youtu.be' || host.endsWith('.youtu.be')) {
+        videoId = urlObj.pathname.split('/').filter(Boolean)[0] || '';
+      } else if (host === 'youtube.com' || host.endsWith('.youtube.com')) {
         if (urlObj.pathname.includes('/embed/')) {
+          const segment = urlObj.pathname.slice('/embed/'.length).split('/')[0];
+          if (segment && idPattern.test(segment)) {
+            return `https://www.youtube-nocookie.com/embed/${encodeURIComponent(segment)}`;
+          }
           return url;
         }
+        videoId = urlObj.searchParams.get('v') || '';
+      } else {
+        return url;
       }
 
-      if (videoId) {
-        return `https://www.youtube.com/embed/${videoId}`;
+      if (videoId && idPattern.test(videoId)) {
+        return `https://www.youtube-nocookie.com/embed/${encodeURIComponent(videoId)}`;
       }
     } catch (e) {
       console.error('Failed to parse YouTube URL:', url, e);

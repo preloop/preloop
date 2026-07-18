@@ -87,9 +87,6 @@ async def _log_writer_worker():
         except asyncio.CancelledError:
             break
         except Exception as e:
-            import logging
-
-            logger = logging.getLogger(__name__)
             logger.error(f"Error in log writer worker: {e}", exc_info=True)
             await asyncio.sleep(1)
 
@@ -381,6 +378,7 @@ async def nats_consumer(manager: "WebSocketManager"):
                     )
                 )
             except Exception:
+                # Best-effort admin alert; malformed JSON handling continues below.
                 pass
         except Exception as e:
             logger.error(f"Error processing NATS message: {e}")
@@ -393,6 +391,7 @@ async def nats_consumer(manager: "WebSocketManager"):
                     )
                 )
             except Exception:
+                # Best-effort admin alert; log the original processing error above.
                 pass
 
     async def persistence_handler(msg: Msg):
@@ -406,7 +405,7 @@ async def nats_consumer(manager: "WebSocketManager"):
 
     try:
         # Subscribe to a wildcard subject to receive all flow updates
-        flow_sub = await nats_client.subscribe("flow-updates.*", cb=message_handler)
+        await nats_client.subscribe("flow-updates.*", cb=message_handler)
         logger.info("Subscribed to NATS subject 'flow-updates.*'")
 
         # Persist logs with a queue group so only one instance writes them to DB
@@ -417,19 +416,15 @@ async def nats_consumer(manager: "WebSocketManager"):
             "Subscribed to NATS subject 'flow-updates.*' with queue group 'log-persisters'"
         )
 
-        account_sub = await nats_client.subscribe(
-            "account-updates.*", cb=message_handler
-        )
+        await nats_client.subscribe("account-updates.*", cb=message_handler)
         logger.info("Subscribed to NATS subject 'account-updates.*'")
 
         # Subscribe to approval updates
-        approval_sub = await nats_client.subscribe(
-            "approval-updates", cb=message_handler
-        )
+        await nats_client.subscribe("approval-updates", cb=message_handler)
         logger.info("Subscribed to NATS subject 'approval-updates'")
 
         # Subscribe to admin activity updates (for admin dashboard)
-        activity_sub = await nats_client.subscribe("admin.activity", cb=message_handler)
+        await nats_client.subscribe("admin.activity", cb=message_handler)
         logger.info("Subscribed to NATS subject 'admin.activity'")
 
         # Start the background log writer worker task
@@ -444,6 +439,7 @@ async def nats_consumer(manager: "WebSocketManager"):
             try:
                 await log_worker_task
             except asyncio.CancelledError:
+                # Background log writer was cancelled during consumer shutdown.
                 pass
 
     except Exception as e:

@@ -1,8 +1,7 @@
 import { LitElement, html, css } from 'lit';
-import { customElement, state } from 'lit/decorators.js';
+import { customElement } from 'lit/decorators.js';
 import { router } from '../router';
 import { Router } from '@vaadin/router';
-import { activityTracker } from '../services/activity-tracker';
 import { isSaaS } from '../brand-config';
 import { getFeatures } from '../api';
 import '../views/public/landing-view';

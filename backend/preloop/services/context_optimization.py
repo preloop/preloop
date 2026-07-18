@@ -39,7 +39,6 @@ MIN_DEDUPE_CHARS = 240
 # Floor for configured tool-result caps to avoid breaking agents outright.
 MIN_TOOL_RESULT_CAP = 1_000
 
-_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*(\x07|\x1b\\)")
 _CHARS_PER_TOKEN = 4
 
 
@@ -369,6 +368,43 @@ def optimize_messages(
     return result, stats
 
 
+def _strip_ansi_codes(text: str) -> str:
+    """Strip ANSI CSI/OSC sequences with a linear scan (no backtracking regex)."""
+    out: List[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "\x1b" and i + 1 < n:
+            nxt = text[i + 1]
+            if nxt == "[":
+                # CSI: ESC [ ... final byte in @-~
+                j = i + 2
+                while j < n and not ("@" <= text[j] <= "~"):
+                    j += 1
+                if j < n:
+                    i = j + 1
+                    continue
+            elif nxt == "]":
+                # OSC: ESC ] ... BEL or ESC \
+                j = i + 2
+                while j < n:
+                    if text[j] == "\x07":
+                        i = j + 1
+                        break
+                    if text[j] == "\x1b" and j + 1 < n and text[j + 1] == "\\":
+                        i = j + 2
+                        break
+                    j += 1
+                else:
+                    out.append(ch)
+                    i += 1
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def strip_noise_text(text: str) -> str:
     """Strip ANSI codes, resolve CR progress updates, collapse repeats.
 
@@ -378,7 +414,7 @@ def strip_noise_text(text: str) -> str:
     Returns:
         Cleaned text with explicit repeat markers where lines collapsed.
     """
-    cleaned = _ANSI_RE.sub("", text)
+    cleaned = _strip_ansi_codes(text)
     lines: List[str] = []
     for raw_line in cleaned.split("\n"):
         # Carriage-return progress updates: only the final state matters.

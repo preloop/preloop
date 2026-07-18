@@ -1,6 +1,5 @@
 import { LitElement, html, css, unsafeCSS, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
-import { repeat } from 'lit/directives/repeat.js';
 import {
   getTools,
   getMCPServers,

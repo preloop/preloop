@@ -1682,7 +1682,7 @@ func runAgentsValidate(cmd *cobra.Command, args []string) error {
 		"error",
 	} {
 		if value, ok := result[key]; ok {
-			fmt.Printf("  %s: %v\n", key, value)
+			fmt.Printf("  %s: %s\n", key, formatManagedValidationValue(key, value))
 		}
 	}
 	fmt.Printf("  onboarding_mode: %s\n", onboardingStateLabel(onboardingStateFromValidation(result)))
@@ -3691,20 +3691,6 @@ func clearClaudePinnedModelEnv(env map[string]interface{}) {
 	}
 }
 
-func claudePinnedModelSelection(modelAlias string) (string, string) {
-	lower := strings.ToLower(strings.TrimSpace(modelAlias))
-	switch {
-	case strings.Contains(lower, "claude-opus"), strings.Contains(lower, "/opus"):
-		return "opus", "ANTHROPIC_DEFAULT_OPUS_MODEL"
-	case strings.Contains(lower, "claude-sonnet"), strings.Contains(lower, "/sonnet"):
-		return "sonnet", "ANTHROPIC_DEFAULT_SONNET_MODEL"
-	case strings.Contains(lower, "claude-haiku"), strings.Contains(lower, "/haiku"):
-		return "haiku", "ANTHROPIC_DEFAULT_HAIKU_MODEL"
-	default:
-		return "", ""
-	}
-}
-
 func ensureLegacyCodexMCPServer(agent AgentConfig, doc map[string]interface{}, baseURL string, token string) {
 	if !strings.EqualFold(strings.TrimSpace(agent.Name), "codex cli") {
 		return
@@ -4799,6 +4785,39 @@ func isSensitiveKey(key string) bool {
 	default:
 		return false
 	}
+}
+
+func formatManagedValidationValue(key string, value interface{}) string {
+	switch key {
+	case "config_path", "live_validation_status", "live_validation_skip_reason":
+		if s, ok := value.(string); ok {
+			return s
+		}
+	case "error":
+		if s, ok := value.(string); ok {
+			return sanitizeValidationErrorMessage(s)
+		}
+	case "config_parse_ok", "preloop_server_present", "gateway_provider_ok",
+		"gateway_base_url_ok", "gateway_token_ok", "model_provider_rewritten",
+		"live_validation_passed", "control_config_written", "control_plugin_installed",
+		"control_plugin_verified", "control_channel_configured":
+		return boolStatus(value)
+	}
+	return "n/a"
+}
+
+func sanitizeValidationErrorMessage(message string) string {
+	trimmed := strings.TrimSpace(message)
+	if trimmed == "" {
+		return "n/a"
+	}
+	lower := strings.ToLower(trimmed)
+	for _, token := range []string{"token", "api_key", "apikey", "secret", "password", "bearer"} {
+		if strings.Contains(lower, token) {
+			return "<redacted>"
+		}
+	}
+	return trimmed
 }
 
 func prunePreloopOwnedMCPServersFromDocument(doc map[string]interface{}) []string {

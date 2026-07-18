@@ -180,7 +180,7 @@ class TestWebSocketManager:
 
     async def test_broadcast_to_single_client(self, manager, mock_websocket):
         """Test broadcasting message to single client."""
-        connection_id = await manager.connect(mock_websocket)
+        await manager.connect(mock_websocket)
         message = "Test message"
 
         await manager.broadcast(message)
@@ -360,6 +360,7 @@ class TestNatsConsumer:
         try:
             await consumer_task
         except asyncio.CancelledError:
+            # Expected when cancelling the NATS consumer background task.
             pass
 
     @patch("preloop.services.websocket_manager.get_task_publisher")
@@ -421,6 +422,7 @@ class TestNatsConsumer:
         try:
             await consumer_task
         except asyncio.CancelledError:
+            # Expected when cancelling the NATS consumer background task.
             pass
 
     @patch("preloop.services.websocket_manager.get_task_publisher")
@@ -475,4 +477,5 @@ class TestNatsConsumer:
         try:
             await consumer_task
         except asyncio.CancelledError:
+            # Expected when cancelling the NATS consumer background task.
             pass

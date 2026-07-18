@@ -941,8 +941,6 @@ class JiraTracker(BaseTracker):
                                 else:
                                     # Real ADF with plain text content
                                     # Check if the text is just test suffixes (artifacts from integration tests)
-                                    import re
-
                                     test_suffix_pattern = (
                                         r"^[\s]*(test_[a-f0-9]+[\s]*)+$"
                                     )
@@ -1172,8 +1170,6 @@ class JiraTracker(BaseTracker):
 
     async def get_organizations(self) -> List[Dict[str, Any]]:
         """Get organizations from Jira."""
-        import re
-
         domain_match = re.search(r"https?://([^/]+)", self.jira_url)
         org_name = domain_match.group(1) if domain_match else "Jira Instance"
         return [{"id": org_name, "name": org_name, "url": self.jira_url}]
@@ -1260,6 +1256,7 @@ class JiraTracker(BaseTracker):
                     issue_data["created"], "%Y-%m-%dT%H:%M:%S.%f%z"
                 )
             except (ValueError, TypeError):
+                # Jira timestamp format may omit fractional seconds or timezone.
                 pass
 
         updated_at = None
@@ -1269,6 +1266,7 @@ class JiraTracker(BaseTracker):
                     issue_data["updated"], "%Y-%m-%dT%H:%M:%S.%f%z"
                 )
             except (ValueError, TypeError):
+                # Jira timestamp format may omit fractional seconds or timezone.
                 pass
 
         # Get fields from either top level (webhook) or nested in fields (API)

@@ -53,7 +53,7 @@ class TestGenerateMCPConfig:
         """Test generating config with default URL from environment."""
         mock_getenv.return_value = "http://localhost:8000"
 
-        config = MCPConfigService.generate_mcp_config(
+        MCPConfigService.generate_mcp_config(
             allowed_mcp_servers=["preloop-mcp"],
             allowed_mcp_tools=[],
         )

@@ -1,13 +1,25 @@
 #!/usr/bin/env python3
 
+import os
+import sys
+
 import requests
+
+username = os.environ.get("PRELOOP_USERNAME")
+password = os.environ.get("PRELOOP_PASSWORD")
+if not username or not password:
+    print(
+        "Missing credentials. Set PRELOOP_USERNAME and PRELOOP_PASSWORD "
+        "environment variables."
+    )
+    sys.exit(1)
 
 # Test JSON auth (new endpoint)
 print("Testing JSON auth (new endpoint)...")
 try:
     response = requests.post(
         "http://localhost:8000/api/v1/auth/token/json",
-        json={"username": "admin", "password": "admin"},
+        json={"username": username, "password": password},
     )
     print(f"Status code: {response.status_code}")
     print(f"Response: {response.text}")
@@ -19,7 +31,7 @@ print("\nTesting form auth...")
 try:
     response = requests.post(
         "http://localhost:8000/api/v1/auth/token",
-        data={"username": "admin", "password": "admin"},
+        data={"username": username, "password": password},
     )
     print(f"Status code: {response.status_code}")
     print(f"Response: {response.text}")
@@ -32,7 +44,7 @@ try:
     # Get token first
     auth_response = requests.post(
         "http://localhost:8000/api/v1/auth/token",
-        data={"username": "admin", "password": "admin"},
+        data={"username": username, "password": password},
     )
     if auth_response.status_code == 200:
         token_data = auth_response.json()

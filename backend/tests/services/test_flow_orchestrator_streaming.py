@@ -277,6 +277,7 @@ class TestLogStreaming:
         try:
             await task
         except asyncio.CancelledError:
+            # Expected when cancelling the streaming task after assertions.
             pass
 
         # Verify NATS publish was called
@@ -342,7 +343,7 @@ class TestLogStreaming:
         await asyncio.sleep(0.1)
 
         # Should complete without raising
-        await task
+        await asyncio.wait_for(task, timeout=1.0)
 
         # Should have published error
         calls = [call for call in mock_nats_client.publish.call_args_list]
@@ -437,7 +438,6 @@ class TestCommandListener:
     @pytest.mark.asyncio
     async def test_listen_for_commands_stop(self, orchestrator, mock_nats_client):
         """Test that stop command is handled."""
-        command_subject = f"flow-commands.{orchestrator.execution_log.id}"
 
         # Capture the subscription callback
         callback = None
@@ -586,8 +586,6 @@ class TestCleanupMonitoring:
 
         # Patch the timeout to be very short for testing
 
-        original_cleanup = orchestrator._cleanup_monitoring
-
         async def short_timeout_cleanup():
             # Wait for just 0.1 seconds instead of 30
             if (
@@ -603,6 +601,7 @@ class TestCleanupMonitoring:
                     try:
                         await orchestrator._log_streaming_task
                     except asyncio.CancelledError:
+                        # Expected after timeout-driven cancellation in cleanup test.
                         pass
 
         # Run cleanup with short timeout
@@ -683,7 +682,7 @@ class TestMonitoringIntegration:
             orchestrator.execution_logger.log_milestone = MagicMock()
 
             # Run monitoring (will complete quickly due to SUCCEEDED status)
-            result = await orchestrator._monitor_agent_execution(
+            await orchestrator._monitor_agent_execution(
                 "session-123", mock_agent_executor
             )
 
@@ -736,4 +735,5 @@ class TestMonitoringIntegration:
             try:
                 await task
             except asyncio.CancelledError:
+                # Expected when cancelling the orchestrator run task in the test.
                 pass

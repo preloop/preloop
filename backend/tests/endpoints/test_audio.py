@@ -30,7 +30,7 @@ def test_transcribe_audio_uses_account_default_stt_model(
     monkeypatch.setattr(
         audio_model_module,
         "OpenAIAudioProviderBackend",
-        lambda: FakeAudioBackend(),
+        FakeAudioBackend,
     )
     crud_ai_model.create_with_account(
         db=db_session,
@@ -79,7 +79,7 @@ def test_transcribe_audio_uses_only_account_stt_model_when_no_default(
     monkeypatch.setattr(
         audio_model_module,
         "OpenAIAudioProviderBackend",
-        lambda: FakeAudioBackend(),
+        FakeAudioBackend,
     )
     stt_model = crud_ai_model.create_with_account(
         db=db_session,
@@ -114,7 +114,7 @@ def test_synthesize_speech_falls_back_to_installation_default_tts_model(
     monkeypatch.setattr(
         audio_model_module,
         "OpenAIAudioProviderBackend",
-        lambda: FakeAudioBackend(),
+        FakeAudioBackend,
     )
     tts_model = crud_ai_model.create_with_account(
         db=db_session,

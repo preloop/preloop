@@ -17,7 +17,12 @@ class CRUDApiKey(CRUDBase[ApiKey]):
 
     @staticmethod
     def build_key_hash(key_value: str) -> str:
-        """Build a deterministic hash for an API key value."""
+        """Build a deterministic lookup fingerprint for an API key value.
+
+        This is not password hashing: API keys are high-entropy secrets looked
+        up on every request, so a fast one-way digest is appropriate.
+        """
+        # codeql[py/weak-sensitive-data-hashing] Token fingerprint for lookup, not password storage
         return hashlib.sha256(key_value.encode("utf-8")).hexdigest()
 
     @staticmethod

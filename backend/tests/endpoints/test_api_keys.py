@@ -214,7 +214,7 @@ def test_api_key_model_compatibility():
 
     # Get the __init__ signature
     sig = inspect.signature(ApiKey.__init__)
-    params = list(sig.parameters.keys())
+    list(sig.parameters.keys())
 
     # Check that user_id is an expected parameter
     # Note: SQLAlchemy models don't always show all fields in __init__,

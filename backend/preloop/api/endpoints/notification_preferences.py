@@ -1,5 +1,7 @@
 """API endpoints for notification preferences."""
 
+import html as html_module
+import json
 import logging
 import os
 import threading
@@ -483,9 +485,6 @@ async def register_device_landing_page(
     is_ios = "iphone" in user_agent or "ipad" in user_agent
     is_android = "android" in user_agent
 
-    # Determine which store to redirect to
-    store_url = app_store_url if is_ios else play_store_url
-
     # Check if token is valid (just for messaging - don't consume it yet)
     # The app will consume it when it registers
     is_valid_token = check_token_validity(db, token)
@@ -553,6 +552,9 @@ async def register_device_landing_page(
     # the moment pairing completes — and the shipped mobile apps parse
     # exactly this URL shape, so changing the format breaks pairing for
     # every installed version.
+    escaped_app_store_url = html_module.escape(app_store_url, quote=True)
+    escaped_play_store_url = html_module.escape(play_store_url, quote=True)
+    token_js = json.dumps(token)
     return f"""
     <!DOCTYPE html>
     <html lang="en">
@@ -641,11 +643,11 @@ async def register_device_landing_page(
                 <h1>Get Preloop.AI</h1>
                 <p>Install the Preloop.AI app to complete device registration.</p>
                 <div class="store-links">
-                    <a href="{app_store_url}" class="store-button" {'style="display: none;"' if not is_ios else ""}>
+                    <a href="{escaped_app_store_url}" class="store-button" {'style="display: none;"' if not is_ios else ""}>
                         <span>📱</span>
                         Download on App Store
                     </a>
-                    <a href="{play_store_url}" class="store-button" {'style="display: none;"' if not is_android else ""}>
+                    <a href="{escaped_play_store_url}" class="store-button" {'style="display: none;"' if not is_android else ""}>
                         <span>🤖</span>
                         Get it on Google Play
                     </a>
@@ -655,7 +657,8 @@ async def register_device_landing_page(
 
         <script>
             // Try to open the app with custom URL scheme
-            const appUrl = 'preloop://register?token={token}';
+            const token = {token_js};
+            const appUrl = 'preloop://register?token=' + encodeURIComponent(token);
 
             // Attempt to open the app
             window.location.href = appUrl;
