@@ -35,8 +35,11 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_cache_bypass $http_upgrade;
         proxy_connect_timeout 10s;
-        proxy_send_timeout 60s;
-        proxy_read_timeout 60s;
+        # LLM-powered analysis (cost optimization suggestions) and replay
+        # verification legitimately run ~90s on slower models; 60s here 504s the
+        # browser while the backend finishes. Durable fix is async jobs + polling.
+        proxy_send_timeout 300s;
+        proxy_read_timeout 300s;
 
         # CORS headers for API requests
         add_header 'Access-Control-Allow-Origin' '*' always;
