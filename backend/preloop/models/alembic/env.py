@@ -9,7 +9,14 @@ from alembic import context
 # Import Base from your models
 from preloop.models.models.base import Base
 
-# Import all models so they register with Base.metadata for autogenerate.
+# Import model modules so their tables register with Base.metadata for
+# autogenerate. Use importlib (instead of unused `from ... import mod` lines)
+# so static analysis does not flag the side-effect imports.
+#
+# Modules loaded for metadata registration:
+#   issue, organization, project, tracker, account, agent_control_command,
+#   api_key, api_usage, client_version_log, comment, ai_model, issue_duplicate,
+#   model_price_override, provider_billing
 import importlib
 
 _MODEL_MODULES = (

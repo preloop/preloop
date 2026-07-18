@@ -30,12 +30,20 @@ assert _ALEMBIC_IDENTIFIERS, "Alembic revision metadata must be defined"
 
 def upgrade() -> None:
     """Create the approval_bypass table and approval-request markers."""
+    # Create the enum once explicitly. Column usage must set create_type=False
+    # so SQLAlchemy does not emit a second CREATE TYPE during create_table.
     approval_bypass_mode = sa.Enum(
         "mute_notifications",
         "auto_approve",
         name="approval_bypass_mode",
     )
     approval_bypass_mode.create(op.get_bind(), checkfirst=True)
+    approval_bypass_mode_col = sa.Enum(
+        "mute_notifications",
+        "auto_approve",
+        name="approval_bypass_mode",
+        create_type=False,
+    )
 
     op.create_table(
         "approval_bypass",
@@ -72,7 +80,7 @@ def upgrade() -> None:
         sa.Column("managed_agent_id", UUID(as_uuid=True), nullable=True),
         sa.Column(
             "mode",
-            approval_bypass_mode,
+            approval_bypass_mode_col,
             nullable=False,
         ),
         sa.Column("reason", sa.Text(), nullable=True),

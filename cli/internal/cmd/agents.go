@@ -3691,20 +3691,6 @@ func clearClaudePinnedModelEnv(env map[string]interface{}) {
 	}
 }
 
-func claudePinnedModelSelection(modelAlias string) (string, string) {
-	lower := strings.ToLower(strings.TrimSpace(modelAlias))
-	switch {
-	case strings.Contains(lower, "claude-opus"), strings.Contains(lower, "/opus"):
-		return "opus", "ANTHROPIC_DEFAULT_OPUS_MODEL"
-	case strings.Contains(lower, "claude-sonnet"), strings.Contains(lower, "/sonnet"):
-		return "sonnet", "ANTHROPIC_DEFAULT_SONNET_MODEL"
-	case strings.Contains(lower, "claude-haiku"), strings.Contains(lower, "/haiku"):
-		return "haiku", "ANTHROPIC_DEFAULT_HAIKU_MODEL"
-	default:
-		return "", ""
-	}
-}
-
 func ensureLegacyCodexMCPServer(agent AgentConfig, doc map[string]interface{}, baseURL string, token string) {
 	if !strings.EqualFold(strings.TrimSpace(agent.Name), "codex cli") {
 		return

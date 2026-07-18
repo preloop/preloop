@@ -1,12 +1,12 @@
 """Server entry point for Preloop REST API."""
 
 import argparse
-from logging import getLogger
+import importlib
 import os
-import sys  # Import sys
-import uvicorn
-
+import sys
 from typing import Optional
+
+import uvicorn
 
 import preloop.logging as preloop_logging
 
@@ -15,8 +15,9 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-
-logger = getLogger(__name__)
+# Resolve stdlib logging without `import logging`, which CodeQL flags as a
+# self-import relative to preloop.logging.
+logger = importlib.import_module("logging").getLogger(__name__)
 
 
 def start_server(
