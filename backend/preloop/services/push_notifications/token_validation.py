@@ -23,7 +23,18 @@ SUPPORTED_PLATFORMS = ("ios", "android")
 _APNS_TOKEN_RE = re.compile(r"^[0-9a-fA-F]{64,200}$")
 
 # Placeholders the mobile apps have been observed to store when the push SDK
-# fails to produce a real token. These must never reach a provider.
+# fails to produce a real token.
+#
+# This list only *classifies* a token that has already failed its platform's
+# structural check, so that the caller gets "your app stored a placeholder"
+# instead of a generic shape error. It must never be used to reject on its
+# own: these are ordinary word prefixes, and a real FCM token begins with a
+# random installation id drawn from the same alphabet. A token such as
+# "testGk9TgQ1mR2:APA91b..." is perfectly valid, and rejecting it would cost
+# that device every push notification it should have received. Every known
+# placeholder already fails the structural checks below (none contain the
+# ":<100+ chars>" of an FCM token or the pure hex of an APNs token), so
+# deferring to those checks loses no rejection power.
 _KNOWN_PLACEHOLDER_PREFIXES = (
     "fcm_unavailable",
     "apns_unavailable",
@@ -33,6 +44,12 @@ _KNOWN_PLACEHOLDER_PREFIXES = (
     "none",
     "null",
     "undefined",
+)
+
+
+_PLACEHOLDER_ERROR = (
+    "Device push token is a placeholder, not a real token. The app failed to "
+    "obtain a push token and must retry registration."
 )
 
 
@@ -81,14 +98,14 @@ def validate_device_token(platform: str, token: str) -> Tuple[bool, Optional[str
     if not cleaned_token:
         return False, "Device push token must not be empty"
 
-    if is_placeholder_token(cleaned_token):
-        return (
-            False,
-            "Device push token is a placeholder, not a real token. The app "
-            "failed to obtain a push token and must retry registration.",
-        )
-
+    # NOTE: the placeholder check is deliberately *not* performed here as a
+    # rejection of its own. It runs only inside the structural failure paths
+    # below, to explain a token that was going to be rejected anyway. See
+    # _KNOWN_PLACEHOLDER_PREFIXES for why rejecting on it directly would throw
+    # away legitimate tokens.
     if cleaned_platform == "android" and not looks_like_fcm_token(cleaned_token):
+        if is_placeholder_token(cleaned_token):
+            return False, _PLACEHOLDER_ERROR
         return (
             False,
             "Token is not a valid FCM registration token. An Android device "
@@ -96,6 +113,8 @@ def validate_device_token(platform: str, token: str) -> Tuple[bool, Optional[str
         )
 
     if cleaned_platform == "ios" and not looks_like_apns_token(cleaned_token):
+        if is_placeholder_token(cleaned_token):
+            return False, _PLACEHOLDER_ERROR
         # An FCM-shaped token here means the platform field is wrong, which
         # would route an Android token down the APNs path (and vice versa).
         if looks_like_fcm_token(cleaned_token):

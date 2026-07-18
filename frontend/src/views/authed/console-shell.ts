@@ -17,6 +17,7 @@ import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '../../components/logo-component';
 import '../../components/global-notice';
 import '../../components/console-header';
+import '../../components/approval-bypass-banner';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import {
   getFeatures,
@@ -713,6 +714,9 @@ export class ConsoleShell extends LitElement {
               @click=${this._handleSidebarToggle}
             ></sl-icon-button>
           </console-header>
+          <!-- Sits directly under the header so a relaxed governance state is
+               visible on every console page, not just the approvals view. -->
+          <approval-bypass-banner></approval-bypass-banner>
           <div
             class="main-content ${this._fullBleed ? 'full-bleed' : ''}"
             @request-full-bleed=${(e: CustomEvent) =>

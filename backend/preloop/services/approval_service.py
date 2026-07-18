@@ -12,7 +12,11 @@ from urllib.parse import urljoin
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from preloop.models.models import ApprovalRequest, ApprovalWorkflow
+from preloop.models.models import (
+    ApprovalRequest,
+    ApprovalWorkflow,
+    AutoApprovedReason,
+)
 from preloop.models.schemas.approval_request import (
     ApprovalRequestUpdate,
 )
@@ -20,6 +24,11 @@ from preloop.models.crud.approval_request import (
     get_approval_request_async,
     get_approval_request_for_update_async,
 )
+from preloop.models.crud.approval_bypass import (
+    get_active_bypass_async,
+    record_bypass_use_async,
+)
+from preloop.models.models.approval_bypass import ApprovalBypass, ApprovalBypassMode
 from preloop.sync.services.event_bus import get_task_publisher
 from preloop.services.ai_approval_service import get_ai_approval_service
 
@@ -208,6 +217,55 @@ def _log_approval_tool_executed_async(
 
 # Thread pool for running sync database operations
 _sync_db_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+
+
+async def _send_android_push_transport(
+    *,
+    token: str,
+    title: str,
+    body: str,
+    data: Dict[str, Any],
+    priority: str,
+    fcm_available: bool,
+    use_proxy: bool,
+) -> Dict[str, Any]:
+    """Send one Android push via FCM or the push proxy; return the result dict.
+
+    The single place that knows both transports' call signatures. The main and
+    escalation paths previously each spelled these calls out, and the copies
+    drifted: the escalation copy passed ``device_token=`` to
+    ``send_fcm_notification`` (whose parameter is ``token``), so every
+    escalation send raised TypeError. Keeping transport dispatch here makes
+    that class of divergence unrepeatable.
+
+    Callers classify the result themselves — the main path prunes dead tokens,
+    escalation only counts — so policy stays local while transport is shared.
+
+    Returns:
+        The transport's result dict; ``{"success": False, ...}`` when no
+        transport is configured.
+    """
+    from preloop.services.push_notifications import send_fcm_notification
+    from preloop.services.push_proxy import send_push_via_proxy
+
+    if fcm_available:
+        return await send_fcm_notification(
+            token=token,
+            title=title,
+            body=body,
+            data=data,
+            priority=priority,
+        )
+    if use_proxy:
+        return await send_push_via_proxy(
+            platform="android",
+            device_token=token,
+            title=title,
+            body=body,
+            data=data,
+            priority=priority,
+        )
+    return {"success": False, "error": "no_push_transport_configured"}
 
 
 class ApprovalService:
@@ -956,6 +1014,185 @@ class ApprovalService:
 
         return (max(total, 1), is_exact)
 
+    async def _resolve_bypass(
+        self,
+        approval_workflow: ApprovalWorkflow,
+        account_id: str,
+        managed_agent_id: Optional[uuid.UUID],
+        required_mode: str,
+    ) -> Optional[ApprovalBypass]:
+        """Return an active bypass covering *every* approver, or None.
+
+        The unanimity rule is deliberate and is the main safety property here.
+        A bypass belongs to one user. If a workflow requires several approvers,
+        one of them muting their phone must not disable the gate for everybody
+        else — that would let a single person silently revoke a control other
+        people are relying on. So the bypass only takes effect when every
+        approver on the workflow has an active bypass of at least the required
+        strength. In the common single-approver case (an individual governing
+        their own agents, which is the case this feature was built for) that
+        reduces to "the one approver muted it".
+
+        When no approvers can be resolved the request is treated as *not*
+        bypassed. Failing closed is the only safe direction here.
+
+        Args:
+            approval_workflow: Workflow whose approvers gate the request.
+            account_id: Owning account.
+            managed_agent_id: Agent raising the request, if known.
+            required_mode: Minimum strength; ``auto_approve`` matches only
+                auto-approve bypasses, ``mute_notifications`` matches either.
+
+        Returns:
+            The bypass to attribute the decision to, or None.
+        """
+        try:
+            approver_user_ids = await self._get_all_approver_user_ids(approval_workflow)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "Could not resolve approvers for bypass check on workflow %s: %s; "
+                "failing closed (no bypass applied)",
+                approval_workflow.id,
+                exc,
+            )
+            return None
+
+        if not approver_user_ids:
+            return None
+
+        try:
+            account_uuid = uuid.UUID(str(account_id))
+        except (ValueError, AttributeError, TypeError):
+            logger.warning(
+                "Invalid account_id %r for bypass check; failing closed", account_id
+            )
+            return None
+
+        winning: Optional[ApprovalBypass] = None
+        for approver_id in approver_user_ids:
+            bypass = await get_active_bypass_async(
+                self.db,
+                account_id=account_uuid,
+                user_id=approver_id,
+                managed_agent_id=managed_agent_id,
+            )
+            if bypass is None:
+                return None
+            if (
+                required_mode == ApprovalBypassMode.AUTO_APPROVE
+                and bypass.mode != ApprovalBypassMode.AUTO_APPROVE
+            ):
+                return None
+            if winning is None:
+                winning = bypass
+
+        return winning
+
+    async def _auto_approve_via_bypass(
+        self,
+        approval_request: ApprovalRequest,
+        bypass: ApprovalBypass,
+    ) -> ApprovalRequest:
+        """Approve a request under a time-boxed bypass.
+
+        Args:
+            approval_request: The pending request to resolve.
+            bypass: The bypass authorizing the auto-approval.
+
+        Returns:
+            The updated, approved approval request.
+        """
+        scope = "all agents" if bypass.managed_agent_id is None else "this agent"
+        reason = (
+            f"Auto-approved without review: an approval bypass for {scope} is "
+            f"active until {bypass.expires_at.isoformat()}Z"
+        )
+        return await self._auto_approve_without_review(
+            approval_request,
+            reason_code=AutoApprovedReason.BYPASS,
+            reason=reason,
+            bypass=bypass,
+        )
+
+    async def _auto_approve_without_review(
+        self,
+        approval_request: ApprovalRequest,
+        *,
+        reason_code: str,
+        reason: str,
+        bypass: Optional[ApprovalBypass] = None,
+    ) -> ApprovalRequest:
+        """Approve a request with no human involved, recording it as such.
+
+        Shared by every "nobody looked at this" path: time-boxed bypasses and
+        the standing ``native_tool_approvals: "off"`` governance setting.
+
+        The request row is kept — deliberately. Suppressing the notification is
+        what relieves the user; suppressing the record would only destroy the
+        evidence of what ran while nobody was watching, which is the opposite
+        of what a governance product should do. The row is marked so no
+        surface can mistake it for a human decision.
+
+        Args:
+            approval_request: The pending request to resolve.
+            reason_code: An :class:`AutoApprovedReason` value stored in
+                ``auto_approved_reason``; this is what makes the request
+                machine-identifiable as unsupervised.
+            reason: Human-readable explanation shown to operators.
+            bypass: The authorizing bypass, when a time-boxed one exists.
+                None for standing configured bypasses, which are authorized by
+                the account's governance config rather than by a bypass row.
+
+        Returns:
+            The updated, approved approval request.
+        """
+        update = ApprovalRequestUpdate(
+            status="approved",
+            approver_comment=reason,
+            resolved_at=datetime.utcnow(),
+            decided_by_ai=False,
+            auto_approved_reason=reason_code,
+            auto_approval_bypass_id=bypass.id if bypass is not None else None,
+        )
+        updated_request = await self.update_approval_request(
+            approval_request.id, update
+        )
+        if updated_request is None:  # pragma: no cover - defensive
+            return approval_request
+
+        if bypass is not None:
+            try:
+                await record_bypass_use_async(self.db, bypass_id=bypass.id)
+            except Exception as exc:  # pragma: no cover - counter is advisory
+                logger.warning(
+                    "Failed to increment bypass %s usage counter: %s", bypass.id, exc
+                )
+
+        await self._broadcast_approval_update(updated_request, "approved")
+
+        # Audit with no approver_id: nobody approved this. The [BYPASS] prefix
+        # mirrors the [AI] convention so the audit timeline is scannable.
+        _log_approval_lifecycle_async(
+            account_id=str(updated_request.account_id),
+            approval_id=updated_request.id,
+            event="approved",
+            tool_name=updated_request.tool_name,
+            approver_id=None,
+            reason=f"[BYPASS] {reason}",
+            execution_id=updated_request.execution_id,
+        )
+
+        logger.info(
+            "Approval request %s auto-approved without review "
+            "(reason=%s, bypass=%s, tool=%s, agent=%s)",
+            updated_request.id,
+            reason_code,
+            bypass.id if bypass is not None else None,
+            updated_request.tool_name,
+            updated_request.managed_agent_id,
+        )
+        return updated_request
+
     async def _auto_approve_request(
         self,
         request_id: uuid.UUID,
@@ -1235,6 +1472,7 @@ class ApprovalService:
         managed_agent_id: Optional[uuid.UUID] = None,
         runtime_session_id: Optional[uuid.UUID] = None,
         managed_agent_name: Optional[str] = None,
+        standing_bypass_reason: Optional[str] = None,
     ) -> ApprovalRequest:
         """Create approval request and send notifications through configured channels.
 
@@ -1250,6 +1488,12 @@ class ApprovalService:
             agent_reasoning: Agent's reasoning for the tool call
             execution_id: Flow execution ID (if applicable)
             user_id: ID of the user who initiated the tool call
+            standing_bypass_reason: When set, the caller has already established
+                that a standing governance setting disables approval for this
+                request (currently only ``native_tool_approvals: "off"``). The
+                request is still created and recorded, then immediately
+                auto-approved without notifying anyone. Must be an
+                :class:`AutoApprovedReason` value.
 
         Returns:
             Created approval request (may be already resolved if AI-driven)
@@ -1300,6 +1544,47 @@ class ApprovalService:
                 summary_error,
                 exc_info=True,
             )
+
+        # Standing configured bypass. The operator has turned approvals off for
+        # this subject in governance config, which is a durable setting rather
+        # than a time-boxed escape hatch — so it is deliberately NOT expressed
+        # as an ApprovalBypass row (those are always time-boxed, and inventing
+        # a never-expiring one would make that guarantee a lie). The request is
+        # still created, recorded and audited; only the notification and the
+        # human gate are skipped.
+        if standing_bypass_reason:
+            return await self._auto_approve_without_review(
+                approval_request,
+                reason_code=standing_bypass_reason,
+                reason=(
+                    "Auto-approved without review: native tool approvals are "
+                    "switched off for this agent in Preloop's governance settings"
+                ),
+            )
+
+        # Time-boxed bypass check. Runs BEFORE the AI branch: the operator has
+        # made an explicit, expiring, recorded decision to stop being asked, and
+        # that outranks (and is far cheaper than) an LLM evaluation.
+        try:
+            bypass = await self._resolve_bypass(
+                approval_workflow,
+                account_id,
+                managed_agent_id,
+                required_mode=ApprovalBypassMode.AUTO_APPROVE,
+            )
+        except Exception as bypass_error:  # pragma: no cover - defensive
+            # Fail closed: an error resolving the bypass must never silently
+            # turn into an auto-approval.
+            logger.error(
+                "Bypass resolution failed for %s: %s; enforcing approval",
+                approval_request.id,
+                bypass_error,
+                exc_info=True,
+            )
+            bypass = None
+
+        if bypass is not None:
+            return await self._auto_approve_via_bypass(approval_request, bypass)
 
         # Check if this is an AI-driven approval workflow
         if approval_workflow.approval_mode == "ai_driven":
@@ -1475,6 +1760,40 @@ class ApprovalService:
         except (TypeError, AttributeError):
             # In tests, requested_at might be a mock - just continue
             pass
+
+        # Notification mute. Distinct from auto-approval: the request stays
+        # pending and keeps blocking the agent, we simply stop buzzing people.
+        # This is the control for "I am being spammed but I still want the
+        # gate", and it is the safer of the two escape hatches.
+        try:
+            mute = await self._resolve_bypass(
+                approval_workflow,
+                str(approval_request.account_id),
+                approval_request.managed_agent_id,
+                required_mode=ApprovalBypassMode.MUTE_NOTIFICATIONS,
+            )
+        except Exception as mute_error:  # pragma: no cover - defensive
+            logger.warning(
+                "Mute resolution failed for %s: %s; notifying normally",
+                approval_request.id,
+                mute_error,
+            )
+            mute = None
+
+        if mute is not None:
+            logger.info(
+                "Suppressing notifications for approval request %s under bypass "
+                "%s (mode=%s); the request still requires approval",
+                approval_request.id,
+                mute.id,
+                mute.mode,
+            )
+            return {
+                "skipped": True,
+                "reason": "notifications_muted",
+                "bypass_id": str(mute.id),
+                "expires_at": mute.expires_at.isoformat(),
+            }
 
         # Recover correlation_id from the originating MCP context so the audit
         # entries we emit below land in the same timeline group.
@@ -1793,7 +2112,6 @@ class ApprovalService:
         from preloop.services.push_notifications import (
             get_apns_service,
             NotificationPayloadBuilder,
-            send_fcm_notification,
             is_fcm_configured,
         )
         from preloop.services.push_proxy import (
@@ -2050,78 +2368,65 @@ class ApprovalService:
                 )
                 continue
             try:
-                if fcm_available:
-                    # Use native FCM (enterprise mode with credentials)
-                    result = await send_fcm_notification(
-                        token=token,
-                        title=notification_title,
-                        body=notification_body,
-                        data=notification_data,
-                        priority=fcm_priority,
-                    )
+                result = await _send_android_push_transport(
+                    token=token,
+                    title=notification_title,
+                    body=notification_body,
+                    data=notification_data,
+                    priority=fcm_priority,
+                    fcm_available=fcm_available,
+                    use_proxy=use_proxy,
+                )
 
-                    if result.get("success"):
-                        sent_count += 1
-                    elif result.get("should_prune", result.get("invalid_token")):
-                        # Token is dead (unregistered, malformed, or minted by
-                        # a different Firebase project). Drop it instead of
-                        # retrying it on every future approval forever.
-                        invalid_tokens.append((user_id, token, "android"))
-                        logger.warning(
-                            "Pruning dead Android push token: reason=%s "
-                            "project_id=%s remediation=%s",
-                            result.get("error_reason"),
-                            result.get("project_id"),
-                            result.get("remediation"),
-                        )
-                        _record_failure(
-                            platform="android",
-                            token=token,
-                            reason=result.get("error_reason")
-                            or result.get("error")
-                            or "invalid_token",
-                            pruned=True,
-                        )
-                    else:
-                        # Server-side or transient fault: keep the token.
-                        logger.warning(
-                            "FCM notification failed (token kept): reason=%s "
-                            "retryable=%s error=%s",
-                            result.get("error_reason"),
-                            result.get("retryable"),
-                            result.get("error"),
-                        )
-                        _record_failure(
-                            platform="android",
-                            token=token,
-                            reason=result.get("error_reason")
-                            or result.get("error")
-                            or "unknown_fcm_error",
-                        )
-                        failed_count += 1
-                else:
-                    # Use push proxy (OSS mode with API key)
-                    result = await send_push_via_proxy(
+                if result.get("success"):
+                    sent_count += 1
+                elif fcm_available and result.get(
+                    "should_prune", result.get("invalid_token")
+                ):
+                    # Token is dead (unregistered, malformed, or minted by
+                    # a different Firebase project). Drop it instead of
+                    # retrying it on every future approval forever.
+                    invalid_tokens.append((user_id, token, "android"))
+                    logger.warning(
+                        "Pruning dead Android push token: reason=%s "
+                        "project_id=%s remediation=%s",
+                        result.get("error_reason"),
+                        result.get("project_id"),
+                        result.get("remediation"),
+                    )
+                    _record_failure(
                         platform="android",
-                        device_token=token,
-                        title=notification_title,
-                        body=notification_body,
-                        data=notification_data,
-                        priority=fcm_priority,
+                        token=token,
+                        reason=result.get("error_reason")
+                        or result.get("error")
+                        or "invalid_token",
+                        pruned=True,
                     )
-
-                    if result.get("success"):
-                        sent_count += 1
-                    else:
-                        logger.warning(
-                            f"Android push proxy failed: {result.get('error')}"
-                        )
-                        _record_failure(
-                            platform="android",
-                            token=token,
-                            reason=result.get("error") or "push_proxy_error",
-                        )
-                        failed_count += 1
+                elif fcm_available:
+                    # Server-side or transient fault: keep the token.
+                    logger.warning(
+                        "FCM notification failed (token kept): reason=%s "
+                        "retryable=%s error=%s",
+                        result.get("error_reason"),
+                        result.get("retryable"),
+                        result.get("error"),
+                    )
+                    _record_failure(
+                        platform="android",
+                        token=token,
+                        reason=result.get("error_reason")
+                        or result.get("error")
+                        or "unknown_fcm_error",
+                    )
+                    failed_count += 1
+                else:
+                    logger.warning(f"Android push proxy failed: {result.get('error')}")
+                    _record_failure(
+                        platform="android",
+                        token=token,
+                        reason=result.get("error") or "push_proxy_error",
+                    )
+                    failed_count += 1
 
             except Exception as e:
                 logger.error(
@@ -2138,21 +2443,59 @@ class ApprovalService:
 
                 # Get a fresh sync database session (not from async session)
                 sync_db = next(get_db_session())
+                removed = 0
+                failed = 0
                 try:
+                    # Commit per token so one bad row cannot roll back the
+                    # whole batch and keep every other dead token alive until
+                    # the next send.
                     for user_id, token, _ in invalid_tokens:
-                        notification_preferences.remove_device_token(
-                            sync_db, user_id, token
-                        )
-                    sync_db.commit()
-                    logger.info(f"Removed {len(invalid_tokens)} invalid device tokens")
-                except Exception as e:
-                    logger.error(f"Failed to remove invalid tokens: {e}")
-                    sync_db.rollback()
+                        try:
+                            notification_preferences.remove_device_token(
+                                sync_db, user_id, token
+                            )
+                            sync_db.commit()
+                            removed += 1
+                        except Exception as e:
+                            sync_db.rollback()
+                            failed += 1
+                            logger.error(
+                                "Failed to remove invalid token %s... (user=%s): %s",
+                                token[:8],
+                                user_id,
+                                e,
+                            )
                 finally:
                     sync_db.close()
+                if failed:
+                    logger.warning(
+                        "Invalid-token pruning: removed=%d failed=%d "
+                        "(failures retry on the next send that hits them)",
+                        removed,
+                        failed,
+                    )
+                else:
+                    logger.info(f"Removed {removed} invalid device tokens")
+
+            def _log_prune_outcome(fut: "concurrent.futures.Future") -> None:
+                # The executor future was previously discarded, so a crash
+                # before the function's own try block (session factory,
+                # executor shutdown) vanished without a log line.
+                if fut.cancelled():
+                    logger.warning("Invalid-token pruning was cancelled")
+                    return
+                exc = fut.exception()
+                if exc is not None:
+                    logger.error(
+                        "Invalid-token pruning crashed before completing: %s",
+                        exc,
+                    )
 
             # Run token cleanup in background
-            loop.run_in_executor(_sync_db_executor, _remove_invalid_tokens)
+            prune_future = loop.run_in_executor(
+                _sync_db_executor, _remove_invalid_tokens
+            )
+            prune_future.add_done_callback(_log_prune_outcome)
 
         # Notify admins if push notifications failed (and we had devices to send to)
         if failed_count > 0 and (ios_tokens or android_tokens):
@@ -2354,7 +2697,6 @@ class ApprovalService:
         from preloop.services.push_notifications import (
             get_apns_service,
             NotificationPayloadBuilder,
-            send_fcm_notification,
             is_fcm_configured,
         )
         from preloop.services.push_proxy import (
@@ -2530,33 +2872,29 @@ class ApprovalService:
                 logger.error(f"Escalation iOS push error: {e}")
                 failed_count += 1
 
-        # Send to Android devices
+        # Send to Android devices. Transport dispatch is shared with the main
+        # push path via _send_android_push_transport — this branch previously
+        # hand-copied the calls and drifted (`device_token=` against a `token`
+        # parameter), which is how escalation pushes came to fail silently.
+        # Dead tokens are not pruned here; the main path prunes them on the
+        # next regular send.
         for _user_id, token in android_tokens:
             try:
-                if fcm_available:
-                    success = await send_fcm_notification(
-                        device_token=token,
-                        title=notification_title,
-                        body=notification_body,
-                        data=notification_data,
-                        priority="high",
-                    )
-                    if success:
-                        sent_count += 1
-                    else:
-                        failed_count += 1
-                elif use_proxy:
-                    result = await send_push_via_proxy(
-                        device_token=token,
-                        platform="android",
-                        title=notification_title,
-                        body=notification_body,
-                        data=notification_data,
-                    )
-                    if result.get("success"):
-                        sent_count += 1
-                    else:
-                        failed_count += 1
+                result = await _send_android_push_transport(
+                    token=token,
+                    title=notification_title,
+                    body=notification_body,
+                    data=notification_data,
+                    priority="high",
+                    fcm_available=fcm_available,
+                    use_proxy=use_proxy,
+                )
+                # The transport returns a dict, which is always truthy — even
+                # for a failed send. Check the flag, as the main path does.
+                if result.get("success"):
+                    sent_count += 1
+                else:
+                    failed_count += 1
             except Exception as e:
                 logger.error(f"Escalation Android push error: {e}")
                 failed_count += 1

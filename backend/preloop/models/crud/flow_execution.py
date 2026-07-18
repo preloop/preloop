@@ -1,10 +1,13 @@
 import uuid
 from typing import List, Optional, Any
 
-from sqlalchemy.orm import Session, joinedload, load_only
+from sqlalchemy.orm import Session, joinedload, load_only, with_expression
 from sqlalchemy.future import select
 
-from preloop.models.models.flow_execution import FlowExecution
+from preloop.models.models.flow_execution import (
+    TRIGGER_SUBJECT_KEY,
+    FlowExecution,
+)
 from preloop.models.models.flow import Flow
 from preloop.models.schemas.flow_execution import (
     FlowExecutionCreate,
@@ -243,6 +246,20 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                     FlowExecution.created_at,
                     FlowExecution.updated_at,
                 )
+            )
+            # Project the precomputed subject out of the trigger payload
+            # instead of loading the (potentially very large) JSONB column.
+            # Rows created before subjects existed simply yield NULL.
+            subject = FlowExecution.trigger_event_details[TRIGGER_SUBJECT_KEY]
+            query = query.options(
+                with_expression(
+                    FlowExecution.trigger_subject,
+                    subject["text"].astext,
+                ),
+                with_expression(
+                    FlowExecution.trigger_subject_url,
+                    subject["url"].astext,
+                ),
             )
 
         # Eagerly load flow relationship to avoid N+1 queries

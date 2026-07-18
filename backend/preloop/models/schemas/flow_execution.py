@@ -112,6 +112,23 @@ class FlowExecutionListResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     flow_name: Optional[str] = None
+    trigger_subject: Optional[str] = Field(
+        None,
+        description=(
+            "Short human-readable description of what triggered this "
+            "execution, e.g. 'preloop/preloop #78 · Pull Request Updated · "
+            "5167595c'. Null for executions created before subjects were "
+            "recorded, or where no identifying detail could be derived."
+        ),
+    )
+    trigger_subject_url: Optional[str] = Field(
+        None,
+        description=(
+            "Link to the resource that triggered this execution (e.g. the "
+            "pull request or merge request), when the trigger payload "
+            "carries one."
+        ),
+    )
 
     model_config = ConfigDict(from_attributes=True)
 

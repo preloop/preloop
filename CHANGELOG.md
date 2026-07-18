@@ -21,6 +21,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model at all skipped the allowlist entirely; enforcement now runs whenever an
   allowlist exists and fails closed. Accounts with no `allowed_models`
   configured are unaffected.
+### Added
+
+- **One provider key can now back several models.** After a provider key
+  validates, the add-model dialog offers the rest of that provider's models
+  under "Also add", creating an `AIModel` row per selection that reuses the
+  single stored credential. Deleting one of them leaves the key in place for
+  the others; deleting the last one removes it.
+
+### Fixed
+
+- **Model resolution was nondeterministic when several models shared an
+  identifier suffix.** The gateway matched a requested model against an
+  unordered query and returned on the first suffix match, so a bare
+  `claude-sonnet-4-5` could resolve to `anthropic/…` on one request and
+  `bedrock/…` on the next — a different `ai_model_id`, and therefore different
+  pricing, between otherwise identical requests. A suffix match on an earlier
+  row could also beat an exact match on a later one. Exact alias matches now
+  always win, and the candidate list is ordered deterministically
+  (account-owned models before system defaults, then oldest first). This was
+  latent while accounts held one model each; multi-model keys make it
+  reachable.
 
 ## [0.12.4] - 2026-07-18
 

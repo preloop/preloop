@@ -31,6 +31,7 @@ from preloop.api.endpoints import (
     agent_permission,
     anthropic_gateway,
     audio,
+    approval_bypass,
     approval_requests,
     comments,
     cost,
@@ -854,6 +855,12 @@ def create_app() -> FastAPI:
             approval_requests.router,
             prefix="/api/v1",
             tags=["Approval Requests"],
+            dependencies=[Depends(get_current_active_user)],
+        )
+        app.include_router(
+            approval_bypass.router,
+            prefix="/api/v1",
+            tags=["Approval Bypasses"],
             dependencies=[Depends(get_current_active_user)],
         )
         app.include_router(

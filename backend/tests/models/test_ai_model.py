@@ -527,3 +527,196 @@ def test_normalize_model_kind_fields_does_not_mutate_caller_dict():
     assert normalized["meta_data"]["service_kind"] == "stt"
     assert normalized["meta_data"]["region"] == "us"
     assert original_meta["region"] == "us"
+
+
+def test_create_models_sharing_one_credentials_secret(
+    db_session: Session, create_account
+):
+    """One provider key should back several models via credentials_secret_id."""
+    account: Account = create_account()
+
+    first = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Claude Sonnet",
+            "provider_name": "anthropic",
+            "model_identifier": "claude-sonnet-4-5",
+            "api_key": "one-anthropic-key",
+        },
+        account_id=account.id,
+    )
+    shared_secret_id = first.credentials_secret_id
+    assert shared_secret_id is not None
+
+    second = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Claude Haiku",
+            "provider_name": "anthropic",
+            "model_identifier": "claude-haiku-4-5",
+            "credentials_secret_id": shared_secret_id,
+        },
+        account_id=account.id,
+    )
+
+    assert second.credentials_secret_id == shared_secret_id
+    assert second.api_key is None
+    # Reuse must not mint a second secret for the same key.
+    secrets = (
+        db_session.query(SecretReference)
+        .filter(SecretReference.account_id == account.id)
+        .all()
+    )
+    assert len(secrets) == 1
+
+
+def test_shared_secret_survives_until_last_model_is_deleted(
+    db_session: Session, create_account
+):
+    """Deleting one of N shared models keeps the key; the last deletion reaps it."""
+    account: Account = create_account()
+
+    first = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Model A",
+            "provider_name": "anthropic",
+            "model_identifier": "claude-sonnet-4-5",
+            "api_key": "one-anthropic-key",
+        },
+        account_id=account.id,
+    )
+    shared_secret_id = first.credentials_secret_id
+    second = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Model B",
+            "provider_name": "anthropic",
+            "model_identifier": "claude-haiku-4-5",
+            "credentials_secret_id": shared_secret_id,
+        },
+        account_id=account.id,
+    )
+    third = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Model C",
+            "provider_name": "anthropic",
+            "model_identifier": "claude-opus-4-1",
+            "credentials_secret_id": shared_secret_id,
+        },
+        account_id=account.id,
+    )
+
+    crud_ai_model.remove(db=db_session, id=first.id)
+    assert db_session.get(SecretReference, shared_secret_id) is not None
+    assert crud_ai_model.get(db=db_session, id=second.id) is not None
+    assert crud_ai_model.get(db=db_session, id=third.id) is not None
+
+    crud_ai_model.remove(db=db_session, id=second.id)
+    assert db_session.get(SecretReference, shared_secret_id) is not None
+
+    crud_ai_model.remove(db=db_session, id=third.id)
+    assert db_session.get(SecretReference, shared_secret_id) is None
+
+
+def test_cannot_attach_secret_belonging_to_another_account(
+    db_session: Session, create_account
+):
+    """A model must not be able to borrow another account's provider key."""
+    owner: Account = create_account()
+    intruder: Account = create_account()
+
+    owned = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Owner Model",
+            "provider_name": "anthropic",
+            "model_identifier": "claude-sonnet-4-5",
+            "api_key": "owner-key",
+        },
+        account_id=owner.id,
+    )
+
+    try:
+        crud_ai_model.create_with_account(
+            db=db_session,
+            obj_in={
+                "name": "Stolen",
+                "provider_name": "anthropic",
+                "model_identifier": "claude-haiku-4-5",
+                "credentials_secret_id": owned.credentials_secret_id,
+            },
+            account_id=intruder.id,
+        )
+    except ValueError as exc:
+        assert "different account" in str(exc)
+    else:
+        raise AssertionError("expected ValueError for cross-account secret reuse")
+
+
+def test_get_all_for_account_is_deterministically_ordered(
+    db_session: Session, create_account
+):
+    """Ordering must be stable: account models first, then oldest-first.
+
+    Model resolution walks this list, so an unordered query makes pricing
+    nondeterministic when several models share an identifier suffix.
+    """
+    account: Account = create_account()
+
+    system_default = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "System Default",
+            "provider_name": "anthropic",
+            "model_identifier": "claude-sonnet-4-5",
+        },
+        account_id=None,
+    )
+    owned_first = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Owned First",
+            "provider_name": "anthropic",
+            "model_identifier": "claude-haiku-4-5",
+        },
+        account_id=account.id,
+    )
+    owned_second = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Owned Second",
+            "provider_name": "anthropic",
+            "model_identifier": "claude-opus-4-1",
+        },
+        account_id=account.id,
+    )
+
+    created = {owned_first.id, owned_second.id, system_default.id}
+
+    def ordering() -> list:
+        # Other tests may leave system-default rows behind, so compare only the
+        # rows this test created while preserving their relative order.
+        return [
+            model.id
+            for model in crud_ai_model.get_all_for_account(
+                db=db_session, account_id=account.id
+            )
+            if model.id in created
+        ]
+
+    observed = ordering()
+
+    # Account-owned models must sort ahead of system defaults.
+    assert observed[-1] == system_default.id
+    assert set(observed[:2]) == {owned_first.id, owned_second.id}
+
+    # These rows share a created_at (same transaction), so id.asc() is the
+    # tiebreak. The point is that the order is fixed and explainable, not that
+    # any particular model wins an inherently ambiguous tie.
+    assert observed[:2] == sorted([owned_first.id, owned_second.id])
+
+    # Repeated calls must agree — this is what pricing stability depends on.
+    for _ in range(3):
+        assert ordering() == observed

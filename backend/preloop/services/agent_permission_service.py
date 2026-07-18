@@ -287,9 +287,13 @@ async def request_agent_permission(
 
     Escalation can be disabled per agent: when the managed agent's
     subject-governance config sets ``native_tool_approvals`` to ``"off"``,
-    escalated (ask) calls are allowed immediately without creating an
-    approval request. Explicit client ``allow``/``deny`` decisions are
-    unaffected by that switch.
+    escalated (ask) calls are approved immediately without asking a human.
+    They are still **recorded**: an approval request row is created and
+    resolved with ``auto_approved_reason='native_tool_approvals_off'`` and
+    audited under the ``[BYPASS]`` prefix with no approver, so the audit trail
+    shows what ran unsupervised. Only the notification and the human gate are
+    skipped. Explicit client ``allow``/``deny`` decisions are unaffected by
+    that switch.
 
     Args:
         base_url: Preloop base URL for approval links and notifications.
@@ -320,12 +324,55 @@ async def request_agent_permission(
     from preloop.models.crud.approval_request import get_approval_request_async
 
     async with get_async_db_session() as db:
-        if managed_agent_id is not None and await _native_tool_approvals_disabled(
-            db, account_id, managed_agent_id
-        ):
+        approvals_off = managed_agent_id is not None and (
+            await _native_tool_approvals_disabled(db, account_id, managed_agent_id)
+        )
+        if approvals_off:
             logger.info(
                 "Native tool approvals are disabled for managed agent %s "
-                "(account %s); auto-allowing tool %s without an approval request",
+                "(account %s); recording an auto-approved request for tool %s",
+                managed_agent_id,
+                account_id,
+                tool_name,
+            )
+
+        try:
+            workflow = await _resolve_workflow(
+                db, account_id, user_id, managed_agent_id=managed_agent_id
+            )
+            timeout_seconds = workflow.timeout_seconds or 300
+            config = await _resolve_tool_config(db, account_id, tool_name, workflow.id)
+
+            service = ApprovalService(db, base_url)
+            approval = await service.create_and_notify(
+                account_id=account_id,
+                tool_configuration_id=config.id,
+                approval_workflow=workflow,
+                tool_name=tool_name,
+                tool_args=tool_input or {},
+                agent_reasoning=agent_reasoning,
+                execution_id=None,
+                user_id=user_id,
+                managed_agent_id=managed_agent_id,
+                runtime_session_id=runtime_session_id,
+                managed_agent_name=managed_agent_name,
+                standing_bypass_reason=(
+                    models.AutoApprovedReason.NATIVE_TOOL_APPROVALS_OFF
+                    if approvals_off
+                    else None
+                ),
+            )
+        except Exception:
+            # The recording path must never become a new way to block an agent
+            # whose operator explicitly switched approvals off. Losing the audit
+            # row is bad; silently gating a tool call the operator said should
+            # not be gated is worse, and would read as a regression. Enforced
+            # agents still fail closed by propagating.
+            if not approvals_off:
+                raise
+            logger.exception(
+                "Failed to record the auto-approved request for managed agent %s "
+                "(account %s, tool %s); allowing per governance config",
                 managed_agent_id,
                 account_id,
                 tool_name,
@@ -336,26 +383,6 @@ async def request_agent_permission(
                 None,
             )
 
-        workflow = await _resolve_workflow(
-            db, account_id, user_id, managed_agent_id=managed_agent_id
-        )
-        timeout_seconds = workflow.timeout_seconds or 300
-        config = await _resolve_tool_config(db, account_id, tool_name, workflow.id)
-
-        service = ApprovalService(db, base_url)
-        approval = await service.create_and_notify(
-            account_id=account_id,
-            tool_configuration_id=config.id,
-            approval_workflow=workflow,
-            tool_name=tool_name,
-            tool_args=tool_input or {},
-            agent_reasoning=agent_reasoning,
-            execution_id=None,
-            user_id=user_id,
-            managed_agent_id=managed_agent_id,
-            runtime_session_id=runtime_session_id,
-            managed_agent_name=managed_agent_name,
-        )
         request_id = str(approval.id)
         status = approval.status
         comment = approval.approver_comment

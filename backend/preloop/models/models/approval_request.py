@@ -28,6 +28,27 @@ class ApprovalRequestStatus(str):
     CANCELLED = "cancelled"
 
 
+class AutoApprovedReason(str):
+    """Why a request was approved without a human looking at it.
+
+    Every value here means "no person judged this call". Surfaces must render
+    these distinctly from human decisions, and statistics must never count
+    them as approvals (see ``ApprovalRequestResponse.decided_by_human``).
+    """
+
+    #: A time-boxed :class:`ApprovalBypass` was in force. Carries a
+    #: non-NULL ``auto_approval_bypass_id`` pointing at the authorizing row.
+    BYPASS = "bypass"
+
+    #: The managed agent's subject-governance config sets
+    #: ``native_tool_approvals: "off"``. This is a *standing configured*
+    #: bypass rather than a time-boxed one, so ``auto_approval_bypass_id``
+    #: is NULL: no ApprovalBypass row authorizes it, the account's own
+    #: governance config does. Recorded identically in every other respect
+    #: so the audit trail still shows what ran unsupervised.
+    NATIVE_TOOL_APPROVALS_OFF = "native_tool_approvals_off"
+
+
 class ApprovalRequest(Base):
     """Approval request for tool execution.
 
@@ -232,6 +253,26 @@ class ApprovalRequest(Base):
         Text,
         nullable=True,
         comment="AI's reasoning for the approval/denial decision",
+    )
+
+    # Bypass tracking. Set when the request was resolved without a human because
+    # a time-boxed ApprovalBypass was in force. Kept distinct from decided_by_ai:
+    # an AI *judged* the call, a bypass merely *skipped* judging it. Surfaces
+    # must render these differently and must never count them as human
+    # approvals in approval-rate statistics.
+    auto_approved_reason: Mapped[Optional[str]] = mapped_column(
+        String(64),
+        nullable=True,
+        index=True,
+        comment="Why this request was auto-approved without a human (e.g. 'bypass')",
+    )
+
+    auto_approval_bypass_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("approval_bypass.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="The ApprovalBypass that auto-approved this request",
     )
 
     # Relationships

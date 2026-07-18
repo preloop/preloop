@@ -2902,6 +2902,65 @@ class TestSendEscalationNotifications:
             assert result["success"] is False
             assert "No escalation targets" in result["error"]
 
+    @patch(
+        "preloop.services.push_notifications.send_fcm_notification",
+        autospec=True,
+    )
+    @patch("preloop.services.push_proxy.is_push_proxy_configured")
+    @patch("preloop.services.push_notifications.is_fcm_configured")
+    @patch("preloop.services.push_notifications.get_apns_service")
+    async def test_send_escalation_android_uses_real_fcm_signature(
+        self,
+        mock_get_apns,
+        mock_is_fcm,
+        mock_is_proxy,
+        mock_send_fcm,
+        approval_service,
+        mock_db,
+        sample_approval_request,
+        sample_approval_workflow,
+    ):
+        """Escalation must call send_fcm_notification with its real signature.
+
+        The escalation branch passed ``device_token=``, but the function names
+        that parameter ``token``. Every escalation send raised TypeError, which
+        the surrounding ``except Exception`` swallowed, so Android escalation
+        pushes failed silently. ``autospec=True`` enforces the real signature,
+        so this test fails with TypeError against the old keyword.
+
+        It also pins the return-value check: the function returns a dict, which
+        is truthy even when the send failed, so a failure must not be counted
+        as delivered.
+        """
+        mock_get_apns.return_value = None
+        mock_is_fcm.return_value = True
+        mock_is_proxy.return_value = False
+        mock_send_fcm.return_value = {"success": False, "error": "boom"}
+
+        sample_approval_workflow.escalation_user_ids = ["user-1"]
+        sample_approval_workflow.escalation_team_ids = None
+
+        mock_loop = MagicMock()
+        mock_loop.run_in_executor = AsyncMock(
+            return_value=({"user-1"}, [], [("user-1", "fcm-token-abc")])
+        )
+        with patch(
+            "preloop.services.approval_service.asyncio.get_event_loop",
+            return_value=mock_loop,
+        ):
+            result = await approval_service._send_escalation_notifications(
+                sample_approval_request, sample_approval_workflow
+            )
+
+        mock_send_fcm.assert_awaited_once()
+        assert "token" in mock_send_fcm.await_args.kwargs
+        assert "device_token" not in mock_send_fcm.await_args.kwargs
+        assert mock_send_fcm.await_args.kwargs["token"] == "fcm-token-abc"
+
+        # A failed send must count as failed, not delivered.
+        assert result["push_sent"] == 0
+        assert result["push_failed"] == 1
+
     @patch("preloop.services.push_proxy.is_push_proxy_configured")
     @patch("preloop.services.push_notifications.is_fcm_configured")
     @patch("preloop.services.push_notifications.get_apns_service")
