@@ -689,6 +689,8 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
                 _empty_usage_aggregate(),
             )
             summary["total_requests"] = aggregate["total_requests"]
+            summary["successful_requests"] = aggregate["successful_requests"]
+            summary["failed_requests"] = aggregate["failed_requests"]
             summary["estimated_cost"] = aggregate["estimated_cost"]
             summary["latest_model_alias"] = aggregate["latest_model_alias"]
             summary["latest_provider_name"] = aggregate["latest_provider_name"]
@@ -778,6 +780,8 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             principal_id=row.session_source_id,
         )
         summary["total_requests"] = aggregate["total_requests"]
+        summary["successful_requests"] = aggregate["successful_requests"]
+        summary["failed_requests"] = aggregate["failed_requests"]
         summary["estimated_cost"] = aggregate["estimated_cost"]
         summary["latest_model_alias"] = aggregate["latest_model_alias"]
         summary["latest_provider_name"] = aggregate["latest_provider_name"]
@@ -930,6 +934,8 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             "last_activity_at": row.last_activity_at,
             "ended_at": row.ended_at,
             "total_requests": int(row.request_count or 0),
+            "successful_requests": 0,
+            "failed_requests": 0,
             "estimated_cost": float(row.estimated_cost or 0.0),
             "latest_model_alias": row.latest_model_alias,
             "latest_provider_name": row.latest_provider_name,

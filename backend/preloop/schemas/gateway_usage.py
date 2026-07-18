@@ -271,6 +271,8 @@ class ManagedAgentSummary(BaseModel):
     last_activity_at: Optional[datetime] = None
     ended_at: Optional[datetime] = None
     total_requests: int = 0
+    successful_requests: int = 0
+    failed_requests: int = 0
     estimated_cost: float = 0.0
     configured_model_alias: Optional[str] = None
     configured_model_id: Optional[str] = None
