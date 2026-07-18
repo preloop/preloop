@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 import uuid
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 from sqlalchemy import Float, String, and_, case, cast, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -776,9 +776,35 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         runtime_principal_id: Optional[str] = None,
         flow_execution_id: Optional[str] = None,
         api_key_id: Optional[str] = None,
-        limit: int = 20,
+        ai_model_ids: Optional[Sequence[str]] = None,
+        limit: Optional[int] = 20,
     ) -> List[Dict[str, Any]]:
-        """Group gateway usage by model."""
+        """Group gateway usage by model.
+
+        Args:
+            db: Database session.
+            account_id: Account whose gateway usage is aggregated.
+            start_date: Inclusive lower bound on usage timestamp.
+            end_date: Exclusive upper bound on usage timestamp.
+            flow_id: Restrict to a single flow.
+            runtime_session_id: Restrict to a single runtime session.
+            runtime_principal_id: Restrict to a single runtime principal.
+            flow_execution_id: Restrict to a single flow execution.
+            api_key_id: Restrict to a single API key.
+            ai_model_ids: Restrict aggregation to these model ids. Applied in
+                SQL, before the row limit, so callers that need a total for a
+                known set of models cannot lose rows to the limit. An empty
+                sequence yields no rows.
+            limit: Maximum number of grouped rows, ordered by request count
+                descending. Pass ``None`` to return every group — required by
+                callers that SUM the result (e.g. spend caps), since a
+                request-count-ordered truncation silently drops low-volume,
+                high-cost models from the sum.
+
+        Returns:
+            One dict per (model, alias, provider) group with request counts,
+            token totals, and estimated cost.
+        """
         query = db.query(
             ApiUsage.ai_model_id,
             ApiUsage.model_alias,
@@ -824,15 +850,15 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             query = query.filter(ApiUsage.runtime_principal_id == runtime_principal_id)
         if api_key_id:
             query = query.filter(ApiUsage.api_key_id == api_key_id)
+        if ai_model_ids is not None:
+            query = query.filter(ApiUsage.ai_model_id.in_(list(ai_model_ids)))
 
-        rows = (
-            query.group_by(
-                ApiUsage.ai_model_id, ApiUsage.model_alias, ApiUsage.provider_name
-            )
-            .order_by(func.count(ApiUsage.id).desc())
-            .limit(limit)
-            .all()
-        )
+        query = query.group_by(
+            ApiUsage.ai_model_id, ApiUsage.model_alias, ApiUsage.provider_name
+        ).order_by(func.count(ApiUsage.id).desc())
+        if limit is not None:
+            query = query.limit(limit)
+        rows = query.all()
         return [
             {
                 "ai_model_id": str(row.ai_model_id) if row.ai_model_id else None,
