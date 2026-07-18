@@ -2,6 +2,18 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _clear_users_exist_cache():
+    """Each test starts with an empty sticky users-exist cache."""
+    from preloop.api.endpoints.features import reset_users_exist_cache
+
+    reset_users_exist_cache()
+    yield
+    reset_users_exist_cache()
+
 
 class TestGetFeatures:
     """Test get_features endpoint."""
@@ -159,3 +171,32 @@ class TestGetFeatures:
 
         assert result["features"]["first_account_pending"] is False
         assert result["features"]["registration"] is False
+        # Registration closed: no need to query the users table.
+        mock_crud_user.has_any_users.assert_not_called()
+
+    @patch("preloop.api.endpoints.features.crud_user")
+    @patch("preloop.api.endpoints.features.get_plugin_manager")
+    def test_first_account_pending_sticky_cache_skips_db_after_users_exist(
+        self, mock_get_plugin_manager, mock_crud_user
+    ):
+        """Once any user exists, subsequent /features calls skip the DB query."""
+        from preloop.api.endpoints.features import get_features
+
+        mock_plugin_manager = MagicMock()
+        mock_plugin_manager.get_enabled_features.return_value = {
+            "plugins": [],
+            "features": {},
+        }
+        mock_get_plugin_manager.return_value = mock_plugin_manager
+        mock_crud_user.has_any_users.return_value = True
+
+        assert (
+            get_features(db=MagicMock())["features"]["first_account_pending"] is False
+        )
+        assert mock_crud_user.has_any_users.call_count == 1
+
+        # Second call: sticky cache must avoid another has_any_users hit.
+        assert (
+            get_features(db=MagicMock())["features"]["first_account_pending"] is False
+        )
+        assert mock_crud_user.has_any_users.call_count == 1

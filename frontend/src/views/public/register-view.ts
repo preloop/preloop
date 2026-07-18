@@ -32,7 +32,9 @@ export function humanizeRegisterError(message: string): string {
   if (/not a valid email address/i.test(raw)) {
     return "That email address doesn't look deliverable — check the part after the @.";
   }
-  if (/password.*at least 8 characters|String should have at least 8/i.test(raw)) {
+  if (
+    /password.*at least 8 characters|String should have at least 8/i.test(raw)
+  ) {
     return 'Passwords need at least 8 characters.';
   }
   return `That didn't work: ${raw}`;
