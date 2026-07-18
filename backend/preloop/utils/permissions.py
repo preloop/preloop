@@ -62,9 +62,9 @@ def _run_awaitable_sync(awaitable):
     def runner() -> None:
         try:
             result["value"] = asyncio.run(awaitable)
-        except BaseException as exc:  # pragma: no cover - re-raised below
-            # Capture any failure from asyncio.run in the helper thread, including
-            # CancelledError, so the caller thread can re-raise it.
+        except (Exception, asyncio.CancelledError) as exc:  # pragma: no cover
+            # Capture asyncio.run failures (including CancelledError) so the
+            # caller thread can re-raise them after join().
             result["error"] = exc
 
     thread = threading.Thread(target=runner, daemon=True)

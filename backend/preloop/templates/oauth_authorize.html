@@ -183,8 +183,8 @@
 
     <script>
         function handleDeny() {
-            const redirectUri = {{ redirect_uri_json }};
-            const state = {{ state_json }};
+            const redirectUri = {{ redirect_uri|tojson }};
+            const state = {{ state|tojson }};
             if (redirectUri === 'urn:ietf:wg:oauth:2.0:oob') {
                 document.body.innerHTML = `
                     <div class="container">
@@ -207,7 +207,7 @@
         }
 
         // Show server-side error if present
-        const serverError = {{ error_json }};
+        const serverError = {{ error|tojson }};
         if (serverError) {
             const errEl = document.getElementById('errorMsg');
             errEl.textContent = serverError;

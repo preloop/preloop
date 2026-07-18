@@ -11,13 +11,13 @@ Routes:
 """
 
 import html
-import json
 import logging
 import os
 from pathlib import Path
 
 from fastapi import APIRouter, Form, Depends
 from fastapi.responses import HTMLResponse, RedirectResponse
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 from mcp.server.auth.provider import construct_redirect_uri
 from pydantic import BaseModel
 from urllib.parse import urlencode
@@ -31,6 +31,10 @@ router = APIRouter(tags=["OAuth Consent"], include_in_schema=False)
 
 # Template directory
 _TEMPLATE_DIR = Path(__file__).resolve().parent.parent.parent / "templates"
+_JINJA_ENV = Environment(
+    loader=FileSystemLoader(str(_TEMPLATE_DIR)),
+    autoescape=select_autoescape(enabled_extensions=("html", "htm", "xml")),
+)
 
 
 # Known CLI client_id — allowed to use http://localhost redirect URIs
@@ -40,40 +44,8 @@ _CLI_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
 def _render_template(template_name: str, context: dict) -> str:
-    """Template rendering with auto HTML-escaping for XSS prevention.
-
-    Uses Jinja2-style {{ variable }} placeholders.
-    All values are HTML-escaped (with quote=True for attribute safety) to
-    prevent XSS attacks from user-controlled inputs (client_name,
-    redirect_uri, state, error, etc.).
-
-    Values under keys ending with '_json' are JSON-encoded (for <script> blocks)
-    instead of HTML-escaped.
-    """
-    template_path = _TEMPLATE_DIR / template_name
-    template = template_path.read_text()
-
-    for key, value in context.items():
-        str_value = str(value or "")
-        if key.endswith("_json"):
-            # JSON-encode for safe embedding inside <script> blocks.
-            # Replace < and > to prevent </script> breakout.
-            safe_value = (
-                json.dumps(str_value).replace("<", "\\u003c").replace(">", "\\u003e")
-            )
-        else:
-            # quote=True so values are safe in HTML attributes (hidden inputs,
-            # href) as well as text nodes.
-            safe_value = html.escape(str_value, quote=True)
-        template = template.replace("{{ " + key + " }}", safe_value)
-
-    if "{{ " in template:
-        logger.warning(
-            "OAuth consent template %s has unreplaced placeholders after render",
-            template_name,
-        )
-
-    return template
+    """Render an HTML template with Jinja2 autoescaping enabled."""
+    return _JINJA_ENV.get_template(template_name).render(**context)
 
 
 def _validate_client_and_redirect(client_id: str, redirect_uri: str) -> dict:
@@ -374,10 +346,6 @@ def _render_error_response(
         "resource": resource,
         "error": error,
         "next_step_note": _manual_code_note(redirect_uri),
-        # JSON-encoded variants for safe use inside <script> blocks
-        "redirect_uri_json": redirect_uri,
-        "state_json": state,
-        "error_json": error,
     }
     html_content = _render_template("oauth_authorize.html", context)
     return HTMLResponse(content=html_content)

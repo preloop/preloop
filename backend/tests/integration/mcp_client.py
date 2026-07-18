@@ -120,7 +120,7 @@ class MCPTestClient:
             try:
                 await self._open_session()
                 return self
-            except BaseException as exc:
+            except (Exception, ExceptionGroup, asyncio.CancelledError) as exc:
                 # Catch ExceptionGroup/CancelledError from MCP transport setup; retry below.
                 if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                     raise

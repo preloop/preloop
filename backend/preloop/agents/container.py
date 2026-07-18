@@ -2038,7 +2038,8 @@ PREOF
                             encoded_path = urllib.parse.quote(repo_path, safe="")
 
                             self.logger.info(
-                                f"Creating GitLab MR: host={gitlab_host}, path={encoded_path}, create_pr={create_pr}"
+                                "Creating GitLab MR (create_pr=%s)",
+                                create_pr,
                             )
 
                             # Build MR creation command with dynamic title/description

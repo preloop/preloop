@@ -117,11 +117,12 @@ class TestJustificationEnforcement:
 
     def test_optional_justification_missing_is_allowed(self):
         """Tool calls without justification should pass when optional."""
-        justification = None
         requires_justification = False
+        justification = None
 
         should_reject = requires_justification and not justification
         assert should_reject is False
+        assert justification is None
 
     def test_empty_string_justification_is_rejected(self):
         """Empty string justification should be treated as missing."""

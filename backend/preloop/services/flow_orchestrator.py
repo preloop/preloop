@@ -422,7 +422,7 @@ class FlowExecutionOrchestrator:
             RuntimeError: If NATS client is not available
         """
         # If nats_client not provided, try to get it from app state
-        if not nats_client:
+        if nats_client is None:
             try:
                 import inspect
 
@@ -437,6 +437,8 @@ class FlowExecutionOrchestrator:
             except Exception:
                 # NATS may be unavailable when send_command is invoked outside a request.
                 pass
+
+        if nats_client is None:
             raise RuntimeError("NATS client not available or not connected")
 
         try:

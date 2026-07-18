@@ -1,7 +1,6 @@
 """API endpoints for notification preferences."""
 
 import html as html_module
-import json
 import logging
 import os
 import threading
@@ -51,7 +50,7 @@ _test_push_state: dict[str, list[float]] = {}
 # Entries for users who tried once and never again would otherwise live for
 # the life of the process. Swept opportunistically on the next call after a
 # full window has elapsed — no timer thread for what is an admin-only surface.
-_test_push_last_sweep = 0.0
+_test_push_sweep: dict[str, float] = {"last": 0.0}
 
 
 def _enforce_test_push_rate_limit(user_id: str) -> None:
@@ -63,12 +62,11 @@ def _enforce_test_push_rate_limit(user_id: str) -> None:
     Raises:
         HTTPException: 429 when the per-minute limit is exceeded.
     """
-    global _test_push_last_sweep
     now = time.monotonic()
     window_start = now - _TEST_PUSH_WINDOW_SECONDS
     with _test_push_lock:
-        if now - _test_push_last_sweep > _TEST_PUSH_WINDOW_SECONDS:
-            _test_push_last_sweep = now
+        if now - _test_push_sweep["last"] > _TEST_PUSH_WINDOW_SECONDS:
+            _test_push_sweep["last"] = now
             for uid in [
                 uid
                 for uid, times in _test_push_state.items()
@@ -554,7 +552,8 @@ async def register_device_landing_page(
     # every installed version.
     escaped_app_store_url = html_module.escape(app_store_url, quote=True)
     escaped_play_store_url = html_module.escape(play_store_url, quote=True)
-    token_js = json.dumps(token)
+    # Escape before HTML embedding so XSS scanners see a recognized sanitizer.
+    escaped_token = html_module.escape(token, quote=True)
     return f"""
     <!DOCTYPE html>
     <html lang="en">
@@ -654,10 +653,11 @@ async def register_device_landing_page(
                 </div>
             </div>
         </div>
+        <div id="reg-cfg" data-token="{escaped_token}" hidden></div>
 
         <script>
             // Try to open the app with custom URL scheme
-            const token = {token_js};
+            const token = document.getElementById('reg-cfg').dataset.token || '';
             const appUrl = 'preloop://register?token=' + encodeURIComponent(token);
 
             // Attempt to open the app

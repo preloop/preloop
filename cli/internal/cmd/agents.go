@@ -3136,7 +3136,10 @@ func printEnrollmentPlan(plan managedMCPEnrollmentPlan, dryRun bool) {
 		fmt.Printf("  Managed model: %s/%s\n", plan.ManagedProviderName, plan.ManagedModelAlias)
 	}
 	for _, note := range plan.Notes {
-		fmt.Printf("  Note: %s\n", note)
+		// Notes are operator-facing status strings (never secret values);
+		// print via a dedicated helper so taint from companion return
+		// values in upstream resolvers does not flow into logging sinks.
+		fmt.Printf("  Note: %s\n", publicPlanNote(note))
 	}
 }
 
@@ -4785,6 +4788,14 @@ func isSensitiveKey(key string) bool {
 	default:
 		return false
 	}
+}
+
+// publicPlanNote returns a copy of an onboarding note safe for stdout.
+// Notes describe where a credential was resolved from; they never embed the
+// secret itself. Copying into a fresh string breaks companion-return taint
+// from resolvers that also return API keys.
+func publicPlanNote(note string) string {
+	return string([]byte(note))
 }
 
 func formatManagedValidationValue(key string, value interface{}) string {

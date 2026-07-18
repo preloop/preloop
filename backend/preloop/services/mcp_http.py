@@ -574,8 +574,7 @@ async def mcp_http_streaming_endpoint(
         raise HTTPException(status_code=400, detail=f"Unsupported method: {method}")
 
 
-# Global MCP app and lifespan manager
-_mcp_app = None
+# Global MCP lifespan manager (retained for health checks / startup)
 _mcp_lifespan_manager = None
 
 
@@ -588,7 +587,7 @@ def setup_mcp_routes(app: FastAPI):
     Args:
         app: FastAPI application instance
     """
-    global _mcp_app, _mcp_lifespan_manager
+    global _mcp_lifespan_manager
 
     from preloop.services.initialize_mcp import initialize_mcp_with_tools
     from preloop.services.dynamic_fastmcp_http import setup_dynamic_mcp_http
@@ -600,9 +599,6 @@ def setup_mcp_routes(app: FastAPI):
     # Set up StreamableHTTP transport with authentication
     mcp_app = setup_dynamic_mcp_http(mcp)
     logger.info("StreamableHTTP transport configured")
-
-    # Store the MCP app
-    _mcp_app = mcp_app
 
     # The mcp_app returned by setup_dynamic_mcp_http is wrapped with middleware
     # We need to access the underlying Starlette app's lifespan
