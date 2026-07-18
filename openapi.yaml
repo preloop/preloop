@@ -7585,6 +7585,15 @@ components:
           - type: 'null'
           title: Meta Data
           description: Optional, for custom fields, labels, etc.
+        credentials_secret_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Credentials Secret Id
+          description: Reuse an existing SecretReference instead of minting a new
+            one. Used to create several models that share a single provider key. The
+            secret must already belong to the caller's account.
       type: object
       required:
       - name

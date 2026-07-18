@@ -71,6 +71,15 @@ class AIModelBase(BaseModel):
 class AIModelCreate(AIModelBase):
     """Schema for creating a new AIModel entry."""
 
+    credentials_secret_id: Optional[uuid.UUID] = Field(
+        None,
+        description=(
+            "Reuse an existing SecretReference instead of minting a new one. Used to "
+            "create several models that share a single provider key. The secret must "
+            "already belong to the caller's account."
+        ),
+    )
+
     @model_validator(mode="after")
     def validate_credentials(self):
         has_inline_payload = (
@@ -84,6 +93,12 @@ class AIModelCreate(AIModelBase):
                 self.credentials_meta_data,
             )
         )
+        if self.credentials_secret_id is not None and (
+            self.api_key or has_inline_payload or has_external
+        ):
+            raise ValueError(
+                "credentials_secret_id cannot be combined with new credential material"
+            )
         if self.api_key and (has_external or has_inline_payload):
             raise ValueError("api_key cannot be combined with other credential fields")
         if has_inline_payload and has_external:

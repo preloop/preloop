@@ -91,6 +91,11 @@ export class AddAIModelModal extends LitElement {
   @state() private _isOtherModel = false;
   @state() private _isFetchingModels = false;
   @state() private _modelsFetchError: string | null = null;
+  /**
+   * Extra models to create alongside the primary one, all sharing the single
+   * provider key entered on this form. Create-mode only.
+   */
+  @state() private _additionalModelIds: string[] = [];
   /** When true, register this model for Preloop gateway routing (requires upstream API key). */
   @state() private _preloopGatewayEnabled = true;
 
@@ -148,6 +153,7 @@ export class AddAIModelModal extends LitElement {
     }
     this._modelSuggestions = [];
     this._isOtherModel = false;
+    this._additionalModelIds = [];
     this._formError = null;
     this._isSubmitting = false;
     this._isFetchingModels = false;
@@ -155,15 +161,23 @@ export class AddAIModelModal extends LitElement {
   }
 
   /** Merge gateway routing metadata; gateway.enabled only when upstream credentials exist. */
-  private _buildMetaDataForSubmit(): Record<string, unknown> {
+  /**
+   * @param modelIdOverride Build the gateway alias for this model id instead of
+   *   the primary one. Used when creating extra models that share one key —
+   *   each needs its own alias or they would all resolve to the same entry.
+   */
+  private _buildMetaDataForSubmit(
+    modelIdOverride?: string
+  ): Record<string, unknown> {
     const existing =
       this._isEditing &&
+      !modelIdOverride &&
       this.model?.meta_data &&
       typeof this.model.meta_data === 'object'
         ? { ...this.model.meta_data }
         : {};
     const provider = this._currentModel.provider_name;
-    const modelId = this._currentModel.model_identifier;
+    const modelId = modelIdOverride ?? this._currentModel.model_identifier;
     const modelKind = this._currentModel.model_kind || 'llm';
     const baseMeta = {
       ...existing,
@@ -245,6 +259,7 @@ export class AddAIModelModal extends LitElement {
 
     this._modelSuggestions = [];
     this._isOtherModel = false;
+    this._additionalModelIds = [];
     this._modelsFetchError = null;
     this.requestUpdate();
     if (this._selectedServiceKind !== 'llm') {
@@ -291,6 +306,7 @@ export class AddAIModelModal extends LitElement {
     }
     this._modelSuggestions = [];
     this._isOtherModel = false;
+    this._additionalModelIds = [];
     this._modelsFetchError = null;
     this.requestUpdate();
     if (providerSupported && modelKind !== 'llm') {
@@ -346,10 +362,71 @@ export class AddAIModelModal extends LitElement {
       this._isOtherModel = false;
       this._currentModel.model_identifier = selectedValue;
     }
+    // The primary model must never also appear in the extras list, or we would
+    // try to create it twice.
+    this._additionalModelIds = this._additionalModelIds.filter(
+      (id) => id !== this._currentModel.model_identifier
+    );
   }
 
   private _handleCustomModelInput(e: Event) {
     this._currentModel.model_identifier = (e.target as SlInput).value;
+  }
+
+  private _handleAdditionalModelsChange(e: Event) {
+    const value = (e.target as SlSelect).value;
+    this._additionalModelIds = Array.isArray(value) ? [...value] : [];
+  }
+
+  /**
+   * Models offered as extras: everything discovered for this provider except
+   * the one already chosen as primary.
+   */
+  private get _additionalModelChoices(): string[] {
+    const primary = this._currentModel.model_identifier;
+    return this._modelSuggestions.filter((id) => id !== primary);
+  }
+
+  /**
+   * Create the extra selected models, each reusing the primary model's secret
+   * so a single provider key backs all of them.
+   *
+   * A failure here must not look like a total failure: the primary model was
+   * already created successfully, so we surface a partial-success message
+   * rather than throwing.
+   */
+  private async _createAdditionalModels(primary: AIModel): Promise<AIModel[]> {
+    const secretId = primary.credentials_secret_id;
+    if (!this._additionalModelIds.length || !secretId) return [];
+
+    const created: AIModel[] = [];
+    const failed: string[] = [];
+
+    for (const modelId of this._additionalModelIds) {
+      try {
+        created.push(
+          await createAIModel({
+            name: modelId,
+            description: this._currentModel.description,
+            provider_name: this._currentModel.provider_name,
+            model_identifier: modelId,
+            model_kind: this._currentModel.model_kind,
+            api_endpoint: this._currentModel.api_endpoint,
+            credentials_secret_id: secretId,
+            is_default: false,
+            meta_data: this._buildMetaDataForSubmit(modelId),
+          })
+        );
+      } catch (error) {
+        console.error(`Failed to create additional model ${modelId}:`, error);
+        failed.push(modelId);
+      }
+    }
+
+    if (failed.length) {
+      this._formError = `Added ${primary.model_identifier}, but these could not be added: ${failed.join(', ')}. You can add them separately.`;
+    }
+    return created;
   }
 
   // ── submit ───────────────────────────────────────────
@@ -399,9 +476,10 @@ export class AddAIModelModal extends LitElement {
         );
       } else {
         const created = await createAIModel(payload);
+        const extraModels = await this._createAdditionalModels(created);
         this.dispatchEvent(
           new CustomEvent('model-created', {
-            detail: { model: created },
+            detail: { model: created, additionalModels: extraModels },
             bubbles: true,
             composed: true,
           })
@@ -640,6 +718,29 @@ export class AddAIModelModal extends LitElement {
                         @sl-input=${this._handleCustomModelInput}
                         ?disabled=${this._isSubmitting}
                       ></sl-input>
+                    `
+                  )}
+                  ${when(
+                    !this._isEditing &&
+                      !this._isOtherModel &&
+                      this._additionalModelChoices.length > 0,
+                    () => html`
+                      <sl-select
+                        class="full-width"
+                        label="Also add (optional)"
+                        multiple
+                        clearable
+                        .value=${this._additionalModelIds}
+                        @sl-change=${this._handleAdditionalModelsChange}
+                        ?disabled=${this._isSubmitting}
+                        help-text="Add more models from this provider. They all reuse the same API key you entered above."
+                      >
+                        ${repeat(
+                          this._additionalModelChoices,
+                          (s) => s,
+                          (s) => html`<sl-option value="${s}">${s}</sl-option>`
+                        )}
+                      </sl-select>
                     `
                   )}
                 `
