@@ -94,17 +94,20 @@ def _detect_platform_from_url(url: str) -> Literal["github", "gitlab"]:
     Raises:
         ValueError: If platform cannot be determined.
     """
-    url_lower = url.lower()
+    parsed = urlparse(url)
+    hostname = (parsed.hostname or "").lower()
 
-    # Check for GitHub indicators (must be github.com domain)
-    if "github.com" in url_lower:
+    if hostname == "github.com" or hostname.endswith(".github.com"):
         return "github"
 
-    # Check for GitLab indicators (gitlab.com or contains gitlab in domain)
-    if "gitlab.com" in url_lower or "gitlab." in url_lower:
+    if (
+        hostname == "gitlab.com"
+        or hostname.endswith(".gitlab.com")
+        or ".gitlab." in hostname
+    ):
         return "gitlab"
 
-    # Check URL structure patterns (use url_lower for consistency)
+    url_lower = url.lower()
     if "/pull/" in url_lower:
         return "github"
     if "/merge_requests/" in url_lower or "/-/" in url_lower:
@@ -1242,9 +1245,9 @@ async def add_comment(
             pass
 
         # GitHub PR URL: https://github.com/owner/repo/pull/123
-        if "github.com" in target and "/pull/" in target:
+        # Use hostname-derived platform (not substring match) to avoid host confusion.
+        if platform == "github" and "/pull/" in target:
             is_pull_request = True
-            platform = "github"
             parts = target.split("/")
             if len(parts) >= 7:
                 owner = parts[3]
@@ -1510,7 +1513,7 @@ async def add_comment(
                 pass
 
             # GitHub issue URL: https://github.com/owner/repo/issues/123
-            if "github.com" in target and "/issues/" in target:
+            if issue_platform == "github" and "/issues/" in target:
                 parts = target.split("/")
                 if len(parts) >= 7:
                     owner = parts[3]
@@ -2278,21 +2281,18 @@ async def create_pull_request(
     project_path = project
     platform = None
 
-    # Detect platform from URL if provided
-    if "github.com" in project.lower():
-        platform = "github"
-        # Extract owner/repo from GitHub URL
-        if "github.com/" in project:
-            parts = project.split("github.com/")[1].split("/")
-            if len(parts) >= 2:
-                project_path = f"{parts[0]}/{parts[1].rstrip('/')}"
-    elif "gitlab" in project.lower():
-        platform = "gitlab"
-        # Extract project path from GitLab URL
-        if "://" in project:
-            url_parts = project.split("://")[1].split("/")
-            if len(url_parts) >= 2:
-                project_path = "/".join(url_parts[1:]).rstrip("/")
+    # Detect platform from URL hostname (not substring match).
+    if project.startswith("http"):
+        try:
+            platform = _detect_platform_from_url(project)
+        except ValueError:
+            platform = None
+        parsed_project = urlparse(project)
+        path_parts = [p for p in parsed_project.path.split("/") if p]
+        if platform == "github" and len(path_parts) >= 2:
+            project_path = f"{path_parts[0]}/{path_parts[1]}"
+        elif platform == "gitlab" and path_parts:
+            project_path = "/".join(path_parts).rstrip("/")
 
     # Find the project in database
     from preloop.models.crud import crud_project
@@ -2542,8 +2542,7 @@ async def update_comment(
             pass
 
         # GitHub PR URL: https://github.com/owner/repo/pull/123
-        if "github.com" in target and "/pull/" in target:
-            platform = "github"
+        if platform == "github" and "/pull/" in target:
             parts = target.split("/")
             if len(parts) >= 7:
                 owner = parts[3]

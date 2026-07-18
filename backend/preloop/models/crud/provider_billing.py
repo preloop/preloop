@@ -29,7 +29,11 @@ def snapshot_dedup_key(
     project_or_workspace_id: Optional[str],
     service_tier: Optional[str],
 ) -> str:
-    """Deterministic identity for one provider billing bucket."""
+    """Deterministic identity for one provider billing bucket.
+
+    Hashes metadata fields (including an opaque provider key id), not a
+    user password or recoverable secret.
+    """
     parts = "|".join(
         str(part or "")
         for part in (
@@ -43,6 +47,7 @@ def snapshot_dedup_key(
             service_tier,
         )
     )
+    # codeql[py/weak-sensitive-data-hashing] Billing bucket dedup key, not password hashing
     return hashlib.sha256(parts.encode("utf-8")).hexdigest()
 
 

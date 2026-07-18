@@ -9,6 +9,11 @@ from aiodocker.exceptions import DockerError
 
 from preloop.services.mcp_config_service import MCPConfigService
 from preloop.services.model_runtime_resolver import gateway_url_for_api
+from preloop.utils.repo_urls import (
+    inject_oauth_token,
+    repo_url_log_location,
+    tracker_host_kind,
+)
 
 from .container import ContainerAgentExecutor
 
@@ -296,7 +301,9 @@ class OpenHandsAgent(ContainerAgentExecutor):
                 git_cmd = self._prepare_git_clone_command(execution_context)
                 if git_cmd:
                     commands.append(git_cmd)
-                    self.logger.info(f"Git clone commands added: {git_cmd[:200]}...")
+                    self.logger.info(
+                        "Git clone commands added (length=%d)", len(git_cmd)
+                    )
                 else:
                     self.logger.warning(
                         "Git clone was configured but no commands were generated"
@@ -400,19 +407,23 @@ class OpenHandsAgent(ContainerAgentExecutor):
                         )
 
                     if token:
-                        # Inject token into URL
-                        if "github.com" in repo_url or tracker_type == "github":
-                            repo_url = repo_url.replace("https://", f"https://{token}@")
+                        host_kind = tracker_host_kind(repo_url)
+                        if host_kind == "github" or tracker_type == "github":
+                            repo_url = inject_oauth_token(
+                                repo_url, token, token_as_username=True
+                            )
                             self.logger.info("Injected GitHub token into URL")
-                        elif "gitlab" in repo_url.lower() or tracker_type == "gitlab":
-                            repo_url = repo_url.replace(
-                                "https://", f"https://gitlab-ci-token:{token}@"
+                        elif host_kind == "gitlab" or tracker_type == "gitlab":
+                            repo_url = inject_oauth_token(
+                                repo_url, token, user="gitlab-ci-token"
                             )
                             self.logger.info("Injected GitLab token into URL")
                         else:
                             self.logger.warning(
-                                f"Could not determine tracker type for token injection. "
-                                f"URL: {repo_url[:50]}..., tracker_type: {tracker_type}"
+                                "Could not determine tracker type for token injection. "
+                                "URL: %s, tracker_type: %s",
+                                repo_url_log_location(repo_url),
+                                tracker_type,
                             )
                     else:
                         self.logger.warning(

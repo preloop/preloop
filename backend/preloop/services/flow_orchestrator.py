@@ -33,6 +33,7 @@ from preloop.services.prompt_resolvers import (
 from preloop.services.flow_execution_logger import FlowExecutionLogger
 from preloop.sync.event_normalizer import attach_trigger_subject
 from preloop.services.model_runtime_resolver import resolve_ai_model_runtime
+from preloop.utils.repo_urls import inject_oauth_token, tracker_host_kind
 from preloop.services.account_realtime import (
     ACCOUNT_TOPIC_AUDIT,
     ACCOUNT_TOPIC_RUNTIME_SESSIONS,
@@ -843,7 +844,7 @@ class FlowExecutionOrchestrator:
             )
 
             logger.info(
-                "Created temporary runtime API token %s for flow execution %s "
+                "Created temporary API key record id=%s for flow execution %s "
                 "(principal_user=%s), expires at %s",
                 api_key.id,
                 self.execution_log.id if self.execution_log else None,
@@ -854,7 +855,11 @@ class FlowExecutionOrchestrator:
             return token_key, api_key.id
 
         except Exception as e:
-            logger.error(f"Failed to create temporary API token: {e}", exc_info=True)
+            logger.error(
+                "Failed to create temporary API key record: %s",
+                type(e).__name__,
+                exc_info=True,
+            )
             self.db.rollback()
             return None, None
 
@@ -868,15 +873,21 @@ class FlowExecutionOrchestrator:
 
             if api_key:
                 logger.info(
-                    "Deactivated temporary API token %s", self.temporary_api_key_id
+                    "Deactivated temporary API key record id=%s",
+                    self.temporary_api_key_id,
                 )
             else:
                 logger.warning(
-                    f"Temporary API token {self.temporary_api_key_id} not found for cleanup"
+                    "Temporary API key record id=%s not found for cleanup",
+                    self.temporary_api_key_id,
                 )
 
         except Exception as e:
-            logger.error(f"Failed to cleanup temporary API token: {e}", exc_info=True)
+            logger.error(
+                "Failed to cleanup temporary API key record: %s",
+                type(e).__name__,
+                exc_info=True,
+            )
             self.db.rollback()
 
     def _simple_resolve(self, placeholder: str, data: Dict[str, Any]) -> Optional[str]:
@@ -1246,21 +1257,23 @@ class FlowExecutionOrchestrator:
             if not token:
                 return repo_url
 
-            # For GitHub: https://oauth2:TOKEN@github.com/owner/repo
-            # For GitLab: https://oauth2:TOKEN@gitlab.com/owner/repo
-            if "github.com" in repo_url or tracker_type == "github":
-                if "https://" in repo_url:
-                    return repo_url.replace("https://", f"https://oauth2:{token}@")
-            elif "gitlab.com" in repo_url or tracker_type == "gitlab":
-                if "https://" in repo_url:
-                    return repo_url.replace("https://", f"https://oauth2:{token}@")
+            host_kind = tracker_host_kind(repo_url)
+            if host_kind in {"github", "gitlab"} or tracker_type in {
+                "github",
+                "gitlab",
+            }:
+                return inject_oauth_token(repo_url, token)
 
             # If we can't inject, return original URL
             logger.warning("Could not inject credentials into repository URL")
             return repo_url
 
         except Exception as e:
-            logger.error(f"Error injecting credentials: {e}", exc_info=True)
+            logger.error(
+                "Error injecting credentials: %s",
+                type(e).__name__,
+                exc_info=True,
+            )
             return repo_url
 
     async def _execute_custom_commands(self, work_dir: str) -> bool:
@@ -1357,7 +1370,8 @@ class FlowExecutionOrchestrator:
             )
             if not account_api_token:
                 logger.warning(
-                    f"Could not create temporary API token for account {self.flow.account_id}"
+                    "Could not create temporary API key record for account %s",
+                    self.flow.account_id,
                 )
 
         execution_context = {

@@ -43,8 +43,9 @@ def _render_template(template_name: str, context: dict) -> str:
     """Template rendering with auto HTML-escaping for XSS prevention.
 
     Uses Jinja2-style {{ variable }} placeholders.
-    All values are HTML-escaped to prevent XSS attacks from user-controlled
-    inputs (client_name, redirect_uri, state, error, etc.).
+    All values are HTML-escaped (with quote=True for attribute safety) to
+    prevent XSS attacks from user-controlled inputs (client_name,
+    redirect_uri, state, error, etc.).
 
     Values under keys ending with '_json' are JSON-encoded (for <script> blocks)
     instead of HTML-escaped.
@@ -61,8 +62,16 @@ def _render_template(template_name: str, context: dict) -> str:
                 json.dumps(str_value).replace("<", "\\u003c").replace(">", "\\u003e")
             )
         else:
-            safe_value = html.escape(str_value)
+            # quote=True so values are safe in HTML attributes (hidden inputs,
+            # href) as well as text nodes.
+            safe_value = html.escape(str_value, quote=True)
         template = template.replace("{{ " + key + " }}", safe_value)
+
+    if "{{ " in template:
+        logger.warning(
+            "OAuth consent template %s has unreplaced placeholders after render",
+            template_name,
+        )
 
     return template
 

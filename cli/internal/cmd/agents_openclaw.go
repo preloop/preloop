@@ -982,8 +982,8 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		fmt.Printf("  Agent Control runtime plugin: %s\n", agentControlPluginStatus(validationResult))
 		fmt.Printf("  Agent Control channel: %s\n", boolStatus(validationResult["control_channel_configured"]))
 	}
-	if validationResult["live_validation_status"] != nil {
-		fmt.Printf("  Live validation: %v\n", validationResult["live_validation_status"])
+	if status, ok := validationResult["live_validation_status"].(string); ok && strings.TrimSpace(status) != "" {
+		fmt.Printf("  Live validation: %s\n", status)
 	}
 	fmt.Printf("  Config updated: %s\n", agent.ConfigPath)
 	fmt.Printf("  Backup saved: %s\n", backupState.BackupPath)
@@ -5068,6 +5068,8 @@ func managedGatewayUpstreamFingerprint(upstream *managedGatewayUpstream) string 
 	}
 	keyDigest := ""
 	if apiKey := strings.TrimSpace(upstream.APIKey); apiKey != "" {
+		// Fingerprint for config comparison only — not password storage.
+		// codeql[go/weak-sensitive-data-hashing]
 		sum := sha256.Sum256([]byte(apiKey))
 		keyDigest = hex.EncodeToString(sum[:])
 	}
@@ -5076,6 +5078,7 @@ func managedGatewayUpstreamFingerprint(upstream *managedGatewayUpstream) string 
 	if len(upstream.CredentialPayload) > 0 {
 		payloadBytes, marshalErr := json.Marshal(upstream.CredentialPayload)
 		if marshalErr == nil {
+			// codeql[go/weak-sensitive-data-hashing]
 			sum := sha256.Sum256(payloadBytes)
 			credentialDigest = hex.EncodeToString(sum[:])
 		}
@@ -5102,6 +5105,8 @@ func openClawUpstreamFingerprint(parsed *openClawParsedConfig) string {
 	}
 	keyDigest := ""
 	if apiKey := strings.TrimSpace(parsed.ProviderAPIKey); apiKey != "" {
+		// Fingerprint for config comparison only — not password storage.
+		// codeql[go/weak-sensitive-data-hashing]
 		sum := sha256.Sum256([]byte(apiKey))
 		keyDigest = hex.EncodeToString(sum[:])
 	}

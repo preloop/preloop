@@ -76,7 +76,8 @@ export class MessageRouter {
           sub.callback(message);
         } catch (error) {
           console.error(
-            `[MessageRouter] Error in callback for topic ${topic}:`,
+            '[MessageRouter] Error in callback for topic',
+            topic,
             error
           );
         }

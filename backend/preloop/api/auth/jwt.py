@@ -47,10 +47,15 @@ logger = logging.getLogger(__name__)
 
 
 def _token_log_fingerprint(token: str) -> str:
-    """Return a non-reversible fingerprint for auth debug logs."""
+    """Return a non-reversible fingerprint for auth debug logs.
+
+    Not used for password storage — only a truncated digest for correlating
+    debug log lines without retaining the bearer token.
+    """
 
     if not token:
         return "empty"
+    # codeql[py/weak-sensitive-data-hashing] Log fingerprint only, not password storage
     return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
 
 

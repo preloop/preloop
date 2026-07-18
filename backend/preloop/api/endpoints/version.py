@@ -2,6 +2,7 @@ import logging
 import os
 import re
 from typing import Annotated, Optional
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, Header, Request
 from sqlalchemy.exc import SQLAlchemyError
@@ -174,6 +175,31 @@ async def get_version_info(
     )
 
 
+_IOS_STORE_HOSTS = frozenset({"apps.apple.com"})
+_ANDROID_STORE_HOSTS = frozenset({"play.google.com"})
+_DEFAULT_IOS_STORE_URL = "https://apps.apple.com/app/preloop/id6757803021"
+_DEFAULT_ANDROID_STORE_URL = (
+    "https://play.google.com/store/apps/details?id=ai.spacecode.preloop"
+)
+
+
+def _validated_store_url(url: str, allowed_hosts: frozenset[str], default: str) -> str:
+    """Return url when it is https and on an allowed host, else default."""
+    candidate = (url or "").strip() or default
+    try:
+        parsed = urlparse(candidate)
+    except ValueError:
+        return default
+    if parsed.scheme != "https" or not parsed.hostname:
+        return default
+    host = parsed.hostname.lower()
+    if host in allowed_hosts or any(
+        host.endswith(f".{allowed}") for allowed in allowed_hosts
+    ):
+        return candidate
+    return default
+
+
 def _client_version_contracts() -> dict[str, ClientVersionInfo]:
     """Per-platform native-app update contracts from deploy-time env vars."""
     contracts: dict[str, ClientVersionInfo] = {}
@@ -183,18 +209,20 @@ def _client_version_contracts() -> dict[str, ClientVersionInfo]:
         contracts["ios"] = ClientVersionInfo(
             min_version=os.environ.get("IOS_MIN_VERSION", "").strip(),
             latest_version=ios_latest,
-            store_url=os.environ.get(
-                "IOS_APP_STORE_URL",
-                "https://apps.apple.com/app/preloop/id6757803021",
+            store_url=_validated_store_url(
+                os.environ.get("IOS_APP_STORE_URL", _DEFAULT_IOS_STORE_URL),
+                _IOS_STORE_HOSTS,
+                _DEFAULT_IOS_STORE_URL,
             ),
         )
     if android_latest:
         contracts["android"] = ClientVersionInfo(
             min_version=os.environ.get("ANDROID_MIN_VERSION", "").strip(),
             latest_version=android_latest,
-            store_url=os.environ.get(
-                "ANDROID_PLAY_STORE_URL",
-                "https://play.google.com/store/apps/details?id=ai.spacecode.preloop",
+            store_url=_validated_store_url(
+                os.environ.get("ANDROID_PLAY_STORE_URL", _DEFAULT_ANDROID_STORE_URL),
+                _ANDROID_STORE_HOSTS,
+                _DEFAULT_ANDROID_STORE_URL,
             ),
         )
     return contracts

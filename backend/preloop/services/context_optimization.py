@@ -369,6 +369,20 @@ def optimize_messages(
     return result, stats
 
 
+_ANSI_MAX_RE_SUB_LEN = 256_000
+_ANSI_CHUNK_SIZE = 64_000
+
+
+def _strip_ansi_codes(text: str) -> str:
+    """Strip ANSI escape sequences without ReDoS on very large inputs."""
+    if len(text) <= _ANSI_MAX_RE_SUB_LEN:
+        return _ANSI_RE.sub("", text)
+    parts: List[str] = []
+    for start in range(0, len(text), _ANSI_CHUNK_SIZE):
+        parts.append(_ANSI_RE.sub("", text[start : start + _ANSI_CHUNK_SIZE]))
+    return "".join(parts)
+
+
 def strip_noise_text(text: str) -> str:
     """Strip ANSI codes, resolve CR progress updates, collapse repeats.
 
@@ -378,7 +392,7 @@ def strip_noise_text(text: str) -> str:
     Returns:
         Cleaned text with explicit repeat markers where lines collapsed.
     """
-    cleaned = _ANSI_RE.sub("", text)
+    cleaned = _strip_ansi_codes(text)
     lines: List[str] = []
     for raw_line in cleaned.split("\n"):
         # Carriage-return progress updates: only the final state matters.

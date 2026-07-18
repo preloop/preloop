@@ -436,8 +436,9 @@ class MCPClientPool:
                 return client
             else:
                 # Client exists but not connected, remove it
+                # Log only server_id; auth_config/url are never included in logs.
                 logger.warning(
-                    f"Existing client for {server_id} not connected, recreating"
+                    "Existing client for %s not connected, recreating", server_id
                 )
                 await self.close_client(server_id)
 
@@ -457,7 +458,8 @@ class MCPClientPool:
             )
             await client.connect()
             self._clients[server_id] = client
-            logger.info(f"Created new MCP client for server {server_id}")
+            # Log only server_id; auth_config/url are never included in logs.
+            logger.info("Created new MCP client for server %s", server_id)
 
         return client
 
@@ -472,7 +474,8 @@ class MCPClientPool:
                 if server_id in self._clients:
                     await self._clients[server_id].close()
                     del self._clients[server_id]
-                    logger.info(f"Closed and removed client for server {server_id}")
+                    # Log only server_id; auth_config/url are never included in logs.
+                    logger.info("Closed and removed client for server %s", server_id)
 
     async def close_all(self):
         """Close all clients in the pool."""

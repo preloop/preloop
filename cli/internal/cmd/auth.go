@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"net"
 	"net/http"
 	"net/url"
@@ -588,7 +589,7 @@ func handleOAuthCallback(w http.ResponseWriter, r *http.Request, expectedState s
 		errDesc := query.Get("error_description")
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprintf(w, "<html><body><h1>Authentication Failed</h1><p>%s: %s</p><p>You can close this window.</p></body></html>", errMsg, errDesc) //nolint:errcheck
+		fmt.Fprintf(w, "<html><body><h1>Authentication Failed</h1><p>%s: %s</p><p>You can close this window.</p></body></html>", html.EscapeString(errMsg), html.EscapeString(errDesc)) //nolint:errcheck
 		errChan <- fmt.Errorf("OAuth error: %s - %s", errMsg, errDesc)
 		return
 	}
@@ -617,13 +618,14 @@ func handleOAuthCallback(w http.ResponseWriter, r *http.Request, expectedState s
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Location", successRedirectURL)
 		w.WriteHeader(http.StatusFound)
+		safeRedirectURL := html.EscapeString(successRedirectURL)
 		_, _ = fmt.Fprintf(w, `<!doctype html>
 <html><head>
 <meta http-equiv="refresh" content="0; url=%s">
 <title>Preloop CLI connected</title>
 </head><body>
 <p>CLI connected. <a href="%s">Continue to Preloop</a>...</p>
-</body></html>`, successRedirectURL, successRedirectURL)
+</body></html>`, safeRedirectURL, safeRedirectURL)
 		codeChan <- code
 		return
 	}

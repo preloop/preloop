@@ -455,13 +455,15 @@ async def mcp_http_streaming_endpoint(
                         f"Tool {tool_name} approved - proceeding with execution"
                     )
                 except TimeoutError as e:
-                    logger.warning(f"Approval timeout for tool {tool_name}: {e}")
+                    logger.warning(
+                        f"Approval timeout for tool {tool_name}: {e}", exc_info=True
+                    )
                     response_data = {
                         "jsonrpc": "2.0",
                         "id": body.get("id", 1),
                         "error": {
                             "code": -32000,
-                            "message": f"Approval timeout: {str(e)}",
+                            "message": "Approval timed out",
                         },
                     }
                     return Response(
@@ -469,13 +471,15 @@ async def mcp_http_streaming_endpoint(
                         media_type="application/json",
                     )
                 except PermissionError as e:
-                    logger.warning(f"Approval declined for tool {tool_name}: {e}")
+                    logger.warning(
+                        f"Approval declined for tool {tool_name}: {e}", exc_info=True
+                    )
                     response_data = {
                         "jsonrpc": "2.0",
                         "id": body.get("id", 1),
                         "error": {
                             "code": -32000,
-                            "message": f"Approval declined: {str(e)}",
+                            "message": "Approval declined",
                         },
                     }
                     return Response(
@@ -491,7 +495,7 @@ async def mcp_http_streaming_endpoint(
                         "id": body.get("id", 1),
                         "error": {
                             "code": -32000,
-                            "message": f"Approval error: {str(e)}",
+                            "message": "Approval request failed",
                         },
                     }
                     return Response(
@@ -558,7 +562,7 @@ async def mcp_http_streaming_endpoint(
                 "id": body.get("id", 1),
                 "error": {
                     "code": -32000,
-                    "message": f"Error executing tool: {str(e)}",
+                    "message": "Tool execution failed",
                 },
             }
             return Response(

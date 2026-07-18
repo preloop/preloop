@@ -844,7 +844,9 @@ async def mcp_server_oauth_callback(
                 },
             )
             logger.info(
-                f"OAuth tokens saved for MCP server {server.name} (id={server_id})"
+                "OAuth credentials stored for MCP server %s (id=%s)",
+                server.name,
+                server_id,
             )
 
             # Auto-scan for tools now that we have credentials
@@ -854,8 +856,12 @@ async def mcp_server_oauth_callback(
                     f"Post-OAuth auto-scan: discovered {len(tools)} tools for {server.name}"
                 )
             except Exception as e:
-                logger.warning(f"Post-OAuth auto-scan failed for {server_id}: {e}")
-                # Don't fail the callback — tokens are saved, user can rescan manually
+                logger.warning(
+                    "Post-OAuth auto-scan failed for %s: %s",
+                    server_id,
+                    type(e).__name__,
+                )
+                # Don't fail the callback — credentials are stored, user can rescan manually
         else:
             logger.warning(f"MCP server {server_id} not found after OAuth callback")
     finally:

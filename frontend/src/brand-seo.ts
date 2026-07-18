@@ -387,7 +387,15 @@ function strip_html(input: string): string {
   if (!input) {
     return '';
   }
-  return input.replace(/<[^>]*>/g, '').trim();
+  let text = input;
+  let prev = '';
+  while (text !== prev) {
+    prev = text;
+    text = text.replace(/<[^>]*>/g, '');
+  }
+  text = text.replace(/javascript:/gi, '');
+  text = text.replace(/</g, '');
+  return text.trim();
 }
 
 function get_organization_id(config: BrandConfig): string {
