@@ -45,6 +45,7 @@ import type {
   AIModel,
 } from '../../types';
 import consoleStyles from '../../styles/console-styles.css?inline';
+import { reducedMotionStyles } from '../../styles/reduced-motion';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import { getAgentControlState } from '../../utils/agent-control';
 import { renderAgentIcon } from '../../utils/agent-icons';
@@ -263,6 +264,7 @@ export class AgentsView extends LitElement {
   private refreshTimer: number | null = null;
 
   static styles = [
+    reducedMotionStyles,
     unsafeCSS(consoleStyles),
     css`
       :host {

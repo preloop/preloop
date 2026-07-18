@@ -1,6 +1,8 @@
 body {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue',
+    Arial, sans-serif;
 }
 
 html {
@@ -32,4 +34,17 @@ html {
 
 .issue-title {
   margin-top: 4px;
+}
+
+/* Global prefers-reduced-motion guard (DESIGN.md D19). Shadow-DOM components
+   carry the same rules via src/styles/reduced-motion.ts. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
