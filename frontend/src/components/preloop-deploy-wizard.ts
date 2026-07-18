@@ -12,6 +12,7 @@ import '@shoelace-style/shoelace/dist/components/option/option.js';
 import {
   getAIModels,
   getAccountAgent,
+  getAccountAgents,
   createFlow,
   createManagedAgent,
   createManagedAgentCredential,
@@ -222,6 +223,23 @@ export class PreloopDeployWizard extends LitElement {
       width: 100%;
     }
 
+    .cli-connected-line {
+      color: var(--sl-color-success-600);
+      font-size: var(--sl-font-size-small);
+      font-weight: var(--sl-font-weight-semibold);
+    }
+
+    .cli-connected-link {
+      color: var(--sl-color-primary-600);
+      display: inline-block;
+      font-size: var(--sl-font-size-small);
+      margin-top: var(--sl-spacing-2x-small);
+    }
+
+    .conn-status .conn-waiting {
+      margin-top: var(--sl-spacing-x-small);
+    }
+
     .conn-waiting {
       display: flex;
       align-items: center;
@@ -333,6 +351,23 @@ export class PreloopDeployWizard extends LitElement {
   private customDismissTimer: number | null = null;
   private customPolling = false;
 
+  // CLI-path polling: while the CLI command screen is open we watch the
+  // managed-agents list so the browser visibly reacts as `preloop agents
+  // discover` onboards agents in the terminal. Reuses the custom-path poll
+  // cadence and cap; polls only while the CLI screen is showing.
+  @state()
+  private cliConnectedAgents: ManagedAgentSummary[] = [];
+
+  // Agent ids that already existed when the CLI screen opened — only agents
+  // onboarded after that count as newly connected.
+  private cliBaselineIds: Set<string> | null = null;
+
+  @state()
+  private cliPollingActive = false;
+
+  private cliPollTimer: number | null = null;
+  private cliPollDeadline = 0;
+
   async connectedCallback() {
     super.connectedCallback();
     this.onboardingPath = this.initialPath;
@@ -352,6 +387,7 @@ export class PreloopDeployWizard extends LitElement {
     // Cancel any in-flight polling / dismiss timers so a torn-down wizard does
     // not keep firing fetches or dispatch events after it is gone.
     this.cancelFirstDataPolling();
+    this.cancelCliAgentPolling();
   }
 
   updated(changedProperties: Map<string, unknown>) {
@@ -363,6 +399,15 @@ export class PreloopDeployWizard extends LitElement {
       }
       if (this.initialPath === 'custom') {
         this.resetCustomState();
+      }
+    }
+    // Poll for CLI-onboarded agents only while the CLI command screen is
+    // showing (same lifecycle as the custom-path first-data poll).
+    if (changedProperties.has('onboardingPath')) {
+      if (this.onboardingPath === 'cli') {
+        this.startCliAgentPolling();
+      } else {
+        this.cancelCliAgentPolling();
       }
     }
   }
@@ -726,6 +771,75 @@ export class PreloopDeployWizard extends LitElement {
     }
   }
 
+  /**
+   * Begin watching the managed-agents list while the CLI command screen is
+   * open. The first fetch snapshots the agents that already exist (the
+   * baseline); every agent that appears afterwards was just onboarded by the
+   * CLI and flips the screen to a "✓ <agent> connected" line. Polling reuses
+   * the custom-path cadence/cap and stops on navigation, teardown, or timeout.
+   */
+  private startCliAgentPolling() {
+    this.cancelCliAgentPolling();
+    this.cliConnectedAgents = [];
+    this.cliBaselineIds = null;
+    this.cliPollingActive = true;
+    this.cliPollDeadline = Date.now() + FIRST_DATA_POLL_TIMEOUT_MS;
+    const poll = async () => {
+      if (!this.cliPollingActive) {
+        return;
+      }
+      try {
+        const response = await getAccountAgents({ limit: 100 });
+        const items = response.items || [];
+        if (!this.cliPollingActive) {
+          return;
+        }
+        if (this.cliBaselineIds === null) {
+          this.cliBaselineIds = new Set(items.map((agent) => agent.id));
+        } else {
+          const knownIds = new Set(
+            this.cliConnectedAgents.map((agent) => agent.id)
+          );
+          const arrivals = items.filter(
+            (agent) =>
+              !this.cliBaselineIds!.has(agent.id) && !knownIds.has(agent.id)
+          );
+          if (arrivals.length > 0) {
+            this.cliConnectedAgents = [...this.cliConnectedAgents, ...arrivals];
+            // Agents are still landing — extend the watch window so a long
+            // multi-agent onboarding run keeps flipping lines live.
+            this.cliPollDeadline = Date.now() + FIRST_DATA_POLL_TIMEOUT_MS;
+          }
+        }
+      } catch {
+        // Transient errors are ignored; we keep polling until the deadline.
+      }
+      if (!this.cliPollingActive) {
+        return;
+      }
+      if (Date.now() >= this.cliPollDeadline) {
+        // Cap reached: stop polling quietly. Connected lines stay visible.
+        this.cliPollingActive = false;
+        this.cliPollTimer = null;
+        return;
+      }
+      this.cliPollTimer = window.setTimeout(poll, FIRST_DATA_POLL_INTERVAL_MS);
+    };
+    // Snapshot the baseline immediately so the first CLI-onboarded agent is
+    // detected one interval later, not two.
+    void poll();
+  }
+
+  /** Stop the CLI-path agents-list polling and clear its timer. */
+  private cancelCliAgentPolling() {
+    this.cliPollingActive = false;
+    this.cliBaselineIds = null;
+    if (this.cliPollTimer !== null) {
+      window.clearTimeout(this.cliPollTimer);
+      this.cliPollTimer = null;
+    }
+  }
+
   private buildGatewayBaseUrl(): string {
     // Mirror the installCommand hostname-switch pattern. On the hosted product
     // the gateway lives on the same origin; for self-hosted/dev we derive it
@@ -999,6 +1113,8 @@ agent.invoke(
               <sl-copy-button value="preloop agents discover"></sl-copy-button>
             </div>
           </div>
+
+          ${this.renderCliConnStatus()}
         </div>
 
         <p class="wizard-copy">
@@ -1007,6 +1123,51 @@ agent.invoke(
           Onboarded agents appear on the Agents page; their first model call
           shows up under Sessions.
         </p>
+      </div>
+    `;
+  }
+
+  /**
+   * Live status under the CLI command boxes: a waiting line while we watch
+   * for CLI-onboarded agents, flipping to one "✓ <agent> connected" line per
+   * agent as they land, with a link to the Agents page.
+   */
+  private renderCliConnStatus() {
+    const connected = this.cliConnectedAgents;
+    if (!this.cliPollingActive && connected.length === 0) {
+      return nothing;
+    }
+    return html`
+      <div class="conn-status">
+        ${connected.map(
+          (agent) => html`
+            <div class="cli-connected-line">
+              ✓ ${agent.display_name} connected
+            </div>
+          `
+        )}
+        ${
+          connected.length > 0
+            ? html`
+                <a class="cli-connected-link" href="/console/agents"
+                  >View it on the Agents page</a
+                >
+              `
+            : nothing
+        }
+        ${
+          this.cliPollingActive
+            ? html`
+                <div class="conn-waiting">
+                  <sl-spinner></sl-spinner>
+                  <span>
+                    Waiting for the CLI — onboarded agents appear here
+                    automatically.
+                  </span>
+                </div>
+              `
+            : nothing
+        }
       </div>
     `;
   }

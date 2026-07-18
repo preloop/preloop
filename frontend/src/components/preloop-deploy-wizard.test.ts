@@ -777,3 +777,175 @@ describe('PreloopDeployWizard custom agent path', () => {
     expect(doneFired).to.equal(true);
   });
 });
+
+describe('PreloopDeployWizard CLI path polling', () => {
+  let fetchStub: sinon.SinonStub;
+  // Counts GET /api/v1/agents list polls so agents can "arrive" after the
+  // baseline snapshot.
+  let listCallCount = 0;
+
+  function stubAgentsList(opts?: {
+    // Agents present from the very first (baseline) fetch.
+    baseline?: Array<Record<string, unknown>>;
+    // Agents that appear from the Nth list call on (1-based).
+    arrivals?: Array<Record<string, unknown>>;
+    arriveOnCall?: number;
+  }) {
+    listCallCount = 0;
+    fetchStub.callsFake(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        const method = (init?.method || 'GET').toUpperCase();
+        if (/\/api\/v1\/agents(\?|$)/.test(url) && method === 'GET') {
+          listCallCount += 1;
+          const arrived =
+            listCallCount >= (opts?.arriveOnCall ?? 2)
+              ? opts?.arrivals || []
+              : [];
+          const items = [...(opts?.baseline || []), ...arrived];
+          return new Response(JSON.stringify({ total: items.length, items }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+    );
+  }
+
+  function agentSummary(id: string, name: string): Record<string, unknown> {
+    return {
+      id,
+      display_name: name,
+      session_source_type: 'claude_code',
+      session_source_id: `host-${id}`,
+      enrolled_via: 'cli',
+      lifecycle_state: 'active',
+      activity_status: 'idle',
+      is_active_now: false,
+      last_seen_at: '2026-07-18T00:00:00Z',
+      total_requests: 0,
+      estimated_cost: 0,
+      managed_mcp_servers: [],
+      tags: {},
+    };
+  }
+
+  beforeEach(() => {
+    localStorage.setItem('accessToken', 'test-access-token');
+    localStorage.setItem('refreshToken', 'test-refresh-token');
+    fetchStub = sinon.stub(window, 'fetch');
+    stubAgentsList();
+  });
+
+  afterEach(() => {
+    document.querySelectorAll('preloop-deploy-wizard').forEach((el) => {
+      (el as any).cancelFirstDataPolling?.();
+      (el as any).cancelCliAgentPolling?.();
+    });
+    fetchStub.restore();
+    localStorage.clear();
+  });
+
+  async function createCliWizard(): Promise<PreloopDeployWizard> {
+    const el = (await fixture(
+      html`<preloop-deploy-wizard initial-path="cli"></preloop-deploy-wizard>`
+    )) as PreloopDeployWizard;
+    await el.updateComplete;
+    return el;
+  }
+
+  it('shows the waiting line and polls the agents list while the CLI screen is open', async () => {
+    const el = await createCliWizard();
+    expect((el as any).cliPollingActive).to.equal(true);
+    const text = (el.shadowRoot?.textContent || '').replace(/\s+/g, ' ');
+    expect(text).to.contain(
+      'Waiting for the CLI — onboarded agents appear here automatically.'
+    );
+    // The baseline snapshot fetch fires immediately.
+    await waitUntil(() => listCallCount >= 1, 'baseline fetch', {
+      timeout: 3000,
+    });
+  });
+
+  it('flips to "✓ <agent> connected" as CLI-onboarded agents land', async () => {
+    stubAgentsList({
+      arrivals: [agentSummary('a1', 'Claude Code')],
+      arriveOnCall: 2,
+    });
+    const el = await createCliWizard();
+
+    await waitUntil(
+      () => (el as any).cliConnectedAgents.length === 1,
+      'agent should be detected after the baseline',
+      { timeout: 8000 }
+    );
+    await el.updateComplete;
+
+    const text = el.shadowRoot?.textContent || '';
+    expect(text).to.contain('✓ Claude Code connected');
+    expect(text).to.contain('View it on the Agents page');
+    const link = el.shadowRoot?.querySelector('a.cli-connected-link');
+    expect(link?.getAttribute('href')).to.equal('/console/agents');
+    // Polling continues so further agents can land.
+    expect((el as any).cliPollingActive).to.equal(true);
+  });
+
+  it('does not count agents that existed before the CLI screen opened', async () => {
+    stubAgentsList({
+      baseline: [agentSummary('old', 'Existing Agent')],
+      arrivals: [agentSummary('new', 'Codex CLI')],
+      arriveOnCall: 2,
+    });
+    const el = await createCliWizard();
+
+    await waitUntil(
+      () => (el as any).cliConnectedAgents.length === 1,
+      'only the new arrival should be detected',
+      { timeout: 8000 }
+    );
+    await el.updateComplete;
+
+    const text = el.shadowRoot?.textContent || '';
+    expect(text).to.contain('✓ Codex CLI connected');
+    expect(text).to.not.contain('✓ Existing Agent connected');
+  });
+
+  it('stops polling when navigating away from the CLI screen', async () => {
+    const el = await createCliWizard();
+    expect((el as any).cliPollingActive).to.equal(true);
+
+    (el as any).handleBack();
+    await el.updateComplete;
+    expect((el as any).onboardingPath).to.equal('govern');
+    expect((el as any).cliPollingActive).to.equal(false);
+    expect((el as any).cliPollTimer).to.equal(null);
+  });
+
+  it('stops polling quietly at the cap but keeps connected lines', async () => {
+    stubAgentsList({
+      arrivals: [agentSummary('a1', 'Claude Code')],
+      arriveOnCall: 2,
+    });
+    const el = await createCliWizard();
+    await waitUntil(() => (el as any).cliConnectedAgents.length === 1, '', {
+      timeout: 8000,
+    });
+
+    // Simulate the deadline being hit before the next poll.
+    (el as any).cliPollDeadline = Date.now() - 1;
+    await waitUntil(
+      () => (el as any).cliPollingActive === false,
+      'polling should stop at the cap',
+      { timeout: 8000 }
+    );
+    await el.updateComplete;
+
+    const text = el.shadowRoot?.textContent || '';
+    expect(text).to.contain('✓ Claude Code connected');
+    expect(text).to.not.contain('Waiting for the CLI');
+  });
+});
