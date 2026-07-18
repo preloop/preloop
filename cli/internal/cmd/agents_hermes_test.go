@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/preloop/preloop/cli/internal/testenv"
 )
 
 const hermesSampleConfig = `# Sample Hermes Agent config
@@ -101,13 +103,7 @@ func TestRuntimeSessionSourceTypeForHermesAgent(t *testing.T) {
 
 func TestDiscoverAgentsFindsHermesYAMLConfig(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	defer func() {
-		_ = os.Setenv("HOME", oldHome)
-	}()
+	testenv.SetHome(t, home)
 
 	configPath := filepath.Join(home, ".hermes", "config.yaml")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
@@ -139,13 +135,7 @@ func TestDiscoverAgentsFindsHermesYAMLConfig(t *testing.T) {
 
 func TestDiscoverAgentsFindsInstalledHermesWithoutConfig(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	defer func() {
-		_ = os.Setenv("HOME", oldHome)
-	}()
+	testenv.SetHome(t, home)
 
 	if err := os.MkdirAll(filepath.Join(home, ".hermes", "sessions"), 0755); err != nil {
 		t.Fatalf("failed to create hermes install marker: %v", err)
@@ -374,6 +364,7 @@ func TestHermesAdapterValidateManagedConfig_PassesWithControlChannel(t *testing.
 }
 
 func TestInstallAgentControlRuntimePluginInstallsAndVerifiesHermes(t *testing.T) {
+	skipNoShebangOnWindows(t, "Hermes runtime-plugin install+verify flow")
 	dir := t.TempDir()
 	pluginsRoot := filepath.Join(dir, "runtime-plugins")
 	sourcePath := filepath.Join(pluginsRoot, "hermes-preloop")
@@ -414,6 +405,7 @@ func TestInstallAgentControlRuntimePluginInstallsAndVerifiesHermes(t *testing.T)
 }
 
 func TestInstallAgentControlRuntimePluginFindsHermesInUserLocalBin(t *testing.T) {
+	skipNoShebangOnWindows(t, "Hermes discovery in ~/.local/bin")
 	dir := t.TempDir()
 	home := filepath.Join(dir, "home")
 	localBin := filepath.Join(home, ".local", "bin")
@@ -425,7 +417,7 @@ func TestInstallAgentControlRuntimePluginFindsHermesInUserLocalBin(t *testing.T)
 	if err := os.MkdirAll(localBin, 0755); err != nil {
 		t.Fatalf("failed to create local bin dir: %v", err)
 	}
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 	t.Setenv("PRELOOP_RUNTIME_PLUGINS_DIR", pluginsRoot)
 	t.Setenv("PATH", filepath.Join(dir, "empty-path"))
 
@@ -457,11 +449,12 @@ func TestInstallAgentControlRuntimePluginFindsHermesInUserLocalBin(t *testing.T)
 }
 
 func TestInstallAgentControlRuntimePluginFallsBackToPipWhenHermesRejectsIdentifier(t *testing.T) {
+	skipNoShebangOnWindows(t, "Hermes pip fallback path")
 	dir := t.TempDir()
 	// Point the plugin source root at an empty directory so the install target
 	// falls back to the PyPI package name, matching an end-user install.
 	t.Setenv("PRELOOP_RUNTIME_PLUGINS_DIR", filepath.Join(dir, "runtime-plugins"))
-	t.Setenv("HOME", filepath.Join(dir, "home"))
+	testenv.SetHome(t, filepath.Join(dir, "home"))
 
 	binDir := filepath.Join(dir, "bin")
 	if err := os.MkdirAll(binDir, 0755); err != nil {
@@ -532,6 +525,7 @@ func TestClassifyRuntimePluginInstallFailureHermesInvalidIdentifier(t *testing.T
 }
 
 func TestResolveHermesPipPythonPrefersHermesEnvironment(t *testing.T) {
+	skipManagedLauncherOnWindows(t, "preferring the Hermes-bundled Python interpreter")
 	dir := t.TempDir()
 	home := filepath.Join(dir, "home")
 	venvBin := filepath.Join(home, ".hermes", "hermes-agent", "venv", "bin")
@@ -542,7 +536,7 @@ func TestResolveHermesPipPythonPrefersHermesEnvironment(t *testing.T) {
 	if err := os.WriteFile(venvPython, []byte("#!/bin/sh\n"), 0755); err != nil {
 		t.Fatalf("failed to write fake venv python: %v", err)
 	}
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 	t.Setenv("PATH", filepath.Join(dir, "empty-path"))
 
 	resolved, err := resolveHermesPipPython()
@@ -556,7 +550,7 @@ func TestResolveHermesPipPythonPrefersHermesEnvironment(t *testing.T) {
 
 func TestRuntimeExecutableSearchDescriptionIncludesHermesUserLocalBin(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "home")
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 
 	description := runtimeExecutableSearchDescription("hermes")
 	if !strings.Contains(description, "PATH") {
@@ -674,7 +668,7 @@ func TestApplyHermesManagedGateway_RewritesModelBlock(t *testing.T) {
 
 func TestParseHermesManagedGatewayUpstreamResolvesProviderSpecificEnvKey(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 	t.Setenv("DEEPSEEK_API_KEY", "")
 	configPath := filepath.Join(home, ".hermes", "config.yaml")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
@@ -844,11 +838,7 @@ func TestNormalizeHermesManagedAlias_CollapsesCodexProvider(t *testing.T) {
 
 func TestParseHermesManagedGatewayUpstream_ImportsCodexOAuth(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to override HOME: %v", err)
-	}
-	defer func() { _ = os.Setenv("HOME", oldHome) }()
+	testenv.SetHome(t, home)
 
 	configPath := filepath.Join(home, hermesBootstrapConfigPath)
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
@@ -921,11 +911,7 @@ func TestParseHermesManagedGatewayUpstream_ImportsCodexOAuth(t *testing.T) {
 
 func TestParseHermesManagedGatewayUpstream_ImportsCredentialPoolCodexOAuth(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to override HOME: %v", err)
-	}
-	defer func() { _ = os.Setenv("HOME", oldHome) }()
+	testenv.SetHome(t, home)
 
 	configPath := filepath.Join(home, hermesBootstrapConfigPath)
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
@@ -990,11 +976,7 @@ func TestParseHermesManagedGatewayUpstream_ImportsCredentialPoolCodexOAuth(t *te
 
 func TestParseHermesManagedGatewayUpstream_ResolvesOpenAIKeyFromEnvFile(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to override HOME: %v", err)
-	}
-	defer func() { _ = os.Setenv("HOME", oldHome) }()
+	testenv.SetHome(t, home)
 
 	for _, key := range []string{"OPENAI_API_KEY", "OPENROUTER_API_KEY"} {
 		old, present := os.LookupEnv(key)
@@ -1051,11 +1033,7 @@ func TestParseHermesManagedGatewayUpstream_ResolvesOpenAIKeyFromEnvFile(t *testi
 
 func TestParseHermesManagedGatewayUpstream_SkipsAlreadyManagedConfig(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to override HOME: %v", err)
-	}
-	defer func() { _ = os.Setenv("HOME", oldHome) }()
+	testenv.SetHome(t, home)
 
 	configPath := filepath.Join(home, hermesBootstrapConfigPath)
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
@@ -1114,6 +1092,7 @@ func TestRestartHermesGatewayAfterReconfigHermesNotFound(t *testing.T) {
 }
 
 func TestRestartHermesGatewayAfterReconfigSuccess(t *testing.T) {
+	skipNoShebangOnWindows(t, "Hermes gateway restart success path")
 	dir := t.TempDir()
 	binDir := filepath.Join(dir, "bin")
 	if err := os.MkdirAll(binDir, 0755); err != nil {
@@ -1139,6 +1118,7 @@ func TestRestartHermesGatewayAfterReconfigSuccess(t *testing.T) {
 }
 
 func TestRestartHermesGatewayAfterReconfigFailure(t *testing.T) {
+	skipNoShebangOnWindows(t, "Hermes gateway restart failure path")
 	dir := t.TempDir()
 	binDir := filepath.Join(dir, "bin")
 	if err := os.MkdirAll(binDir, 0755); err != nil {

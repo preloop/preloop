@@ -5,10 +5,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/preloop/preloop/cli/internal/testenv"
 )
 
 func TestGetOrCreateClientIDGeneratesAndPersists(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	testenv.SetHome(t, t.TempDir())
 
 	first, err := GetOrCreateClientID()
 	if err != nil {
@@ -37,7 +39,7 @@ func TestGetOrCreateClientIDGeneratesAndPersists(t *testing.T) {
 }
 
 func TestGetOrCreateClientIDReplacesGarbage(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	testenv.SetHome(t, t.TempDir())
 	dir, _ := GetConfigDir()
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)

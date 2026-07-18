@@ -10,11 +10,13 @@ import (
 	"testing"
 
 	"github.com/preloop/preloop/cli/internal/config"
+
+	"github.com/preloop/preloop/cli/internal/testenv"
 )
 
 func TestResolveConfiguredAPIURLUsesEnvVariable(t *testing.T) {
 	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
+	testenv.SetHome(t, tempHome)
 	t.Setenv("PRELOOP_URL", "http://example.test/api/")
 
 	originalFlagURL := FlagURL
@@ -147,7 +149,7 @@ func TestHandleOAuthCallbackRedirectsToConsole(t *testing.T) {
 
 func TestRunAuthStatusRefreshesStoredLoginBeforeFetchingUser(t *testing.T) {
 	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
+	testenv.SetHome(t, tempHome)
 
 	restore := snapshotLoginFlags()
 	defer restore()
@@ -202,7 +204,7 @@ func TestRunAuthStatusRefreshesStoredLoginBeforeFetchingUser(t *testing.T) {
 
 func TestRunAuthStatusPrintsUnderlyingError(t *testing.T) {
 	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
+	testenv.SetHome(t, tempHome)
 
 	restore := snapshotLoginFlags()
 	defer restore()
@@ -273,21 +275,22 @@ func captureStdout(t *testing.T, fn func() error) string {
 }
 
 func TestMain(m *testing.M) {
-	// Prevent tests from reading the developer's real config.
-	originalHome := os.Getenv("HOME")
+	// Prevent tests from reading the developer's real config. This is the
+	// package-wide backstop for any test that forgets to redirect the home
+	// directory itself; testenv.SetProcessHome covers Windows too, where
+	// setting HOME alone would leave lookups pointing at the real profile.
 	tempHome, err := os.MkdirTemp("", "preloop-cli-tests-*")
 	if err != nil {
 		panic(err)
 	}
-	_ = os.Setenv("HOME", tempHome)
+	restoreHome, err := testenv.SetProcessHome(tempHome)
+	if err != nil {
+		panic(err)
+	}
 
 	code := m.Run()
 
-	if originalHome == "" {
-		_ = os.Unsetenv("HOME")
-	} else {
-		_ = os.Setenv("HOME", originalHome)
-	}
+	restoreHome()
 	_ = os.RemoveAll(tempHome)
 	os.Exit(code)
 }

@@ -214,26 +214,34 @@ jobs:
   # ==========================================================================
   #
   # Windows CLI binaries already ship on every release (see release.yml), but
-  # nothing has ever exercised them. This job is the first Windows runner in
-  # the repo, so it is deliberately INFORMATIONAL ONLY:
+  # nothing had ever exercised them. This job is the first Windows runner in the
+  # repo. It is still INFORMATIONAL ONLY:
   #   - continue-on-error: true, so a failure never turns the check red, and
   #   - it is absent from build-and-push's `needs:`, so it cannot gate a release.
-  # Read the logs to see what genuinely breaks on Windows. Once the failures are
-  # burned down, drop continue-on-error and add this to `needs:` to lock it in.
   #
-  # `go build` and `go vet` are expected to PASS (verified by cross-compiling
-  # with GOOS=windows). `go test` is expected to be very red, for three known
-  # reasons — triage against these before assuming a new regression:
-  #   1. Most tests redirect the home dir with t.Setenv("HOME", ...), but
-  #      os.UserHomeDir() reads %USERPROFILE% on Windows, so they operate on the
-  #      real profile instead of their temp dir. This is the dominant cause.
-  #      (agents_preflight_test.go sets USERPROFILE too and is the correct model.)
-  #   2. ~16 tests write a #!/bin/sh script and exec it; Windows has no shebang.
-  #   3. The managed-launcher feature itself is POSIX-only — it emits a bash
-  #      script to ~/.local/bin and gates on the 0111 executable bit, which
-  #      Windows files never carry. That is a product gap, not a test bug.
-  # Because of (1), do NOT run this suite on a Windows workstation you care
-  # about: it writes into the real ~/.preloop. CI runners are ephemeral.
+  # The three original failure causes have been addressed, so this job is
+  # EXPECTED TO PASS. It has not yet been observed green on a real Windows
+  # runner, which is the only reason continue-on-error is still set — flip it
+  # (and add this job to build-and-push's `needs:`) once a few runs confirm it.
+  # A failure here is now a signal, not background noise: triage it.
+  #
+  #   1. FIXED. Tests redirected the home dir with t.Setenv("HOME", ...), but
+  #      os.UserHomeDir() reads %USERPROFILE% on Windows, so they operated on
+  #      the real profile instead of their temp dir. All 94 call sites now go
+  #      through internal/testenv.SetHome, which sets HOME, USERPROFILE, and
+  #      the APPDATA/LOCALAPPDATA roots behind os.UserConfigDir/UserCacheDir.
+  #      internal/testenv's own tests assert the redirection through the stdlib
+  #      accessors, so they fail here if the helper ever stops working.
+  #   2. SKIPPED. Ten tests write a #!/bin/sh stub and exec it; Windows has no
+  #      shebang. They call skipNoShebangOnWindows with the untested behavior
+  #      named in the skip message. Fixture limitation, not a product problem.
+  #   3. SKIPPED — REAL PRODUCT GAP. The managed-launcher feature is POSIX-only:
+  #      it emits a bash script to ~/.local/bin and gates on the 0111 executable
+  #      bit, which Windows files never carry. Five tests call
+  #      skipManagedLauncherOnWindows. These skips hide missing functionality,
+  #      NOT a test defect — `preloop agents onboard` cannot install a managed
+  #      launcher on Windows today. See the managedLauncherWindowsGap doc
+  #      comment in cli/internal/cmd/testsupport_test.go.
 
   test-cli-windows:
     name: CLI Tests (Windows)

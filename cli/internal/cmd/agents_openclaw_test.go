@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/preloop/preloop/cli/internal/api"
+
+	"github.com/preloop/preloop/cli/internal/testenv"
 )
 
 func TestOpenClawConfigPathsIncludesCurrentLocations(t *testing.T) {
@@ -287,9 +289,7 @@ func TestParseOpenClawConfigResolvesAmazonBedrockRefToBedrockProviderBlock(t *te
 
 func TestParseOpenClawConfigRecoversUpstreamFromManagedConfigState(t *testing.T) {
 	tempDir := t.TempDir()
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tempDir)        //nolint:errcheck
-	defer os.Setenv("HOME", origHome) //nolint:errcheck
+	testenv.SetHome(t, tempDir)
 
 	configPath := filepath.Join(tempDir, ".openclaw", "openclaw.json")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
@@ -753,6 +753,7 @@ func TestApplyManagedAgentControlConfigAddsRuntimeMetadata(t *testing.T) {
 }
 
 func TestValidateAgentControlConfigVerifiesInstalledRuntimePlugin(t *testing.T) {
+	skipNoShebangOnWindows(t, "OpenClaw runtime-plugin config verification")
 	dir := t.TempDir()
 	binDir := filepath.Join(dir, "bin")
 	if err := os.MkdirAll(binDir, 0755); err != nil {
@@ -789,7 +790,7 @@ func TestValidateAgentControlConfigVerifiesInstalledRuntimePlugin(t *testing.T) 
 
 func TestValidateAgentControlConfigRejectsStaleOpenClawSidecarStatus(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 	statusDir := filepath.Join(home, ".preloop-agent-control")
 	if err := os.MkdirAll(statusDir, 0755); err != nil {
 		t.Fatalf("failed to create sidecar status dir: %v", err)
@@ -880,6 +881,7 @@ func TestAgentControlPluginInstallCommandFallsBackToMarketplacePackage(t *testin
 }
 
 func TestInstallAgentControlRuntimePluginInstallsAndVerifiesOpenClaw(t *testing.T) {
+	skipNoShebangOnWindows(t, "OpenClaw runtime-plugin install+verify flow")
 	dir := t.TempDir()
 	pluginsRoot := filepath.Join(dir, "runtime-plugins")
 	sourcePath := filepath.Join(pluginsRoot, "openclaw-preloop")
@@ -920,6 +922,7 @@ func TestInstallAgentControlRuntimePluginInstallsAndVerifiesOpenClaw(t *testing.
 }
 
 func TestInstallAgentControlRuntimePluginReportsOpenClawNodeMismatch(t *testing.T) {
+	skipNoShebangOnWindows(t, "OpenClaw Node version mismatch reporting")
 	dir := t.TempDir()
 	pluginsRoot := filepath.Join(dir, "runtime-plugins")
 	sourcePath := filepath.Join(pluginsRoot, "openclaw-preloop")
@@ -958,6 +961,7 @@ func TestInstallAgentControlRuntimePluginReportsOpenClawNodeMismatch(t *testing.
 }
 
 func TestEnsureAgentControlRuntimePluginsInstallsSupportedDiscoveredAgents(t *testing.T) {
+	skipNoShebangOnWindows(t, "runtime-plugin install across discovered agents")
 	dir := t.TempDir()
 	pluginsRoot := filepath.Join(dir, "runtime-plugins")
 	sourcePath := filepath.Join(pluginsRoot, "openclaw-preloop")
@@ -1118,7 +1122,7 @@ func TestResolveOpenClawBedrockCredentialsFromEnv(t *testing.T) {
 
 func TestResolveOpenClawBedrockCredentialsFromSharedAWSFiles(t *testing.T) {
 	tempDir := t.TempDir()
-	t.Setenv("HOME", tempDir)
+	testenv.SetHome(t, tempDir)
 	t.Setenv("AWS_PROFILE", "review")
 	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "")
 	t.Setenv("AWS_ACCESS_KEY_ID", "")
@@ -1159,7 +1163,7 @@ func TestResolveOpenClawBedrockCredentialsFromSharedAWSFiles(t *testing.T) {
 
 func TestFilterAgentsPendingLocalEnrollmentSkipsSavedState(t *testing.T) {
 	tempDir := t.TempDir()
-	t.Setenv("HOME", tempDir)
+	testenv.SetHome(t, tempDir)
 
 	enrolled := AgentConfig{
 		Name:       "OpenClaw",
@@ -1448,13 +1452,7 @@ func TestExtractClaudeTokenFromCredentialBlobSupportsClaudeAiOauthAccessToken(t 
 
 func TestResolveClaudePrimaryAPIKey(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	defer func() {
-		_ = os.Setenv("HOME", oldHome)
-	}()
+	testenv.SetHome(t, home)
 	if err := os.WriteFile(
 		filepath.Join(home, ".claude.json"),
 		[]byte(`{"primaryApiKey":"sk-ant-api03-managed"}`),
