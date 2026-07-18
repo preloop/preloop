@@ -6,6 +6,7 @@ __all__ = [
     "agent_control",
     "anthropic_gateway",
     "audio",
+    "approval_bypass",
     "approval_requests",
     "comments",
     "cost",

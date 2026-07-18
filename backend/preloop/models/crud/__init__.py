@@ -68,6 +68,12 @@ from .tool_configuration import CRUDToolConfiguration
 from .mcp_server import CRUDMCPServer
 from .mcp_tool import CRUDMCPTool
 from .approval_workflow import CRUDApprovalWorkflow
+from .approval_bypass import (
+    CRUDApprovalBypass,
+    crud_approval_bypass,
+    get_active_bypass_async,
+    record_bypass_use_async,
+)
 from .approval_request import CRUDApprovalRequest, crud_approval_request
 from .tool_access_rule import CRUDToolAccessRule
 from .gateway_usage_search_document import CRUDGatewayUsageSearchDocument
@@ -258,6 +264,10 @@ __all__ = [
     "crud_mcp_tool",
     "crud_approval_workflow",
     "crud_approval_request",
+    "CRUDApprovalBypass",
+    "crud_approval_bypass",
+    "get_active_bypass_async",
+    "record_bypass_use_async",
     "crud_tool_access_rule",
     "plan",
     "subscription",

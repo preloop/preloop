@@ -3,6 +3,9 @@ import { Router } from '@vaadin/router';
 import { DEFAULT_SIMILARITY_THRESHOLD } from './config';
 import { PermissionError, permissionErrorFromResponse } from './permissions';
 import type {
+  ApprovalBypass,
+  ApprovalBypassMode,
+  ApprovalBypassStatus,
   FetchIssuesListParams,
   SearchIssuesParams,
   SearchIssuesResponse,
@@ -3867,4 +3870,82 @@ export async function deleteBudgetPolicy(id: string): Promise<void> {
     method: 'DELETE',
   });
   if (!response.ok) throw new Error('Failed to delete budget policy');
+}
+
+// --- Approval bypasses (approval / notification fatigue escape hatch) -------
+
+/**
+ * Fetch the calling user's current bypass state.
+ *
+ * Drives the console warning banner. Deliberately cheap so it can be polled.
+ */
+export async function getApprovalBypassStatus(): Promise<ApprovalBypassStatus> {
+  const response = await fetchWithAuth('/api/v1/approval-bypasses/status');
+  if (!response.ok) {
+    throw new Error('Failed to fetch approval bypass status');
+  }
+  return response.json();
+}
+
+/** List every active bypass in the account (including teammates'). */
+export async function listApprovalBypasses(): Promise<ApprovalBypass[]> {
+  const response = await fetchWithAuth('/api/v1/approval-bypasses');
+  if (!response.ok) {
+    throw new Error('Failed to fetch approval bypasses');
+  }
+  return response.json();
+}
+
+/**
+ * Open a time-boxed bypass for the current user.
+ *
+ * `durationMinutes` is required and server-capped - there is intentionally no
+ * way to express an indefinite bypass.
+ */
+export async function createApprovalBypass(params: {
+  mode: ApprovalBypassMode;
+  durationMinutes: number;
+  managedAgentId?: string | null;
+  reason?: string | null;
+}): Promise<ApprovalBypass> {
+  const response = await fetchWithAuth('/api/v1/approval-bypasses', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      mode: params.mode,
+      duration_minutes: params.durationMinutes,
+      managed_agent_id: params.managedAgentId ?? null,
+      reason: params.reason ?? null,
+      created_via: 'console',
+    }),
+  });
+  if (!response.ok) {
+    throw new Error('Failed to create approval bypass');
+  }
+  return response.json();
+}
+
+/** End a single bypass early. */
+export async function revokeApprovalBypass(
+  bypassId: string
+): Promise<ApprovalBypass> {
+  const response = await fetchWithAuth(
+    `/api/v1/approval-bypasses/${bypassId}`,
+    { method: 'DELETE' }
+  );
+  if (!response.ok) {
+    throw new Error('Failed to revoke approval bypass');
+  }
+  return response.json();
+}
+
+/** Revoke every active bypass in the account - the "panic off" button. */
+export async function revokeAllApprovalBypasses(): Promise<ApprovalBypass[]> {
+  const response = await fetchWithAuth('/api/v1/approval-bypasses/revoke-all', {
+    method: 'POST',
+  });
+  if (!response.ok) {
+    throw new Error('Failed to revoke approval bypasses');
+  }
+  return response.json();
 }

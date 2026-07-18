@@ -20,6 +20,11 @@ from preloop.models.crud.approval_request import (
     get_approval_request_async,
     get_approval_request_for_update_async,
 )
+from preloop.models.crud.approval_bypass import (
+    get_active_bypass_async,
+    record_bypass_use_async,
+)
+from preloop.models.models.approval_bypass import ApprovalBypass, ApprovalBypassMode
 from preloop.sync.services.event_bus import get_task_publisher
 from preloop.services.ai_approval_service import get_ai_approval_service
 
@@ -956,6 +961,150 @@ class ApprovalService:
 
         return (max(total, 1), is_exact)
 
+    async def _resolve_bypass(
+        self,
+        approval_workflow: ApprovalWorkflow,
+        account_id: str,
+        managed_agent_id: Optional[uuid.UUID],
+        required_mode: str,
+    ) -> Optional[ApprovalBypass]:
+        """Return an active bypass covering *every* approver, or None.
+
+        The unanimity rule is deliberate and is the main safety property here.
+        A bypass belongs to one user. If a workflow requires several approvers,
+        one of them muting their phone must not disable the gate for everybody
+        else — that would let a single person silently revoke a control other
+        people are relying on. So the bypass only takes effect when every
+        approver on the workflow has an active bypass of at least the required
+        strength. In the common single-approver case (an individual governing
+        their own agents, which is the case this feature was built for) that
+        reduces to "the one approver muted it".
+
+        When no approvers can be resolved the request is treated as *not*
+        bypassed. Failing closed is the only safe direction here.
+
+        Args:
+            approval_workflow: Workflow whose approvers gate the request.
+            account_id: Owning account.
+            managed_agent_id: Agent raising the request, if known.
+            required_mode: Minimum strength; ``auto_approve`` matches only
+                auto-approve bypasses, ``mute_notifications`` matches either.
+
+        Returns:
+            The bypass to attribute the decision to, or None.
+        """
+        try:
+            approver_user_ids = await self._get_all_approver_user_ids(approval_workflow)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "Could not resolve approvers for bypass check on workflow %s: %s; "
+                "failing closed (no bypass applied)",
+                approval_workflow.id,
+                exc,
+            )
+            return None
+
+        if not approver_user_ids:
+            return None
+
+        try:
+            account_uuid = uuid.UUID(str(account_id))
+        except (ValueError, AttributeError, TypeError):
+            logger.warning(
+                "Invalid account_id %r for bypass check; failing closed", account_id
+            )
+            return None
+
+        winning: Optional[ApprovalBypass] = None
+        for approver_id in approver_user_ids:
+            bypass = await get_active_bypass_async(
+                self.db,
+                account_id=account_uuid,
+                user_id=approver_id,
+                managed_agent_id=managed_agent_id,
+            )
+            if bypass is None:
+                return None
+            if (
+                required_mode == ApprovalBypassMode.AUTO_APPROVE
+                and bypass.mode != ApprovalBypassMode.AUTO_APPROVE
+            ):
+                return None
+            if winning is None:
+                winning = bypass
+
+        return winning
+
+    async def _auto_approve_via_bypass(
+        self,
+        approval_request: ApprovalRequest,
+        bypass: ApprovalBypass,
+    ) -> ApprovalRequest:
+        """Approve a request under a bypass, recording it as unsupervised.
+
+        The request row is kept — deliberately. Suppressing the notification is
+        what relieves the user; suppressing the record would only destroy the
+        evidence of what ran while nobody was watching, which is the opposite
+        of what a governance product should do. The row is marked so no
+        surface can mistake it for a human decision.
+
+        Args:
+            approval_request: The pending request to resolve.
+            bypass: The bypass authorizing the auto-approval.
+
+        Returns:
+            The updated, approved approval request.
+        """
+        scope = "all agents" if bypass.managed_agent_id is None else "this agent"
+        reason = (
+            f"Auto-approved without review: an approval bypass for {scope} is "
+            f"active until {bypass.expires_at.isoformat()}Z"
+        )
+
+        update = ApprovalRequestUpdate(
+            status="approved",
+            approver_comment=reason,
+            resolved_at=datetime.utcnow(),
+            decided_by_ai=False,
+            auto_approved_reason="bypass",
+            auto_approval_bypass_id=bypass.id,
+        )
+        updated_request = await self.update_approval_request(
+            approval_request.id, update
+        )
+        if updated_request is None:  # pragma: no cover - defensive
+            return approval_request
+
+        try:
+            await record_bypass_use_async(self.db, bypass_id=bypass.id)
+        except Exception as exc:  # pragma: no cover - counter is advisory
+            logger.warning(
+                "Failed to increment bypass %s usage counter: %s", bypass.id, exc
+            )
+
+        await self._broadcast_approval_update(updated_request, "approved")
+
+        # Audit with no approver_id: nobody approved this. The [BYPASS] prefix
+        # mirrors the [AI] convention so the audit timeline is scannable.
+        _log_approval_lifecycle_async(
+            account_id=str(updated_request.account_id),
+            approval_id=updated_request.id,
+            event="approved",
+            tool_name=updated_request.tool_name,
+            approver_id=None,
+            reason=f"[BYPASS] {reason}",
+            execution_id=updated_request.execution_id,
+        )
+
+        logger.info(
+            "Approval request %s auto-approved under bypass %s (tool=%s, agent=%s)",
+            updated_request.id,
+            bypass.id,
+            updated_request.tool_name,
+            updated_request.managed_agent_id,
+        )
+        return updated_request
+
     async def _auto_approve_request(
         self,
         request_id: uuid.UUID,
@@ -1301,6 +1450,30 @@ class ApprovalService:
                 exc_info=True,
             )
 
+        # Time-boxed bypass check. Runs BEFORE the AI branch: the operator has
+        # made an explicit, expiring, recorded decision to stop being asked, and
+        # that outranks (and is far cheaper than) an LLM evaluation.
+        try:
+            bypass = await self._resolve_bypass(
+                approval_workflow,
+                account_id,
+                managed_agent_id,
+                required_mode=ApprovalBypassMode.AUTO_APPROVE,
+            )
+        except Exception as bypass_error:  # pragma: no cover - defensive
+            # Fail closed: an error resolving the bypass must never silently
+            # turn into an auto-approval.
+            logger.error(
+                "Bypass resolution failed for %s: %s; enforcing approval",
+                approval_request.id,
+                bypass_error,
+                exc_info=True,
+            )
+            bypass = None
+
+        if bypass is not None:
+            return await self._auto_approve_via_bypass(approval_request, bypass)
+
         # Check if this is an AI-driven approval workflow
         if approval_workflow.approval_mode == "ai_driven":
             # Evaluate using AI
@@ -1475,6 +1648,40 @@ class ApprovalService:
         except (TypeError, AttributeError):
             # In tests, requested_at might be a mock - just continue
             pass
+
+        # Notification mute. Distinct from auto-approval: the request stays
+        # pending and keeps blocking the agent, we simply stop buzzing people.
+        # This is the control for "I am being spammed but I still want the
+        # gate", and it is the safer of the two escape hatches.
+        try:
+            mute = await self._resolve_bypass(
+                approval_workflow,
+                str(approval_request.account_id),
+                approval_request.managed_agent_id,
+                required_mode=ApprovalBypassMode.MUTE_NOTIFICATIONS,
+            )
+        except Exception as mute_error:  # pragma: no cover - defensive
+            logger.warning(
+                "Mute resolution failed for %s: %s; notifying normally",
+                approval_request.id,
+                mute_error,
+            )
+            mute = None
+
+        if mute is not None:
+            logger.info(
+                "Suppressing notifications for approval request %s under bypass "
+                "%s (mode=%s); the request still requires approval",
+                approval_request.id,
+                mute.id,
+                mute.mode,
+            )
+            return {
+                "skipped": True,
+                "reason": "notifications_muted",
+                "bypass_id": str(mute.id),
+                "expires_at": mute.expires_at.isoformat(),
+            }
 
         # Recover correlation_id from the originating MCP context so the audit
         # entries we emit below land in the same timeline group.

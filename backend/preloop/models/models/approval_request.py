@@ -234,6 +234,26 @@ class ApprovalRequest(Base):
         comment="AI's reasoning for the approval/denial decision",
     )
 
+    # Bypass tracking. Set when the request was resolved without a human because
+    # a time-boxed ApprovalBypass was in force. Kept distinct from decided_by_ai:
+    # an AI *judged* the call, a bypass merely *skipped* judging it. Surfaces
+    # must render these differently and must never count them as human
+    # approvals in approval-rate statistics.
+    auto_approved_reason: Mapped[Optional[str]] = mapped_column(
+        String(64),
+        nullable=True,
+        index=True,
+        comment="Why this request was auto-approved without a human (e.g. 'bypass')",
+    )
+
+    auto_approval_bypass_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("approval_bypass.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="The ApprovalBypass that auto-approved this request",
+    )
+
     # Relationships
     account: Mapped["Account"] = relationship(
         "Account", back_populates="approval_requests"
