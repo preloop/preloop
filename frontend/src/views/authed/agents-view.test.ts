@@ -261,4 +261,96 @@ describe('AgentsView', () => {
     const text = el.shadowRoot?.textContent || '';
     expect(text).to.contain('My Claude Desktop');
   });
+
+  it('surfaces the unverified badge on the list when validation was throttled', async () => {
+    agentItems = [
+      {
+        ...makeAgent('agent-1', 'Claude Code Workspace', 'claude_code'),
+        live_validation_passed: null,
+        live_validation_status: 'throttled',
+      },
+    ];
+
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitUntil(() => !el.shadowRoot?.querySelector('sl-spinner'));
+
+    const text = (el.shadowRoot?.textContent || '').replace(/\s+/g, ' ');
+    expect(text).to.contain('Live check throttled — unverified');
+    const badge = el.shadowRoot?.querySelector('sl-badge.validation-badge');
+    expect(badge?.getAttribute('variant')).to.equal('warning');
+  });
+
+  it('surfaces a red badge on the list when validation failed', async () => {
+    agentItems = [
+      {
+        ...makeAgent('agent-1', 'Claude Code Workspace', 'claude_code'),
+        live_validation_passed: false,
+        live_validation_status: 'failed',
+      },
+    ];
+
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitUntil(() => !el.shadowRoot?.querySelector('sl-spinner'));
+
+    const text = (el.shadowRoot?.textContent || '').replace(/\s+/g, ' ');
+    expect(text).to.contain('Live check failed');
+    const badge = el.shadowRoot?.querySelector('sl-badge.validation-badge');
+    expect(badge?.getAttribute('variant')).to.equal('danger');
+  });
+
+  it('suppresses the validation badge when the live check passed', async () => {
+    // Default makeAgent fixture has live_validation_status: 'passed'.
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitUntil(() => !el.shadowRoot?.querySelector('sl-spinner'));
+
+    expect(el.shadowRoot?.querySelector('sl-badge.validation-badge')).to.not
+      .exist;
+    expect(el.shadowRoot?.textContent).to.not.contain('Live validated');
+  });
+
+  it('shows the red model-traffic-failing strip when every request failed', async () => {
+    agentItems = [
+      {
+        ...makeAgent('agent-1', 'Broken Claude', 'claude_code'),
+        total_requests: 21,
+        successful_requests: 0,
+        failed_requests: 21,
+      },
+    ];
+
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitUntil(() => !el.shadowRoot?.querySelector('sl-spinner'));
+
+    const strip = el.shadowRoot?.querySelector('.model-traffic-failing');
+    expect(strip, 'failing strip renders').to.exist;
+    expect(strip?.textContent?.replace(/\s+/g, ' ')).to.contain(
+      'Model traffic failing — see latest session'
+    );
+    const link = strip?.querySelector('a');
+    expect(link?.getAttribute('href')).to.contain(
+      '/console/runtime-sessions?sessionId=runtime-session-agent-1'
+    );
+  });
+
+  it('keeps the strip off below the 5-request threshold and on mixed outcomes', async () => {
+    agentItems = [
+      {
+        ...makeAgent('agent-few', 'New Agent', 'claude_code'),
+        total_requests: 3,
+        successful_requests: 0,
+        failed_requests: 3,
+      },
+      {
+        ...makeAgent('agent-mixed', 'Mixed Agent', 'codex'),
+        total_requests: 10,
+        successful_requests: 4,
+        failed_requests: 6,
+      },
+    ];
+
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitUntil(() => !el.shadowRoot?.querySelector('sl-spinner'));
+
+    expect(el.shadowRoot?.querySelector('.model-traffic-failing')).to.not.exist;
+  });
 });

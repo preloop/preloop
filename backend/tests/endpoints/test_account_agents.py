@@ -251,6 +251,69 @@ def test_account_agents_endpoint_lists_onboarded_agents(client, db_session, test
     assert item["model_gateway_configured"] is False
 
 
+def test_account_agents_list_exposes_success_and_failure_counts(
+    client, db_session, test_user
+):
+    """The list summary carries success/failure splits so the console can
+    surface an all-requests-failing agent (red 'Model traffic failing' strip)."""
+    token_response = client.post(
+        "/api/v1/auth/runtime-sessions/token",
+        json={
+            "session_source_type": "claude_code",
+            "session_source_id": "workspace-fail",
+            "session_reference": "claude-session-fail",
+            "runtime_principal_name": "Failing Claude",
+        },
+    )
+    assert token_response.status_code == 201
+    runtime_session = crud_runtime_session.get_by_source(
+        db_session,
+        account_id=test_user.account_id,
+        session_source_type="claude_code",
+        session_source_id="workspace-fail",
+    )
+    assert runtime_session is not None
+
+    for _ in range(5):
+        crud_api_usage.log_gateway_request(
+            db_session,
+            endpoint="/openai/v1/responses",
+            method="POST",
+            status_code=502,
+            duration=0.1,
+            user_id=str(test_user.id),
+            account_id=str(test_user.account_id),
+            runtime_session_id=str(runtime_session.id),
+            model_alias="openai/gpt-5",
+            provider_name="openai",
+            prompt_tokens=10,
+            completion_tokens=0,
+            total_tokens=10,
+            estimated_cost=0.0,
+            runtime_principal_type="claude_code",
+            runtime_principal_id="workspace-fail",
+            runtime_principal_name="Failing Claude",
+        )
+
+    response = client.get("/api/v1/agents")
+    assert response.status_code == 200
+    body = response.json()
+    item = next(
+        entry
+        for entry in body["items"]
+        if entry["session_source_id"] == "workspace-fail"
+    )
+    assert item["total_requests"] == 5
+    assert item["successful_requests"] == 0
+    assert item["failed_requests"] == 5
+
+    detail = client.get(f"/api/v1/agents/{item['id']}")
+    assert detail.status_code == 200
+    agent = detail.json()["agent"]
+    assert agent["successful_requests"] == 0
+    assert agent["failed_requests"] == 5
+
+
 def test_account_agents_list_batches_usage_and_enrichment_for_multiple_agents(
     client, db_session, test_user
 ):
