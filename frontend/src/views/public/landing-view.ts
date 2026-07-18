@@ -21,6 +21,90 @@ interface FeatureSlide {
   placeholderImg: string;
 }
 
+/** Parsed target of the hero `video_playlist_url` brand knob. */
+export interface HeroVideoTarget {
+  videoId: string | null;
+  listId: string | null;
+}
+
+/**
+ * Parse the `hero.video_playlist_url` brand knob into a video/playlist pair.
+ *
+ * Accepted forms:
+ * - `https://www.youtube.com/watch?v=ID&list=LIST` -> video + list
+ * - `https://www.youtube.com/watch?v=ID` -> video only
+ * - `https://www.youtube.com/playlist?list=LIST` -> list only
+ * - `https://youtu.be/ID?list=LIST` -> video (+ optional list)
+ * - `https://www.youtube.com/embed/ID?list=LIST` (and youtube-nocookie.com)
+ *
+ * Returns `null` for anything unparseable or non-YouTube, in which case the
+ * hero behaves exactly as if the knob were absent.
+ */
+export function parseHeroVideoUrl(url: string): HeroVideoTarget | null {
+  const trimmed = (url || '').trim();
+  if (!trimmed) return null;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return null;
+  }
+
+  const host = parsed.hostname.toLowerCase();
+  let videoId: string | null = null;
+  let listId: string | null = parsed.searchParams.get('list');
+
+  if (host === 'youtu.be' || host.endsWith('.youtu.be')) {
+    videoId = parsed.pathname.split('/').filter(Boolean)[0] || null;
+  } else if (
+    host === 'youtube.com' ||
+    host.endsWith('.youtube.com') ||
+    host === 'youtube-nocookie.com' ||
+    host.endsWith('.youtube-nocookie.com')
+  ) {
+    videoId = parsed.searchParams.get('v');
+    if (!videoId && parsed.pathname.startsWith('/embed/')) {
+      const segment = parsed.pathname.slice('/embed/'.length).split('/')[0];
+      // `/embed/videoseries?list=...` is YouTube's list-only embed form.
+      videoId = segment && segment !== 'videoseries' ? segment : null;
+    }
+  } else {
+    return null;
+  }
+
+  // Defensive: only allow the characters YouTube ids actually use, so the
+  // knob can never smuggle path/query syntax into the iframe URL.
+  const idPattern = /^[A-Za-z0-9_-]+$/;
+  if (videoId && !idPattern.test(videoId)) videoId = null;
+  if (listId && !idPattern.test(listId)) listId = null;
+
+  if (!videoId && !listId) return null;
+  return { videoId, listId };
+}
+
+/**
+ * Build the privacy-enhanced (youtube-nocookie.com) embed URL for a parsed
+ * hero video target. `autoplay=1` is safe here: the iframe is only created
+ * after an explicit user click on the play button.
+ */
+export function buildHeroVideoEmbedUrl(
+  target: HeroVideoTarget | null
+): string | null {
+  if (!target) return null;
+  const { videoId, listId } = target;
+  if (videoId && listId) {
+    return `https://www.youtube-nocookie.com/embed/${videoId}?list=${listId}&autoplay=1`;
+  }
+  if (videoId) {
+    return `https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1`;
+  }
+  if (listId) {
+    return `https://www.youtube-nocookie.com/embed/videoseries?list=${listId}&autoplay=1`;
+  }
+  return null;
+}
+
 @customElement('landing-view')
 export class LandingView extends LitElement {
   @query('.feature-carousel') private _carousel!: SlCarousel;
@@ -51,6 +135,8 @@ export class LandingView extends LitElement {
   @state() private _heroTrustTags: string[] = [];
   @state() private _heroImage = '';
   @state() private _heroImageAlt = '';
+  @state() private _heroVideoUrl = '';
+  @state() private _heroVideoActive = false;
   @state() private _getStartedTitle = '';
   @state() private _getStartedLinkText = '';
   @state() private _getStartedLinkUrl = '';
@@ -208,6 +294,128 @@ export class LandingView extends LitElement {
         border-radius: 12px;
         box-shadow: 0 0 50px rgba(0, 0, 0, 0.8);
       }
+
+      /* Hero video (click-to-load YouTube embed over the product screenshot).
+         The wrapper is a fixed 16:9 box in both states so swapping the
+         screenshot for the iframe never shifts layout — mobile included. */
+      .hero-visual--video {
+        position: relative;
+        aspect-ratio: 16 / 9;
+        overflow: hidden;
+        border-radius: 14px;
+      }
+
+      .hero-visual--video img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        border-radius: 14px;
+      }
+
+      .hero-visual--video.is-playing {
+        cursor: default;
+      }
+
+      .hero-visual--video.is-playing:hover {
+        transform: none;
+      }
+
+      .hero-video-play {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 4.5rem;
+        height: 3.25rem;
+        padding: 0;
+        background: #0284c7;
+        color: #ffffff;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+        transition: background-color 150ms ease-out;
+      }
+
+      .hero-video-play:hover {
+        background: #0273ac;
+      }
+
+      .hero-video-play:focus-visible {
+        outline: 3px solid #30c9e8;
+        outline-offset: 2px;
+      }
+
+      .hero-video-frame {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        border: 0;
+        border-radius: 14px;
+        background: #000;
+        animation: hero-video-fade 200ms ease-out;
+      }
+
+      .hero-video-close {
+        position: absolute;
+        top: 0.5rem;
+        right: 0.5rem;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 2rem;
+        height: 2rem;
+        padding: 0;
+        background: rgba(13, 17, 23, 0.72);
+        color: #e6edf3;
+        border: 1px solid rgba(230, 237, 243, 0.25);
+        border-radius: 4px;
+        font-size: 1.1rem;
+        line-height: 1;
+        cursor: pointer;
+      }
+
+      .hero-video-close:hover {
+        background: rgba(13, 17, 23, 0.9);
+      }
+
+      .hero-video-close:focus-visible {
+        outline: 3px solid #30c9e8;
+        outline-offset: 2px;
+      }
+
+      /* In the stacked (column-flex) hero the base .hero-visual rule's
+         flex-basis of 0 becomes a zero HEIGHT basis, which would collapse
+         the aspect-ratio box. Size the video variant from its width instead
+         so the product poster/video always shows on mobile (D18). */
+      @media (max-width: 1150px) {
+        .hero-visual--video {
+          flex: none;
+          width: 100%;
+        }
+      }
+
+      @keyframes hero-video-fade {
+        from {
+          opacity: 0;
+        }
+        to {
+          opacity: 1;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .hero-video-frame {
+          animation: none;
+        }
+        .hero-video-play {
+          transition: none;
+        }
+      }
     `,
   ];
 
@@ -352,6 +560,13 @@ export class LandingView extends LitElement {
     if (heroImage) {
       this._heroImage = heroImage.getAttribute('data-src') || '';
       this._heroImageAlt = heroImage.getAttribute('data-alt') || '';
+    }
+
+    const heroVideo = children.find(
+      (el) => el.getAttribute('slot') === 'hero-video'
+    ) as HTMLElement | undefined;
+    if (heroVideo) {
+      this._heroVideoUrl = (heroVideo.getAttribute('data-url') || '').trim();
     }
 
     // Read extended description from light DOM slot
@@ -588,6 +803,7 @@ export class LandingView extends LitElement {
       : [];
     this._heroImage = hero.image || '';
     this._heroImageAlt = hero.image_alt || '';
+    this._heroVideoUrl = (hero.video_playlist_url || '').trim();
     this._extendedDescription = content.extended_description || '';
     this._featuresLayout = content.features_layout || 'grid';
 
@@ -686,6 +902,26 @@ export class LandingView extends LitElement {
     }
 
     return url;
+  }
+
+  /**
+   * Embed URL for the hero video knob, or null when the knob is absent or
+   * unparseable (in which case the hero renders exactly as before).
+   */
+  private get _heroVideoEmbedUrl(): string | null {
+    return buildHeroVideoEmbedUrl(parseHeroVideoUrl(this._heroVideoUrl));
+  }
+
+  private _playHeroVideo() {
+    if (this._heroVideoActive || !this._heroVideoEmbedUrl) return;
+    this._heroVideoActive = true;
+    trackGoal('Hero Video Play', { location: 'landing' });
+  }
+
+  private _closeHeroVideo(e: Event) {
+    // The poster container also plays on click; don't immediately reopen.
+    e.stopPropagation();
+    this._heroVideoActive = false;
   }
 
   private _selectHeroInstallTab(index: number) {
@@ -986,15 +1222,65 @@ export class LandingView extends LitElement {
               }
             </div>
             ${
-              this._heroImage
+              this._heroImage && this._heroVideoEmbedUrl
                 ? html`<div
-                    class="hero-visual"
-                    aria-hidden="true"
-                    @click=${() => (this._lightboxImage = this._heroImage)}
+                    class="hero-visual hero-visual--video ${
+                      this._heroVideoActive ? 'is-playing' : ''
+                    }"
+                    @click=${this._playHeroVideo}
                   >
                     <img src=${this._heroImage} alt=${this._heroImageAlt} />
+                    ${
+                      this._heroVideoActive
+                        ? html`
+                            <iframe
+                              class="hero-video-frame"
+                              src=${this._heroVideoEmbedUrl}
+title="${this._brandName || 'Preloop'} product tour video"
+                              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                              referrerpolicy="strict-origin-when-cross-origin"
+                              allowfullscreen
+                            ></iframe>
+                            <button
+                              type="button"
+                              class="hero-video-close"
+                              aria-label="Close the video and show the product screenshot"
+                              @click=${this._closeHeroVideo}
+                            >
+                              &times;
+                            </button>
+                          `
+                        : html`
+                            <button
+                              type="button"
+                              class="hero-video-play"
+                              aria-label="Play the Preloop product tour video"
+                            >
+                              <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                width="22"
+                                height="22"
+                                fill="currentColor"
+                                viewBox="0 0 16 16"
+                                aria-hidden="true"
+                              >
+                                <path
+                                  d="M4.5 2.7a.7.7 0 0 1 1.05-.61l8.1 4.68a.7.7 0 0 1 0 1.21l-8.1 4.68a.7.7 0 0 1-1.05-.6V2.7z"
+                                />
+                              </svg>
+                            </button>
+                          `
+                    }
                   </div>`
-                : ''
+                : this._heroImage
+                  ? html`<div
+                      class="hero-visual"
+                      aria-hidden="true"
+                      @click=${() => (this._lightboxImage = this._heroImage)}
+                    >
+                      <img src=${this._heroImage} alt=${this._heroImageAlt} />
+                    </div>`
+                  : ''
             }
           </div>
         </section>

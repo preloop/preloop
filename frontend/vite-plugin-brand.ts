@@ -704,6 +704,7 @@ async function generateSlottedContentForRoute(
     ${Array.isArray((hero as any).install_tabs) && (hero as any).install_tabs.length ? `<script type="application/json" slot="cta-install-tabs">${JSON.stringify((hero as any).install_tabs).replace(/</g, '\\u003c')}</script>` : ''}
     ${(hero.trust_tags || []).length ? `<span slot="cta-install-tags">${escapeHtml((hero.trust_tags || []).join('|'))}</span>` : ''}
     ${hero.image ? `<div slot="hero-image" data-src="${escapeAttr(hero.image)}" data-alt="${escapeAttr(hero.image_alt || '')}"></div>` : ''}
+    ${hero.image && (hero as any).video_playlist_url ? `<div slot="hero-video" data-url="${escapeAttr((hero as any).video_playlist_url)}"></div>` : ''}
 
     <!-- Extended description slot (only if exists) -->
     ${meta.extended_description ? `<p slot="extended-description">${meta.extended_description}</p>` : ''}
