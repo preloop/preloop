@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import partial
@@ -18,6 +19,12 @@ _fcm_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="fcm_")
 
 # Global FCM service instance
 _fcm_initialized = False
+
+# Guards first-time initialization: concurrent sends from the FCM executor
+# threads could otherwise interleave the global writes below. firebase_admin
+# itself tolerates re-init attempts, so the race was benign, but benign races
+# rot into real ones when someone adds a second global.
+_fcm_init_lock = threading.Lock()
 
 # Firebase project id of the loaded service-account credentials. Logged with
 # every token failure so a "token minted for project A, server holds project B"
@@ -215,6 +222,23 @@ def classify_fcm_error(error: BaseException) -> FcmErrorClassification:
 
 def _initialize_fcm() -> bool:
     """Initialize Firebase Admin SDK if not already done.
+
+    Thread-safe: double-checked around ``_fcm_init_lock`` so concurrent first
+    sends cannot interleave the global writes in the unlocked body.
+
+    Returns:
+        True if initialization succeeded, False otherwise.
+    """
+    if _fcm_initialized:
+        return True
+    with _fcm_init_lock:
+        if _fcm_initialized:
+            return True
+        return _initialize_fcm_unlocked()
+
+
+def _initialize_fcm_unlocked() -> bool:
+    """Perform the actual SDK initialization. Call only under ``_fcm_init_lock``.
 
     Environment variables:
         FCM_CREDENTIALS_JSON: JSON string of Firebase service account credentials (preferred for K8s)

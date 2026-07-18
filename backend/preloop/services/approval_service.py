@@ -210,6 +210,55 @@ def _log_approval_tool_executed_async(
 _sync_db_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 
 
+async def _send_android_push_transport(
+    *,
+    token: str,
+    title: str,
+    body: str,
+    data: Dict[str, Any],
+    priority: str,
+    fcm_available: bool,
+    use_proxy: bool,
+) -> Dict[str, Any]:
+    """Send one Android push via FCM or the push proxy; return the result dict.
+
+    The single place that knows both transports' call signatures. The main and
+    escalation paths previously each spelled these calls out, and the copies
+    drifted: the escalation copy passed ``device_token=`` to
+    ``send_fcm_notification`` (whose parameter is ``token``), so every
+    escalation send raised TypeError. Keeping transport dispatch here makes
+    that class of divergence unrepeatable.
+
+    Callers classify the result themselves — the main path prunes dead tokens,
+    escalation only counts — so policy stays local while transport is shared.
+
+    Returns:
+        The transport's result dict; ``{"success": False, ...}`` when no
+        transport is configured.
+    """
+    from preloop.services.push_notifications import send_fcm_notification
+    from preloop.services.push_proxy import send_push_via_proxy
+
+    if fcm_available:
+        return await send_fcm_notification(
+            token=token,
+            title=title,
+            body=body,
+            data=data,
+            priority=priority,
+        )
+    if use_proxy:
+        return await send_push_via_proxy(
+            platform="android",
+            device_token=token,
+            title=title,
+            body=body,
+            data=data,
+            priority=priority,
+        )
+    return {"success": False, "error": "no_push_transport_configured"}
+
+
 class ApprovalService:
     """Service for handling approval requests."""
 
@@ -1793,7 +1842,6 @@ class ApprovalService:
         from preloop.services.push_notifications import (
             get_apns_service,
             NotificationPayloadBuilder,
-            send_fcm_notification,
             is_fcm_configured,
         )
         from preloop.services.push_proxy import (
@@ -2050,78 +2098,65 @@ class ApprovalService:
                 )
                 continue
             try:
-                if fcm_available:
-                    # Use native FCM (enterprise mode with credentials)
-                    result = await send_fcm_notification(
-                        token=token,
-                        title=notification_title,
-                        body=notification_body,
-                        data=notification_data,
-                        priority=fcm_priority,
-                    )
+                result = await _send_android_push_transport(
+                    token=token,
+                    title=notification_title,
+                    body=notification_body,
+                    data=notification_data,
+                    priority=fcm_priority,
+                    fcm_available=fcm_available,
+                    use_proxy=use_proxy,
+                )
 
-                    if result.get("success"):
-                        sent_count += 1
-                    elif result.get("should_prune", result.get("invalid_token")):
-                        # Token is dead (unregistered, malformed, or minted by
-                        # a different Firebase project). Drop it instead of
-                        # retrying it on every future approval forever.
-                        invalid_tokens.append((user_id, token, "android"))
-                        logger.warning(
-                            "Pruning dead Android push token: reason=%s "
-                            "project_id=%s remediation=%s",
-                            result.get("error_reason"),
-                            result.get("project_id"),
-                            result.get("remediation"),
-                        )
-                        _record_failure(
-                            platform="android",
-                            token=token,
-                            reason=result.get("error_reason")
-                            or result.get("error")
-                            or "invalid_token",
-                            pruned=True,
-                        )
-                    else:
-                        # Server-side or transient fault: keep the token.
-                        logger.warning(
-                            "FCM notification failed (token kept): reason=%s "
-                            "retryable=%s error=%s",
-                            result.get("error_reason"),
-                            result.get("retryable"),
-                            result.get("error"),
-                        )
-                        _record_failure(
-                            platform="android",
-                            token=token,
-                            reason=result.get("error_reason")
-                            or result.get("error")
-                            or "unknown_fcm_error",
-                        )
-                        failed_count += 1
-                else:
-                    # Use push proxy (OSS mode with API key)
-                    result = await send_push_via_proxy(
+                if result.get("success"):
+                    sent_count += 1
+                elif fcm_available and result.get(
+                    "should_prune", result.get("invalid_token")
+                ):
+                    # Token is dead (unregistered, malformed, or minted by
+                    # a different Firebase project). Drop it instead of
+                    # retrying it on every future approval forever.
+                    invalid_tokens.append((user_id, token, "android"))
+                    logger.warning(
+                        "Pruning dead Android push token: reason=%s "
+                        "project_id=%s remediation=%s",
+                        result.get("error_reason"),
+                        result.get("project_id"),
+                        result.get("remediation"),
+                    )
+                    _record_failure(
                         platform="android",
-                        device_token=token,
-                        title=notification_title,
-                        body=notification_body,
-                        data=notification_data,
-                        priority=fcm_priority,
+                        token=token,
+                        reason=result.get("error_reason")
+                        or result.get("error")
+                        or "invalid_token",
+                        pruned=True,
                     )
-
-                    if result.get("success"):
-                        sent_count += 1
-                    else:
-                        logger.warning(
-                            f"Android push proxy failed: {result.get('error')}"
-                        )
-                        _record_failure(
-                            platform="android",
-                            token=token,
-                            reason=result.get("error") or "push_proxy_error",
-                        )
-                        failed_count += 1
+                elif fcm_available:
+                    # Server-side or transient fault: keep the token.
+                    logger.warning(
+                        "FCM notification failed (token kept): reason=%s "
+                        "retryable=%s error=%s",
+                        result.get("error_reason"),
+                        result.get("retryable"),
+                        result.get("error"),
+                    )
+                    _record_failure(
+                        platform="android",
+                        token=token,
+                        reason=result.get("error_reason")
+                        or result.get("error")
+                        or "unknown_fcm_error",
+                    )
+                    failed_count += 1
+                else:
+                    logger.warning(f"Android push proxy failed: {result.get('error')}")
+                    _record_failure(
+                        platform="android",
+                        token=token,
+                        reason=result.get("error") or "push_proxy_error",
+                    )
+                    failed_count += 1
 
             except Exception as e:
                 logger.error(
@@ -2138,21 +2173,59 @@ class ApprovalService:
 
                 # Get a fresh sync database session (not from async session)
                 sync_db = next(get_db_session())
+                removed = 0
+                failed = 0
                 try:
+                    # Commit per token so one bad row cannot roll back the
+                    # whole batch and keep every other dead token alive until
+                    # the next send.
                     for user_id, token, _ in invalid_tokens:
-                        notification_preferences.remove_device_token(
-                            sync_db, user_id, token
-                        )
-                    sync_db.commit()
-                    logger.info(f"Removed {len(invalid_tokens)} invalid device tokens")
-                except Exception as e:
-                    logger.error(f"Failed to remove invalid tokens: {e}")
-                    sync_db.rollback()
+                        try:
+                            notification_preferences.remove_device_token(
+                                sync_db, user_id, token
+                            )
+                            sync_db.commit()
+                            removed += 1
+                        except Exception as e:
+                            sync_db.rollback()
+                            failed += 1
+                            logger.error(
+                                "Failed to remove invalid token %s... (user=%s): %s",
+                                token[:8],
+                                user_id,
+                                e,
+                            )
                 finally:
                     sync_db.close()
+                if failed:
+                    logger.warning(
+                        "Invalid-token pruning: removed=%d failed=%d "
+                        "(failures retry on the next send that hits them)",
+                        removed,
+                        failed,
+                    )
+                else:
+                    logger.info(f"Removed {removed} invalid device tokens")
+
+            def _log_prune_outcome(fut: "concurrent.futures.Future") -> None:
+                # The executor future was previously discarded, so a crash
+                # before the function's own try block (session factory,
+                # executor shutdown) vanished without a log line.
+                if fut.cancelled():
+                    logger.warning("Invalid-token pruning was cancelled")
+                    return
+                exc = fut.exception()
+                if exc is not None:
+                    logger.error(
+                        "Invalid-token pruning crashed before completing: %s",
+                        exc,
+                    )
 
             # Run token cleanup in background
-            loop.run_in_executor(_sync_db_executor, _remove_invalid_tokens)
+            prune_future = loop.run_in_executor(
+                _sync_db_executor, _remove_invalid_tokens
+            )
+            prune_future.add_done_callback(_log_prune_outcome)
 
         # Notify admins if push notifications failed (and we had devices to send to)
         if failed_count > 0 and (ios_tokens or android_tokens):
@@ -2354,7 +2427,6 @@ class ApprovalService:
         from preloop.services.push_notifications import (
             get_apns_service,
             NotificationPayloadBuilder,
-            send_fcm_notification,
             is_fcm_configured,
         )
         from preloop.services.push_proxy import (
@@ -2530,41 +2602,29 @@ class ApprovalService:
                 logger.error(f"Escalation iOS push error: {e}")
                 failed_count += 1
 
-        # Send to Android devices
+        # Send to Android devices. Transport dispatch is shared with the main
+        # push path via _send_android_push_transport — this branch previously
+        # hand-copied the calls and drifted (`device_token=` against a `token`
+        # parameter), which is how escalation pushes came to fail silently.
+        # Dead tokens are not pruned here; the main path prunes them on the
+        # next regular send.
         for _user_id, token in android_tokens:
             try:
-                if fcm_available:
-                    # `token=`, not `device_token=`: send_fcm_notification names
-                    # its first parameter `token`, so the old keyword raised
-                    # TypeError on every escalation send and the except-clause
-                    # below swallowed it. Escalation pushes had been failing
-                    # silently and counting as delivery errors.
-                    result = await send_fcm_notification(
-                        token=token,
-                        title=notification_title,
-                        body=notification_body,
-                        data=notification_data,
-                        priority="high",
-                    )
-                    # The function returns a dict, which is always truthy — even
-                    # for a failed send. Check the flag, as the main push path
-                    # above does.
-                    if result.get("success"):
-                        sent_count += 1
-                    else:
-                        failed_count += 1
-                elif use_proxy:
-                    result = await send_push_via_proxy(
-                        device_token=token,
-                        platform="android",
-                        title=notification_title,
-                        body=notification_body,
-                        data=notification_data,
-                    )
-                    if result.get("success"):
-                        sent_count += 1
-                    else:
-                        failed_count += 1
+                result = await _send_android_push_transport(
+                    token=token,
+                    title=notification_title,
+                    body=notification_body,
+                    data=notification_data,
+                    priority="high",
+                    fcm_available=fcm_available,
+                    use_proxy=use_proxy,
+                )
+                # The transport returns a dict, which is always truthy — even
+                # for a failed send. Check the flag, as the main path does.
+                if result.get("success"):
+                    sent_count += 1
+                else:
+                    failed_count += 1
             except Exception as e:
                 logger.error(f"Escalation Android push error: {e}")
                 failed_count += 1

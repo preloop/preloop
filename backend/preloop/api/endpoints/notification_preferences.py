@@ -46,6 +46,10 @@ _TEST_PUSH_LIMIT_PER_MINUTE = 5
 _TEST_PUSH_WINDOW_SECONDS = 60.0
 _test_push_lock = threading.Lock()
 _test_push_state: dict[str, list[float]] = {}
+# Entries for users who tried once and never again would otherwise live for
+# the life of the process. Swept opportunistically on the next call after a
+# full window has elapsed — no timer thread for what is an admin-only surface.
+_test_push_last_sweep = 0.0
 
 
 def _enforce_test_push_rate_limit(user_id: str) -> None:
@@ -57,9 +61,18 @@ def _enforce_test_push_rate_limit(user_id: str) -> None:
     Raises:
         HTTPException: 429 when the per-minute limit is exceeded.
     """
+    global _test_push_last_sweep
     now = time.monotonic()
     window_start = now - _TEST_PUSH_WINDOW_SECONDS
     with _test_push_lock:
+        if now - _test_push_last_sweep > _TEST_PUSH_WINDOW_SECONDS:
+            _test_push_last_sweep = now
+            for uid in [
+                uid
+                for uid, times in _test_push_state.items()
+                if uid != user_id and all(t < window_start for t in times)
+            ]:
+                del _test_push_state[uid]
         recent = [t for t in _test_push_state.get(user_id, []) if t >= window_start]
         if len(recent) >= _TEST_PUSH_LIMIT_PER_MINUTE:
             _test_push_state[user_id] = recent
@@ -531,7 +544,15 @@ async def register_device_landing_page(
         </html>
         """
 
-    # Valid token - serve the deep link page
+    # Valid token - serve the deep link page.
+    #
+    # The deep link below carries the token in its query string, which can
+    # surface in OS diagnostic logs on some platforms. Accepted deliberately:
+    # the token is single-use (validate_and_consume burns it on the first
+    # registration) and expires after 15 minutes, so a logged copy is dead
+    # the moment pairing completes — and the shipped mobile apps parse
+    # exactly this URL shape, so changing the format breaks pairing for
+    # every installed version.
     return f"""
     <!DOCTYPE html>
     <html lang="en">
