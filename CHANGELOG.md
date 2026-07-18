@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Console nginx no longer 504s long-running API requests: the `/api/` proxy
+  timeouts (console image and helm chart nginx configmap) were raised from 60s
+  to 300s. LLM-powered cost optimization suggestions
+  (`POST /api/v1/billing/cost/runtime-sessions/{id}/optimizations`) and replay
+  verification legitimately take ~90s on slower BYOK models; the browser got a
+  504 while the backend finished and cached the result, so a retry succeeded
+  instantly and the feature read as broken. Static-asset serving is unchanged.
+  The durable fix — running these analyses as async jobs with polling/SSE — is
+  tracked as a follow-up.
+
 ## [0.12.2] - 2026-07-18
 
 ## [0.12.1] - 2026-07-17
