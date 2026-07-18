@@ -27,16 +27,24 @@ import (
 
 // AgentConfig describes a discovered AI agent MCP configuration.
 type AgentConfig struct {
-	Name                 string            `json:"name"`
-	DisplayName          string            `json:"display_name,omitempty"`
-	RuntimePrincipalID   string            `json:"runtime_principal_id,omitempty"`
-	ConfigPath           string            `json:"config_path"`
-	MCPServers           map[string]MCPDef `json:"mcp_servers,omitempty"`
-	IsOnboarded          bool              `json:"is_onboarded,omitempty"`
-	OnboardingState      string            `json:"onboarding_state,omitempty"`
-	ConfigDrift          bool              `json:"config_drift,omitempty"`
-	ReonboardRecommended bool              `json:"reonboard_recommended,omitempty"`
-	DriftReasons         []string          `json:"drift_reasons,omitempty"`
+	Name               string            `json:"name"`
+	DisplayName        string            `json:"display_name,omitempty"`
+	RuntimePrincipalID string            `json:"runtime_principal_id,omitempty"`
+	ConfigPath         string            `json:"config_path"`
+	MCPServers         map[string]MCPDef `json:"mcp_servers,omitempty"`
+	IsOnboarded        bool              `json:"is_onboarded,omitempty"`
+	OnboardingState    string            `json:"onboarding_state,omitempty"`
+	// AuthState is the pre-onboarding readiness probe result
+	// (ready / not_logged_in / unknown) — see detectAgentAuthState.
+	AuthState  string `json:"auth_state,omitempty"`
+	AuthDetail string `json:"auth_detail,omitempty"`
+	// SupportLevel is the per-agent-type capability: "full" (MCP + model
+	// routing) or "mcp-only" (model traffic not routable for this agent
+	// type) — see supportLevelForAgent.
+	SupportLevel         string   `json:"support_level,omitempty"`
+	ConfigDrift          bool     `json:"config_drift,omitempty"`
+	ReonboardRecommended bool     `json:"reonboard_recommended,omitempty"`
+	DriftReasons         []string `json:"drift_reasons,omitempty"`
 }
 
 // MCPDef is a minimal MCP server definition read from an agent config.
@@ -195,21 +203,37 @@ func isDevinAgent(agent AgentConfig) bool {
 // a vendor backend that cannot be redirected (Antigravity, Devin). Returns
 // "" for agents that do support gateway routing.
 func mcpOnlyAgentModelNote(agent AgentConfig) string {
+	// Every mcp-only note leads with the shared support-level phrase so the
+	// onboarding output matches the discovery listing and summary table:
+	// this is a support level of the agent type, not an incomplete
+	// onboarding.
 	switch {
 	case strings.EqualFold(strings.TrimSpace(agent.Name), "cursor"):
-		return "Cursor tool calls are governed through Preloop's MCP firewall. " +
-			"Cursor only accepts a custom model base URL via its in-app Settings → Models " +
-			"(global, chat-only, no config-file hook), so Preloop does not rewrite model " +
-			"traffic automatically. To route model spend through Preloop, set the OpenAI " +
-			"base URL override in Cursor settings to your Preloop gateway URL manually."
+		return mcpOnlySupportLabel + ": Cursor tool calls are governed through " +
+			"Preloop's MCP firewall. Cursor only accepts a custom model base URL via " +
+			"its in-app Settings → Models (global, chat-only, no config-file hook), " +
+			"so Preloop does not rewrite model traffic automatically. To route model " +
+			"spend through Preloop, set the OpenAI base URL override in Cursor " +
+			"settings to your Preloop gateway URL manually."
+	case strings.EqualFold(strings.TrimSpace(agent.Name), "claude desktop"):
+		return mcpOnlySupportLabel + ": Claude Desktop tool calls are governed " +
+			"through Preloop's MCP firewall. Claude Desktop's model traffic is fixed " +
+			"to Anthropic's backend by design and cannot be repointed, so MCP-level " +
+			"governance is the complete onboarding for this agent type."
 	case isAntigravityAgent(agent):
-		return "Antigravity tool calls are governed through Preloop's MCP firewall. " +
-			"Antigravity is locked to Google-hosted models with no BYO key or custom base " +
-			"URL, so model traffic cannot be routed through the Preloop gateway."
+		return mcpOnlySupportLabel + ": Antigravity tool calls are governed through " +
+			"Preloop's MCP firewall. Antigravity is locked to Google-hosted models " +
+			"with no BYO key or custom base URL, so model traffic cannot be routed " +
+			"through the Preloop gateway."
 	case isDevinAgent(agent):
-		return "Devin tool calls are governed through Preloop's MCP firewall. " +
-			"Devin runs all inference in Cognition's cloud and does not support third-party " +
-			"LLM endpoints, so model traffic cannot be routed through the Preloop gateway."
+		return mcpOnlySupportLabel + ": Devin tool calls are governed through " +
+			"Preloop's MCP firewall. Devin runs all inference in Cognition's cloud " +
+			"and does not support third-party LLM endpoints, so model traffic cannot " +
+			"be routed through the Preloop gateway."
+	case supportLevelForAgent(agent) == agentSupportLevelMCPOnly:
+		return mcpOnlySupportLabel + ": tool calls are governed through Preloop's " +
+			"MCP firewall; this agent type exposes no hook for rewriting model " +
+			"traffic."
 	default:
 		return ""
 	}
@@ -232,6 +256,14 @@ MCP server configurations without mutating local files or your Preloop account.
 Supported agents: Claude Code, Cursor, Windsurf, VSCode/Copilot,
                   Gemini CLI, OpenCode, Codex CLI, OpenClaw, Hermes,
                   Antigravity, Devin.
+
+Each listed agent shows a pre-onboarding readiness probe:
+  Auth     Ready / Not logged in / Unknown, detected from the agent's local
+           auth artifacts. A not-logged-in agent can still be onboarded; live
+           validation will fail until the agent logs in.
+  Support  Full (MCP firewall + model routing), or MCP-governed when the
+           agent type offers no way to route model traffic (a support level,
+           not a failure).
 
 When the post-scan onboarding prompts run, an error onboarding one agent does
 not stop the remaining agents; a per-agent summary (onboarded / partial /
@@ -401,6 +433,10 @@ func classifyAgentOnboardingOutcome(agent AgentConfig, err error) agentOnboardin
 		return agentOnboardingOutcome{
 			Agent:  agent,
 			Status: agentOnboardingStatusOnboarded,
+			// Successful onboardings still surface a pending agent-side
+			// login or an mcp-only support level in the Reason column so
+			// the summary is honest about what "onboarded" covers.
+			Reason: successSummaryReason(agent),
 		}
 	}
 	var skipErr *managedLauncherSkippedError
@@ -737,6 +773,8 @@ func runAgentsDiscover(cmd *cobra.Command, args []string) error {
 		fmt.Printf("     Agent Name: %s\n", resolveAgentDisplayName(agent))
 		fmt.Printf("     Runtime principal: %s\n", runtimePrincipalIDForAgent(agent))
 		fmt.Printf("     Config: %s\n", agent.ConfigPath)
+		fmt.Printf("     Auth: %s\n", agentAuthListingLabel(agent))
+		fmt.Printf("     Support: %s\n", agentSupportListingLabel(agent))
 		if agent.IsOnboarded {
 			fmt.Printf(
 				"     Managed: yes (%s)\n",
@@ -808,7 +846,10 @@ func promptToOnboardDiscoveredAgents(
 	deferLiveValidate := !skipLiveValidate
 	outcomes, err := promptToOnboardCandidates(os.Stdin, os.Stdout, candidates, autoApprove, true, func(agent AgentConfig, approvals bool) error {
 		return executeManagedEnrollment(agent, managedEnrollmentOptions{
-			Client:            client,
+			Client: client,
+			// AutoApprove carries the -y flag so per-agent sub-prompts
+			// (e.g. stale OpenClaw plugin cleanup) auto-accept under -y.
+			AutoApprove:       autoApprove,
 			SkipConfirmation:  true,
 			LiveValidate:      true,
 			SkipLiveValidate:  skipLiveValidate,
@@ -2885,7 +2926,9 @@ func discoverAgents(w io.Writer, printWarnings bool) ([]AgentConfig, error) {
 				ConfigPath: fullPath,
 				MCPServers: servers,
 			})
-			discovered[len(discovered)-1] = normalizeDiscoveredAgent(discovered[len(discovered)-1])
+			discovered[len(discovered)-1] = withDetectedAuthState(
+				normalizeDiscoveredAgent(discovered[len(discovered)-1]),
+			)
 			discoveredSpec = true
 			break
 		}
@@ -2893,11 +2936,11 @@ func discoverAgents(w io.Writer, printWarnings bool) ([]AgentConfig, error) {
 			continue
 		}
 		if fallbackPath, ok := detectInstalledAgent(home, spec); ok {
-			discovered = append(discovered, normalizeDiscoveredAgent(AgentConfig{
+			discovered = append(discovered, withDetectedAuthState(normalizeDiscoveredAgent(AgentConfig{
 				Name:       spec.Name,
 				ConfigPath: fallbackPath,
 				MCPServers: map[string]MCPDef{},
-			}))
+			})))
 		}
 	}
 	return discovered, nil
