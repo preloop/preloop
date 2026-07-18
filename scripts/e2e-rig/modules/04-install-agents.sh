@@ -56,5 +56,5 @@ rig_ssh 'for b in claude opencode codex; do
 # Fresh installs above may have created config files (e.g. the codex marker)
 # that the module-02 baseline predates. Refresh the baseline — nothing is
 # onboarded at this point, so it is still the pre-onboarding state that
-# module 12 must restore to.
+# module 14 must restore to.
 rig_snapshot "baseline"

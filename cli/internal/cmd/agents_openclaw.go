@@ -38,6 +38,196 @@ const (
 	openClawPreloopPluginID   = "preloop-plugin"
 )
 
+// canonicalOpenClawPluginPackage is the published npm package for the Preloop
+// OpenClaw runtime plugin. Earlier package names (below) are superseded by it.
+const canonicalOpenClawPluginPackage = "@preloop-ai/openclaw-plugin"
+
+// staleOpenClawPluginNames are earlier Preloop plugin package names that
+// OpenClaw can no longer resolve, superseded by
+// canonicalOpenClawPluginPackage. A plugins entry that tries to LOAD one of
+// these (loader keys like enabled/source/package) makes OpenClaw print a
+// scary "unknown plugin" warning on every startup. Note the distinction from
+// the CLI's own config stash: `plugins.entries.<id> = {"config": {...}}`
+// carries only Preloop control metadata (which the current plugin still reads
+// under legacy ids for backward compatibility) and is never stale.
+var staleOpenClawPluginNames = []string{
+	openClawPreloopPluginID, // "preloop-plugin"
+	"openclaw-plugin",
+	"@preloop/openclaw-plugin",
+}
+
+// detectStaleOpenClawPluginEntries returns the sorted ids of plugins entries
+// in the OpenClaw document that reference a known-stale Preloop plugin name:
+// either an entry under a stale id with loader keys, or an entry whose
+// source/package field points at a stale package.
+func detectStaleOpenClawPluginEntries(agent AgentConfig, doc map[string]interface{}) []string {
+	if !isOpenClawAgent(agent) || doc == nil {
+		return nil
+	}
+	plugins, ok := asObjectMap(doc["plugins"])
+	if !ok {
+		return nil
+	}
+	entries, ok := asObjectMap(plugins["entries"])
+	if !ok {
+		return nil
+	}
+	stale := map[string]bool{}
+	for id, raw := range entries {
+		entry, ok := asObjectMap(raw)
+		if !ok {
+			continue
+		}
+		if !openClawPluginEntryHasLoaderKeys(entry) {
+			// Pure {"config": {...}} stash written by this CLI — not stale.
+			continue
+		}
+		if isStaleOpenClawPluginName(id) {
+			stale[id] = true
+			continue
+		}
+		for _, field := range []string{"source", "package", "path", "url"} {
+			if isStaleOpenClawPluginName(lookupString(entry, field)) {
+				stale[id] = true
+				break
+			}
+		}
+	}
+	ids := make([]string, 0, len(stale))
+	for id := range stale {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// openClawPluginEntryHasLoaderKeys reports whether the entry carries anything
+// beyond the CLI-managed "config" stash (i.e. it asks OpenClaw to load a
+// plugin by this entry's name).
+func openClawPluginEntryHasLoaderKeys(entry map[string]interface{}) bool {
+	for key := range entry {
+		if key != "config" {
+			return true
+		}
+	}
+	return false
+}
+
+// isStaleOpenClawPluginName matches a plugin id or package reference against
+// the known-stale names, tolerating npm:/file: style prefixes.
+func isStaleOpenClawPluginName(name string) bool {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return false
+	}
+	for _, prefix := range []string{"npm:", "pkg:"} {
+		trimmed = strings.TrimPrefix(trimmed, prefix)
+	}
+	for _, staleName := range staleOpenClawPluginNames {
+		if strings.EqualFold(trimmed, staleName) {
+			return true
+		}
+	}
+	return false
+}
+
+// removeStaleOpenClawPluginEntries deletes the given plugin entry ids from
+// the document. Only the in-memory managed document is touched; the on-disk
+// config is preserved by the standard pre-onboarding backup.
+func removeStaleOpenClawPluginEntries(doc map[string]interface{}, ids []string) {
+	plugins, ok := asObjectMap(doc["plugins"])
+	if !ok {
+		return
+	}
+	entries, ok := asObjectMap(plugins["entries"])
+	if !ok {
+		return
+	}
+	for _, id := range ids {
+		delete(entries, id)
+	}
+}
+
+func staleOpenClawPluginEntriesNote(ids []string) string {
+	return fmt.Sprintf(
+		"Stale OpenClaw plugin entr%s detected (%s — superseded by %s); onboarding will offer to remove %s.",
+		pluralEntrySuffix(ids),
+		strings.Join(ids, ", "),
+		canonicalOpenClawPluginPackage,
+		pluralItPronoun(ids),
+	)
+}
+
+func pluralEntrySuffix(ids []string) string {
+	if len(ids) == 1 {
+		return "y"
+	}
+	return "ies"
+}
+
+func pluralItPronoun(ids []string) string {
+	if len(ids) == 1 {
+		return "it"
+	}
+	return "them"
+}
+
+// maybeRemoveStaleOpenClawPluginEntries offers to drop plugins entries that
+// reference superseded Preloop plugin package names before the managed config
+// is written. Auto-accepts under -y / PRELOOP_CONFIRM; preserves the entries
+// when the user declines. The pre-onboarding backup keeps the original config
+// either way.
+func maybeRemoveStaleOpenClawPluginEntries(
+	plan managedMCPEnrollmentPlan,
+	agent AgentConfig,
+	opts managedEnrollmentOptions,
+	input io.Reader,
+	output io.Writer,
+) (managedMCPEnrollmentPlan, error) {
+	staleIDs := detectStaleOpenClawPluginEntries(agent, plan.ManagedDocument)
+	if len(staleIDs) == 0 {
+		return plan, nil
+	}
+	joined := strings.Join(staleIDs, ", ")
+	remove := opts.AutoApprove || nonInteractiveAutoConfirm()
+	if remove {
+		fmt.Fprintf( //nolint:errcheck
+			output,
+			"  Removing stale OpenClaw plugin entr%s %s (superseded by %s); the pre-onboarding backup keeps the original config.\n",
+			pluralEntrySuffix(staleIDs),
+			joined,
+			canonicalOpenClawPluginPackage,
+		)
+	} else {
+		confirmed, err := confirmActionDefaultYes(
+			input,
+			output,
+			fmt.Sprintf(
+				"Remove stale OpenClaw plugin entr%s %s (superseded by %s)? The config backup keeps the original. (Y/n): ",
+				pluralEntrySuffix(staleIDs),
+				joined,
+				canonicalOpenClawPluginPackage,
+			),
+		)
+		if err != nil {
+			return plan, fmt.Errorf("failed to read stale plugin cleanup confirmation: %w", err)
+		}
+		remove = confirmed
+	}
+	if !remove {
+		fmt.Fprintf( //nolint:errcheck
+			output,
+			"  Keeping stale plugin entr%s %s; OpenClaw may warn about %s at startup.\n",
+			pluralEntrySuffix(staleIDs),
+			joined,
+			pluralItPronoun(staleIDs),
+		)
+		return plan, nil
+	}
+	removeStaleOpenClawPluginEntries(plan.ManagedDocument, staleIDs)
+	return refreshManagedPlanSnapshots(plan)
+}
+
 var openClawEnvPattern = regexp.MustCompile(`^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$`)
 var opencodeEnvPattern = regexp.MustCompile(`^\{env:([A-Za-z_][A-Za-z0-9_]*)\}$`)
 var opencodeBearerEnvPattern = regexp.MustCompile(`^[Bb]earer\s+\{env:([A-Za-z_][A-Za-z0-9_]*)\}$`)
@@ -277,6 +467,14 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		}
 	}
 
+	// Pre-onboarding readiness: when the agent itself is not logged in,
+	// onboarding still proceeds (the MCP/model config is written), but say so
+	// once up front so a later live-validation failure reads as "log the
+	// agent in", not as a Preloop bug.
+	if !opts.DryRun {
+		printAgentAuthPreflightNotice(output, agent)
+	}
+
 	syncAgent := prepareAgentForRemoteServerSync(agent, baseURL)
 
 	plan, err := buildManagedMCPEnrollmentPlan(
@@ -286,6 +484,9 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	)
 	if err != nil {
 		return err
+	}
+	if staleEntries := detectStaleOpenClawPluginEntries(agent, plan.ManagedDocument); len(staleEntries) > 0 {
+		plan.Notes = append(plan.Notes, staleOpenClawPluginEntriesNote(staleEntries))
 	}
 	if supportsManagedGateway(agent) {
 		upstream, upstreamErr := resolveManagedGatewayUpstream(agent)
@@ -445,6 +646,10 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		baseURL,
 		credentialResp.Token,
 	)
+	if err != nil {
+		return err
+	}
+	plan, err = maybeRemoveStaleOpenClawPluginEntries(plan, agent, opts, input, output)
 	if err != nil {
 		return err
 	}

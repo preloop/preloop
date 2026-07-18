@@ -40,6 +40,13 @@ brands:
         cta_primary_url: "/login"
         image: "/assets/screenshots/quickstart/dark/agent_bubble.png"
         image_alt: "Preloop agents canvas with an active speech bubble showing runtime activity"
+        # Optional: YouTube video/playlist for a click-to-load hero embed.
+        # When set, the hero screenshot gets a play-button overlay; clicking
+        # swaps it in place for a privacy-enhanced youtube-nocookie.com embed.
+        # No YouTube network activity happens until the visitor clicks.
+        # Unset by default: self-hosted landing pages serve their own users
+        # and should not embed third-party content.
+        # video_playlist_url: "https://www.youtube.com/watch?v=VIDEO_ID&list=PLAYLIST_ID"
         og_image: "/assets/mcp-firewall.svg"
 
       get_started:
