@@ -27,6 +27,8 @@ class FlowExecution(Base):
     start_time = Column(
         DateTime, default=lambda: datetime.now(UTC), nullable=False, index=True
     )
+        DateTime, default=lambda: datetime.now(UTC), nullable=False, index=True
+    )
     end_time = Column(DateTime, nullable=True)
     resolved_input_prompt = Column(Text, nullable=True)
     model_output_summary = Column(Text, nullable=True)
@@ -66,11 +68,11 @@ class FlowExecution(Base):
     orchestrator_claimed_at = Column(DateTime(timezone=True), nullable=True)
     orchestrator_heartbeat_at = Column(
         DateTime(timezone=True), nullable=True, index=True
-    )
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
 
     created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
-    updated_at = Column(
-        DateTime,
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
         default=lambda: datetime.now(UTC),
         onupdate=lambda: datetime.now(UTC),
         nullable=False,
