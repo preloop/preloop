@@ -511,4 +511,47 @@ describe('PreloopSessionObserver', () => {
       );
     expect(failedCall, 'expected a failed_only request call').to.exist;
   });
+
+  it('renders a bounded empty state (no spinner) when there are no sessions', async () => {
+    const el = (await fixture(
+      html`<preloop-session-observer
+        .sessions=${[]}
+      ></preloop-session-observer>`
+    )) as PreloopSessionObserver;
+    await el.updateComplete;
+
+    const panel = el.shadowRoot?.querySelector('session-replay-panel');
+    expect(panel, 'replay panel renders').to.exist;
+    await (panel as any).updateComplete;
+
+    // The replay panel must not spin forever with nothing to load.
+    expect((panel as any).loading, 'panel loading flag').to.equal(false);
+    expect(panel!.shadowRoot?.querySelector('.loading sl-spinner')).to.not
+      .exist;
+    expect(deepText(el.shadowRoot)).to.include(
+      'Select a session to follow it live or replay it.'
+    );
+    expect(deepText(el.shadowRoot)).to.not.include('Loading session replay');
+  });
+
+  it('explains the first gateway call on an agent scope with no sessions', async () => {
+    const el = (await fixture(
+      html`<preloop-session-observer
+        scope="managed_agent"
+        .scopeId=${'agent-1'}
+        .sessions=${[]}
+      ></preloop-session-observer>`
+    )) as PreloopSessionObserver;
+    await el.updateComplete;
+
+    const panel = el.shadowRoot?.querySelector('session-replay-panel');
+    expect(panel).to.exist;
+    await (panel as any).updateComplete;
+
+    expect(deepText(el.shadowRoot)).to.include(
+      'No sessions yet for this agent. Its first gateway call will appear here live.'
+    );
+    expect(panel!.shadowRoot?.querySelector('.loading sl-spinner')).to.not
+      .exist;
+  });
 });
