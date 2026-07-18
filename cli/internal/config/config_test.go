@@ -4,14 +4,14 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/preloop/preloop/cli/internal/testenv"
 )
 
 func TestLoadConfig_NoFile(t *testing.T) {
 	// Use a temp dir so no real config is loaded
 	tmpDir := t.TempDir()
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir) //nolint:errcheck
-	defer os.Setenv("HOME", origHome) //nolint:errcheck
+	testenv.SetHome(t, tmpDir)
 
 	cfg, err := Load()
 	if err != nil {
@@ -27,9 +27,7 @@ func TestLoadConfig_NoFile(t *testing.T) {
 
 func TestSaveAndLoad(t *testing.T) {
 	tmpDir := t.TempDir()
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir) //nolint:errcheck
-	defer os.Setenv("HOME", origHome) //nolint:errcheck
+	testenv.SetHome(t, tmpDir)
 
 	cfg := &Config{
 		AccessToken:  "test-access-token",
@@ -64,9 +62,7 @@ func TestSaveAndLoad(t *testing.T) {
 
 func TestSetTokens(t *testing.T) {
 	tmpDir := t.TempDir()
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir) //nolint:errcheck
-	defer os.Setenv("HOME", origHome) //nolint:errcheck
+	testenv.SetHome(t, tmpDir)
 
 	// First save creates the file
 	if err := Save(&Config{APIURL: DefaultAPIURL}); err != nil {
@@ -91,9 +87,7 @@ func TestSetTokens(t *testing.T) {
 
 func TestClear(t *testing.T) {
 	tmpDir := t.TempDir()
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir) //nolint:errcheck
-	defer os.Setenv("HOME", origHome) //nolint:errcheck
+	testenv.SetHome(t, tmpDir)
 
 	// Save config with tokens
 	if err := Save(&Config{
@@ -122,9 +116,7 @@ func TestClear(t *testing.T) {
 
 func TestIsAuthenticated(t *testing.T) {
 	tmpDir := t.TempDir()
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir) //nolint:errcheck
-	defer os.Setenv("HOME", origHome) //nolint:errcheck
+	testenv.SetHome(t, tmpDir)
 
 	// No config file => not authenticated
 	if IsAuthenticated() {
@@ -140,9 +132,7 @@ func TestIsAuthenticated(t *testing.T) {
 
 func TestSetAPIURL(t *testing.T) {
 	tmpDir := t.TempDir()
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir) //nolint:errcheck
-	defer os.Setenv("HOME", origHome) //nolint:errcheck
+	testenv.SetHome(t, tmpDir)
 
 	Save(&Config{APIURL: DefaultAPIURL}) //nolint:errcheck
 
@@ -161,9 +151,7 @@ func TestSetAPIURL(t *testing.T) {
 
 func TestResolveTrimsTrailingSlash(t *testing.T) {
 	tmpDir := t.TempDir()
-	origHome := os.Getenv("HOME")
-	_ = os.Setenv("HOME", tmpDir)
-	defer func() { _ = os.Setenv("HOME", origHome) }()
+	testenv.SetHome(t, tmpDir)
 
 	t.Setenv(EnvURL, "https://review.preloop.ai/")
 
@@ -179,9 +167,7 @@ func TestResolveTrimsTrailingSlash(t *testing.T) {
 
 func TestGetConfigDir(t *testing.T) {
 	tmpDir := t.TempDir()
-	origHome := os.Getenv("HOME")
-	_ = os.Setenv("HOME", tmpDir)
-	defer func() { _ = os.Setenv("HOME", origHome) }()
+	testenv.SetHome(t, tmpDir)
 
 	dir, err := GetConfigDir()
 	if err != nil {

@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/preloop/preloop/cli/internal/testenv"
 )
 
 // useTempConfigDir points the CLI config dir at a temp dir for the test.
@@ -12,7 +14,7 @@ func useTempConfigDir(t *testing.T) string {
 	dir := t.TempDir()
 	t.Setenv("PRELOOP_CONFIG_DIR", dir)
 	// Fallback for config implementations keyed off HOME.
-	t.Setenv("HOME", dir)
+	testenv.SetHome(t, dir)
 	// Hermetic: a developer's telemetry opt-out must not skip Increment here.
 	clearOptOutEnv(t)
 	return dir

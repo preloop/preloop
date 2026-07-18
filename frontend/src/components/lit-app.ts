@@ -3,6 +3,7 @@ import { customElement, state } from 'lit/decorators.js';
 import { router } from '../router';
 import { Router } from '@vaadin/router';
 import { activityTracker } from '../services/activity-tracker';
+import { isSaaS } from '../brand-config';
 import { getFeatures } from '../api';
 import '../views/public/landing-view';
 import './static-view-wrapper';
@@ -321,6 +322,65 @@ export class LitApp extends LitElement {
 
           const view = commands.component('static-view') as any;
           view.src = `/content/vs/${slug}.md`;
+          return view;
+        },
+      },
+      {
+        // Blog index. Like /vs/<slug>, the page is prerendered at build time
+        // (dist/blog/index.html); this action reuses the SSR'd markup on first
+        // load and otherwise fetches the rendered fragment. <static-view>
+        // serves .html fragments verbatim, so no blog-specific component is
+        // needed and no landing content ends up trapped in a shadow root.
+        path: '/blog',
+        action: (context, commands) => {
+          // The blog is Preloop Cloud only. A self-hosted install serves its
+          // own landing page from this same bundle and must not surface
+          // preloop.ai's marketing blog.
+          if (!isSaaS()) {
+            return commands.redirect('/');
+          }
+          const outlet = this.renderRoot.querySelector('main');
+          const existingWrapper = outlet?.querySelector('static-view-wrapper');
+          const ssrRoute = this.getAttribute('data-ssr-route');
+
+          if (existingWrapper && ssrRoute === '/blog' && !this.hasNavigated) {
+            this.hasNavigated = true;
+            return existingWrapper;
+          }
+
+          const view = commands.component('static-view') as any;
+          view.src = '/content/blog/index.html';
+          return view;
+        },
+      },
+      {
+        path: '/blog/:slug',
+        action: (context, commands) => {
+          if (!isSaaS()) {
+            return commands.redirect('/');
+          }
+          const outlet = this.renderRoot.querySelector('main');
+          const existingWrapper = outlet?.querySelector('static-view-wrapper');
+          const ssrRoute = this.getAttribute('data-ssr-route');
+          const slug = (context.params?.slug as string) || '';
+
+          // Route params are unconstrained strings; accept slug characters
+          // only, matching the filenames the build is willing to emit.
+          if (!/^[a-z0-9][a-z0-9-]*$/.test(slug)) {
+            return commands.redirect('/blog');
+          }
+
+          if (
+            existingWrapper &&
+            ssrRoute === `/blog/${slug}` &&
+            !this.hasNavigated
+          ) {
+            this.hasNavigated = true;
+            return existingWrapper;
+          }
+
+          const view = commands.component('static-view') as any;
+          view.src = `/content/blog/${slug}.html`;
           return view;
         },
       },

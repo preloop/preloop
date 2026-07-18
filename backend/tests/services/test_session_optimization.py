@@ -1,6 +1,7 @@
 """Tests for runtime-session optimization (moved from the billing plugin)."""
 
 import json
+import logging
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
@@ -10,7 +11,18 @@ import pytest
 from preloop.services.session_optimization import SessionOptimizationService
 from preloop.models.crud import crud_account, crud_api_usage, crud_runtime_session
 from preloop.models.models.ai_model import AIModel
-from preloop.schemas.gateway_usage import RuntimeSessionOptimizationRequest
+from preloop.schemas.gateway_usage import (
+    RuntimeSessionOptimizationRequest,
+    RuntimeSessionOptimizationResponse,
+    RuntimeSessionOptimizationSuggestion,
+)
+from preloop.services.context_analysis import (
+    OversizedOutputField,
+    RetryProfile,
+    SessionContextProfile,
+    ToolBloatProfile,
+    ToolSchemaOverheadProfile,
+)
 
 
 def _create_runtime_session(db_session, test_user, *, source_id: str) -> object:
@@ -1855,3 +1867,176 @@ def test_launch_metrics_are_derivable_from_audit_events(db_session, test_user) -
     assert apply_click_rate == 1.0
     assert reached_number_rate == 1.0
     assert returned_within_7d is True
+
+
+class TestSavingsRollupInvariant:
+    """Headline savings must be deduped and bounded by the analyzed scope."""
+
+    @staticmethod
+    def _response(
+        suggestions: list[RuntimeSessionOptimizationSuggestion],
+    ) -> RuntimeSessionOptimizationResponse:
+        return RuntimeSessionOptimizationResponse(
+            generated_by="local",
+            generated_at=datetime.now(UTC),
+            suggestions=suggestions,
+        )
+
+    @staticmethod
+    def _summary(*, total_tokens: int, cost: float) -> MagicMock:
+        summary = MagicMock()
+        summary.token_usage.total_tokens = total_tokens
+        summary.token_usage.prompt_tokens = total_tokens
+        summary.estimated_cost = cost
+        return summary
+
+    def test_scope_tools_suggestion_is_not_resend_multiplied(self) -> None:
+        """The schema estimate is already resend-inclusive."""
+        summary = self._summary(total_tokens=61_625, cost=1.0)
+        summary.failed_requests = 0
+        profile = SessionContextProfile(
+            session_id="s1",
+            analyzed_event_count=3,
+            total_prompt_tokens=58_000,
+            total_completion_tokens=3_625,
+            tool_schema_overhead=ToolSchemaOverheadProfile(
+                advertised_tools=18,
+                invoked_tools=4,
+                unused_tool_names=["a", "b", "c"],
+                schema_tokens_estimate=31_000,
+                unused_schema_tokens_estimate=24_000,
+                resend_count=3,
+            ),
+        )
+        service = SessionOptimizationService(MagicMock())
+        suggestions = service._local_optimization_suggestions(summary, profile)
+        scope_tools = next(s for s in suggestions if s.id == "scope-tools")
+        assert scope_tools.expected_savings_tokens == 24_000
+
+    def test_rollup_dedupes_overlapping_suggestions(self) -> None:
+        """Profile-level total is not the sum of overlapping suggestions."""
+        profile = SessionContextProfile(
+            session_id="s1",
+            analyzed_event_count=3,
+            total_prompt_tokens=58_000,
+            total_completion_tokens=3_625,
+            tool_schema_overhead=ToolSchemaOverheadProfile(
+                unused_schema_tokens_estimate=24_000, resend_count=3
+            ),
+            tool_bloat=ToolBloatProfile(
+                compressible_tokens_estimate=4_000,
+                oversized_output_fields=[
+                    OversizedOutputField(
+                        tool_name="search", field_names=["raw"], estimated_tokens=3_500
+                    )
+                ],
+            ),
+            retry_profile=RetryProfile(failed_requests=2, wasted_tokens=4_921),
+        )
+        response = self._response(
+            [
+                RuntimeSessionOptimizationSuggestion(
+                    id="scope-tools",
+                    title="t",
+                    description="d",
+                    expected_savings_tokens=24_000,
+                    expected_savings_usd=0.0,
+                    confidence="high",
+                    action_label="a",
+                ),
+                RuntimeSessionOptimizationSuggestion(
+                    id="filter-tool-output",
+                    title="t",
+                    description="d",
+                    expected_savings_tokens=3_500,
+                    expected_savings_usd=0.0,
+                    confidence="medium",
+                    action_label="a",
+                ),
+                RuntimeSessionOptimizationSuggestion(
+                    id="trim-context",
+                    title="t",
+                    description="d",
+                    expected_savings_tokens=4_000,
+                    expected_savings_usd=0.0,
+                    confidence="high",
+                    action_label="a",
+                ),
+                RuntimeSessionOptimizationSuggestion(
+                    id="fix-failures",
+                    title="t",
+                    description="d",
+                    expected_savings_tokens=4_921,
+                    expected_savings_usd=0.0,
+                    confidence="high",
+                    action_label="a",
+                ),
+            ]
+        )
+        SessionOptimizationService._apply_savings_rollup(
+            response,
+            summary=self._summary(total_tokens=61_625, cost=1.0),
+            profile=profile,
+            scope_tokens=61_625,
+        )
+        # Suggestion sum would be 36,421; the oversized field is already inside
+        # the compressible tool-output measurement.
+        assert response.potential_savings_tokens == 32_921
+
+    def test_savings_never_exceed_analyzed_scope(self, caplog) -> None:
+        """The invariant is enforced in code, with a logged warning."""
+        profile = SessionContextProfile(
+            session_id="s1",
+            analyzed_event_count=3,
+            total_prompt_tokens=1_000,
+            total_completion_tokens=0,
+            tool_schema_overhead=ToolSchemaOverheadProfile(
+                unused_schema_tokens_estimate=50_000, resend_count=4
+            ),
+        )
+        response = self._response(
+            [
+                RuntimeSessionOptimizationSuggestion(
+                    id="scope-tools",
+                    title="t",
+                    description="d",
+                    expected_savings_tokens=50_000,
+                    expected_savings_usd=0.0,
+                    confidence="high",
+                    action_label="a",
+                )
+            ]
+        )
+        with caplog.at_level(logging.WARNING):
+            SessionOptimizationService._apply_savings_rollup(
+                response,
+                summary=self._summary(total_tokens=1_000, cost=0.05),
+                profile=profile,
+                scope_tokens=1_000,
+            )
+        assert response.potential_savings_tokens == 1_000
+        assert response.potential_savings_tokens <= 1_000
+        assert "Clamped runtime-session savings estimate" in caplog.text
+
+    def test_fallback_without_profile_is_still_bounded(self) -> None:
+        """No profile: suggestion sum is used but still capped to session."""
+        response = self._response(
+            [
+                RuntimeSessionOptimizationSuggestion(
+                    id="scope-tools",
+                    title="t",
+                    description="d",
+                    expected_savings_tokens=999_999,
+                    expected_savings_usd=0.0,
+                    confidence="high",
+                    action_label="a",
+                )
+            ]
+        )
+        SessionOptimizationService._apply_savings_rollup(
+            response,
+            summary=self._summary(total_tokens=5_000, cost=0.1),
+            profile=None,
+            scope_tokens=0,
+        )
+        assert response.potential_savings_tokens == 5_000

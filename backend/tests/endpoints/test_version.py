@@ -260,6 +260,11 @@ class TestVersionStatusEndpoint:
         from preloop.api.endpoints import version as version_module
         from preloop.models.crud import crud_account, crud_user
 
+        # Assert the telemetry-enabled branch explicitly rather than inheriting
+        # ambient state: CLAUDE.md mandates PRELOOP_DISABLE_TELEMETRY=true for
+        # all test runs, under which this test's precondition never holds.
+        # The disabled branch is covered by test_telemetry_disabled_reports_no_update.
+        monkeypatch.delenv("PRELOOP_DISABLE_TELEMETRY", raising=False)
         monkeypatch.setattr(
             version_module, "get_local_update_status", self._status_result
         )

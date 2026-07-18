@@ -3,7 +3,14 @@
 import json
 
 from preloop.services.context_analysis import (
+    CacheBreakingEvent,
+    CacheProfile,
     GatewayCallEvent,
+    OversizedOutputField,
+    RetryProfile,
+    SessionContextProfile,
+    ToolBloatProfile,
+    ToolSchemaOverheadProfile,
     _content_kind,
     _duplicate_log_tokens,
     _extract_messages,
@@ -13,6 +20,7 @@ from preloop.services.context_analysis import (
     analyze_tool_bloat,
     analyze_tool_schema_overhead,
     build_profile_from_events,
+    compute_profile_savings,
     estimate_tokens,
 )
 
@@ -461,3 +469,151 @@ class TestBuildFromDatabase:
         assert profile.retry_profile.failed_requests == 1
         system = next(s for s in profile.segments if s.kind == "system_prompt")
         assert len(system.event_ids) == 2
+
+
+class TestProfileSavingsDedupe:
+    """Profile-level savings roll-up must not double-count overlapping waste."""
+
+    @staticmethod
+    def _profile(
+        *,
+        prompt_tokens: int = 100_000,
+        completion_tokens: int = 0,
+        schema: object = None,
+        bloat: object = None,
+        retry: object = None,
+        cache: object = None,
+    ) -> SessionContextProfile:
+        return SessionContextProfile(
+            session_id="s1",
+            analyzed_event_count=3,
+            total_prompt_tokens=prompt_tokens,
+            total_completion_tokens=completion_tokens,
+            tool_schema_overhead=schema,
+            tool_bloat=bloat,
+            retry_profile=retry,
+            cache_profile=cache,
+        )
+
+    def test_schema_overhead_is_not_resend_multiplied_again(self) -> None:
+        """``unused_schema_tokens_estimate`` already sums every resend."""
+        profile = self._profile(
+            schema=ToolSchemaOverheadProfile(
+                advertised_tools=10,
+                invoked_tools=2,
+                unused_tool_names=["a", "b"],
+                schema_tokens_estimate=30_000,
+                unused_schema_tokens_estimate=24_000,
+                resend_count=3,
+            )
+        )
+        breakdown = compute_profile_savings(profile)
+        assert breakdown.schema_overhead_tokens == 24_000
+        assert breakdown.total_tokens == 24_000
+
+    def test_oversized_fields_and_compressible_counted_once(self) -> None:
+        """Both measure the same tool-output bytes, so take the larger."""
+        profile = self._profile(
+            bloat=ToolBloatProfile(
+                duplicate_output_tokens=2_000,
+                compressible_tokens_estimate=5_000,
+                oversized_output_fields=[
+                    OversizedOutputField(
+                        tool_name="search", field_names=["raw"], estimated_tokens=4_000
+                    )
+                ],
+            )
+        )
+        breakdown = compute_profile_savings(profile)
+        assert breakdown.tool_output_tokens == 5_000
+        assert breakdown.total_tokens == 5_000
+
+    def test_cache_prefix_overlap_does_not_stack(self) -> None:
+        """Repeated prefix re-measures schema + tool-output bytes."""
+        profile = self._profile(
+            schema=ToolSchemaOverheadProfile(
+                unused_schema_tokens_estimate=10_000, resend_count=4
+            ),
+            bloat=ToolBloatProfile(compressible_tokens_estimate=5_000),
+            cache=CacheProfile(
+                avg_repeated_prefix_tokens=4_000,
+                cache_breaking_events=[
+                    CacheBreakingEvent(
+                        event_id="e1",
+                        diverged_at_message_index=1,
+                        reason_hint="system drift",
+                    ),
+                    CacheBreakingEvent(
+                        event_id="e2",
+                        diverged_at_message_index=2,
+                        reason_hint="system drift",
+                    ),
+                ],
+            ),
+        )
+        breakdown = compute_profile_savings(profile)
+        # max(10_000 + 5_000, 8_000) rather than 23_000.
+        assert breakdown.total_tokens == 15_000
+
+    def test_retry_waste_is_additive(self) -> None:
+        """Retry spend is separate from the surviving prompt context."""
+        profile = self._profile(
+            schema=ToolSchemaOverheadProfile(
+                unused_schema_tokens_estimate=1_000, resend_count=2
+            ),
+            retry=RetryProfile(failed_requests=1, wasted_tokens=500),
+        )
+        breakdown = compute_profile_savings(profile)
+        assert breakdown.retry_waste_tokens == 500
+        assert breakdown.total_tokens == 1_500
+
+    def test_total_never_exceeds_analyzed_scope(self) -> None:
+        """The invariant: savings <= the scope they were measured against."""
+        profile = self._profile(
+            prompt_tokens=1_000,
+            completion_tokens=0,
+            schema=ToolSchemaOverheadProfile(
+                unused_schema_tokens_estimate=9_000, resend_count=3
+            ),
+        )
+        breakdown = compute_profile_savings(profile)
+        assert breakdown.total_tokens == 1_000
+        assert breakdown.clamped is True
+        assert breakdown.scope_tokens == 1_000
+
+    def test_observed_131_percent_regression(self) -> None:
+        """Regression for the observed 80,921 saved / 61,625 analyzed (131%).
+
+        The reported figure was ``unused_schema_tokens_estimate`` (already the
+        sum across 3 resends) multiplied by ``resend_count`` a second time:
+        24,000 * 3 = 72,000, plus 4,921 retry waste and 4,000 compressible
+        tool-output tokens => 80,921 against a 61,625-token scope.
+        """
+        profile = self._profile(
+            prompt_tokens=58_000,
+            completion_tokens=3_625,
+            schema=ToolSchemaOverheadProfile(
+                advertised_tools=18,
+                invoked_tools=4,
+                unused_tool_names=["a", "b", "c"],
+                schema_tokens_estimate=31_000,
+                unused_schema_tokens_estimate=24_000,
+                resend_count=3,
+            ),
+            bloat=ToolBloatProfile(compressible_tokens_estimate=4_000),
+            retry=RetryProfile(failed_requests=2, wasted_tokens=4_921),
+        )
+        buggy_total = (
+            profile.tool_schema_overhead.unused_schema_tokens_estimate
+            * profile.tool_schema_overhead.resend_count
+            + profile.tool_bloat.compressible_tokens_estimate
+            + profile.retry_profile.wasted_tokens
+        )
+        assert buggy_total == 80_921
+        assert profile.total_prompt_tokens + profile.total_completion_tokens == 61_625
+
+        breakdown = compute_profile_savings(profile)
+        assert breakdown.total_tokens == 32_921
+        assert breakdown.scope_tokens == 61_625
+        assert breakdown.clamped is False
+        assert breakdown.total_tokens < breakdown.scope_tokens

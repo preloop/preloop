@@ -1,14 +1,46 @@
 [build-system]
-requires = ["setuptools>=42", "wheel"]
+# setuptools>=77 is required for the PEP 639 SPDX `license = "Apache-2.0"`
+# string form below; older versions fail to parse it.
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "preloop"
-version = "0.12.3"
+version = "0.12.4"
 description = "Preloop - Control plane & safety layer for your agentic AI workforce"
 readme = "README.md"
 authors = [{name = "Dimitris Moraitis", email = "dimitris@preloop.ai"}, {name = "Yannis Chatzikonstantinou", email = "yannis@preloop.ai"}]
 requires-python = ">=3.11"
+license = "Apache-2.0"
+keywords = [
+    "ai-agent-control-plane",
+    "mcp",
+    "mcp-firewall",
+    "mcp-gateway",
+    "ai-gateway",
+    "llm-gateway",
+    "ai-agent-governance",
+    "human-in-the-loop",
+    "guardrails",
+    "policy-as-code",
+    "observability",
+    "audit-trail",
+    "self-hosted",
+    "agentops",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: System :: Monitoring",
+    "Topic :: Security",
+    "Framework :: FastAPI",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
 dependencies = [
     "anthropic>=0.72.0",
     "uvicorn[standard]>=0.36.0",
@@ -63,6 +95,13 @@ dependencies = [
     "litellm>=1.81.13,<1.90",
     "boto3>=1.34.0",  # For AWS Bedrock support through litellm
 ]
+
+[project.urls]
+Homepage = "https://preloop.ai"
+Documentation = "https://docs.preloop.ai"
+Repository = "https://github.com/preloop/preloop"
+Changelog = "https://github.com/preloop/preloop/blob/main/CHANGELOG.md"
+Issues = "https://github.com/preloop/preloop/issues"
 
 [tool.setuptools.packages.find]
 where = ["backend"]

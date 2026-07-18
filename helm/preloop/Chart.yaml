@@ -1,28 +1,39 @@
 apiVersion: v2
 name: preloop
-description: A Helm chart for Preloop - The policy engine for AI agents with approval workflows and audit trails
+description: The open-source AI agent control plane - MCP firewall, model gateway with budgets, human approvals, runtime observability, and audit trails
 
 # A chart can be either an 'application' or a 'library' chart.
 type: application
 
 # Chart version
-version: 0.12.3
+version: 0.12.4
 
 # Application version
-appVersion: "0.12.3"
+appVersion: "0.12.4"
 
 # Keywords for the chart
 keywords:
   - preloop
-  - automation
-  - human-in-the-loop
+  - ai-agent-control-plane
   - mcp
-  - jira
-  - github
-  - gitlab
+  - mcp-firewall
+  - mcp-gateway
+  - ai-gateway
+  - llm-gateway
+  - ai-agent-governance
+  - human-in-the-loop
+  - guardrails
+  - policy-as-code
+  - observability
+  - audit-trail
+  - self-hosted
 
 # Home URL for the project
 home: https://preloop.ai
+
+# Source repositories (surfaced by Artifact Hub and `helm show chart`)
+sources:
+  - https://github.com/preloop/preloop
 
 # Chart maintainers
 maintainers:

@@ -54,6 +54,7 @@ from preloop.services.context_analysis import (
     GatewayCallEvent,
     SessionContextProfile,
     build_profile_from_events,
+    compute_profile_savings,
     load_session_gateway_events,
 )
 from preloop.services.context_optimization import (
@@ -299,13 +300,6 @@ class SessionOptimizationService:
             profile.model_dump(exclude_none=True) if profile else None
         )
         response.waste_score = self._compute_waste_score(summary, profile)
-        response.potential_savings_tokens = sum(
-            suggestion.expected_savings_tokens for suggestion in response.suggestions
-        )
-        response.potential_savings_usd = round(
-            sum(suggestion.expected_savings_usd for suggestion in response.suggestions),
-            6,
-        )
         # Baseline totals for the analyzed scope so the UI can show savings as a
         # share of a coherent "before". The scope may be a subset of the whole
         # session, so apportion the session cost by token share rather than
@@ -316,6 +310,9 @@ class SessionOptimizationService:
                 profile.total_completion_tokens
             )
         response.analyzed_scope_total_tokens = scope_tokens
+        self._apply_savings_rollup(
+            response, summary=summary, profile=profile, scope_tokens=scope_tokens
+        )
         session_tokens = (
             int(summary.token_usage.total_tokens or 0) if summary.token_usage else 0
         )
@@ -327,6 +324,69 @@ class SessionOptimizationService:
             response.analyzed_scope_estimated_cost = round(session_cost, 6)
         self._attach_suggestion_actions(
             response.suggestions, account=account, summary=summary, profile=profile
+        )
+
+    @staticmethod
+    def _apply_savings_rollup(
+        response: RuntimeSessionOptimizationResponse,
+        *,
+        summary: RuntimeSessionSummary,
+        profile: Optional[SessionContextProfile],
+        scope_tokens: int,
+    ) -> None:
+        """Set the headline savings totals from a deduped, bounded roll-up.
+
+        Suggestions are overlapping lenses on the same measured tokens, so
+        summing them double-counts. When a profile is available the total comes
+        from :func:`compute_profile_savings`; otherwise the suggestion sum is
+        used as a fallback. Either way the result is clamped to the analyzed
+        scope, because no optimization can recover more tokens than were
+        analyzed. A clamp is logged rather than applied silently.
+
+        Args:
+            response: Response to populate in place.
+            summary: Stored usage totals, used for the fallback bound and cost.
+            profile: Measured context profile, if available.
+            scope_tokens: Total tokens in the analyzed scope.
+        """
+        suggestion_sum = sum(
+            suggestion.expected_savings_tokens for suggestion in response.suggestions
+        )
+        if profile is not None:
+            breakdown = compute_profile_savings(profile)
+            total_tokens = breakdown.total_tokens
+            if breakdown.clamped:
+                logger.warning(
+                    "Clamped runtime-session savings estimate to analyzed scope: "
+                    "raw components exceeded scope (scope=%s tokens, "
+                    "suggestion_sum=%s tokens, session=%s)",
+                    breakdown.scope_tokens,
+                    suggestion_sum,
+                    getattr(profile, "session_id", "unknown"),
+                )
+        else:
+            total_tokens = suggestion_sum
+
+        session_tokens = (
+            int(summary.token_usage.total_tokens or 0) if summary.token_usage else 0
+        )
+        # Invariant: estimated savings can never exceed the tokens they were
+        # measured against. Fall back to session totals when no scope is known.
+        bound = scope_tokens or session_tokens
+        if bound and total_tokens > bound:
+            logger.warning(
+                "Runtime-session savings estimate %s exceeded analyzed scope %s; "
+                "clamping to scope",
+                total_tokens,
+                bound,
+            )
+            total_tokens = bound
+
+        response.potential_savings_tokens = max(total_tokens, 0)
+        session_cost = float(summary.estimated_cost or 0.0)
+        cost_per_token = session_cost / session_tokens if session_tokens else 0.0
+        response.potential_savings_usd = round(
+            response.potential_savings_tokens * cost_per_token, 6
         )
 
     @staticmethod
@@ -345,15 +405,9 @@ class SessionOptimizationService:
         """
         if profile is None or profile.analyzed_event_count == 0:
             return None
-        wasted = 0
-        if profile.retry_profile:
-            wasted += profile.retry_profile.wasted_tokens
-        if profile.tool_bloat:
-            wasted += profile.tool_bloat.compressible_tokens_estimate
-        if profile.tool_schema_overhead:
-            wasted += profile.tool_schema_overhead.unused_schema_tokens_estimate * max(
-                profile.tool_schema_overhead.resend_count, 1
-            )
+        # Use the same deduped roll-up as the headline savings figure so the
+        # waste score and the token total can never disagree.
+        wasted = compute_profile_savings(profile).total_tokens
         denominator = max(
             profile.total_prompt_tokens,
             (summary.token_usage.prompt_tokens if summary.token_usage else 0) or 0,
@@ -876,7 +930,7 @@ class SessionOptimizationService:
                         "were never called this session yet their schemas are "
                         "re-sent on every request, costing ~"
                         f"{schema_overhead.unused_schema_tokens_estimate:,} tokens "
-                        "each time"
+                        f"across {max(schema_overhead.resend_count, 1)} request(s)"
                         + (
                             " ("
                             + ", ".join(schema_overhead.unused_tool_names[:4])
@@ -886,14 +940,16 @@ class SessionOptimizationService:
                         )
                         + ". Restrict tool visibility for this agent."
                     ),
+                    # NOT multiplied by resend_count: analyze_tool_schema_overhead
+                    # already accumulates each advertised schema once per request
+                    # that carried it, so this estimate is resend-inclusive.
+                    # Multiplying again made the figure quadratic in request count
+                    # and pushed reported savings above 100% of analyzed tokens.
                     expected_savings_tokens=(
                         schema_overhead.unused_schema_tokens_estimate
-                        * max(schema_overhead.resend_count, 1)
                     ),
                     expected_savings_usd=round(
-                        schema_overhead.unused_schema_tokens_estimate
-                        * max(schema_overhead.resend_count, 1)
-                        * cost_per_token,
+                        schema_overhead.unused_schema_tokens_estimate * cost_per_token,
                         6,
                     ),
                     confidence="high",

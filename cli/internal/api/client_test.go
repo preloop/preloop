@@ -6,12 +6,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/preloop/preloop/cli/internal/config"
 	"github.com/preloop/preloop/cli/internal/version"
+
+	"github.com/preloop/preloop/cli/internal/testenv"
 )
 
 func TestNewClientWithToken(t *testing.T) {
@@ -288,9 +289,7 @@ func TestGet_APIError(t *testing.T) {
 
 func TestClientRefreshesExpiredAccessTokenFromStoredConfig(t *testing.T) {
 	tmpDir := t.TempDir()
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)         //nolint:errcheck
-	defer os.Setenv("HOME", origHome) //nolint:errcheck
+	testenv.SetHome(t, tmpDir)
 
 	requestCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -370,9 +369,7 @@ func TestClientRefreshesExpiredAccessTokenFromStoredConfig(t *testing.T) {
 
 func TestClientDoesNotRefreshWhenExplicitTokenOverrideIsUsed(t *testing.T) {
 	tmpDir := t.TempDir()
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)         //nolint:errcheck
-	defer os.Setenv("HOME", origHome) //nolint:errcheck
+	testenv.SetHome(t, tmpDir)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

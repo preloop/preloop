@@ -1,11 +1,18 @@
 import uuid
 from datetime import datetime, UTC
+from typing import Optional
 
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import Mapped, query_expression, relationship
 
 from .base import Base
+
+# Reserved key under which the compact, human-readable execution subject is
+# stored inside FlowExecution.trigger_event_details. Defined here (rather than
+# alongside the extraction logic in preloop.sync.event_normalizer) so the CRUD
+# layer can project it without models depending on sync.
+TRIGGER_SUBJECT_KEY = "_subject"
 
 
 class FlowExecution(Base):
@@ -75,6 +82,18 @@ class FlowExecution(Base):
         onupdate=lambda: datetime.now(UTC),
         nullable=False,
     )
+
+    # Human-readable subject for list views (e.g.
+    # "preloop/preloop #78 · Pull Request Updated · 5167595c").
+    #
+    # Not a real column: the value is stored denormalized inside
+    # trigger_event_details under the "_subject" key when the execution is
+    # created, and projected out by the query rather than shipping the whole
+    # trigger payload to list callers. Populated via with_expression() in
+    # CRUDFlowExecution.get_multi; None on rows created before subjects
+    # existed, and on any query that does not request it.
+    trigger_subject: Mapped[Optional[str]] = query_expression()
+    trigger_subject_url: Mapped[Optional[str]] = query_expression()
 
     # Relationships
     flow = relationship(

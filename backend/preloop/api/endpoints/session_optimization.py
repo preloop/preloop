@@ -33,6 +33,10 @@ from preloop.schemas.gateway_usage import (
     RuntimeSessionOptimizationRequest,
     RuntimeSessionOptimizationResponse,
 )
+from preloop.services.example_optimization import (
+    ExampleSessionUnavailableError,
+    build_example_optimization_response,
+)
 from preloop.services.replay_savings_service import (
     ConsentRequiredError,
     run_session_replay,
@@ -42,6 +46,42 @@ from preloop.utils.permissions import require_permission
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/billing/cost", tags=["Session Optimization"])
+
+
+@router.get(
+    "/runtime-sessions/example/optimization",
+    response_model=RuntimeSessionOptimizationResponse,
+)
+@require_permission("view_cost")
+def get_example_runtime_session_optimization(
+    account: Annotated[Account, Depends(get_account_for_user)],
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_active_user),
+) -> RuntimeSessionOptimizationResponse:
+    """Return the bundled example session's optimization suggestions.
+
+    Lets a brand-new account see what the Optimize tab produces before its own
+    agents have generated any traffic. The response is computed live by the
+    production deterministic analyzers over a bundled transcript and is flagged
+    ``is_example`` so the console can label it as sample data.
+
+    Deliberately side-effect free: no database writes, no LLM call, and — unlike
+    :func:`optimize_account_runtime_session` — no ``optimization_result_viewed``
+    audit event, because viewing a bundled sample is not the account "reaching
+    their number" and must not enter launch telemetry.
+
+    Raises:
+        HTTPException: 404 if the bundled transcript is unavailable, so the
+            console falls back to its normal empty state.
+    """
+    try:
+        return build_example_optimization_response(db)
+    except ExampleSessionUnavailableError:
+        logger.warning("Bundled example session unavailable", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Example session is not available",
+        ) from None
 
 
 @router.post(

@@ -81,6 +81,29 @@ def update_pyproject(plan: ReleasePlan) -> Path:
     return path
 
 
+def update_openapi_spec(plan: ReleasePlan) -> Path:
+    """Update the committed OpenAPI spec version.
+
+    ``scripts/generate_openapi.py`` stamps ``info.version`` from the VERSION
+    file, so bumping VERSION without restamping here leaves the committed spec
+    stale. CI regenerates the spec and diffs it, which then fails the lint job
+    on every release. The version line is the only part that changes at release
+    time — schema drift is caught separately by the generate-openapi hook — so
+    stamp it directly rather than importing the app, which would make releases
+    depend on a fully installed backend environment.
+    """
+    path = ROOT_DIR / "openapi.yaml"
+    text = read_text(path)
+    updated = replace_once(
+        text,
+        r"^  version: .+$",
+        f"  version: {plan.version}",
+        path,
+    )
+    write_text(path, updated)
+    return path
+
+
 def update_frontend_package(plan: ReleasePlan) -> Path:
     """Update frontend package.json version."""
     path = ROOT_DIR / "frontend" / "package.json"
@@ -579,6 +602,7 @@ def main() -> int:
     updated_paths = [
         update_version_file(plan),
         update_pyproject(plan),
+        update_openapi_spec(plan),
         update_frontend_package(plan),
         update_frontend_lockfile(plan),
         update_chart(plan),

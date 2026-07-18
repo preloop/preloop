@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/preloop/preloop/cli/internal/testenv"
 )
 
 func TestPromptToOnboardCandidatesContinuesOnError(t *testing.T) {
@@ -297,7 +299,7 @@ func TestDiscoverAgentsClaudeCodeMarkers(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			home := t.TempDir()
-			t.Setenv("HOME", home)
+			testenv.SetHome(t, home)
 			pathDir := t.TempDir()
 			t.Setenv("PATH", pathDir)
 
@@ -317,10 +319,11 @@ func TestDiscoverAgentsClaudeCodeMarkers(t *testing.T) {
 				}
 			}
 			if tt.binaryOnPath {
-				binaryPath := filepath.Join(pathDir, "claude")
-				if err := os.WriteFile(binaryPath, []byte("#!/usr/bin/env bash\n"), 0755); err != nil {
-					t.Fatalf("failed to write claude binary: %v", err)
-				}
+				// The stub only has to be found by exec.LookPath, never run, so
+				// it can be made portable rather than skipped: on Windows a real
+				// `claude` install is claude.cmd, and an extensionless file is
+				// invisible to PATH lookup there.
+				writeFakeExecutable(t, pathDir, "claude")
 			}
 
 			discovered, err := discoverAgents(bytes.NewBuffer(nil), false)
@@ -353,7 +356,7 @@ func TestDiscoverAgentsClaudeCodeMarkers(t *testing.T) {
 
 func TestRuntimeErrorsDoNotPrintUsage(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 	// Pre-seed the version check cache so PersistentPreRun does not hit the
 	// network during the test.
 	configDir := filepath.Join(home, ".preloop")

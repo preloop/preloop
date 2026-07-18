@@ -34,6 +34,18 @@ preloop agents discover
   <img alt="Preloop onboarding local agents into the control plane" src="frontend/public/assets/screenshots/quickstart/dark/agents-onboarding.webp" style="width: 100%; max-width: 1135px; border-radius: 12px;" />
 </p>
 
+## Watch it work
+
+A short series covering onboarding, the MCP firewall, human approvals, and cutting session cost — recorded end to end against a real stack, no slideware.
+
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=Y_geb2Or8zM&list=PLr2Jp0c-Qn2hoYL3aRZGUtBjTCVygWIXt">
+    <img alt="Preloop video series - see them, govern them, cut their cost" src="https://img.youtube.com/vi/Y_geb2Or8zM/maxresdefault.jpg" style="width: 100%; max-width: 640px; border-radius: 12px;" />
+  </a>
+</p>
+
+<p align="center"><a href="https://www.youtube.com/watch?v=Y_geb2Or8zM&list=PLr2Jp0c-Qn2hoYL3aRZGUtBjTCVygWIXt"><b>Watch the full playlist &rarr;</b></a></p>
+
 ## What is Preloop?
 
 Preloop is a single open-source platform that covers the five jobs teams otherwise buy from four different vendors:
@@ -237,7 +249,7 @@ curl -fsSL https://preloop.ai/install/oss | \
 
 **Email is not optional in practice**: approval requests, invitations and password resets are delivered by email, so an instance without SMTP cannot notify approvers. Everything the installer writes lives in `~/.preloop-oss/.env` — edit it and run `docker compose up -d` to change any setting later.
 
-To install a pre-release (e.g. a release candidate), pin the version: `curl -fsSL https://preloop.ai/install/oss | PRELOOP_VERSION=0.12.3 sh` (the same works for the CLI installer).
+To install a pre-release (e.g. a release candidate), pin the version: `curl -fsSL https://preloop.ai/install/oss | PRELOOP_VERSION=0.12.4 sh` (the same works for the CLI installer).
 
 #### Upgrading
 
@@ -253,7 +265,7 @@ For Kubernetes/prod-like deployments, use the Helm chart in [`helm/preloop`](hel
 
 ### Release smoke test
 
-Every tagged release is verified automatically before it is published: the `verify-oss-install` job in the release workflow runs [`scripts/release_smoke_test.sh`](scripts/release_smoke_test.sh), which boots `docker-compose.release.yaml` with the tagged images, checks API/gateway/console health, exercises first-user sign-up and login, and fails if any service restart-loops. You can run the same script locally with `PRELOOP_VERSION=0.12.3 ./scripts/release_smoke_test.sh`.
+Every tagged release is verified automatically before it is published: the `verify-oss-install` job in the release workflow runs [`scripts/release_smoke_test.sh`](scripts/release_smoke_test.sh), which boots `docker-compose.release.yaml` with the tagged images, checks API/gateway/console health, exercises first-user sign-up and login, and fails if any service restart-loops. You can run the same script locally with `PRELOOP_VERSION=0.12.4 ./scripts/release_smoke_test.sh`.
 
 For hosted trials, additionally verify that the public URL loads the console, `/api/v1/health` responds, first-user sign-in or sign-up works, `preloop agents discover` can target the public URL, one gateway model call appears in the UI, and one MCP policy event appears in the audit timeline.
 

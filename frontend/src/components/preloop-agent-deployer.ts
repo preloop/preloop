@@ -7,6 +7,10 @@ import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import { getAIModels } from '../api';
 import type { AIModel } from '../types';
+import {
+  pickDefaultModel,
+  selectableModels,
+} from '../utils/ai-model-selection';
 import './add-ai-model-modal';
 
 @customElement('preloop-agent-deployer')
@@ -276,8 +280,10 @@ export class PreloopAgentDeployer extends LitElement {
     if (this.aiModels.length === 0) {
       this.aiModels = await getAIModels().catch(() => []);
     }
-    if (this.aiModels.length > 0 && !this.deployModel) {
-      this.deployModel = this.aiModels[0].id;
+    if (!this.deployModel) {
+      // Never auto-select a principal-bound OAuth model: it cannot serve
+      // server-side generation and would fail on first use.
+      this.deployModel = pickDefaultModel(this.aiModels)?.id || '';
     }
   }
 
@@ -285,9 +291,11 @@ export class PreloopAgentDeployer extends LitElement {
     this.isAddingAIModel = false;
     void getAIModels().then((models) => {
       this.aiModels = models;
-      if (models.length > 0) {
-        this.deployModel = models[models.length - 1].id;
-      }
+      // Prefer the model the user just added, but only if Preloop can
+      // actually generate with it; otherwise fall back to the standard rule.
+      const usable = selectableModels(models);
+      this.deployModel =
+        usable[usable.length - 1]?.id || pickDefaultModel(models)?.id || '';
       this.requestUpdate();
     });
   }

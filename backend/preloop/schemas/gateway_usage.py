@@ -690,6 +690,15 @@ class RuntimeSessionOptimizationResponse(BaseModel):
     suggestions: List[RuntimeSessionOptimizationSuggestion] = Field(
         default_factory=list
     )
+    # Example-session labelling. ``is_example`` is True ONLY for the bundled
+    # sample analyzed by preloop.services.example_optimization; it is never set
+    # for a real session. Clients must label such a response unmistakably as
+    # sample data and must not fold its figures into the account's own totals.
+    is_example: bool = False
+    example_notice: Optional[str] = None
+    example_provenance: Optional[str] = None
+    example_title: Optional[str] = None
+    example_pricing_note: Optional[str] = None
 
 
 class AccountRuntimeSessionDetailResponse(BaseModel):

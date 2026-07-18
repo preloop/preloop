@@ -9,6 +9,7 @@ from preloop.models.crud import crud_flow, crud_flow_execution
 from preloop.models.models import Flow
 from preloop.models.schemas.flow_execution import FlowExecutionCreate
 from .flow_orchestrator import FlowExecutionOrchestrator
+from preloop.sync.event_normalizer import attach_trigger_subject
 from preloop.sync.services.event_bus import get_nats_client
 from preloop.models.db.session import get_session_factory
 
@@ -409,6 +410,7 @@ class FlowTriggerService:
             )
             if test_mode:
                 trigger_details["test_mode"] = True
+            attach_trigger_subject(trigger_details)
             execution_data = FlowExecutionCreate(
                 flow_id=flow.id
                 if isinstance(flow.id, uuid.UUID)
@@ -799,6 +801,7 @@ class FlowTriggerService:
         from preloop.services.flow_orchestrator import _make_json_serializable
 
         trigger_details = _make_json_serializable(trigger_details)
+        attach_trigger_subject(trigger_details)
 
         execution_data = FlowExecutionCreate(
             flow_id=flow_id,

@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/preloop/preloop/cli/internal/testenv"
 )
 
 func TestGlobMatch(t *testing.T) {
@@ -221,7 +223,7 @@ func TestEvaluateClaudePermissionPolicyBashPrefixRules(t *testing.T) {
 
 func TestLoadClaudePermissionPolicyProjectAndManaged(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 	project := t.TempDir()
 	managedDir := t.TempDir()
 	managedPath := filepath.Join(managedDir, "managed-settings.json")
@@ -278,7 +280,7 @@ func TestLoadClaudePermissionPolicyProjectAndManaged(t *testing.T) {
 
 func TestLoadClaudePermissionPolicyWithoutCwdSkipsProject(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 	overrideManagedSettingsPath(t, filepath.Join(t.TempDir(), "absent.json"))
 	claudeDir := filepath.Join(home, ".claude")
 	if err := os.MkdirAll(claudeDir, 0700); err != nil {
@@ -299,7 +301,7 @@ func TestLoadClaudePermissionPolicyWithoutCwdSkipsProject(t *testing.T) {
 
 func TestLoadClaudePermissionPolicyMergesLocal(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 	overrideManagedSettingsPath(t, filepath.Join(t.TempDir(), "absent.json"))
 	claudeDir := filepath.Join(home, ".claude")
 	if err := os.MkdirAll(claudeDir, 0700); err != nil {
@@ -331,7 +333,7 @@ func TestLoadClaudePermissionPolicyMergesLocal(t *testing.T) {
 
 func TestLoadClaudePermissionPolicyMissingFileIsEmpty(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 	overrideManagedSettingsPath(t, filepath.Join(t.TempDir(), "absent.json"))
 	policy, err := loadClaudePermissionPolicy("")
 	if err != nil {

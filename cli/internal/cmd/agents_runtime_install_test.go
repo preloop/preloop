@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/preloop/preloop/cli/internal/testenv"
 )
 
 func TestRuntimeInstallSpecForKind(t *testing.T) {
@@ -56,7 +58,7 @@ func TestRunAgentsInstallRuntimeSkipInstallRequiresAuth(t *testing.T) {
 	if err := os.MkdirAll(hermesDir, 0755); err != nil {
 		t.Fatalf("failed to create hermes dir: %v", err)
 	}
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 
 	cmd := agentsInstallRuntimeCmd
 	if err := cmd.Flags().Set("dry-run", "false"); err != nil {
@@ -75,6 +77,7 @@ func TestRunAgentsInstallRuntimeSkipInstallRequiresAuth(t *testing.T) {
 }
 
 func TestRunRuntimeInstallCommandUsesExecutable(t *testing.T) {
+	skipNoShebangOnWindows(t, "runtime install command execution")
 	dir := t.TempDir()
 	binDir := filepath.Join(dir, "bin")
 	if err := os.MkdirAll(binDir, 0755); err != nil {

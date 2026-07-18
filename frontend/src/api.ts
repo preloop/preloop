@@ -1324,6 +1324,24 @@ export async function optimizeRuntimeSession(
   return response.json();
 }
 
+/**
+ * Fetch the bundled example session's optimization suggestions.
+ *
+ * Used to show a new account what the Optimize tab produces before its own
+ * agents have generated traffic. The response is flagged `is_example` and must
+ * always be labelled as sample data — it is never the user's own session, and
+ * its figures must not be folded into any account total.
+ */
+export async function getExampleSessionOptimization(): Promise<RuntimeSessionOptimizationResponse> {
+  const response = await fetchWithAuth(
+    '/api/v1/billing/cost/runtime-sessions/example/optimization'
+  );
+  if (!response.ok) {
+    throw new Error('Failed to load example session optimization');
+  }
+  return response.json();
+}
+
 export async function applyRuntimeSessionOptimization(
   runtimeSessionId: string,
   payload: {

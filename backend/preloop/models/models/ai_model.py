@@ -119,6 +119,26 @@ class AIModel(Base):
         return None
 
     @property
+    def is_principal_bound_oauth(self) -> bool:
+        """Whether this model's credential is bound to a human principal.
+
+        Claude Code / Codex OAuth credentials authorize only that principal's
+        own interactive traffic. They cannot serve Preloop's server-side
+        generation (optimization, policy generation, summaries), so they must
+        never be auto-selected as a default.
+        """
+        from preloop.services.secret_service import (
+            PRINCIPAL_BOUND_OAUTH_CREDENTIAL_TYPES,
+        )
+
+        return self.credential_type in PRINCIPAL_BOUND_OAUTH_CREDENTIAL_TYPES
+
+    @property
+    def supports_server_side_generation(self) -> bool:
+        """Whether Preloop can run its own generation calls with this model."""
+        return self.has_api_key and not self.is_principal_bound_oauth
+
+    @property
     def credentials_backend_type(self) -> Optional[str]:
         """Return the backend type for the configured credentials."""
         if self.credentials_secret:

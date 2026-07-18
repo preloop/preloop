@@ -307,3 +307,37 @@ def create_embedding_model(db_session):
         return crud_embedding_model.create(db_session, obj_in=model_data)
 
     return _create_embedding_model
+
+
+@pytest.fixture(autouse=True)
+def isolate_system_wide_ai_models(db_session):
+    """Remove system-wide (account-less) AI models for the duration of a test.
+
+    ``get_default_active_model`` deliberately falls back to system-wide models
+    (``account_id IS NULL``) so that a self-hosted install seeded by
+    ``scripts/init_db.py`` resolves a default without per-account setup. That
+    fallback is correct product behaviour, but it makes any test that asserts
+    "this account resolves to X" depend on whether the database happens to have
+    been seeded.
+
+    CI seeds one: the workflow sets ``OPENAI_API_KEY=mock_key`` and runs
+    ``init_db.py --force``, which creates a global default named
+    ``gpt-5.3-codex``. A local database usually has none, so these tests passed
+    locally and failed in CI. Clearing the global scope here makes the
+    assertions mean what they say in both environments.
+
+    The deletion happens inside the test's transaction, which ``db_session``
+    rolls back, so a seeded database is left untouched.
+    """
+    from preloop.models.crud import crud_ai_model
+
+    for model_kind in ("llm", "stt", "tts"):
+        while True:
+            system_model = crud_ai_model.get_default_active_model(
+                db=db_session, account_id=None, model_kind=model_kind
+            )
+            if system_model is None:
+                break
+            crud_ai_model.remove(db_session, id=system_model.id)
+
+    yield

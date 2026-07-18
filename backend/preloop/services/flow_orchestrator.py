@@ -31,6 +31,7 @@ from preloop.services.prompt_resolvers import (
     AccountResolver,
 )
 from preloop.services.flow_execution_logger import FlowExecutionLogger
+from preloop.sync.event_normalizer import attach_trigger_subject
 from preloop.services.model_runtime_resolver import resolve_ai_model_runtime
 from preloop.services.account_realtime import (
     ACCOUNT_TOPIC_AUDIT,
@@ -2152,6 +2153,7 @@ class FlowExecutionOrchestrator:
 
         # Ensure trigger_event_data is JSON serializable (convert UUIDs, datetimes, etc.)
         serializable_event_data = _make_json_serializable(self.trigger_event_data)
+        attach_trigger_subject(serializable_event_data)
 
         execution_create = schemas.FlowExecutionCreate(
             flow_id=self.flow_id,

@@ -1,0 +1,807 @@
+{
+  "schema_version": 1,
+  "session_reference": "example-ci-triage",
+  "title": "Example: CI failure triage (bundled sample)",
+  "provenance": "Constructed example modelled on a CI-triage agent session using an MCP GitHub server plus filesystem tools. Not a recording of real user traffic. All reported savings are computed from this content by the same analyzers Preloop runs on real sessions.",
+  "model_alias": "anthropic/claude-sonnet-4",
+  "provider_name": "anthropic",
+  "input_cost_per_token": 3e-06,
+  "output_cost_per_token": 1.5e-05,
+  "pricing_note": "Priced at Claude Sonnet 4 public list rates.",
+  "events": [
+    {
+      "event_id": "example-event-1",
+      "request": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a release engineering agent operating on the acme/checkout repository. Your job is to triage failing CI pipelines, identify the root cause, and report a concise summary to the on-call engineer.\n\nOperating rules:\n- Always inspect the most recent failing workflow run before forming a hypothesis.\n- Prefer reading source files over guessing at behaviour.\n- Never modify CI configuration without explicit human approval.\n- When you have a root cause, state it in one sentence, then list the evidence you used.\n"
+          },
+          {
+            "role": "user",
+            "content": "The main branch CI has been red since this morning. Figure out what is failing and why, then summarise the root cause for the on-call engineer."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "github__list_workflow_runs",
+              "description": "List recent GitHub Actions workflow runs for a repository, including status, conclusion, timing, triggering actor, and the head commit associated with each run. Supports filtering by branch and event.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "repo": {
+                    "type": "string",
+                    "description": "Repository in owner/name form."
+                  },
+                  "branch": {
+                    "type": "string",
+                    "description": "Branch to filter runs by."
+                  },
+                  "status": {
+                    "type": "string",
+                    "description": "Run status filter, e.g. completed or failure."
+                  }
+                },
+                "required": [
+                  "repo",
+                  "branch",
+                  "status"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "github__get_workflow_run_logs",
+              "description": "Fetch the raw log output for a single GitHub Actions workflow run. Returns the concatenated step logs as plain text, which may be large for long-running or highly parallel pipelines.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "repo": {
+                    "type": "string",
+                    "description": "Repository in owner/name form."
+                  },
+                  "run_id": {
+                    "type": "string",
+                    "description": "Numeric workflow run identifier."
+                  }
+                },
+                "required": [
+                  "repo",
+                  "run_id"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "fs__read_file",
+              "description": "Read a UTF-8 text file from the local checkout and return its full contents. Use this to inspect source, configuration, and lockfiles before forming a hypothesis about a failure.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "description": "Repository-relative path to the file to read."
+                  }
+                },
+                "required": [
+                  "path"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "github__create_issue",
+              "description": "Open a new GitHub issue in the target repository with a title, markdown body, assignees, labels, and an optional milestone. Use this to file a defect once a root cause has been confirmed by a human reviewer.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "repo": {
+                    "type": "string",
+                    "description": "Repository in owner/name form."
+                  },
+                  "title": {
+                    "type": "string",
+                    "description": "Issue title."
+                  },
+                  "body": {
+                    "type": "string",
+                    "description": "Markdown issue body."
+                  },
+                  "labels": {
+                    "type": "string",
+                    "description": "Comma-separated label names."
+                  },
+                  "assignees": {
+                    "type": "string",
+                    "description": "Comma-separated GitHub usernames."
+                  }
+                },
+                "required": [
+                  "repo",
+                  "title",
+                  "body",
+                  "labels",
+                  "assignees"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "github__update_issue",
+              "description": "Update an existing GitHub issue: change its title, body, state, labels, assignees, or milestone. Commonly used to close a triage issue once the underlying pipeline failure has been resolved.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "repo": {
+                    "type": "string",
+                    "description": "Repository in owner/name form."
+                  },
+                  "issue_number": {
+                    "type": "string",
+                    "description": "Issue number to update."
+                  },
+                  "state": {
+                    "type": "string",
+                    "description": "New issue state, open or closed."
+                  },
+                  "body": {
+                    "type": "string",
+                    "description": "Replacement markdown issue body."
+                  }
+                },
+                "required": [
+                  "repo",
+                  "issue_number",
+                  "state",
+                  "body"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "github__list_pull_requests",
+              "description": "List open or closed pull requests for a repository including title, author, target branch, mergeability, review state, and the set of files each pull request touches.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "repo": {
+                    "type": "string",
+                    "description": "Repository in owner/name form."
+                  },
+                  "state": {
+                    "type": "string",
+                    "description": "Pull request state filter."
+                  },
+                  "base": {
+                    "type": "string",
+                    "description": "Base branch to filter by."
+                  }
+                },
+                "required": [
+                  "repo",
+                  "state",
+                  "base"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "github__merge_pull_request",
+              "description": "Merge an approved pull request using the repository's configured merge strategy. Fails if required status checks have not passed or if the branch is behind its base.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "repo": {
+                    "type": "string",
+                    "description": "Repository in owner/name form."
+                  },
+                  "pull_number": {
+                    "type": "string",
+                    "description": "Pull request number to merge."
+                  },
+                  "merge_method": {
+                    "type": "string",
+                    "description": "One of merge, squash, or rebase."
+                  }
+                },
+                "required": [
+                  "repo",
+                  "pull_number",
+                  "merge_method"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "slack__post_message",
+              "description": "Post a message to a Slack channel or thread on behalf of the agent, with optional blocks, attachments, and thread targeting. Used to notify the on-call engineer once triage has completed.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "channel": {
+                    "type": "string",
+                    "description": "Slack channel id or name."
+                  },
+                  "text": {
+                    "type": "string",
+                    "description": "Message text in Slack markdown."
+                  },
+                  "thread_ts": {
+                    "type": "string",
+                    "description": "Optional parent thread timestamp."
+                  }
+                },
+                "required": [
+                  "channel",
+                  "text",
+                  "thread_ts"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "jira__create_ticket",
+              "description": "Create a Jira ticket in the configured project with a summary, description, issue type, priority, and component assignment. Used when the team tracks defects in Jira rather than GitHub issues.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "project": {
+                    "type": "string",
+                    "description": "Jira project key."
+                  },
+                  "summary": {
+                    "type": "string",
+                    "description": "Ticket summary line."
+                  },
+                  "description": {
+                    "type": "string",
+                    "description": "Ticket description body."
+                  },
+                  "issue_type": {
+                    "type": "string",
+                    "description": "Issue type, e.g. Bug or Task."
+                  }
+                },
+                "required": [
+                  "project",
+                  "summary",
+                  "description",
+                  "issue_type"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "completion_tokens": 140,
+      "outcome": "success",
+      "status_code": 200,
+      "model_alias": "anthropic/claude-sonnet-4",
+      "provider_name": "anthropic"
+    },
+    {
+      "event_id": "example-event-2",
+      "request": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a release engineering agent operating on the acme/checkout repository. Your job is to triage failing CI pipelines, identify the root cause, and report a concise summary to the on-call engineer.\n\nOperating rules:\n- Always inspect the most recent failing workflow run before forming a hypothesis.\n- Prefer reading source files over guessing at behaviour.\n- Never modify CI configuration without explicit human approval.\n- When you have a root cause, state it in one sentence, then list the evidence you used.\n"
+          },
+          {
+            "role": "user",
+            "content": "The main branch CI has been red since this morning. Figure out what is failing and why, then summarise the root cause for the on-call engineer."
+          },
+          {
+            "role": "assistant",
+            "content": "Let me look at the recent workflow runs on main.",
+            "tool_calls": [
+              {
+                "id": "call_runs_1",
+                "type": "function",
+                "function": {
+                  "name": "github__list_workflow_runs",
+                  "arguments": "{\"repo\": \"acme/checkout\", \"branch\": \"main\", \"status\": \"completed\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_runs_1",
+            "name": "github__list_workflow_runs",
+            "content": "[{\"id\": 5821000, \"name\": \"CI\", \"node_id\": \"WFR_kwLOA5821000zQ\", \"head_branch\": \"main\", \"head_sha\": \"009f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"run_number\": 4120, \"event\": \"push\", \"status\": \"completed\", \"conclusion\": \"failure\", \"workflow_id\": 71223344, \"created_at\": \"2026-07-10T09:10:22Z\", \"updated_at\": \"2026-07-10T09:20:07Z\", \"html_url\": \"https://github.com/acme/checkout/actions/runs/5821000\", \"logs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821000/logs?token=AABBCCDDEEFF00112233445566778899&expires=1784500000&signature=b7c1e94a2f83d05e6a1c74bf93028dd5\", \"jobs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821000/jobs\", \"artifacts_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821000/artifacts\", \"head_commit\": {\"id\": \"009f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"tree_id\": \"001a7b93ce02d4f8615a09c3be27d418f0a6c95d3\", \"message\": \"refactor(checkout): extract price rounding into a shared helper so the web and mobile carts agree on cents\\n\\nCo-authored-by: Priya Raman <priya@acme.example>\", \"timestamp\": \"2026-07-10T09:00:11Z\", \"author\": {\"name\": \"Priya Raman\", \"email\": \"priya@acme.example\"}, \"committer\": {\"name\": \"GitHub\", \"email\": \"noreply@github.com\"}}, \"actor\": {\"login\": \"priya-raman\", \"id\": 4471290, \"node_id\": \"MDQ6VXNlcjQ0NzEyOTA=\", \"avatar_url\": \"https://avatars.githubusercontent.com/u/4471290?v=4\", \"gravatar_id\": \"\", \"url\": \"https://api.github.com/users/priya-raman\", \"html_url\": \"https://github.com/priya-raman\", \"followers_url\": \"https://api.github.com/users/priya-raman/followers\", \"organizations_url\": \"https://api.github.com/users/priya-raman/orgs\", \"repos_url\": \"https://api.github.com/users/priya-raman/repos\", \"type\": \"User\", \"site_admin\": false}}, {\"id\": 5821001, \"name\": \"CI\", \"node_id\": \"WFR_kwLOA5821001zQ\", \"head_branch\": \"main\", \"head_sha\": \"019f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"run_number\": 4121, \"event\": \"push\", \"status\": \"completed\", \"conclusion\": \"success\", \"workflow_id\": 71223344, \"created_at\": \"2026-07-11T09:11:22Z\", \"updated_at\": \"2026-07-11T09:21:07Z\", \"html_url\": \"https://github.com/acme/checkout/actions/runs/5821001\", \"logs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821001/logs?token=AABBCCDDEEFF00112233445566778899&expires=1784500000&signature=b7c1e94a2f83d05e6a1c74bf93028dd5\", \"jobs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821001/jobs\", \"artifacts_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821001/artifacts\", \"head_commit\": {\"id\": \"019f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"tree_id\": \"011a7b93ce02d4f8615a09c3be27d418f0a6c95d3\", \"message\": \"refactor(checkout): extract price rounding into a shared helper so the web and mobile carts agree on cents\\n\\nCo-authored-by: Priya Raman <priya@acme.example>\", \"timestamp\": \"2026-07-11T09:01:11Z\", \"author\": {\"name\": \"Priya Raman\", \"email\": \"priya@acme.example\"}, \"committer\": {\"name\": \"GitHub\", \"email\": \"noreply@github.com\"}}, \"actor\": {\"login\": \"priya-raman\", \"id\": 4471291, \"node_id\": \"MDQ6VXNlcjQ0NzEyOTA=\", \"avatar_url\": \"https://avatars.githubusercontent.com/u/4471290?v=4\", \"gravatar_id\": \"\", \"url\": \"https://api.github.com/users/priya-raman\", \"html_url\": \"https://github.com/priya-raman\", \"followers_url\": \"https://api.github.com/users/priya-raman/followers\", \"organizations_url\": \"https://api.github.com/users/priya-raman/orgs\", \"repos_url\": \"https://api.github.com/users/priya-raman/repos\", \"type\": \"User\", \"site_admin\": false}}, {\"id\": 5821002, \"name\": \"CI\", \"node_id\": \"WFR_kwLOA5821002zQ\", \"head_branch\": \"main\", \"head_sha\": \"029f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"run_number\": 4122, \"event\": \"push\", \"status\": \"completed\", \"conclusion\": \"success\", \"workflow_id\": 71223344, \"created_at\": \"2026-07-12T09:12:22Z\", \"updated_at\": \"2026-07-12T09:22:07Z\", \"html_url\": \"https://github.com/acme/checkout/actions/runs/5821002\", \"logs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821002/logs?token=AABBCCDDEEFF00112233445566778899&expires=1784500000&signature=b7c1e94a2f83d05e6a1c74bf93028dd5\", \"jobs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821002/jobs\", \"artifacts_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821002/artifacts\", \"head_commit\": {\"id\": \"029f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"tree_id\": \"021a7b93ce02d4f8615a09c3be27d418f0a6c95d3\", \"message\": \"refactor(checkout): extract price rounding into a shared helper so the web and mobile carts agree on cents\\n\\nCo-authored-by: Priya Raman <priya@acme.example>\", \"timestamp\": \"2026-07-12T09:02:11Z\", \"author\": {\"name\": \"Priya Raman\", \"email\": \"priya@acme.example\"}, \"committer\": {\"name\": \"GitHub\", \"email\": \"noreply@github.com\"}}, \"actor\": {\"login\": \"priya-raman\", \"id\": 4471292, \"node_id\": \"MDQ6VXNlcjQ0NzEyOTA=\", \"avatar_url\": \"https://avatars.githubusercontent.com/u/4471290?v=4\", \"gravatar_id\": \"\", \"url\": \"https://api.github.com/users/priya-raman\", \"html_url\": \"https://github.com/priya-raman\", \"followers_url\": \"https://api.github.com/users/priya-raman/followers\", \"organizations_url\": \"https://api.github.com/users/priya-raman/orgs\", \"repos_url\": \"https://api.github.com/users/priya-raman/repos\", \"type\": \"User\", \"site_admin\": false}}, {\"id\": 5821003, \"name\": \"CI\", \"node_id\": \"WFR_kwLOA5821003zQ\", \"head_branch\": \"main\", \"head_sha\": \"039f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"run_number\": 4123, \"event\": \"push\", \"status\": \"completed\", \"conclusion\": \"failure\", \"workflow_id\": 71223344, \"created_at\": \"2026-07-13T09:13:22Z\", \"updated_at\": \"2026-07-13T09:23:07Z\", \"html_url\": \"https://github.com/acme/checkout/actions/runs/5821003\", \"logs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821003/logs?token=AABBCCDDEEFF00112233445566778899&expires=1784500000&signature=b7c1e94a2f83d05e6a1c74bf93028dd5\", \"jobs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821003/jobs\", \"artifacts_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821003/artifacts\", \"head_commit\": {\"id\": \"039f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"tree_id\": \"031a7b93ce02d4f8615a09c3be27d418f0a6c95d3\", \"message\": \"refactor(checkout): extract price rounding into a shared helper so the web and mobile carts agree on cents\\n\\nCo-authored-by: Priya Raman <priya@acme.example>\", \"timestamp\": \"2026-07-13T09:03:11Z\", \"author\": {\"name\": \"Priya Raman\", \"email\": \"priya@acme.example\"}, \"committer\": {\"name\": \"GitHub\", \"email\": \"noreply@github.com\"}}, \"actor\": {\"login\": \"priya-raman\", \"id\": 4471293, \"node_id\": \"MDQ6VXNlcjQ0NzEyOTA=\", \"avatar_url\": \"https://avatars.githubusercontent.com/u/4471290?v=4\", \"gravatar_id\": \"\", \"url\": \"https://api.github.com/users/priya-raman\", \"html_url\": \"https://github.com/priya-raman\", \"followers_url\": \"https://api.github.com/users/priya-raman/followers\", \"organizations_url\": \"https://api.github.com/users/priya-raman/orgs\", \"repos_url\": \"https://api.github.com/users/priya-raman/repos\", \"type\": \"User\", \"site_admin\": false}}, {\"id\": 5821004, \"name\": \"CI\", \"node_id\": \"WFR_kwLOA5821004zQ\", \"head_branch\": \"main\", \"head_sha\": \"049f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"run_number\": 4124, \"event\": \"push\", \"status\": \"completed\", \"conclusion\": \"success\", \"workflow_id\": 71223344, \"created_at\": \"2026-07-14T09:14:22Z\", \"updated_at\": \"2026-07-14T09:24:07Z\", \"html_url\": \"https://github.com/acme/checkout/actions/runs/5821004\", \"logs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821004/logs?token=AABBCCDDEEFF00112233445566778899&expires=1784500000&signature=b7c1e94a2f83d05e6a1c74bf93028dd5\", \"jobs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821004/jobs\", \"artifacts_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821004/artifacts\", \"head_commit\": {\"id\": \"049f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"tree_id\": \"041a7b93ce02d4f8615a09c3be27d418f0a6c95d3\", \"message\": \"refactor(checkout): extract price rounding into a shared helper so the web and mobile carts agree on cents\\n\\nCo-authored-by: Priya Raman <priya@acme.example>\", \"timestamp\": \"2026-07-14T09:04:11Z\", \"author\": {\"name\": \"Priya Raman\", \"email\": \"priya@acme.example\"}, \"committer\": {\"name\": \"GitHub\", \"email\": \"noreply@github.com\"}}, \"actor\": {\"login\": \"priya-raman\", \"id\": 4471294, \"node_id\": \"MDQ6VXNlcjQ0NzEyOTA=\", \"avatar_url\": \"https://avatars.githubusercontent.com/u/4471290?v=4\", \"gravatar_id\": \"\", \"url\": \"https://api.github.com/users/priya-raman\", \"html_url\": \"https://github.com/priya-raman\", \"followers_url\": \"https://api.github.com/users/priya-raman/followers\", \"organizations_url\": \"https://api.github.com/users/priya-raman/orgs\", \"repos_url\": \"https://api.github.com/users/priya-raman/repos\", \"type\": \"User\", \"site_admin\": false}}, {\"id\": 5821005, \"name\": \"CI\", \"node_id\": \"WFR_kwLOA5821005zQ\", \"head_branch\": \"main\", \"head_sha\": \"059f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"run_number\": 4125, \"event\": \"push\", \"status\": \"completed\", \"conclusion\": \"success\", \"workflow_id\": 71223344, \"created_at\": \"2026-07-15T09:15:22Z\", \"updated_at\": \"2026-07-15T09:25:07Z\", \"html_url\": \"https://github.com/acme/checkout/actions/runs/5821005\", \"logs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821005/logs?token=AABBCCDDEEFF00112233445566778899&expires=1784500000&signature=b7c1e94a2f83d05e6a1c74bf93028dd5\", \"jobs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821005/jobs\", \"artifacts_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821005/artifacts\", \"head_commit\": {\"id\": \"059f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"tree_id\": \"051a7b93ce02d4f8615a09c3be27d418f0a6c95d3\", \"message\": \"refactor(checkout): extract price rounding into a shared helper so the web and mobile carts agree on cents\\n\\nCo-authored-by: Priya Raman <priya@acme.example>\", \"timestamp\": \"2026-07-15T09:05:11Z\", \"author\": {\"name\": \"Priya Raman\", \"email\": \"priya@acme.example\"}, \"committer\": {\"name\": \"GitHub\", \"email\": \"noreply@github.com\"}}, \"actor\": {\"login\": \"priya-raman\", \"id\": 4471295, \"node_id\": \"MDQ6VXNlcjQ0NzEyOTA=\", \"avatar_url\": \"https://avatars.githubusercontent.com/u/4471290?v=4\", \"gravatar_id\": \"\", \"url\": \"https://api.github.com/users/priya-raman\", \"html_url\": \"https://github.com/priya-raman\", \"followers_url\": \"https://api.github.com/users/priya-raman/followers\", \"organizations_url\": \"https://api.github.com/users/priya-raman/orgs\", \"repos_url\": \"https://api.github.com/users/priya-raman/repos\", \"type\": \"User\", \"site_admin\": false}}, {\"id\": 5821006, \"name\": \"CI\", \"node_id\": \"WFR_kwLOA5821006zQ\", \"head_branch\": \"main\", \"head_sha\": \"069f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"run_number\": 4126, \"event\": \"push\", \"status\": \"completed\", \"conclusion\": \"success\", \"workflow_id\": 71223344, \"created_at\": \"2026-07-16T09:10:22Z\", \"updated_at\": \"2026-07-16T09:20:07Z\", \"html_url\": \"https://github.com/acme/checkout/actions/runs/5821006\", \"logs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821006/logs?token=AABBCCDDEEFF00112233445566778899&expires=1784500000&signature=b7c1e94a2f83d05e6a1c74bf93028dd5\", \"jobs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821006/jobs\", \"artifacts_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821006/artifacts\", \"head_commit\": {\"id\": \"069f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"tree_id\": \"061a7b93ce02d4f8615a09c3be27d418f0a6c95d3\", \"message\": \"refactor(checkout): extract price rounding into a shared helper so the web and mobile carts agree on cents\\n\\nCo-authored-by: Priya Raman <priya@acme.example>\", \"timestamp\": \"2026-07-16T09:00:11Z\", \"author\": {\"name\": \"Priya Raman\", \"email\": \"priya@acme.example\"}, \"committer\": {\"name\": \"GitHub\", \"email\": \"noreply@github.com\"}}, \"actor\": {\"login\": \"priya-raman\", \"id\": 4471296, \"node_id\": \"MDQ6VXNlcjQ0NzEyOTA=\", \"avatar_url\": \"https://avatars.githubusercontent.com/u/4471290?v=4\", \"gravatar_id\": \"\", \"url\": \"https://api.github.com/users/priya-raman\", \"html_url\": \"https://github.com/priya-raman\", \"followers_url\": \"https://api.github.com/users/priya-raman/followers\", \"organizations_url\": \"https://api.github.com/users/priya-raman/orgs\", \"repos_url\": \"https://api.github.com/users/priya-raman/repos\", \"type\": \"User\", \"site_admin\": false}}, {\"id\": 5821007, \"name\": \"CI\", \"node_id\": \"WFR_kwLOA5821007zQ\", \"head_branch\": \"main\", \"head_sha\": \"079f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"run_number\": 4127, \"event\": \"push\", \"status\": \"completed\", \"conclusion\": \"failure\", \"workflow_id\": 71223344, \"created_at\": \"2026-07-17T09:11:22Z\", \"updated_at\": \"2026-07-17T09:21:07Z\", \"html_url\": \"https://github.com/acme/checkout/actions/runs/5821007\", \"logs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821007/logs?token=AABBCCDDEEFF00112233445566778899&expires=1784500000&signature=b7c1e94a2f83d05e6a1c74bf93028dd5\", \"jobs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821007/jobs\", \"artifacts_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821007/artifacts\", \"head_commit\": {\"id\": \"079f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"tree_id\": \"071a7b93ce02d4f8615a09c3be27d418f0a6c95d3\", \"message\": \"refactor(checkout): extract price rounding into a shared helper so the web and mobile carts agree on cents\\n\\nCo-authored-by: Priya Raman <priya@acme.example>\", \"timestamp\": \"2026-07-17T09:01:11Z\", \"author\": {\"name\": \"Priya Raman\", \"email\": \"priya@acme.example\"}, \"committer\": {\"name\": \"GitHub\", \"email\": \"noreply@github.com\"}}, \"actor\": {\"login\": \"priya-raman\", \"id\": 4471297, \"node_id\": \"MDQ6VXNlcjQ0NzEyOTA=\", \"avatar_url\": \"https://avatars.githubusercontent.com/u/4471290?v=4\", \"gravatar_id\": \"\", \"url\": \"https://api.github.com/users/priya-raman\", \"html_url\": \"https://github.com/priya-raman\", \"followers_url\": \"https://api.github.com/users/priya-raman/followers\", \"organizations_url\": \"https://api.github.com/users/priya-raman/orgs\", \"repos_url\": \"https://api.github.com/users/priya-raman/repos\", \"type\": \"User\", \"site_admin\": false}}, {\"id\": 5821008, \"name\": \"CI\", \"node_id\": \"WFR_kwLOA5821008zQ\", \"head_branch\": \"main\", \"head_sha\": \"089f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"run_number\": 4128, \"event\": \"push\", \"status\": \"completed\", \"conclusion\": \"success\", \"workflow_id\": 71223344, \"created_at\": \"2026-07-18T09:12:22Z\", \"updated_at\": \"2026-07-18T09:22:07Z\", \"html_url\": \"https://github.com/acme/checkout/actions/runs/5821008\", \"logs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821008/logs?token=AABBCCDDEEFF00112233445566778899&expires=1784500000&signature=b7c1e94a2f83d05e6a1c74bf93028dd5\", \"jobs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821008/jobs\", \"artifacts_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821008/artifacts\", \"head_commit\": {\"id\": \"089f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"tree_id\": \"081a7b93ce02d4f8615a09c3be27d418f0a6c95d3\", \"message\": \"refactor(checkout): extract price rounding into a shared helper so the web and mobile carts agree on cents\\n\\nCo-authored-by: Priya Raman <priya@acme.example>\", \"timestamp\": \"2026-07-18T09:02:11Z\", \"author\": {\"name\": \"Priya Raman\", \"email\": \"priya@acme.example\"}, \"committer\": {\"name\": \"GitHub\", \"email\": \"noreply@github.com\"}}, \"actor\": {\"login\": \"priya-raman\", \"id\": 4471298, \"node_id\": \"MDQ6VXNlcjQ0NzEyOTA=\", \"avatar_url\": \"https://avatars.githubusercontent.com/u/4471290?v=4\", \"gravatar_id\": \"\", \"url\": \"https://api.github.com/users/priya-raman\", \"html_url\": \"https://github.com/priya-raman\", \"followers_url\": \"https://api.github.com/users/priya-raman/followers\", \"organizations_url\": \"https://api.github.com/users/priya-raman/orgs\", \"repos_url\": \"https://api.github.com/users/priya-raman/repos\", \"type\": \"User\", \"site_admin\": false}}, {\"id\": 5821009, \"name\": \"CI\", \"node_id\": \"WFR_kwLOA5821009zQ\", \"head_branch\": \"main\", \"head_sha\": \"099f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"run_number\": 4129, \"event\": \"push\", \"status\": \"completed\", \"conclusion\": \"success\", \"workflow_id\": 71223344, \"created_at\": \"2026-07-10T09:13:22Z\", \"updated_at\": \"2026-07-10T09:23:07Z\", \"html_url\": \"https://github.com/acme/checkout/actions/runs/5821009\", \"logs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821009/logs?token=AABBCCDDEEFF00112233445566778899&expires=1784500000&signature=b7c1e94a2f83d05e6a1c74bf93028dd5\", \"jobs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821009/jobs\", \"artifacts_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821009/artifacts\", \"head_commit\": {\"id\": \"099f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"tree_id\": \"091a7b93ce02d4f8615a09c3be27d418f0a6c95d3\", \"message\": \"refactor(checkout): extract price rounding into a shared helper so the web and mobile carts agree on cents\\n\\nCo-authored-by: Priya Raman <priya@acme.example>\", \"timestamp\": \"2026-07-10T09:03:11Z\", \"author\": {\"name\": \"Priya Raman\", \"email\": \"priya@acme.example\"}, \"committer\": {\"name\": \"GitHub\", \"email\": \"noreply@github.com\"}}, \"actor\": {\"login\": \"priya-raman\", \"id\": 4471299, \"node_id\": \"MDQ6VXNlcjQ0NzEyOTA=\", \"avatar_url\": \"https://avatars.githubusercontent.com/u/4471290?v=4\", \"gravatar_id\": \"\", \"url\": \"https://api.github.com/users/priya-raman\", \"html_url\": \"https://github.com/priya-raman\", \"followers_url\": \"https://api.github.com/users/priya-raman/followers\", \"organizations_url\": \"https://api.github.com/users/priya-raman/orgs\", \"repos_url\": \"https://api.github.com/users/priya-raman/repos\", \"type\": \"User\", \"site_admin\": false}}, {\"id\": 5821010, \"name\": \"CI\", \"node_id\": \"WFR_kwLOA5821010zQ\", \"head_branch\": \"main\", \"head_sha\": \"0a9f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"run_number\": 4130, \"event\": \"push\", \"status\": \"completed\", \"conclusion\": \"success\", \"workflow_id\": 71223344, \"created_at\": \"2026-07-11T09:14:22Z\", \"updated_at\": \"2026-07-11T09:24:07Z\", \"html_url\": \"https://github.com/acme/checkout/actions/runs/5821010\", \"logs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821010/logs?token=AABBCCDDEEFF00112233445566778899&expires=1784500000&signature=b7c1e94a2f83d05e6a1c74bf93028dd5\", \"jobs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821010/jobs\", \"artifacts_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821010/artifacts\", \"head_commit\": {\"id\": \"0a9f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"tree_id\": \"0a1a7b93ce02d4f8615a09c3be27d418f0a6c95d3\", \"message\": \"refactor(checkout): extract price rounding into a shared helper so the web and mobile carts agree on cents\\n\\nCo-authored-by: Priya Raman <priya@acme.example>\", \"timestamp\": \"2026-07-11T09:04:11Z\", \"author\": {\"name\": \"Priya Raman\", \"email\": \"priya@acme.example\"}, \"committer\": {\"name\": \"GitHub\", \"email\": \"noreply@github.com\"}}, \"actor\": {\"login\": \"priya-raman\", \"id\": 4471300, \"node_id\": \"MDQ6VXNlcjQ0NzEyOTA=\", \"avatar_url\": \"https://avatars.githubusercontent.com/u/4471290?v=4\", \"gravatar_id\": \"\", \"url\": \"https://api.github.com/users/priya-raman\", \"html_url\": \"https://github.com/priya-raman\", \"followers_url\": \"https://api.github.com/users/priya-raman/followers\", \"organizations_url\": \"https://api.github.com/users/priya-raman/orgs\", \"repos_url\": \"https://api.github.com/users/priya-raman/repos\", \"type\": \"User\", \"site_admin\": false}}, {\"id\": 5821011, \"name\": \"CI\", \"node_id\": \"WFR_kwLOA5821011zQ\", \"head_branch\": \"main\", \"head_sha\": \"0b9f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"run_number\": 4131, \"event\": \"push\", \"status\": \"completed\", \"conclusion\": \"success\", \"workflow_id\": 71223344, \"created_at\": \"2026-07-12T09:15:22Z\", \"updated_at\": \"2026-07-12T09:25:07Z\", \"html_url\": \"https://github.com/acme/checkout/actions/runs/5821011\", \"logs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821011/logs?token=AABBCCDDEEFF00112233445566778899&expires=1784500000&signature=b7c1e94a2f83d05e6a1c74bf93028dd5\", \"jobs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821011/jobs\", \"artifacts_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821011/artifacts\", \"head_commit\": {\"id\": \"0b9f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"tree_id\": \"0b1a7b93ce02d4f8615a09c3be27d418f0a6c95d3\", \"message\": \"refactor(checkout): extract price rounding into a shared helper so the web and mobile carts agree on cents\\n\\nCo-authored-by: Priya Raman <priya@acme.example>\", \"timestamp\": \"2026-07-12T09:05:11Z\", \"author\": {\"name\": \"Priya Raman\", \"email\": \"priya@acme.example\"}, \"committer\": {\"name\": \"GitHub\", \"email\": \"noreply@github.com\"}}, \"actor\": {\"login\": \"priya-raman\", \"id\": 4471301, \"node_id\": \"MDQ6VXNlcjQ0NzEyOTA=\", \"avatar_url\": \"https://avatars.githubusercontent.com/u/4471290?v=4\", \"gravatar_id\": \"\", \"url\": \"https://api.github.com/users/priya-raman\", \"html_url\": \"https://github.com/priya-raman\", \"followers_url\": \"https://api.github.com/users/priya-raman/followers\", \"organizations_url\": \"https://api.github.com/users/priya-raman/orgs\", \"repos_url\": \"https://api.github.com/users/priya-raman/repos\", \"type\": \"User\", \"site_admin\": false}}]"
+          },
+          {
+            "role": "assistant",
+            "content": "Run 5821000 failed. Pulling its logs.",
+            "tool_calls": [
+              {
+                "id": "call_logs_1",
+                "type": "function",
+                "function": {
+                  "name": "github__get_workflow_run_logs",
+                  "arguments": "{\"repo\": \"acme/checkout\", \"run_id\": \"5821000\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_logs_1",
+            "name": "github__get_workflow_run_logs",
+            "content": "2026-07-18T09:14:22.101Z ##[group]Run actions/checkout@v4\n2026-07-18T09:14:22.884Z Syncing repository: acme/checkout\n2026-07-18T09:14:23.402Z ##[endgroup]\n2026-07-18T09:14:24.019Z ##[group]Run npm ci\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:39.881Z npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported.\n2026-07-18T09:14:39.881Z npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported.\n2026-07-18T09:14:39.881Z npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported.\n2026-07-18T09:14:39.881Z npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported.\n2026-07-18T09:14:39.881Z npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported.\n2026-07-18T09:14:39.881Z npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported.\n2026-07-18T09:14:39.881Z npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported.\n2026-07-18T09:14:39.881Z npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported.\n2026-07-18T09:14:39.881Z npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported.\n2026-07-18T09:14:39.881Z npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported.\n2026-07-18T09:14:39.881Z npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported.\n2026-07-18T09:14:39.881Z npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported.\n2026-07-18T09:14:39.881Z npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported.\n2026-07-18T09:14:39.881Z npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported.\n2026-07-18T09:15:02.550Z added 1284 packages in 38s\n2026-07-18T09:15:03.001Z ##[endgroup]\n2026-07-18T09:15:03.400Z ##[group]Run npm test -- --runInBand\n2026-07-18T09:15:44.318Z   RETRY 1 checkout/cart total rounds line items to the nearest cent\n2026-07-18T09:15:44.318Z   RETRY 1 checkout/cart total rounds line items to the nearest cent\n2026-07-18T09:15:44.318Z   RETRY 1 checkout/cart total rounds line items to the nearest cent\n2026-07-18T09:15:44.318Z   RETRY 1 checkout/cart total rounds line items to the nearest cent\n2026-07-18T09:15:44.318Z   RETRY 1 checkout/cart total rounds line items to the nearest cent\n2026-07-18T09:15:44.318Z   RETRY 1 checkout/cart total rounds line items to the nearest cent\n2026-07-18T09:15:44.318Z   RETRY 1 checkout/cart total rounds line items to the nearest cent\n2026-07-18T09:15:44.318Z   RETRY 1 checkout/cart total rounds line items to the nearest cent\n2026-07-18T09:15:44.318Z   RETRY 1 checkout/cart total rounds line items to the nearest cent\n2026-07-18T09:15:44.318Z   RETRY 1 checkout/cart total rounds line items to the nearest cent\n2026-07-18T09:15:44.318Z   RETRY 1 checkout/cart total rounds line items to the nearest cent\n2026-07-18T09:16:12.771Z   FAIL  src/cart/total.test.ts\n2026-07-18T09:16:12.772Z     ● cart total rounds line items to the nearest cent\n2026-07-18T09:16:12.774Z       expect(received).toBe(expected)\n2026-07-18T09:16:12.775Z       Expected: 1999\n2026-07-18T09:16:12.776Z       Received: 1998\n2026-07-18T09:16:12.780Z       at Object.<anonymous> (src/cart/total.test.ts:42:26)\n2026-07-18T09:16:13.020Z Tests: 1 failed, 316 passed, 317 total\n2026-07-18T09:16:13.402Z ##[error]Process completed with exit code 1."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "github__list_workflow_runs",
+              "description": "List recent GitHub Actions workflow runs for a repository, including status, conclusion, timing, triggering actor, and the head commit associated with each run. Supports filtering by branch and event.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "repo": {
+                    "type": "string",
+                    "description": "Repository in owner/name form."
+                  },
+                  "branch": {
+                    "type": "string",
+                    "description": "Branch to filter runs by."
+                  },
+                  "status": {
+                    "type": "string",
+                    "description": "Run status filter, e.g. completed or failure."
+                  }
+                },
+                "required": [
+                  "repo",
+                  "branch",
+                  "status"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "github__get_workflow_run_logs",
+              "description": "Fetch the raw log output for a single GitHub Actions workflow run. Returns the concatenated step logs as plain text, which may be large for long-running or highly parallel pipelines.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "repo": {
+                    "type": "string",
+                    "description": "Repository in owner/name form."
+                  },
+                  "run_id": {
+                    "type": "string",
+                    "description": "Numeric workflow run identifier."
+                  }
+                },
+                "required": [
+                  "repo",
+                  "run_id"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "fs__read_file",
+              "description": "Read a UTF-8 text file from the local checkout and return its full contents. Use this to inspect source, configuration, and lockfiles before forming a hypothesis about a failure.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "description": "Repository-relative path to the file to read."
+                  }
+                },
+                "required": [
+                  "path"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "github__create_issue",
+              "description": "Open a new GitHub issue in the target repository with a title, markdown body, assignees, labels, and an optional milestone. Use this to file a defect once a root cause has been confirmed by a human reviewer.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "repo": {
+                    "type": "string",
+                    "description": "Repository in owner/name form."
+                  },
+                  "title": {
+                    "type": "string",
+                    "description": "Issue title."
+                  },
+                  "body": {
+                    "type": "string",
+                    "description": "Markdown issue body."
+                  },
+                  "labels": {
+                    "type": "string",
+                    "description": "Comma-separated label names."
+                  },
+                  "assignees": {
+                    "type": "string",
+                    "description": "Comma-separated GitHub usernames."
+                  }
+                },
+                "required": [
+                  "repo",
+                  "title",
+                  "body",
+                  "labels",
+                  "assignees"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "github__update_issue",
+              "description": "Update an existing GitHub issue: change its title, body, state, labels, assignees, or milestone. Commonly used to close a triage issue once the underlying pipeline failure has been resolved.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "repo": {
+                    "type": "string",
+                    "description": "Repository in owner/name form."
+                  },
+                  "issue_number": {
+                    "type": "string",
+                    "description": "Issue number to update."
+                  },
+                  "state": {
+                    "type": "string",
+                    "description": "New issue state, open or closed."
+                  },
+                  "body": {
+                    "type": "string",
+                    "description": "Replacement markdown issue body."
+                  }
+                },
+                "required": [
+                  "repo",
+                  "issue_number",
+                  "state",
+                  "body"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "github__list_pull_requests",
+              "description": "List open or closed pull requests for a repository including title, author, target branch, mergeability, review state, and the set of files each pull request touches.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "repo": {
+                    "type": "string",
+                    "description": "Repository in owner/name form."
+                  },
+                  "state": {
+                    "type": "string",
+                    "description": "Pull request state filter."
+                  },
+                  "base": {
+                    "type": "string",
+                    "description": "Base branch to filter by."
+                  }
+                },
+                "required": [
+                  "repo",
+                  "state",
+                  "base"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "github__merge_pull_request",
+              "description": "Merge an approved pull request using the repository's configured merge strategy. Fails if required status checks have not passed or if the branch is behind its base.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "repo": {
+                    "type": "string",
+                    "description": "Repository in owner/name form."
+                  },
+                  "pull_number": {
+                    "type": "string",
+                    "description": "Pull request number to merge."
+                  },
+                  "merge_method": {
+                    "type": "string",
+                    "description": "One of merge, squash, or rebase."
+                  }
+                },
+                "required": [
+                  "repo",
+                  "pull_number",
+                  "merge_method"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "slack__post_message",
+              "description": "Post a message to a Slack channel or thread on behalf of the agent, with optional blocks, attachments, and thread targeting. Used to notify the on-call engineer once triage has completed.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "channel": {
+                    "type": "string",
+                    "description": "Slack channel id or name."
+                  },
+                  "text": {
+                    "type": "string",
+                    "description": "Message text in Slack markdown."
+                  },
+                  "thread_ts": {
+                    "type": "string",
+                    "description": "Optional parent thread timestamp."
+                  }
+                },
+                "required": [
+                  "channel",
+                  "text",
+                  "thread_ts"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "jira__create_ticket",
+              "description": "Create a Jira ticket in the configured project with a summary, description, issue type, priority, and component assignment. Used when the team tracks defects in Jira rather than GitHub issues.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "project": {
+                    "type": "string",
+                    "description": "Jira project key."
+                  },
+                  "summary": {
+                    "type": "string",
+                    "description": "Ticket summary line."
+                  },
+                  "description": {
+                    "type": "string",
+                    "description": "Ticket description body."
+                  },
+                  "issue_type": {
+                    "type": "string",
+                    "description": "Issue type, e.g. Bug or Task."
+                  }
+                },
+                "required": [
+                  "project",
+                  "summary",
+                  "description",
+                  "issue_type"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "completion_tokens": 210,
+      "outcome": "success",
+      "status_code": 200,
+      "model_alias": "anthropic/claude-sonnet-4",
+      "provider_name": "anthropic"
+    },
+    {
+      "event_id": "example-event-3",
+      "request": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a release engineering agent operating on the acme/checkout repository. Your job is to triage failing CI pipelines, identify the root cause, and report a concise summary to the on-call engineer.\n\nOperating rules:\n- Always inspect the most recent failing workflow run before forming a hypothesis.\n- Prefer reading source files over guessing at behaviour.\n- Never modify CI configuration without explicit human approval.\n- When you have a root cause, state it in one sentence, then list the evidence you used.\n"
+          },
+          {
+            "role": "user",
+            "content": "The main branch CI has been red since this morning. Figure out what is failing and why, then summarise the root cause for the on-call engineer."
+          },
+          {
+            "role": "assistant",
+            "content": "Let me look at the recent workflow runs on main.",
+            "tool_calls": [
+              {
+                "id": "call_runs_1",
+                "type": "function",
+                "function": {
+                  "name": "github__list_workflow_runs",
+                  "arguments": "{\"repo\": \"acme/checkout\", \"branch\": \"main\", \"status\": \"completed\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_runs_1",
+            "name": "github__list_workflow_runs",
+            "content": "[{\"id\": 5821000, \"name\": \"CI\", \"node_id\": \"WFR_kwLOA5821000zQ\", \"head_branch\": \"main\", \"head_sha\": \"009f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"run_number\": 4120, \"event\": \"push\", \"status\": \"completed\", \"conclusion\": \"failure\", \"workflow_id\": 71223344, \"created_at\": \"2026-07-10T09:10:22Z\", \"updated_at\": \"2026-07-10T09:20:07Z\", \"html_url\": \"https://github.com/acme/checkout/actions/runs/5821000\", \"logs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821000/logs?token=AABBCCDDEEFF00112233445566778899&expires=1784500000&signature=b7c1e94a2f83d05e6a1c74bf93028dd5\", \"jobs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821000/jobs\", \"artifacts_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821000/artifacts\", \"head_commit\": {\"id\": \"009f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"tree_id\": \"001a7b93ce02d4f8615a09c3be27d418f0a6c95d3\", \"message\": \"refactor(checkout): extract price rounding into a shared helper so the web and mobile carts agree on cents\\n\\nCo-authored-by: Priya Raman <priya@acme.example>\", \"timestamp\": \"2026-07-10T09:00:11Z\", \"author\": {\"name\": \"Priya Raman\", \"email\": \"priya@acme.example\"}, \"committer\": {\"name\": \"GitHub\", \"email\": \"noreply@github.com\"}}, \"actor\": {\"login\": \"priya-raman\", \"id\": 4471290, \"node_id\": \"MDQ6VXNlcjQ0NzEyOTA=\", \"avatar_url\": \"https://avatars.githubusercontent.com/u/4471290?v=4\", \"gravatar_id\": \"\", \"url\": \"https://api.github.com/users/priya-raman\", \"html_url\": \"https://github.com/priya-raman\", \"followers_url\": \"https://api.github.com/users/priya-raman/followers\", \"organizations_url\": \"https://api.github.com/users/priya-raman/orgs\", \"repos_url\": \"https://api.github.com/users/priya-raman/repos\", \"type\": \"User\", \"site_admin\": false}}, {\"id\": 5821001, \"name\": \"CI\", \"node_id\": \"WFR_kwLOA5821001zQ\", \"head_branch\": \"main\", \"head_sha\": \"019f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"run_number\": 4121, \"event\": \"push\", \"status\": \"completed\", \"conclusion\": \"success\", \"workflow_id\": 71223344, \"created_at\": \"2026-07-11T09:11:22Z\", \"updated_at\": \"2026-07-11T09:21:07Z\", \"html_url\": \"https://github.com/acme/checkout/actions/runs/5821001\", \"logs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821001/logs?token=AABBCCDDEEFF00112233445566778899&expires=1784500000&signature=b7c1e94a2f83d05e6a1c74bf93028dd5\", \"jobs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821001/jobs\", \"artifacts_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821001/artifacts\", \"head_commit\": {\"id\": \"019f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"tree_id\": \"011a7b93ce02d4f8615a09c3be27d418f0a6c95d3\", \"message\": \"refactor(checkout): extract price rounding into a shared helper so the web and mobile carts agree on cents\\n\\nCo-authored-by: Priya Raman <priya@acme.example>\", \"timestamp\": \"2026-07-11T09:01:11Z\", \"author\": {\"name\": \"Priya Raman\", \"email\": \"priya@acme.example\"}, \"committer\": {\"name\": \"GitHub\", \"email\": \"noreply@github.com\"}}, \"actor\": {\"login\": \"priya-raman\", \"id\": 4471291, \"node_id\": \"MDQ6VXNlcjQ0NzEyOTA=\", \"avatar_url\": \"https://avatars.githubusercontent.com/u/4471290?v=4\", \"gravatar_id\": \"\", \"url\": \"https://api.github.com/users/priya-raman\", \"html_url\": \"https://github.com/priya-raman\", \"followers_url\": \"https://api.github.com/users/priya-raman/followers\", \"organizations_url\": \"https://api.github.com/users/priya-raman/orgs\", \"repos_url\": \"https://api.github.com/users/priya-raman/repos\", \"type\": \"User\", \"site_admin\": false}}, {\"id\": 5821002, \"name\": \"CI\", \"node_id\": \"WFR_kwLOA5821002zQ\", \"head_branch\": \"main\", \"head_sha\": \"029f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"run_number\": 4122, \"event\": \"push\", \"status\": \"completed\", \"conclusion\": \"success\", \"workflow_id\": 71223344, \"created_at\": \"2026-07-12T09:12:22Z\", \"updated_at\": \"2026-07-12T09:22:07Z\", \"html_url\": \"https://github.com/acme/checkout/actions/runs/5821002\", \"logs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821002/logs?token=AABBCCDDEEFF00112233445566778899&expires=1784500000&signature=b7c1e94a2f83d05e6a1c74bf93028dd5\", \"jobs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821002/jobs\", \"artifacts_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821002/artifacts\", \"head_commit\": {\"id\": \"029f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"tree_id\": \"021a7b93ce02d4f8615a09c3be27d418f0a6c95d3\", \"message\": \"refactor(checkout): extract price rounding into a shared helper so the web and mobile carts agree on cents\\n\\nCo-authored-by: Priya Raman <priya@acme.example>\", \"timestamp\": \"2026-07-12T09:02:11Z\", \"author\": {\"name\": \"Priya Raman\", \"email\": \"priya@acme.example\"}, \"committer\": {\"name\": \"GitHub\", \"email\": \"noreply@github.com\"}}, \"actor\": {\"login\": \"priya-raman\", \"id\": 4471292, \"node_id\": \"MDQ6VXNlcjQ0NzEyOTA=\", \"avatar_url\": \"https://avatars.githubusercontent.com/u/4471290?v=4\", \"gravatar_id\": \"\", \"url\": \"https://api.github.com/users/priya-raman\", \"html_url\": \"https://github.com/priya-raman\", \"followers_url\": \"https://api.github.com/users/priya-raman/followers\", \"organizations_url\": \"https://api.github.com/users/priya-raman/orgs\", \"repos_url\": \"https://api.github.com/users/priya-raman/repos\", \"type\": \"User\", \"site_admin\": false}}, {\"id\": 5821003, \"name\": \"CI\", \"node_id\": \"WFR_kwLOA5821003zQ\", \"head_branch\": \"main\", \"head_sha\": \"039f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"run_number\": 4123, \"event\": \"push\", \"status\": \"completed\", \"conclusion\": \"failure\", \"workflow_id\": 71223344, \"created_at\": \"2026-07-13T09:13:22Z\", \"updated_at\": \"2026-07-13T09:23:07Z\", \"html_url\": \"https://github.com/acme/checkout/actions/runs/5821003\", \"logs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821003/logs?token=AABBCCDDEEFF00112233445566778899&expires=1784500000&signature=b7c1e94a2f83d05e6a1c74bf93028dd5\", \"jobs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821003/jobs\", \"artifacts_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821003/artifacts\", \"head_commit\": {\"id\": \"039f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"tree_id\": \"031a7b93ce02d4f8615a09c3be27d418f0a6c95d3\", \"message\": \"refactor(checkout): extract price rounding into a shared helper so the web and mobile carts agree on cents\\n\\nCo-authored-by: Priya Raman <priya@acme.example>\", \"timestamp\": \"2026-07-13T09:03:11Z\", \"author\": {\"name\": \"Priya Raman\", \"email\": \"priya@acme.example\"}, \"committer\": {\"name\": \"GitHub\", \"email\": \"noreply@github.com\"}}, \"actor\": {\"login\": \"priya-raman\", \"id\": 4471293, \"node_id\": \"MDQ6VXNlcjQ0NzEyOTA=\", \"avatar_url\": \"https://avatars.githubusercontent.com/u/4471290?v=4\", \"gravatar_id\": \"\", \"url\": \"https://api.github.com/users/priya-raman\", \"html_url\": \"https://github.com/priya-raman\", \"followers_url\": \"https://api.github.com/users/priya-raman/followers\", \"organizations_url\": \"https://api.github.com/users/priya-raman/orgs\", \"repos_url\": \"https://api.github.com/users/priya-raman/repos\", \"type\": \"User\", \"site_admin\": false}}, {\"id\": 5821004, \"name\": \"CI\", \"node_id\": \"WFR_kwLOA5821004zQ\", \"head_branch\": \"main\", \"head_sha\": \"049f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"run_number\": 4124, \"event\": \"push\", \"status\": \"completed\", \"conclusion\": \"success\", \"workflow_id\": 71223344, \"created_at\": \"2026-07-14T09:14:22Z\", \"updated_at\": \"2026-07-14T09:24:07Z\", \"html_url\": \"https://github.com/acme/checkout/actions/runs/5821004\", \"logs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821004/logs?token=AABBCCDDEEFF00112233445566778899&expires=1784500000&signature=b7c1e94a2f83d05e6a1c74bf93028dd5\", \"jobs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821004/jobs\", \"artifacts_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821004/artifacts\", \"head_commit\": {\"id\": \"049f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"tree_id\": \"041a7b93ce02d4f8615a09c3be27d418f0a6c95d3\", \"message\": \"refactor(checkout): extract price rounding into a shared helper so the web and mobile carts agree on cents\\n\\nCo-authored-by: Priya Raman <priya@acme.example>\", \"timestamp\": \"2026-07-14T09:04:11Z\", \"author\": {\"name\": \"Priya Raman\", \"email\": \"priya@acme.example\"}, \"committer\": {\"name\": \"GitHub\", \"email\": \"noreply@github.com\"}}, \"actor\": {\"login\": \"priya-raman\", \"id\": 4471294, \"node_id\": \"MDQ6VXNlcjQ0NzEyOTA=\", \"avatar_url\": \"https://avatars.githubusercontent.com/u/4471290?v=4\", \"gravatar_id\": \"\", \"url\": \"https://api.github.com/users/priya-raman\", \"html_url\": \"https://github.com/priya-raman\", \"followers_url\": \"https://api.github.com/users/priya-raman/followers\", \"organizations_url\": \"https://api.github.com/users/priya-raman/orgs\", \"repos_url\": \"https://api.github.com/users/priya-raman/repos\", \"type\": \"User\", \"site_admin\": false}}, {\"id\": 5821005, \"name\": \"CI\", \"node_id\": \"WFR_kwLOA5821005zQ\", \"head_branch\": \"main\", \"head_sha\": \"059f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"run_number\": 4125, \"event\": \"push\", \"status\": \"completed\", \"conclusion\": \"success\", \"workflow_id\": 71223344, \"created_at\": \"2026-07-15T09:15:22Z\", \"updated_at\": \"2026-07-15T09:25:07Z\", \"html_url\": \"https://github.com/acme/checkout/actions/runs/5821005\", \"logs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821005/logs?token=AABBCCDDEEFF00112233445566778899&expires=1784500000&signature=b7c1e94a2f83d05e6a1c74bf93028dd5\", \"jobs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821005/jobs\", \"artifacts_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821005/artifacts\", \"head_commit\": {\"id\": \"059f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"tree_id\": \"051a7b93ce02d4f8615a09c3be27d418f0a6c95d3\", \"message\": \"refactor(checkout): extract price rounding into a shared helper so the web and mobile carts agree on cents\\n\\nCo-authored-by: Priya Raman <priya@acme.example>\", \"timestamp\": \"2026-07-15T09:05:11Z\", \"author\": {\"name\": \"Priya Raman\", \"email\": \"priya@acme.example\"}, \"committer\": {\"name\": \"GitHub\", \"email\": \"noreply@github.com\"}}, \"actor\": {\"login\": \"priya-raman\", \"id\": 4471295, \"node_id\": \"MDQ6VXNlcjQ0NzEyOTA=\", \"avatar_url\": \"https://avatars.githubusercontent.com/u/4471290?v=4\", \"gravatar_id\": \"\", \"url\": \"https://api.github.com/users/priya-raman\", \"html_url\": \"https://github.com/priya-raman\", \"followers_url\": \"https://api.github.com/users/priya-raman/followers\", \"organizations_url\": \"https://api.github.com/users/priya-raman/orgs\", \"repos_url\": \"https://api.github.com/users/priya-raman/repos\", \"type\": \"User\", \"site_admin\": false}}, {\"id\": 5821006, \"name\": \"CI\", \"node_id\": \"WFR_kwLOA5821006zQ\", \"head_branch\": \"main\", \"head_sha\": \"069f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"run_number\": 4126, \"event\": \"push\", \"status\": \"completed\", \"conclusion\": \"success\", \"workflow_id\": 71223344, \"created_at\": \"2026-07-16T09:10:22Z\", \"updated_at\": \"2026-07-16T09:20:07Z\", \"html_url\": \"https://github.com/acme/checkout/actions/runs/5821006\", \"logs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821006/logs?token=AABBCCDDEEFF00112233445566778899&expires=1784500000&signature=b7c1e94a2f83d05e6a1c74bf93028dd5\", \"jobs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821006/jobs\", \"artifacts_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821006/artifacts\", \"head_commit\": {\"id\": \"069f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"tree_id\": \"061a7b93ce02d4f8615a09c3be27d418f0a6c95d3\", \"message\": \"refactor(checkout): extract price rounding into a shared helper so the web and mobile carts agree on cents\\n\\nCo-authored-by: Priya Raman <priya@acme.example>\", \"timestamp\": \"2026-07-16T09:00:11Z\", \"author\": {\"name\": \"Priya Raman\", \"email\": \"priya@acme.example\"}, \"committer\": {\"name\": \"GitHub\", \"email\": \"noreply@github.com\"}}, \"actor\": {\"login\": \"priya-raman\", \"id\": 4471296, \"node_id\": \"MDQ6VXNlcjQ0NzEyOTA=\", \"avatar_url\": \"https://avatars.githubusercontent.com/u/4471290?v=4\", \"gravatar_id\": \"\", \"url\": \"https://api.github.com/users/priya-raman\", \"html_url\": \"https://github.com/priya-raman\", \"followers_url\": \"https://api.github.com/users/priya-raman/followers\", \"organizations_url\": \"https://api.github.com/users/priya-raman/orgs\", \"repos_url\": \"https://api.github.com/users/priya-raman/repos\", \"type\": \"User\", \"site_admin\": false}}, {\"id\": 5821007, \"name\": \"CI\", \"node_id\": \"WFR_kwLOA5821007zQ\", \"head_branch\": \"main\", \"head_sha\": \"079f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"run_number\": 4127, \"event\": \"push\", \"status\": \"completed\", \"conclusion\": \"failure\", \"workflow_id\": 71223344, \"created_at\": \"2026-07-17T09:11:22Z\", \"updated_at\": \"2026-07-17T09:21:07Z\", \"html_url\": \"https://github.com/acme/checkout/actions/runs/5821007\", \"logs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821007/logs?token=AABBCCDDEEFF00112233445566778899&expires=1784500000&signature=b7c1e94a2f83d05e6a1c74bf93028dd5\", \"jobs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821007/jobs\", \"artifacts_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821007/artifacts\", \"head_commit\": {\"id\": \"079f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"tree_id\": \"071a7b93ce02d4f8615a09c3be27d418f0a6c95d3\", \"message\": \"refactor(checkout): extract price rounding into a shared helper so the web and mobile carts agree on cents\\n\\nCo-authored-by: Priya Raman <priya@acme.example>\", \"timestamp\": \"2026-07-17T09:01:11Z\", \"author\": {\"name\": \"Priya Raman\", \"email\": \"priya@acme.example\"}, \"committer\": {\"name\": \"GitHub\", \"email\": \"noreply@github.com\"}}, \"actor\": {\"login\": \"priya-raman\", \"id\": 4471297, \"node_id\": \"MDQ6VXNlcjQ0NzEyOTA=\", \"avatar_url\": \"https://avatars.githubusercontent.com/u/4471290?v=4\", \"gravatar_id\": \"\", \"url\": \"https://api.github.com/users/priya-raman\", \"html_url\": \"https://github.com/priya-raman\", \"followers_url\": \"https://api.github.com/users/priya-raman/followers\", \"organizations_url\": \"https://api.github.com/users/priya-raman/orgs\", \"repos_url\": \"https://api.github.com/users/priya-raman/repos\", \"type\": \"User\", \"site_admin\": false}}, {\"id\": 5821008, \"name\": \"CI\", \"node_id\": \"WFR_kwLOA5821008zQ\", \"head_branch\": \"main\", \"head_sha\": \"089f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"run_number\": 4128, \"event\": \"push\", \"status\": \"completed\", \"conclusion\": \"success\", \"workflow_id\": 71223344, \"created_at\": \"2026-07-18T09:12:22Z\", \"updated_at\": \"2026-07-18T09:22:07Z\", \"html_url\": \"https://github.com/acme/checkout/actions/runs/5821008\", \"logs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821008/logs?token=AABBCCDDEEFF00112233445566778899&expires=1784500000&signature=b7c1e94a2f83d05e6a1c74bf93028dd5\", \"jobs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821008/jobs\", \"artifacts_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821008/artifacts\", \"head_commit\": {\"id\": \"089f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"tree_id\": \"081a7b93ce02d4f8615a09c3be27d418f0a6c95d3\", \"message\": \"refactor(checkout): extract price rounding into a shared helper so the web and mobile carts agree on cents\\n\\nCo-authored-by: Priya Raman <priya@acme.example>\", \"timestamp\": \"2026-07-18T09:02:11Z\", \"author\": {\"name\": \"Priya Raman\", \"email\": \"priya@acme.example\"}, \"committer\": {\"name\": \"GitHub\", \"email\": \"noreply@github.com\"}}, \"actor\": {\"login\": \"priya-raman\", \"id\": 4471298, \"node_id\": \"MDQ6VXNlcjQ0NzEyOTA=\", \"avatar_url\": \"https://avatars.githubusercontent.com/u/4471290?v=4\", \"gravatar_id\": \"\", \"url\": \"https://api.github.com/users/priya-raman\", \"html_url\": \"https://github.com/priya-raman\", \"followers_url\": \"https://api.github.com/users/priya-raman/followers\", \"organizations_url\": \"https://api.github.com/users/priya-raman/orgs\", \"repos_url\": \"https://api.github.com/users/priya-raman/repos\", \"type\": \"User\", \"site_admin\": false}}, {\"id\": 5821009, \"name\": \"CI\", \"node_id\": \"WFR_kwLOA5821009zQ\", \"head_branch\": \"main\", \"head_sha\": \"099f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"run_number\": 4129, \"event\": \"push\", \"status\": \"completed\", \"conclusion\": \"success\", \"workflow_id\": 71223344, \"created_at\": \"2026-07-10T09:13:22Z\", \"updated_at\": \"2026-07-10T09:23:07Z\", \"html_url\": \"https://github.com/acme/checkout/actions/runs/5821009\", \"logs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821009/logs?token=AABBCCDDEEFF00112233445566778899&expires=1784500000&signature=b7c1e94a2f83d05e6a1c74bf93028dd5\", \"jobs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821009/jobs\", \"artifacts_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821009/artifacts\", \"head_commit\": {\"id\": \"099f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"tree_id\": \"091a7b93ce02d4f8615a09c3be27d418f0a6c95d3\", \"message\": \"refactor(checkout): extract price rounding into a shared helper so the web and mobile carts agree on cents\\n\\nCo-authored-by: Priya Raman <priya@acme.example>\", \"timestamp\": \"2026-07-10T09:03:11Z\", \"author\": {\"name\": \"Priya Raman\", \"email\": \"priya@acme.example\"}, \"committer\": {\"name\": \"GitHub\", \"email\": \"noreply@github.com\"}}, \"actor\": {\"login\": \"priya-raman\", \"id\": 4471299, \"node_id\": \"MDQ6VXNlcjQ0NzEyOTA=\", \"avatar_url\": \"https://avatars.githubusercontent.com/u/4471290?v=4\", \"gravatar_id\": \"\", \"url\": \"https://api.github.com/users/priya-raman\", \"html_url\": \"https://github.com/priya-raman\", \"followers_url\": \"https://api.github.com/users/priya-raman/followers\", \"organizations_url\": \"https://api.github.com/users/priya-raman/orgs\", \"repos_url\": \"https://api.github.com/users/priya-raman/repos\", \"type\": \"User\", \"site_admin\": false}}, {\"id\": 5821010, \"name\": \"CI\", \"node_id\": \"WFR_kwLOA5821010zQ\", \"head_branch\": \"main\", \"head_sha\": \"0a9f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"run_number\": 4130, \"event\": \"push\", \"status\": \"completed\", \"conclusion\": \"success\", \"workflow_id\": 71223344, \"created_at\": \"2026-07-11T09:14:22Z\", \"updated_at\": \"2026-07-11T09:24:07Z\", \"html_url\": \"https://github.com/acme/checkout/actions/runs/5821010\", \"logs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821010/logs?token=AABBCCDDEEFF00112233445566778899&expires=1784500000&signature=b7c1e94a2f83d05e6a1c74bf93028dd5\", \"jobs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821010/jobs\", \"artifacts_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821010/artifacts\", \"head_commit\": {\"id\": \"0a9f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"tree_id\": \"0a1a7b93ce02d4f8615a09c3be27d418f0a6c95d3\", \"message\": \"refactor(checkout): extract price rounding into a shared helper so the web and mobile carts agree on cents\\n\\nCo-authored-by: Priya Raman <priya@acme.example>\", \"timestamp\": \"2026-07-11T09:04:11Z\", \"author\": {\"name\": \"Priya Raman\", \"email\": \"priya@acme.example\"}, \"committer\": {\"name\": \"GitHub\", \"email\": \"noreply@github.com\"}}, \"actor\": {\"login\": \"priya-raman\", \"id\": 4471300, \"node_id\": \"MDQ6VXNlcjQ0NzEyOTA=\", \"avatar_url\": \"https://avatars.githubusercontent.com/u/4471290?v=4\", \"gravatar_id\": \"\", \"url\": \"https://api.github.com/users/priya-raman\", \"html_url\": \"https://github.com/priya-raman\", \"followers_url\": \"https://api.github.com/users/priya-raman/followers\", \"organizations_url\": \"https://api.github.com/users/priya-raman/orgs\", \"repos_url\": \"https://api.github.com/users/priya-raman/repos\", \"type\": \"User\", \"site_admin\": false}}, {\"id\": 5821011, \"name\": \"CI\", \"node_id\": \"WFR_kwLOA5821011zQ\", \"head_branch\": \"main\", \"head_sha\": \"0b9f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"run_number\": 4131, \"event\": \"push\", \"status\": \"completed\", \"conclusion\": \"success\", \"workflow_id\": 71223344, \"created_at\": \"2026-07-12T09:15:22Z\", \"updated_at\": \"2026-07-12T09:25:07Z\", \"html_url\": \"https://github.com/acme/checkout/actions/runs/5821011\", \"logs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821011/logs?token=AABBCCDDEEFF00112233445566778899&expires=1784500000&signature=b7c1e94a2f83d05e6a1c74bf93028dd5\", \"jobs_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821011/jobs\", \"artifacts_url\": \"https://api.github.com/repos/acme/checkout/actions/runs/5821011/artifacts\", \"head_commit\": {\"id\": \"0b9f2c41b7de3a5480cc17e2b6a8f3d10945e7b2c\", \"tree_id\": \"0b1a7b93ce02d4f8615a09c3be27d418f0a6c95d3\", \"message\": \"refactor(checkout): extract price rounding into a shared helper so the web and mobile carts agree on cents\\n\\nCo-authored-by: Priya Raman <priya@acme.example>\", \"timestamp\": \"2026-07-12T09:05:11Z\", \"author\": {\"name\": \"Priya Raman\", \"email\": \"priya@acme.example\"}, \"committer\": {\"name\": \"GitHub\", \"email\": \"noreply@github.com\"}}, \"actor\": {\"login\": \"priya-raman\", \"id\": 4471301, \"node_id\": \"MDQ6VXNlcjQ0NzEyOTA=\", \"avatar_url\": \"https://avatars.githubusercontent.com/u/4471290?v=4\", \"gravatar_id\": \"\", \"url\": \"https://api.github.com/users/priya-raman\", \"html_url\": \"https://github.com/priya-raman\", \"followers_url\": \"https://api.github.com/users/priya-raman/followers\", \"organizations_url\": \"https://api.github.com/users/priya-raman/orgs\", \"repos_url\": \"https://api.github.com/users/priya-raman/repos\", \"type\": \"User\", \"site_admin\": false}}]"
+          },
+          {
+            "role": "assistant",
+            "content": "Run 5821000 failed. Pulling its logs.",
+            "tool_calls": [
+              {
+                "id": "call_logs_1",
+                "type": "function",
+                "function": {
+                  "name": "github__get_workflow_run_logs",
+                  "arguments": "{\"repo\": \"acme/checkout\", \"run_id\": \"5821000\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_logs_1",
+            "name": "github__get_workflow_run_logs",
+            "content": "2026-07-18T09:14:22.101Z ##[group]Run actions/checkout@v4\n2026-07-18T09:14:22.884Z Syncing repository: acme/checkout\n2026-07-18T09:14:23.402Z ##[endgroup]\n2026-07-18T09:14:24.019Z ##[group]Run npm ci\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:31.226Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n2026-07-18T09:14:39.881Z npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported.\n2026-07-18T09:14:39.881Z npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported.\n2026-07-18T09:14:39.881Z npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported.\n2026-07-18T09:14:39.881Z npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported.\n2026-07-18T09:14:39.881Z npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported.\n2026-07-18T09:14:39.881Z npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported.\n2026-07-18T09:14:39.881Z npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported.\n2026-07-18T09:14:39.881Z npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported.\n2026-07-18T09:14:39.881Z npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported.\n2026-07-18T09:14:39.881Z npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported.\n2026-07-18T09:14:39.881Z npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported.\n2026-07-18T09:14:39.881Z npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported.\n2026-07-18T09:14:39.881Z npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported.\n2026-07-18T09:14:39.881Z npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported.\n2026-07-18T09:15:02.550Z added 1284 packages in 38s\n2026-07-18T09:15:03.001Z ##[endgroup]\n2026-07-18T09:15:03.400Z ##[group]Run npm test -- --runInBand\n2026-07-18T09:15:44.318Z   RETRY 1 checkout/cart total rounds line items to the nearest cent\n2026-07-18T09:15:44.318Z   RETRY 1 checkout/cart total rounds line items to the nearest cent\n2026-07-18T09:15:44.318Z   RETRY 1 checkout/cart total rounds line items to the nearest cent\n2026-07-18T09:15:44.318Z   RETRY 1 checkout/cart total rounds line items to the nearest cent\n2026-07-18T09:15:44.318Z   RETRY 1 checkout/cart total rounds line items to the nearest cent\n2026-07-18T09:15:44.318Z   RETRY 1 checkout/cart total rounds line items to the nearest cent\n2026-07-18T09:15:44.318Z   RETRY 1 checkout/cart total rounds line items to the nearest cent\n2026-07-18T09:15:44.318Z   RETRY 1 checkout/cart total rounds line items to the nearest cent\n2026-07-18T09:15:44.318Z   RETRY 1 checkout/cart total rounds line items to the nearest cent\n2026-07-18T09:15:44.318Z   RETRY 1 checkout/cart total rounds line items to the nearest cent\n2026-07-18T09:15:44.318Z   RETRY 1 checkout/cart total rounds line items to the nearest cent\n2026-07-18T09:16:12.771Z   FAIL  src/cart/total.test.ts\n2026-07-18T09:16:12.772Z     ● cart total rounds line items to the nearest cent\n2026-07-18T09:16:12.774Z       expect(received).toBe(expected)\n2026-07-18T09:16:12.775Z       Expected: 1999\n2026-07-18T09:16:12.776Z       Received: 1998\n2026-07-18T09:16:12.780Z       at Object.<anonymous> (src/cart/total.test.ts:42:26)\n2026-07-18T09:16:13.020Z Tests: 1 failed, 316 passed, 317 total\n2026-07-18T09:16:13.402Z ##[error]Process completed with exit code 1."
+          },
+          {
+            "role": "assistant",
+            "content": "The cart total test fails by one cent. Reading the source.",
+            "tool_calls": [
+              {
+                "id": "call_read_1",
+                "type": "function",
+                "function": {
+                  "name": "fs__read_file",
+                  "arguments": "{\"path\": \"src/cart/total.ts\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_read_1",
+            "name": "fs__read_file",
+            "content": "import { Money } from '../money';\nimport type { LineItem } from './types';\n\n/**\n * Sum line items into an order total.\n *\n * Historically this rounded each line item independently, which drifts\n * from the mobile client's behaviour of rounding once at the end.\n */\nexport function cartTotal(items: LineItem[]): Money {\n  let subtotalCents = 0;\n  for (const item of items) {\n    // NOTE: per-line rounding is the suspected source of the off-by-one.\n    const lineCents = Math.round(item.unitPrice * item.quantity * 100);\n    subtotalCents += lineCents;\n  }\n  const taxCents = Math.round(subtotalCents * TAX_RATE);\n  const shippingCents = shippingFor(subtotalCents);\n  return Money.fromCents(subtotalCents + taxCents + shippingCents);\n}\n\nconst TAX_RATE = 0.0825;\n\nfunction shippingFor(subtotalCents: number): number {\n  if (subtotalCents >= 5000) return 0;\n  return 599;\n}\n"
+          },
+          {
+            "role": "assistant",
+            "content": "Re-reading the rounding helper to confirm the drift.",
+            "tool_calls": [
+              {
+                "id": "call_read_2",
+                "type": "function",
+                "function": {
+                  "name": "fs__read_file",
+                  "arguments": "{\"path\": \"src/cart/total.ts\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_read_2",
+            "name": "fs__read_file",
+            "content": "import { Money } from '../money';\nimport type { LineItem } from './types';\n\n/**\n * Sum line items into an order total.\n *\n * Historically this rounded each line item independently, which drifts\n * from the mobile client's behaviour of rounding once at the end.\n */\nexport function cartTotal(items: LineItem[]): Money {\n  let subtotalCents = 0;\n  for (const item of items) {\n    // NOTE: per-line rounding is the suspected source of the off-by-one.\n    const lineCents = Math.round(item.unitPrice * item.quantity * 100);\n    subtotalCents += lineCents;\n  }\n  const taxCents = Math.round(subtotalCents * TAX_RATE);\n  const shippingCents = shippingFor(subtotalCents);\n  return Money.fromCents(subtotalCents + taxCents + shippingCents);\n}\n\nconst TAX_RATE = 0.0825;\n\nfunction shippingFor(subtotalCents: number): number {\n  if (subtotalCents >= 5000) return 0;\n  return 599;\n}\n"
+          },
+          {
+            "role": "user",
+            "content": "Good — what is the root cause?"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "github__list_workflow_runs",
+              "description": "List recent GitHub Actions workflow runs for a repository, including status, conclusion, timing, triggering actor, and the head commit associated with each run. Supports filtering by branch and event.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "repo": {
+                    "type": "string",
+                    "description": "Repository in owner/name form."
+                  },
+                  "branch": {
+                    "type": "string",
+                    "description": "Branch to filter runs by."
+                  },
+                  "status": {
+                    "type": "string",
+                    "description": "Run status filter, e.g. completed or failure."
+                  }
+                },
+                "required": [
+                  "repo",
+                  "branch",
+                  "status"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "github__get_workflow_run_logs",
+              "description": "Fetch the raw log output for a single GitHub Actions workflow run. Returns the concatenated step logs as plain text, which may be large for long-running or highly parallel pipelines.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "repo": {
+                    "type": "string",
+                    "description": "Repository in owner/name form."
+                  },
+                  "run_id": {
+                    "type": "string",
+                    "description": "Numeric workflow run identifier."
+                  }
+                },
+                "required": [
+                  "repo",
+                  "run_id"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "fs__read_file",
+              "description": "Read a UTF-8 text file from the local checkout and return its full contents. Use this to inspect source, configuration, and lockfiles before forming a hypothesis about a failure.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "description": "Repository-relative path to the file to read."
+                  }
+                },
+                "required": [
+                  "path"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "completion_tokens": 320,
+      "outcome": "success",
+      "status_code": 200,
+      "model_alias": "anthropic/claude-sonnet-4",
+      "provider_name": "anthropic"
+    }
+  ]
+}

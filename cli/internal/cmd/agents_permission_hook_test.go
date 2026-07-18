@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/preloop/preloop/cli/internal/testenv"
 )
 
 func TestNormalizePermissionSource(t *testing.T) {
@@ -45,7 +47,7 @@ func TestCoerceToolInput(t *testing.T) {
 
 func TestBuildPermissionRequestClaudeCodeHonorsConfig(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 	overrideManagedSettingsPath(t, filepath.Join(t.TempDir(), "absent.json"))
 	claudeDir := filepath.Join(home, ".claude")
 	if err := os.MkdirAll(claudeDir, 0700); err != nil {
@@ -173,7 +175,7 @@ func TestRenderHookDecision(t *testing.T) {
 
 func TestResolvePermissionDecisionFailDefault(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 	// No credential file and no settings.json -> no token available.
 	raw := []byte(`{"tool_name":"Bash","tool_input":{"command":"ls"}}`)
 
@@ -190,7 +192,7 @@ func TestResolvePermissionDecisionFailDefault(t *testing.T) {
 
 func TestResolvePermissionDecisionClientFallbackAllow(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 	overrideManagedSettingsPath(t, filepath.Join(t.TempDir(), "absent.json"))
 	claudeDir := filepath.Join(home, ".claude")
 	if err := os.MkdirAll(claudeDir, 0700); err != nil {
@@ -211,7 +213,7 @@ func TestResolvePermissionDecisionClientFallbackAllow(t *testing.T) {
 
 func TestResolvePermissionDecisionCallsEndpoint(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 
 	var gotAuth string
 	var gotBody permissionCheckRequest
@@ -250,7 +252,7 @@ func TestResolvePermissionDecisionCallsEndpoint(t *testing.T) {
 
 func TestClaudeSettingsBearerTokenFallback(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 	claudeDir := filepath.Join(home, ".claude")
 	if err := os.MkdirAll(claudeDir, 0700); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -275,7 +277,7 @@ func TestClaudeSettingsBearerTokenFallback(t *testing.T) {
 
 func TestInstallRemoveApprovalHooksClaudeCode(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 	agent := AgentConfig{Name: "Claude Code", ConfigPath: filepath.Join(home, ".claude", "settings.json")}
 
 	// Pre-existing unrelated user settings + an unrelated PreToolUse hook.
@@ -344,7 +346,7 @@ func TestInstallRemoveApprovalHooksClaudeCode(t *testing.T) {
 
 func TestInstallRemoveApprovalHooksCodex(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 	agent := AgentConfig{Name: "Codex CLI", ConfigPath: filepath.Join(home, ".codex", "config.toml")}
 	hooksPath := filepath.Join(home, ".codex", "hooks.json")
 
@@ -368,7 +370,7 @@ func TestInstallRemoveApprovalHooksCodex(t *testing.T) {
 
 func TestInstallRemoveApprovalHooksCursor(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 	agent := AgentConfig{Name: "Cursor", ConfigPath: filepath.Join(home, ".cursor", "mcp.json")}
 	hooksPath := filepath.Join(home, ".cursor", "hooks.json")
 
@@ -598,7 +600,7 @@ func boolPtr(v bool) *bool { return &v }
 
 func TestBuildPermissionRequestClaudeProjectSettings(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 	overrideManagedSettingsPath(t, filepath.Join(t.TempDir(), "absent.json"))
 
 	// User settings have no rules; the allow rule lives in the project's
@@ -636,7 +638,7 @@ func TestBuildPermissionRequestClaudeProjectSettings(t *testing.T) {
 
 func TestBuildPermissionRequestClaudeManagedDenyWins(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 	managedPath := filepath.Join(t.TempDir(), "managed-settings.json")
 	overrideManagedSettingsPath(t, managedPath)
 
@@ -665,7 +667,7 @@ func TestBuildPermissionRequestClaudeManagedDenyWins(t *testing.T) {
 
 func TestClaudeSafeReadBashFallback(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 	overrideManagedSettingsPath(t, filepath.Join(t.TempDir(), "absent.json"))
 
 	build := func(command string, cred permissionHookCredential) permissionCheckRequest {
@@ -713,7 +715,7 @@ func TestCursorSafeReadAutoAllow(t *testing.T) {
 	// No permissions.json anywhere (the common case): safe reads auto-allow,
 	// everything else still asks.
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 
 	build := func(raw string, cred permissionHookCredential) permissionCheckRequest {
 		t.Helper()
@@ -757,7 +759,7 @@ func TestCursorSafeReadAutoAllow(t *testing.T) {
 
 func TestFailureDecisionReasonsAreActionable(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 
 	// Missing credential: the deny reason must say what is missing and how to
 	// repair or disable the hook. Codex is used because it never computes a

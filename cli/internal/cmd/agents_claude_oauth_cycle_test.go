@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/preloop/preloop/cli/internal/api"
+	"github.com/preloop/preloop/cli/internal/testenv"
 )
 
 func claudeOAuthUpstreamForTest(payload map[string]interface{}) *managedGatewayUpstream {
@@ -311,7 +312,7 @@ func writeClaudeCredentialsFileForTest(t *testing.T, home, access string, expire
 
 func TestOnboardOffboardCyclesPreserveRotatingClaudeCredentialFile(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 	// Keep removeClaudeCodeManagedMCPServer from invoking a real `claude`
 	// binary found on the developer's PATH.
 	t.Setenv("PATH", "")
@@ -418,7 +419,7 @@ func TestOnboardOffboardCyclesPreserveRotatingClaudeCredentialFile(t *testing.T)
 
 func TestPrintClaudeCodeOAuthOffboardNote(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 
 	// Expired local bundle: the gateway-held copy superseded it, so the user
 	// gets a recovery hint.

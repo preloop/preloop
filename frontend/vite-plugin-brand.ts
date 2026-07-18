@@ -11,6 +11,19 @@ import {
   get_structured_data_for_route,
   VS_PAGE_META,
 } from './src/brand-seo';
+import {
+  BLOG_BASE_PATH,
+  BLOG_SLUG_PATTERN,
+  estimate_reading_minutes,
+  generate_blog_feed_xml,
+  generate_blog_llms_section,
+  get_blog_slug_from_route,
+  get_published_posts,
+  is_blog_enabled,
+  render_blog_index_html,
+  render_blog_post_html,
+  type BlogPost,
+} from './src/blog-seo';
 
 /**
  * Enumerate competitor comparison slugs that have both a markdown file on
@@ -32,6 +45,126 @@ function discover_vs_slugs(
     .map((name) => name.replace(/\.md$/, ''))
     .filter((slug) => Boolean(VS_PAGE_META[slug]))
     .sort();
+}
+
+/**
+ * Split a markdown file into its YAML frontmatter block and its body.
+ *
+ * Frontmatter is the leading `---` fenced block. Anything else is treated as
+ * a body-only file with no metadata, which the caller then rejects.
+ */
+export function split_frontmatter(source: string): {
+  frontmatter: string;
+  body: string;
+} {
+  const normalised = source.replace(/^﻿/, '');
+  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(normalised);
+  if (!match) {
+    return { frontmatter: '', body: normalised };
+  }
+  return { frontmatter: match[1], body: match[2] };
+}
+
+/**
+ * Read every blog post from `content/<brand>/blog/*.md`.
+ *
+ * A post is included only if it has a valid slug (from the filename), a
+ * title, a description, an ISO date, and `draft` is not true. Anything that
+ * fails those checks is skipped with a build warning rather than shipping a
+ * half-formed page — a blog post with no description is a post with no
+ * snippet in search results and no summary in llms.txt.
+ */
+async function discover_blog_posts(
+  contentBasePath: string,
+  brandKey: string
+): Promise<BlogPost[]> {
+  const blogDir = path.resolve(contentBasePath, brandKey, 'blog');
+  if (!fs.existsSync(blogDir)) {
+    return [];
+  }
+
+  const { marked } = await import('marked');
+  const posts: BlogPost[] = [];
+
+  const files = fs
+    .readdirSync(blogDir)
+    .filter((name) => name.endsWith('.md'))
+    .sort();
+
+  for (const filename of files) {
+    const slug = filename.replace(/\.md$/, '');
+    if (!BLOG_SLUG_PATTERN.test(slug)) {
+      console.warn(
+        `[blog] Skipping "${filename}": slug must match ${BLOG_SLUG_PATTERN}`
+      );
+      continue;
+    }
+
+    const source = fs.readFileSync(path.resolve(blogDir, filename), 'utf-8');
+    const { frontmatter, body } = split_frontmatter(source);
+    if (!frontmatter) {
+      console.warn(`[blog] Skipping "${filename}": no YAML frontmatter block`);
+      continue;
+    }
+
+    let meta: Record<string, any>;
+    try {
+      meta = (yaml.load(frontmatter) as Record<string, any>) || {};
+    } catch (error) {
+      console.warn(`[blog] Skipping "${filename}": invalid frontmatter YAML`);
+      continue;
+    }
+
+    if (meta.draft === true) {
+      continue;
+    }
+
+    const missing = ['title', 'description', 'date'].filter(
+      (field) => !meta[field]
+    );
+    if (missing.length > 0) {
+      console.warn(
+        `[blog] Skipping "${filename}": missing frontmatter ${missing.join(', ')}`
+      );
+      continue;
+    }
+
+    // `date` may be parsed by js-yaml into a Date; normalise to YYYY-MM-DD.
+    const date =
+      meta.date instanceof Date
+        ? meta.date.toISOString().slice(0, 10)
+        : String(meta.date).slice(0, 10);
+    const updated =
+      meta.updated instanceof Date
+        ? meta.updated.toISOString().slice(0, 10)
+        : meta.updated
+          ? String(meta.updated).slice(0, 10)
+          : undefined;
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      console.warn(
+        `[blog] Skipping "${filename}": date "${date}" is not YYYY-MM-DD`
+      );
+      continue;
+    }
+
+    posts.push({
+      slug,
+      title: String(meta.title),
+      description: String(meta.description),
+      date,
+      updated,
+      author: meta.author ? String(meta.author) : undefined,
+      author_url: meta.author_url ? String(meta.author_url) : undefined,
+      tags: Array.isArray(meta.tags) ? meta.tags.map(String) : [],
+      og_image: meta.og_image ? String(meta.og_image) : undefined,
+      related: Array.isArray(meta.related) ? meta.related.map(String) : [],
+      reading_minutes: estimate_reading_minutes(body),
+      body_html: await marked.parse(body),
+    });
+  }
+
+  return get_published_posts(posts);
 }
 
 /**
@@ -63,6 +196,19 @@ export function brandPlugin(
   options: BrandPluginOptions = {}
 ): Plugin {
   let brandConfig: BrandConfig;
+
+  // Blog posts are read once per build and shared by `generateBundle`,
+  // `closeBundle`, and `transformIndexHtml` so the sitemap, llms.txt, feed,
+  // and rendered pages can never disagree about which posts exist.
+  let blogPostsPromise: Promise<BlogPost[]> | null = null;
+  const loadBlogPosts = (): Promise<BlogPost[]> => {
+    if (!blogPostsPromise) {
+      blogPostsPromise = is_blog_enabled(brandConfig)
+        ? discover_blog_posts(contentBasePath, brandKey)
+        : Promise.resolve([]);
+    }
+    return blogPostsPromise;
+  };
 
   // Resolve paths - use options or defaults
   const configPath =
@@ -147,6 +293,9 @@ export function brandPlugin(
           ? discover_vs_slugs(contentBasePath, brandKey)
           : [];
 
+      // Blog posts (SaaS-only; empty array on self-hosted builds).
+      const blogPosts = await loadBlogPosts();
+
       // Add JSON file to bundle
       this.emitFile({
         type: 'asset',
@@ -160,7 +309,8 @@ export function brandPlugin(
         source: generateSitemapXml(
           brandConfig,
           hasAiActReadinessPage,
-          vsSlugsForRouting
+          vsSlugsForRouting,
+          blogPosts
         ),
       });
 
@@ -176,9 +326,40 @@ export function brandPlugin(
         source: generateLlmsTxt(
           brandConfig,
           hasAiActReadinessPage,
-          vsSlugsForRouting
+          vsSlugsForRouting,
+          blogPosts
         ),
       });
+
+      // Blog: RSS feed plus pre-rendered article fragments that <static-view>
+      // fetches during client-side navigation. Fragments are `.html` rather
+      // than `.md` because the dateline, tags, and related-links block are
+      // rendered from frontmatter, not from the markdown body.
+      if (blogPosts.length > 0) {
+        this.emitFile({
+          type: 'asset',
+          fileName: 'blog/feed.xml',
+          source: generate_blog_feed_xml(brandConfig, blogPosts),
+        });
+
+        this.emitFile({
+          type: 'asset',
+          fileName: 'content/blog/index.html',
+          source: render_blog_index_html(
+            brandConfig,
+            blogPosts,
+            ARTICLE_STYLES
+          ),
+        });
+
+        for (const post of blogPosts) {
+          this.emitFile({
+            type: 'asset',
+            fileName: `content/blog/${post.slug}.html`,
+            source: render_blog_post_html(post, brandConfig, ARTICLE_STYLES),
+          });
+        }
+      }
 
       // Generate static HTML fragments for dynamic loading
       const privacyHTML = await loadMarkdownContent(
@@ -495,6 +676,45 @@ export function brandPlugin(
             fs.copyFileSync(vsMdPath, path.resolve(contentVsDir, `${slug}.md`));
           }
         }
+
+        // Blog: a crawlable standalone page per post plus the index. Same
+        // prerender-first shape as /vs/ and /resources/ — the SPA reuses the
+        // SSR'd markup on first load and fetches the fragment thereafter.
+        const blogPosts = await loadBlogPosts();
+        if (blogPosts.length > 0) {
+          const blogOutDir = path.resolve(outDirPath, 'blog');
+          if (!fs.existsSync(blogOutDir)) {
+            fs.mkdirSync(blogOutDir, { recursive: true });
+          }
+
+          const blogIndexPage = generateFullHtmlPage(
+            indexHtml,
+            BLOG_BASE_PATH,
+            brandConfig,
+            render_blog_index_html(brandConfig, blogPosts, ARTICLE_STYLES),
+            blogPosts
+          );
+          fs.writeFileSync(
+            path.resolve(blogOutDir, 'index.html'),
+            blogIndexPage
+          );
+          generatedPages.push('blog/index.html');
+
+          for (const post of blogPosts) {
+            const postPage = generateFullHtmlPage(
+              indexHtml,
+              `${BLOG_BASE_PATH}/${post.slug}`,
+              brandConfig,
+              render_blog_post_html(post, brandConfig, ARTICLE_STYLES),
+              blogPosts
+            );
+            fs.writeFileSync(
+              path.resolve(blogOutDir, `${post.slug}.html`),
+              postPage
+            );
+            generatedPages.push(`blog/${post.slug}.html`);
+          }
+        }
       }
 
       console.log(
@@ -506,9 +726,10 @@ export function brandPlugin(
       // Determine which route we're rendering based on the filename
       const filename = ctx.filename || '';
       const route = get_route_from_filename(filename);
+      const blogPosts = await loadBlogPosts();
 
       // Get route-specific metadata
-      const meta = get_meta_for_route(route, brandConfig);
+      const meta = get_meta_for_route(route, brandConfig, blogPosts);
       const canonicalUrl = get_canonical_url(route, brandConfig);
 
       // Replace <title>
@@ -598,7 +819,8 @@ export function brandPlugin(
         `<meta name="twitter:creator" content="${brandConfig.social.twitter}">`
       );
 
-      html = upsertStructuredDataTag(html, route, brandConfig);
+      html = upsertStructuredDataTag(html, route, brandConfig, blogPosts);
+      html = upsertFeedLink(html, route, brandConfig, blogPosts);
 
       // Replace favicon
       html = html.replace(
@@ -629,7 +851,8 @@ export function brandPlugin(
         route,
         brandConfig,
         brandKey,
-        contentBasePath
+        contentBasePath,
+        blogPosts
       );
       if (slottedContent) {
         if (route === '/') {
@@ -648,6 +871,8 @@ export function brandPlugin(
           route === '/privacy' ||
           route === '/ai-act-readiness' ||
           route === '/resources/ai-agent-control-plane-2026' ||
+          route === BLOG_BASE_PATH ||
+          get_blog_slug_from_route(route) !== null ||
           route.startsWith('/vs/')
         ) {
           // Static pages: inject static-view-wrapper with content
@@ -674,7 +899,8 @@ async function generateSlottedContentForRoute(
   route: string,
   config: BrandConfig,
   brandKey: string,
-  contentBasePath: string
+  contentBasePath: string,
+  blogPosts: BlogPost[] = []
 ): Promise<string> {
   // Safe accessors with defaults
   const hero = config.landing?.hero || {};
@@ -822,7 +1048,24 @@ async function generateSlottedContentForRoute(
         'resources/ai-agent-control-plane-2026'
       );
 
+    case BLOG_BASE_PATH:
+      return blogPosts.length > 0
+        ? render_blog_index_html(config, blogPosts, ARTICLE_STYLES)
+        : '';
+
     default: {
+      // Blog posts at /blog/<slug>.
+      const blog_slug = get_blog_slug_from_route(route);
+      if (blog_slug) {
+        const post = blogPosts.find(
+          (candidate) => candidate.slug === blog_slug
+        );
+        if (post) {
+          return render_blog_post_html(post, config, ARTICLE_STYLES);
+        }
+        return '';
+      }
+
       // Competitor comparison landing pages at /vs/<slug>. Load the matching
       // markdown fragment so the pre-rendered HTML ships with real content.
       if (route.startsWith('/vs/')) {
@@ -855,9 +1098,10 @@ function generateFullHtmlPage(
   indexHtml: string,
   route: string,
   config: BrandConfig,
-  content: string
+  content: string,
+  blogPosts: BlogPost[] = []
 ): string {
-  const meta = get_meta_for_route(route, config);
+  const meta = get_meta_for_route(route, config, blogPosts);
   const canonicalUrl = get_canonical_url(route, config);
   let html = indexHtml;
 
@@ -932,7 +1176,8 @@ function generateFullHtmlPage(
     `<meta name="twitter:image" content="${meta.og_image}">`
   );
 
-  html = upsertStructuredDataTag(html, route, config);
+  html = upsertStructuredDataTag(html, route, config, blogPosts);
+  html = upsertFeedLink(html, route, config, blogPosts);
 
   // Replace <lit-app> with content-wrapped version. The pricing route is
   // special-cased: instead of the read-only static-view-wrapper, we wrap the
@@ -956,13 +1201,38 @@ function upsertHeadTag(html: string, pattern: RegExp, tag: string): string {
   return html.replace('</head>', `  ${tag}\n</head>`);
 }
 
+/**
+ * Advertise the RSS feed from blog pages so readers and crawlers can discover
+ * it without visiting the index. Only emitted on `/blog` and `/blog/<slug>` —
+ * a feed link on the pricing page would be noise.
+ */
+function upsertFeedLink(
+  html: string,
+  route: string,
+  config: BrandConfig,
+  blogPosts: BlogPost[]
+): string {
+  const isBlogRoute =
+    route === BLOG_BASE_PATH || get_blog_slug_from_route(route) !== null;
+  if (!isBlogRoute || blogPosts.length === 0) {
+    return html;
+  }
+  const tag = `<link rel="alternate" type="application/rss+xml" title="${config.name} Blog" href="https://${config.domain}${BLOG_BASE_PATH}/feed.xml">`;
+  return upsertHeadTag(
+    html,
+    /<link\s+rel="alternate"\s+type="application\/rss\+xml"[\s\S]*?>/,
+    tag
+  );
+}
+
 function upsertStructuredDataTag(
   html: string,
   route: string,
-  config: BrandConfig
+  config: BrandConfig,
+  blogPosts: BlogPost[] = []
 ): string {
   const structuredData = JSON.stringify(
-    get_structured_data_for_route(route, config)
+    get_structured_data_for_route(route, config, blogPosts)
   )
     .replaceAll('<', '\\u003c')
     .replaceAll('</script', '<\\/script');
@@ -977,18 +1247,29 @@ function upsertStructuredDataTag(
 function generateSitemapXml(
   config: BrandConfig,
   includeAiActReadiness: boolean,
-  vsSlugs: string[] = []
+  vsSlugs: string[] = [],
+  blogPosts: BlogPost[] = []
 ): string {
   const routes = get_static_routes_with_options(
     config,
     includeAiActReadiness,
-    vsSlugs
+    vsSlugs,
+    blogPosts
   );
   const urls = routes
-    .map(
-      (route) =>
-        `  <url>\n    <loc>https://${config.domain}${route}</loc>\n  </url>`
-    )
+    .map((route) => {
+      // Blog posts carry a real <lastmod> from their frontmatter. Dated
+      // entries are only worth emitting where the date is genuine, so the
+      // rest of the site deliberately stays lastmod-free.
+      const blogSlug = get_blog_slug_from_route(route);
+      const post = blogSlug
+        ? blogPosts.find((candidate) => candidate.slug === blogSlug)
+        : undefined;
+      const lastmod = post
+        ? `\n    <lastmod>${post.updated || post.date}</lastmod>`
+        : '';
+      return `  <url>\n    <loc>https://${config.domain}${route}</loc>${lastmod}\n  </url>`;
+    })
     .join('\n');
 
   return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`;
@@ -1019,14 +1300,16 @@ function resolveCtaUrl(
 function generateLlmsTxt(
   config: BrandConfig,
   includeAiActReadiness: boolean,
-  vsSlugs: string[] = []
+  vsSlugs: string[] = [],
+  blogPosts: BlogPost[] = []
 ): string {
   const meta = config.landing?.meta || {};
   const hero = config.landing?.hero || {};
   const routes = get_static_routes_with_options(
     config,
     includeAiActReadiness,
-    vsSlugs
+    vsSlugs,
+    blogPosts
   );
 
   return [
@@ -1037,6 +1320,9 @@ function generateLlmsTxt(
     'Primary pages:',
     ...routes.map((route) => `- https://${config.domain}${route}`),
     '',
+    // Posts are listed a second time with title, date, and summary. A bare
+    // URL tells an answer engine nothing about what a post argues.
+    ...generate_blog_llms_section(config, blogPosts),
     'Primary calls to action:',
     `- ${hero.cta_primary || 'Sign up'} -> ${resolveCtaUrl(
       (hero as any).cta_primary_url,
@@ -1077,7 +1363,23 @@ async function loadMarkdownContent(
   // ::slotted() can't style descendants. Keep these in lockstep with the
   // .text-section styles in views/public/static-view.ts.
   const styledArticle = `<article class="container py-5">
-    <style>
+    <style>${ARTICLE_STYLES}</style>
+    ${html}
+  </article>`;
+
+  return styledArticle;
+}
+
+/**
+ * Long-form article styles, shared by every markdown-driven page (privacy,
+ * terms, /about, /vs/<slug>, /resources/<slug>) and by the blog.
+ *
+ * These live in the light DOM as an inline <style> tag because the article is
+ * slotted into <static-view-wrapper> and ::slotted() cannot style
+ * descendants. Keep in lockstep with the `.text-section` styles in
+ * views/public/static-view.ts.
+ */
+export const ARTICLE_STYLES = `
       article.container {
         font-size: 1.0625rem;
         line-height: 1.75;
@@ -1298,12 +1600,7 @@ async function loadMarkdownContent(
           padding: 0.55em 0.7em;
         }
       }
-    </style>
-    ${html}
-  </article>`;
-
-  return styledArticle;
-}
+`;
 
 // generatePrivacyContent removed - use loadMarkdownContent(brandKey, 'privacy') directly
 

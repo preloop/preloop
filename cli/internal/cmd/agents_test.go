@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/preloop/preloop/cli/internal/api"
+
+	"github.com/preloop/preloop/cli/internal/testenv"
 )
 
 func TestOnboardCandidatesBestEffortContinuesPastLauncherFailures(t *testing.T) {
@@ -124,8 +126,9 @@ func TestPrintAgentOnboardingFailuresReportsRecordedFailures(t *testing.T) {
 }
 
 func TestResolveManagedAgentExecutablePathUsesNVMFallback(t *testing.T) {
+	skipManagedLauncherOnWindows(t, "resolving an agent binary from the nvm fallback path")
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 	t.Setenv("PATH", "")
 
 	geminiPath := filepath.Join(home, ".nvm", "versions", "node", "v25.8.1", "bin", "gemini")
@@ -437,13 +440,7 @@ bearer_token_env_var = "PRELOOP_TOKEN"
 
 func TestDiscoverAgentsFindsClaudeCodeSettingsAndCodexTOML(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	defer func() {
-		_ = os.Setenv("HOME", oldHome)
-	}()
+	testenv.SetHome(t, home)
 
 	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0755); err != nil {
 		t.Fatalf("failed to create claude dir: %v", err)
@@ -481,13 +478,7 @@ trust_level = "trusted"
 
 func TestDiscoverAgentsFindsInstalledOpenCodeWithoutConfig(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	defer func() {
-		_ = os.Setenv("HOME", oldHome)
-	}()
+	testenv.SetHome(t, home)
 
 	authPath := filepath.Join(home, ".local", "share", "opencode", "auth.json")
 	if err := os.MkdirAll(filepath.Dir(authPath), 0755); err != nil {
@@ -519,13 +510,7 @@ func TestDiscoverAgentsFindsInstalledOpenCodeWithoutConfig(t *testing.T) {
 
 func TestParseOpenCodeManagedGatewayUpstreamUsesAuthDefaults(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	defer func() {
-		_ = os.Setenv("HOME", oldHome)
-	}()
+	testenv.SetHome(t, home)
 
 	authPath := filepath.Join(home, ".local", "share", "opencode", "auth.json")
 	if err := os.MkdirAll(filepath.Dir(authPath), 0755); err != nil {
@@ -576,13 +561,7 @@ func TestParseOpenCodeManagedGatewayUpstreamUsesAuthDefaults(t *testing.T) {
 
 func TestParseOpenCodeManagedGatewayUpstreamPrefersDiscoveredState(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	defer func() {
-		_ = os.Setenv("HOME", oldHome)
-	}()
+	testenv.SetHome(t, home)
 
 	configPath := filepath.Join(home, ".config", "opencode", "config.json")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
@@ -645,13 +624,7 @@ func TestParseOpenCodeManagedGatewayUpstreamPrefersDiscoveredState(t *testing.T)
 
 func TestParseOpenCodeManagedGatewayUpstreamIgnoresManagedPreloopConfig(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	defer func() {
-		_ = os.Setenv("HOME", oldHome)
-	}()
+	testenv.SetHome(t, home)
 
 	configPath := filepath.Join(home, ".config", "opencode", "config.json")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
@@ -693,13 +666,7 @@ func TestParseOpenCodeManagedGatewayUpstreamIgnoresManagedPreloopConfig(t *testi
 
 func TestParseCodexManagedGatewayUpstreamReturnsNilWithoutResolvedModel(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	defer func() {
-		_ = os.Setenv("HOME", oldHome)
-	}()
+	testenv.SetHome(t, home)
 
 	configPath := filepath.Join(home, ".codex", "config.toml")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
@@ -726,13 +693,7 @@ func TestParseCodexManagedGatewayUpstreamReturnsNilWithoutResolvedModel(t *testi
 
 func TestParseGeminiManagedGatewayUpstreamUsesRecentChatAndDotEnv(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	defer func() {
-		_ = os.Setenv("HOME", oldHome)
-	}()
+	testenv.SetHome(t, home)
 
 	configPath := filepath.Join(home, ".gemini", "settings.json")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
@@ -787,18 +748,8 @@ func TestParseGeminiManagedGatewayUpstreamUsesRecentChatAndDotEnv(t *testing.T) 
 
 func TestParseGeminiManagedGatewayUpstreamUsesEncryptedStoredAPIKey(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	oldUser := os.Getenv("USER")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	if err := os.Setenv("USER", "preloop-gemini-test"); err != nil {
-		t.Fatalf("failed to set USER: %v", err)
-	}
-	defer func() {
-		_ = os.Setenv("HOME", oldHome)
-		_ = os.Setenv("USER", oldUser)
-	}()
+	testenv.SetHome(t, home)
+	t.Setenv("USER", "preloop-gemini-test")
 
 	configPath := filepath.Join(home, ".gemini", "settings.json")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
@@ -871,18 +822,8 @@ func TestParseGeminiManagedGatewayUpstreamUsesEncryptedStoredAPIKey(t *testing.T
 
 func TestParseGeminiManagedGatewayUpstreamUsesEncryptedObjectAPIKey(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	oldUser := os.Getenv("USER")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	if err := os.Setenv("USER", "preloop-gemini-test"); err != nil {
-		t.Fatalf("failed to set USER: %v", err)
-	}
-	defer func() {
-		_ = os.Setenv("HOME", oldHome)
-		_ = os.Setenv("USER", oldUser)
-	}()
+	testenv.SetHome(t, home)
+	t.Setenv("USER", "preloop-gemini-test")
 
 	configPath := filepath.Join(home, ".gemini", "settings.json")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
@@ -947,18 +888,8 @@ func TestParseGeminiManagedGatewayUpstreamUsesEncryptedObjectAPIKey(t *testing.T
 
 func TestParseGeminiManagedGatewayUpstreamDefaultsFreshAPIKeyInstall(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	oldUser := os.Getenv("USER")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	if err := os.Setenv("USER", "preloop-gemini-test"); err != nil {
-		t.Fatalf("failed to set USER: %v", err)
-	}
-	defer func() {
-		_ = os.Setenv("HOME", oldHome)
-		_ = os.Setenv("USER", oldUser)
-	}()
+	testenv.SetHome(t, home)
+	t.Setenv("USER", "preloop-gemini-test")
 
 	configPath := filepath.Join(home, ".gemini", "settings.json")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
@@ -1018,18 +949,8 @@ func TestParseGeminiManagedGatewayUpstreamDefaultsFreshAPIKeyInstall(t *testing.
 
 func TestParseGeminiManagedGatewayUpstreamRecoversFromManagedConfig(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	oldUser := os.Getenv("USER")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	if err := os.Setenv("USER", "preloop-gemini-test"); err != nil {
-		t.Fatalf("failed to set USER: %v", err)
-	}
-	defer func() {
-		_ = os.Setenv("HOME", oldHome)
-		_ = os.Setenv("USER", oldUser)
-	}()
+	testenv.SetHome(t, home)
+	t.Setenv("USER", "preloop-gemini-test")
 
 	configPath := filepath.Join(home, ".gemini", "settings.json")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
@@ -1096,18 +1017,8 @@ func TestParseGeminiManagedGatewayUpstreamRecoversFromManagedConfig(t *testing.T
 
 func TestParseClaudeManagedGatewayUpstreamUsesRecentSessionModel(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	oldToken := os.Getenv("CLAUDE_TEST_TOKEN")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	if err := os.Setenv("CLAUDE_TEST_TOKEN", "sk-ant-api03-claude-auth-token"); err != nil {
-		t.Fatalf("failed to set CLAUDE_TEST_TOKEN: %v", err)
-	}
-	defer func() {
-		_ = os.Setenv("HOME", oldHome)
-		_ = os.Setenv("CLAUDE_TEST_TOKEN", oldToken)
-	}()
+	testenv.SetHome(t, home)
+	t.Setenv("CLAUDE_TEST_TOKEN", "sk-ant-api03-claude-auth-token")
 
 	configPath := filepath.Join(home, ".claude", "settings.json")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
@@ -1158,18 +1069,8 @@ func TestParseClaudeManagedGatewayUpstreamUsesRecentSessionModel(t *testing.T) {
 
 func TestParseClaudeManagedGatewayUpstreamImportsOAuthWithWarning(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	oldToken := os.Getenv("CLAUDE_TEST_TOKEN")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	if err := os.Setenv("CLAUDE_TEST_TOKEN", "sk-ant-oat01-claude-code-token"); err != nil {
-		t.Fatalf("failed to set CLAUDE_TEST_TOKEN: %v", err)
-	}
-	defer func() {
-		_ = os.Setenv("HOME", oldHome)
-		_ = os.Setenv("CLAUDE_TEST_TOKEN", oldToken)
-	}()
+	testenv.SetHome(t, home)
+	t.Setenv("CLAUDE_TEST_TOKEN", "sk-ant-oat01-claude-code-token")
 
 	configPath := filepath.Join(home, ".claude", "settings.json")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
@@ -1252,13 +1153,7 @@ func encryptGeminiCredentialStoreForTest(plaintext string) (string, error) {
 
 func TestParseCodexManagedGatewayUpstreamNotesChatGPTOAuth(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	defer func() {
-		_ = os.Setenv("HOME", oldHome)
-	}()
+	testenv.SetHome(t, home)
 
 	configPath := filepath.Join(home, ".codex", "config.toml")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
@@ -1298,13 +1193,7 @@ func TestParseCodexManagedGatewayUpstreamNotesChatGPTOAuth(t *testing.T) {
 
 func TestParseCodexManagedGatewayUpstreamImportsChatGPTOAuth(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	defer func() {
-		_ = os.Setenv("HOME", oldHome)
-	}()
+	testenv.SetHome(t, home)
 
 	configPath := filepath.Join(home, ".codex", "config.toml")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
@@ -1363,13 +1252,7 @@ func TestParseCodexManagedGatewayUpstreamImportsChatGPTOAuth(t *testing.T) {
 
 func TestParseCodexManagedGatewayUpstreamInfersOpenAIForBareChatGPTModel(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	defer func() {
-		_ = os.Setenv("HOME", oldHome)
-	}()
+	testenv.SetHome(t, home)
 
 	configPath := filepath.Join(home, ".codex", "config.toml")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
@@ -1440,13 +1323,7 @@ func TestCodexGatewayResolutionPrefersCurrentDirectModel(t *testing.T) {
 
 func TestParseCodexManagedGatewayUpstreamRecoversFromPreloopProviderSnapshot(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	defer func() {
-		_ = os.Setenv("HOME", oldHome)
-	}()
+	testenv.SetHome(t, home)
 
 	configPath := filepath.Join(home, ".codex", "config.toml")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
@@ -1483,13 +1360,7 @@ func TestParseCodexManagedGatewayUpstreamRecoversFromPreloopProviderSnapshot(t *
 
 func TestParseCodexManagedGatewayUpstreamForcesOpenAIProviderForChatGPTOAuth(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	defer func() {
-		_ = os.Setenv("HOME", oldHome)
-	}()
+	testenv.SetHome(t, home)
 
 	configPath := filepath.Join(home, ".codex", "config.toml")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
@@ -1539,13 +1410,7 @@ func TestParseCodexManagedGatewayUpstreamForcesOpenAIProviderForChatGPTOAuth(t *
 
 func TestParseCodexManagedGatewayUpstreamInfersModelFromRecentSession(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	defer func() {
-		_ = os.Setenv("HOME", oldHome)
-	}()
+	testenv.SetHome(t, home)
 
 	configPath := filepath.Join(home, ".codex", "config.toml")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
@@ -1615,13 +1480,7 @@ func TestParseCodexManagedGatewayUpstreamInfersModelFromRecentSession(t *testing
 
 func TestEnrichDiscoveredAgentMarksManagedConfigDrift(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	defer func() {
-		_ = os.Setenv("HOME", oldHome)
-	}()
+	testenv.SetHome(t, home)
 
 	configPath := filepath.Join(home, ".claude", "settings.json")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
@@ -1992,13 +1851,7 @@ func TestInferAgentDisplayNameFromIdentityFile(t *testing.T) {
 
 func TestPrepareAgentForRemoteServerSync_RestoresDiscoveredServersFromLocalState(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	defer func() {
-		_ = os.Setenv("HOME", oldHome)
-	}()
+	testenv.SetHome(t, home)
 
 	agent := AgentConfig{
 		Name:               "OpenClaw",
@@ -2050,13 +1903,7 @@ func TestPrepareAgentForRemoteServerSync_RestoresDiscoveredServersFromLocalState
 
 func TestCreateLocalEnrollmentBackup_ReusesOriginalBackupState(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	defer func() {
-		_ = os.Setenv("HOME", oldHome)
-	}()
+	testenv.SetHome(t, home)
 
 	agent := AgentConfig{
 		Name:        "OpenClaw",
@@ -3234,8 +3081,9 @@ func TestGenericAdapterValidateManagedConfigKeepsDirectGeminiModelMCPOnly(t *tes
 }
 
 func TestSyncManagedAgentRuntimeArtifactsInstallsGeminiLauncher(t *testing.T) {
+	skipManagedLauncherOnWindows(t, "installing the Gemini managed launcher")
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 
 	launcherDir := filepath.Join(home, ".local", "bin")
 	if err := os.MkdirAll(launcherDir, 0o755); err != nil {
@@ -3277,8 +3125,9 @@ func TestSyncManagedAgentRuntimeArtifactsInstallsGeminiLauncher(t *testing.T) {
 }
 
 func TestSyncManagedAgentRuntimeArtifactsReplacesLegacyGeminiLauncher(t *testing.T) {
+	skipManagedLauncherOnWindows(t, "replacing a legacy Gemini managed launcher")
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 
 	launcherDir := filepath.Join(home, ".local", "bin")
 	if err := os.MkdirAll(launcherDir, 0o755); err != nil {
@@ -3327,8 +3176,9 @@ func TestSyncManagedAgentRuntimeArtifactsReplacesLegacyGeminiLauncher(t *testing
 }
 
 func TestSyncManagedAgentRuntimeArtifactsInstallsCodexLauncher(t *testing.T) {
+	skipManagedLauncherOnWindows(t, "installing the Codex managed launcher")
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 
 	launcherDir := filepath.Join(home, ".local", "bin")
 	if err := os.MkdirAll(launcherDir, 0o755); err != nil {
@@ -3371,7 +3221,7 @@ func TestSyncManagedAgentRuntimeArtifactsInstallsCodexLauncher(t *testing.T) {
 
 func TestRemoveManagedAgentRuntimeArtifactsRemovesLegacyGeminiLauncher(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 
 	runtimeDir := filepath.Join(home, ".preloop", "agents", "runtime")
 	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
@@ -3407,7 +3257,7 @@ func TestRemoveManagedAgentRuntimeArtifactsRemovesLegacyGeminiLauncher(t *testin
 
 func TestParseClaudeManagedGatewayUpstreamUsesShellExportsForBedrock(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "")
 	t.Setenv("ANTHROPIC_MODEL", "")
 	t.Setenv("CLAUDE_CODE_USE_BEDROCK", "")
@@ -3495,13 +3345,7 @@ func TestOpenClawValidateManagedConfigSupportsAnthropicGateway(t *testing.T) {
 
 func TestDiscoverAgentsFindsInstalledOpenClawWithoutConfig(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	defer func() {
-		_ = os.Setenv("HOME", oldHome)
-	}()
+	testenv.SetHome(t, home)
 
 	openClawDir := filepath.Join(home, ".openclaw")
 	if err := os.MkdirAll(openClawDir, 0755); err != nil {
@@ -3533,13 +3377,7 @@ func TestDiscoverAgentsFindsInstalledOpenClawWithoutConfig(t *testing.T) {
 
 func TestRestoreAgentFromBackupRemovesSynthesizedConfig(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	defer func() {
-		_ = os.Setenv("HOME", oldHome)
-	}()
+	testenv.SetHome(t, home)
 
 	configPath := filepath.Join(home, ".config", "opencode", "config.json")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
@@ -3573,13 +3411,7 @@ func TestRestoreAgentFromBackupRemovesSynthesizedConfig(t *testing.T) {
 
 func TestRestoreAgentFromBackupRestoresNonEmptyBackupEvenWhenStateSaysSynthetic(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	defer func() {
-		_ = os.Setenv("HOME", oldHome)
-	}()
+	testenv.SetHome(t, home)
 
 	configPath := filepath.Join(home, ".openclaw", "openclaw.json")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
@@ -3618,13 +3450,7 @@ func TestRestoreAgentFromBackupRestoresNonEmptyBackupEvenWhenStateSaysSynthetic(
 
 func TestLocalEnrollmentStateRoundTrip(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	defer func() {
-		_ = os.Setenv("HOME", oldHome)
-	}()
+	testenv.SetHome(t, home)
 
 	agent := AgentConfig{
 		Name:               "Claude Code",
@@ -3660,13 +3486,7 @@ func TestLocalEnrollmentStateRoundTrip(t *testing.T) {
 
 func TestRemoveLocalEnrollmentStateDeletesPersistedState(t *testing.T) {
 	home := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	defer func() {
-		_ = os.Setenv("HOME", oldHome)
-	}()
+	testenv.SetHome(t, home)
 
 	agent := AgentConfig{
 		Name:       "OpenClaw",

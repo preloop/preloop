@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/preloop/preloop/cli/internal/testenv"
 )
 
 // clearOptOutEnv removes both opt-out variables for the duration of a test
@@ -57,7 +59,7 @@ func TestDisabledEnvParsing(t *testing.T) {
 
 func TestSendConversionSkippedWhenTelemetryDisabled(t *testing.T) {
 	clearOptOutEnv(t)
-	t.Setenv("HOME", t.TempDir())
+	testenv.SetHome(t, t.TempDir())
 
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(
@@ -82,7 +84,7 @@ func TestSendConversionSkippedWhenTelemetryDisabled(t *testing.T) {
 
 func TestIncrementSkippedWhenTelemetryDisabled(t *testing.T) {
 	clearOptOutEnv(t)
-	t.Setenv("HOME", t.TempDir())
+	testenv.SetHome(t, t.TempDir())
 
 	t.Setenv(DisableTelemetryEnv, "1")
 	Increment("agents")

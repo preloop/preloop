@@ -10,6 +10,14 @@ from preloop.models.crud import crud_registration_token
 from preloop.models.models.api_key import ApiKey
 from preloop.models.models.user import User
 
+# Device tokens are validated structurally at registration, so these fixtures
+# must have the shape of the real thing: an APNs token is hex (the iOS app
+# sends the raw 32-byte device token hex-encoded), and an FCM token is an
+# installation-id prefix, a colon, then a long body.
+IOS_TOKEN = "7f87557745bffcb16fa49fdf684e844f9f96582980b1fa290a786556c344fcae"
+IOS_TOKEN_2 = "1c02de5a9b3f4e7d8a6c5b4e3f2a1d0c9b8a7f6e5d4c3b2a1908f7e6d5c4b3a2"
+ANDROID_TOKEN = "cXqNs9TgQ1mR2vB3nK4pLd:APA91b" + ("Z" * 134)
+
 
 def test_get_qr_code_success(client: TestClient, test_user: User, db_session: Session):
     """Test generating QR code for mobile device registration."""
@@ -60,7 +68,7 @@ def test_register_via_token_success(
         # Register device via token
         response = client.post(
             f"/api/v1/notification-preferences/register-via-token?token={token}",
-            json={"platform": "ios", "token": "test-device-token-123"},
+            json={"platform": "ios", "token": IOS_TOKEN},
         )
 
     assert response.status_code == 200
@@ -78,7 +86,7 @@ def test_register_via_token_success(
     assert len(prefs["mobile_device_tokens"]) > 0
     device_token_entry = prefs["mobile_device_tokens"][0]
     assert device_token_entry["platform"] == "ios"
-    assert device_token_entry["token"] == "test-device-token-123"
+    assert device_token_entry["token"] == IOS_TOKEN
 
     # Verify API key was created
     assert data["api_key"] is not None
@@ -130,7 +138,7 @@ def test_register_via_token_persistence_across_requests(
     ):
         response = client.post(
             f"/api/v1/notification-preferences/register-via-token?token={token}",
-            json={"platform": "android", "token": "android-token-456"},
+            json={"platform": "android", "token": ANDROID_TOKEN},
         )
 
     # Should succeed because token is in database
@@ -196,7 +204,7 @@ def test_register_via_token_already_consumed(
     ):
         response1 = client.post(
             f"/api/v1/notification-preferences/register-via-token?token={token}",
-            json={"platform": "ios", "token": "test-device-token-1"},
+            json={"platform": "ios", "token": IOS_TOKEN},
         )
     assert response1.status_code == 200
 
@@ -207,7 +215,7 @@ def test_register_via_token_already_consumed(
     ):
         response2 = client.post(
             f"/api/v1/notification-preferences/register-via-token?token={token}",
-            json={"platform": "android", "token": "test-device-token-2"},
+            json={"platform": "android", "token": ANDROID_TOKEN},
         )
 
     assert response2.status_code == 400
@@ -326,7 +334,7 @@ def test_register_mobile_device_direct(
     """Test direct device registration (without QR token)."""
     response = client.post(
         "/api/v1/notification-preferences/me/register-device",
-        json={"platform": "ios", "token": "direct-device-token-789"},
+        json={"platform": "ios", "token": IOS_TOKEN},
     )
 
     assert response.status_code == 200
@@ -336,7 +344,7 @@ def test_register_mobile_device_direct(
     assert len(data["mobile_device_tokens"]) > 0
     device = data["mobile_device_tokens"][0]
     assert device["platform"] == "ios"
-    assert device["token"] == "direct-device-token-789"
+    assert device["token"] == IOS_TOKEN
 
 
 def test_unregister_mobile_device(
@@ -346,13 +354,13 @@ def test_unregister_mobile_device(
     # First register a device
     register_response = client.post(
         "/api/v1/notification-preferences/me/register-device",
-        json={"platform": "ios", "token": "device-to-remove"},
+        json={"platform": "ios", "token": IOS_TOKEN_2},
     )
     assert register_response.status_code == 200
 
     # Unregister the device
     response = client.delete(
-        "/api/v1/notification-preferences/me/device/device-to-remove"
+        f"/api/v1/notification-preferences/me/device/{IOS_TOKEN_2}"
     )
 
     assert response.status_code == 200

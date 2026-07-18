@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/preloop/preloop/cli/internal/telemetry"
+
+	"github.com/preloop/preloop/cli/internal/testenv"
 )
 
 func TestTokenFingerprint(t *testing.T) {
@@ -69,7 +71,7 @@ func TestFetchVersionInfoPostsRichPayload(t *testing.T) {
 	defer func() { VersionCheckOrigin = oldOrigin }()
 
 	// Isolate config dir so the test never touches the real ~/.preloop.
-	t.Setenv("HOME", t.TempDir())
+	testenv.SetHome(t, t.TempDir())
 
 	info, err := fetchVersionInfo()
 	if err != nil {
@@ -120,7 +122,7 @@ func TestFetchVersionInfoFallsBackToLegacyEndpoint(t *testing.T) {
 	oldOrigin := VersionCheckOrigin
 	VersionCheckOrigin = server.URL
 	defer func() { VersionCheckOrigin = oldOrigin }()
-	t.Setenv("HOME", t.TempDir())
+	testenv.SetHome(t, t.TempDir())
 
 	info, err := fetchVersionInfo()
 	if err != nil {
@@ -151,7 +153,7 @@ func TestCheckForUpdateSkipsWhenTelemetryDisabled(t *testing.T) {
 
 	// Fresh HOME: without the opt-out this would be a first run, which
 	// checks in immediately — the strictest possible setting.
-	t.Setenv("HOME", t.TempDir())
+	testenv.SetHome(t, t.TempDir())
 	t.Setenv(telemetry.DisableTelemetryEnv, "true")
 
 	if err := CheckForUpdate(); err != nil {
@@ -174,7 +176,7 @@ func TestForceCheckRefusesWhenTelemetryDisabled(t *testing.T) {
 	VersionCheckOrigin = server.URL
 	defer func() { VersionCheckOrigin = oldOrigin }()
 
-	t.Setenv("HOME", t.TempDir())
+	testenv.SetHome(t, t.TempDir())
 	t.Setenv(telemetry.DisableVersionCheckEnv, "yes")
 
 	_, err := ForceCheck()

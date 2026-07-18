@@ -10,10 +10,19 @@
 # Required repo secrets (environment: release):
 #   NPM_TOKEN          - npm automation token with publish rights
 #   PLUGINS_PYPI_TOKEN - PyPI token scoped to preloop-hermes-plugin
+#   CLAWHUB_TOKEN      - ClawHub API token with publish rights on the
+#                        'preloop-ai' publisher (generate once locally:
+#                        `clawhub login` then `clawhub token`)
 #
-# NOT automated here: the ClawHub marketplace publish for the OpenClaw plugin
-# (`clawhub package publish`) — it needs interactive auth and provenance
-# flags; follow runtime-plugins/PUBLISHING.md after the npm publish succeeds.
+# The ClawHub marketplace publish for the OpenClaw plugin is automated below.
+# It used to be manual on the false premise that `clawhub login` is
+# interactive-only; the CLI accepts `clawhub login --token`, a global
+# `--no-input`, and per-command `--json` specifically for CI.
+#
+# npm and ClawHub MUST ship the same build. In Jul 2026 they diverged under the
+# same version 0.1.1 and ClawHub served pre-hardening code (missing 6fb1bb79,
+# an auth-bypass fix). The shasum guard in publish-openclaw is the regression
+# test for that — do not remove it.
 
 name: Publish Runtime Plugins
 
@@ -97,15 +106,73 @@ jobs:
           npm run build
           npm pack --dry-run
 
-      - name: Publish
+      # Fail before npm is touched if the ClawHub token is missing or the
+      # package does not pass the Plugin Inspector. npm and ClawHub must go out
+      # together or not at all.
+      - name: ClawHub pre-flight (auth + validate)
+        run: |
+          set -euo pipefail
+          if [ -z "${CLAWHUB_TOKEN:-}" ]; then
+            echo "::error::secret CLAWHUB_TOKEN is not set on the 'release' environment — refusing to publish to npm, because npm and ClawHub must not diverge. Generate it once locally with 'clawhub login' then 'clawhub token', and add it as a repo secret."
+            exit 1
+          fi
+          npm i -g clawhub
+          clawhub login --token "$CLAWHUB_TOKEN" --no-input
+          clawhub whoami --no-input
+          clawhub package validate . --json --no-input
+        env:
+          CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
+
+      - name: Publish (npm)
         if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: ClawHub reminder
+      # Runs after npm: ClawHub fetches the npm tarball, and installs of a
+      # version npm has not published yet fail at package fetch.
+      #
+      # github.sha is already the public github.com/preloop/preloop commit —
+      # this workflow runs on the public mirror, so no cross-remote translation
+      # is needed (unlike the preloop-ee GitLab job, where CI_COMMIT_SHA is an
+      # internal-only preloop-ee commit and the submodule SHA must be used).
+      - name: Publish (ClawHub)
+        if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
         run: |
-          echo "::notice::npm publish done. ClawHub publish is manual — see runtime-plugins/PUBLISHING.md (clawhub package publish with provenance flags)."
+          set -euo pipefail
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          clawhub package publish . \
+            --family code-plugin \
+            --version "$PKG_VERSION" \
+            --source-repo preloop/preloop \
+            --source-commit "${GITHUB_SHA}" \
+            --source-ref "${GITHUB_REF_NAME}" \
+            --source-path runtime-plugins/openclaw-preloop \
+            --json \
+            --no-input
+
+      # Regression test for the Jul 2026 npm/ClawHub divergence: both
+      # registries must serve byte-identical tarballs for this version.
+      - name: Verify npm and ClawHub serve the same artifact
+        if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
+        run: |
+          set -euo pipefail
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          NPM_SHASUM=$(npm view "@preloop-ai/openclaw-plugin@$PKG_VERSION" dist.shasum)
+          CLAWHUB_SHASUM=$(clawhub package inspect @preloop-ai/openclaw-plugin \
+            --version "$PKG_VERSION" --json --no-input \
+            | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const p=JSON.parse(s).package||{};process.stdout.write((p.artifact&&p.artifact.npmShasum)||'')})")
+          echo "npm     dist.shasum = ${NPM_SHASUM:-<empty>}"
+          echo "clawhub npmShasum   = ${CLAWHUB_SHASUM:-<empty>}"
+          if [ -z "$NPM_SHASUM" ] || [ -z "$CLAWHUB_SHASUM" ]; then
+            echo "::error::could not read a shasum from both registries — cannot prove they match."
+            exit 1
+          fi
+          if [ "$NPM_SHASUM" != "$CLAWHUB_SHASUM" ]; then
+            echo "::error::npm and ClawHub are serving DIFFERENT artifacts for $PKG_VERSION. Re-publish ClawHub from the npm tarball, or permanently delete the bad ClawHub version and ship a fresh patch to both registries."
+            exit 1
+          fi
+          echo "OK: npm and ClawHub agree on $PKG_VERSION ($NPM_SHASUM)."
 
   publish-hermes:
     name: Publish preloop-hermes-plugin (PyPI)

@@ -14,8 +14,30 @@ import {
 import { getVisitorId } from './visitor-id';
 import { getAttribution } from './attribution';
 
+/**
+ * Browser-side counterpart to the `PRELOOP_DISABLE_TELEMETRY` env var.
+ *
+ * That variable is read by the server and the CLI, so it can never suppress
+ * events a browser sends. Without this opt-out, internal browsing (the team's
+ * own dogfooding, demo recordings, scripted UI runs) is indistinguishable
+ * from real traffic in the admin funnel. Set it from the console:
+ *
+ *     localStorage.setItem('preloop:disableTelemetry', 'true')
+ */
+const DISABLE_TELEMETRY_KEY = 'preloop:disableTelemetry';
+
+function telemetryDisabled(): boolean {
+  try {
+    return localStorage.getItem(DISABLE_TELEMETRY_KEY) === 'true';
+  } catch {
+    // localStorage unavailable (private mode, sandboxed iframe) — tracking
+    // stays on, matching the previous default.
+    return false;
+  }
+}
+
 export class ActivityTracker {
-  private enabled = true;
+  private enabled = !telemetryDisabled();
   private messageQueue: any[] = [];
   private isProcessingQueue = false;
 
