@@ -1,4 +1,4 @@
-import { LitElement, html, css, unsafeCSS, nothing } from 'lit';
+import { LitElement, html, css, unsafeCSS } from 'lit';
 import { repeat } from 'lit/directives/repeat.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import { Router } from '@vaadin/router';
@@ -8,9 +8,6 @@ import {
   updateFlow,
   getTrackers,
   getAIModels,
-  createAIModel,
-  getAvailableModelsForProvider,
-  getFlowPresets,
   listOrganizations,
   listProjects,
   getAllTools,
@@ -1368,9 +1365,6 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
     );
     const supportedBuiltinTools = builtinTools.filter(
       (tool) => tool.is_supported !== false
-    );
-    const unsupportedBuiltinTools = builtinTools.filter(
-      (tool) => tool.is_supported === false
     );
     const mcpTools = this.availableTools.filter(
       (tool) => tool.source === 'mcp'

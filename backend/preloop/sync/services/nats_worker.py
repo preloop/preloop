@@ -97,14 +97,14 @@ class PreloopSyncNatsWorker:
         overlap the dedicated pool's filtered consumers and NATS would reject
         them with `filtered consumer not unique on workqueue stream`.
         """
-        from preloop.sync.tasks import DISPATCHABLE_TASKS
+        dispatchable_tasks = tasks.DISPATCHABLE_TASKS
 
         if self.tasks_allowlist:
             names = list(self.tasks_allowlist)
         elif self.tasks_excludelist:
             excluded = set(self.tasks_excludelist)
-            names = [task for task in DISPATCHABLE_TASKS if task not in excluded]
-            unknown = excluded - set(DISPATCHABLE_TASKS)
+            names = [task for task in dispatchable_tasks if task not in excluded]
+            unknown = excluded - set(dispatchable_tasks)
             if unknown:
                 logger.warning(
                     "Ignoring unknown task(s) in exclude list: %s",

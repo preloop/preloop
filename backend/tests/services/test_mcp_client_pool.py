@@ -761,12 +761,10 @@ class TestMCPClientPoolGetActiveServers:
 class TestGetMCPClientPool:
     """Test get_mcp_client_pool function."""
 
-    def test_get_mcp_client_pool_creates_singleton(self):
+    def test_get_mcp_client_pool_creates_singleton(self, monkeypatch):
         """Test that get_mcp_client_pool creates singleton."""
         # Reset global
-        import preloop.services.mcp_client_pool as module
-
-        module._client_pool = None
+        monkeypatch.setattr("preloop.services.mcp_client_pool._client_pool", None)
 
         pool1 = get_mcp_client_pool()
         pool2 = get_mcp_client_pool()

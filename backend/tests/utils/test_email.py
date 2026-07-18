@@ -63,10 +63,8 @@ class TestSendEmail:
     def test_send_email_no_credentials_does_not_send(self, mock_smtp, monkeypatch):
         """Test that email logs warning and returns gracefully when credentials are missing."""
         # Use monkeypatch to modify module-level variables at runtime
-        import preloop.utils.email as email_module
-
-        monkeypatch.setattr(email_module, "SMTP_USERNAME", "")
-        monkeypatch.setattr(email_module, "SMTP_PASSWORD", "")
+        monkeypatch.setattr("preloop.utils.email.SMTP_USERNAME", "")
+        monkeypatch.setattr("preloop.utils.email.SMTP_PASSWORD", "")
 
         # Call should succeed without raising
         send_email(
@@ -504,9 +502,7 @@ class TestSendProductNotificationEmail:
         def mock_send_email(*args, **kwargs):
             raise EmailError("SMTP failed")
 
-        import preloop.utils.email as email_module
-
-        monkeypatch.setattr(email_module, "send_email", mock_send_email)
+        monkeypatch.setattr("preloop.utils.email.send_email", mock_send_email)
 
         user_data = {"username": "testuser"}
 
@@ -529,9 +525,7 @@ class TestSendProductNotificationEmail:
         def mock_send_email(*args, **kwargs):
             raise RuntimeError("Unexpected error")
 
-        import preloop.utils.email as email_module
-
-        monkeypatch.setattr(email_module, "send_email", mock_send_email)
+        monkeypatch.setattr("preloop.utils.email.send_email", mock_send_email)
 
         user_data = {"username": "testuser"}
 

@@ -31,11 +31,16 @@ def patch_crud(monkeypatch):
             mock_account.meta_data = {}
             return mock_account
 
-    import preloop.services.policy_evaluator as pe
-
-    monkeypatch.setattr(pe, "crud_tool_configuration", FakeCRUDConfig())
-    monkeypatch.setattr(pe, "crud_tool_access_rule", FakeCRUDRules())
-    monkeypatch.setattr(pe, "crud_account", FakeCRUDAccount())
+    monkeypatch.setattr(
+        "preloop.services.policy_evaluator.crud_tool_configuration",
+        FakeCRUDConfig(),
+    )
+    monkeypatch.setattr(
+        "preloop.services.policy_evaluator.crud_tool_access_rule", FakeCRUDRules()
+    )
+    monkeypatch.setattr(
+        "preloop.services.policy_evaluator.crud_account", FakeCRUDAccount()
+    )
 
     async def fake_get_tool_config_by_id_async(db, **kwargs):
         res = await db.execute()
@@ -53,15 +58,21 @@ def patch_crud(monkeypatch):
         return {}
 
     monkeypatch.setattr(
-        pe, "get_tool_config_by_id_async", fake_get_tool_config_by_id_async
+        "preloop.services.policy_evaluator.get_tool_config_by_id_async",
+        fake_get_tool_config_by_id_async,
     )
     monkeypatch.setattr(
-        pe,
-        "get_tool_config_by_tool_name_async",
+        "preloop.services.policy_evaluator.get_tool_config_by_tool_name_async",
         fake_get_tool_config_by_tool_name_async,
     )
-    monkeypatch.setattr(pe, "get_multi_by_config_async", fake_get_multi_by_config_async)
-    monkeypatch.setattr(pe, "get_meta_data_async", fake_get_meta_data_async)
+    monkeypatch.setattr(
+        "preloop.services.policy_evaluator.get_multi_by_config_async",
+        fake_get_multi_by_config_async,
+    )
+    monkeypatch.setattr(
+        "preloop.services.policy_evaluator.get_meta_data_async",
+        fake_get_meta_data_async,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -284,8 +295,6 @@ class TestEvaluatePolicyWithRules:
         ]
 
         # Patch the default-workflow lookup to return a known workflow.
-        import preloop.services.policy_evaluator as pe
-
         default_workflow = MagicMock()
         default_workflow.id = default_workflow_id
 
@@ -293,7 +302,10 @@ class TestEvaluatePolicyWithRules:
             def get_default(self, db, account_id):
                 return default_workflow
 
-        monkeypatch.setattr(pe, "crud_approval_workflow", FakeApprovalWorkflowCRUD())
+        monkeypatch.setattr(
+            "preloop.services.policy_evaluator.crud_approval_workflow",
+            FakeApprovalWorkflowCRUD(),
+        )
 
         action, approval_id, desc = evaluate_policy(
             db=mock_db,
@@ -327,13 +339,14 @@ class TestEvaluatePolicyWithRules:
             rule
         ]
 
-        import preloop.services.policy_evaluator as pe
-
         class FakeApprovalWorkflowCRUD:
             def get_default(self, db, account_id):
                 return None
 
-        monkeypatch.setattr(pe, "crud_approval_workflow", FakeApprovalWorkflowCRUD())
+        monkeypatch.setattr(
+            "preloop.services.policy_evaluator.crud_approval_workflow",
+            FakeApprovalWorkflowCRUD(),
+        )
 
         action, approval_id, desc = evaluate_policy(
             db=mock_db,

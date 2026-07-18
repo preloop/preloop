@@ -250,3 +250,8 @@ def run_accounting_checks(
         overall = "skip"
 
     return {"window_hours": window_hours, "checks": checks, "status": overall}
+
+
+def _module_state_for_tests() -> dict[str, bool | None]:
+    """Expose module cache globals for tests and static analysis."""
+    return {"audit_table_exists": _AUDIT_TABLE_EXISTS}

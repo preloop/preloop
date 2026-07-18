@@ -121,6 +121,7 @@ class MCPTestClient:
                 await self._open_session()
                 return self
             except BaseException as exc:
+                # Catch ExceptionGroup/CancelledError from MCP transport setup; retry below.
                 if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                     raise
                 last_error = exc

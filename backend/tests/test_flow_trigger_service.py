@@ -257,9 +257,7 @@ class TestFlowTriggerService:
             agent_config={},
             account_id=test_account.id,
         )
-        flow = crud_flow.create(
-            db=db_session, flow_in=flow_in, account_id=test_account.id
-        )
+        crud_flow.create(db=db_session, flow_in=flow_in, account_id=test_account.id)
 
         mock_nats.return_value = AsyncMock()
         service = FlowTriggerService(db_session)
@@ -301,9 +299,7 @@ class TestFlowTriggerService:
             agent_config={},
             account_id=test_account.id,
         )
-        flow1 = crud_flow.create(
-            db=db_session, flow_in=flow1_in, account_id=test_account.id
-        )
+        crud_flow.create(db=db_session, flow_in=flow1_in, account_id=test_account.id)
 
         flow2_in = FlowCreate(
             name="Flow 2",
@@ -314,9 +310,7 @@ class TestFlowTriggerService:
             agent_config={},
             account_id=test_account.id,
         )
-        flow2 = crud_flow.create(
-            db=db_session, flow_in=flow2_in, account_id=test_account.id
-        )
+        crud_flow.create(db=db_session, flow_in=flow2_in, account_id=test_account.id)
 
         mock_nats.return_value = AsyncMock()
         service = FlowTriggerService(db_session)

@@ -103,6 +103,7 @@ def _log_approval_lifecycle_async(
             try:
                 exec_id = uuid.UUID(execution_id)
             except (ValueError, TypeError):
+                # execution_id may be a non-UUID flow id; omit it from audit metadata.
                 pass
 
         audit_service.log_approval_lifecycle_async(
@@ -197,6 +198,7 @@ def _log_approval_tool_executed_async(
             try:
                 exec_id = uuid.UUID(execution_id)
             except (ValueError, TypeError):
+                # execution_id may be a non-UUID flow id; omit it from audit metadata.
                 pass
         audit_service.log_approval_tool_executed_async(
             db_factory=db_factory,
@@ -412,6 +414,7 @@ class ApprovalService:
 
             corr_id = _correlation_id_var.get(None)
         except Exception:
+            # Correlation id is optional telemetry; ignore lookup failures.
             pass
         from preloop.utils.redaction import redact_dict
 

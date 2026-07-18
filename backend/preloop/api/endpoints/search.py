@@ -173,12 +173,7 @@ async def perform_search(
                 detail="Query cannot be empty for similarity search. Please provide a search query.",
             )
 
-        # TODO:Check usage limit before proceeding
-        # if not billing_service.check_limit(current_user.id, "ai_calls"):
-        #     raise HTTPException(
-        #         status_code=429,
-        #         detail="You have exceeded the AI model call limit for your current plan.",
-        #     )
+        # TODO: enforce AI call billing limits before similarity search proceeds.
 
         # 1. Get Active Embedding Model (since model_id is not in signature)
         active_models = crud_embedding_model.get_active(db)

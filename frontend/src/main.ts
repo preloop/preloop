@@ -26,7 +26,6 @@ import { unifiedWebSocketManager } from './services/unified-websocket-manager';
 import { activityTracker } from './services/activity-tracker';
 import { recordPathChange } from './services/web-analytics';
 import { captureAttribution } from './services/attribution';
-import { router } from './router';
 
 function applyTheme(theme: Theme) {
   const darkTheme = 'sl-theme-dark';

@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from preloop.logging import configure_logging
+import preloop.logging as preloop_logging
 
 # Load environment variables from .env file if it exists
 load_dotenv()
@@ -37,7 +37,7 @@ def setup_logging() -> None:
     log_level = getattr(logging, LOG_LEVEL.upper())
 
     # Create a logger for the application
-    configure_logging()
+    preloop_logging.configure_logging()
     logger = logging.getLogger("preloop-sync")
     logger.setLevel(log_level)
     return logger

@@ -515,13 +515,13 @@ class TestHelperFunctions:
 
         assert result is False
 
-    def test_get_dynamic_mcp_server_creates_singleton(self):
+    def test_get_dynamic_mcp_server_creates_singleton(self, monkeypatch):
         """Test that get_dynamic_mcp_server creates singleton."""
         # Clear global if exists
-        import preloop.services.dynamic_mcp_server as module
-
-        if "_dynamic_mcp_server" in dir(module):
-            delattr(module, "_dynamic_mcp_server")
+        monkeypatch.delattr(
+            "preloop.services.dynamic_mcp_server._dynamic_mcp_server",
+            raising=False,
+        )
 
         server1 = get_dynamic_mcp_server()
         server2 = get_dynamic_mcp_server()

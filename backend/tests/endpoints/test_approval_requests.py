@@ -133,7 +133,7 @@ class TestListApprovalRequests:
         ) as mock_crud:
             mock_crud.get_multi_by_account.return_value = [mock_approval_request]
 
-            result = approval_requests.list_approval_requests(
+            approval_requests.list_approval_requests(
                 status="pending",
                 execution_id=None,
                 limit=50,
@@ -161,7 +161,7 @@ class TestListApprovalRequests:
         ) as mock_crud:
             mock_crud.get_multi_by_account.return_value = [mock_approval_request]
 
-            result = approval_requests.list_approval_requests(
+            approval_requests.list_approval_requests(
                 status=None,
                 execution_id=execution_id,
                 limit=50,

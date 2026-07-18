@@ -20,4 +20,5 @@ def mock_has_permission(mocker: MockerFixture):
             return_value=True,
         )
     except ImportError:
+        # EE RBAC plugin is optional in OSS endpoint tests.
         pass

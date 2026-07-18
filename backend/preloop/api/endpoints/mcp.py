@@ -261,9 +261,8 @@ def _parse_pr_identifier(pr_identifier: str) -> Dict[str, Any]:
         try:
             result["platform"] = _detect_platform_from_url(pr_identifier)
         except ValueError:
+            # URL may not match a known tracker host; fall back to regex extraction.
             pass
-
-        # Last-resort: try to extract just the number from the URL path
         m = re.search(r"/(\d+)/?$", urlparse(normalized).path)
         if m:
             result["pr_number"] = m.group(1)
@@ -798,16 +797,6 @@ async def update_issue(
             if isinstance(meta_data, dict)
             else None
         )
-        external_url = (
-            meta_data.get("url") or issue_obj.external_url or f"/issues/{issue_obj.id}"
-        )  # Fallback URL
-
-        # Construct the key using potentially updated slug/external_id
-        final_response_key = (
-            f"{project_slug}#{issue_obj.external_id}"
-            if project_slug and issue_obj.external_id
-            else str(issue_obj.id)
-        )
 
     # Get compliance results using CRUD layer
     compliance_results = crud_issue_compliance_result.get_for_issue(
@@ -1249,6 +1238,7 @@ async def add_comment(
         try:
             platform = _detect_platform_from_url(target)
         except ValueError:
+            # Unrecognized tracker URL; continue with path-based heuristics below.
             pass
 
         # GitHub PR URL: https://github.com/owner/repo/pull/123
@@ -1310,10 +1300,8 @@ async def add_comment(
         if platform is None:
             if tracker_client.tracker_type.lower() == "github":
                 platform = "github"
-                is_pull_request = True
             elif tracker_client.tracker_type.lower() == "gitlab":
                 platform = "gitlab"
-                is_merge_request = True
 
         target_id = pr_mr_number
 
@@ -1518,6 +1506,7 @@ async def add_comment(
             try:
                 issue_platform = _detect_platform_from_url(target)
             except ValueError:
+                # Self-hosted or nonstandard issue URL; rely on later slug parsing.
                 pass
 
             # GitHub issue URL: https://github.com/owner/repo/issues/123
@@ -2549,6 +2538,7 @@ async def update_comment(
         try:
             platform = _detect_platform_from_url(target)
         except ValueError:
+            # Unrecognized tracker URL; continue with path-based heuristics below.
             pass
 
         # GitHub PR URL: https://github.com/owner/repo/pull/123
@@ -2856,7 +2846,7 @@ async def update_comment(
                 logger.info(
                     f"Updating GitLab MR note {comment_id} for MR {pr_mr_number}"
                 )
-                update_result = await tracker_client.update_mr_note(
+                await tracker_client.update_mr_note(
                     mr_iid=pr_mr_number,
                     note_id=comment_id,
                     body=body,

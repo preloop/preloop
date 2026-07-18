@@ -171,6 +171,7 @@ class APNsService:
                     error_data = response.json()
                     error_reason = error_data.get("reason")
                 except Exception:
+                    # APNs error body may be non-JSON; status code is still logged.
                     pass
 
                 logger.warning(

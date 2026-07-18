@@ -24,8 +24,8 @@ class Base(DeclarativeBase):
 
     # Generate table name automatically from class name
     @declared_attr.directive
-    def __tablename__(cls) -> str:
-        return cls.__name__.lower()
+    def __tablename__(self) -> str:
+        return self.__name__.lower()
 
     # Common columns for all models
     id: Mapped[uuid.UUID] = mapped_column(

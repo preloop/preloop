@@ -424,7 +424,6 @@ export class PublicPricingView extends LitElement {
                   : plan.price_annually;
 
                 const unit = isMonthly ? ' /user/month' : ' /user/year';
-                const perMo = !isMonthly ? Math.round(amount / 12) : null;
 
                 priceHtml = html`
                   <div class="price">

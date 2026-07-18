@@ -1,4 +1,4 @@
-import { Plugin, IndexHtmlTransformContext } from 'vite';
+import { Plugin } from 'vite';
 import * as yaml from 'js-yaml';
 import * as fs from 'fs';
 import * as path from 'path';

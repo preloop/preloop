@@ -448,12 +448,12 @@ class TestMonitorLoop:
 class TestGetExecutionMonitor:
     """Test get_execution_monitor function."""
 
-    def test_get_execution_monitor_creates_instance(self):
+    def test_get_execution_monitor_creates_instance(self, monkeypatch):
         """Test that get_execution_monitor creates a singleton instance."""
         # Reset global instance
-        import preloop.services.execution_monitor as em_module
-
-        em_module._monitor_instance = None
+        monkeypatch.setattr(
+            "preloop.services.execution_monitor._monitor_instance", None
+        )
 
         monitor1 = get_execution_monitor()
         assert monitor1 is not None
@@ -463,11 +463,11 @@ class TestGetExecutionMonitor:
         monitor2 = get_execution_monitor()
         assert monitor2 is monitor1
 
-    def test_get_execution_monitor_with_env_vars(self):
+    def test_get_execution_monitor_with_env_vars(self, monkeypatch):
         """Test that environment variables configure the monitor."""
-        import preloop.services.execution_monitor as em_module
-
-        em_module._monitor_instance = None
+        monkeypatch.setattr(
+            "preloop.services.execution_monitor._monitor_instance", None
+        )
 
         with patch("preloop.services.execution_monitor.os.getenv") as mock_getenv:
             mock_getenv.side_effect = lambda key, default: {

@@ -262,8 +262,6 @@ async def require_approval(
                     execution_id=None,
                 )
 
-                approval_url = f"{base_url}/approval/{approval_request.id}?token={approval_request.approval_token}"
-
                 # Derive notification channel from approval_type
                 notification_channels = (
                     [workflow.approval_type] if workflow.approval_type else ["manual"]

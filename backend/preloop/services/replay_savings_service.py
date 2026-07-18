@@ -583,7 +583,7 @@ class GatewayBudgetEnforcer(Protocol):
         payload: dict[str, Any],
     ) -> Any:
         """Raise when the pending gateway call would breach a hard limit."""
-        ...
+        pass
 
 
 def _default_gateway_factory(

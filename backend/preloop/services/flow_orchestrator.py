@@ -434,9 +434,8 @@ class FlowExecutionOrchestrator:
                             nats_client = getattr(request.app.state, "nats", None)
                             break
             except Exception:
+                # NATS may be unavailable when send_command is invoked outside a request.
                 pass
-
-        if not nats_client or not nats_client.is_connected:
             raise RuntimeError("NATS client not available or not connected")
 
         try:
@@ -1504,8 +1503,6 @@ class FlowExecutionOrchestrator:
                 # Check for token usage pattern: "tokens used" followed by number on next line
                 if "tokens used" in previous_line.lower():
                     # Try to extract token count from current line
-                    import re
-
                     # Pattern: number with optional commas (e.g., "1,234" or "1234")
                     token_match = re.search(r"(\d{1,3}(?:,\d{3})*)", log_line.strip())
                     if token_match:
@@ -1788,8 +1785,10 @@ class FlowExecutionOrchestrator:
                 try:
                     await self._log_streaming_task
                 except asyncio.CancelledError:
+                    # Expected after cancelling the log streaming task on timeout.
                     pass
             except asyncio.CancelledError:
+                # Task was cancelled while awaiting completion during cleanup.
                 pass
             except Exception as e:
                 logger.warning(f"Error waiting for log streaming task: {e}")

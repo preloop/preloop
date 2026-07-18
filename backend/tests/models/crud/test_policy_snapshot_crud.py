@@ -76,7 +76,7 @@ class TestPolicySnapshotCRUD:
             "policies_count": 0,
             "tools_count": 0,
         }
-        snapshot = crud_policy_snapshot.create(db_session, obj_in=obj_in)
+        crud_policy_snapshot.create(db_session, obj_in=obj_in)
         db_session.flush()
 
         found = crud_policy_snapshot.get_by_version_number(
@@ -105,7 +105,7 @@ class TestPolicySnapshotCRUD:
             "policies_count": 0,
             "tools_count": 0,
         }
-        snapshot = crud_policy_snapshot.create(db_session, obj_in=obj_in)
+        crud_policy_snapshot.create(db_session, obj_in=obj_in)
         db_session.flush()
 
         found = crud_policy_snapshot.get_by_tag(
@@ -126,7 +126,7 @@ class TestPolicySnapshotCRUD:
             "policies_count": 0,
             "tools_count": 0,
         }
-        snapshot = crud_policy_snapshot.create(db_session, obj_in=obj_in)
+        crud_policy_snapshot.create(db_session, obj_in=obj_in)
         db_session.flush()
 
         found = crud_policy_snapshot.get_active(db_session, account_id=str(account.id))

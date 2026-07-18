@@ -123,7 +123,7 @@ def test_api_key_creation_fails_with_created_by(db_session: Session):
     # Try to create an ApiKey with the old 'created_by' field
     # This should fail with a TypeError
     with pytest.raises(TypeError) as exc_info:
-        api_key = ApiKey(
+        ApiKey(
             name="Test API Key",
             key=f"test_key_{uuid.uuid4().hex}",  # Use unique key to avoid duplicates
             account_id=test_user.account_id,

@@ -2,8 +2,7 @@
 Tests for GitHub tracker CRUD methods.
 """
 
-import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import ANY, AsyncMock
 from unittest import IsolatedAsyncioTestCase
 
 from preloop.sync.trackers.github import GitHubTracker
@@ -63,7 +62,7 @@ class TestGitHubTrackerCRUD(IsolatedAsyncioTestCase):
 
         # Verify API call
         self.tracker._request.assert_called_once_with(
-            "POST", "/repos/testowner/testrepo/issues", data=unittest.mock.ANY
+            "POST", "/repos/testowner/testrepo/issues", data=ANY
         )
 
     async def test_update_issue_success(self):
@@ -107,7 +106,7 @@ class TestGitHubTrackerCRUD(IsolatedAsyncioTestCase):
 
         # Verify API call
         self.tracker._request.assert_called_once_with(
-            "PATCH", "/repos/testowner/testrepo/issues/1", data=unittest.mock.ANY
+            "PATCH", "/repos/testowner/testrepo/issues/1", data=ANY
         )
 
     async def test_add_comment_success(self):

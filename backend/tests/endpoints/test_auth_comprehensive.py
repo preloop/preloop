@@ -115,9 +115,6 @@ class TestLoginNotificationBackgroundThread:
         """Test that login notification captures string values before thread starts."""
         mock_user.last_login = datetime.now(timezone.utc) - timedelta(days=10)
 
-        captured_username = None
-        captured_email = None
-
         with (
             patch("preloop.api.auth.router.get_db_session") as mock_get_db,
             patch("preloop.api.auth.router.crud_user") as mock_crud_user,
@@ -138,18 +135,15 @@ class TestLoginNotificationBackgroundThread:
 
             # Capture the thread target function
             def capture_thread_call(*args, **kwargs):
-                nonlocal captured_username, captured_email
                 target = kwargs.get("target")
                 if target:
-                    # Execute the target to capture what it passes
                     target()
-                mock_thread = MagicMock()
-                return mock_thread
+                return MagicMock()
 
             mock_thread_class.side_effect = capture_thread_call
 
             # Authenticate user
-            result = await authenticate_user(
+            await authenticate_user(
                 "testuser", "password123", source_ip="192.168.1.1", db=db_session
             )
 
@@ -180,7 +174,7 @@ class TestLoginNotificationBackgroundThread:
             mock_should_notify.return_value = True
 
             # Authenticate with testclient IP
-            result = await authenticate_user(
+            await authenticate_user(
                 "testuser", "password123", source_ip="testclient", db=db_session
             )
 
@@ -208,7 +202,7 @@ class TestLoginNotificationBackgroundThread:
             mock_should_notify.return_value = False  # Recent login
 
             # Authenticate user
-            result = await authenticate_user(
+            await authenticate_user(
                 "testuser", "password123", source_ip="192.168.1.1", db=db_session
             )
 

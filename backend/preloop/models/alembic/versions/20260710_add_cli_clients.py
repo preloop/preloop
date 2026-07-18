@@ -15,6 +15,10 @@ revision: str = "20260710_cli_clients"
 down_revision: Union[str, None] = "20260706_aw_name_uq"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
+# Alembic reads these module globals by name; keep a local reference so static analysis
+# treats them as used.
+_ALEMBIC_IDENTIFIERS = (revision, down_revision, branch_labels, depends_on)
+assert _ALEMBIC_IDENTIFIERS, "Alembic revision metadata must be defined"
 
 
 def upgrade() -> None:

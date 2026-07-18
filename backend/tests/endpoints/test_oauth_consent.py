@@ -21,13 +21,11 @@ from preloop.api.endpoints.oauth_consent import (
 
 
 @pytest.fixture(autouse=True)
-def reset_provider_singleton():
+def reset_provider_singleton(monkeypatch):
     """Reset the module-level singleton before each test."""
-    import preloop.api.endpoints.oauth_consent as mod
-
-    mod._oauth_provider_instance = None
-    yield
-    mod._oauth_provider_instance = None
+    monkeypatch.setattr(
+        "preloop.api.endpoints.oauth_consent._oauth_provider_instance", None
+    )
 
 
 @pytest.fixture

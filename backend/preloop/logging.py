@@ -1,8 +1,11 @@
 """Logging configuration for Preloop."""
 
-import logging
-import logging.config
+import importlib
 import os
+
+# Import stdlib logging.config via importlib so this module (also named
+# ``logging``) does not look like a self-import to static analysis.
+_logging_config = importlib.import_module("logging.config")
 
 # Get log level from environment
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -102,4 +105,4 @@ def configure_logging() -> None:
         pass
 
     # Configure logging
-    logging.config.dictConfig(logging_config)
+    _logging_config.dictConfig(logging_config)

@@ -750,7 +750,6 @@ export class ToolRuleEditor extends LitElement {
   }
 
   private _renderMultiConditionEditor() {
-    const args = this._getToolArguments();
     const builtExpr = this._buildMultiConditionExpression();
 
     return html`

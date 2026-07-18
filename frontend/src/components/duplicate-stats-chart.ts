@@ -1,11 +1,7 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { Chart, registerables } from 'chart.js';
-import {
-  getProjectDuplicateStats,
-  ProjectStats,
-  DuplicateStatsResponse,
-} from '../api';
+import { getProjectDuplicateStats, ProjectStats } from '../api';
 
 Chart.register(...registerables);
 

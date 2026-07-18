@@ -442,6 +442,7 @@ async def _handle_refresh_token(refresh_token_str: str, client_id: str):
         finally:
             db.close()
     except Exception:
+        # Opaque refresh failed; fall through to JWT refresh handling below.
         pass
 
     # 2. Try JWT refresh token (CLI path)
@@ -479,6 +480,7 @@ async def _handle_refresh_token(refresh_token_str: str, client_id: str):
                 }
             )
     except Exception:
+        # JWT refresh failed; return invalid_grant below.
         pass
 
     return _oauth_error("invalid_grant", "Invalid refresh token")
@@ -573,6 +575,7 @@ async def revoke_token(token: str = Form(...)):
         finally:
             db.close()
     except Exception:
+        # Token may already be revoked or absent; RFC 7009 still returns success.
         pass
 
     # Not found — still return success per RFC 7009

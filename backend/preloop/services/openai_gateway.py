@@ -150,7 +150,8 @@ def _bedrock_credential_kwargs(secret_value: Optional[str]) -> Dict[str, Any]:
 
 
 class ModelGatewayBackend(Protocol):
-    def completion(self, **kwargs: Any) -> Any: ...
+    def completion(self, **kwargs: Any) -> Any:
+        pass
 
 
 _ANTHROPIC_OAUTH_ENV_LOCK = threading.Lock()
@@ -1055,6 +1056,7 @@ class OpenAIGatewayService:
                                             parsed, ensure_ascii=False
                                         )
                                 except Exception:
+                                    # Keep streaming if argument delta is not Python-literal JSON.
                                     pass
 
                             state["function"]["arguments"] += arguments_delta
@@ -3071,6 +3073,7 @@ class OpenAIGatewayService:
                 raw_type = error.get("type")
                 error_type = str(raw_type) if raw_type else None
         except (TypeError, ValueError):
+            # Body is not JSON; fall back to the generic upstream message.
             pass
         return ModelGatewayAPIError(
             provider="anthropic",
@@ -3892,6 +3895,7 @@ class OpenAIGatewayService:
                     message=f"The AI Gateway experienced an upstream or timeout failure.\n\nProvider: {provider}\nStatus: {status_code}\nMessage: {message}\nType: {error_type}\nCode: {code}\n\nTrace:\n{str(exc)}",
                 )
             except Exception:
+                # Admin alert is best-effort; never block error mapping.
                 pass
 
         return ModelGatewayAPIError(
@@ -5210,6 +5214,7 @@ class OpenAIGatewayService:
                             if isinstance(parsed, dict):
                                 args = parsed
                         except Exception:
+                            # Leave args as the raw string when literal_eval fails.
                             pass
                 except ValueError:
                     args = {}
@@ -5221,6 +5226,7 @@ class OpenAIGatewayService:
                             if isinstance(parsed, dict):
                                 args = parsed
                         except Exception:
+                            # Keep args empty when the payload is not valid JSON or Python literal.
                             pass
                 content.append(
                     {

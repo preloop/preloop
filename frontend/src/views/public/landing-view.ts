@@ -6,7 +6,6 @@ import landingStyles from '../../styles/landing.css?inline';
 import { reducedMotionStyles } from '../../styles/reduced-motion';
 import './../../components/news-capsule';
 import './../../components/ide-setup-tabs';
-import { getIdeConfigs } from '../../utils/ide-configs';
 import { trackGoal } from '../../services/web-analytics';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/carousel/carousel.js';

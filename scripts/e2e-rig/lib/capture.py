@@ -158,6 +158,7 @@ def clear_buffer(child: pexpect.spawn) -> None:
         child._buffer.truncate(0)
         child._buffer.seek(0)
     except AttributeError:
+        # Older pexpect versions may not expose an internal buffer to clear.
         pass
 
 
@@ -227,8 +228,10 @@ def render(cast: Path, out_mp4: Path) -> None:
             "-i",
             str(gif),
             "-vf",
-            "scale=1920:1080:force_original_aspect_ratio=decrease,"
-            "pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=#212632,fps=30",
+            (
+                "scale=1920:1080:force_original_aspect_ratio=decrease,"
+                + "pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=#212632,fps=30"
+            ),
             "-c:v",
             "libx264",
             "-pix_fmt",

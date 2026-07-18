@@ -17,6 +17,7 @@ def _resolve_version(default: str = "0.8.0") -> str:
     try:
         return _package_version("preloop")
     except PackageNotFoundError:
+        # Editable/local installs may not be registered in package metadata.
         pass
 
     version_file = Path(__file__).resolve().parents[2] / "VERSION"
@@ -25,6 +26,7 @@ def _resolve_version(default: str = "0.8.0") -> str:
         if v:
             return v
     except OSError:
+        # VERSION file may be absent in minimal checkouts; keep the default.
         pass
 
     return default

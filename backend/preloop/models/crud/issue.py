@@ -278,9 +278,8 @@ class CRUDIssue(CRUDBase[Issue]):
             uuid_module.UUID(identifier)
             conditions.append(Issue.id == identifier)
         except (ValueError, TypeError):
+            # Identifier is not a UUID; skip id equality to avoid PostgreSQL cast errors.
             pass
-
-        # Add alternative key formats if provided
         if alternative_keys:
             for alt_key in alternative_keys:
                 conditions.append(Issue.key == alt_key)

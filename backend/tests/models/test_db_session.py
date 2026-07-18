@@ -7,7 +7,6 @@ import pytest
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from preloop.models.db.session import get_db_session, get_engine, get_session_factory
 import preloop.models.db.session as session_module
 
 
@@ -23,7 +22,7 @@ EXPECTED_POOL_KWARGS = {
 
 @pytest.fixture(autouse=True)  # Apply mock engine automatically to relevant tests
 def mock_engine_dependencies(monkeypatch):
-    """Mock dependencies used by get_engine."""
+    """Mock dependencies used by session_module.get_engine."""
     # Reset global engine cache before each test
     session_module._engine = None
     session_module._session_factory = None
@@ -59,7 +58,7 @@ def mock_engine_dependencies(monkeypatch):
 def test_get_engine_custom_url(mock_engine_dependencies):
     """Test get_engine with a custom URL."""
     custom_url = "postgresql://user:pass@custom-host/db"
-    engine = get_engine(custom_url)
+    engine = session_module.get_engine(custom_url)
 
     # Verify create_engine was called with the custom URL and connection pool parameters
     mock_engine_dependencies["create_engine"].assert_called_once_with(
@@ -93,7 +92,7 @@ def test_get_engine_from_env(mock_engine_dependencies):
     env_url = "postgresql://user:pass@env-host/db"
 
     with patch.dict(os.environ, {"DATABASE_URL": env_url}):
-        engine = get_engine()
+        engine = session_module.get_engine()
 
         # Verify create_engine was called with the URL from environment and pool parameters
         mock_engine_dependencies["create_engine"].assert_called_once_with(
@@ -127,7 +126,7 @@ def test_get_engine_default(mock_engine_dependencies):
     # Assume DATABASE_URL is set in the environment for default case
     default_url = "postgresql://default:pass@default-host/db"
     with patch.dict(os.environ, {"DATABASE_URL": default_url}):
-        engine = get_engine()  # Call without args
+        engine = session_module.get_engine()  # Call without args
 
         # Verify create_engine was called with the default URL and pool parameters
         mock_engine_dependencies["create_engine"].assert_called_once_with(
@@ -163,13 +162,13 @@ def test_get_engine_error_fallback():
     # Ensure DATABASE_URL is not set
     with patch.dict(os.environ, {}, clear=True):
         with pytest.raises(Exception, match="DATABASE_URL not in env"):
-            get_engine()
+            session_module.get_engine()
 
 
 def test_get_session_factory(mock_engine_dependencies):
     """Test get_session_factory function."""
     # get_engine is mocked by mock_engine_dependencies fixture via autouse
-    factory = get_session_factory()
+    factory = session_module.get_session_factory()
 
     # Verify the factory has the correct bind (the mocked engine instance)
     assert factory.kw["bind"] == mock_engine_dependencies["engine_instance"]
@@ -188,7 +187,7 @@ def test_get_engine_uses_database_pool_env(mock_engine_dependencies):
             "DATABASE_POOL_TIMEOUT": "7",
         },
     ):
-        get_engine()
+        session_module.get_engine()
 
     mock_engine_dependencies["create_engine"].assert_called_once_with(
         env_url,
@@ -210,7 +209,7 @@ def test_get_engine_keeps_pool_reset_on_return_default(mock_engine_dependencies)
     """Pooled connections should be rolled back on return before reuse."""
     env_url = "postgresql://user:pass@env-host/db"
     with patch.dict(os.environ, {"DATABASE_URL": env_url}):
-        get_engine()
+        session_module.get_engine()
 
     _, kwargs = mock_engine_dependencies["create_engine"].call_args
     assert "pool_reset_on_return" not in kwargs
@@ -225,7 +224,7 @@ def test_get_db_session():
         "preloop.models.db.session.get_session_factory", return_value=mock_factory
     ):
         # Get the generator
-        session_gen = get_db_session()
+        session_gen = session_module.get_db_session()
 
         # Get the session from the generator
         session = next(session_gen)
@@ -255,7 +254,7 @@ def test_get_db_session_invalidates_when_rollback_fails():
     with patch(
         "preloop.models.db.session.get_session_factory", return_value=mock_factory
     ):
-        session_gen = get_db_session()
+        session_gen = session_module.get_db_session()
         assert next(session_gen) == mock_session
 
         with pytest.raises(StopIteration):

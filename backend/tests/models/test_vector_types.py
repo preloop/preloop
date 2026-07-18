@@ -74,14 +74,7 @@ def test_check_pgvector_extension():
     mock_connection.execute.assert_called_once()
 
 
-# def test_install_pgvector_extension():
-#     """Test install_pgvector_extension function."""
-#     mock_engine = MagicMock()
-#     mock_connection = mock_engine.connect.return_value.__enter__.return_value
-
-#     assert install_pgvector_extension(mock_engine) is True
-#     mock_connection.execute.assert_called_once()
-#     mock_connection.commit.assert_called_once()
+# install_pgvector_extension is covered by integration tests elsewhere.
 
 
 def test_python_type():

@@ -53,43 +53,8 @@ def test_update(crud_account, mock_db_session):
         assert "last_updated" in updated_data
 
 
-# NOTE: get_by_email and get_by_username methods have been moved to User CRUD
-# These tests are no longer applicable to Account model
-#
-# def test_get_by_email(crud_account, mock_db_session):
-#     """Test retrieving an account by email."""
-#     # Arrange
-#     email = "test@example.com"
-#     mock_account = Account(id=str(uuid4()), email=email)
-#
-#     mock_query = MagicMock()
-#     mock_db_session.query.return_value = mock_query
-#     mock_query.filter.return_value = mock_query
-#     mock_query.first.return_value = mock_account
-#
-#     # Act
-#     result = crud_account.get_by_email(mock_db_session, email=email)
-#
-#     # Assert
-#     assert result.email == email
-#
-#
-# def test_get_by_username(crud_account, mock_db_session):
-#     """Test retrieving an account by username."""
-#     # Arrange
-#     username = "testuser"
-#     mock_account = Account(id=str(uuid4()), username=username)
-#
-#     mock_query = MagicMock()
-#     mock_db_session.query.return_value = mock_query
-#     mock_query.filter.return_value = mock_query
-#     mock_query.first.return_value = mock_account
-#
-#     # Act
-#     result = crud_account.get_by_username(mock_db_session, username=username)
-#
-#     # Assert
-#     assert result.username == username
+# NOTE: get_by_email and get_by_username methods moved to User CRUD; Account CRUD
+# no longer exposes those lookups, so the former retrieval tests were removed.
 
 
 def test_get_active(crud_account, mock_db_session):
@@ -112,29 +77,7 @@ def test_get_active(crud_account, mock_db_session):
     assert result[0].is_active
 
 
-# NOTE: get_by_oauth method has been moved to User CRUD
-# This test is no longer applicable to Account model
-#
-# def test_get_by_oauth(crud_account, mock_db_session):
-#     """Test retrieving an account by OAuth provider and ID."""
-#     # Arrange
-#     provider = "github"
-#     oauth_id = "12345"
-#     mock_account = Account(id=str(uuid4()), oauth_provider=provider, oauth_id=oauth_id)
-#
-#     mock_query = MagicMock()
-#     mock_db_session.query.return_value = mock_query
-#     mock_query.filter.return_value = mock_query
-#     mock_query.first.return_value = mock_account
-#
-#     # Act
-#     result = crud_account.get_by_oauth(
-#         mock_db_session, provider=provider, oauth_id=oauth_id
-#     )
-#
-#     # Assert
-#     assert result.oauth_provider == provider
-#     assert result.oauth_id == oauth_id
+# NOTE: get_by_oauth moved to User CRUD; Account CRUD no longer exposes that lookup.
 
 
 def test_add_to_organization(crud_account, mock_db_session):

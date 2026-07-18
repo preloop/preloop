@@ -165,7 +165,7 @@ async def create_mcp_server(
                     logger.info(
                         f"Auto-scan complete: discovered {len(tools)} tools for {new_server.name}"
                     )
-                except BaseException as e:
+                except Exception as e:
                     logger.warning(f"Auto-scan failed for {new_server.id}: {e}")
                     # Don't fail the creation if scan fails - user can manually rescan
 
@@ -853,7 +853,7 @@ async def mcp_server_oauth_callback(
                 logger.info(
                     f"Post-OAuth auto-scan: discovered {len(tools)} tools for {server.name}"
                 )
-            except BaseException as e:
+            except Exception as e:
                 logger.warning(f"Post-OAuth auto-scan failed for {server_id}: {e}")
                 # Don't fail the callback — tokens are saved, user can rescan manually
         else:

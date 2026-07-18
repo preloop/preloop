@@ -143,7 +143,7 @@ class TestCreateApprovalRequest:
 
         self._setup_mock_db_for_create(mock_db, sample_approval_workflow)
 
-        result = await approval_service.create_approval_request(
+        await approval_service.create_approval_request(
             account_id=account_id,
             tool_configuration_id=tool_config_id,
             approval_workflow_id=sample_approval_workflow.id,
@@ -171,7 +171,7 @@ class TestCreateApprovalRequest:
 
         self._setup_mock_db_for_create(mock_db, sample_approval_workflow)
 
-        result = await approval_service.create_approval_request(
+        await approval_service.create_approval_request(
             account_id="test_account",
             tool_configuration_id=uuid.uuid4(),
             approval_workflow_id=sample_approval_workflow.id,
@@ -195,7 +195,7 @@ class TestCreateApprovalRequest:
         mock_get_publisher.return_value = mock_task_publisher
         self._setup_mock_db_for_create(mock_db, sample_approval_workflow)
 
-        result = await approval_service.create_approval_request(
+        await approval_service.create_approval_request(
             account_id="test_account",
             tool_configuration_id=uuid.uuid4(),
             approval_workflow_id=sample_approval_workflow.id,
@@ -219,7 +219,7 @@ class TestCreateApprovalRequest:
         mock_get_publisher.return_value = mock_task_publisher
         self._setup_mock_db_for_create(mock_db, sample_approval_workflow)
 
-        result = await approval_service.create_approval_request(
+        await approval_service.create_approval_request(
             account_id="test_account",
             tool_configuration_id=uuid.uuid4(),
             approval_workflow_id=sample_approval_workflow.id,
@@ -526,7 +526,7 @@ class TestUpdateApprovalRequest:
             "get_approval_request",
             return_value=sample_approval_request,
         ):
-            result = await approval_service.update_approval_request(request_id, update)
+            await approval_service.update_approval_request(request_id, update)
 
             assert mock_db.commit.called
 
@@ -802,7 +802,7 @@ class TestDeclineRequest:
                     "_broadcast_approval_update",
                     new_callable=AsyncMock,
                 ):
-                    result = await approval_service.decline_request(
+                    await approval_service.decline_request(
                         request_id, "Security risk", user_id=user_id_2
                     )
 
@@ -941,7 +941,7 @@ class TestDeclineRequest:
                     "_broadcast_approval_update",
                     new_callable=AsyncMock,
                 ):
-                    result = await approval_service.decline_request(
+                    await approval_service.decline_request(
                         request_id, "Second decline", user_id=user_id_2
                     )
 
@@ -1976,7 +1976,7 @@ class TestQuorumVoteTracking:
                     "_broadcast_approval_update",
                     new_callable=AsyncMock,
                 ):
-                    result = await approval_service.approve_request(
+                    await approval_service.approve_request(
                         request_id, "Second approval", user_id=user_id_2
                     )
 

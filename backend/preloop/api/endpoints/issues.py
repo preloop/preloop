@@ -781,7 +781,6 @@ async def create_issue(
                             status_code=500,
                             detail="Internal error: Project's organization not loaded.",
                         )
-                    org_id = org.id
                 else:  # Exactly one project found
                     proj = candidate_projects[0]
                     org = proj.organization  # Already eager loaded
@@ -790,7 +789,6 @@ async def create_issue(
                             status_code=500,
                             detail="Internal error: Project's organization not loaded.",
                         )
-                    org_id = org.id
 
         # --- Final Sanity Checks ---
         if not org or not proj:

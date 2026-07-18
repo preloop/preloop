@@ -179,7 +179,7 @@ class TestEndpointsWithUserDependency:
         from typing import get_type_hints
 
         # Get function signature
-        sig = inspect.signature(get_account_for_user)
+        inspect.signature(get_account_for_user)
         type_hints = get_type_hints(get_account_for_user)
 
         # Check current_user parameter type

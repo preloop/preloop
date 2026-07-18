@@ -23,21 +23,6 @@ function createMatchMediaStub(matches: boolean) {
   };
 }
 
-const BRAND_CONFIG_STUB = {
-  name: 'Test Brand',
-  domain: 'test.example.com',
-  company: { legal_name: 'Test Co', address: '123 Test', city: 'Test' },
-  branding: {
-    logo_light: '/logo.svg',
-    logo_dark: '/logo-dark.svg',
-    favicon: '/favicon.ico',
-    primary_color: '#000',
-    gradient_product: '',
-    gradient_ai: '',
-  },
-  social: { twitter: '', linkedin: '', instagram: '' },
-};
-
 describe('ConsoleShell', () => {
   let fetchStub: sinon.SinonStub;
   let matchMediaStub: sinon.SinonStub;

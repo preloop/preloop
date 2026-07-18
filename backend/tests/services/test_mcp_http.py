@@ -131,12 +131,10 @@ class TestPreloopBearerAuthBackend:
 class TestGetMCPServer:
     """Test get_mcp_server singleton."""
 
-    def test_get_mcp_server_creates_instance(self):
+    def test_get_mcp_server_creates_instance(self, monkeypatch):
         """Test that get_mcp_server creates instance."""
         # Reset global
-        import preloop.services.mcp_http as mcp_http_module
-
-        mcp_http_module._mcp_server_instance = None
+        monkeypatch.setattr("preloop.services.mcp_http._mcp_server_instance", None)
 
         with patch(
             "preloop.services.mcp_http.initialize_dynamic_mcp_server"
@@ -149,13 +147,13 @@ class TestGetMCPServer:
             assert server == mock_server
             mock_init.assert_called_once()
 
-    def test_get_mcp_server_returns_existing_instance(self):
+    def test_get_mcp_server_returns_existing_instance(self, monkeypatch):
         """Test that get_mcp_server returns existing instance."""
-        import preloop.services.mcp_http as mcp_http_module
-
         # Set existing instance
         existing_server = MagicMock()
-        mcp_http_module._mcp_server_instance = existing_server
+        monkeypatch.setattr(
+            "preloop.services.mcp_http._mcp_server_instance", existing_server
+        )
 
         with patch(
             "preloop.services.mcp_http.initialize_dynamic_mcp_server"
@@ -747,22 +745,20 @@ class TestSetupMCPRoutes:
 class TestGetMCPLifespanManager:
     """Test get_mcp_lifespan_manager function."""
 
-    def test_get_mcp_lifespan_manager_returns_manager(self):
+    def test_get_mcp_lifespan_manager_returns_manager(self, monkeypatch):
         """Test get_mcp_lifespan_manager returns stored manager."""
-        import preloop.services.mcp_http as mcp_http_module
-
         mock_manager = MagicMock()
-        mcp_http_module._mcp_lifespan_manager = mock_manager
+        monkeypatch.setattr(
+            "preloop.services.mcp_http._mcp_lifespan_manager", mock_manager
+        )
 
         manager = get_mcp_lifespan_manager()
 
         assert manager == mock_manager
 
-    def test_get_mcp_lifespan_manager_returns_none(self):
+    def test_get_mcp_lifespan_manager_returns_none(self, monkeypatch):
         """Test get_mcp_lifespan_manager returns None when not set."""
-        import preloop.services.mcp_http as mcp_http_module
-
-        mcp_http_module._mcp_lifespan_manager = None
+        monkeypatch.setattr("preloop.services.mcp_http._mcp_lifespan_manager", None)
 
         manager = get_mcp_lifespan_manager()
 

@@ -483,9 +483,6 @@ async def register_device_landing_page(
     is_ios = "iphone" in user_agent or "ipad" in user_agent
     is_android = "android" in user_agent
 
-    # Determine which store to redirect to
-    store_url = app_store_url if is_ios else play_store_url
-
     # Check if token is valid (just for messaging - don't consume it yet)
     # The app will consume it when it registers
     is_valid_token = check_token_validity(db, token)

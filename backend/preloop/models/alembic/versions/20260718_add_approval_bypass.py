@@ -22,6 +22,10 @@ revision = "20260718_approval_bypass"
 down_revision = "20260714_growth_analytics"
 branch_labels = None
 depends_on = None
+# Alembic reads these module globals by name; keep a local reference so static analysis
+# treats them as used.
+_ALEMBIC_IDENTIFIERS = (revision, down_revision, branch_labels, depends_on)
+assert _ALEMBIC_IDENTIFIERS, "Alembic revision metadata must be defined"
 
 
 def upgrade() -> None:

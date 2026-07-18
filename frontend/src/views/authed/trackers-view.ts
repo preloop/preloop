@@ -1,4 +1,4 @@
-import { LitElement, html, css, unsafeCSS } from 'lit';
+import { LitElement, html, unsafeCSS } from 'lit';
 import { customElement, state, query } from 'lit/decorators.js';
 import { Router } from '@vaadin/router';
 import '../../components/tracker-list.ts';

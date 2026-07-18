@@ -1,6 +1,5 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
-import { when } from 'lit/directives/when.js';
 import { listIssueDuplicates, checkAIVerdict } from '../api';
 import type { DuplicatePair } from '../types';
 import { AIModelVerdict, renderVerdict } from '../utils/verdict';

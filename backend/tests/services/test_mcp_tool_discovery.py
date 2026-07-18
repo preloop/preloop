@@ -85,7 +85,7 @@ class TestScanMCPServerTools:
         mock_db.query.side_effect = mock_query_side_effect
 
         # Execute
-        result = await scan_mcp_server_tools(server_id, mock_db)
+        await scan_mcp_server_tools(server_id, mock_db)
 
         # Verify
         assert len(added_tools) == 1
@@ -145,7 +145,7 @@ class TestScanMCPServerTools:
         )
 
         # Execute
-        result = await scan_mcp_server_tools(server_id, mock_db)
+        await scan_mcp_server_tools(server_id, mock_db)
 
         # Verify tool was updated
         assert existing_tool.description == "Updated description"

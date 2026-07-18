@@ -315,8 +315,6 @@ def test_github_tracker_sync(preloop_client, github_client):
                         text = content_item.text
                         # Try to parse JSON and extract URL
                         try:
-                            import json
-
                             data = json.loads(text)
                             url = data.get("url")
                             if url:
@@ -359,7 +357,7 @@ def test_github_tracker_sync(preloop_client, github_client):
 
             # Test search via MCP
             print(f"🔍 Searching via MCP: {create_title}")
-            search_result = await mcp_client.search(
+            await mcp_client.search(
                 query=create_title, project=f"{owner}/{repo}", limit=10
             )
             print("✓ Found created issue via MCP search")
@@ -390,9 +388,7 @@ def test_github_tracker_sync(preloop_client, github_client):
             return created_issue_key
 
         # Run MCP tests
-        created_issue_key = run_mcp_test(
-            PRELOOP_URL, PRELOOP_API_KEY, test_mcp_operations
-        )
+        run_mcp_test(PRELOOP_URL, PRELOOP_API_KEY, test_mcp_operations)
 
         print("✓ MCP integration tests complete")
         print("\n✅ GitHub tracker sync test PASSED (including MCP)")

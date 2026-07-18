@@ -266,7 +266,7 @@ async def test_client_survives_malformed_json_without_disconnecting() -> None:
 async def test_client_reconnects_after_connection_failure() -> None:
     websocket = FakeWebSocket()
     sessions = [
-        lambda headers: FailingSession(headers),
+        FailingSession,
         lambda headers: FakeSession(websocket, headers),
     ]
     sleeps: list[float] = []

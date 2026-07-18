@@ -1,4 +1,4 @@
-import { LitElement, html, css, unsafeCSS } from 'lit';
+import { html, css, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { router } from '../../router';
 import { getFlowExecutions } from '../../api';

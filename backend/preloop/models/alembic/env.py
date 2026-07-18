@@ -9,22 +9,27 @@ from alembic import context
 # Import Base from your models
 from preloop.models.models.base import Base
 
-# Import all models here to ensure they are registered with Base.metadata
-# Adjust these imports based on your actual model file structure
-from preloop.models.models import issue  # noqa: F401
-from preloop.models.models import organization  # noqa: F401
-from preloop.models.models import project  # noqa: F401
-from preloop.models.models import tracker  # noqa: F401
-from preloop.models.models import account  # noqa: F401
-from preloop.models.models import agent_control_command  # noqa: F401
-from preloop.models.models import api_key  # noqa: F401
-from preloop.models.models import api_usage  # noqa: F401
-from preloop.models.models import client_version_log  # noqa: F401
-from preloop.models.models import comment  # noqa: F401
-from preloop.models.models import ai_model  # noqa: F401
-from preloop.models.models import issue_duplicate  # noqa: F401
-from preloop.models.models import model_price_override  # noqa: F401
-from preloop.models.models import provider_billing  # noqa: F401
+# Import all models so they register with Base.metadata for autogenerate.
+import importlib
+
+_MODEL_MODULES = (
+    "issue",
+    "organization",
+    "project",
+    "tracker",
+    "account",
+    "agent_control_command",
+    "api_key",
+    "api_usage",
+    "client_version_log",
+    "comment",
+    "ai_model",
+    "issue_duplicate",
+    "model_price_override",
+    "provider_billing",
+)
+for _model_module in _MODEL_MODULES:
+    importlib.import_module(f"preloop.models.models.{_model_module}")
 
 # Load .env file from the parent directory (project root)
 load_dotenv(
