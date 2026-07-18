@@ -347,6 +347,8 @@ export interface ManagedAgentSummary {
   last_activity_at: string | null;
   ended_at: string | null;
   total_requests: number;
+  successful_requests?: number;
+  failed_requests?: number;
   estimated_cost: number;
   configured_model_alias: string | null;
   configured_model_id?: string | null;

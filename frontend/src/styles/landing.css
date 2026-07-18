@@ -1290,3 +1290,16 @@ summary.faq-question:hover sl-icon {
     background-position: 0% 50%;
   }
 }
+
+/* Reduced-motion fallback (DESIGN.md D19): the hero gradient drift and every
+   other animation go static when the user asks for less motion. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

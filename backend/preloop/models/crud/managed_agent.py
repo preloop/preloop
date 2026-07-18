@@ -689,6 +689,8 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
                 _empty_usage_aggregate(),
             )
             summary["total_requests"] = aggregate["total_requests"]
+            summary["successful_requests"] = aggregate["successful_requests"]
+            summary["failed_requests"] = aggregate["failed_requests"]
             summary["estimated_cost"] = aggregate["estimated_cost"]
             summary["latest_model_alias"] = aggregate["latest_model_alias"]
             summary["latest_provider_name"] = aggregate["latest_provider_name"]
@@ -778,6 +780,8 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             principal_id=row.session_source_id,
         )
         summary["total_requests"] = aggregate["total_requests"]
+        summary["successful_requests"] = aggregate["successful_requests"]
+        summary["failed_requests"] = aggregate["failed_requests"]
         summary["estimated_cost"] = aggregate["estimated_cost"]
         summary["latest_model_alias"] = aggregate["latest_model_alias"]
         summary["latest_provider_name"] = aggregate["latest_provider_name"]
@@ -877,8 +881,19 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
     def _row_to_summary(row: Any) -> dict[str, Any]:
         """Normalize one list row into API response data."""
         now = _utc_now()
-        last_activity = _coerce_utc(
-            row.last_activity_at or row.last_request_at or row.last_seen_at
+        # "Active now" means traffic recency, never registration recency:
+        # last_seen_at is stamped by CLI enrollment/heartbeats and
+        # last_activity_at is stamped at session-token mint, so counting them
+        # unconditionally made a freshly onboarded agent with zero requests
+        # render as active while the dashboard (which requires requests)
+        # showed "No active agents right now". An agent with no gateway
+        # requests is idle; once traffic exists, later session activity keeps
+        # it fresh.
+        has_gateway_traffic = int(row.request_count or 0) > 0
+        last_activity = (
+            _coerce_utc(row.last_activity_at or row.last_request_at)
+            if has_gateway_traffic
+            else None
         )
         if row.lifecycle_state == "decommissioned":
             activity_status = "decommissioned"
@@ -930,6 +945,8 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             "last_activity_at": row.last_activity_at,
             "ended_at": row.ended_at,
             "total_requests": int(row.request_count or 0),
+            "successful_requests": 0,
+            "failed_requests": 0,
             "estimated_cost": float(row.estimated_cost or 0.0),
             "latest_model_alias": row.latest_model_alias,
             "latest_provider_name": row.latest_provider_name,

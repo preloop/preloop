@@ -1,7 +1,7 @@
 import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 import './register-view';
-import { RegisterView } from './register-view';
+import { RegisterView, humanizeRegisterError } from './register-view';
 import { invalidateApiCaches } from '../../api';
 
 describe('RegisterView', () => {
@@ -143,5 +143,143 @@ describe('RegisterView', () => {
     expect(loginLink?.textContent).to.contain(
       'Already have an account? Sign In'
     );
+  });
+
+  it('shows a persistent password rule under the password field', () => {
+    const passwordInput = element.shadowRoot?.querySelector<any>('#password');
+    expect(passwordInput?.getAttribute('help-text')).to.equal(
+      'At least 8 characters.'
+    );
+  });
+
+  it('humanizes raw pydantic email validation errors', async () => {
+    // FastAPI 422 shape: detail is a list of {msg} items. The raw prose must
+    // never reach the user.
+    fetchStub.resolves(
+      new Response(
+        JSON.stringify({
+          detail: [
+            {
+              msg: 'value is not a valid email address: The part after the @-sign is a special-use or reserved name that cannot be used with email.',
+            },
+          ],
+        }),
+        { status: 422 }
+      )
+    );
+
+    const usernameInput = element.shadowRoot?.querySelector<any>('#username');
+    const emailInput = element.shadowRoot?.querySelector<any>('#email');
+    const passwordInput = element.shadowRoot?.querySelector<any>('#password');
+    usernameInput.value = 'testuser';
+    emailInput.value = 'name@preloop.test';
+    passwordInput.value = 'password123';
+
+    const form = element.shadowRoot?.querySelector('form') as HTMLFormElement;
+    form.dispatchEvent(
+      new SubmitEvent('submit', { bubbles: true, cancelable: true })
+    );
+
+    await waitUntil(
+      () => element.shadowRoot?.querySelector('.error-message'),
+      'Error message did not appear'
+    );
+    const errorMessage = element.shadowRoot?.querySelector('.error-message');
+    expect(errorMessage?.textContent).to.contain(
+      "That email address doesn't look deliverable — check the part after the @."
+    );
+    expect(errorMessage?.textContent).to.not.contain('special-use');
+  });
+
+  describe('humanizeRegisterError', () => {
+    it('maps pydantic email prose to the first-class string', () => {
+      expect(
+        humanizeRegisterError(
+          'value is not a valid email address: The part after the @-sign is a special-use or reserved name that cannot be used with email.'
+        )
+      ).to.equal(
+        "That email address doesn't look deliverable — check the part after the @."
+      );
+    });
+
+    it('maps password length errors to the first-class string', () => {
+      expect(
+        humanizeRegisterError('String should have at least 8 characters')
+      ).to.equal('Passwords need at least 8 characters.');
+      expect(
+        humanizeRegisterError('password must be at least 8 characters')
+      ).to.equal('Passwords need at least 8 characters.');
+    });
+
+    it('does not treat unrelated length messages as password errors', () => {
+      expect(
+        humanizeRegisterError('Name should have at least 8 characters')
+      ).to.equal("That didn't work: Name should have at least 8 characters");
+    });
+
+    it('wraps unmapped errors in plain language', () => {
+      expect(humanizeRegisterError('Username already registered')).to.equal(
+        "That didn't work: Username already registered"
+      );
+    });
+
+    it('falls back on empty messages', () => {
+      expect(humanizeRegisterError('')).to.equal('Failed to create an account');
+    });
+  });
+
+  describe('first-account context', () => {
+    it('renders the first-account note when the instance has no users yet', async () => {
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.includes('/api/v1/features')) {
+          return new Response(
+            JSON.stringify({
+              plugins: [],
+              features: { registration: true, first_account_pending: true },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        return new Response(JSON.stringify({}), { status: 200 });
+      });
+      invalidateApiCaches();
+
+      const el = (await fixture(
+        html`<register-view></register-view>`
+      )) as RegisterView;
+      await waitUntil(
+        () => el.shadowRoot?.querySelector('.first-account-note'),
+        'first-account note did not appear'
+      );
+      const note = el.shadowRoot?.querySelector('.first-account-note');
+      expect(note?.textContent?.replace(/\s+/g, ' ')).to.contain(
+        "You're creating the first account on this instance — it becomes the admin account."
+      );
+    });
+
+    it('omits the note once users exist', async () => {
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.includes('/api/v1/features')) {
+          return new Response(
+            JSON.stringify({
+              plugins: [],
+              features: { registration: true, first_account_pending: false },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        return new Response(JSON.stringify({}), { status: 200 });
+      });
+      invalidateApiCaches();
+
+      const el = (await fixture(
+        html`<register-view></register-view>`
+      )) as RegisterView;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await el.updateComplete;
+      expect(el.shadowRoot?.querySelector('.first-account-note')).to.not.exist;
+    });
   });
 });

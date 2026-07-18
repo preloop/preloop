@@ -45,6 +45,7 @@ import type {
   AIModel,
 } from '../../types';
 import consoleStyles from '../../styles/console-styles.css?inline';
+import { reducedMotionStyles } from '../../styles/reduced-motion';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import { getAgentControlState } from '../../utils/agent-control';
 import { renderAgentIcon } from '../../utils/agent-icons';
@@ -263,6 +264,7 @@ export class AgentsView extends LitElement {
   private refreshTimer: number | null = null;
 
   static styles = [
+    reducedMotionStyles,
     unsafeCSS(consoleStyles),
     css`
       :host {
@@ -445,6 +447,19 @@ export class AgentsView extends LitElement {
       }
       .identity-badges sl-badge {
         max-width: 100%;
+      }
+      .model-traffic-failing {
+        background: var(--sl-color-danger-50);
+        border-left: 3px solid var(--sl-color-danger-600);
+        border-radius: 4px;
+        color: var(--sl-color-danger-700);
+        font-size: 0.85rem;
+        margin-bottom: 12px;
+        padding: 6px 10px;
+      }
+      .model-traffic-failing a {
+        color: inherit;
+        text-decoration: underline;
       }
       .top-action {
         display: flex;
@@ -2560,6 +2575,29 @@ export class AgentsView extends LitElement {
     return actions;
   }
 
+  /**
+   * Whether the live-validation badge belongs on the list card. Quiet chrome:
+   * only failure states surface here (badges mean "look here"); passed and
+   * not-run stay off the card and remain visible on the detail page.
+   */
+  private shouldShowValidationBadge(agent: ManagedAgentSummary): boolean {
+    if (!agent.live_validation_supported) return false;
+    return ['failed', 'throttled', 'upstream_unavailable'].includes(
+      agent.live_validation_status
+    );
+  }
+
+  /**
+   * An agent whose gateway traffic is failing across the board (≥5 requests,
+   * zero successes) gets a red strip on its card — the silent-failure case
+   * where a broken agent otherwise renders as a healthy green one.
+   */
+  private isModelTrafficFailing(agent: ManagedAgentSummary): boolean {
+    const total = agent.total_requests || 0;
+    const failed = agent.failed_requests ?? 0;
+    return total >= 5 && failed === total;
+  }
+
   private renderAgentIdentityBadges(agent: ManagedAgentSummary) {
     const tags = Object.entries(agent.tags || {});
     return html`
@@ -2567,6 +2605,17 @@ export class AgentsView extends LitElement {
         <sl-badge variant="${this.getLifecycleVariant(agent)}" pill>
           ${this.getLifecycleLabel(agent)}
         </sl-badge>
+        ${
+          this.shouldShowValidationBadge(agent)
+            ? html`<sl-badge
+                class="validation-badge"
+                variant="${this.getLiveValidationVariant(agent)}"
+                pill
+              >
+                ${this.getLiveValidationLabel(agent)}
+              </sl-badge>`
+            : null
+        }
         ${
           agent.owner_username
             ? html`<sl-badge variant="neutral" pill title="Owner">
@@ -2813,6 +2862,27 @@ export class AgentsView extends LitElement {
             ${isFlow ? '' : this.getOnboardingDescription(agent!)}
           </div>
 
+          ${
+            !isFlow && agent && this.isModelTrafficFailing(agent)
+              ? html`
+                  <div class="model-traffic-failing">
+                    Model traffic failing —
+                    <a
+                      href=${
+                        agent.runtime_session_id
+                          ? `/console/runtime-sessions?sessionId=${encodeURIComponent(
+                              agent.runtime_session_id
+                            )}`
+                          : `/console/agents/${encodeURIComponent(agent.id)}`
+                      }
+                      @pointerdown=${(e: Event) => e.stopPropagation()}
+                      @click=${(e: Event) => e.stopPropagation()}
+                      >see latest session</a
+                    >
+                  </div>
+                `
+              : ''
+          }
           ${
             liveActivity?.lastMessagePreview
               ? html`
@@ -3210,6 +3280,33 @@ export class AgentsView extends LitElement {
                             !isFlow && agent
                               ? this.renderAgentIdentityBadges(agent)
                               : null
+                          }
+                          ${
+                            !isFlow &&
+                            agent &&
+                            this.isModelTrafficFailing(agent)
+                              ? html`
+                                  <div class="model-traffic-failing">
+                                    Model traffic failing —
+                                    <a
+                                      href=${
+                                        agent.runtime_session_id
+                                          ? `/console/runtime-sessions?sessionId=${encodeURIComponent(
+                                              agent.runtime_session_id
+                                            )}`
+                                          : `/console/agents/${encodeURIComponent(
+                                              agent.id
+                                            )}`
+                                      }
+                                      @pointerdown=${(e: Event) =>
+                                        e.stopPropagation()}
+                                      @click=${(e: Event) =>
+                                        e.stopPropagation()}
+                                      >see latest session</a
+                                    >
+                                  </div>
+                                `
+                              : ''
                           }
                           ${
                             isFlow && flowNode?.agent_type

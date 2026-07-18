@@ -169,6 +169,15 @@ export class SessionReplayPanel extends LitElement {
   @property({ type: Boolean })
   loading = false;
 
+  /**
+   * Copy shown when no session is selected. Parents override this per scope
+   * (e.g. the agent-detail observer explains that the first gateway call will
+   * appear here) so an empty observer reads as a bounded state, never as a
+   * stuck loading screen.
+   */
+  @property({ type: String })
+  emptyText = 'Select a session to follow it live or replay it.';
+
   @property({ type: Boolean })
   rawPayloads = true;
 
@@ -3412,8 +3421,10 @@ export class SessionReplayPanel extends LitElement {
                       }
                     `
                   : html`
-                      Generate suggestions with
-                      ${selectedModel?.name || 'the account default model'}.
+                      Analyze this session's token use and get cuts you can
+                      verify by replay. Suggestions run on
+                      ${selectedModel?.name || 'the account default model'} —
+                      generation cost is shown with the results.
                     `
               }
             </div>
@@ -4846,7 +4857,7 @@ export class SessionReplayPanel extends LitElement {
     }
 
     if (!this.session) {
-      return html`<div class="empty">Select a session to inspect it.</div>`;
+      return html`<div class="empty">${this.emptyText}</div>`;
     }
 
     if (!this.events.length && !this.activity.length) {

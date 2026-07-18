@@ -24,6 +24,7 @@ import '@shoelace-style/shoelace/dist/components/tag/tag.js';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import '@shoelace-style/shoelace/dist/components/divider/divider.js';
 import consoleStyles from '../../styles/console-styles.css?inline';
+import { reducedMotionStyles } from '../../styles/reduced-motion';
 import '../../components/view-header.ts';
 import '../../components/permission-denied';
 
@@ -1363,6 +1364,7 @@ export class AuditView extends AuthedElement {
   // ── Styles ─────────────────────────────────────────────────────────
 
   static styles = [
+    reducedMotionStyles,
     unsafeCSS(consoleStyles),
     css`
       :host {

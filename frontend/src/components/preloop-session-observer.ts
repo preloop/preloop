@@ -49,6 +49,7 @@ import {
   formatNumber,
   normalizeObservedSessions,
 } from '../utils/session-observer';
+import { reducedMotionStyles } from '../styles/reduced-motion';
 import './session-list-panel';
 import './session-replay-panel';
 import './session-request-timeline';
@@ -62,6 +63,20 @@ type EventPageState = {
 
 const EVENT_PAGE_SIZE = 25;
 const REPLAY_METADATA_LIMIT = 5000;
+
+// First-use hint for the Optimize tab: rendered once per user (same
+// localStorage mechanism as dashboard_welcome_dismissed) until the drawer is
+// opened or the hint is dismissed.
+const OPTIMIZE_HINT_DISMISSED_KEY = 'optimize_hint_dismissed';
+
+/** Read the Optimize hint dismiss flag; never throw if storage is unavailable. */
+function readOptimizeHintDismissed(): boolean {
+  try {
+    return localStorage.getItem(OPTIMIZE_HINT_DISMISSED_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
 
 const DEFAULT_FEATURES: Required<SessionObserverFeatures> = {
   summaries: true,
@@ -220,98 +235,162 @@ export class PreloopSessionObserver extends LitElement {
   @state()
   private searchQuery = '';
 
+  @state()
+  private optimizeHintDismissed = readOptimizeHintDismissed();
+
   private unsubscribeRealtime?: () => void;
   private refreshTimer: number | null = null;
   private livePulseTimer: number | null = null;
 
-  static styles = css`
-    :host {
-      display: block;
-    }
-
-    .observer {
-      display: grid;
-      gap: var(--sl-spacing-large);
-      min-height: 0;
-    }
-
-    .observer.with-sidebar {
-      grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
-    }
-
-    .sidebar,
-    .content {
-      min-height: 0;
-      overflow: auto;
-    }
-
-    .toolbar,
-    .mode-row,
-    .summary-row {
-      align-items: center;
-      display: flex;
-      flex-wrap: wrap;
-      gap: var(--sl-spacing-small);
-      justify-content: space-between;
-    }
-
-    .content {
-      display: flex;
-      flex-direction: column;
-      gap: var(--sl-spacing-medium);
-    }
-
-    .toolbar {
-      background: var(--sl-color-neutral-50);
-      border: 1px solid var(--sl-color-neutral-200);
-      border-radius: var(--sl-border-radius-medium);
-      padding: var(--sl-spacing-small);
-    }
-
-    .meta {
-      color: var(--sl-color-neutral-600);
-      font-size: var(--sl-font-size-small);
-    }
-
-    .live-indicator {
-      align-items: center;
-      background: var(--sl-color-neutral-100);
-      border-radius: 999px;
-      color: var(--sl-color-neutral-600);
-      display: inline-flex;
-      font-size: 0.72rem;
-      font-weight: 700;
-      gap: 5px;
-      letter-spacing: 0.04em;
-      padding: 3px 8px;
-      text-transform: uppercase;
-    }
-
-    .live-dot {
-      background: var(--sl-color-success-500);
-      border-radius: 999px;
-      height: 7px;
-      width: 7px;
-    }
-
-    .live-indicator.pulsing {
-      background: var(--sl-color-success-100);
-      color: var(--sl-color-success-700);
-    }
-
-    .empty,
-    .loading {
-      color: var(--sl-color-neutral-600);
-      padding: var(--sl-spacing-x-large);
-      text-align: center;
-    }
-
-    @media (max-width: 950px) {
-      .observer.with-sidebar {
-        grid-template-columns: 1fr;
+  static styles = [
+    reducedMotionStyles,
+    css`
+      :host {
+        display: block;
       }
-    }
-  `;
+
+      .observer {
+        display: grid;
+        gap: var(--sl-spacing-large);
+        min-height: 0;
+      }
+
+      .observer.with-sidebar {
+        grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+      }
+
+      .sidebar,
+      .content {
+        min-height: 0;
+        overflow: auto;
+      }
+
+      .toolbar,
+      .mode-row,
+      .summary-row {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-small);
+        justify-content: space-between;
+      }
+
+      .content {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-medium);
+      }
+
+      .toolbar {
+        background: var(--sl-color-neutral-50);
+        border: 1px solid var(--sl-color-neutral-200);
+        border-radius: var(--sl-border-radius-medium);
+        padding: var(--sl-spacing-small);
+      }
+
+      .meta {
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
+      }
+
+      .live-indicator {
+        align-items: center;
+        background: var(--sl-color-neutral-100);
+        border-radius: 999px;
+        color: var(--sl-color-neutral-600);
+        display: inline-flex;
+        font-size: 0.72rem;
+        font-weight: 700;
+        gap: 5px;
+        letter-spacing: 0.04em;
+        padding: 3px 8px;
+        text-transform: uppercase;
+      }
+
+      .live-dot {
+        background: var(--sl-color-success-500);
+        border-radius: 999px;
+        height: 7px;
+        width: 7px;
+      }
+
+      .live-indicator.pulsing {
+        background: var(--sl-color-success-100);
+        color: var(--sl-color-success-700);
+      }
+
+      .empty,
+      .loading {
+        color: var(--sl-color-neutral-600);
+        padding: var(--sl-spacing-x-large);
+        text-align: center;
+      }
+
+      /* Optimize first-use hint: a single-line info bar under the tab strip.
+       Semantic info cyan left border (this IS information), 4px radius. */
+      .optimize-hint {
+        align-items: baseline;
+        background: var(--sl-color-neutral-50);
+        border: 1px solid var(--sl-color-neutral-200);
+        border-left: 3px solid var(--sl-color-cyan-500, #30c9e8);
+        border-radius: 4px;
+        color: var(--sl-color-neutral-700);
+        display: flex;
+        font-size: var(--sl-font-size-small);
+        gap: var(--sl-spacing-x-small);
+        line-height: 1.5;
+        padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
+      }
+
+      .optimize-hint-body {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .optimize-hint-link {
+        color: var(--sl-color-primary-600);
+        cursor: pointer;
+        font-weight: var(--sl-font-weight-semibold);
+        text-decoration: underline;
+        white-space: nowrap;
+      }
+
+      .optimize-hint-dismiss {
+        background: none;
+        border: none;
+        color: var(--sl-color-neutral-500);
+        cursor: pointer;
+        font-size: var(--sl-font-size-medium);
+        line-height: 1;
+        padding: 0 2px;
+      }
+
+      /* Entry motion: one 250ms ease-out fade + 2px rise on first render,
+       inside the DESIGN.md budget and behind the reduced-motion guard. */
+      @media (prefers-reduced-motion: no-preference) {
+        .optimize-hint {
+          animation: optimize-hint-enter 250ms ease-out;
+        }
+
+        @keyframes optimize-hint-enter {
+          from {
+            opacity: 0;
+            transform: translateY(2px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+      }
+
+      @media (max-width: 950px) {
+        .observer.with-sidebar {
+          grid-template-columns: 1fr;
+        }
+      }
+    `,
+  ];
 
   private readonly handleInspectRequests = (event: Event): void => {
     const detail = (event as CustomEvent).detail || {};
@@ -1054,6 +1133,10 @@ export class PreloopSessionObserver extends LitElement {
   private setReplayMode(mode: SessionReplayMode): void {
     if (this.replayMode === mode) return;
     this.replayMode = mode;
+    if (mode === 'optimize') {
+      // Opening the drawer retires the first-use hint for good.
+      this.dismissOptimizeHint();
+    }
     if (mode === 'replay' && this.activeSessionId) {
       void this.loadReplayMetadata(this.activeSessionId);
     }
@@ -1065,6 +1148,72 @@ export class PreloopSessionObserver extends LitElement {
         cacheOnly: true,
       });
     }
+  }
+
+  private dismissOptimizeHint(): void {
+    if (this.optimizeHintDismissed) return;
+    this.optimizeHintDismissed = true;
+    try {
+      localStorage.setItem(OPTIMIZE_HINT_DISMISSED_KEY, 'true');
+    } catch {
+      // Privacy modes / missing storage: keep the in-memory dismiss only.
+    }
+  }
+
+  /**
+   * First-use hint for Optimize: a single info bar under the tab strip,
+   * rendered once per user, only when the active session has real ledger
+   * numbers to show (never invented) and the drawer was never opened.
+   */
+  private renderOptimizeHint() {
+    if (this.optimizeHintDismissed) return nothing;
+    if (!this.enabledFeatures.optimization) return nothing;
+    if (this.replayMode === 'optimize') return nothing;
+    const session = this.activeSession;
+    if (!session || (session.totalRequests || 0) < 1) return nothing;
+    const tokens = session.tokenUsage?.total_tokens || 0;
+    if (tokens <= 0) return nothing;
+    const cost = session.estimatedCost || 0;
+    const ledger =
+      cost > 0
+        ? `This session used ${formatNumber(tokens)} tokens (${formatCost(cost)}).`
+        : `This session used ${formatNumber(tokens)} tokens.`;
+    return html`
+      <div class="optimize-hint" role="note">
+        <div class="optimize-hint-body">
+          <strong>${ledger}</strong> Optimize finds where they went and suggests
+          cuts — you verify each one by replaying the session, without touching
+          your agent. →
+          <a
+            class="optimize-hint-link"
+            @click=${() => this.setReplayMode('optimize')}
+            >Try Optimize</a
+          >
+        </div>
+        <button
+          class="optimize-hint-dismiss"
+          type="button"
+          aria-label="Dismiss"
+          title="Dismiss"
+          @click=${() => this.dismissOptimizeHint()}
+        >
+          ×
+        </button>
+      </div>
+    `;
+  }
+
+  /**
+   * Copy for the replay panel when no session is selected. With zero sessions
+   * this must be a bounded static state (never a spinner): on an agent's
+   * detail page it explains the first gateway call will appear here; on the
+   * account-wide explorer it invites selecting a session.
+   */
+  private get replayEmptyText(): string {
+    if (this.scope === 'managed_agent' && this.observedSessions.length === 0) {
+      return 'No sessions yet for this agent. Its first gateway call will appear here live.';
+    }
+    return 'Select a session to follow it live or replay it.';
   }
 
   private renderToolbar() {
@@ -1185,7 +1334,7 @@ export class PreloopSessionObserver extends LitElement {
 
     const content = html`
       <div class="content">
-        ${this.renderToolbar()}
+        ${this.renderToolbar()} ${this.renderOptimizeHint()}
         ${
           this.error
             ? html`
@@ -1293,6 +1442,7 @@ export class PreloopSessionObserver extends LitElement {
         }
         <session-replay-panel
           .session=${this.activeSession}
+          .emptyText=${this.replayEmptyText}
           .events=${this.activeEvents}
           .timelineEvents=${
             this.activeSessionId
@@ -1301,7 +1451,10 @@ export class PreloopSessionObserver extends LitElement {
           }
           .activity=${this.activeActivity}
           .replayMode=${this.replayMode}
-          .loading=${this.loadingSessionId === this.activeSessionId}
+          .loading=${
+            this.activeSessionId !== null &&
+            this.loadingSessionId === this.activeSessionId
+          }
           .rawPayloads=${this.enabledFeatures.rawPayloads}
           .eventDetails=${this.loadedEventDetails}
           .loadingEventDetails=${this.loadingEventDetails}

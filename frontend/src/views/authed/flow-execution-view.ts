@@ -7,6 +7,7 @@ import { unifiedWebSocketManager } from '../../services/unified-websocket-manage
 
 const ansiConverter = new AnsiUp();
 import consoleStyles from '../../styles/console-styles.css?inline';
+import { reducedMotionStyles } from '../../styles/reduced-motion';
 import {
   getFlowExecution,
   getFlow,
@@ -99,6 +100,7 @@ export class FlowExecutionView extends LitElement {
   }
 
   static styles = [
+    reducedMotionStyles,
     unsafeCSS(consoleStyles),
     css`
       :host {

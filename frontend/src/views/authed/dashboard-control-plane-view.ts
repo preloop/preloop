@@ -59,6 +59,7 @@ import { parseUTCDate } from '../../utils/date';
 import { getAgentControlState } from '../../utils/agent-control';
 import type { Tool } from '../../components/tool-card';
 import consoleStyles from '../../styles/console-styles.css?inline';
+import { reducedMotionStyles } from '../../styles/reduced-motion';
 
 interface AuditEvent {
   id: string;
@@ -242,6 +243,7 @@ export class DashboardView extends AuthedElement {
   }
 
   static styles = [
+    reducedMotionStyles,
     css`
       .tool-counts {
         display: flex;
