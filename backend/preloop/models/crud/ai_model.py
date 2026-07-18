@@ -44,13 +44,43 @@ class CRUDAIModel(CRUDBase[AIModel]):
         secret_name: str,
         existing_secret_id=None,
     ) -> None:
-        """Resolve incoming credential fields into a SecretReference."""
+        """Resolve incoming credential fields into a SecretReference.
+
+        When ``obj_data`` already carries a ``credentials_secret_id`` and no new
+        credential material, the existing secret is reused as-is. This is what lets
+        several models share one provider key. The secret is verified to belong to
+        ``account_id`` first, so a caller cannot attach another account's key.
+
+        Raises:
+            ValueError: If the referenced secret does not exist or belongs to a
+                different account.
+        """
         api_key = obj_data.pop("api_key", None) if "api_key" in obj_data else None
         credential_type = obj_data.pop("credential_type", None)
         credential_payload = obj_data.pop("credential_payload", None)
         credentials_backend_type = obj_data.pop("credentials_backend_type", None)
         credentials_external_ref = obj_data.pop("credentials_external_ref", None)
         credentials_meta_data = obj_data.pop("credentials_meta_data", None)
+
+        reuse_secret_id = obj_data.get("credentials_secret_id")
+        has_new_credential_material = bool(
+            api_key
+            or credential_type
+            or credential_payload is not None
+            or credentials_backend_type
+            or credentials_external_ref
+            or credentials_meta_data
+        )
+        if reuse_secret_id is not None and not has_new_credential_material:
+            secret_ref = crud_secret_reference.get(db, id=reuse_secret_id)
+            if secret_ref is None:
+                raise ValueError("Referenced credential secret does not exist")
+            if str(secret_ref.account_id) != str(account_id):
+                raise ValueError(
+                    "Referenced credential secret belongs to a different account"
+                )
+            obj_data["api_key"] = None
+            return
 
         if api_key:
             secret_ref = get_secret_service().create_local_secret_reference(
@@ -252,13 +282,24 @@ class CRUDAIModel(CRUDBase[AIModel]):
     def get_all_for_account(
         self, db: Session, *, account_id: uuid.UUID | str
     ) -> list[AIModel]:
-        """Get all configured AIModels available to the account, including system defaults."""
+        """Get all configured AIModels available to the account, including system defaults.
+
+        Results are ordered deterministically: account-owned models before system
+        defaults, then oldest-first by ``created_at``, with ``id`` as a final
+        tiebreak. Model resolution and therefore pricing depend on this ordering
+        being stable across requests, so it must not be removed.
+        """
         return (
             db.query(self.model)
             .filter(
                 or_(
                     self.model.account_id == account_id, self.model.account_id.is_(None)
                 )
+            )
+            .order_by(
+                self.model.account_id.is_(None).asc(),
+                self.model.created_at.asc(),
+                self.model.id.asc(),
             )
             .all()
         )

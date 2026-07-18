@@ -220,3 +220,45 @@ def test_ai_model_schema_rejects_mixed_inline_and_external_credentials():
     assert "api_key cannot be combined with other credential fields" in str(
         update_error.value
     )
+
+
+def test_ai_model_schema_accepts_reused_credentials_secret_id():
+    """Reusing an existing secret is the supported multi-model-per-key path."""
+    secret_id = uuid.uuid4()
+
+    model = AIModelCreate(
+        name="Claude Haiku",
+        provider_name="anthropic",
+        model_identifier="claude-haiku-4-5",
+        credentials_secret_id=secret_id,
+    )
+
+    assert model.credentials_secret_id == secret_id
+    assert model.api_key is None
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"api_key": "inline-key"},
+        {"credential_type": "oauth_openai_codex", "credential_payload": {}},
+        {
+            "credentials_backend_type": "vault_kv_v2",
+            "credentials_external_ref": "providers/anthropic/team-a",
+        },
+    ],
+)
+def test_ai_model_schema_rejects_secret_reuse_with_new_credentials(extra):
+    """Reusing a secret and supplying new credential material is contradictory."""
+    with pytest.raises(ValidationError) as error:
+        AIModelCreate(
+            name="Confused Model",
+            provider_name="anthropic",
+            model_identifier="claude-haiku-4-5",
+            credentials_secret_id=uuid.uuid4(),
+            **extra,
+        )
+
+    assert "credentials_secret_id cannot be combined with new credential material" in (
+        str(error.value)
+    )

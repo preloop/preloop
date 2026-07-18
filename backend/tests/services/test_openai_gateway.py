@@ -2077,3 +2077,81 @@ def test_build_openai_codex_payload_passes_through_responses_api_tools():
     )
 
     assert upstream["tools"] == already_flat
+
+
+def _gateway_model(name: str, alias: str) -> SimpleNamespace:
+    """Build a gateway-enabled AIModel stand-in with an explicit alias."""
+    return SimpleNamespace(
+        id=name,
+        name=name,
+        provider_name="anthropic",
+        model_identifier=alias,
+        api_endpoint=None,
+        is_default=False,
+        model_parameters=None,
+        meta_data={"gateway": {"enabled": True, "model_alias": alias}},
+    )
+
+
+def _resolver_service(models):
+    auth_context = ModelGatewayAuthContext(
+        token="token",
+        user=SimpleNamespace(id="user-1", account_id="account-1"),
+    )
+    service = OpenAIGatewayService(MagicMock(), auth_context)
+    service._get_account_models = lambda: list(models)  # type: ignore[method-assign]
+    return service
+
+
+def test_resolve_requested_model_prefers_exact_match_over_earlier_suffix_match():
+    """An exact alias match must win even when a suffix match comes first.
+
+    Red under the old resolver: it returned on the first suffix match, so the
+    exact row was never reached and the request was priced against the wrong model.
+    """
+    suffix_row = _gateway_model("suffix", "anthropic/claude-sonnet-4-5")
+    exact_row = _gateway_model("exact", "claude-sonnet-4-5")
+    service = _resolver_service([suffix_row, exact_row])
+
+    resolved = service._resolve_requested_model(
+        "claude-sonnet-4-5", provider="anthropic"
+    )
+
+    assert resolved is exact_row
+
+
+def test_resolve_requested_model_exact_match_wins_regardless_of_position():
+    """The exact-match rule must not depend on list position."""
+    exact_row = _gateway_model("exact", "claude-sonnet-4-5")
+    suffix_row = _gateway_model("suffix", "anthropic/claude-sonnet-4-5")
+
+    for ordering in ([suffix_row, exact_row], [exact_row, suffix_row]):
+        service = _resolver_service(ordering)
+        resolved = service._resolve_requested_model(
+            "claude-sonnet-4-5", provider="anthropic"
+        )
+        assert resolved is exact_row
+
+
+def test_resolve_requested_model_suffix_match_is_stable_and_repeatable():
+    """With only suffix candidates, the first in the given order wins, every time."""
+    first = _gateway_model("first", "anthropic/claude-sonnet-4-5")
+    second = _gateway_model("second", "bedrock/claude-sonnet-4-5")
+    service = _resolver_service([first, second])
+
+    resolved = [
+        service._resolve_requested_model("claude-sonnet-4-5", provider="anthropic")
+        for _ in range(5)
+    ]
+
+    assert all(row is first for row in resolved)
+
+
+def test_resolve_requested_model_unknown_model_still_404s():
+    """Unknown models must keep raising a loud 404 rather than falling back."""
+    service = _resolver_service([_gateway_model("only", "anthropic/claude-opus-4-1")])
+
+    with pytest.raises(ModelGatewayAPIError) as excinfo:
+        service._resolve_requested_model("gpt-5", provider="anthropic")
+
+    assert excinfo.value.status_code == 404
