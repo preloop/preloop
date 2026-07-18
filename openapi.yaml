@@ -12421,6 +12421,14 @@ components:
           type: integer
           title: Total Requests
           default: 0
+        successful_requests:
+          type: integer
+          title: Successful Requests
+          default: 0
+        failed_requests:
+          type: integer
+          title: Failed Requests
+          default: 0
         estimated_cost:
           type: number
           title: Estimated Cost
