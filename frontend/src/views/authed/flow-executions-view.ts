@@ -11,6 +11,7 @@ import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import { parseUTCDate, formatLocalDateTime } from '../../utils/date';
 import consoleStyles from '../../styles/console-styles.css?inline';
+import { reducedMotionStyles } from '../../styles/reduced-motion';
 import '../../components/view-header.ts';
 
 interface FlowExecution {
@@ -26,6 +27,7 @@ interface FlowExecution {
 @customElement('flow-executions-view')
 export class FlowExecutionsView extends AuthedElement {
   static styles = [
+    reducedMotionStyles,
     unsafeCSS(consoleStyles),
     css`
       :host {

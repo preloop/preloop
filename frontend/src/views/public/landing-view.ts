@@ -3,6 +3,7 @@ import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { getBrandConfig } from '../../brand-config';
 import { customElement, state, query } from 'lit/decorators.js';
 import landingStyles from '../../styles/landing.css?inline';
+import { reducedMotionStyles } from '../../styles/reduced-motion';
 import './../../components/news-capsule';
 import './../../components/ide-setup-tabs';
 import { getIdeConfigs } from '../../utils/ide-configs';
@@ -79,6 +80,7 @@ export class LandingView extends LitElement {
   private _animTimer?: number;
 
   static styles = [
+    reducedMotionStyles,
     css`
       ${unsafeCSS(landingStyles)}
 
