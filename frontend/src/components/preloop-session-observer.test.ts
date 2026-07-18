@@ -554,4 +554,88 @@ describe('PreloopSessionObserver', () => {
     expect(panel!.shadowRoot?.querySelector('.loading sl-spinner')).to.not
       .exist;
   });
+
+  describe('Optimize first-use hint', () => {
+    beforeEach(() => {
+      localStorage.removeItem('optimize_hint_dismissed');
+    });
+
+    async function createObserverWithOptimization() {
+      return (await fixture(
+        html`<preloop-session-observer
+          .sessions=${[session]}
+          .features=${{ optimization: true }}
+        ></preloop-session-observer>`
+      )) as PreloopSessionObserver;
+    }
+
+    it("shows the hint with the session's real ledger numbers", async () => {
+      const el = await createObserverWithOptimization();
+      await waitUntil(
+        () => el.shadowRoot?.querySelector('.optimize-hint'),
+        'hint bar did not render',
+        { timeout: 3000 }
+      );
+      const hint = el.shadowRoot?.querySelector('.optimize-hint');
+      const text = (hint?.textContent || '').replace(/\s+/g, ' ');
+      expect(text).to.contain('This session used 1,300 tokens ($0.42).');
+      expect(text).to.contain(
+        'Optimize finds where they went and suggests cuts — you verify each one by replaying the session, without touching your agent.'
+      );
+      expect(text).to.contain('Try Optimize');
+    });
+
+    it('does not show the hint when optimization is disabled', async () => {
+      const el = (await fixture(
+        html`<preloop-session-observer
+          .sessions=${[session]}
+        ></preloop-session-observer>`
+      )) as PreloopSessionObserver;
+      await el.updateComplete;
+      expect(el.shadowRoot?.querySelector('.optimize-hint')).to.not.exist;
+    });
+
+    it('does not show the hint once dismissed (persisted per user)', async () => {
+      localStorage.setItem('optimize_hint_dismissed', 'true');
+      const el = await createObserverWithOptimization();
+      await el.updateComplete;
+      expect(el.shadowRoot?.querySelector('.optimize-hint')).to.not.exist;
+    });
+
+    it('dismissing via × persists and removes the bar', async () => {
+      const el = await createObserverWithOptimization();
+      await waitUntil(() => el.shadowRoot?.querySelector('.optimize-hint'));
+      (
+        el.shadowRoot?.querySelector(
+          '.optimize-hint-dismiss'
+        ) as HTMLButtonElement
+      ).click();
+      await el.updateComplete;
+      expect(el.shadowRoot?.querySelector('.optimize-hint')).to.not.exist;
+      expect(localStorage.getItem('optimize_hint_dismissed')).to.equal('true');
+    });
+
+    it('Try Optimize opens the drawer and retires the hint for good', async () => {
+      const el = await createObserverWithOptimization();
+      await waitUntil(() => el.shadowRoot?.querySelector('.optimize-hint'));
+      (
+        el.shadowRoot?.querySelector('.optimize-hint-link') as HTMLElement
+      ).click();
+      await el.updateComplete;
+      expect((el as any).replayMode).to.equal('optimize');
+      expect(el.shadowRoot?.querySelector('.optimize-hint')).to.not.exist;
+      expect(localStorage.getItem('optimize_hint_dismissed')).to.equal('true');
+    });
+
+    it('ships its entry motion behind the reduced-motion guard', () => {
+      const styles = ((el: unknown) =>
+        (el as { styles: Array<{ cssText: string }> }).styles)(
+        customElements.get('preloop-session-observer')
+      );
+      const text = styles.map((s) => s.cssText).join('\n');
+      expect(text).to.contain('@media (prefers-reduced-motion: reduce)');
+      expect(text).to.contain('@media (prefers-reduced-motion: no-preference)');
+      expect(text).to.contain('optimize-hint-enter');
+    });
+  });
 });

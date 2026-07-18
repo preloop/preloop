@@ -3421,8 +3421,10 @@ export class SessionReplayPanel extends LitElement {
                       }
                     `
                   : html`
-                      Generate suggestions with
-                      ${selectedModel?.name || 'the account default model'}.
+                      Analyze this session's token use and get cuts you can
+                      verify by replay. Suggestions run on
+                      ${selectedModel?.name || 'the account default model'} —
+                      generation cost is shown with the results.
                     `
               }
             </div>
