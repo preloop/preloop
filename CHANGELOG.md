@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A per-subject `allowed_models` policy only governed one spelling of a
+  model.** The gateway resolver accepts both a model's canonical alias
+  (`anthropic/claude-opus-4-1`) and its bare provider-suffix form
+  (`claude-opus-4-1`), but the budget preflight compared the raw client wire
+  string, so the two spellings were separate policy keys and an admin who
+  listed one had not listed the other. The check now keys off the resolved
+  model and matches any spelling that reaches it — canonical alias, configured
+  alias, bare identifier, or the raw request string — so one allowlist entry
+  covers the model however a client names it. Relatedly, a request naming no
+  model at all skipped the allowlist entirely; enforcement now runs whenever an
+  allowlist exists and fails closed. Accounts with no `allowed_models`
+  configured are unaffected.
+
 ## [0.12.4] - 2026-07-18
 
 ### Fixed

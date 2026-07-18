@@ -5,11 +5,15 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi import HTTPException
 
-from preloop.models.crud import crud_ai_model
+from preloop.models.crud import crud_account, crud_ai_model, crud_api_key
 from preloop.models.crud.plan import plan as crud_plan
 from preloop.models.crud.plan import subscription as crud_subscription
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.model_gateway_budget import ModelGatewayBudgetService
+from preloop.services.subject_governance import (
+    SUBJECT_TYPE_API_KEYS,
+    set_subject_governance,
+)
 
 
 def test_enforce_or_raise_reports_trial_hosted_model_limit(db_session, test_user):
@@ -213,3 +217,146 @@ def test_active_subscription_not_hit_by_free_cap(db_session, test_user):
     )
     assert result.hard_limit_exceeded is False
     assert result.enforcement_reason is None
+
+
+def _governed_model(db_session, test_user, **overrides):
+    """Create a gateway-enabled model whose canonical alias is prefixed."""
+    obj_in = {
+        "name": "Governed Opus",
+        "provider_name": "anthropic",
+        "model_identifier": "claude-opus-4-1",
+        "meta_data": {
+            "gateway": {"enabled": True},
+            "pricing": {"input_price_per_1k": 0.01, "output_price_per_1k": 0.02},
+        },
+    }
+    obj_in.update(overrides)
+    return crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in=obj_in,
+        account_id=test_user.account_id,
+    )
+
+
+def _key_scoped_allowlist(db_session, test_user, allowed_models):
+    """Attach a per-API-key allowed_models policy and return the key."""
+    api_key, _ = crud_api_key.create_runtime_key(
+        db_session,
+        name="Governed Runtime Token",
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        context_data={},
+    )
+    account = crud_account.get(db_session, id=test_user.account_id)
+    crud_account.update(
+        db_session,
+        db_obj=account,
+        obj_in={
+            "meta_data": set_subject_governance(
+                account.meta_data or {},
+                subject_type=SUBJECT_TYPE_API_KEYS,
+                subject_id=str(api_key.id),
+                config={"allowed_models": list(allowed_models)},
+            )
+        },
+    )
+    return api_key
+
+
+def _governed_service(db_session, test_user, api_key):
+    return ModelGatewayBudgetService(
+        db_session,
+        ModelGatewayAuthContext(
+            token="governed-token", user=test_user, api_key=api_key
+        ),
+    )
+
+
+@pytest.mark.parametrize("wire_model", ["anthropic/claude-opus-4-1", "claude-opus-4-1"])
+def test_allowlist_governs_every_spelling_of_the_same_model(
+    db_session, test_user, wire_model
+):
+    """Both spellings resolve to one model, so one allowlist entry covers both."""
+    ai_model = _governed_model(db_session, test_user)
+    api_key = _key_scoped_allowlist(
+        db_session, test_user, ["anthropic/claude-opus-4-1"]
+    )
+    service = _governed_service(db_session, test_user, api_key)
+
+    result = service.preflight_check(ai_model, {"model": wire_model, "input": "hi"})
+
+    assert result.hard_limit_exceeded is False
+    assert result.enforcement_reason is None
+
+
+@pytest.mark.parametrize("wire_model", ["anthropic/claude-opus-4-1", "claude-opus-4-1"])
+def test_allowlist_denies_every_spelling_of_a_disallowed_model(
+    db_session, test_user, wire_model
+):
+    """A model absent from the allowlist is denied however the client spells it."""
+    ai_model = _governed_model(db_session, test_user)
+    api_key = _key_scoped_allowlist(db_session, test_user, ["openai/gpt-4o"])
+    service = _governed_service(db_session, test_user, api_key)
+
+    result = service.preflight_check(ai_model, {"model": wire_model, "input": "hi"})
+
+    assert result.hard_limit_exceeded is True
+    assert result.enforcement_reason == "subject_model_not_allowed"
+
+
+def test_allowlist_accepts_bare_identifier_entry_for_prefixed_request(
+    db_session, test_user
+):
+    """Legacy allowlists holding bare ids still cover prefixed wire spellings."""
+    ai_model = _governed_model(db_session, test_user)
+    api_key = _key_scoped_allowlist(db_session, test_user, ["claude-opus-4-1"])
+    service = _governed_service(db_session, test_user, api_key)
+
+    result = service.preflight_check(
+        ai_model, {"model": "anthropic/claude-opus-4-1", "input": "hi"}
+    )
+
+    assert result.hard_limit_exceeded is False
+
+
+def test_blank_wire_model_still_enforces_allowlist(db_session, test_user):
+    """A payload without a model must not skip the allowlist check."""
+    ai_model = _governed_model(db_session, test_user, model_identifier="")
+    api_key = _key_scoped_allowlist(db_session, test_user, ["openai/gpt-4o"])
+    service = _governed_service(db_session, test_user, api_key)
+
+    result = service.preflight_check(ai_model, {"input": "hi"})
+
+    assert result.hard_limit_exceeded is True
+    assert result.enforcement_reason == "subject_model_not_allowed"
+
+
+def test_blank_wire_model_resolves_to_allowed_model(db_session, test_user):
+    """Omitting the wire model is fine when the resolved model is allowed."""
+    ai_model = _governed_model(db_session, test_user)
+    api_key = _key_scoped_allowlist(
+        db_session, test_user, ["anthropic/claude-opus-4-1"]
+    )
+    service = _governed_service(db_session, test_user, api_key)
+
+    result = service.preflight_check(ai_model, {"input": "hi"})
+
+    assert result.hard_limit_exceeded is False
+
+
+def test_account_without_allowlist_is_unaffected(db_session, test_user):
+    """No configured allowed_models means no model governance at all."""
+    ai_model = _governed_model(db_session, test_user)
+    api_key, _ = crud_api_key.create_runtime_key(
+        db_session,
+        name="Ungoverned Runtime Token",
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        context_data={},
+    )
+    service = _governed_service(db_session, test_user, api_key)
+
+    for payload in ({"model": "anthropic/claude-opus-4-1"}, {"model": ""}, {}):
+        result = service.preflight_check(ai_model, {**payload, "input": "hi"})
+        assert result.hard_limit_exceeded is False
+        assert result.enforcement_reason is None

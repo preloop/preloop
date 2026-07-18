@@ -22,6 +22,7 @@ from preloop.models.models.ai_model import AIModel
 from preloop.models.models.flow import Flow
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.model_pricing import estimate_ai_model_usage_cost
+from preloop.services.model_runtime_resolver import gateway_model_alias_candidates
 from preloop.services.subject_governance import (
     build_subject_context_from_api_key,
     get_subject_governance,
@@ -118,9 +119,7 @@ class ModelGatewayBudgetService:
         trial_hosted_model_limit_usd = None
         trial_hosted_model_current_spend_usd = None
         trial_hosted_model_estimated_total_usd = None
-        requested_model = str(
-            payload.get("model") or ai_model.model_identifier or ""
-        ).strip()
+        governed_model_spellings = self._governed_model_spellings(ai_model, payload)
 
         # 1. Check legacy allowed models for subject
         scoped_allowed_models: list[set[str]] = []
@@ -143,7 +142,10 @@ class ModelGatewayBudgetService:
 
         if scoped_allowed_models:
             allowed_model_set = set.intersection(*scoped_allowed_models)
-            if requested_model and requested_model not in allowed_model_set:
+            # Fail closed: an allowlist that matches none of the resolved
+            # model's spellings denies the request, including the degenerate
+            # case where the request names no model at all.
+            if not governed_model_spellings & allowed_model_set:
                 hard_limit_exceeded = True
                 enforcement_reason = "subject_model_not_allowed"
 
@@ -276,6 +278,32 @@ class ModelGatewayBudgetService:
 
             raise HTTPException(status_code=403, detail=detail, headers=headers)
         return result
+
+    @staticmethod
+    def _governed_model_spellings(
+        ai_model: AIModel, payload: Dict[str, Any]
+    ) -> set[str]:
+        """Return the allowlist keys that identify this request's model.
+
+        Governance keys off the *resolved* model, not the raw wire string, so
+        that every spelling the gateway resolver accepts for one model is
+        governed as one model. The raw request string is kept as an extra
+        candidate so allowlists written against historical spellings keep
+        matching.
+
+        Args:
+            ai_model: The model the gateway already resolved the request to.
+            payload: The gateway request body.
+
+        Returns:
+            Spellings to test against the subject's ``allowed_models``; empty
+            only when the model carries no identifier at all.
+        """
+        spellings = gateway_model_alias_candidates(ai_model)
+        raw_requested = payload.get("model")
+        if isinstance(raw_requested, str) and raw_requested.strip():
+            spellings.add(raw_requested.strip())
+        return spellings
 
     def _get_gateway_spend(
         self,
