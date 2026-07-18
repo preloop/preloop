@@ -1,6 +1,6 @@
 {
   "name": "preloop",
-  "version": "0.12.2",
+  "version": "0.12.3",
   "description": "Preloop console frontend",
   "main": "src/main.ts",
   "overrides": {
