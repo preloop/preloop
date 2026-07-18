@@ -75,6 +75,24 @@ class TestValidateDeviceToken:
     def test_surrounding_whitespace_is_tolerated(self) -> None:
         assert validate_device_token("android", f"  {VALID_FCM}  ") == (True, None)
 
+    @pytest.mark.parametrize(
+        "installation_id",
+        ["testGk9TgQ1mR2", "noneS9TgQ1mR2v", "nullX9TgQ1mR2v", "TeStGk9TgQ1mR2"],
+    )
+    def test_accepts_real_token_whose_id_starts_with_a_placeholder_word(
+        self, installation_id: str
+    ) -> None:
+        """A real FCM token must never be rejected for its random prefix.
+
+        An installation id is drawn from the same alphabet as the words in
+        _KNOWN_PLACEHOLDER_PREFIXES, so a perfectly valid token can begin with
+        "test", "none" or "null". Rejecting it would cost that device every
+        push notification it should have received, which is the exact failure
+        this validation exists to prevent.
+        """
+        token = f"{installation_id}:APA91b" + ("Z" * 134)
+        assert validate_device_token("android", token) == (True, None)
+
 
 if __name__ == "__main__":
     pytest.main([__file__])
