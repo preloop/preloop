@@ -35,6 +35,13 @@ import { getExampleSessionOptimization } from '../api';
 import './preloop-gateway-event';
 import './session-optimization-panel';
 
+// The bundled example has no runtime session behind it and nothing can be
+// applied from it. These are bound explicitly rather than omitted: Lit reuses
+// DOM across renders, so leaving the bindings off would let a real session's
+// values persist into the example view.
+const EXAMPLE_NO_SESSION: ObservedSession | null = null;
+const EXAMPLE_NO_APPLYING_ID: string | null = null;
+
 type ReplayMessage = FlowGatewayConversationPreviewMessage & {
   key: string;
   event: FlowGatewayEvent | null;
@@ -3509,13 +3516,13 @@ export class SessionReplayPanel extends LitElement {
           </div>
         </div>
         <session-optimization-panel
-          .session=${null}
+          .session=${EXAMPLE_NO_SESSION}
           .events=${[]}
           .activity=${[]}
           .suggestions=${suggestions}
           .optimization=${example}
           .appliedActions=${[]}
-          .applyingSuggestionId=${null}
+          .applyingSuggestionId=${EXAMPLE_NO_APPLYING_ID}
         ></session-optimization-panel>
         ${
           example.example_provenance
