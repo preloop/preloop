@@ -2534,14 +2534,22 @@ class ApprovalService:
         for _user_id, token in android_tokens:
             try:
                 if fcm_available:
-                    success = await send_fcm_notification(
-                        device_token=token,
+                    # `token=`, not `device_token=`: send_fcm_notification names
+                    # its first parameter `token`, so the old keyword raised
+                    # TypeError on every escalation send and the except-clause
+                    # below swallowed it. Escalation pushes had been failing
+                    # silently and counting as delivery errors.
+                    result = await send_fcm_notification(
+                        token=token,
                         title=notification_title,
                         body=notification_body,
                         data=notification_data,
                         priority="high",
                     )
-                    if success:
+                    # The function returns a dict, which is always truthy — even
+                    # for a failed send. Check the flag, as the main push path
+                    # above does.
+                    if result.get("success"):
                         sent_count += 1
                     else:
                         failed_count += 1
