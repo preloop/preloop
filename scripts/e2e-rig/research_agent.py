@@ -159,23 +159,40 @@ def main() -> None:
         )
         sys.exit(SKIP_EXIT)
 
-    model = model_ids[0]
-    print(f"[4/4] research session via gateway model {model!r} ...")
-    status, completion = request(
-        f"{base}/openai/v1/chat/completions",
-        "POST",
-        gw_token,
-        {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": "You are a concise research assistant."},
-                {"role": "user", "content": args.question},
-            ],
-            "max_tokens": 200,
-        },
-    )
-    if status != 200:
-        sys.exit(f"gateway chat completion failed ({status}): {redact(completion)}")
+    # Try models in listing order: some listed models are backed by
+    # credentials bound to a specific agent principal (e.g. a subscription-
+    # OAuth model imported from Claude Code) and correctly refuse third-party
+    # callers with a 400. A usable BYOK-API-key model may appear later in
+    # the list, so fall through until one answers.
+    completion = None
+    model = None
+    for candidate in model_ids:
+        print(f"[4/4] research session via gateway model {candidate!r} ...")
+        status, completion = request(
+            f"{base}/openai/v1/chat/completions",
+            "POST",
+            gw_token,
+            {
+                "model": candidate,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "You are a concise research assistant.",
+                    },
+                    {"role": "user", "content": args.question},
+                ],
+                "max_tokens": 200,
+            },
+        )
+        if status == 200:
+            model = candidate
+            break
+        print(f"      model {candidate!r} unusable ({status}): {redact(completion)}")
+    if model is None:
+        sys.exit(
+            "gateway chat completion failed on every listed model "
+            f"(last: {redact(completion)})"
+        )
     answer = completion["choices"][0]["message"]["content"]
     usage = completion.get("usage", {})
     print("----- agent answer -----")
