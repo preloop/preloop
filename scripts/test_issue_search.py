@@ -1,15 +1,23 @@
 #!/usr/bin/env python3
 import json
 import os
+import os
 
 import requests
 
 # Base URL for the Preloop API
 base_url = "http://localhost:8000/api/v1"
 
-# Authenticate and get a token
 username = os.environ.get("PRELOOP_USERNAME")
 password = os.environ.get("PRELOOP_PASSWORD")
+
+if not username or not password:
+    print("Missing credentials. Set PRELOOP_USERNAME and PRELOOP_PASSWORD environment variables.")
+    raise SystemExit(1)
+
+# Authenticate and get a token
+username = os.environ.get("PRELOOP_USERNAME")
+    f"{base_url}/auth/token", data={"username": username, "password": password}
 
 if not username or not password:
     print(
