@@ -10120,6 +10120,22 @@ components:
           - type: string
           - type: 'null'
           title: Flow Name
+        trigger_subject:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Trigger Subject
+          description: 'Short human-readable description of what triggered this execution,
+            e.g. ''preloop/preloop #78 · Pull Request Updated · 5167595c''. Null for
+            executions created before subjects were recorded, or where no identifying
+            detail could be derived.'
+        trigger_subject_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Trigger Subject Url
+          description: Link to the resource that triggered this execution (e.g. the
+            pull request or merge request), when the trigger payload carries one.
       type: object
       required:
       - id

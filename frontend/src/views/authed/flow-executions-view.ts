@@ -22,6 +22,14 @@ interface FlowExecution {
   start_time: string;
   end_time?: string;
   tool_calls_count?: number;
+  /**
+   * Short human-readable description of what triggered this execution, e.g.
+   * 'preloop/preloop #78 · Pull Request Updated · 5167595c'. Computed when the
+   * execution is created; absent on executions that predate subjects.
+   */
+  trigger_subject?: string | null;
+  /** Link to the triggering pull/merge request, when the payload carries one. */
+  trigger_subject_url?: string | null;
 }
 
 @customElement('flow-executions-view')
@@ -50,6 +58,29 @@ export class FlowExecutionsView extends AuthedElement {
       }
       th {
         background-color: var(--sl-color-neutral-100);
+      }
+      /* The subject is the primary way to tell executions apart, so give it
+         room while keeping long repo/branch names from widening the table. */
+      .subject-cell {
+        max-width: 340px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .subject-cell a {
+        color: inherit;
+        text-decoration: none;
+        border-bottom: 1px solid var(--sl-color-neutral-300);
+      }
+      .subject-cell a:hover,
+      .subject-cell a:focus-visible {
+        color: var(--sl-color-primary-600);
+        border-bottom-color: var(--sl-color-primary-600);
+      }
+      /* Fallback for executions with no derivable subject: the short id. */
+      .subject-fallback {
+        font-family: var(--sl-font-mono);
+        color: var(--sl-color-neutral-500);
       }
       .status-cell {
         display: flex;
@@ -284,11 +315,11 @@ export class FlowExecutionsView extends AuthedElement {
                       <thead>
                         <tr>
                           <th>Flow Name</th>
-                          <th>Execution ID</th>
+                          <th>Subject</th>
                           <th>Status</th>
                           <th>Start Time</th>
                           <th>End Time</th>
-                          <th>Actions</th>
+                          <th>Tool Calls</th>
                           <th>Details</th>
                         </tr>
                       </thead>
@@ -297,7 +328,9 @@ export class FlowExecutionsView extends AuthedElement {
                           (exec) => html`
                             <tr>
                               <td>${exec.flow_name || 'Unnamed Flow'}</td>
-                              <td>${exec.id.slice(0, 8)}...</td>
+                              <td class="subject-cell">
+                                ${this.renderSubject(exec)}
+                              </td>
                               <td>
                                 <div class="status-cell">
                                   ${
@@ -377,6 +410,35 @@ export class FlowExecutionsView extends AuthedElement {
         </div>
       </div>
     `;
+  }
+
+  /**
+   * Render the identifying subject for an execution row.
+   *
+   * Prefers the server-computed trigger subject, linking to the underlying
+   * pull/merge request when the trigger payload carried a URL. Executions
+   * created before subjects were recorded (or whose trigger carried nothing
+   * identifying) fall back to the short execution id, so the column is never
+   * empty.
+   */
+  renderSubject(exec: FlowExecution) {
+    const subject = exec.trigger_subject;
+    if (!subject) {
+      return html`<span class="subject-fallback" title=${exec.id}
+        >${exec.id.slice(0, 8)}</span
+      >`;
+    }
+    if (exec.trigger_subject_url) {
+      return html`<a
+        href=${exec.trigger_subject_url}
+        target="_blank"
+        rel="noopener noreferrer"
+        title=${subject}
+        @click=${(e: Event) => e.stopPropagation()}
+        >${subject}</a
+      >`;
+    }
+    return html`<span title=${subject}>${subject}</span>`;
   }
 
   getStatusVariant(status: string) {

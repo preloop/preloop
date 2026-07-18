@@ -1138,6 +1138,14 @@ export class FlowExecutionView extends LitElement {
 
     const details = this.execution.trigger_event_details;
 
+    // Prefer the subject computed when the execution was created — it reads
+    // like 'preloop/preloop #78 · Pull Request Updated · 5167595c' and saves
+    // digging through the raw payload below. Older executions have none.
+    const subject = details._subject?.text;
+    if (subject) {
+      return subject;
+    }
+
     if (details.test_mode) {
       return 'Manual Test Run';
     }
