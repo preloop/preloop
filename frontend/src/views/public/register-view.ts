@@ -17,6 +17,27 @@ const OAUTH_PROVIDER_CONFIG: Record<string, { label: string; icon: string }> = {
   gitlab: { label: 'GitLab', icon: 'gitlab' },
 };
 
+/**
+ * Map raw server/validator error text to human copy. Pydantic validation
+ * prose (e.g. "value is not a valid email address: The part after the @-sign
+ * is a special-use or reserved name…") must never render verbatim on the very
+ * first form a stranger touches. Email and password get first-class strings;
+ * anything unmapped is wrapped in a plain-language fallback.
+ */
+export function humanizeRegisterError(message: string): string {
+  const raw = (message || '').trim();
+  if (!raw) {
+    return 'Failed to create an account';
+  }
+  if (/not a valid email address/i.test(raw)) {
+    return "That email address doesn't look deliverable — check the part after the @.";
+  }
+  if (/at least 8 characters/i.test(raw)) {
+    return 'Passwords need at least 8 characters.';
+  }
+  return `That didn't work: ${raw}`;
+}
+
 @customElement('register-view')
 export class RegisterView extends LitElement {
   @state()
@@ -27,6 +48,11 @@ export class RegisterView extends LitElement {
 
   @state()
   private oauthProviders: string[] = [];
+
+  // True while this instance has zero users and registration is open — the
+  // account being created becomes the admin account.
+  @state()
+  private firstAccountPending = false;
 
   static styles = [
     formStyles,
@@ -71,6 +97,13 @@ export class RegisterView extends LitElement {
       .divider::after {
         margin-left: 0.75rem;
       }
+
+      .first-account-note {
+        color: var(--sl-color-neutral-500);
+        font-size: var(--sl-font-size-small);
+        line-height: 1.5;
+        margin: 0 0 1rem;
+      }
     `,
   ];
 
@@ -84,8 +117,11 @@ export class RegisterView extends LitElement {
       const features = await getFeatures();
       const providers = features.features['oauth_providers'];
       this.oauthProviders = Array.isArray(providers) ? providers : [];
+      this.firstAccountPending =
+        features.features['first_account_pending'] === true;
     } catch (error) {
       this.oauthProviders = [];
+      this.firstAccountPending = false;
     }
   }
 
@@ -159,7 +195,7 @@ export class RegisterView extends LitElement {
     } catch (error) {
       this._loading = false;
       if (error instanceof Error) {
-        this.error = error.message;
+        this.error = humanizeRegisterError(error.message);
       } else {
         this.error = 'Failed to create an account';
       }
@@ -207,6 +243,14 @@ export class RegisterView extends LitElement {
         <div class="form-container">
           <h2>Create a ${getBrandConfig().name} account</h2>
           ${
+            this.firstAccountPending
+              ? html`<p class="first-account-note">
+                  You're creating the first account on this instance — it
+                  becomes the admin account.
+                </p>`
+              : ''
+          }
+          ${
             this.error
               ? html`<div class="error-message">${this.error}</div>`
               : ''
@@ -239,6 +283,7 @@ export class RegisterView extends LitElement {
                 minlength="8"
                 required
                 password-toggle
+                help-text="At least 8 characters."
               ></sl-input>
             </div>
             <div class="form-actions">

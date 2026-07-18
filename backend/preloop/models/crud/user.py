@@ -141,6 +141,17 @@ class CRUDUser(CRUDBase[User]):
             db.refresh(user)
         return user
 
+    def has_any_users(self, db: Session) -> bool:
+        """Return whether at least one user exists on this instance.
+
+        Args:
+            db: Database session.
+
+        Returns:
+            True when any user row exists, False on a fresh instance.
+        """
+        return db.query(User.id).first() is not None
+
 
 # Create instance
 crud_user = CRUDUser(User)
