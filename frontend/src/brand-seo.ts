@@ -394,6 +394,8 @@ function strip_html(input: string): string {
     text = text.replace(/<[^>]*>/g, '');
   }
   text = text.replace(/javascript:/gi, '');
+  text = text.replace(/vbscript:/gi, '');
+  text = text.replace(/data:/gi, '');
   text = text.replace(/</g, '');
   return text.trim();
 }

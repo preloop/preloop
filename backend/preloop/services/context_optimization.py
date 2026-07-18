@@ -39,7 +39,6 @@ MIN_DEDUPE_CHARS = 240
 # Floor for configured tool-result caps to avoid breaking agents outright.
 MIN_TOOL_RESULT_CAP = 1_000
 
-_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*(\x07|\x1b\\)")
 _CHARS_PER_TOKEN = 4
 
 
@@ -369,18 +368,41 @@ def optimize_messages(
     return result, stats
 
 
-_ANSI_MAX_RE_SUB_LEN = 256_000
-_ANSI_CHUNK_SIZE = 64_000
-
-
 def _strip_ansi_codes(text: str) -> str:
-    """Strip ANSI escape sequences without ReDoS on very large inputs."""
-    if len(text) <= _ANSI_MAX_RE_SUB_LEN:
-        return _ANSI_RE.sub("", text)
-    parts: List[str] = []
-    for start in range(0, len(text), _ANSI_CHUNK_SIZE):
-        parts.append(_ANSI_RE.sub("", text[start : start + _ANSI_CHUNK_SIZE]))
-    return "".join(parts)
+    """Strip ANSI CSI/OSC sequences with a linear scan (no backtracking regex)."""
+    out: List[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "\x1b" and i + 1 < n:
+            nxt = text[i + 1]
+            if nxt == "[":
+                # CSI: ESC [ ... final byte in @-~
+                j = i + 2
+                while j < n and not ("@" <= text[j] <= "~"):
+                    j += 1
+                if j < n:
+                    i = j + 1
+                    continue
+            elif nxt == "]":
+                # OSC: ESC ] ... BEL or ESC \
+                j = i + 2
+                while j < n:
+                    if text[j] == "\x07":
+                        i = j + 1
+                        break
+                    if text[j] == "\x1b" and j + 1 < n and text[j + 1] == "\\":
+                        i = j + 2
+                        break
+                    j += 1
+                else:
+                    out.append(ch)
+                    i += 1
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def strip_noise_text(text: str) -> str:

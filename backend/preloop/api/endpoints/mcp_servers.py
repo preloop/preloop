@@ -843,27 +843,25 @@ async def mcp_server_oauth_callback(
                     "last_error": None,
                 },
             )
-            logger.info(
-                "OAuth credentials stored for MCP server %s (id=%s)",
-                server.name,
-                server_id,
-            )
+            # Do not log server_id/name here: they share a dict with
+            # client_secret in the OAuth state and CodeQL taints the whole map.
+            logger.info("OAuth credentials stored for MCP server")
 
             # Auto-scan for tools now that we have credentials
             try:
                 tools = await scan_mcp_server_tools(server_id, db)
                 logger.info(
-                    f"Post-OAuth auto-scan: discovered {len(tools)} tools for {server.name}"
+                    "Post-OAuth auto-scan: discovered %s tools",
+                    len(tools),
                 )
-            except Exception as e:
+            except Exception:
                 logger.warning(
-                    "Post-OAuth auto-scan failed for %s: %s",
-                    server_id,
-                    type(e).__name__,
+                    "Post-OAuth auto-scan failed after credential storage",
+                    exc_info=True,
                 )
                 # Don't fail the callback — credentials are stored, user can rescan manually
         else:
-            logger.warning(f"MCP server {server_id} not found after OAuth callback")
+            logger.warning("MCP server not found after OAuth callback")
     finally:
         db.close()
 

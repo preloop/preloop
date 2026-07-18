@@ -11,11 +11,7 @@ from aiodocker.exceptions import DockerError
 
 from .base import AgentExecutionResult, AgentExecutor, AgentStatus
 from preloop.services.mcp_config_service import MCPConfigService
-from preloop.utils.repo_urls import (
-    inject_oauth_token,
-    repo_url_log_location,
-    tracker_host_kind,
-)
+from preloop.utils.repo_urls import inject_oauth_token, tracker_host_kind
 
 logger = logging.getLogger(__name__)
 
@@ -1514,9 +1510,7 @@ class ContainerAgentExecutor(AgentExecutor):
             return inject_oauth_token(repo_url, token, user="gitlab-ci-token")
 
         self.logger.warning(
-            "Could not determine tracker type for token injection. "
-            "URL: %s, tracker_type: %s",
-            repo_url_log_location(repo_url),
+            "Could not determine tracker type for token injection (tracker_type=%s)",
             tracker_type,
         )
         return repo_url

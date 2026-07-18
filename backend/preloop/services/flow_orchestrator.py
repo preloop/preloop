@@ -872,15 +872,10 @@ class FlowExecutionOrchestrator:
             api_key = crud_api_key.deactivate(self.db, key_id=self.temporary_api_key_id)
 
             if api_key:
-                logger.info(
-                    "Deactivated temporary API key record id=%s",
-                    self.temporary_api_key_id,
-                )
+                # Log outcome only — key ids are treated as sensitive by CodeQL.
+                logger.info("Deactivated temporary API key record")
             else:
-                logger.warning(
-                    "Temporary API key record id=%s not found for cleanup",
-                    self.temporary_api_key_id,
-                )
+                logger.warning("Temporary API key record not found for cleanup")
 
         except Exception as e:
             logger.error(

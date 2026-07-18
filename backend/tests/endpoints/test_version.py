@@ -1,6 +1,7 @@
 """Tests for version API endpoint."""
 
 from unittest.mock import MagicMock
+from urllib.parse import urlparse
 
 import pytest
 
@@ -205,10 +206,10 @@ class TestVersionUpdateFields:
         monkeypatch.setenv("ANDROID_PLAY_STORE_URL", "javascript:alert(1)")
 
         data = client.get("/api/v1/version").json()
-        assert data["clients"]["ios"]["store_url"].startswith("https://apps.apple.com")
-        assert data["clients"]["android"]["store_url"].startswith(
-            "https://play.google.com"
-        )
+        ios_host = urlparse(data["clients"]["ios"]["store_url"]).hostname
+        android_host = urlparse(data["clients"]["android"]["store_url"]).hostname
+        assert ios_host == "apps.apple.com"
+        assert android_host == "play.google.com"
 
     def test_latest_version_reflects_persisted_check(
         self, client: TestClient, monkeypatch
