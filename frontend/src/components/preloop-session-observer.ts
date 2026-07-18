@@ -1067,6 +1067,19 @@ export class PreloopSessionObserver extends LitElement {
     }
   }
 
+  /**
+   * Copy for the replay panel when no session is selected. With zero sessions
+   * this must be a bounded static state (never a spinner): on an agent's
+   * detail page it explains the first gateway call will appear here; on the
+   * account-wide explorer it invites selecting a session.
+   */
+  private get replayEmptyText(): string {
+    if (this.scope === 'managed_agent' && this.observedSessions.length === 0) {
+      return 'No sessions yet for this agent. Its first gateway call will appear here live.';
+    }
+    return 'Select a session to follow it live or replay it.';
+  }
+
   private renderToolbar() {
     const session = this.activeSession;
     return html`
@@ -1293,6 +1306,7 @@ export class PreloopSessionObserver extends LitElement {
         }
         <session-replay-panel
           .session=${this.activeSession}
+          .emptyText=${this.replayEmptyText}
           .events=${this.activeEvents}
           .timelineEvents=${
             this.activeSessionId
@@ -1301,7 +1315,10 @@ export class PreloopSessionObserver extends LitElement {
           }
           .activity=${this.activeActivity}
           .replayMode=${this.replayMode}
-          .loading=${this.loadingSessionId === this.activeSessionId}
+          .loading=${
+            this.activeSessionId !== null &&
+            this.loadingSessionId === this.activeSessionId
+          }
           .rawPayloads=${this.enabledFeatures.rawPayloads}
           .eventDetails=${this.loadedEventDetails}
           .loadingEventDetails=${this.loadingEventDetails}
