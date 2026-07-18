@@ -39,7 +39,11 @@ from .approval_bypass import (
     DEFAULT_BYPASS_DURATION,
     MAX_BYPASS_DURATION,
 )
-from .approval_request import ApprovalRequest, ApprovalRequestStatus
+from .approval_request import (
+    ApprovalRequest,
+    ApprovalRequestStatus,
+    AutoApprovedReason,
+)
 from .approval_event import ApprovalEvent
 from .tool_access_rule import ToolAccessRule
 from .notification_preferences import NotificationPreferences
@@ -120,6 +124,7 @@ __all__ = [
     "MAX_BYPASS_DURATION",
     "ApprovalRequest",
     "ApprovalRequestStatus",
+    "AutoApprovedReason",
     "ApprovalEvent",
     "ToolAccessRule",
     "NotificationPreferences",

@@ -2752,10 +2752,14 @@ export class AgentDetailView extends LitElement {
                                       name="exclamation-triangle"
                                     ></sl-icon>
                                     Approvals are bypassed server-side: Preloop
-                                    now auto-allows this agent's escalated tool
-                                    calls. The local hook installed at
-                                    onboarding still adds a network round-trip
-                                    to Preloop on every tool call.
+                                    now auto-approves this agent's escalated
+                                    tool calls without asking anyone. They are
+                                    still recorded in Approvals, marked
+                                    auto-approved and excluded from your
+                                    approval stats, so you keep the audit trail.
+                                    The local hook installed at onboarding still
+                                    adds a network round-trip to Preloop on
+                                    every tool call.
                                     <sl-details
                                       summary="How to fully disable the hook locally"
                                       style="margin-top: var(--sl-spacing-small);"

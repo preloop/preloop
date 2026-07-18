@@ -19,7 +19,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from preloop.models.models import ApprovalRequest, ApprovalWorkflow
+from preloop.models.models import (
+    ApprovalRequest,
+    ApprovalWorkflow,
+    AutoApprovedReason,
+)
 from preloop.models.models.approval_bypass import (
     ApprovalBypass,
     ApprovalBypassMode,
@@ -404,6 +408,19 @@ class TestStatisticsDistinction:
         assert resp.decided_by_human is False
         assert resp.was_bypassed is True
 
+    async def test_standing_bypass_approval_is_not_human(self):
+        """A ``native_tool_approvals: "off"`` approval is not human review either.
+
+        The statistics filter keys off ``auto_approved_reason`` being set at
+        all, not off the literal ``"bypass"``, so the standing reason code is
+        excluded from approval rates for free. This test pins that.
+        """
+        resp = self._response(
+            auto_approved_reason=AutoApprovedReason.NATIVE_TOOL_APPROVALS_OFF
+        )
+        assert resp.decided_by_human is False
+        assert resp.was_bypassed is True
+
     async def test_ai_approval_is_not_human(self):
         """AI decisions were already non-human; that stays true."""
         resp = self._response(decided_by_ai=True)
@@ -462,6 +479,67 @@ class TestCreateAndNotifyIntegration:
         assert result is approved
         approval_service.send_notifications.assert_not_called()
         approval_service._auto_approve_via_bypass.assert_awaited_once()
+
+    async def test_standing_bypass_records_and_suppresses_notification(
+        self, approval_service, workflow, account_id
+    ):
+        """``native_tool_approvals: "off"`` is recorded, audited, and silent.
+
+        This is the migration of the old invisible short-circuit in
+        agent_permission_service. The request must be marked with its own
+        reason code, carry NO bypass id (no ApprovalBypass row authorizes it),
+        be audited with no approver under [BYPASS], and notify nobody.
+        """
+        created = MagicMock(spec=ApprovalRequest)
+        created.id = uuid.uuid4()
+        created.account_id = uuid.UUID(account_id)
+        created.tool_name = "Bash"
+        created.execution_id = None
+        created.managed_agent_id = None
+        created.status = "pending"
+
+        approval_service.create_approval_request = AsyncMock(return_value=created)
+        approval_service.update_approval_request = AsyncMock(return_value=created)
+        approval_service._broadcast_approval_update = AsyncMock()
+        approval_service.send_notifications = AsyncMock()
+        # Must not consult time-boxed bypasses at all: this is a standing one.
+        approval_service._resolve_bypass = AsyncMock()
+
+        with (
+            patch(
+                "preloop.services.approval_summary.generate_approval_summary",
+                AsyncMock(return_value=None),
+            ),
+            patch(
+                "preloop.services.approval_service._log_approval_lifecycle_async"
+            ) as mock_log,
+        ):
+            await approval_service.create_and_notify(
+                account_id=account_id,
+                tool_configuration_id=uuid.uuid4(),
+                approval_workflow=workflow,
+                tool_name="Bash",
+                tool_args={"command": "ls"},
+                standing_bypass_reason=(AutoApprovedReason.NATIVE_TOOL_APPROVALS_OFF),
+            )
+
+        approval_service.send_notifications.assert_not_called()
+        approval_service._resolve_bypass.assert_not_called()
+
+        update_arg = approval_service.update_approval_request.call_args[0][1]
+        assert update_arg.status == "approved"
+        assert (
+            update_arg.auto_approved_reason
+            == AutoApprovedReason.NATIVE_TOOL_APPROVALS_OFF
+        )
+        # No ApprovalBypass row authorized this - the governance config did.
+        assert update_arg.auto_approval_bypass_id is None
+        # An AI judged nothing here either.
+        assert update_arg.decided_by_ai is False
+
+        audit_kwargs = mock_log.call_args.kwargs
+        assert audit_kwargs["approver_id"] is None
+        assert audit_kwargs["reason"].startswith("[BYPASS]")
 
     async def test_bypass_error_falls_back_to_normal_approval(
         self, approval_service, workflow, account_id

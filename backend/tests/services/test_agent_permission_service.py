@@ -167,29 +167,142 @@ def test_managed_agent_approval_workflow_pin_rejects_unsafe_segments() -> None:
         raise AssertionError("expected ValueError for non-UUID path segment")
 
 
-@pytest.mark.asyncio
-async def test_request_agent_permission_disabled_short_circuits_allow() -> None:
-    """native_tool_approvals="off" → immediate allow, no approval row created.
+def _governance_off_db(default_workflow: models.ApprovalWorkflow) -> AsyncMock:
+    """An async DB mock whose governance lookup reports approvals switched off."""
+    account = MagicMock()
+    account.meta_data = {}
 
-    The switch only affects escalated (ask) calls; the immediate allow carries
-    the documented reason and no ApprovalRequest is created or notified.
-    """
-    db = AsyncMock()
     setting_result = MagicMock()
     setting_result.scalar.return_value = "off"
-    db.execute = AsyncMock(return_value=setting_result)
+    account_and_workflow = MagicMock()
+    account_and_workflow.first.return_value = (account, None)
+    default_result = MagicMock()
+    default_result.scalars.return_value.first.return_value = default_workflow
+
+    db = AsyncMock()
+    db.execute = AsyncMock(
+        side_effect=[setting_result, account_and_workflow, default_result]
+    )
+    return db
+
+
+@pytest.mark.asyncio
+async def test_request_agent_permission_disabled_records_auto_approval() -> None:
+    """native_tool_approvals="off" → allowed, but *recorded*, never silent.
+
+    This is the core of the migration away from the old invisible
+    short-circuit. The call must still produce an ApprovalRequest carrying
+    ``auto_approved_reason='native_tool_approvals_off'`` so the audit trail
+    shows what ran unsupervised; only the human gate and the notification are
+    skipped.
+    """
+    account_id = str(uuid.uuid4())
+    managed_agent_id = uuid.uuid4()
+    default_workflow = models.ApprovalWorkflow(
+        id=uuid.uuid4(),
+        account_id=account_id,
+        name="Default Approval Workflow",
+        approval_type=DEFAULT_APPROVAL_TYPE,
+        is_default=True,
+        timeout_seconds=300,
+    )
+    db = _governance_off_db(default_workflow)
+
+    tool_config = MagicMock()
+    tool_config.id = uuid.uuid4()
+
+    approval = MagicMock()
+    approval.id = uuid.uuid4()
+    approval.status = "approved"
+    approval.approver_comment = "Auto-approved without review"
 
     with (
         patch(
             "preloop.services.agent_permission_service.get_async_db_session"
         ) as mock_get_session,
         patch("preloop.services.approval_service.ApprovalService") as mock_service_cls,
+        patch(
+            "preloop.models.crud.tool_configuration."
+            "get_tool_config_by_name_and_source_async",
+            new=AsyncMock(return_value=tool_config),
+        ),
     ):
         mock_get_session.return_value.__aenter__.return_value = db
+        mock_service = AsyncMock()
+        mock_service.create_and_notify = AsyncMock(return_value=approval)
+        mock_service_cls.return_value = mock_service
+
+        decision, _reason, request_id = await request_agent_permission(
+            base_url="http://localhost",
+            account_id=account_id,
+            user_id=uuid.uuid4(),
+            managed_agent_id=managed_agent_id,
+            runtime_session_id=None,
+            managed_agent_name="Claude Code",
+            source="claude_code",
+            tool_name="Bash",
+            tool_input={"command": "ls"},
+            agent_reasoning=None,
+            client_decision=None,
+        )
+
+    # The agent is still allowed to proceed, exactly as before the migration.
+    assert decision == "allow"
+    # ...but now there is a request id, i.e. a record, where there was None.
+    assert request_id == str(approval.id)
+
+    mock_service.create_and_notify.assert_awaited_once()
+    kwargs = mock_service.create_and_notify.await_args.kwargs
+    assert (
+        kwargs["standing_bypass_reason"]
+        == models.AutoApprovedReason.NATIVE_TOOL_APPROVALS_OFF
+    )
+
+
+@pytest.mark.asyncio
+async def test_request_agent_permission_disabled_allows_when_recording_fails() -> None:
+    """A recording failure must not start gating an agent set to "off".
+
+    The operator explicitly disabled approvals for this agent. Losing the audit
+    row is bad, but silently blocking a tool call they said should not be
+    blocked would be a regression, so this path fails *open* — and only this
+    path: enforced agents still propagate the error.
+    """
+    account_id = str(uuid.uuid4())
+    default_workflow = models.ApprovalWorkflow(
+        id=uuid.uuid4(),
+        account_id=account_id,
+        name="Default Approval Workflow",
+        approval_type=DEFAULT_APPROVAL_TYPE,
+        is_default=True,
+        timeout_seconds=300,
+    )
+    db = _governance_off_db(default_workflow)
+
+    tool_config = MagicMock()
+    tool_config.id = uuid.uuid4()
+
+    with (
+        patch(
+            "preloop.services.agent_permission_service.get_async_db_session"
+        ) as mock_get_session,
+        patch("preloop.services.approval_service.ApprovalService") as mock_service_cls,
+        patch(
+            "preloop.models.crud.tool_configuration."
+            "get_tool_config_by_name_and_source_async",
+            new=AsyncMock(return_value=tool_config),
+        ),
+    ):
+        mock_get_session.return_value.__aenter__.return_value = db
+        mock_service = AsyncMock()
+        mock_service.create_and_notify = AsyncMock(
+            side_effect=RuntimeError("database is on fire")
+        )
+        mock_service_cls.return_value = mock_service
 
         decision, reason, request_id = await request_agent_permission(
             base_url="http://localhost",
-            account_id=str(uuid.uuid4()),
+            account_id=account_id,
             user_id=uuid.uuid4(),
             managed_agent_id=uuid.uuid4(),
             runtime_session_id=None,
@@ -204,10 +317,68 @@ async def test_request_agent_permission_disabled_short_circuits_allow() -> None:
     assert decision == "allow"
     assert reason == "Native tool approvals are disabled for this agent in Preloop"
     assert request_id is None
-    # Only the governance lookup ran; no ApprovalRequest was created.
-    mock_service_cls.assert_not_called()
-    db.add.assert_not_called()
-    assert db.execute.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_request_agent_permission_enforced_propagates_recording_failure() -> None:
+    """An enforced agent must fail closed when the approval cannot be created."""
+    account_id = str(uuid.uuid4())
+    default_workflow = models.ApprovalWorkflow(
+        id=uuid.uuid4(),
+        account_id=account_id,
+        name="Default Approval Workflow",
+        approval_type=DEFAULT_APPROVAL_TYPE,
+        is_default=True,
+        timeout_seconds=300,
+    )
+    account = MagicMock()
+    account.meta_data = {}
+    setting_result = MagicMock()
+    setting_result.scalar.return_value = None
+    account_and_workflow = MagicMock()
+    account_and_workflow.first.return_value = (account, None)
+    default_result = MagicMock()
+    default_result.scalars.return_value.first.return_value = default_workflow
+    db = AsyncMock()
+    db.execute = AsyncMock(
+        side_effect=[setting_result, account_and_workflow, default_result]
+    )
+
+    tool_config = MagicMock()
+    tool_config.id = uuid.uuid4()
+
+    with (
+        patch(
+            "preloop.services.agent_permission_service.get_async_db_session"
+        ) as mock_get_session,
+        patch("preloop.services.approval_service.ApprovalService") as mock_service_cls,
+        patch(
+            "preloop.models.crud.tool_configuration."
+            "get_tool_config_by_name_and_source_async",
+            new=AsyncMock(return_value=tool_config),
+        ),
+        pytest.raises(RuntimeError, match="database is on fire"),
+    ):
+        mock_get_session.return_value.__aenter__.return_value = db
+        mock_service = AsyncMock()
+        mock_service.create_and_notify = AsyncMock(
+            side_effect=RuntimeError("database is on fire")
+        )
+        mock_service_cls.return_value = mock_service
+
+        await request_agent_permission(
+            base_url="http://localhost",
+            account_id=account_id,
+            user_id=uuid.uuid4(),
+            managed_agent_id=uuid.uuid4(),
+            runtime_session_id=None,
+            managed_agent_name="Claude Code",
+            source="claude_code",
+            tool_name="Bash",
+            tool_input={"command": "ls"},
+            agent_reasoning=None,
+            client_decision=None,
+        )
 
 
 @pytest.mark.asyncio

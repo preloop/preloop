@@ -12,7 +12,11 @@ from urllib.parse import urljoin
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from preloop.models.models import ApprovalRequest, ApprovalWorkflow
+from preloop.models.models import (
+    ApprovalRequest,
+    ApprovalWorkflow,
+    AutoApprovedReason,
+)
 from preloop.models.schemas.approval_request import (
     ApprovalRequestUpdate,
 )
@@ -1040,13 +1044,7 @@ class ApprovalService:
         approval_request: ApprovalRequest,
         bypass: ApprovalBypass,
     ) -> ApprovalRequest:
-        """Approve a request under a bypass, recording it as unsupervised.
-
-        The request row is kept — deliberately. Suppressing the notification is
-        what relieves the user; suppressing the record would only destroy the
-        evidence of what ran while nobody was watching, which is the opposite
-        of what a governance product should do. The row is marked so no
-        surface can mistake it for a human decision.
+        """Approve a request under a time-boxed bypass.
 
         Args:
             approval_request: The pending request to resolve.
@@ -1060,14 +1058,52 @@ class ApprovalService:
             f"Auto-approved without review: an approval bypass for {scope} is "
             f"active until {bypass.expires_at.isoformat()}Z"
         )
+        return await self._auto_approve_without_review(
+            approval_request,
+            reason_code=AutoApprovedReason.BYPASS,
+            reason=reason,
+            bypass=bypass,
+        )
 
+    async def _auto_approve_without_review(
+        self,
+        approval_request: ApprovalRequest,
+        *,
+        reason_code: str,
+        reason: str,
+        bypass: Optional[ApprovalBypass] = None,
+    ) -> ApprovalRequest:
+        """Approve a request with no human involved, recording it as such.
+
+        Shared by every "nobody looked at this" path: time-boxed bypasses and
+        the standing ``native_tool_approvals: "off"`` governance setting.
+
+        The request row is kept — deliberately. Suppressing the notification is
+        what relieves the user; suppressing the record would only destroy the
+        evidence of what ran while nobody was watching, which is the opposite
+        of what a governance product should do. The row is marked so no
+        surface can mistake it for a human decision.
+
+        Args:
+            approval_request: The pending request to resolve.
+            reason_code: An :class:`AutoApprovedReason` value stored in
+                ``auto_approved_reason``; this is what makes the request
+                machine-identifiable as unsupervised.
+            reason: Human-readable explanation shown to operators.
+            bypass: The authorizing bypass, when a time-boxed one exists.
+                None for standing configured bypasses, which are authorized by
+                the account's governance config rather than by a bypass row.
+
+        Returns:
+            The updated, approved approval request.
+        """
         update = ApprovalRequestUpdate(
             status="approved",
             approver_comment=reason,
             resolved_at=datetime.utcnow(),
             decided_by_ai=False,
-            auto_approved_reason="bypass",
-            auto_approval_bypass_id=bypass.id,
+            auto_approved_reason=reason_code,
+            auto_approval_bypass_id=bypass.id if bypass is not None else None,
         )
         updated_request = await self.update_approval_request(
             approval_request.id, update
@@ -1075,12 +1111,13 @@ class ApprovalService:
         if updated_request is None:  # pragma: no cover - defensive
             return approval_request
 
-        try:
-            await record_bypass_use_async(self.db, bypass_id=bypass.id)
-        except Exception as exc:  # pragma: no cover - counter is advisory
-            logger.warning(
-                "Failed to increment bypass %s usage counter: %s", bypass.id, exc
-            )
+        if bypass is not None:
+            try:
+                await record_bypass_use_async(self.db, bypass_id=bypass.id)
+            except Exception as exc:  # pragma: no cover - counter is advisory
+                logger.warning(
+                    "Failed to increment bypass %s usage counter: %s", bypass.id, exc
+                )
 
         await self._broadcast_approval_update(updated_request, "approved")
 
@@ -1097,9 +1134,11 @@ class ApprovalService:
         )
 
         logger.info(
-            "Approval request %s auto-approved under bypass %s (tool=%s, agent=%s)",
+            "Approval request %s auto-approved without review "
+            "(reason=%s, bypass=%s, tool=%s, agent=%s)",
             updated_request.id,
-            bypass.id,
+            reason_code,
+            bypass.id if bypass is not None else None,
             updated_request.tool_name,
             updated_request.managed_agent_id,
         )
@@ -1384,6 +1423,7 @@ class ApprovalService:
         managed_agent_id: Optional[uuid.UUID] = None,
         runtime_session_id: Optional[uuid.UUID] = None,
         managed_agent_name: Optional[str] = None,
+        standing_bypass_reason: Optional[str] = None,
     ) -> ApprovalRequest:
         """Create approval request and send notifications through configured channels.
 
@@ -1399,6 +1439,12 @@ class ApprovalService:
             agent_reasoning: Agent's reasoning for the tool call
             execution_id: Flow execution ID (if applicable)
             user_id: ID of the user who initiated the tool call
+            standing_bypass_reason: When set, the caller has already established
+                that a standing governance setting disables approval for this
+                request (currently only ``native_tool_approvals: "off"``). The
+                request is still created and recorded, then immediately
+                auto-approved without notifying anyone. Must be an
+                :class:`AutoApprovedReason` value.
 
         Returns:
             Created approval request (may be already resolved if AI-driven)
@@ -1448,6 +1494,23 @@ class ApprovalService:
                 approval_request.id,
                 summary_error,
                 exc_info=True,
+            )
+
+        # Standing configured bypass. The operator has turned approvals off for
+        # this subject in governance config, which is a durable setting rather
+        # than a time-boxed escape hatch — so it is deliberately NOT expressed
+        # as an ApprovalBypass row (those are always time-boxed, and inventing
+        # a never-expiring one would make that guarantee a lie). The request is
+        # still created, recorded and audited; only the notification and the
+        # human gate are skipped.
+        if standing_bypass_reason:
+            return await self._auto_approve_without_review(
+                approval_request,
+                reason_code=standing_bypass_reason,
+                reason=(
+                    "Auto-approved without review: native tool approvals are "
+                    "switched off for this agent in Preloop's governance settings"
+                ),
             )
 
         # Time-boxed bypass check. Runs BEFORE the AI branch: the operator has
