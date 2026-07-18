@@ -545,7 +545,7 @@ class TestMCPHTTPStreamingEndpoint:
         assert response.status_code == 200
         response_data = json.loads(response.body)
         assert "error" in response_data
-        assert "Approval timeout" in response_data["error"]["message"]
+        assert response_data["error"]["message"] == "Approval timed out"
 
     async def test_endpoint_tools_call_with_approval_declined(self, mock_request):
         """Test tools/call with approval declined."""
@@ -623,7 +623,7 @@ class TestMCPHTTPStreamingEndpoint:
         assert response.status_code == 200
         response_data = json.loads(response.body)
         assert "error" in response_data
-        assert "Approval error" in response_data["error"]["message"]
+        assert response_data["error"]["message"] == "Approval request failed"
 
     async def test_endpoint_tools_call_execution_error(self, mock_request):
         """Test tools/call with execution error."""
@@ -662,7 +662,7 @@ class TestMCPHTTPStreamingEndpoint:
         assert response.status_code == 200
         response_data = json.loads(response.body)
         assert "error" in response_data
-        assert "Error executing tool" in response_data["error"]["message"]
+        assert response_data["error"]["message"] == "Tool execution failed"
 
     async def test_endpoint_unsupported_method(self, mock_request):
         """Test endpoint with unsupported method."""

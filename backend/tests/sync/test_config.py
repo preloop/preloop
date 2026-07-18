@@ -20,12 +20,14 @@ class TestConfig(unittest.TestCase):
         self.assertIsNotNone(LOG_LEVEL)
         self.assertIsInstance(SERVICE_PORT, int)  # Should be converted to int
 
-    @patch("preloop.sync.config.configure_logging")
-    @patch("preloop.sync.config.logging")
+    @patch("preloop.sync.config.preloop_logging.configure_logging")
+    @patch("preloop.sync.config._logging")
     def test_logger_setup(self, mock_logging, mock_configure_logging):
         """Test logger setup configuration."""
         # Import inside the test to use the mocked logging
         from preloop.sync.config import setup_logging
+
+        mock_logging.INFO = 20
 
         # Call the function directly
         logger = setup_logging()

@@ -94,26 +94,20 @@ def _detect_platform_from_url(url: str) -> Literal["github", "gitlab"]:
     Raises:
         ValueError: If platform cannot be determined.
     """
-    parsed = urlparse(url)
-    hostname = (parsed.hostname or "").lower()
+    from preloop.utils.repo_urls import tracker_host_kind
 
-    if hostname == "github.com" or hostname.endswith(".github.com"):
+    host_kind = tracker_host_kind(url)
+    if host_kind in ("github", "gitlab"):
+        return host_kind
+
+    # Path-based fallback for non-standard hosts (parsed path segments only).
+    path = (urlparse(url).path or "").lower()
+    path_parts = [part for part in path.split("/") if part]
+    if "pull" in path_parts:
         return "github"
-
-    if (
-        hostname == "gitlab.com"
-        or hostname.endswith(".gitlab.com")
-        or ".gitlab." in hostname
-    ):
+    if "merge_requests" in path_parts or "-" in path_parts:
         return "gitlab"
 
-    url_lower = url.lower()
-    if "/pull/" in url_lower:
-        return "github"
-    if "/merge_requests/" in url_lower or "/-/" in url_lower:
-        return "gitlab"
-
-    # Default based on common patterns
     raise ValueError(f"Cannot determine platform from URL: {url}")
 
 
