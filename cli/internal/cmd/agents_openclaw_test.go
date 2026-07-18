@@ -1156,8 +1156,16 @@ func TestResolveOpenClawBedrockCredentialsFromSharedAWSFiles(t *testing.T) {
 	if usesAmbient {
 		t.Fatal("expected imported Bedrock credentials, not ambient fallback")
 	}
-	if !strings.Contains(note, ".aws/credentials") {
-		t.Fatalf("expected shared credentials note, got %q", note)
+	// The note embeds a real filesystem path, so the separator is platform
+	// native. Build the expected fragment the same way rather than hardcoding
+	// a forward slash, which only matches on POSIX.
+	sharedCredentialsFragment := filepath.Join(".aws", "credentials")
+	if !strings.Contains(note, sharedCredentialsFragment) {
+		t.Fatalf(
+			"expected shared credentials note containing %q, got %q",
+			sharedCredentialsFragment,
+			note,
+		)
 	}
 }
 

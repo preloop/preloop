@@ -1,6 +1,7 @@
 import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
+import { keyed } from 'lit/directives/keyed.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/button-group/button-group.js';
@@ -36,11 +37,11 @@ import './preloop-gateway-event';
 import './session-optimization-panel';
 
 // The bundled example has no runtime session behind it and nothing can be
-// applied from it. These are bound explicitly rather than omitted: Lit reuses
-// DOM across renders, so leaving the bindings off would let a real session's
-// values persist into the example view.
-const EXAMPLE_NO_SESSION: ObservedSession | null = null;
-const EXAMPLE_NO_APPLYING_ID: string | null = null;
+// applied from it, so `session` and `applyingSuggestionId` are left at their
+// null defaults rather than bound. That is only safe because the panel is
+// keyed: Lit reuses DOM across renders, and without a distinct identity a real
+// session's values could persist into the example view.
+const EXAMPLE_PANEL_KEY = 'session-optimization-example';
 
 type ReplayMessage = FlowGatewayConversationPreviewMessage & {
   key: string;
@@ -3515,15 +3516,16 @@ export class SessionReplayPanel extends LitElement {
             <div>${example.example_notice}</div>
           </div>
         </div>
-        <session-optimization-panel
-          .session=${EXAMPLE_NO_SESSION}
-          .events=${[]}
-          .activity=${[]}
-          .suggestions=${suggestions}
-          .optimization=${example}
-          .appliedActions=${[]}
-          .applyingSuggestionId=${EXAMPLE_NO_APPLYING_ID}
-        ></session-optimization-panel>
+        ${keyed(
+          EXAMPLE_PANEL_KEY,
+          html`<session-optimization-panel
+            .events=${[]}
+            .activity=${[]}
+            .suggestions=${suggestions}
+            .optimization=${example}
+            .appliedActions=${[]}
+          ></session-optimization-panel>`
+        )}
         ${
           example.example_provenance
             ? html`<div class="example-provenance">
