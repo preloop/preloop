@@ -948,4 +948,14 @@ describe('PreloopDeployWizard CLI path polling', () => {
     expect(text).to.contain('✓ Claude Code connected');
     expect(text).to.not.contain('Waiting for the CLI');
   });
+
+  it('sets an absolute hard stop beyond the initial soft deadline', async () => {
+    const before = Date.now();
+    const el = await createCliWizard();
+    expect((el as any).cliPollHardStop).to.be.greaterThan(
+      (el as any).cliPollDeadline
+    );
+    // Soft window ~3m; hard cap ~10m from start.
+    expect((el as any).cliPollHardStop - before).to.be.at.least(9 * 60 * 1000);
+  });
 });

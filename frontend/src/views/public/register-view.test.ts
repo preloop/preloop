@@ -206,6 +206,15 @@ describe('RegisterView', () => {
       expect(
         humanizeRegisterError('String should have at least 8 characters')
       ).to.equal('Passwords need at least 8 characters.');
+      expect(
+        humanizeRegisterError('password must be at least 8 characters')
+      ).to.equal('Passwords need at least 8 characters.');
+    });
+
+    it('does not treat unrelated length messages as password errors', () => {
+      expect(
+        humanizeRegisterError('Name should have at least 8 characters')
+      ).to.equal("That didn't work: Name should have at least 8 characters");
     });
 
     it('wraps unmapped errors in plain language', () => {

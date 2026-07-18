@@ -69,6 +69,15 @@ const REPLAY_METADATA_LIMIT = 5000;
 // opened or the hint is dismissed.
 const OPTIMIZE_HINT_DISMISSED_KEY = 'optimize_hint_dismissed';
 
+/** Read the Optimize hint dismiss flag; never throw if storage is unavailable. */
+function readOptimizeHintDismissed(): boolean {
+  try {
+    return localStorage.getItem(OPTIMIZE_HINT_DISMISSED_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
 const DEFAULT_FEATURES: Required<SessionObserverFeatures> = {
   summaries: true,
   optimization: false,
@@ -227,8 +236,7 @@ export class PreloopSessionObserver extends LitElement {
   private searchQuery = '';
 
   @state()
-  private optimizeHintDismissed =
-    localStorage.getItem(OPTIMIZE_HINT_DISMISSED_KEY) === 'true';
+  private optimizeHintDismissed = readOptimizeHintDismissed();
 
   private unsubscribeRealtime?: () => void;
   private refreshTimer: number | null = null;
@@ -1145,7 +1153,11 @@ export class PreloopSessionObserver extends LitElement {
   private dismissOptimizeHint(): void {
     if (this.optimizeHintDismissed) return;
     this.optimizeHintDismissed = true;
-    localStorage.setItem(OPTIMIZE_HINT_DISMISSED_KEY, 'true');
+    try {
+      localStorage.setItem(OPTIMIZE_HINT_DISMISSED_KEY, 'true');
+    } catch {
+      // Privacy modes / missing storage: keep the in-memory dismiss only.
+    }
   }
 
   /**

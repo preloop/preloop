@@ -1,6 +1,6 @@
 """System features and plugin detection endpoints."""
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
@@ -11,6 +11,35 @@ from preloop.models.db.session import get_db_session
 from preloop.plugins.base import get_plugin_manager
 
 router = APIRouter()
+
+# Sticky process-level cache for "does this instance have any users?".
+# Transitions only once in an instance lifetime (False → True when the first
+# account registers) and never flips back, so caching True forever is safe and
+# avoids a DB round-trip on every /features call (landing, signup, authed views).
+# Mutable mapping avoids a module-level `global` flag (CodeQL unused-global FP).
+# None = unknown (must query); True = at least one user exists.
+_users_exist_state: Dict[str, Optional[bool]] = {"known": None}
+
+
+def reset_users_exist_cache() -> None:
+    """Clear the sticky users-exist cache (for tests)."""
+    _users_exist_state["known"] = None
+
+
+def _first_account_pending(db: Session) -> bool:
+    """Return True when signup would create the instance's first admin account.
+
+    Uses a sticky process-level cache once any user is known to exist so the
+    common case (production after first signup) never hits the DB again.
+    """
+    if not settings.registration_enabled:
+        return False
+    if _users_exist_state["known"] is True:
+        return False
+    if crud_user.has_any_users(db):
+        _users_exist_state["known"] = True
+        return False
+    return True
 
 
 @router.get("/features")
@@ -34,10 +63,9 @@ def get_features(db: Session = Depends(get_db_session)) -> Dict[str, Any]:
 
     # First-account context for the signup form: when no user exists yet the
     # console explains that the account being created becomes the admin
-    # account. Only meaningful while registration is open.
-    result["features"]["first_account_pending"] = (
-        settings.registration_enabled and not crud_user.has_any_users(db)
-    )
+    # account. Only meaningful while registration is open. Cached process-
+    # wide once the first user exists (never flips back).
+    result["features"]["first_account_pending"] = _first_account_pending(db)
 
     # Session optimization ships in the open-source core (0.12.0): the
     # capability is always present, so the console must always show it.

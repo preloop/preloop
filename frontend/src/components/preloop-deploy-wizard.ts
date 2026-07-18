@@ -39,6 +39,9 @@ const PRELOOP_SESSION_HEADER = 'X-Preloop-Session-Id';
 // the dialog never hangs; a manual "Done" button is always available.
 const FIRST_DATA_POLL_INTERVAL_MS = 2500;
 const FIRST_DATA_POLL_TIMEOUT_MS = 3 * 60 * 1000; // stop polling after ~3 minutes
+// Absolute wall-clock cap for CLI-path polling. Soft deadline can extend on
+// each new agent arrival, but never past this hard stop.
+const CLI_AGENT_POLL_HARD_CAP_MS = 10 * 60 * 1000;
 // How long the "Connected" success state stays up before auto-dismiss.
 const FIRST_DATA_SUCCESS_DISMISS_MS = 2000;
 
@@ -367,6 +370,7 @@ export class PreloopDeployWizard extends LitElement {
 
   private cliPollTimer: number | null = null;
   private cliPollDeadline = 0;
+  private cliPollHardStop = 0;
 
   async connectedCallback() {
     super.connectedCallback();
@@ -783,7 +787,12 @@ export class PreloopDeployWizard extends LitElement {
     this.cliConnectedAgents = [];
     this.cliBaselineIds = null;
     this.cliPollingActive = true;
-    this.cliPollDeadline = Date.now() + FIRST_DATA_POLL_TIMEOUT_MS;
+    const now = Date.now();
+    this.cliPollHardStop = now + CLI_AGENT_POLL_HARD_CAP_MS;
+    this.cliPollDeadline = Math.min(
+      now + FIRST_DATA_POLL_TIMEOUT_MS,
+      this.cliPollHardStop
+    );
     const poll = async () => {
       if (!this.cliPollingActive) {
         return;
@@ -806,9 +815,12 @@ export class PreloopDeployWizard extends LitElement {
           );
           if (arrivals.length > 0) {
             this.cliConnectedAgents = [...this.cliConnectedAgents, ...arrivals];
-            // Agents are still landing — extend the watch window so a long
-            // multi-agent onboarding run keeps flipping lines live.
-            this.cliPollDeadline = Date.now() + FIRST_DATA_POLL_TIMEOUT_MS;
+            // Agents are still landing — extend the soft window, but never
+            // past the absolute wall-clock hard stop.
+            this.cliPollDeadline = Math.min(
+              Date.now() + FIRST_DATA_POLL_TIMEOUT_MS,
+              this.cliPollHardStop
+            );
           }
         }
       } catch {
