@@ -47,7 +47,7 @@ def client(app):
 
 
 class TestRenderTemplate:
-    """Tests for the simple template renderer."""
+    """Tests for the Jinja2 template renderer with autoescaping."""
 
     def test_replaces_variables(self, tmp_path):
         template = tmp_path / "test.html"
@@ -58,25 +58,24 @@ class TestRenderTemplate:
 
         assert result == "<p>hello - world</p>"
 
-    def test_json_keys_are_json_encoded(self, tmp_path):
-        """Values under keys ending in _json should be JSON-encoded, not HTML-escaped."""
+    def test_tojson_encodes_script_values(self, tmp_path):
+        """``|tojson`` emits a JSON literal safe for use inside <script>."""
         template = tmp_path / "test.html"
-        template.write_text("<script>const v = {{ val_json }};</script>")
+        template.write_text("<script>const v = {{ val|tojson }};</script>")
 
         with patch("preloop.api.endpoints.oauth_consent._TEMPLATE_DIR", tmp_path):
-            result = _render_template("test.html", {"val_json": 'he said "hi"'})
+            result = _render_template("test.html", {"val": 'he said "hi"'})
 
-        # json.dumps produces '"he said \\"hi\\""' — a valid JS string literal
         assert '"he said \\"hi\\""' in result
 
-    def test_json_keys_escape_script_tags(self, tmp_path):
-        """JSON-encoded values must escape < and > to prevent </script> breakout."""
+    def test_tojson_escapes_script_tags(self, tmp_path):
+        """``|tojson`` must escape < and > to prevent </script> breakout."""
         template = tmp_path / "test.html"
-        template.write_text("<script>const v = {{ xss_json }};</script>")
+        template.write_text("<script>const v = {{ xss|tojson }};</script>")
 
         with patch("preloop.api.endpoints.oauth_consent._TEMPLATE_DIR", tmp_path):
             result = _render_template(
-                "test.html", {"xss_json": "</script><img src=x onerror=alert(1)>"}
+                "test.html", {"xss": "</script><img src=x onerror=alert(1)>"}
             )
 
         assert "</script>" not in result.split("<script>")[1].split("</script>")[0]
@@ -84,7 +83,7 @@ class TestRenderTemplate:
         assert "\\u003e" in result
 
     def test_html_escapes_regular_values(self, tmp_path):
-        """Non-_json values must be HTML-escaped."""
+        """Autoescape must HTML-escape interpolated values."""
         template = tmp_path / "test.html"
         template.write_text("<p>{{ name }}</p>")
 

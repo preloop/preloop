@@ -36,8 +36,10 @@ def _prefs_with_devices(devices: list) -> MagicMock:
 def _reset_rate_limiter():
     """Keep the module-level sliding window from leaking between tests."""
     endpoint._test_push_state.clear()
+    endpoint._test_push_sweep["last"] = 0.0
     yield
     endpoint._test_push_state.clear()
+    endpoint._test_push_sweep["last"] = 0.0
 
 
 class TestAdminGating:
@@ -263,7 +265,7 @@ class TestRateLimiterEviction:
         stale_time = time.monotonic() - (endpoint._TEST_PUSH_WINDOW_SECONDS * 3)
         endpoint._test_push_state["stale-user"] = [stale_time]
         # Force the next call to consider a sweep due.
-        endpoint._test_push_last_sweep = stale_time
+        endpoint._test_push_sweep["last"] = stale_time
 
         endpoint._enforce_test_push_rate_limit("active-user")
 
@@ -272,7 +274,7 @@ class TestRateLimiterEviction:
 
     def test_current_user_survives_sweep(self) -> None:
         """The caller's own fresh entry must never be evicted by the sweep."""
-        endpoint._test_push_last_sweep = time.monotonic() - (
+        endpoint._test_push_sweep["last"] = time.monotonic() - (
             endpoint._TEST_PUSH_WINDOW_SECONDS * 3
         )
         endpoint._enforce_test_push_rate_limit("caller")

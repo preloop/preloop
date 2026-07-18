@@ -29,12 +29,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["OAuth Consent"], include_in_schema=False)
 
-# Template directory
+# Template directory (read at render time so tests can patch the path)
 _TEMPLATE_DIR = Path(__file__).resolve().parent.parent.parent / "templates"
-_JINJA_ENV = Environment(
-    loader=FileSystemLoader(str(_TEMPLATE_DIR)),
-    autoescape=select_autoescape(enabled_extensions=("html", "htm", "xml")),
-)
 
 
 # Known CLI client_id — allowed to use http://localhost redirect URIs
@@ -43,9 +39,21 @@ _CLI_MANUAL_REDIRECT_URI = "urn:ietf:wg:oauth:2.0:oob"
 _CLI_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
+def _jinja_env() -> Environment:
+    """Build a Jinja2 environment with HTML autoescaping enabled."""
+    return Environment(
+        loader=FileSystemLoader(str(_TEMPLATE_DIR)),
+        autoescape=select_autoescape(enabled_extensions=("html", "htm", "xml")),
+    )
+
+
 def _render_template(template_name: str, context: dict) -> str:
     """Render an HTML template with Jinja2 autoescaping enabled."""
-    return _JINJA_ENV.get_template(template_name).render(**context)
+    # Normalize None to empty string so optional fields stay blank in HTML.
+    safe_context = {
+        key: ("" if value is None else value) for key, value in context.items()
+    }
+    return _jinja_env().get_template(template_name).render(**safe_context)
 
 
 def _validate_client_and_redirect(client_id: str, redirect_uri: str) -> dict:
