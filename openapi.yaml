@@ -3672,6 +3672,149 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/approval-bypasses/status:
+    get:
+      tags:
+      - Approval Bypasses
+      - approval_bypasses
+      summary: Get Bypass Status
+      description: "Report whether any bypass is currently in force for this user.\n\
+        \nConsole and mobile poll this to drive the persistent warning banner. It\
+        \ is\nintentionally readable by any authenticated user without a special\n\
+        permission: knowing that governance is currently relaxed is not privileged\n\
+        information, and hiding it would defeat the point.\n\nArgs:\n    current_user:\
+        \ Current authenticated user.\n    db: Database session.\n\nReturns:\n   \
+        \ Aggregate bypass status for banner rendering."
+      operationId: get_bypass_status_api_v1_approval_bypasses_status_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalBypassStatus'
+      security:
+      - bearerAuth: []
+  /api/v1/approval-bypasses:
+    get:
+      tags:
+      - Approval Bypasses
+      - approval_bypasses
+      summary: List Bypasses
+      description: "List every active bypass in the account.\n\nAccount-wide visibility\
+        \ is deliberate: if a teammate has relaxed gating,\neveryone governing the\
+        \ same fleet should be able to see it.\n\nArgs:\n    current_user: Current\
+        \ authenticated user.\n    db: Database session.\n\nReturns:\n    Active bypasses,\
+        \ soonest-expiring last."
+      operationId: list_bypasses_api_v1_approval_bypasses_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/ApprovalBypassResponse'
+                type: array
+                title: Response List Bypasses Api V1 Approval Bypasses Get
+      security:
+      - bearerAuth: []
+    post:
+      tags:
+      - Approval Bypasses
+      - approval_bypasses
+      summary: Create Bypass
+      description: "Open a time-boxed bypass for the calling user.\n\nThe bypass always\
+        \ targets ``current_user``; there is no parameter to target\nsomebody else.\
+        \ Duration is validated by the schema against the hard cap, so\nan unbounded\
+        \ bypass cannot be constructed.\n\nArgs:\n    payload: Mode, duration, optional\
+        \ agent scope and reason.\n    current_user: Current authenticated user (the\
+        \ bypass subject).\n    db: Database session.\n\nReturns:\n    The created\
+        \ bypass.\n\nRaises:\n    HTTPException: If the duration is outside the permitted\
+        \ range."
+      operationId: create_bypass_api_v1_approval_bypasses_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApprovalBypassCreate'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalBypassResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
+  /api/v1/approval-bypasses/{bypass_id}:
+    delete:
+      tags:
+      - Approval Bypasses
+      - approval_bypasses
+      summary: Revoke Bypass
+      description: "End a bypass early.\n\nAny user who can view approvals in the\
+        \ account may revoke a bypass, even\none they did not create. Re-tightening\
+        \ a control is always safe, so it\nshould never be blocked on ownership.\n\
+        \nArgs:\n    bypass_id: The bypass to revoke.\n    current_user: Current authenticated\
+        \ user.\n    db: Database session.\n\nReturns:\n    The revoked bypass.\n\n\
+        Raises:\n    HTTPException: If the bypass is not found in this account."
+      operationId: revoke_bypass_api_v1_approval_bypasses__bypass_id__delete
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: bypass_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Bypass Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalBypassResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/approval-bypasses/revoke-all:
+    post:
+      tags:
+      - Approval Bypasses
+      - approval_bypasses
+      summary: Revoke All Bypasses
+      description: "Revoke every active bypass in the account — the 'panic off' button.\n\
+        \nExists so that restoring full governance is always a single unambiguous\n\
+        action, with no list to scroll and no per-item taps, from any surface.\n\n\
+        Args:\n    current_user: Current authenticated user.\n    db: Database session.\n\
+        \nReturns:\n    The bypasses that were revoked."
+      operationId: revoke_all_bypasses_api_v1_approval_bypasses_revoke_all_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/ApprovalBypassResponse'
+                type: array
+                title: Response Revoke All Bypasses Api V1 Approval Bypasses Revoke
+                  All Post
+      security:
+      - bearerAuth: []
   /api/v1/notification-preferences/me:
     get:
       tags:
@@ -8579,6 +8722,176 @@ components:
       - requests_by_endpoint
       title: ApiUsageStatistics
       description: Model for API usage statistics.
+    ApprovalBypassCreate:
+      properties:
+        mode:
+          type: string
+          enum:
+          - mute_notifications
+          - auto_approve
+          title: Mode
+          description: '''mute_notifications'' silences alerts but still blocks the
+            agent; ''auto_approve'' also approves automatically (governance bypass)'
+        duration_minutes:
+          type: integer
+          maximum: 480.0
+          minimum: 1.0
+          title: Duration Minutes
+          description: How long the bypass lasts (1-480 minutes)
+        managed_agent_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Managed Agent Id
+          description: Scope to one agent. Omit for an account-wide bypass.
+        reason:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+          title: Reason
+          description: Why the bypass was opened (recorded for audit)
+        created_via:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Created Via
+          description: 'Originating surface: console|mobile|watch|api|cli'
+      type: object
+      required:
+      - mode
+      - duration_minutes
+      title: ApprovalBypassCreate
+      description: 'Request body for opening a bypass.
+
+
+        ``duration_minutes`` is required and bounded — there is deliberately no way
+
+        to express "forever". An indefinite bypass is the failure mode this feature
+
+        exists to prevent.'
+    ApprovalBypassResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        account_id:
+          type: string
+          format: uuid
+          title: Account Id
+        user_id:
+          type: string
+          format: uuid
+          title: User Id
+        managed_agent_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Managed Agent Id
+        mode:
+          type: string
+          title: Mode
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+        created_by_user_id:
+          type: string
+          format: uuid
+          title: Created By User Id
+        created_via:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Created Via
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        expires_at:
+          type: string
+          format: date-time
+          title: Expires At
+        revoked_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Revoked At
+        revoked_by_user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Revoked By User Id
+        auto_approved_count:
+          type: integer
+          title: Auto Approved Count
+          default: 0
+        is_account_wide:
+          type: boolean
+          title: Is Account Wide
+          description: True when this bypass applies to every agent for the user.
+          readOnly: true
+        suppresses_approvals:
+          type: boolean
+          title: Suppresses Approvals
+          description: True when agents are auto-approved rather than merely unmuted.
+          readOnly: true
+      type: object
+      required:
+      - id
+      - account_id
+      - user_id
+      - mode
+      - created_by_user_id
+      - created_at
+      - expires_at
+      - is_account_wide
+      - suppresses_approvals
+      title: ApprovalBypassResponse
+      description: A bypass as returned to console and mobile surfaces.
+    ApprovalBypassStatus:
+      properties:
+        active:
+          type: boolean
+          title: Active
+          description: Whether any bypass is currently in force
+        auto_approve_active:
+          type: boolean
+          title: Auto Approve Active
+          description: Whether any active bypass is auto-approving (unsupervised)
+        bypasses:
+          items:
+            $ref: '#/components/schemas/ApprovalBypassResponse'
+          type: array
+          title: Bypasses
+        soonest_expiry:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Soonest Expiry
+          description: Earliest expiry among active bypasses, for a countdown.
+          readOnly: true
+      type: object
+      required:
+      - active
+      - auto_approve_active
+      - soonest_expiry
+      title: ApprovalBypassStatus
+      description: 'Aggregate ''is anything bypassed right now?'' answer for banners.
+
+
+        Console and mobile poll this to decide whether to show the persistent
+
+        warning banner, so it is intentionally cheap and shaped for direct
+
+        rendering.'
     ApprovalDecision:
       properties:
         approved:
@@ -8728,6 +9041,34 @@ components:
           - type: string
           - type: 'null'
           title: Ai Reasoning
+        auto_approved_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Auto Approved Reason
+        auto_approval_bypass_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Auto Approval Bypass Id
+        was_bypassed:
+          type: boolean
+          title: Was Bypassed
+          description: True when a bypass auto-approved this request without a human.
+          readOnly: true
+        decided_by_human:
+          type: boolean
+          title: Decided By Human
+          description: 'True only when a person actually made this decision.
+
+
+            The single field every statistic should filter on. A request is a human
+
+            decision only if it reached a terminal decided state without an AI
+
+            judging it and without a bypass skipping it.'
+          readOnly: true
         approval_policy_id:
           type: string
           title: Approval Policy Id
@@ -8771,6 +9112,8 @@ components:
       - approver_comment
       - webhook_posted_at
       - webhook_error
+      - was_bypassed
+      - decided_by_human
       - approval_policy_id
       - is_question
       - question
@@ -14723,8 +15066,12 @@ components:
           - type: 'null'
           title: Native Tool Approvals
           description: Whether native tool-call approvals (agents permission-check)
-            are enforced for this subject. "off" makes the server auto-allow escalated
-            (ask) calls instead of asking a human; absent/None means "enforce".
+            are enforced for this subject. "off" makes the server auto-approve escalated
+            (ask) calls instead of asking a human; the calls are still recorded as
+            approval requests marked auto_approved_reason='native_tool_approvals_off'
+            and audited with no approver, so the audit trail stays complete. Unlike
+            a time-boxed approval bypass this setting does not expire; it stays off
+            until changed. Absent/None means "enforce".
       type: object
       title: SubjectGovernanceConfig
     SubjectGovernanceResponse:
