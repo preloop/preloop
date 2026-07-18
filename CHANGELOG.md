@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The free/trial hosted-model spend cap could be bypassed by cheap traffic.**
+  The cap summed gateway usage from a query that orders models by *request
+  count* and then truncates to 20 rows, so an account making thousands of cheap
+  BYOK calls pushed its low-volume, high-cost hosted-model usage past the
+  cutoff. That spend was never summed and the account counted as $0 against
+  `billing_trial_hosted_model_hard_cap_usd` — the hard cap silently stopped
+  enforcing, and founder-paid hosted inference ran unmetered for exactly the
+  accounts spending the most. The cap now filters to hosted models in SQL and
+  reads every matching row, since truncating a SUM by request count can never
+  produce a correct spend total.
+
 ## [0.12.4] - 2026-07-18
 
 ### Fixed

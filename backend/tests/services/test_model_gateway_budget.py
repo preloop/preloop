@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi import HTTPException
 
-from preloop.models.crud import crud_ai_model
+from preloop.models.crud import crud_ai_model, crud_api_usage
 from preloop.models.crud.plan import plan as crud_plan
 from preloop.models.crud.plan import subscription as crud_subscription
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
@@ -213,3 +213,76 @@ def test_active_subscription_not_hit_by_free_cap(db_session, test_user):
     )
     assert result.hard_limit_exceeded is False
     assert result.enforcement_reason is None
+
+
+def test_free_cap_spend_includes_expensive_hosted_model_behind_cheap_traffic(
+    db_session, test_user
+):
+    """Hosted spend must survive high-volume cheap BYOK traffic.
+
+    Regression: the cap summed only the top-N models *by request count*, so
+    thousands of cheap BYOK calls pushed a low-volume, high-cost hosted model
+    past the row cutoff. Its spend was never summed and the account counted as
+    $0 against the hosted hard cap — silent non-enforcement of the paywall.
+    """
+    hosted_model = _hosted_model(db_session, test_user)
+    for index in range(25):
+        cheap_model = crud_ai_model.create_with_account(
+            db=db_session,
+            obj_in={
+                "name": f"Cheap BYOK Model {index}",
+                "provider_name": "anthropic",
+                "model_identifier": f"claude-haiku-{index}",
+                "meta_data": {"pricing": {"price_per_1k": 0.001}},
+            },
+            account_id=test_user.account_id,
+        )
+        for _ in range(5):
+            crud_api_usage.log_gateway_request(
+                db_session,
+                endpoint="/anthropic/v1/messages",
+                method="POST",
+                status_code=200,
+                duration=0.1,
+                user_id=str(test_user.id),
+                account_id=str(test_user.account_id),
+                ai_model_id=str(cheap_model.id),
+                model_alias=f"anthropic/claude-haiku-{index}",
+                provider_name="anthropic",
+                prompt_tokens=10,
+                completion_tokens=5,
+                total_tokens=15,
+                estimated_cost=0.001,
+            )
+
+    # Two expensive hosted calls: lowest request count, highest spend.
+    for _ in range(2):
+        crud_api_usage.log_gateway_request(
+            db_session,
+            endpoint="/openai/v1/responses",
+            method="POST",
+            status_code=200,
+            duration=0.1,
+            user_id=str(test_user.id),
+            account_id=str(test_user.account_id),
+            ai_model_id=str(hosted_model.id),
+            model_alias="openai/gpt-5",
+            provider_name="openai",
+            prompt_tokens=1000,
+            completion_tokens=1000,
+            total_tokens=2000,
+            estimated_cost=5.0,
+        )
+
+    service = ModelGatewayBudgetService(
+        db_session,
+        ModelGatewayAuthContext(token="free-token", user=test_user),
+    )
+    now = datetime.now(timezone.utc)
+    spend = service._get_trial_hosted_model_spend(
+        account_id=str(test_user.account_id),
+        start=now - timedelta(days=1),
+        end=now + timedelta(days=1),
+    )
+
+    assert spend == pytest.approx(10.0)

@@ -310,20 +310,19 @@ class ModelGatewayBudgetService:
         if not hosted_model_ids:
             return 0.0
 
+        # Filter to hosted models in SQL and take every matching row: this is a
+        # SUM feeding a hard spend cap, and the query orders by request count,
+        # so any row limit would silently drop low-volume, high-cost models
+        # from the total and under-report spend against the cap.
         usage_rows = crud_api_usage.get_gateway_usage_by_model(
             self.db,
             account_id=account_id,
             start_date=start,
             end_date=end,
-            limit=max(len(hosted_model_ids), 20),
+            ai_model_ids=sorted(hosted_model_ids),
+            limit=None,
         )
-        return float(
-            sum(
-                float(row.get("estimated_cost") or 0.0)
-                for row in usage_rows
-                if row.get("ai_model_id") in hosted_model_ids
-            )
-        )
+        return float(sum(float(row.get("estimated_cost") or 0.0) for row in usage_rows))
 
     @staticmethod
     def _is_built_in_hosted_model(ai_model: AIModel) -> bool:

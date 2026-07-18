@@ -692,3 +692,96 @@ def test_get_statistics_for_user_defaults_to_last_30_days(
     assert stats["total_requests"] == 1
     assert stats["requests_by_endpoint"] == {"/api/v1/recent": 1}
     assert recent.id is not None
+
+
+def test_get_gateway_usage_by_model_filters_ids_and_honors_unlimited(
+    db_session, test_user
+):
+    """``ai_model_ids`` filters in SQL and ``limit=None`` returns every group.
+
+    Both are required by spend caps: the query orders by request count, so a
+    limit would drop a low-volume, high-cost model from a SUM.
+    """
+    expensive_model = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Expensive Model",
+            "provider_name": "openai",
+            "model_identifier": "gpt-5-expensive",
+        },
+        account_id=test_user.account_id,
+    )
+    for index in range(25):
+        cheap_model = crud_ai_model.create_with_account(
+            db=db_session,
+            obj_in={
+                "name": f"Cheap Model {index}",
+                "provider_name": "anthropic",
+                "model_identifier": f"claude-haiku-{index}",
+            },
+            account_id=test_user.account_id,
+        )
+        for _ in range(5):
+            crud_api_usage.log_gateway_request(
+                db_session,
+                endpoint="/anthropic/v1/messages",
+                method="POST",
+                status_code=200,
+                duration=0.1,
+                user_id=str(test_user.id),
+                account_id=str(test_user.account_id),
+                ai_model_id=str(cheap_model.id),
+                model_alias=f"anthropic/claude-haiku-{index}",
+                provider_name="anthropic",
+                prompt_tokens=10,
+                completion_tokens=5,
+                total_tokens=15,
+                estimated_cost=0.001,
+            )
+    crud_api_usage.log_gateway_request(
+        db_session,
+        endpoint="/openai/v1/responses",
+        method="POST",
+        status_code=200,
+        duration=0.1,
+        user_id=str(test_user.id),
+        account_id=str(test_user.account_id),
+        ai_model_id=str(expensive_model.id),
+        model_alias="openai/gpt-5-expensive",
+        provider_name="openai",
+        prompt_tokens=1000,
+        completion_tokens=1000,
+        total_tokens=2000,
+        estimated_cost=7.5,
+    )
+
+    # Default (limit=20, request-count ordering) hides the expensive model.
+    default_rows = crud_api_usage.get_gateway_usage_by_model(
+        db_session, account_id=str(test_user.account_id)
+    )
+    assert len(default_rows) == 20
+    assert str(expensive_model.id) not in {row["ai_model_id"] for row in default_rows}
+
+    # Filtering by id keeps it regardless of request count.
+    filtered_rows = crud_api_usage.get_gateway_usage_by_model(
+        db_session,
+        account_id=str(test_user.account_id),
+        ai_model_ids=[str(expensive_model.id)],
+        limit=None,
+    )
+    assert len(filtered_rows) == 1
+    assert filtered_rows[0]["estimated_cost"] == 7.5
+
+    # limit=None returns every group.
+    all_rows = crud_api_usage.get_gateway_usage_by_model(
+        db_session, account_id=str(test_user.account_id), limit=None
+    )
+    assert len(all_rows) == 26
+
+    # An empty id sequence yields nothing (it is a filter, not "unset").
+    assert (
+        crud_api_usage.get_gateway_usage_by_model(
+            db_session, account_id=str(test_user.account_id), ai_model_ids=[]
+        )
+        == []
+    )
