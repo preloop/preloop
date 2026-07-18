@@ -5,7 +5,7 @@ import uuid
 from typing import Any, Dict, Optional, Sequence
 
 from sqlalchemy import or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from preloop.models.models.ai_model import AIModel
 from preloop.models.crud.secret_reference import crud_secret_reference
@@ -108,11 +108,29 @@ class CRUDAIModel(CRUDBase[AIModel]):
     ) -> Optional[AIModel]:
         """
         Get the default, active AIModel for a given account.
+
         If account_id is None, gets the system-wide default.
         If account_id is provided, returns account-specific default or falls back to system-wide default.
+
+        Principal-bound OAuth models (Claude Code / Codex subscription
+        credentials) are never returned: they only authorize their owner's
+        interactive traffic and fail on server-side generation. When the
+        flagged default is such a model — or nothing is flagged — the first
+        BYOK/API-key-backed model of the same kind wins instead.
+
+        Args:
+            db: Active database session.
+            account_id: Owning account identifier, or None for system-wide.
+            model_kind: Service kind to resolve ("llm", "stt", or "tts").
+
+        Returns:
+            A model usable for server-side generation, or None when the
+            account has no BYOK-backed model of that kind.
         """
         normalized_model_kind = model_kind.strip().lower()
-        query = db.query(self.model).filter(self.model.is_default)
+        # Eager-load the credential secret: resolving credential_type per
+        # candidate would otherwise issue one query per model.
+        query = db.query(self.model).options(joinedload(self.model.credentials_secret))
         if account_id is not None:
             query = query.filter(
                 or_(
@@ -122,10 +140,20 @@ class CRUDAIModel(CRUDBase[AIModel]):
         else:
             query = query.filter(self.model.account_id.is_(None))
 
-        for ai_model in query.order_by(self.model.account_id).all():
-            if self._model_kind(ai_model) == normalized_model_kind:
+        candidates = [
+            ai_model
+            for ai_model in query.order_by(
+                self.model.account_id, self.model.created_at
+            ).all()
+            if self._model_kind(ai_model) == normalized_model_kind
+            and ai_model.supports_server_side_generation
+        ]
+        if not candidates:
+            return None
+        for ai_model in candidates:
+            if ai_model.is_default:
                 return ai_model
-        return None
+        return candidates[0]
 
     def create_with_account(
         self,

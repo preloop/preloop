@@ -3,7 +3,7 @@
   "name": "@preloop-ai/openclaw-plugin",
   "displayName": "Preloop",
   "description": "Expose OpenClaw to Preloop for discovery, status, Agent Control, voice-transcript delivery, and native tool-call approval on mobile/watch.",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "runtime": "openclaw",
   "license": "Apache-2.0",
   "homepage": "https://preloop.ai",

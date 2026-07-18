@@ -715,6 +715,10 @@ issue_certificate() {
   certbot_status=0
   (
     cd "$INSTALL_DIR"
+    # MSYS_NO_PATHCONV stops Git Bash / MSYS2 on Windows from rewriting the
+    # container-side webroot into a host path ("C:/Program Files/Git/var/www/
+    # certbot"). It is an ordinary unused variable on macOS and Linux.
+    export MSYS_NO_PATHCONV=1
     # shellcheck disable=SC2086
     docker compose -f docker-compose.yaml -f docker-compose.tls.yaml run --rm \
       --entrypoint certbot certbot certonly \
@@ -734,7 +738,7 @@ issue_certificate() {
     echo "     *.googleusercontent.com can never be certified — use your own domain)"
     echo "  - Let's Encrypt rate limits (retry with PRELOOP_TLS_STAGING=1)"
     echo "Fix the cause and re-run:"
-    echo "  cd ${INSTALL_DIR} && docker compose -f docker-compose.yaml -f docker-compose.tls.yaml run --rm --entrypoint certbot certbot certonly --webroot -w /var/www/certbot -d ${host} --agree-tos"
+    echo "  cd ${INSTALL_DIR} && MSYS_NO_PATHCONV=1 docker compose -f docker-compose.yaml -f docker-compose.tls.yaml run --rm --entrypoint certbot certbot certonly --webroot -w /var/www/certbot -d ${host} --agree-tos"
     return 1
   fi
 

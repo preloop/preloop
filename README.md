@@ -34,6 +34,18 @@ preloop agents discover
   <img alt="Preloop onboarding local agents into the control plane" src="frontend/public/assets/screenshots/quickstart/dark/agents-onboarding.webp" style="width: 100%; max-width: 1135px; border-radius: 12px;" />
 </p>
 
+## Watch it work
+
+A short series covering onboarding, the MCP firewall, human approvals, and cutting session cost — recorded end to end against a real stack, no slideware.
+
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=Y_geb2Or8zM&list=PLr2Jp0c-Qn2hoYL3aRZGUtBjTCVygWIXt">
+    <img alt="Preloop video series - see them, govern them, cut their cost" src="https://img.youtube.com/vi/Y_geb2Or8zM/maxresdefault.jpg" style="width: 100%; max-width: 640px; border-radius: 12px;" />
+  </a>
+</p>
+
+<p align="center"><a href="https://www.youtube.com/watch?v=Y_geb2Or8zM&list=PLr2Jp0c-Qn2hoYL3aRZGUtBjTCVygWIXt"><b>Watch the full playlist &rarr;</b></a></p>
+
 ## What is Preloop?
 
 Preloop is a single open-source platform that covers the five jobs teams otherwise buy from four different vendors:

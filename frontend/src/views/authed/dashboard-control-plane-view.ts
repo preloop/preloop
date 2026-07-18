@@ -57,6 +57,10 @@ import type {
 } from '../../types';
 import { parseUTCDate } from '../../utils/date';
 import { getAgentControlState } from '../../utils/agent-control';
+import {
+  pickDefaultModel,
+  selectableModels,
+} from '../../utils/ai-model-selection';
 import type { Tool } from '../../components/tool-card';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import { reducedMotionStyles } from '../../styles/reduced-motion';
@@ -1588,14 +1592,18 @@ export class DashboardView extends AuthedElement {
         this.mcpServers = mcpServers;
         this.tools = tools;
         this.aiModels = aiModels || [];
-        const filtered = this.aiModels.filter(
-          (m) => m.model_kind !== 'stt' && m.model_kind !== 'tts'
+        // Exclude speech models, then never auto-select a principal-bound
+        // OAuth model — it cannot serve server-side generation.
+        const filtered = selectableModels(
+          this.aiModels.filter(
+            (m) => m.model_kind !== 'stt' && m.model_kind !== 'tts'
+          )
         );
         if (
           filtered.length > 0 &&
           !filtered.some((m) => m.id === this.deployModel)
         ) {
-          this.deployModel = filtered[0].id;
+          this.deployModel = pickDefaultModel(filtered)?.id || '';
         }
         this.hasAIModels = (aiModels || []).length > 0;
         this.aiModelsCount = Array.isArray(aiModels) ? aiModels.length : 0;

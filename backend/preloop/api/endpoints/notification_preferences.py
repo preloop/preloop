@@ -1,6 +1,9 @@
 """API endpoints for notification preferences."""
 
+import logging
 import os
+import threading
+import time
 from datetime import datetime, UTC
 from typing import Optional
 
@@ -18,14 +21,57 @@ from preloop.schemas.notification_preferences import (
     MobileDeviceRegistration,
     MobileDeviceRegistrationResponse,
     QRCodeResponse,
+    TestPushRequest,
+    TestPushResponse,
 )
 from preloop.services.push_notifications import (
     generate_registration_token,
     validate_registration_token,
     check_token_validity,
 )
+from preloop.services.push_notifications.token_validation import (
+    validate_device_token,
+)
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
+
+# In-memory sliding-window rate limiter for admin test sends: a diagnostic
+# button must not become a way to spam a device. Per-process, matching the
+# existing limiter pattern in plugins/push_notifications/endpoints.py — with
+# multiple pods the effective ceiling scales with pod count, which is fine for
+# a manually-triggered admin action.
+_TEST_PUSH_LIMIT_PER_MINUTE = 5
+_TEST_PUSH_WINDOW_SECONDS = 60.0
+_test_push_lock = threading.Lock()
+_test_push_state: dict[str, list[float]] = {}
+
+
+def _enforce_test_push_rate_limit(user_id: str) -> None:
+    """Raise HTTP 429 if the user has exhausted their test-send budget.
+
+    Args:
+        user_id: Identifier of the user triggering the test send.
+
+    Raises:
+        HTTPException: 429 when the per-minute limit is exceeded.
+    """
+    now = time.monotonic()
+    window_start = now - _TEST_PUSH_WINDOW_SECONDS
+    with _test_push_lock:
+        recent = [t for t in _test_push_state.get(user_id, []) if t >= window_start]
+        if len(recent) >= _TEST_PUSH_LIMIT_PER_MINUTE:
+            _test_push_state[user_id] = recent
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=(
+                    f"Rate limit exceeded: {_TEST_PUSH_LIMIT_PER_MINUTE} test "
+                    "notifications per minute."
+                ),
+            )
+        recent.append(now)
+        _test_push_state[user_id] = recent
 
 
 @router.get("/me", response_model=NotificationPreferencesResponse)
@@ -89,10 +135,22 @@ async def register_mobile_device(
     Returns:
         Updated notification preferences.
     """
-    if device_in.platform not in ["ios", "android"]:
+    # Reject structurally impossible tokens here rather than storing them and
+    # failing every later send: a stored placeholder makes the account look
+    # push-enabled while silently delivering nothing.
+    is_valid, validation_error = validate_device_token(
+        device_in.platform, device_in.token
+    )
+    if not is_valid:
+        logger.warning(
+            "Rejected device registration for user %s (platform=%s): %s",
+            current_user.id,
+            device_in.platform,
+            validation_error,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Platform must be 'ios' or 'android'",
+            detail=validation_error,
         )
 
     prefs = notification_preferences.add_device_token(
@@ -158,6 +216,65 @@ async def unregister_mobile_device(
     db.refresh(prefs)
 
     return prefs
+
+
+@router.post("/me/test-push", response_model=TestPushResponse)
+async def send_test_push_notification(
+    request_in: TestPushRequest,
+    db: Session = Depends(get_db_session),
+    current_user: models.User = Depends(get_current_active_user),
+) -> dict:
+    """Send a clearly-labelled TEST notification to the caller's devices.
+
+    Admin-only diagnostic. Exercises the real APNs/FCM/proxy delivery path and
+    returns the provider's verbatim result per device, so an otherwise silent
+    push failure becomes visible.
+
+    The test is fully isolated from governance: no ApprovalRequest row is
+    created, so nothing waits on it, it appears in no approval list, and
+    approving or declining it changes no state.
+
+    Args:
+        request_in: Which kind of test to send ('approval' or 'question').
+
+    Returns:
+        Per-device send results.
+
+    Raises:
+        HTTPException: 403 if the caller is not an admin, 404 if no devices are
+            registered, 429 if the rate limit is exceeded.
+    """
+    from preloop.services.push_notifications.test_send import send_test_push
+
+    if not current_user.is_superuser:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required",
+        )
+
+    _enforce_test_push_rate_limit(str(current_user.id))
+
+    prefs = notification_preferences.get_by_user(db, current_user.id)
+    devices = list(prefs.mobile_device_tokens or []) if prefs else []
+
+    if request_in.platform:
+        devices = [d for d in devices if d.get("platform") == request_in.platform]
+
+    if not devices:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No registered devices to send a test notification to",
+        )
+
+    logger.info(
+        "Admin test push (%s) requested by user %s for %d device(s)",
+        request_in.kind,
+        current_user.id,
+        len(devices),
+    )
+
+    report = await send_test_push(devices=devices, kind=request_in.kind)
+    return report.as_dict()
 
 
 @router.get("/me/qr-code", response_model=QRCodeResponse)
@@ -235,15 +352,30 @@ async def register_device_via_token(
         or len(existing_prefs.mobile_device_tokens) == 0
     )
 
-    # Register device
-    prefs = notification_preferences.add_device_token(
-        db, user_id, device_in.platform, device_in.token
+    # Validate the push token, but never fail pairing over it: pairing also
+    # issues the API key the app needs to function at all. A bad token is
+    # skipped (not stored) so it cannot poison every future send, and the
+    # caller is told push was not enabled.
+    push_registered, push_error = validate_device_token(
+        device_in.platform, device_in.token
     )
 
-    # Enable push notifications by default when adding the first device
-    if is_first_device and not prefs.enable_mobile_push:
-        prefs.enable_mobile_push = True
-        db.flush()
+    if push_registered:
+        prefs = notification_preferences.add_device_token(
+            db, user_id, device_in.platform, device_in.token
+        )
+        # Enable push notifications by default when adding the first device
+        if is_first_device and not prefs.enable_mobile_push:
+            prefs.enable_mobile_push = True
+            db.flush()
+    else:
+        logger.warning(
+            "QR pairing for user %s completed WITHOUT push: platform=%s %s",
+            user_id,
+            device_in.platform,
+            push_error,
+        )
+        prefs = notification_preferences.get_or_create(db, user_id)
 
     # Generate API key for mobile app
     alphabet = string.ascii_letters + string.digits
@@ -296,6 +428,8 @@ async def register_device_via_token(
         "api_key": new_api_key.key,
         "api_key_id": new_api_key.id,
         "api_key_expires_at": new_api_key.expires_at,
+        "push_registered": push_registered,
+        "push_error": push_error,
     }
 
 

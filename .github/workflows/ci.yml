@@ -210,6 +210,63 @@ jobs:
         run: npm test
 
   # ==========================================================================
+  # CLI (Windows)
+  # ==========================================================================
+  #
+  # Windows CLI binaries already ship on every release (see release.yml), but
+  # nothing has ever exercised them. This job is the first Windows runner in
+  # the repo, so it is deliberately INFORMATIONAL ONLY:
+  #   - continue-on-error: true, so a failure never turns the check red, and
+  #   - it is absent from build-and-push's `needs:`, so it cannot gate a release.
+  # Read the logs to see what genuinely breaks on Windows. Once the failures are
+  # burned down, drop continue-on-error and add this to `needs:` to lock it in.
+  #
+  # `go build` and `go vet` are expected to PASS (verified by cross-compiling
+  # with GOOS=windows). `go test` is expected to be very red, for three known
+  # reasons — triage against these before assuming a new regression:
+  #   1. Most tests redirect the home dir with t.Setenv("HOME", ...), but
+  #      os.UserHomeDir() reads %USERPROFILE% on Windows, so they operate on the
+  #      real profile instead of their temp dir. This is the dominant cause.
+  #      (agents_preflight_test.go sets USERPROFILE too and is the correct model.)
+  #   2. ~16 tests write a #!/bin/sh script and exec it; Windows has no shebang.
+  #   3. The managed-launcher feature itself is POSIX-only — it emits a bash
+  #      script to ~/.local/bin and gates on the 0111 executable bit, which
+  #      Windows files never carry. That is a product gap, not a test bug.
+  # Because of (1), do NOT run this suite on a Windows workstation you care
+  # about: it writes into the real ~/.preloop. CI runners are ephemeral.
+
+  test-cli-windows:
+    name: CLI Tests (Windows)
+    runs-on: windows-latest
+    continue-on-error: true
+
+    defaults:
+      run:
+        working-directory: cli
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      # Kept as a separate step so a build failure and a test failure are
+      # distinguishable at a glance in the checks UI.
+      - name: Test
+        env:
+          PRELOOP_DISABLE_TELEMETRY: "true"
+        run: go test ./...
+
+  # ==========================================================================
   # Build and Push Docker Images
   # ==========================================================================
 

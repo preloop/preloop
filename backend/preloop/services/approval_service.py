@@ -2062,23 +2062,41 @@ class ApprovalService:
 
                     if result.get("success"):
                         sent_count += 1
-                    elif result.get("invalid_token"):
-                        # Token is no longer valid
+                    elif result.get("should_prune", result.get("invalid_token")):
+                        # Token is dead (unregistered, malformed, or minted by
+                        # a different Firebase project). Drop it instead of
+                        # retrying it on every future approval forever.
                         invalid_tokens.append((user_id, token, "android"))
+                        logger.warning(
+                            "Pruning dead Android push token: reason=%s "
+                            "project_id=%s remediation=%s",
+                            result.get("error_reason"),
+                            result.get("project_id"),
+                            result.get("remediation"),
+                        )
                         _record_failure(
                             platform="android",
                             token=token,
-                            reason=result.get("error") or "invalid_token",
+                            reason=result.get("error_reason")
+                            or result.get("error")
+                            or "invalid_token",
                             pruned=True,
                         )
                     else:
+                        # Server-side or transient fault: keep the token.
                         logger.warning(
-                            f"FCM notification failed: {result.get('error')}"
+                            "FCM notification failed (token kept): reason=%s "
+                            "retryable=%s error=%s",
+                            result.get("error_reason"),
+                            result.get("retryable"),
+                            result.get("error"),
                         )
                         _record_failure(
                             platform="android",
                             token=token,
-                            reason=result.get("error") or "unknown_fcm_error",
+                            reason=result.get("error_reason")
+                            or result.get("error")
+                            or "unknown_fcm_error",
                         )
                         failed_count += 1
                 else:

@@ -6,7 +6,7 @@
   "runtime": "hermes",
   "license": "Apache-2.0",
   "homepage": "https://preloop.ai",
-  "repository": "https://github.com/spacecode-ai/preloop/tree/main/runtime-plugins/hermes-preloop",
+  "repository": "https://github.com/preloop/preloop/tree/main/runtime-plugins/hermes-preloop",
   "keywords": [
     "preloop",
     "agent-control",

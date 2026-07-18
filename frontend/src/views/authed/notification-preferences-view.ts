@@ -1,6 +1,6 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
-import { AuthedElement } from '../../api';
+import { AuthedElement, getUserProfile } from '../../api';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -33,6 +33,27 @@ interface QRCodeData {
   expires_in_seconds: number;
 }
 
+/** Per-device outcome of an admin diagnostic test send. */
+interface TestPushDeviceResult {
+  platform: string;
+  token: string;
+  transport: string;
+  success: boolean;
+  error?: string | null;
+  error_reason?: string | null;
+  remediation?: string | null;
+  project_id?: string | null;
+  status_code?: number | null;
+}
+
+interface TestPushResult {
+  kind: string;
+  request_id: string;
+  sent: number;
+  failed: number;
+  results: TestPushDeviceResult[];
+}
+
 @customElement('notification-preferences-view')
 export class NotificationPreferencesView extends AuthedElement {
   @state()
@@ -58,6 +79,18 @@ export class NotificationPreferencesView extends AuthedElement {
 
   @state()
   private qrExpiry: number = 0;
+
+  @state()
+  private isAdmin = false;
+
+  @state()
+  private isSendingTest: 'approval' | 'question' | null = null;
+
+  @state()
+  private testResult: TestPushResult | null = null;
+
+  @state()
+  private testError = '';
 
   private qrExpiryInterval: any = null;
   private unsubscribe?: () => void;
@@ -245,11 +278,98 @@ export class NotificationPreferencesView extends AuthedElement {
       align-items: center;
       min-height: 400px;
     }
+
+    /* Admin test-send: a diagnostic panel, kept quiet until it has something
+       to say. Colour is reserved for the pass/fail verdict. */
+    .test-send-card {
+      margin-bottom: var(--sl-spacing-large);
+    }
+
+    .test-send-header {
+      margin-bottom: var(--sl-spacing-medium);
+    }
+
+    .test-send-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--sl-spacing-small);
+    }
+
+    .test-send-hint,
+    .test-send-alert {
+      margin-top: var(--sl-spacing-small);
+      font-size: var(--sl-font-size-small);
+      color: var(--sl-color-neutral-600);
+    }
+
+    .test-results {
+      margin-top: var(--sl-spacing-medium);
+      display: flex;
+      flex-direction: column;
+      gap: var(--sl-spacing-small);
+    }
+
+    .test-results-summary {
+      font-size: var(--sl-font-size-small);
+      font-weight: var(--sl-font-weight-semibold);
+      color: var(--sl-color-neutral-600);
+    }
+
+    .test-result-item {
+      border: 1px solid var(--sl-color-neutral-200);
+      border-left-width: 3px;
+      border-radius: var(--sl-border-radius-medium);
+      padding: var(--sl-spacing-small);
+      display: flex;
+      flex-direction: column;
+      gap: var(--sl-spacing-2x-small);
+    }
+
+    .test-result-item.ok {
+      border-left-color: var(--sl-color-success-600);
+    }
+
+    .test-result-item.failed {
+      border-left-color: var(--sl-color-danger-600);
+    }
+
+    .test-result-head {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: var(--sl-spacing-x-small);
+    }
+
+    .test-result-meta {
+      font-size: var(--sl-font-size-x-small);
+      color: var(--sl-color-neutral-500);
+    }
+
+    .test-result-meta code,
+    .test-result-error code {
+      font-family: var(--sl-font-mono);
+    }
+
+    /* The verbatim provider error is the point of this panel — make it
+       readable and selectable rather than truncating it. */
+    .test-result-error {
+      font-family: var(--sl-font-mono);
+      font-size: var(--sl-font-size-x-small);
+      color: var(--sl-color-danger-700);
+      word-break: break-word;
+      user-select: text;
+    }
+
+    .test-result-remediation {
+      font-size: var(--sl-font-size-small);
+      color: var(--sl-color-neutral-600);
+    }
   `;
 
   async connectedCallback() {
     super.connectedCallback();
     await this.loadPreferences();
+    void this.fetchAdminStatus();
 
     // Connect to WebSocket for real-time device registration updates
     try {
@@ -299,6 +419,174 @@ export class NotificationPreferencesView extends AuthedElement {
 
     // Disconnect from WebSocket
     this.unsubscribe?.();
+  }
+
+  /** Test sends are admin-only for now; hide the controls for everyone else. */
+  private async fetchAdminStatus() {
+    try {
+      const user = await getUserProfile();
+      this.isAdmin = user?.is_superuser || false;
+    } catch {
+      this.isAdmin = false;
+    }
+  }
+
+  private get hasRegisteredDevices(): boolean {
+    return (this.preferences?.mobile_device_tokens?.length ?? 0) > 0;
+  }
+
+  /**
+   * Send a clearly-labelled TEST notification over the real push path.
+   *
+   * The backend creates no approval request, so nothing is gated on the
+   * result and approving or declining it on the device has no effect.
+   */
+  private async handleSendTest(kind: 'approval' | 'question') {
+    this.isSendingTest = kind;
+    this.testResult = null;
+    this.testError = '';
+
+    try {
+      const data = await this.fetchData(
+        '/api/v1/notification-preferences/me/test-push',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ kind }),
+        }
+      );
+
+      if (!data) {
+        throw new Error('Test send failed');
+      }
+
+      this.testResult = data as TestPushResult;
+    } catch (error: any) {
+      this.testError = error?.message || 'Failed to send test notification';
+    } finally {
+      this.isSendingTest = null;
+    }
+  }
+
+  private renderTestSendSection() {
+    if (!this.isAdmin) {
+      return '';
+    }
+
+    return html`
+      <sl-card class="test-send-card">
+        <div class="test-send-header">
+          <div>
+            <h2 class="section-title" style="margin: 0;">
+              Test push delivery
+              <sl-badge variant="neutral" pill>Admin</sl-badge>
+            </h2>
+            <div class="preference-description">
+              Sends a clearly labelled test over the real delivery path and
+              reports exactly what the push provider said. Nothing is gated on
+              it &mdash; no approval request is created, and responding to it on
+              the device has no effect.
+            </div>
+          </div>
+        </div>
+
+        <div class="test-send-actions">
+          <sl-button
+            size="small"
+            variant="primary"
+            ?disabled=${
+              !this.hasRegisteredDevices || this.isSendingTest !== null
+            }
+            ?loading=${this.isSendingTest === 'approval'}
+            @click=${() => this.handleSendTest('approval')}
+          >
+            <sl-icon slot="prefix" name="shield-check"></sl-icon>
+            Send test approval
+          </sl-button>
+          <sl-button
+            size="small"
+            ?disabled=${
+              !this.hasRegisteredDevices || this.isSendingTest !== null
+            }
+            ?loading=${this.isSendingTest === 'question'}
+            @click=${() => this.handleSendTest('question')}
+          >
+            <sl-icon slot="prefix" name="chat-dots"></sl-icon>
+            Send test question
+          </sl-button>
+        </div>
+
+        ${
+          !this.hasRegisteredDevices
+            ? html`<div class="test-send-hint">
+                Register a device below to enable test sends.
+              </div>`
+            : ''
+        }
+        ${
+          this.testError
+            ? html`<sl-alert variant="danger" open class="test-send-alert">
+                <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+                ${this.testError}
+              </sl-alert>`
+            : ''
+        }
+        ${this.testResult ? this.renderTestResult(this.testResult) : ''}
+      </sl-card>
+    `;
+  }
+
+  private renderTestResult(result: TestPushResult) {
+    return html`
+      <div class="test-results">
+        <div class="test-results-summary">
+          ${result.sent} delivered &middot; ${result.failed} failed
+        </div>
+        ${result.results.map(
+          (device) => html`
+            <div class="test-result-item ${device.success ? 'ok' : 'failed'}">
+              <div class="test-result-head">
+                <sl-badge variant=${device.success ? 'success' : 'danger'}>
+                  ${device.success ? 'Delivered' : 'Failed'}
+                </sl-badge>
+                <span class="test-result-meta">
+                  ${device.platform === 'ios' ? 'iOS' : 'Android'} &middot;
+                  ${device.transport} &middot;
+                  <code>${device.token}</code>
+                </span>
+              </div>
+              ${
+                device.error
+                  ? html`<div class="test-result-error">
+                      ${
+                        device.error_reason
+                          ? html`<strong>${device.error_reason}</strong>
+                              &mdash; `
+                          : ''
+                      }${device.error}
+                    </div>`
+                  : ''
+              }
+              ${
+                device.remediation
+                  ? html`<div class="test-result-remediation">
+                      ${device.remediation}
+                    </div>`
+                  : ''
+              }
+              ${
+                device.project_id
+                  ? html`<div class="test-result-meta">
+                      Server Firebase project:
+                      <code>${device.project_id}</code>
+                    </div>`
+                  : ''
+              }
+            </div>
+          `
+        )}
+      </div>
+    `;
   }
 
   private async loadPreferences() {
@@ -622,6 +910,8 @@ export class NotificationPreferencesView extends AuthedElement {
                 `
           }
         </sl-card>
+
+        ${this.renderTestSendSection()}
 
         <div class="app-store-links">
           <a

@@ -377,9 +377,12 @@ def test_get_default_ai_model(db_session: Session, create_account):
     assert retrieved_default.id == default_model.id
     assert retrieved_default.model_identifier == "claude-2"
 
-    # Test with no account-specific default model - should fall back to system-wide default
+    # With nothing flagged as default, the first BYOK/API-key-backed model
+    # wins rather than resolving to nothing. See
+    # tests/models/crud/test_ai_model_default_selection.py for the full rule
+    # (principal-bound OAuth models are never auto-selected).
     account2: Account = create_account()
-    crud_ai_model.create_with_account(
+    only_model = crud_ai_model.create_with_account(
         db=db_session,
         obj_in={
             "name": "Non-Default Model for Get Default Test",
@@ -394,11 +397,8 @@ def test_get_default_ai_model(db_session: Session, create_account):
     fallback_default = crud_ai_model.get_default_active_model(
         db=db_session, account_id=account2.id
     )
-    # Should return system-wide default if it exists, or None if no system-wide default exists
-    system_wide_default = crud_ai_model.get_default_active_model(
-        db=db_session, account_id=None
-    )
-    assert fallback_default == system_wide_default
+    assert fallback_default is not None
+    assert fallback_default.id == only_model.id
 
 
 def test_delete_ai_model(db_session: Session, create_account):

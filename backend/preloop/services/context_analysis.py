@@ -150,6 +150,116 @@ class SessionContextProfile(BaseModel):
     tool_schema_overhead: Optional[ToolSchemaOverheadProfile] = None
 
 
+class ProfileSavingsBreakdown(BaseModel):
+    """Deduplicated, profile-level roll-up of estimated recoverable tokens.
+
+    Individual suggestions are separate *lenses* on the same measured bytes:
+    the cache-prefix estimate re-measures the tool schemas and tool outputs it
+    carries, and the oversized-field estimate re-measures part of the tool
+    output the compressible estimate already covers. Summing suggestion
+    estimates therefore double-counts. This breakdown is the single deduped
+    total, bounded by the analyzed scope.
+    """
+
+    schema_overhead_tokens: int = 0
+    tool_output_tokens: int = 0
+    cache_prefix_tokens: int = 0
+    retry_waste_tokens: int = 0
+    total_tokens: int = 0
+    scope_tokens: int = 0
+    clamped: bool = False
+
+
+def compute_profile_savings(
+    profile: Optional[SessionContextProfile],
+) -> ProfileSavingsBreakdown:
+    """Roll measured waste up to one non-overlapping savings total.
+
+    Dedupe rules, in order:
+
+    * Unused tool-schema tokens are taken verbatim. ``analyze_tool_schema_overhead``
+      already accumulates each advertised schema once per resend, so multiplying
+      by ``resend_count`` again would be quadratic in the number of requests.
+    * Tool-output waste takes ``max(compressible, largest oversized field)``:
+      both measure the same tool-result bytes.
+    * Cache-prefix waste overlaps the two above (the repeated prefix contains
+      the schemas and results), so the in-context total is the ``max`` of the
+      prefix estimate and the schema + tool-output sum, never their sum.
+    * Retry waste is additive: those tokens were spent on requests that were
+      discarded, so they are disjoint from the surviving context.
+
+    The total is finally clamped to the analyzed scope, since no optimization
+    can recover more tokens than were analyzed.
+
+    Args:
+        profile: Measured context profile, or ``None`` when unavailable.
+
+    Returns:
+        The deduplicated breakdown. ``clamped`` is ``True`` when the raw total
+        exceeded the analyzed scope and was capped.
+    """
+    if profile is None:
+        return ProfileSavingsBreakdown()
+
+    schema_tokens = 0
+    if profile.tool_schema_overhead is not None:
+        # Deliberately NOT multiplied by resend_count: the analyzer already
+        # summed each advertised schema across every request that carried it.
+        schema_tokens = max(
+            profile.tool_schema_overhead.unused_schema_tokens_estimate, 0
+        )
+
+    tool_output_tokens = 0
+    if profile.tool_bloat is not None:
+        oversized = max(
+            (
+                field.estimated_tokens
+                for field in profile.tool_bloat.oversized_output_fields
+            ),
+            default=0,
+        )
+        tool_output_tokens = max(
+            profile.tool_bloat.compressible_tokens_estimate, oversized, 0
+        )
+
+    cache_prefix_tokens = 0
+    if (
+        profile.cache_profile is not None
+        and profile.cache_profile.cache_breaking_events
+    ):
+        cache_prefix_tokens = max(
+            profile.cache_profile.avg_repeated_prefix_tokens
+            * len(profile.cache_profile.cache_breaking_events),
+            0,
+        )
+
+    retry_waste_tokens = 0
+    if profile.retry_profile is not None:
+        retry_waste_tokens = max(profile.retry_profile.wasted_tokens, 0)
+
+    in_context_tokens = max(schema_tokens + tool_output_tokens, cache_prefix_tokens)
+    raw_total = in_context_tokens + retry_waste_tokens
+
+    scope_tokens = max(
+        int(profile.total_prompt_tokens) + int(profile.total_completion_tokens), 0
+    )
+    total = raw_total
+    clamped = False
+    if scope_tokens and raw_total > scope_tokens:
+        total = scope_tokens
+        clamped = True
+
+    return ProfileSavingsBreakdown(
+        schema_overhead_tokens=schema_tokens,
+        tool_output_tokens=tool_output_tokens,
+        cache_prefix_tokens=cache_prefix_tokens,
+        retry_waste_tokens=retry_waste_tokens,
+        total_tokens=total,
+        scope_tokens=scope_tokens,
+        clamped=clamped,
+    )
+
+
 def _message_content_to_text(value: Any) -> str:
     """Flatten message content (string or content blocks) to plain text."""
     if value is None:

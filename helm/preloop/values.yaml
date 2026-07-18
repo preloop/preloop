@@ -64,6 +64,15 @@ console:
       cpu: "200m"
       memory: "256Mi"
 
+# Account that installer downloads and CLI check-ins are recorded against.
+# Without this the audit trail is never written, so the admin funnel reports
+# no installer downloads at all — it cannot distinguish "nobody installed"
+# from "not configured". The admin console suggests a copy-pasteable UUID on
+# the Installer Downloads page. Left empty by default: self-hosted operators
+# have no reason to record their own installs.
+installerAudit:
+  accountId: ""
+
 # Privacy-friendly web analytics (e.g. Plausible, Umami). When enabled, the
 # console nginx injects the tracking snippet into every HTML page at serve
 # time (sub_filter), so analytics stay runtime-configurable per environment —

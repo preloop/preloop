@@ -1,7 +1,7 @@
 """Pydantic schemas for notification preferences."""
 
 import uuid
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Literal
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -66,6 +66,52 @@ class MobileDeviceRegistration(BaseModel):
         return token
 
 
+class TestPushRequest(BaseModel):
+    """Schema for triggering an admin diagnostic test push."""
+
+    kind: Literal["approval", "question"] = Field(
+        "approval",
+        description="'approval' for a test approval request, 'question' for a "
+        "test ask_user question",
+    )
+    platform: Optional[Literal["ios", "android"]] = Field(
+        None, description="Restrict the test to one platform; default is all devices"
+    )
+
+
+class TestPushDeviceResult(BaseModel):
+    """Per-device outcome of a test push send."""
+
+    platform: str = Field(..., description="Device platform")
+    token: str = Field(..., description="Masked device token")
+    transport: str = Field(..., description="Delivery path used: apns/fcm/proxy/none")
+    success: bool = Field(..., description="Whether the provider accepted the send")
+    error: Optional[str] = Field(None, description="Verbatim provider error")
+    error_reason: Optional[str] = Field(
+        None, description="Machine-readable reason code"
+    )
+    remediation: Optional[str] = Field(None, description="Operator-facing fix hint")
+    project_id: Optional[str] = Field(
+        None, description="Firebase project of the server credentials (FCM only)"
+    )
+    status_code: Optional[int] = Field(None, description="Provider HTTP status (APNs)")
+    pruned: bool = Field(False, description="Whether the dead token was removed")
+
+
+class TestPushResponse(BaseModel):
+    """Schema for the result of an admin diagnostic test push."""
+
+    kind: str = Field(..., description="Kind of test sent")
+    request_id: str = Field(
+        ..., description="Synthetic request id; intentionally not persisted"
+    )
+    sent: int = Field(..., description="Number of devices that accepted the send")
+    failed: int = Field(..., description="Number of devices that failed")
+    results: List[TestPushDeviceResult] = Field(
+        default_factory=list, description="Per-device results"
+    )
+
+
 class QRCodeResponse(BaseModel):
     """Schema for QR code registration response."""
 
@@ -83,4 +129,12 @@ class MobileDeviceRegistrationResponse(BaseModel):
     api_key_id: uuid.UUID = Field(..., description="API key ID")
     api_key_expires_at: Optional[datetime] = Field(
         None, description="API key expiration"
+    )
+    push_registered: bool = Field(
+        True,
+        description="Whether the supplied push token was accepted and stored. "
+        "False means pairing succeeded but push is not enabled for this device.",
+    )
+    push_error: Optional[str] = Field(
+        None, description="Why the push token was rejected, if it was"
     )

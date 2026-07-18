@@ -19,7 +19,7 @@ keywords = ["preloop", "hermes", "agent-control", "tool-approval", "autonomous-a
 
 [project.urls]
 Homepage = "https://preloop.ai"
-Repository = "https://github.com/spacecode-ai/preloop"
+Repository = "https://github.com/preloop/preloop"
 Documentation = "https://docs.preloop.ai"
 
 [project.entry-points."hermes_agent.plugins"]

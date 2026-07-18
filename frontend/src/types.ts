@@ -6,6 +6,17 @@ export interface AIModel {
   model_kind?: 'llm' | 'stt' | 'tts';
   api_key?: string;
   has_api_key?: boolean;
+  /**
+   * Logical credential type, e.g. 'api_key', 'ambient_provider',
+   * 'oauth_anthropic_claude_code', 'oauth_openai_codex'.
+   */
+  credential_type?: string | null;
+  /**
+   * False for principal-bound OAuth (Claude Code / Codex subscription)
+   * credentials, which only authorize their owner's interactive traffic.
+   * Never auto-select a model where this is false.
+   */
+  supports_server_side_generation?: boolean;
   credentials_secret_id?: string | null;
   credentials_backend_type?: string | null;
   api_endpoint?: string;
@@ -688,6 +699,16 @@ export interface RuntimeSessionOptimizationResponse {
   analyzed_scope_estimated_cost?: number;
   context_profile?: SessionContextProfileData | null;
   suggestions: RuntimeSessionOptimizationSuggestion[];
+  /**
+   * True only for the bundled example session. Never set for a real session.
+   * When true the UI MUST label the result as sample data and MUST NOT treat
+   * its figures as belonging to the account.
+   */
+  is_example?: boolean;
+  example_notice?: string | null;
+  example_provenance?: string | null;
+  example_title?: string | null;
+  example_pricing_note?: string | null;
 }
 
 export interface RuntimeSessionReplayResponse {

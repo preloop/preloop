@@ -34,6 +34,15 @@ AI_MODEL_CREDENTIALS_SECRET_KIND = "ai_model_credentials"
 PROVIDER_ADMIN_CREDENTIALS_SECRET_KIND = "provider_admin_credentials"
 OPENAI_CODEX_OAUTH_CREDENTIAL_TYPE = "oauth_openai_codex"
 ANTHROPIC_CLAUDE_CODE_OAUTH_CREDENTIAL_TYPE = "oauth_anthropic_claude_code"
+# Credential types bound to a human principal's subscription (Claude Code /
+# Codex OAuth). They only authorize that principal's own interactive traffic,
+# so Preloop must never auto-select them for server-side generation.
+PRINCIPAL_BOUND_OAUTH_CREDENTIAL_TYPES = frozenset(
+    {
+        OPENAI_CODEX_OAUTH_CREDENTIAL_TYPE,
+        ANTHROPIC_CLAUDE_CODE_OAUTH_CREDENTIAL_TYPE,
+    }
+)
 OPENAI_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 OPENAI_CODEX_TOKEN_URL = "https://auth.openai.com/oauth/token"
 OPENAI_CODEX_JWT_CLAIM_PATH = "https://api.openai.com/auth"

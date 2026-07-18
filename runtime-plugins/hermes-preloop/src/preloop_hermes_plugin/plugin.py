@@ -7,8 +7,11 @@ import asyncio
 import json
 import logging
 import os
+import threading
+from collections.abc import Coroutine
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 from urllib import parse, request
 from uuid import uuid4
 
@@ -26,6 +29,8 @@ from preloop.integrations.agent_control import (
 )
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
 
 # Hermes fires this lifecycle hook after the model selects a tool but before the
 # tool runs. Returning a block envelope vetoes the call.
@@ -46,6 +51,88 @@ HOOK_EVENT_PRE_TOOL_CALL = "pre_tool_call"
 PERMISSION_CHECK_PATH = "/api/v1/agents/permission-check"
 # Backend blocks up to ~300s waiting for a mobile/watch decision; give it slack.
 PERMISSION_CHECK_TIMEOUT_SECONDS = 310.0
+# Outer deadline for the sync bridge. Strictly greater than the HTTP timeout so
+# the aiohttp timeout fires first and produces a precise error message; this is
+# only a backstop against the coroutine wedging somewhere other than the socket.
+BRIDGE_TIMEOUT_SECONDS = PERMISSION_CHECK_TIMEOUT_SECONDS + 15.0
+
+
+class _BridgeLoop:
+    """A dedicated daemon thread running a persistent asyncio event loop.
+
+    Hermes invokes plugin hooks synchronously (``ret = cb(**kwargs)`` in
+    ``hermes_cli/plugins.py``) from whichever thread is executing the tool --
+    the main thread on the CLI path, a ``ThreadPoolExecutor`` worker during
+    parallel tool execution, and an executor thread owned by a live event loop
+    when Hermes is embedded in an async host (gateway, ACP adapter).
+
+    ``asyncio.run()`` cannot serve all three: it raises if the calling thread
+    already has a running loop, and it closes the loop it creates, which
+    invalidates the cached aiohttp connector. Owning one long-lived loop on a
+    separate thread and submitting work to it with
+    ``asyncio.run_coroutine_threadsafe`` is correct from any caller, needs no
+    knowledge of the caller's loop state, and keeps HTTP connections poolable
+    across calls.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def _ensure_loop(self) -> asyncio.AbstractEventLoop:
+        """Start the worker thread and loop on first use.
+
+        Returns:
+            The running event loop owned by the bridge thread.
+        """
+        with self._lock:
+            loop = self._loop
+            if loop is not None and not loop.is_closed():
+                return loop
+            loop = asyncio.new_event_loop()
+            ready = threading.Event()
+
+            def _run() -> None:
+                asyncio.set_event_loop(loop)
+                loop.call_soon(ready.set)
+                loop.run_forever()
+
+            threading.Thread(
+                target=_run,
+                name="preloop-hermes-approval",
+                daemon=True,
+            ).start()
+            ready.wait()
+            self._loop = loop
+            return loop
+
+    def run(self, coro: Coroutine[Any, Any, _T], timeout: float) -> _T:
+        """Run a coroutine on the bridge loop and block for its result.
+
+        Args:
+            coro: The coroutine to execute.
+            timeout: Seconds to wait before giving up and cancelling.
+
+        Returns:
+            Whatever the coroutine returned.
+
+        Raises:
+            TimeoutError: If the coroutine did not finish within ``timeout``.
+            Exception: Any exception raised by the coroutine itself.
+        """
+        future = asyncio.run_coroutine_threadsafe(coro, self._ensure_loop())
+        try:
+            return future.result(timeout=timeout)
+        except FuturesTimeoutError as exc:
+            # Cancel inside the owning loop so the request winds down instead
+            # of leaking a pending task for the process lifetime.
+            future.cancel()
+            raise TimeoutError(
+                f"Preloop approval timed out after {timeout:.0f}s"
+            ) from exc
+
+
+_bridge = _BridgeLoop()
 
 
 class HermesPreloopPlugin:
@@ -57,6 +144,8 @@ class HermesPreloopPlugin:
         self.config_path = config_path
         self.client: AgentControlClient | None = None
         self._control_settings: tuple[AgentControlConfig, dict[str, Any]] | None = None
+        # Outer deadline for the sync bridge; overridable in tests.
+        self._bridge_timeout_seconds = BRIDGE_TIMEOUT_SECONDS
 
     def load_config(self) -> AgentControlConfig:
         """Load the `preloop.control` block from Hermes configuration."""
@@ -137,7 +226,68 @@ class HermesPreloopPlugin:
         register_hook = getattr(ctx, "register_hook", None)
         if not callable(register_hook):
             raise RuntimeError("Hermes plugin context does not expose register_hook")
-        register_hook(HOOK_EVENT_PRE_TOOL_CALL, self.pre_tool_call)
+        # MUST be the sync wrapper: Hermes calls hooks as ``ret = cb(**kwargs)``
+        # with no await, then drops any result that is not a dict. Registering
+        # the async method hands Hermes a coroutine it discards -- every tool
+        # call would then run ungated.
+        register_hook(HOOK_EVENT_PRE_TOOL_CALL, self.pre_tool_call_sync)
+
+    def pre_tool_call_sync(
+        self, payload: Any = None, /, **kwargs: Any
+    ) -> dict[str, Any] | None:
+        """Synchronous ``pre_tool_call`` hook -- the callback Hermes invokes.
+
+        Bridges to the async :meth:`pre_tool_call` implementation on a
+        dedicated event loop thread, so the decision is available as a plain
+        dict by the time Hermes inspects the return value.
+
+        Every failure mode -- timeout, transport error, malformed response, or
+        an unexpected exception anywhere beneath this call -- resolves to a
+        block unless the operator explicitly opted into ``fail_open``. Hermes
+        swallows hook exceptions and treats them as "allow", so this method
+        must never propagate one.
+
+        Args:
+            payload: Event payload mapping, when Hermes passes one positionally.
+            **kwargs: Event fields when Hermes passes them as keywords.
+
+        Returns:
+            A block envelope to veto the tool call, or ``None`` to allow it.
+        """
+        try:
+            return _bridge.run(
+                self.pre_tool_call(payload, **kwargs),
+                timeout=self._bridge_timeout_seconds,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Preloop approval bridge failed for tool %r: %s",
+                kwargs.get("tool_name") or payload,
+                exc,
+            )
+            if self._fail_open_safe():
+                return None
+            return _block(f"Preloop approval unavailable: {exc}")
+
+    def _fail_open_safe(self) -> bool:
+        """Resolve ``fail_open`` without ever raising.
+
+        Used on the failure path, where the config itself may be the thing that
+        is broken. An unreadable config is not treated as consent to run
+        ungoverned, so it resolves to fail-closed unless the environment
+        override says otherwise.
+
+        Returns:
+            True if the tool call should be allowed despite the failure.
+        """
+        try:
+            _, approval = self._load_control_settings()
+        except Exception:
+            approval = {}
+        try:
+            return _resolve_fail_open(approval)
+        except Exception:
+            return False
 
     async def pre_tool_call(
         self, payload: Any = None, /, **kwargs: Any
@@ -238,6 +388,16 @@ class HermesPreloopPlugin:
             if fail_open:
                 return None
             return _block(f"Preloop approval unavailable: {exc}")
+
+        if not isinstance(data, dict):
+            # An unparseable body is an unusable decision, not an allow.
+            logger.warning(
+                "Preloop permission check returned a non-object body for tool %s",
+                tool_name,
+            )
+            if fail_open:
+                return None
+            return _block("Preloop approval unavailable: malformed response")
 
         decision = str(data.get("decision") or "").strip().lower()
         if decision == "deny":

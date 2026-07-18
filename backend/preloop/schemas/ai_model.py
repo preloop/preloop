@@ -189,6 +189,15 @@ class AIModelInDBBase(TimestampMixin, BaseModel):
     has_api_key: bool = Field(
         False, description="Whether this model has credentials configured"
     )
+    supports_server_side_generation: bool = Field(
+        False,
+        description=(
+            "Whether Preloop can run its own generation calls with this model. "
+            "False for principal-bound OAuth (Claude Code / Codex subscription) "
+            "credentials, which only authorize their owner's interactive traffic "
+            "and must never be auto-selected as a default."
+        ),
+    )
 
     @field_serializer("account_id")
     def serialize_account_id(self, value: Optional[uuid.UUID]) -> Optional[str]:

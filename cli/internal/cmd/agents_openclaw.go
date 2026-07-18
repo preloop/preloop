@@ -5840,7 +5840,56 @@ func configPathsForAgentSpec(home string, spec agentSpec) []string {
 		}
 	}
 
+	if strings.EqualFold(spec.Name, "Claude Desktop") {
+		for _, path := range claudeDesktopConfigPaths(home) {
+			addPath(path)
+		}
+	}
+
 	return paths
+}
+
+// claudeDesktopConfigPaths returns the platform-native Claude Desktop config
+// locations that the plain $HOME-relative ConfigPaths cannot express. Claude
+// Desktop stores its config under the OS user-config directory, which is
+// %APPDATA% on Windows, ~/Library/Application Support on macOS and
+// ~/.config on Linux — so on Windows the POSIX-only defaults never match.
+func claudeDesktopConfigPaths(home string) []string {
+	var paths []string
+	for _, dir := range userConfigDirs(home) {
+		paths = append(paths, filepath.Join(dir, "Claude", "claude_desktop_config.json"))
+	}
+	return paths
+}
+
+// userConfigDirs lists candidate OS config roots, preferring os.UserConfigDir
+// and falling back to %APPDATA%/$XDG_CONFIG_HOME so discovery still works when
+// the environment is too sparse for the stdlib lookup to succeed.
+func userConfigDirs(home string) []string {
+	var dirs []string
+	seen := map[string]struct{}{}
+	add := func(dir string) {
+		cleaned := strings.TrimSpace(dir)
+		if cleaned == "" || !filepath.IsAbs(cleaned) {
+			return
+		}
+		cleaned = filepath.Clean(cleaned)
+		if _, ok := seen[cleaned]; ok {
+			return
+		}
+		seen[cleaned] = struct{}{}
+		dirs = append(dirs, cleaned)
+	}
+
+	if dir, err := os.UserConfigDir(); err == nil {
+		add(dir)
+	}
+	add(os.Getenv("APPDATA"))
+	add(os.Getenv("XDG_CONFIG_HOME"))
+	if runtime.GOOS == "darwin" {
+		add(filepath.Join(home, "Library", "Application Support"))
+	}
+	return dirs
 }
 
 func openClawConfigPaths(home string) []string {

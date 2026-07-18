@@ -31,6 +31,7 @@ import {
   getGatewayEventPreviewMessages,
   getGatewayEventUserRequest,
 } from '../utils/session-observer';
+import { getExampleSessionOptimization } from '../api';
 import './preloop-gateway-event';
 import './session-optimization-panel';
 
@@ -226,6 +227,21 @@ export class SessionReplayPanel extends LitElement {
   @property({ type: String })
   applyingOptimizationSuggestionId: string | null = null;
 
+  /**
+   * Bundled example-session result, shown only while the user's own session
+   * has produced no suggestions. Kept in separate state from
+   * `optimizationResult` so example figures can never be mistaken for — or
+   * merged into — the real session's numbers.
+   */
+  @state()
+  private exampleOptimization: RuntimeSessionOptimizationResponse | null = null;
+
+  @state()
+  private loadingExampleOptimization = false;
+
+  /** Set once a fetch has been attempted, so a failure is not retried in a loop. */
+  private exampleOptimizationRequested = false;
+
   @state()
   private visibleActivityCount = 20;
 
@@ -330,6 +346,46 @@ export class SessionReplayPanel extends LitElement {
       justify-content: center;
       padding: var(--sl-spacing-x-large);
       text-align: center;
+    }
+
+    /* Bundled example session. The banner carries semantic info cyan (this IS
+       information about provenance) and sits directly above the figures so the
+       "example, not your data" label cannot be missed while reading them. */
+    .example-optimization {
+      display: flex;
+      flex-direction: column;
+      gap: var(--sl-spacing-small);
+      margin-top: var(--sl-spacing-medium);
+    }
+
+    .example-banner {
+      align-items: flex-start;
+      background: var(--sl-color-neutral-50);
+      border: 1px solid var(--sl-color-neutral-200);
+      border-left: 3px solid var(--sl-color-cyan-500, #30c9e8);
+      border-radius: 4px;
+      color: var(--sl-color-neutral-700);
+      display: flex;
+      font-size: var(--sl-font-size-small);
+      gap: var(--sl-spacing-small);
+      line-height: 1.5;
+      padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
+    }
+
+    .example-banner-body {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .example-banner-title {
+      color: var(--sl-color-neutral-900);
+      font-weight: var(--sl-font-weight-semibold);
+    }
+
+    .example-provenance {
+      color: var(--sl-color-neutral-500);
+      font-size: var(--sl-font-size-x-small);
+      line-height: 1.5;
     }
 
     .timeline-event,
@@ -2095,17 +2151,28 @@ export class SessionReplayPanel extends LitElement {
     );
   }
 
+  /**
+   * Models Preloop can actually run optimization with. Principal-bound OAuth
+   * credentials (Claude Code / Codex subscriptions) only authorize their
+   * owner's interactive traffic, so they fail server-side and must never be
+   * auto-selected.
+   */
+  private getSelectableOptimizationModels(): AIModel[] {
+    return this.availableModels.filter(
+      (model) => model.supports_server_side_generation !== false
+    );
+  }
+
   private getDefaultOptimizationModel(): AIModel | null {
+    const selectable = this.getSelectableOptimizationModels();
     return (
-      this.availableModels.find((model) => model.is_default) ||
-      this.availableModels[0] ||
-      null
+      selectable.find((model) => model.is_default) || selectable[0] || null
     );
   }
 
   private getSelectedOptimizationModel(): AIModel | null {
     if (this.optimizeModelId) {
-      const selected = this.availableModels.find(
+      const selected = this.getSelectableOptimizationModels().find(
         (model) => model.id === this.optimizeModelId
       );
       if (selected) return selected;
@@ -3380,6 +3447,88 @@ export class SessionReplayPanel extends LitElement {
     `;
   }
 
+  /**
+   * Lazily load the bundled example session.
+   *
+   * Fetched at most once per panel instance and only when the user's own
+   * session has nothing to show, so a normal session never pays for the call.
+   * Failures are swallowed: the example is a nicety, and the existing empty
+   * state remains a correct fallback.
+   */
+  private async ensureExampleOptimization(): Promise<void> {
+    if (this.exampleOptimizationRequested) return;
+    this.exampleOptimizationRequested = true;
+    this.loadingExampleOptimization = true;
+    try {
+      this.exampleOptimization = await getExampleSessionOptimization();
+    } catch {
+      this.exampleOptimization = null;
+    } finally {
+      this.loadingExampleOptimization = false;
+    }
+  }
+
+  /** Map the wire suggestion shape onto the panel's view-model. */
+  private exampleSuggestions(): SessionOptimizationSuggestion[] {
+    const suggestions = this.exampleOptimization?.suggestions;
+    if (!Array.isArray(suggestions)) return [];
+    return suggestions.map((suggestion) => ({
+      id: suggestion.id,
+      title: suggestion.title,
+      description: suggestion.description,
+      expectedSavingsTokens: suggestion.expected_savings_tokens,
+      expectedSavingsUsd: suggestion.expected_savings_usd,
+      confidence: suggestion.confidence as 'low' | 'medium' | 'high',
+      actionLabel: suggestion.action_label,
+      evidence: suggestion.evidence,
+      evidenceEventIds: suggestion.evidence_event_ids || [],
+      action: null,
+    }));
+  }
+
+  /**
+   * Render the bundled example with an unmissable provenance label.
+   *
+   * The banner sits directly above the numbers so the savings figure cannot be
+   * read without first reading that it is sample data.
+   */
+  private renderExampleOptimization() {
+    const example = this.exampleOptimization;
+    if (!example) return nothing;
+    const suggestions = this.exampleSuggestions();
+    if (!suggestions.length) return nothing;
+    return html`
+      <div class="example-optimization">
+        <div class="example-banner">
+          <sl-badge variant="primary" pill>Example</sl-badge>
+          <div class="example-banner-body">
+            <div class="example-banner-title">
+              ${example.example_title || 'Example session'}
+            </div>
+            <div>${example.example_notice}</div>
+          </div>
+        </div>
+        <session-optimization-panel
+          .session=${null}
+          .events=${[]}
+          .activity=${[]}
+          .suggestions=${suggestions}
+          .optimization=${example}
+          .appliedActions=${[]}
+          .applyingSuggestionId=${null}
+        ></session-optimization-panel>
+        ${
+          example.example_provenance
+            ? html`<div class="example-provenance">
+                ${example.example_provenance}
+                ${example.example_pricing_note || ''}
+              </div>`
+            : nothing
+        }
+      </div>
+    `;
+  }
+
   private renderOptimizeView() {
     if (!this.optimizationEnabled || !this.session) {
       return html`<div class="empty">
@@ -3390,8 +3539,25 @@ export class SessionReplayPanel extends LitElement {
     const lastIndex = Math.max(messages.length - 1, 0);
     const scopedEvents = this.getOptimizationEvents(messages);
     const hasSuggestions = Boolean(this.optimizationSuggestions?.length);
+    // The empty first impression is not only "no suggestions": a short session
+    // (e.g. 200 tokens, no tool calls) still yields a fallback suggestion with
+    // a zero savings figure, which is the case that actually looks broken. Show
+    // the example whenever this session has no savings to report.
+    const hasMeaningfulSavings =
+      hasSuggestions &&
+      (this.optimizationResult?.potential_savings_tokens ?? 0) > 0;
+    // The state write lands in a later microtask, so this does not mutate
+    // state during this render pass.
+    if (!hasMeaningfulSavings && !this.loadingOptimization) {
+      void this.ensureExampleOptimization();
+    }
     const showControls = this.optimizeControlsOpen || !hasSuggestions;
     const selectedModel = this.getSelectedOptimizationModel();
+    const selectableModels = this.getSelectableOptimizationModels();
+    // The account has models, but every one is a principal-bound OAuth
+    // subscription credential that cannot run server-side generation.
+    const onlyPrincipalBoundModels =
+      !selectableModels.length && this.availableModels.length > 0;
     const optimizationTokenUsage = this.optimizationResult?.token_usage;
     const optimizationCost =
       this.optimizationResult?.estimated_optimization_cost || 0;
@@ -3420,12 +3586,20 @@ export class SessionReplayPanel extends LitElement {
                           : nothing
                       }
                     `
-                  : html`
-                      Analyze this session's token use and get cuts you can
-                      verify by replay. Suggestions run on
-                      ${selectedModel?.name || 'the account default model'} —
-                      generation cost is shown with the results.
-                    `
+                  : onlyPrincipalBoundModels
+                    ? html`
+                        Your only configured models use a Claude Code or Codex
+                        subscription login, which can't run Preloop's own
+                        analysis. Add an API key in Settings → AI Models to
+                        enable model-generated suggestions. Local suggestions
+                        still work.
+                      `
+                    : html`
+                        Analyze this session's token use and get cuts you can
+                        verify by replay. Suggestions run on
+                        ${selectedModel?.name || 'the account default model'} —
+                        generation cost is shown with the results.
+                      `
               }
             </div>
           </div>
@@ -3457,8 +3631,7 @@ export class SessionReplayPanel extends LitElement {
                         class="speed-select-native optimization-model-select"
                         .value=${selectedModel?.id || ''}
                         ?disabled=${
-                          !this.availableModels.length ||
-                          this.loadingOptimization
+                          !selectableModels.length || this.loadingOptimization
                         }
                         @change=${(event: Event) => {
                           this.optimizeModelId =
@@ -3466,8 +3639,8 @@ export class SessionReplayPanel extends LitElement {
                         }}
                       >
                         ${
-                          this.availableModels.length
-                            ? [...this.availableModels]
+                          selectableModels.length
+                            ? [...selectableModels]
                                 .sort(
                                   (a, b) =>
                                     Number(Boolean(b.is_default)) -
@@ -3482,7 +3655,11 @@ export class SessionReplayPanel extends LitElement {
                                     </option>
                                   `
                                 )
-                            : html`<option value="">Local fallback</option>`
+                            : onlyPrincipalBoundModels
+                              ? html`<option value="">
+                                  No API-key model — add one to enable
+                                </option>`
+                              : html`<option value="">Local fallback</option>`
                         }
                       </select>
                     </label>
@@ -3615,6 +3792,13 @@ export class SessionReplayPanel extends LitElement {
                   </div>
                 `
               : nothing
+        }
+        ${
+          // Shown below the session's own result whenever that result has no
+          // savings to report, so the tab always demonstrates what it produces.
+          hasMeaningfulSavings || this.loadingOptimization
+            ? nothing
+            : this.renderExampleOptimization()
         }
       </div>
     `;

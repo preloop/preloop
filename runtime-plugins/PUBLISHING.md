@@ -11,8 +11,9 @@ The enterprise repo pipeline (preloop-ee `.gitlab-ci.yml`) has manual publish
 jobs mirroring `publish:langchain-preloop`:
 
 - `publish:openclaw-plugin` — builds and publishes `@preloop-ai/openclaw-plugin`
-  to npm (requires the `OPENCLAW_NPM_TOKEN` CI variable). ClawHub publication
-  remains a manual follow-up (see below) because `clawhub login` is interactive.
+  to **both npm and ClawHub** in a single job (requires the `OPENCLAW_NPM_TOKEN`
+  and `CLAWHUB_TOKEN` CI variables). The job then verifies that npm's
+  `dist.shasum` matches ClawHub's `npmShasum` and fails if they differ.
 - `publish:hermes-plugin` — builds and publishes `preloop-hermes-plugin` to
   PyPI (requires the `HERMES_PYPI_TOKEN` CI variable).
 
@@ -22,7 +23,7 @@ disagree, or if the version is already on the registry. Release flow:
 1. Bump the versions (see Release Preconditions below) in the preloop repo.
 2. Land the preloop submodule bump on preloop-ee `main`.
 3. On that pipeline, trigger the manual publish job(s) from the `deploy` stage.
-4. For OpenClaw, run the ClawHub publish steps below as a follow-up.
+   For OpenClaw this publishes npm **and** ClawHub — there is no follow-up step.
 
 Plugin versions are decoupled from platform releases (a platform `0.11.x` tag
 does not publish plugins); trigger these jobs whenever plugin changes land.
@@ -70,16 +71,59 @@ Publish to npm:
 npm publish --access public
 ```
 
-After npm publishing, publish the same package to ClawHub (the OpenClaw plugin
-catalog). Install the CLI if needed (`npm install -g clawhub`), then:
+**ClawHub publication is automated in CI** — in the preloop-ee GitLab job
+`publish:openclaw-plugin` and in the GitHub Actions workflow
+`.github/workflows/publish-runtime-plugins.yml`. Both publish npm first, then
+ClawHub from the same build, then assert the two registries serve the same
+tarball. The steps below are the local fallback only.
+
+### Why this is automated (and why it must stay that way)
+
+In July 2026 npm and ClawHub diverged under the **same version 0.1.1**: ClawHub
+served a Jul 10 build while npm served a Jul 18 build, differing by preloop
+commit `6fb1bb79` ("Harden auth, policy evaluation, and approval startup
+repair"). ClawHub was therefore serving pre-hardening code including an
+already-fixed auth bypass. Any change here must preserve the digest guard.
+
+### CI credentials
+
+`CLAWHUB_TOKEN` — a ClawHub API token with publish rights on the `preloop-ai`
+publisher. Generate it once on your workstation:
 
 ```bash
-# Resolve provenance from the preloop git checkout (submodule or clone):
-SOURCE_REPO=https://github.com/preloop/preloop
+clawhub login    # device flow, opens a browser; one time only
+clawhub token    # prints the stored API token
+```
+
+Store it as:
+
+- GitLab (preloop-ee → Settings → CI/CD → Variables): **masked + protected**,
+  named `CLAWHUB_TOKEN`.
+- GitHub (preloop/preloop → Settings → Secrets → Environments → `release`):
+  secret named `CLAWHUB_TOKEN`.
+
+The old claim that ClawHub could not be automated "because `clawhub login` is
+interactive" was wrong. The CLI ships `clawhub login --token <token>`, a global
+`--no-input` flag, and per-command `--json` output specifically for CI.
+
+### Local fallback
+
+Install the CLI if needed (`npm install -g clawhub`), then:
+
+```bash
+# Provenance must point at the PUBLIC GitHub repo. `origin` is the internal
+# GitLab (gitlab.spacecode.ai); `github` is github.com/preloop/preloop. The
+# preloop repo is mirrored commit-for-commit, so the SHA is the same object on
+# both — but only commits actually pushed to `github` will resolve for ClawHub.
+SOURCE_REPO=preloop/preloop
 SOURCE_COMMIT=$(git -C ../.. rev-parse HEAD)  # from openclaw-preloop/
 SOURCE_PATH=runtime-plugins/openclaw-preloop
 
-clawhub login  # if needed
+# Verify the commit is really on public GitHub before recording it:
+curl -sfo /dev/null "https://api.github.com/repos/preloop/preloop/commits/$SOURCE_COMMIT" \
+  || { echo "commit not on public GitHub — push the 'github' remote first"; exit 1; }
+
+clawhub login --token "$CLAWHUB_TOKEN" --no-input
 # First-time only: scoped npm names require a matching ClawHub publisher
 clawhub publisher create preloop-ai --display-name "Preloop"
 clawhub package validate .
@@ -92,6 +136,13 @@ clawhub package publish . --family code-plugin \
   --source-repo "$SOURCE_REPO" \
   --source-commit "$SOURCE_COMMIT" \
   --source-path "$SOURCE_PATH"
+
+# ALWAYS finish with the divergence check:
+VERSION=$(node -p "require('./package.json').version")
+npm view "@preloop-ai/openclaw-plugin@$VERSION" dist.shasum
+clawhub package inspect @preloop-ai/openclaw-plugin --version "$VERSION" --json \
+  | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).package.artifact.npmShasum"
+# these two MUST be identical
 ```
 
 `--source-repo` and `--source-commit` must be set together. Use the public
@@ -99,6 +150,25 @@ GitHub repo (`preloop/preloop`) and a commit SHA that exists there. Prefer
 also setting `--source-path` to the monorepo subpath so ClawHub can locate the
 plugin sources. The package scope (`@preloop-ai/...`) must match an existing
 ClawHub publisher handle (`preloop-ai`).
+
+Publish ClawHub **after** npm: ClawHub fetches the npm tarball, so installs of
+a version npm has not published yet fail at package fetch (observed as
+`ENOENT ... /tmp/openclaw-clawhub-package-*.zip`) even though ClawHub already
+lists the version's metadata.
+
+### Removing a bad ClawHub version
+
+There is no delete control in the ClawHub web UI, but the CLI has one:
+
+```bash
+clawhub package delete @preloop-ai/openclaw-plugin --version <version>
+```
+
+`--version` permanently deletes a single version. It **cannot be restored or
+republished** — the version string is burned. If the version being deleted is
+the current `latest`, publish the replacement first. Without `--version` the
+command soft-deletes the whole package (reversible via
+`clawhub package undelete`), which is almost never what you want.
 
 The ClawHub/marketplace entry should install the npm package and run:
 

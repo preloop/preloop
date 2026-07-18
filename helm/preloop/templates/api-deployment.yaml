@@ -146,6 +146,10 @@ spec:
             - name: PRELOOP_GEOIP_AUTO_DOWNLOAD
               value: "false"
             {{- end }}
+            {{- if .Values.installerAudit.accountId }}
+            - name: INSTALLER_AUDIT_ACCOUNT_ID
+              value: {{ .Values.installerAudit.accountId | quote }}
+            {{- end }}
             - name: STRIPE_SECRET_KEY
               value: {{ .Values.stripe.secretKey | quote }}
             - name: STRIPE_WEBHOOK_SECRET

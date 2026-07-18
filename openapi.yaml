@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Preloop API
   description: REST API for Preloop issue tracking management
-  version: 0.12.2
+  version: 0.12.3
 paths:
   /api/v1/auth/register:
     post:
@@ -3779,6 +3779,43 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/notification-preferences/me/test-push:
+    post:
+      tags:
+      - Notification Preferences
+      summary: Send Test Push Notification
+      description: "Send a clearly-labelled TEST notification to the caller's devices.\n\
+        \nAdmin-only diagnostic. Exercises the real APNs/FCM/proxy delivery path and\n\
+        returns the provider's verbatim result per device, so an otherwise silent\n\
+        push failure becomes visible.\n\nThe test is fully isolated from governance:\
+        \ no ApprovalRequest row is\ncreated, so nothing waits on it, it appears in\
+        \ no approval list, and\napproving or declining it changes no state.\n\nArgs:\n\
+        \    request_in: Which kind of test to send ('approval' or 'question').\n\n\
+        Returns:\n    Per-device send results.\n\nRaises:\n    HTTPException: 403\
+        \ if the caller is not an admin, 404 if no devices are\n        registered,\
+        \ 429 if the rate limit is exceeded."
+      operationId: send_test_push_notification_api_v1_notification_preferences_me_test_push_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestPushRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestPushResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
   /api/v1/notification-preferences/me/qr-code:
     get:
       tags:
@@ -5612,6 +5649,32 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/billing/cost/runtime-sessions/example/optimization:
+    get:
+      tags:
+      - Session Optimization
+      - Session Optimization
+      summary: Get Example Runtime Session Optimization
+      description: "Return the bundled example session's optimization suggestions.\n\
+        \nLets a brand-new account see what the Optimize tab produces before its own\n\
+        agents have generated any traffic. The response is computed live by the\n\
+        production deterministic analyzers over a bundled transcript and is flagged\n\
+        ``is_example`` so the console can label it as sample data.\n\nDeliberately\
+        \ side-effect free: no database writes, no LLM call, and — unlike\n:func:`optimize_account_runtime_session`\
+        \ — no ``optimization_result_viewed``\naudit event, because viewing a bundled\
+        \ sample is not the account \"reaching\ntheir number\" and must not enter\
+        \ launch telemetry.\n\nRaises:\n    HTTPException: 404 if the bundled transcript\
+        \ is unavailable, so the\n        console falls back to its normal empty state."
+      operationId: get_example_runtime_session_optimization_api_v1_billing_cost_runtime_sessions_example_optimization_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeSessionOptimizationResponse'
+      security:
+      - bearerAuth: []
   /api/v1/billing/cost/runtime-sessions/{runtime_session_id}/optimizations:
     post:
       tags:
@@ -7532,6 +7595,14 @@ components:
           type: boolean
           title: Has Api Key
           description: Whether this model has credentials configured
+          default: false
+        supports_server_side_generation:
+          type: boolean
+          title: Supports Server Side Generation
+          description: Whether Preloop can run its own generation calls with this
+            model. False for principal-bound OAuth (Claude Code / Codex subscription)
+            credentials, which only authorize their owner's interactive traffic and
+            must never be auto-selected as a default.
           default: false
       type: object
       required:
@@ -12714,6 +12785,18 @@ components:
           - type: 'null'
           title: Api Key Expires At
           description: API key expiration
+        push_registered:
+          type: boolean
+          title: Push Registered
+          description: Whether the supplied push token was accepted and stored. False
+            means pairing succeeded but push is not enabled for this device.
+          default: true
+        push_error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Push Error
+          description: Why the push token was rejected, if it was
       type: object
       required:
       - preferences
@@ -13926,6 +14009,30 @@ components:
             $ref: '#/components/schemas/RuntimeSessionOptimizationSuggestion'
           type: array
           title: Suggestions
+        is_example:
+          type: boolean
+          title: Is Example
+          default: false
+        example_notice:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Example Notice
+        example_provenance:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Example Provenance
+        example_title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Example Title
+        example_pricing_note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Example Pricing Note
       type: object
       title: RuntimeSessionOptimizationResponse
       description: Optimization suggestions for a runtime session.
@@ -14659,6 +14766,122 @@ components:
       - message
       title: TestConnectionResponse
       description: Response model for testing a project connection.
+    TestPushDeviceResult:
+      properties:
+        platform:
+          type: string
+          title: Platform
+          description: Device platform
+        token:
+          type: string
+          title: Token
+          description: Masked device token
+        transport:
+          type: string
+          title: Transport
+          description: 'Delivery path used: apns/fcm/proxy/none'
+        success:
+          type: boolean
+          title: Success
+          description: Whether the provider accepted the send
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error
+          description: Verbatim provider error
+        error_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Reason
+          description: Machine-readable reason code
+        remediation:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Remediation
+          description: Operator-facing fix hint
+        project_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Project Id
+          description: Firebase project of the server credentials (FCM only)
+        status_code:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Status Code
+          description: Provider HTTP status (APNs)
+        pruned:
+          type: boolean
+          title: Pruned
+          description: Whether the dead token was removed
+          default: false
+      type: object
+      required:
+      - platform
+      - token
+      - transport
+      - success
+      title: TestPushDeviceResult
+      description: Per-device outcome of a test push send.
+    TestPushRequest:
+      properties:
+        kind:
+          type: string
+          enum:
+          - approval
+          - question
+          title: Kind
+          description: '''approval'' for a test approval request, ''question'' for
+            a test ask_user question'
+          default: approval
+        platform:
+          anyOf:
+          - type: string
+            enum:
+            - ios
+            - android
+          - type: 'null'
+          title: Platform
+          description: Restrict the test to one platform; default is all devices
+      type: object
+      title: TestPushRequest
+      description: Schema for triggering an admin diagnostic test push.
+    TestPushResponse:
+      properties:
+        kind:
+          type: string
+          title: Kind
+          description: Kind of test sent
+        request_id:
+          type: string
+          title: Request Id
+          description: Synthetic request id; intentionally not persisted
+        sent:
+          type: integer
+          title: Sent
+          description: Number of devices that accepted the send
+        failed:
+          type: integer
+          title: Failed
+          description: Number of devices that failed
+        results:
+          items:
+            $ref: '#/components/schemas/TestPushDeviceResult'
+          type: array
+          title: Results
+          description: Per-device results
+      type: object
+      required:
+      - kind
+      - request_id
+      - sent
+      - failed
+      title: TestPushResponse
+      description: Schema for the result of an admin diagnostic test push.
     TextToSpeechRequest:
       properties:
         input:
