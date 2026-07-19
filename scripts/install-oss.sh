@@ -60,6 +60,13 @@ PRELOOP_ADMIN_PASSWORD="${PRELOOP_ADMIN_PASSWORD:-}"
 PRELOOP_SKIP_ADMIN="${PRELOOP_SKIP_ADMIN:-}"
 CREATE_ADMIN=0
 
+# First-user setup token. While the instance has zero users, /register only
+# accepts signups that carry this token (the "setup link" in the footer), so
+# a freshly reachable instance can never be claimed by a stranger. Provide
+# your own via the environment to skip generation; the generated one is kept
+# across re-runs (load_existing_env).
+PRELOOP_BOOTSTRAP_TOKEN="${PRELOOP_BOOTSTRAP_TOKEN:-}"
+
 DEFAULT_URL="http://localhost:3000"
 
 # Replace (or append) a single KEY=value line in the install's .env.
@@ -158,6 +165,17 @@ PY
   fi
 }
 
+generate_bootstrap_token() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 24
+  else
+    python3 - <<'PY'
+import secrets
+print(secrets.token_hex(24))
+PY
+  fi
+}
+
 # Load the settings of an existing install so a re-run UPGRADES it instead of
 # silently reconfiguring it: prior values become the defaults for every prompt
 # and for anything not overridden on this run.
@@ -173,6 +191,8 @@ load_existing_env() {
   # Existing values win over the built-in defaults, but NOT over anything the
   # caller explicitly passed in the environment on this run.
   [ -n "$PRELOOP_URL" ] || PRELOOP_URL="$(env_value PRELOOP_URL "$env_file")"
+  [ -n "$PRELOOP_BOOTSTRAP_TOKEN" ] \
+    || PRELOOP_BOOTSTRAP_TOKEN="$(env_value PRELOOP_BOOTSTRAP_TOKEN "$env_file")"
   [ -n "$SMTP_HOST" ] || SMTP_HOST="$(env_value SMTP_HOST "$env_file")"
   [ -n "$SMTP_USERNAME" ] || SMTP_USERNAME="$(env_value SMTP_USERNAME "$env_file")"
   [ -n "$SMTP_PASSWORD" ] || SMTP_PASSWORD="$(env_value SMTP_PASSWORD "$env_file")"
@@ -755,6 +775,7 @@ services:
   api:
     environment:
       REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-true}
+      PRELOOP_BOOTSTRAP_TOKEN: ${PRELOOP_BOOTSTRAP_TOKEN:-}
 EOF
 }
 
@@ -829,6 +850,14 @@ main() {
   prompt_smtp
   prompt_admin
 
+  # First-user setup token: generate one unless the caller provided it via
+  # the environment or a previous run already stored it in .env. Printed
+  # ONLY in the terminal footer (as part of the setup link), never into
+  # ${LOG_FILE}.
+  if [ -z "$PRELOOP_BOOTSTRAP_TOKEN" ]; then
+    PRELOOP_BOOTSTRAP_TOKEN="$(generate_bootstrap_token)"
+  fi
+
   if [ ! -f "${INSTALL_DIR}/.env" ]; then
     cat > "${INSTALL_DIR}/.env" <<EOF
 PRELOOP_VERSION=${VERSION}
@@ -839,6 +868,10 @@ ALLOWED_ORIGINS=${PRELOOP_URL}
 # Public signup. Turned off after the first user is created; set to true to
 # reopen registration, then run 'docker compose up -d api'.
 REGISTRATION_ENABLED=true
+# First-user setup token: while the instance has zero users, signing up
+# requires the setup link printed at the end of the install (which carries
+# this token). Ignored once any user exists.
+PRELOOP_BOOTSTRAP_TOKEN=${PRELOOP_BOOTSTRAP_TOKEN}
 # Email (approval requests, invitations, password resets). Leave SMTP_HOST
 # empty to run without email; re-run the installer or edit these values, then
 # run 'docker compose up -d' to apply.
@@ -874,6 +907,8 @@ EOF
       } >> "$tmp_env"
     fi
     mv "$tmp_env" "${INSTALL_DIR}/.env"
+    # Persist the setup token (idempotent: keeps the loaded/provided value).
+    set_env_value PRELOOP_BOOTSTRAP_TOKEN "$PRELOOP_BOOTSTRAP_TOKEN"
   fi
 
   write_auth_overlay
@@ -975,6 +1010,13 @@ EOF
   echo "Next steps:"
   if [ "$admin_created" -eq 1 ]; then
     echo "  1. Open ${PRELOOP_URL} and sign in as '${PRELOOP_ADMIN_USERNAME}'"
+  elif [ -n "$PRELOOP_BOOTSTRAP_TOKEN" ]; then
+    # The token travels in the URL FRAGMENT (never sent to servers or logged
+    # in access logs) and this footer goes to the terminal only, not to
+    # ${LOG_FILE}.
+    echo "  1. Create the first user (it becomes the admin account) with this"
+    echo "     setup link:"
+    echo "       ${PRELOOP_URL}/register#bootstrap=${PRELOOP_BOOTSTRAP_TOKEN}"
   else
     echo "  1. Open ${PRELOOP_URL} and create the first user"
   fi
@@ -1025,8 +1067,15 @@ EOF
     echo "!!! can register right now."
     echo "!!!"
     echo "!!! Fix it with either:"
-    echo "!!!  a) Open ${PRELOOP_URL} and sign up in the browser (that becomes the"
-    echo "!!!     first account), then set REGISTRATION_ENABLED=false in"
+    if [ -n "$PRELOOP_BOOTSTRAP_TOKEN" ]; then
+      echo "!!!  a) Sign up in the browser with this setup link (that becomes"
+      echo "!!!     the first account):"
+      echo "!!!       ${PRELOOP_URL}/register#bootstrap=${PRELOOP_BOOTSTRAP_TOKEN}"
+      echo "!!!     then set REGISTRATION_ENABLED=false in"
+    else
+      echo "!!!  a) Open ${PRELOOP_URL} and sign up in the browser (that becomes the"
+      echo "!!!     first account), then set REGISTRATION_ENABLED=false in"
+    fi
     echo "!!!     ${INSTALL_DIR}/.env and run:"
     echo "!!!       cd ${INSTALL_DIR} && docker compose ${COMPOSE_ARGS} up -d api"
     echo "!!!  b) Retry from the terminal (use the password you chose):"

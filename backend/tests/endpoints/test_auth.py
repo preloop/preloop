@@ -102,9 +102,12 @@ def test_register_user_email_exists(db_session_mock):
 
 def test_register_disabled(db_session_mock):
     """Test that registration is blocked when REGISTRATION_ENABLED is false."""
-    with patch("preloop.api.auth.router.settings") as mock_settings:
-        # Disable registration
+    # The computed rule lives in preloop.api.auth.bootstrap (shared with
+    # /features), so the effective settings seam is the bootstrap module.
+    with patch("preloop.api.auth.bootstrap.settings") as mock_settings:
+        # Disable registration; no bootstrap token configured.
         mock_settings.registration_enabled = False
+        mock_settings.bootstrap_token = ""
 
         response = client.post(
             "/auth/register",
@@ -120,9 +123,11 @@ def test_register_disabled(db_session_mock):
         assert response.status_code == 403
         assert "Registration is disabled" in response.json()["detail"]
 
-        # Verify that no database operations were performed
-        # (the endpoint should reject before checking username/email)
-        db_session_mock.query.assert_not_called()
+        # Verify that nothing was written: the rule may probe the users
+        # table (zero-users check), but the endpoint must reject before any
+        # create/commit happens.
+        db_session_mock.add.assert_not_called()
+        db_session_mock.commit.assert_not_called()
 
 
 def test_login_success():

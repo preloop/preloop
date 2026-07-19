@@ -3,14 +3,39 @@
 import uuid
 from typing import List, Optional
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from ..models.user import User
 from .base import CRUDBase
 
+# Constant advisory-lock key that serializes first-user (bootstrap)
+# registration. Arbitrary but stable app-unique value ("PRLB" in ASCII).
+REGISTRATION_BOOTSTRAP_LOCK_KEY = 0x5052_4C42
+
 
 class CRUDUser(CRUDBase[User]):
     """CRUD operations for User model."""
+
+    def acquire_registration_bootstrap_lock(self, db: Session) -> None:
+        """Serialize concurrent first-user registrations.
+
+        Takes a Postgres transaction-scoped advisory lock
+        (``pg_advisory_xact_lock``) on a constant key so two concurrent
+        signups cannot both observe the zero-users state. The lock is
+        released automatically when the surrounding transaction commits or
+        rolls back. No-op on non-Postgres dialects.
+
+        Args:
+            db: Database session (the lock binds to its transaction).
+        """
+        bind = db.get_bind()
+        if bind.dialect.name != "postgresql":
+            return
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(:key)"),
+            {"key": REGISTRATION_BOOTSTRAP_LOCK_KEY},
+        )
 
     def get_by_username(self, db: Session, *, username: str) -> Optional[User]:
         """Get user by username.

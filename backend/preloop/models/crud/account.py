@@ -13,8 +13,20 @@ from .base import CRUDBase
 class CRUDAccount(CRUDBase[Account]):
     """CRUD operations for Account model."""
 
-    def create(self, db: Session, *, obj_in: Dict[str, Any]) -> Account:
-        """Create new account with initialized timestamp fields."""
+    def create(
+        self, db: Session, *, obj_in: Dict[str, Any], commit: bool = True
+    ) -> Account:
+        """Create new account with initialized timestamp fields.
+
+        Args:
+            db: Database session.
+            obj_in: Column values for the new account.
+            commit: When False, flush only so callers can batch several
+                writes into one atomic transaction and commit themselves.
+
+        Returns:
+            The created account.
+        """
         obj_data = dict(obj_in)
 
         # Initialize timestamp fields
@@ -22,7 +34,7 @@ class CRUDAccount(CRUDBase[Account]):
         obj_data.setdefault("created", current_time)
         obj_data.setdefault("last_updated", current_time)
 
-        return super().create(db=db, obj_in=obj_data)
+        return super().create(db=db, obj_in=obj_data, commit=commit)
 
     def update(self, db: Session, *, db_obj: Account, obj_in: Any) -> Account:
         """Update account and its last_updated timestamp."""

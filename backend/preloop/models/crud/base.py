@@ -45,14 +45,29 @@ class CRUDBase(Generic[ModelType]):
                 query = query.filter(getattr(self.model, key) == value)
         return query.offset(skip).limit(limit).all()
 
-    def create(self, db: Session, *, obj_in: Dict[str, Any]) -> ModelType:
-        """Create new entity."""
+    def create(
+        self, db: Session, *, obj_in: Dict[str, Any], commit: bool = True
+    ) -> ModelType:
+        """Create new entity.
+
+        Args:
+            db: Database session.
+            obj_in: Column values for the new row.
+            commit: When False, flush only so callers can batch several
+                writes into one atomic transaction and commit themselves.
+
+        Returns:
+            The created (and refreshed) model instance.
+        """
         # Don't add an ID unless it's missing - let the model handle it with default=uuid.uuid4
         obj_data = dict(obj_in)
 
         db_obj = self.model(**obj_data)
         db.add(db_obj)
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
         db.refresh(db_obj)
         return db_obj
 

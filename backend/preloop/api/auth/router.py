@@ -20,6 +20,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from preloop.api.auth import bootstrap
 from preloop.api.auth.jwt import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
     create_access_token,
@@ -391,10 +392,33 @@ async def register(
         The created user.
 
     Raises:
-        HTTPException: If the username or email is already taken, or if registration is disabled.
+        HTTPException: If the username or email is already taken, if
+            registration is disabled, or if the instance is unclaimed and the
+            bootstrap token is missing or invalid.
     """
-    # Check if registration is enabled
-    if not settings.registration_enabled:
+    # Computed bootstrap-registration rule. While the instance has zero
+    # users, first-signup handling is serialized with a Postgres advisory
+    # transaction lock so two concurrent signups cannot both pass the
+    # zero-users check; the rule is then evaluated INSIDE the lock (the
+    # zero-users state is re-read there). The lock releases when this
+    # request's transaction commits or rolls back.
+    if not bootstrap.users_exist(db):
+        crud_user.acquire_registration_bootstrap_lock(db)
+    decision = bootstrap.evaluate_registration(db, user_data.bootstrap_token)
+    if not decision.allowed:
+        if decision.reason == bootstrap.REASON_BOOTSTRAP_TOKEN_REQUIRED:
+            logger.warning(
+                f"[REGISTER] Registration attempt blocked - unclaimed instance, "
+                f"bootstrap token missing or invalid. "
+                f"Username: {user_data.username}, Email: {user_data.email}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Setup link required. Use the link printed at the end of "
+                    "the install, or run create_first_user.py on the server."
+                ),
+            )
         logger.warning(
             f"[REGISTER] Registration attempt blocked - registration is disabled. "
             f"Username: {user_data.username}, Email: {user_data.email}"
@@ -436,58 +460,62 @@ async def register(
             detail="Email already registered",
         )
 
-    # Create organization (Account) first
-    logger.info("[REGISTER] Creating account")
-    account_data = {
-        "organization_name": f"{user_data.username}'s Organization",
-        "is_active": True,
-    }
-    new_account = crud_account.create(session, obj_in=account_data)
-    logger.info(f"[REGISTER] Account created with ID: {new_account.id}")
-
-    # Create user linked to the account
+    # Account, user, primary-user link and Owner role are created in ONE
+    # transaction (commit=False batches them) so a failure part-way through
+    # can never leave an orphaned account or a user without a role behind.
     logger.info("[REGISTER] Hashing password")
     hashed_password = get_password_hash(user_data.password)
     logger.info("[REGISTER] Password hashed")
-    logger.info("[REGISTER] Creating user")
-    user_dict = {
-        "account_id": new_account.id,
-        "username": user_data.username,
-        "email": user_data.email,
-        "hashed_password": hashed_password,
-        "full_name": user_data.full_name,
-        "is_active": True,
-        "email_verified": False,
-        "user_source": "local",
-    }
-    new_user = crud_user.create(session, obj_in=user_dict)
-    logger.info(f"[REGISTER] User created with ID: {new_user.id}")
-
-    # Set this user as the primary user for the account
-    logger.info("[REGISTER] Setting primary_user_id on account")
-    new_account.primary_user_id = new_user.id
-    session.add(new_account)
-    logger.info(
-        f"[REGISTER] Set user {new_user.id} as primary user for account {new_account.id}"
-    )
-
-    # Assign Owner role to the first user
-    logger.info("[REGISTER] Looking up owner role")
-    owner_role = crud_role.get_by_name(session, name="owner")
-    logger.info(f"[REGISTER] Owner role found: {owner_role is not None}")
-    if owner_role:
-        user_role_data = {
-            "user_id": new_user.id,
-            "role_id": owner_role.id,
-        }
-        crud_user_role.create(session, obj_in=user_role_data)
-        logger.info(f"Assigned Owner role to user {new_user.username}")
-    else:
-        logger.warning(
-            "Owner role not found in database - user will have no permissions"
-        )
 
     try:
+        # Create organization (Account) first
+        logger.info("[REGISTER] Creating account")
+        account_data = {
+            "organization_name": f"{user_data.username}'s Organization",
+            "is_active": True,
+        }
+        new_account = crud_account.create(session, obj_in=account_data, commit=False)
+        logger.info(f"[REGISTER] Account created with ID: {new_account.id}")
+
+        # Create user linked to the account
+        logger.info("[REGISTER] Creating user")
+        user_dict = {
+            "account_id": new_account.id,
+            "username": user_data.username,
+            "email": user_data.email,
+            "hashed_password": hashed_password,
+            "full_name": user_data.full_name,
+            "is_active": True,
+            "email_verified": False,
+            "user_source": "local",
+        }
+        new_user = crud_user.create(session, obj_in=user_dict, commit=False)
+        logger.info(f"[REGISTER] User created with ID: {new_user.id}")
+
+        # Set this user as the primary user for the account
+        logger.info("[REGISTER] Setting primary_user_id on account")
+        new_account.primary_user_id = new_user.id
+        session.add(new_account)
+        logger.info(
+            f"[REGISTER] Set user {new_user.id} as primary user for account {new_account.id}"
+        )
+
+        # Assign Owner role to the first user
+        logger.info("[REGISTER] Looking up owner role")
+        owner_role = crud_role.get_by_name(session, name="owner")
+        logger.info(f"[REGISTER] Owner role found: {owner_role is not None}")
+        if owner_role:
+            user_role_data = {
+                "user_id": new_user.id,
+                "role_id": owner_role.id,
+            }
+            crud_user_role.create(session, obj_in=user_role_data, commit=False)
+            logger.info(f"Assigned Owner role to user {new_user.username}")
+        else:
+            logger.warning(
+                "Owner role not found in database - user will have no permissions"
+            )
+
         logger.info("[REGISTER] Committing transaction")
         session.commit()
         logger.info("[REGISTER] Transaction committed, refreshing objects")

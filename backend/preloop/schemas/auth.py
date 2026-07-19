@@ -50,6 +50,13 @@ class AuthUserCreate(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=8)
     full_name: Optional[str] = None
+    bootstrap_token: Optional[str] = Field(
+        None,
+        description=(
+            "First-user setup token from the install (required while the "
+            "instance has zero users and PRELOOP_BOOTSTRAP_TOKEN is set)."
+        ),
+    )
 
     @field_validator("username")
     @classmethod

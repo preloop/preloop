@@ -193,6 +193,15 @@ class Settings(BaseSettings):
         True,
         description="Enable self-registration. Set to False to require admin invitation.",
     )
+    bootstrap_token: str = Field(
+        "",
+        description=(
+            "First-user setup token (PRELOOP_BOOTSTRAP_TOKEN). While the "
+            "instance has zero users and this is set, /register requires the "
+            "token regardless of registration_enabled. Ignored once any user "
+            "exists."
+        ),
+    )
     disable_rbac: bool = Field(
         False,
         description=(
@@ -508,6 +517,7 @@ class Settings(BaseSettings):
             "t",
             "yes",
         )
+        bootstrap_token = os.getenv("PRELOOP_BOOTSTRAP_TOKEN", "")
 
         # GitHub App OAuth settings (SaaS only)
         github_app = GitHubAppSettings(
@@ -553,6 +563,7 @@ class Settings(BaseSettings):
             nats_url=os.getenv("NATS_URL", "nats://localhost:4222"),
             PROMPTS_FILE=prompts_file,
             registration_enabled=registration_enabled,
+            bootstrap_token=bootstrap_token,
             disable_rbac=disable_rbac,
             database=database,
             security=security,

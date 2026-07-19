@@ -18,7 +18,7 @@ def _clear_users_exist_cache():
 class TestGetFeatures:
     """Test get_features endpoint."""
 
-    @patch("preloop.api.endpoints.features.crud_user")
+    @patch("preloop.api.auth.bootstrap.crud_user")
     @patch("preloop.api.endpoints.features.get_plugin_manager")
     def test_get_features_success(self, mock_get_plugin_manager, mock_crud_user):
         """Test getting features successfully."""
@@ -42,13 +42,14 @@ class TestGetFeatures:
                 "audit_logging": True,
                 "registration": True,
                 "first_account_pending": False,
+                "registration_bootstrap_pending": False,
                 "session_optimization": True,
             },
         }
         mock_get_plugin_manager.assert_called_once()
         mock_plugin_manager.get_enabled_features.assert_called_once()
 
-    @patch("preloop.api.endpoints.features.crud_user")
+    @patch("preloop.api.auth.bootstrap.crud_user")
     @patch("preloop.api.endpoints.features.get_plugin_manager")
     def test_get_features_empty_plugins(self, mock_get_plugin_manager, mock_crud_user):
         """Test getting features when no plugins are enabled."""
@@ -69,11 +70,12 @@ class TestGetFeatures:
             "features": {
                 "registration": True,
                 "first_account_pending": False,
+                "registration_bootstrap_pending": False,
                 "session_optimization": True,
             },
         }
 
-    @patch("preloop.api.endpoints.features.crud_user")
+    @patch("preloop.api.auth.bootstrap.crud_user")
     @patch("preloop.api.endpoints.features.get_plugin_manager")
     def test_get_features_with_multiple_plugins(
         self, mock_get_plugin_manager, mock_crud_user
@@ -100,10 +102,10 @@ class TestGetFeatures:
         assert "plugins" in result
         assert "features" in result
         assert len(result["plugins"]) == 3
-        assert len(result["features"]) == 7
+        assert len(result["features"]) == 8
         assert result["features"]["session_optimization"] is True
 
-    @patch("preloop.api.endpoints.features.crud_user")
+    @patch("preloop.api.auth.bootstrap.crud_user")
     @patch("preloop.api.endpoints.features.get_plugin_manager")
     def test_session_optimization_always_advertised(
         self, mock_get_plugin_manager, mock_crud_user
@@ -128,7 +130,7 @@ class TestGetFeatures:
         }
         assert get_features(db=MagicMock())["features"]["session_optimization"] is False
 
-    @patch("preloop.api.endpoints.features.crud_user")
+    @patch("preloop.api.auth.bootstrap.crud_user")
     @patch("preloop.api.endpoints.features.get_plugin_manager")
     def test_first_account_pending_on_fresh_instance(
         self, mock_get_plugin_manager, mock_crud_user
@@ -148,9 +150,11 @@ class TestGetFeatures:
         result = get_features(db=MagicMock())
 
         assert result["features"]["first_account_pending"] is True
+        # No bootstrap token configured: not pending.
+        assert result["features"]["registration_bootstrap_pending"] is False
 
-    @patch("preloop.api.endpoints.features.settings")
-    @patch("preloop.api.endpoints.features.crud_user")
+    @patch("preloop.api.auth.bootstrap.settings")
+    @patch("preloop.api.auth.bootstrap.crud_user")
     @patch("preloop.api.endpoints.features.get_plugin_manager")
     def test_first_account_pending_requires_open_registration(
         self, mock_get_plugin_manager, mock_crud_user, mock_settings
@@ -166,15 +170,18 @@ class TestGetFeatures:
         mock_get_plugin_manager.return_value = mock_plugin_manager
         mock_crud_user.has_any_users.return_value = False
         mock_settings.registration_enabled = False
+        mock_settings.bootstrap_token = ""
 
         result = get_features(db=MagicMock())
 
         assert result["features"]["first_account_pending"] is False
         assert result["features"]["registration"] is False
-        # Registration closed: no need to query the users table.
+        assert result["features"]["registration_bootstrap_pending"] is False
+        # Registration closed and no bootstrap token: no need to query the
+        # users table.
         mock_crud_user.has_any_users.assert_not_called()
 
-    @patch("preloop.api.endpoints.features.crud_user")
+    @patch("preloop.api.auth.bootstrap.crud_user")
     @patch("preloop.api.endpoints.features.get_plugin_manager")
     def test_first_account_pending_sticky_cache_skips_db_after_users_exist(
         self, mock_get_plugin_manager, mock_crud_user
@@ -200,3 +207,55 @@ class TestGetFeatures:
             get_features(db=MagicMock())["features"]["first_account_pending"] is False
         )
         assert mock_crud_user.has_any_users.call_count == 1
+
+    @patch("preloop.api.auth.bootstrap.settings")
+    @patch("preloop.api.auth.bootstrap.crud_user")
+    @patch("preloop.api.endpoints.features.get_plugin_manager")
+    def test_bootstrap_pending_on_unclaimed_instance(
+        self, mock_get_plugin_manager, mock_crud_user, mock_settings
+    ):
+        """Zero users + token configured: signup stays reachable (even with
+        registration disabled) and the form is told the setup link is needed."""
+        from preloop.api.endpoints.features import get_features
+
+        mock_plugin_manager = MagicMock()
+        mock_plugin_manager.get_enabled_features.return_value = {
+            "plugins": [],
+            "features": {},
+        }
+        mock_get_plugin_manager.return_value = mock_plugin_manager
+        mock_crud_user.has_any_users.return_value = False
+        mock_settings.registration_enabled = False
+        mock_settings.bootstrap_token = "sekret"
+
+        result = get_features(db=MagicMock())
+
+        assert result["features"]["registration"] is True
+        assert result["features"]["registration_bootstrap_pending"] is True
+        assert result["features"]["first_account_pending"] is True
+
+    @patch("preloop.api.auth.bootstrap.settings")
+    @patch("preloop.api.auth.bootstrap.crud_user")
+    @patch("preloop.api.endpoints.features.get_plugin_manager")
+    def test_bootstrap_not_pending_once_claimed(
+        self, mock_get_plugin_manager, mock_crud_user, mock_settings
+    ):
+        """Once any user exists the token is ignored: registration_enabled
+        decides, and bootstrap_pending is False."""
+        from preloop.api.endpoints.features import get_features
+
+        mock_plugin_manager = MagicMock()
+        mock_plugin_manager.get_enabled_features.return_value = {
+            "plugins": [],
+            "features": {},
+        }
+        mock_get_plugin_manager.return_value = mock_plugin_manager
+        mock_crud_user.has_any_users.return_value = True
+        mock_settings.registration_enabled = False
+        mock_settings.bootstrap_token = "sekret"
+
+        result = get_features(db=MagicMock())
+
+        assert result["features"]["registration"] is False
+        assert result["features"]["registration_bootstrap_pending"] is False
+        assert result["features"]["first_account_pending"] is False
