@@ -41,7 +41,13 @@ type AgentConfig struct {
 	// SupportLevel is the per-agent-type capability: "full" (MCP + model
 	// routing) or "mcp-only" (model traffic not routable for this agent
 	// type) — see supportLevelForAgent.
-	SupportLevel         string   `json:"support_level,omitempty"`
+	SupportLevel string `json:"support_level,omitempty"`
+	// RuntimeState reports whether the agent's runtime (executable or app
+	// bundle) was actually found: present / missing / unknown — see
+	// detectAgentRuntimeState. "missing" flags a config-only leftover from
+	// an uninstalled agent; "unknown" is treated as present.
+	RuntimeState         string   `json:"runtime_state,omitempty"`
+	RuntimeDetail        string   `json:"runtime_detail,omitempty"`
 	ConfigDrift          bool     `json:"config_drift,omitempty"`
 	ReonboardRecommended bool     `json:"reonboard_recommended,omitempty"`
 	DriftReasons         []string `json:"drift_reasons,omitempty"`
@@ -774,6 +780,9 @@ func runAgentsDiscover(cmd *cobra.Command, args []string) error {
 		fmt.Printf("     Runtime principal: %s\n", runtimePrincipalIDForAgent(agent))
 		fmt.Printf("     Config: %s\n", agent.ConfigPath)
 		fmt.Printf("     Auth: %s\n", agentAuthListingLabel(agent))
+		if runtimeLabel := agentRuntimeListingLabel(agent); runtimeLabel != "" {
+			fmt.Printf("     Runtime: %s\n", runtimeLabel)
+		}
 		fmt.Printf("     Support: %s\n", agentSupportListingLabel(agent))
 		if agent.IsOnboarded {
 			fmt.Printf(
@@ -833,6 +842,16 @@ func promptToOnboardDiscoveredAgents(
 	}
 	if len(candidates) == 0 {
 		fmt.Println("All discovered agents are already onboarded or have local managed enrollment state.")
+		return nil
+	}
+
+	// Config-only agents (runtime uninstalled, config files left behind) are
+	// never onboarded by the discover-driven batch — neither under --yes nor
+	// via the interactive prompts. Explicit `preloop agents onboard <name>`
+	// still works, with a warning.
+	candidates, configOnly := splitRuntimeMissingCandidates(candidates)
+	printRuntimeMissingOnboardingSkips(os.Stdout, configOnly)
+	if len(candidates) == 0 {
 		return nil
 	}
 
@@ -1196,6 +1215,12 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
+		// Batch onboarding (with or without --all/--yes) never touches
+		// config-only agents whose runtime is reliably missing; they need an
+		// explicit `preloop agents onboard <name>`.
+		var configOnly []AgentConfig
+		candidates, configOnly = splitRuntimeMissingCandidates(candidates)
+		printRuntimeMissingOnboardingSkips(os.Stdout, configOnly)
 		if len(candidates) == 0 {
 			if runAll {
 				if err := ensureAgentControlOnboarding(client, discovered, opts); err != nil {
@@ -1291,6 +1316,11 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+
+	// Explicitly named config-only agents may still be onboarded, but say up
+	// front that the runtime is missing so the result is not mistaken for a
+	// working enrollment.
+	printRuntimeMissingOnboardingWarning(os.Stdout, agent)
 
 	// A skipped managed launcher (missing agent binary) is a partial success:
 	// the warning has been printed and the command exits 0.
@@ -2949,9 +2979,9 @@ func discoverAgents(w io.Writer, printWarnings bool) ([]AgentConfig, error) {
 				ConfigPath: fullPath,
 				MCPServers: servers,
 			})
-			discovered[len(discovered)-1] = withDetectedAuthState(
+			discovered[len(discovered)-1] = withDetectedRuntimeState(withDetectedAuthState(
 				normalizeDiscoveredAgent(discovered[len(discovered)-1]),
-			)
+			))
 			discoveredSpec = true
 			break
 		}
@@ -2959,11 +2989,11 @@ func discoverAgents(w io.Writer, printWarnings bool) ([]AgentConfig, error) {
 			continue
 		}
 		if fallbackPath, ok := detectInstalledAgent(home, spec); ok {
-			discovered = append(discovered, withDetectedAuthState(normalizeDiscoveredAgent(AgentConfig{
+			discovered = append(discovered, withDetectedRuntimeState(withDetectedAuthState(normalizeDiscoveredAgent(AgentConfig{
 				Name:       spec.Name,
 				ConfigPath: fallbackPath,
 				MCPServers: map[string]MCPDef{},
-			})))
+			}))))
 		}
 	}
 	return discovered, nil
