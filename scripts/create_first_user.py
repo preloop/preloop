@@ -29,8 +29,9 @@ import os
 import sys
 from pathlib import Path
 
-# Add parent directory to path so we can import from preloop.
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Import preloop from THIS repo's backend/, ahead of any installed package
+# (an editable install may point at a different checkout).
+sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
 
 from preloop.api.auth.jwt import get_password_hash
 from preloop.models.crud import crud_account, crud_role, crud_user, crud_user_role

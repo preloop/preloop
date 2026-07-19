@@ -17,9 +17,10 @@ from preloop.models.models import Subscription
 from preloop.models.db.session import get_db_session
 
 
-# Add the project root to the Python path
+# Import preloop from THIS repo's backend/, ahead of any installed package
+# (an editable install may point at a different checkout).
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, project_root)
+sys.path.insert(0, os.path.join(project_root, "backend"))
 
 # --- Configuration ---
 STRIPE_API_KEY = settings.stripe_secret_key
