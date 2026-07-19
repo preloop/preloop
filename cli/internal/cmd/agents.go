@@ -863,7 +863,7 @@ func promptToOnboardDiscoveredAgents(
 	// take ~5s) and a slow upstream for one agent never blocks subsequent
 	// agents from being touched.
 	deferLiveValidate := !skipLiveValidate
-	outcomes, err := promptToOnboardCandidates(os.Stdin, os.Stdout, candidates, autoApprove, true, func(agent AgentConfig, approvals bool) error {
+	outcomes, err := promptToOnboardCandidatesTiered(os.Stdin, os.Stdout, client, candidates, autoApprove, true, func(agent AgentConfig, approvals bool) error {
 		return executeManagedEnrollment(agent, managedEnrollmentOptions{
 			Client: client,
 			// AutoApprove carries the -y flag so per-agent sub-prompts
@@ -1259,14 +1259,31 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 					return nil
 				}
 			}
+			// Validate-first ordering: agents with verified model routing
+			// onboard first; the MCP-only/unverified tier follows its printed
+			// explanation. --all keeps onboarding everything.
+			verified, unverified, reasons := partitionCandidatesByModelRouting(client, candidates)
 			enrolled, failures := onboardCandidatesBestEffort(
 				os.Stdin,
 				os.Stdout,
-				candidates,
+				verified,
 				opts,
 				deferLiveValidate,
 				executeManagedEnrollment,
 			)
+			if len(unverified) > 0 {
+				printModelRoutingTierExplanation(os.Stdout, unverified, reasons, true)
+				secondTier, secondFailures := onboardCandidatesBestEffort(
+					os.Stdin,
+					os.Stdout,
+					unverified,
+					opts,
+					deferLiveValidate,
+					executeManagedEnrollment,
+				)
+				enrolled = append(enrolled, secondTier...)
+				failures = append(failures, secondFailures...)
+			}
 			if deferLiveValidate && len(enrolled) > 0 {
 				runDeferredLiveValidationsParallel(client, enrolled, os.Stdout)
 			}
@@ -1284,7 +1301,7 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 
 		// askApprovals=false: executeManagedEnrollment prompts for the
 		// approvals hook itself when this path runs interactively.
-		outcomes, err := promptToOnboardCandidates(os.Stdin, os.Stdout, candidates, autoApprove, false, func(a AgentConfig, _ bool) error {
+		outcomes, err := promptToOnboardCandidatesTiered(os.Stdin, os.Stdout, client, candidates, autoApprove, false, func(a AgentConfig, _ bool) error {
 			agentOpts := opts
 			agentOpts.SkipConfirmation = autoApprove
 			agentOpts.DeferLiveValidate = deferLiveValidate
