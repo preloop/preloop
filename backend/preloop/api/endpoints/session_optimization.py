@@ -13,6 +13,7 @@ console clients (the endpoints previously shipped in the billing plugin).
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -22,7 +23,7 @@ from sqlalchemy.orm import Session
 from preloop.api.auth.jwt import get_current_active_user
 from preloop.api.common import get_account_for_user
 from preloop.api.deps import get_budget_enforcer
-from preloop.models.crud import crud_audit_log
+from preloop.models.crud import crud_audit_log, crud_optimization_job
 from preloop.models.db.session import get_db_session
 from preloop.models.models.account import Account
 from preloop.models.models.user import User
@@ -42,6 +43,10 @@ from preloop.services.replay_savings_service import (
     run_session_replay,
 )
 from preloop.services.session_optimization import SessionOptimizationService
+from preloop.services.session_optimization_jobs import (
+    run_session_optimization,
+    submit_session_optimization_job,
+)
 from preloop.utils.permissions import require_permission
 
 logger = logging.getLogger(__name__)
@@ -97,10 +102,14 @@ def optimize_account_runtime_session(
     current_user: User = Depends(get_current_active_user),
     budget_enforcer: Any = Depends(get_budget_enforcer),
 ) -> RuntimeSessionOptimizationResponse:
-    """Suggest cost and context optimizations for one runtime session."""
-    response = SessionOptimizationService(
-        db
-    ).get_account_session_optimization_suggestions(
+    """Suggest cost and context optimizations for one runtime session.
+
+    Legacy inline path: runs the shared worker function synchronously and
+    returns the results in this response — semantics identical to before the
+    async job endpoints existed (no submit-then-poll behind the scenes).
+    """
+    response = run_session_optimization(
+        db,
         account=account,
         runtime_session_id=runtime_session_id,
         request=request or RuntimeSessionOptimizationRequest(),
@@ -128,6 +137,129 @@ def optimize_account_runtime_session(
     except Exception:
         logger.debug("Failed to audit optimization result view", exc_info=True)
     return response
+
+
+class RuntimeSessionOptimizationJobSubmitResponse(BaseModel):
+    """Acknowledgement for an accepted async optimization job."""
+
+    job_id: str
+    status: str
+
+
+class RuntimeSessionOptimizationJobStatusResponse(BaseModel):
+    """Poll response for one async optimization job."""
+
+    job_id: str
+    status: str
+    #: Shaped exactly like the legacy inline response; set only on success.
+    result: Optional[RuntimeSessionOptimizationResponse] = None
+    #: User-facing failure message; set only on failure.
+    error: Optional[str] = None
+
+
+@router.post(
+    "/runtime-sessions/{runtime_session_id}/optimizations/jobs",
+    response_model=RuntimeSessionOptimizationJobSubmitResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+@require_permission("view_cost")
+def submit_account_runtime_session_optimization_job(
+    runtime_session_id: str,
+    account: Annotated[Account, Depends(get_account_for_user)],
+    request: RuntimeSessionOptimizationRequest | None = None,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_active_user),
+    budget_enforcer: Any = Depends(get_budget_enforcer),
+) -> RuntimeSessionOptimizationJobSubmitResponse:
+    """Queue the (slow, LLM-backed) optimization analysis as a background job.
+
+    Idempotent: while a job for this session is still pending or running,
+    re-submitting returns THAT job instead of queuing a second model pass, so
+    a double-click never spends the model budget twice.
+    """
+    job = submit_session_optimization_job(
+        db,
+        account=account,
+        current_user=current_user,
+        runtime_session_id=runtime_session_id,
+        request=request or RuntimeSessionOptimizationRequest(),
+        budget_enforcer=budget_enforcer,
+    )
+    return RuntimeSessionOptimizationJobSubmitResponse(
+        job_id=str(job.id), status=job.status
+    )
+
+
+@router.get(
+    "/runtime-sessions/{runtime_session_id}/optimizations/jobs/{job_id}",
+    response_model=RuntimeSessionOptimizationJobStatusResponse,
+)
+@require_permission("view_cost")
+def get_account_runtime_session_optimization_job(
+    runtime_session_id: str,
+    job_id: str,
+    account: Annotated[Account, Depends(get_account_for_user)],
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_active_user),
+) -> RuntimeSessionOptimizationJobStatusResponse:
+    """Poll one async optimization job's status, result, and error.
+
+    A job id belonging to another account, or attached to a different
+    session, is indistinguishable from a missing one (404) by design.
+
+    Raises:
+        HTTPException: 404 when the job is absent, malformed, or out of scope.
+    """
+    # A malformed id (e.g. corrupted client storage) is "not found", not a
+    # database cast error surfacing as a 500 the console would retry forever.
+    try:
+        uuid.UUID(job_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Optimization job not found",
+        ) from None
+    job = crud_optimization_job.get_for_session(
+        db,
+        job_id=job_id,
+        account_id=account.id,
+        runtime_session_id=runtime_session_id,
+    )
+    if job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Optimization job not found",
+        )
+    result: Optional[RuntimeSessionOptimizationResponse] = None
+    if job.status == "succeeded" and job.result is not None:
+        result = RuntimeSessionOptimizationResponse.model_validate(job.result)
+        # Cohort telemetry, mirroring the legacy inline endpoint: fetching a
+        # succeeded result is the moment the user actually sees optimization
+        # output, so the "reached-their-number" launch metric keeps working
+        # after the console's switch to submit-then-poll. Polling stops on
+        # the first succeeded fetch, so this fires once per completed job.
+        try:
+            crud_audit_log.log_action(
+                db,
+                account_id=account.id,
+                user_id=current_user.id,
+                action="optimization_result_viewed",
+                resource_type="runtime_session",
+                resource_id=runtime_session_id,
+                status="success",
+                details={
+                    "runtime_session_id": runtime_session_id,
+                    "optimization_job_id": str(job.id),
+                },
+            )
+        except Exception:
+            logger.debug("Failed to audit optimization result view", exc_info=True)
+    return RuntimeSessionOptimizationJobStatusResponse(
+        job_id=str(job.id),
+        status=job.status,
+        result=result,
+        error=job.error,
+    )
 
 
 @router.post(

@@ -3,10 +3,12 @@
 On the wasteful runtime session produced by module 11, in the recorded
 browser: open the session's Optimize tab, select a BYOK suggestion model
 explicitly (the account default may be a principal-bound OAuth model that
-correctly refuses server-side calls), generate suggestions, capture the
-potential-savings estimate, VERIFY the top verifiable suggestion by replay
-(the consented re-execution flow that measures the real input-token delta),
-then APPLY the applicable suggestions.
+correctly refuses server-side calls), click Generate and drive the ASYNC
+analysis flow — the console submits a background job and shows the approved
+"Analyzing this session" state, then polls until suggestions (or the
+no-waste state) render. Capture the potential-savings estimate, VERIFY the
+top verifiable suggestion by replay (the consented re-execution flow that
+measures the real input-token delta), then APPLY the applicable suggestions.
 
 Verify runs BEFORE apply on purpose: applying scope-tools/compression writes
 governance that alters future gateway traffic, and the replay's "original"
@@ -143,50 +145,21 @@ def ensure_console_proxy_timeouts() -> None:
         )
 
 
-def prewarm_suggestions(token: str, session_id: str, model: dict | None) -> None:
-    """Generate (and cache) the BYOK-model suggestions before the scene.
+def wait_for_analysis_outcome(page, timeout_ms: int) -> str:
+    """Wait for the async analysis to resolve: suggestions or no-waste.
 
-    The LLM pass takes on the order of a minute; running it here keeps the
-    recorded scene tight — the panel's cache-only open renders the freshly
-    generated suggestions immediately. If the request is cut by a proxy
-    timeout the backend still finishes and caches, so poll until the cached
-    model-generated result appears.
+    The console polls its background job every 2.5s; this waits for either
+    outcome selector and returns which one landed ('suggestions' or
+    'no_waste').
     """
-    if model is None:
-        return
-    payload = {"model_id": str(model["id"]), "regenerate": True}
-    deadline = time.time() + 600
-    attempt = 0
-    while time.time() < deadline:
-        attempt += 1
-        try:
-            status, body = riglib.api_request(
-                f"{URL}/api/v1/billing/cost/runtime-sessions/"
-                f"{session_id}/optimizations",
-                method="POST",
-                token=token,
-                payload=payload,
-                timeout=420,
-            )
-        except Exception as exc:  # noqa: BLE001 — treat as retryable timeout
-            riglib.log(f"prewarm attempt {attempt} errored ({exc}); polling cache")
-            status, body = 0, None
-        if (
-            status == 200
-            and isinstance(body, dict)
-            and body.get("generated_by") == "model"
-        ):
-            riglib.note(
-                f"suggestion cache pre-warmed with {model.get('name')} "
-                f"({len(body.get('suggestions') or [])} suggestions)"
-            )
-            return
-        riglib.log(f"prewarm attempt {attempt}: status={status}; retrying")
-        # After the first (regenerating) attempt only poll for the cached
-        # result — never queue a second generation.
-        payload = {"model_id": str(model["id"])}
-        time.sleep(15)
-    raise SystemExit("could not pre-warm model suggestions within 10 minutes")
+    page.wait_for_selector(
+        "session-optimization-panel div.suggestion, "
+        "session-optimization-panel .job-no-waste",
+        timeout=timeout_ms,
+    )
+    if page.locator("session-optimization-panel div.suggestion").count() > 0:
+        return "suggestions"
+    return "no_waste"
 
 
 def api_replay_fallback(token: str, session_id: str) -> dict:
@@ -251,7 +224,6 @@ def run_scene(token: str, session_id: str) -> None:
 
     model = byok_suggestion_model(token)
     ensure_console_proxy_timeouts()
-    prewarm_suggestions(token, session_id, model)
     verify_text = ""
     verify_notes: list[str] = []
     savings_text = ""
@@ -276,10 +248,10 @@ def run_scene(token: str, session_id: str) -> None:
         optimize_btn.click()
         time.sleep(2)
 
-        # When the pre-warmed cache rendered suggestions on panel open, the
-        # controls drawer (with the model picker) starts collapsed; the small
-        # header "Regenerate" button only toggles the drawer open (it does
-        # not regenerate anything).
+        # When a previous run's cached result rendered suggestions on panel
+        # open, the controls drawer (with the model picker) starts collapsed;
+        # the small header "Regenerate" button only toggles the drawer open
+        # (it does not regenerate anything).
         time.sleep(1.5)
         cached_rendered = (
             page.locator("session-optimization-panel div.suggestion").count() > 0
@@ -322,18 +294,38 @@ def run_scene(token: str, session_id: str) -> None:
         time.sleep(1)
         browserlib.screenshot(page, "12-optimize-controls")
 
-        # --- suggestions: rendered from the pre-warmed cache on panel open;
-        # clicking Generate only on a cache miss (it would otherwise queue a
-        # fresh multi-minute LLM regeneration on camera).
+        # --- generate via the async job flow: clicking Generate submits a
+        # background job; the approved "Analyzing this session" state (slim
+        # cyan progress bar) renders while the console polls, and the results
+        # appear automatically when the job succeeds. The analyzing state is
+        # asserted and captured on camera — it is the launch-state deliverable.
         if not cached_rendered:
             riglib.note("no cached suggestions rendered; generating on camera")
             page.locator(
                 "sl-button", has_text=re.compile("(Generate|Regenerate) suggestions")
             ).first.click()
             page.wait_for_selector(
-                "session-optimization-panel div.suggestion",
-                timeout=GENERATE_TIMEOUT_MS,
+                "session-optimization-panel .job-analyzing",
+                timeout=30_000,
             )
+            analyzing_text = (
+                page.locator("session-optimization-panel .job-analyzing")
+                .first.inner_text()
+                .replace("\n", " ")
+            )
+            if "Analyzing this session" not in analyzing_text:
+                raise SystemExit(
+                    f"analyzing state rendered unexpected copy: {analyzing_text!r}"
+                )
+            riglib.note("analyzing state rendered (async job submitted)")
+            browserlib.screenshot(page, "12-optimize-analyzing")
+            outcome = wait_for_analysis_outcome(page, GENERATE_TIMEOUT_MS)
+            if outcome == "no_waste":
+                browserlib.screenshot(page, "12-optimize-no-waste")
+                raise SystemExit(
+                    "analysis reported no recoverable waste on the module-11 "
+                    "wasteful session — apply/replay assertions cannot run"
+                )
         time.sleep(2)
         headline = page.locator(".savings-summary-headline")
         if headline.count() > 0:

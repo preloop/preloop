@@ -21,9 +21,11 @@ import {
   getApiKeyGatewayUsageSummary,
   getRuntimeSessionGatewayEventDetail,
   getRuntimeSessionGatewayEvents,
+  getRuntimeSessionOptimizationJob,
   getRuntimeSessionRequests,
   listRuntimeSessionOptimizationActions,
   optimizeRuntimeSession,
+  submitRuntimeSessionOptimizationJob,
   summarizeRuntimeSessionGatewayEvent,
   updateAccountRuntimeSession,
 } from '../api';
@@ -75,6 +77,48 @@ function readOptimizeHintDismissed(): boolean {
     return localStorage.getItem(OPTIMIZE_HINT_DISMISSED_KEY) === 'true';
   } catch {
     return false;
+  }
+}
+
+// Async optimization analysis jobs: submit-then-poll cadence and the
+// per-session sessionStorage key used to resume an in-flight job after a
+// reload instead of showing the trigger button again.
+const OPTIMIZE_JOB_POLL_INTERVAL_MS = 2500;
+const OPTIMIZE_JOB_STORAGE_PREFIX = 'preloop_optimize_job_';
+
+type OptimizationJobRequestOptions = {
+  regenerate?: boolean;
+  modelId?: string | null;
+  eventIds?: string[];
+  sourceKinds?: string[];
+  fromIndex?: number;
+  toIndex?: number;
+};
+
+/** Read the persisted active job id for a session; never throw. */
+function readStoredOptimizationJobId(sessionId: string): string | null {
+  try {
+    return sessionStorage.getItem(`${OPTIMIZE_JOB_STORAGE_PREFIX}${sessionId}`);
+  } catch {
+    return null;
+  }
+}
+
+/** Persist the active job id for a session; never throw. */
+function storeOptimizationJobId(sessionId: string, jobId: string): void {
+  try {
+    sessionStorage.setItem(`${OPTIMIZE_JOB_STORAGE_PREFIX}${sessionId}`, jobId);
+  } catch {
+    // Privacy modes / missing storage: reload-resume simply won't apply.
+  }
+}
+
+/** Drop the persisted job id for a session; never throw. */
+function clearStoredOptimizationJobId(sessionId: string): void {
+  try {
+    sessionStorage.removeItem(`${OPTIMIZE_JOB_STORAGE_PREFIX}${sessionId}`);
+  } catch {
+    // Nothing to clean up when storage is unavailable.
   }
 }
 
@@ -192,6 +236,21 @@ export class PreloopSessionObserver extends LitElement {
 
   @state()
   private applyingOptimizationSuggestionId: string | null = null;
+
+  // Async analysis job state per session id: 'analyzing' while a job is
+  // pending/running (submit + poll), 'failed' after a failed job until retry.
+  @state()
+  private optimizationJobStates: Record<string, 'analyzing' | 'failed'> = {};
+
+  // Live poll timers per session id, cleared on completion/disconnect.
+  private optimizationJobPollTimers: Record<string, number> = {};
+
+  // Last submitted analysis options per session id so Retry re-runs the same
+  // scope/model selection.
+  private optimizationJobOptions: Record<
+    string,
+    OptimizationJobRequestOptions
+  > = {};
 
   @state()
   private aiModels: AIModel[] = [];
@@ -430,6 +489,9 @@ export class PreloopSessionObserver extends LitElement {
     this.removeEventListener('session-create-budget', this.handleCreateBudget);
     if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
     if (this.livePulseTimer !== null) window.clearTimeout(this.livePulseTimer);
+    for (const sessionId of Object.keys(this.optimizationJobPollTimers)) {
+      this.clearOptimizationJobPollTimer(sessionId);
+    }
   }
 
   willUpdate(changed: Map<string | number | symbol, unknown>): void {
@@ -637,6 +699,11 @@ export class PreloopSessionObserver extends LitElement {
       return;
     }
     this.activeSessionId = sessionId;
+    // Deep links can land straight in optimize mode; resume any persisted
+    // in-flight analysis job for the newly active session.
+    if (this.replayMode === 'optimize') {
+      this.maybeResumeOptimizationJob(sessionId);
+    }
     this.dispatchEvent(
       new CustomEvent('session-selected', {
         detail: { sessionId },
@@ -904,6 +971,121 @@ export class PreloopSessionObserver extends LitElement {
     }
   }
 
+  private setOptimizationJobState(
+    sessionId: string,
+    state: 'analyzing' | 'failed' | null
+  ): void {
+    if (state === null) {
+      const { [sessionId]: _dropped, ...rest } = this.optimizationJobStates;
+      this.optimizationJobStates = rest;
+      return;
+    }
+    this.optimizationJobStates = {
+      ...this.optimizationJobStates,
+      [sessionId]: state,
+    };
+  }
+
+  private clearOptimizationJobPollTimer(sessionId: string): void {
+    const timer = this.optimizationJobPollTimers[sessionId];
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      delete this.optimizationJobPollTimers[sessionId];
+    }
+  }
+
+  /**
+   * Submit the async analysis job for one session and start polling it.
+   * The backend is idempotent for active jobs, so re-submitting (double
+   * click, retry racing an active job) converges on the same run.
+   */
+  private async startOptimizationJob(
+    sessionId: string,
+    options: OptimizationJobRequestOptions = {}
+  ): Promise<void> {
+    if (this.optimizationJobStates[sessionId] === 'analyzing') return;
+    this.optimizationJobOptions[sessionId] = options;
+    this.setOptimizationJobState(sessionId, 'analyzing');
+    try {
+      const job = await submitRuntimeSessionOptimizationJob(sessionId, options);
+      storeOptimizationJobId(sessionId, job.job_id);
+      this.scheduleOptimizationJobPoll(sessionId, job.job_id, 0);
+    } catch (error) {
+      console.info('Failed to submit optimization job:', error);
+      this.setOptimizationJobState(sessionId, 'failed');
+    }
+  }
+
+  private scheduleOptimizationJobPoll(
+    sessionId: string,
+    jobId: string,
+    delayMs: number = OPTIMIZE_JOB_POLL_INTERVAL_MS
+  ): void {
+    this.clearOptimizationJobPollTimer(sessionId);
+    this.optimizationJobPollTimers[sessionId] = window.setTimeout(() => {
+      void this.pollOptimizationJob(sessionId, jobId);
+    }, delayMs);
+  }
+
+  private async pollOptimizationJob(
+    sessionId: string,
+    jobId: string
+  ): Promise<void> {
+    try {
+      const job = await getRuntimeSessionOptimizationJob(sessionId, jobId);
+      if (job.status === 'succeeded') {
+        if (job.result) {
+          this.loadedOptimizations = {
+            ...this.loadedOptimizations,
+            [sessionId]: job.result,
+          };
+        }
+        clearStoredOptimizationJobId(sessionId);
+        this.setOptimizationJobState(sessionId, null);
+        return;
+      }
+      if (job.status === 'failed') {
+        clearStoredOptimizationJobId(sessionId);
+        this.setOptimizationJobState(sessionId, 'failed');
+        return;
+      }
+    } catch (error) {
+      // A 404 means the job is gone for good (pruned, or a stale stored id);
+      // anything else is transient (network blip) and polling continues.
+      if (error instanceof Error && error.message.includes('(404)')) {
+        clearStoredOptimizationJobId(sessionId);
+        this.setOptimizationJobState(sessionId, 'failed');
+        return;
+      }
+      console.info('Optimization job poll failed; retrying:', error);
+    }
+    this.scheduleOptimizationJobPoll(sessionId, jobId);
+  }
+
+  /**
+   * Reload-resume: when a persisted active job exists for this session,
+   * resume polling it (rendering the analyzing state) instead of showing
+   * the trigger controls again.
+   */
+  private maybeResumeOptimizationJob(sessionId: string | null): void {
+    if (!sessionId || this.optimizationJobStates[sessionId]) return;
+    const jobId = readStoredOptimizationJobId(sessionId);
+    if (!jobId) return;
+    this.setOptimizationJobState(sessionId, 'analyzing');
+    this.scheduleOptimizationJobPoll(sessionId, jobId, 0);
+  }
+
+  /** Retry after a failed analysis: submit a fresh job with the same options. */
+  private retryOptimizationJob(): void {
+    if (!this.activeSessionId) return;
+    const sessionId = this.activeSessionId;
+    this.setOptimizationJobState(sessionId, null);
+    void this.startOptimizationJob(
+      sessionId,
+      this.optimizationJobOptions[sessionId] || {}
+    );
+  }
+
   private async loadAIModels(): Promise<void> {
     try {
       this.aiModels = (await getAIModels()).filter(
@@ -1142,6 +1324,9 @@ export class PreloopSessionObserver extends LitElement {
     }
     if (mode === 'optimize' && this.activeSessionId) {
       void this.loadOptimizationActions(this.activeSessionId);
+      // A persisted in-flight job (e.g. page reload mid-analysis) resumes
+      // polling and renders the analyzing state instead of the trigger.
+      this.maybeResumeOptimizationJob(this.activeSessionId);
       // Surface previously generated suggestions on open (cache-only: no
       // generation on a miss).
       void this.loadSessionOptimization(this.activeSessionId, {
@@ -1485,6 +1670,11 @@ export class PreloopSessionObserver extends LitElement {
           .loadingOptimization=${
             this.loadingOptimizationForSessionId === this.activeSessionId
           }
+          .optimizationJobState=${
+            this.activeSessionId
+              ? this.optimizationJobStates[this.activeSessionId] || null
+              : null
+          }
           @session-event-detail-requested=${(event: CustomEvent) =>
             this.loadEventDetail(event.detail.eventId)}
           @session-interaction-summary-requested=${(event: CustomEvent) =>
@@ -1499,7 +1689,9 @@ export class PreloopSessionObserver extends LitElement {
               : undefined}
           @session-optimization-requested=${(event: CustomEvent) => {
             if (!this.activeSessionId) return;
-            this.loadSessionOptimization(this.activeSessionId, {
+            // Generation is async now: submit a background job and poll it
+            // (the UI shows the analyzing state meanwhile).
+            void this.startOptimizationJob(this.activeSessionId, {
               regenerate: Boolean(event.detail?.regenerate),
               modelId: event.detail?.modelId || null,
               eventIds: event.detail?.eventIds || [],
@@ -1509,6 +1701,7 @@ export class PreloopSessionObserver extends LitElement {
             });
             this.loadOptimizationActions(this.activeSessionId);
           }}
+          @session-optimization-retry=${() => this.retryOptimizationJob()}
           @session-optimization-apply=${(event: CustomEvent) =>
             this.applyOptimizationSuggestion(event.detail)}
           @session-optimization-actions-requested=${() =>

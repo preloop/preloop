@@ -1,4 +1,5 @@
 import { LitElement, css, html, nothing } from 'lit';
+import type { PropertyValues } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -59,6 +60,19 @@ export class SessionOptimizationPanel extends LitElement {
 
   @property({ type: String })
   applyingSuggestionId: string | null = null;
+
+  /**
+   * Async analysis job state, driven by the session observer's submit/poll
+   * loop. 'analyzing' renders the indeterminate progress state; 'failed'
+   * renders the inline error with a retry action; null renders results.
+   */
+  @property({ type: String, attribute: 'job-state' })
+  jobState: 'analyzing' | 'failed' | null = null;
+
+  // Polite screen-reader announcement for job transitions (completion or
+  // failure); rendered in an always-present aria-live region.
+  @state()
+  private liveMessage = '';
 
   @state()
   private pendingApply: SessionOptimizationSuggestion | null = null;
@@ -325,6 +339,136 @@ export class SessionOptimizationPanel extends LitElement {
 
     .governance-link a:hover {
       text-decoration: underline;
+    }
+
+    /* Launch console states (approved spec: 1A analyzing / 2A failed /
+       3A no-waste). Designed for the dark #212632 surface context, Inter,
+       console-compact type (14px headings / 13px body), 4px radii, and the
+       semantic palette (info #30C9E8, error #FF5D5D, success #26D962,
+       action #0284C7). */
+    .job-state {
+      padding: var(--sl-spacing-medium);
+    }
+
+    .job-state-heading {
+      font-size: 14px;
+      font-weight: 600;
+      line-height: 1.4;
+    }
+
+    .job-state-body {
+      font-size: 13px;
+      line-height: 1.5;
+      margin-top: 4px;
+      opacity: 0.85;
+    }
+
+    /* 1A — analyzing: slim indeterminate bar in info cyan. */
+    .job-analyzing .job-progress {
+      background: rgba(48, 201, 232, 0.2);
+      border-radius: 4px;
+      height: 4px;
+      margin-bottom: 12px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .job-analyzing .job-progress-fill {
+      animation: job-progress-slide 1.4s ease-in-out infinite;
+      background: #30c9e8;
+      border-radius: 4px;
+      height: 100%;
+      position: absolute;
+      width: 40%;
+    }
+
+    @keyframes job-progress-slide {
+      0% {
+        left: -40%;
+      }
+      100% {
+        left: 100%;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .job-analyzing .job-progress-fill {
+        animation: none;
+        left: 0;
+        opacity: 0.5;
+        width: 100%;
+      }
+    }
+
+    /* 2A — failed: inline alert with the error-red left border. */
+    .job-failed {
+      border-left: 4px solid #ff5d5d;
+      border-radius: 4px;
+      padding-left: calc(var(--sl-spacing-medium) - 4px + 12px);
+    }
+
+    .job-failed .job-state-heading {
+      color: #ff5d5d;
+    }
+
+    .job-retry-button {
+      background: #0284c7;
+      border: none;
+      border-radius: 4px;
+      color: #ffffff;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      margin-top: 12px;
+      padding: 8px 14px;
+    }
+
+    .job-retry-button:focus-visible {
+      outline: 2px solid #30c9e8;
+      outline-offset: 2px;
+    }
+
+    @media (max-width: 768px), (pointer: coarse) {
+      .job-retry-button {
+        min-height: 44px;
+        min-width: 44px;
+      }
+    }
+
+    /* 3A — no-waste: centered calm state. */
+    .job-no-waste {
+      text-align: center;
+    }
+
+    .job-no-waste-check {
+      color: #26d962;
+      display: block;
+      font-size: 24px;
+      line-height: 1;
+      margin: 0 auto 8px;
+    }
+
+    .job-no-waste a {
+      color: #30c9e8;
+      display: inline-block;
+      font-size: 13px;
+      margin-top: 12px;
+      text-decoration: none;
+    }
+
+    .job-no-waste a:hover {
+      text-decoration: underline;
+    }
+
+    .sr-only {
+      clip: rect(0 0 0 0);
+      clip-path: inset(50%);
+      height: 1px;
+      overflow: hidden;
+      position: absolute;
+      white-space: nowrap;
+      width: 1px;
     }
   `;
 
@@ -1173,14 +1317,137 @@ export class SessionOptimizationPanel extends LitElement {
     `;
   }
 
+  /**
+   * Approved no-waste condition (state 3A): a real analysis result exists and
+   * reports nothing recoverable. Cache-only misses and the bundled example
+   * are never "no waste" — they are handled by their own states.
+   */
+  private hasNoRecoverableWaste(): boolean {
+    const optimization = this.optimization;
+    if (!optimization || optimization.cache_miss || optimization.is_example) {
+      return false;
+    }
+    return (optimization.potential_savings_tokens ?? 0) <= 0;
+  }
+
+  protected willUpdate(changed: PropertyValues<this>): void {
+    // Announce job transitions in the polite live region: completion when the
+    // analyzing state resolves into a result, failure when it flips to failed.
+    if (changed.has('jobState')) {
+      const previous = changed.get('jobState');
+      if (previous === 'analyzing' && this.jobState === 'failed') {
+        this.liveMessage =
+          "Analysis failed. The model request didn't complete. " +
+          'Nothing was changed.';
+      } else if (previous === 'analyzing' && this.jobState === null) {
+        this.liveMessage = 'Analysis complete. Results are shown below.';
+      } else if (this.jobState === 'analyzing') {
+        this.liveMessage = 'Analyzing this session.';
+      }
+    }
+  }
+
+  private requestRetry(): void {
+    this.dispatchEvent(
+      new CustomEvent('session-optimization-retry', {
+        bubbles: true,
+        composed: true,
+      })
+    );
+  }
+
+  // Always-present polite live region so job transitions are announced.
+  private renderLiveRegion() {
+    return html`
+      <div class="sr-only" role="status" aria-live="polite">
+        ${this.liveMessage}
+      </div>
+    `;
+  }
+
+  // State 1A — analyzing.
+  private renderAnalyzingState() {
+    return html`
+      <div class="panel" aria-busy="true">
+        ${this.renderLiveRegion()}
+        <div class="job-state job-analyzing">
+          <div
+            class="job-progress"
+            role="progressbar"
+            aria-label="Analyzing this session"
+          >
+            <div class="job-progress-fill"></div>
+          </div>
+          <div class="job-state-heading">Analyzing this session</div>
+          <div class="job-state-body">
+            Typically 1–2 minutes. You can leave this tab open — results appear
+            automatically.
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  // State 2A — failed, with retry.
+  private renderFailedState() {
+    return html`
+      <div class="panel">
+        ${this.renderLiveRegion()}
+        <div class="job-state job-failed" role="alert">
+          <div class="job-state-heading">Analysis failed</div>
+          <div class="job-state-body">
+            The model request didn't complete. Nothing was changed.
+          </div>
+          <button
+            type="button"
+            class="job-retry-button"
+            @click=${() => this.requestRetry()}
+          >
+            Retry analysis
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  // State 3A — no recoverable waste.
+  private renderNoWasteState() {
+    return html`
+      <div class="panel">
+        ${this.renderLiveRegion()}
+        <div class="job-state job-no-waste">
+          <span class="job-no-waste-check" aria-hidden="true">✓</span>
+          <div class="job-state-heading">
+            No recoverable waste in this session
+          </div>
+          <div class="job-state-body">
+            Short sessions rarely have any. Optimization pays off on longer,
+            tool-heavy sessions.
+          </div>
+          <a
+            href="https://www.youtube.com/playlist?list=PLr2Jp0c-Qn2hoYL3aRZGUtBjTCVygWIXt&utm_source=console&utm_campaign=series-ep1"
+            target="_blank"
+            rel="noopener"
+          >
+            Watch it find real waste (2 min) →
+          </a>
+        </div>
+      </div>
+    `;
+  }
+
   render() {
     if (!this.session) return '';
+    if (this.jobState === 'analyzing') return this.renderAnalyzingState();
+    if (this.jobState === 'failed') return this.renderFailedState();
+    if (this.hasNoRecoverableWaste()) return this.renderNoWasteState();
     const suggestions =
       this.suggestions || suggestSessionOptimizations(this.session);
     const hasProfile = Boolean(this.optimization?.context_profile);
 
     return html`
       <div class="panel">
+        ${this.renderLiveRegion()}
         <sl-tab-group>
           <sl-tab slot="nav" panel="suggestions">
             Suggestions (${suggestions.length})

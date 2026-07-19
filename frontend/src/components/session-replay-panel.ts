@@ -229,6 +229,14 @@ export class SessionReplayPanel extends LitElement {
   @property({ type: Object })
   optimizationResult: RuntimeSessionOptimizationResponse | null = null;
 
+  /**
+   * Async analysis job state from the observer's submit/poll loop. While
+   * 'analyzing' or 'failed' the optimize view renders the corresponding
+   * approved panel state instead of the controls/results.
+   */
+  @property({ type: String })
+  optimizationJobState: 'analyzing' | 'failed' | null = null;
+
   @property({ type: Array })
   optimizationAppliedActions: RuntimeSessionOptimizationAppliedAction[] = [];
 
@@ -3544,6 +3552,23 @@ export class SessionReplayPanel extends LitElement {
         Optimization is not enabled for this view.
       </div>`;
     }
+    // Async job states replace the whole drawer: 1A analyzing (indeterminate
+    // progress) and 2A failed (inline alert + retry). The panel owns the
+    // approved rendering; retry bubbles up to the observer as
+    // 'session-optimization-retry'.
+    if (
+      this.optimizationJobState === 'analyzing' ||
+      this.optimizationJobState === 'failed'
+    ) {
+      return html`
+        <div class="optimize-drawer">
+          <session-optimization-panel
+            .session=${this.session}
+            .jobState=${this.optimizationJobState}
+          ></session-optimization-panel>
+        </div>
+      `;
+    }
     const messages = this.getReplayMessages();
     const lastIndex = Math.max(messages.length - 1, 0);
     const scopedEvents = this.getOptimizationEvents(messages);
@@ -3556,8 +3581,14 @@ export class SessionReplayPanel extends LitElement {
       hasSuggestions &&
       (this.optimizationResult?.potential_savings_tokens ?? 0) > 0;
     // The state write lands in a later microtask, so this does not mutate
-    // state during this render pass.
-    if (!hasMeaningfulSavings && !this.loadingOptimization) {
+    // state during this render pass. A real result with no savings now renders
+    // the approved no-waste state (3A) instead of the example, so only
+    // prefetch the example while this session has produced no result at all.
+    if (
+      !hasMeaningfulSavings &&
+      !this.loadingOptimization &&
+      !this.optimizationResult
+    ) {
       void this.ensureExampleOptimization();
     }
     const showControls = this.optimizeControlsOpen || !hasSuggestions;
@@ -3795,17 +3826,21 @@ export class SessionReplayPanel extends LitElement {
               `
             : this.optimizationResult && !this.loadingOptimization
               ? html`
-                  <div class="empty">
-                    No optimization opportunities found for the selected scope.
-                    Widen the range, or run a longer / more tool-heavy session.
-                  </div>
+                  <session-optimization-panel
+                    .session=${this.session}
+                    .optimization=${this.optimizationResult}
+                    .suggestions=${this.optimizationSuggestions || []}
+                  ></session-optimization-panel>
                 `
               : nothing
         }
         ${
-          // Shown below the session's own result whenever that result has no
-          // savings to report, so the tab always demonstrates what it produces.
-          hasMeaningfulSavings || this.loadingOptimization
+          // Shown below whenever this session has produced no result of its
+          // own, so the tab still demonstrates what it produces. A result
+          // with no savings renders the approved no-waste state instead.
+          hasMeaningfulSavings ||
+          this.loadingOptimization ||
+          this.optimizationResult
             ? nothing
             : this.renderExampleOptimization()
         }

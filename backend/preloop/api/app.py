@@ -325,6 +325,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     else:
         logger.info("Skipping execution monitor for %s role.", service_role)
 
+    # Start the optimization-job recovery sweeper (skip in testing mode). It
+    # runs one sweep immediately, recovering jobs abandoned by the previous
+    # process, then every couple of minutes.
+    optimization_job_sweeper = None
+    if not is_testing and is_api_role:
+        from preloop.services.session_optimization_jobs import (
+            get_optimization_job_sweeper,
+        )
+
+        optimization_job_sweeper = get_optimization_job_sweeper()
+        await optimization_job_sweeper.start()
+        logger.info("Optimization job sweeper started.")
+    else:
+        logger.info("Skipping optimization job sweeper for %s role.", service_role)
+
     # Recover orphaned flow executions (skip in testing mode)
     recovery_service = None
     if not is_testing and is_api_role:
@@ -512,6 +527,23 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.error(f"Error stopping MCP lifespan: {e}", exc_info=True)
     else:
         logger.info("Skipping MCP shutdown for %s role.", service_role)
+
+    # Stop the optimization-job sweeper and abandon in-flight optimization
+    # jobs (skip in testing mode). shutdown(wait=False) on purpose: a model
+    # pass can take minutes; abandoned rows are failed by the sweeper after
+    # restart with the retriable user-facing copy.
+    if not is_testing and optimization_job_sweeper:
+        from preloop.services.session_optimization_jobs import shutdown_job_executor
+
+        try:
+            await optimization_job_sweeper.stop()
+            logger.info("Optimization job sweeper stopped.")
+        except Exception as e:
+            logger.error(f"Error stopping optimization job sweeper: {e}", exc_info=True)
+        shutdown_job_executor()
+        logger.info("Optimization job executor shut down.")
+    else:
+        logger.info("Skipping optimization job shutdown for %s role.", service_role)
 
     # Stop the execution monitor (skip in testing mode)
     if not is_testing and execution_monitor:
