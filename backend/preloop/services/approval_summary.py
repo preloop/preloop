@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from preloop.models.crud.ai_model import ai_model as crud_ai_model
 from preloop.models.models.ai_model import AIModel
+from preloop.services.litellm_routing import to_litellm_model
 from preloop.utils.redaction import redact_dict
 
 logger = logging.getLogger(__name__)
@@ -18,13 +19,6 @@ logger = logging.getLogger(__name__)
 SUMMARY_TIMEOUT_SECONDS = 5.0
 SUMMARY_MAX_TOKENS = 150
 SUMMARY_MAX_CHARS = 400
-
-_PROVIDER_PREFIX = {
-    "openai": "openai",
-    "anthropic": "anthropic",
-    "google": "gemini",
-    "azure": "azure",
-}
 
 
 def _ask_user_question(tool_args: Optional[dict[str, Any]]) -> Optional[str]:
@@ -40,11 +34,7 @@ def _ask_user_question(tool_args: Optional[dict[str, Any]]) -> Optional[str]:
 
 
 def _to_litellm_model(model: AIModel) -> str:
-    provider = (model.provider_name or "openai").lower()
-    identifier = model.model_identifier
-    if "/" in identifier:
-        return identifier
-    return f"{_PROVIDER_PREFIX.get(provider, provider)}/{identifier}"
+    return to_litellm_model(model)
 
 
 def _compact_args(tool_args: dict[str, Any]) -> dict[str, Any]:

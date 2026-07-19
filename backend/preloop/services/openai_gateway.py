@@ -68,6 +68,7 @@ from preloop.services.model_pricing import (
     _iter_litellm_model_candidates,
     estimate_ai_model_usage_cost_detailed,
 )
+from preloop.services.litellm_routing import to_litellm_model
 from preloop.services.pricing_overrides import resolve_pricing_override
 from preloop.services.model_runtime_resolver import resolve_ai_model_runtime
 from preloop.services.gateway_usage_search import GatewayUsageSearchService
@@ -80,19 +81,8 @@ from preloop.services.secret_service import (
 )
 from preloop.utils.audit import log_model_gateway_request
 
-_PROVIDER_PREFIX: Dict[str, str] = {
-    "openai": "openai",
-    "openai-codex": "openai",
-    "anthropic": "anthropic",
-    "google": "gemini",
-    "gemini": "gemini",
-    "bedrock": "bedrock",
-    "amazon-bedrock": "bedrock",
-    "qwen": "openai",
-    "deepseek": "deepseek",
-}
-
 logger = logging.getLogger(__name__)
+
 _RUNTIME_SESSION_ACTIVITY_TOUCH_MIN_INTERVAL = timedelta(seconds=30)
 _RUNTIME_SESSION_SUMMARY_REFRESH_EVERY_REQUESTS = 10
 
@@ -3942,9 +3932,7 @@ class OpenAIGatewayService:
 
     @staticmethod
     def _to_litellm_model(ai_model: AIModel) -> str:
-        provider = (ai_model.provider_name or "openai").strip().lower()
-        prefix = _PROVIDER_PREFIX.get(provider, provider)
-        return f"{prefix}/{ai_model.model_identifier}"
+        return to_litellm_model(ai_model)
 
     @staticmethod
     def _response_to_dict(response: Any) -> Dict[str, Any]:

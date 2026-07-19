@@ -205,9 +205,20 @@ def test_to_litellm_model_unknown_provider_passthrough():
     model = MagicMock()
     model.provider_name = "customcorp"
     model.model_identifier = "model-x"
+    model.api_endpoint = ""
     assert (
         RuntimeSessionExplorerService._to_litellm_model(model) == "customcorp/model-x"
     )
+
+
+def test_to_litellm_model_unknown_provider_with_endpoint_is_openai_compatible():
+    # Unknown providers that carry their own endpoint (imported custom
+    # OpenAI-compatible providers) route via litellm's generic openai adapter.
+    model = MagicMock()
+    model.provider_name = "customcorp"
+    model.model_identifier = "model-x"
+    model.api_endpoint = "https://api.customcorp.example/v1"
+    assert RuntimeSessionExplorerService._to_litellm_model(model) == "openai/model-x"
 
 
 # --- timestamp / scalar parsers --------------------------------------------
