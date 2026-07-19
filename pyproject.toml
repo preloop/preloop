@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "preloop"
-version = "0.12.7"
+version = "0.12.8"
 description = "Preloop - Control plane & safety layer for your agentic AI workforce"
 readme = "README.md"
 authors = [{name = "Dimitris Moraitis", email = "dimitris@preloop.ai"}, {name = "Yannis Chatzikonstantinou", email = "yannis@preloop.ai"}]
