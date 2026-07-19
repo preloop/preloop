@@ -30,6 +30,18 @@ DISABLE_VERSION_CHECK_ENV = "DISABLE_VERSION_CHECK"
 # tracker, so it must never show itself an "update available" banner.
 HOSTED_ENV = "PRELOOP_HOSTED"
 
+# Installer-stamped timestamps: the bash installer MAY write these into the
+# instance .env. When present they ride along in the one-time
+# install_completed payload; when absent they are simply omitted — the server
+# never synthesizes install timing it did not observe.
+INSTALL_STARTED_AT_ENV = "PRELOOP_INSTALL_STARTED_AT"
+INSTALL_COMPLETED_AT_ENV = "PRELOOP_INSTALL_COMPLETED_AT"
+
+# Instance-metadata key recording that the one-time install_completed funnel
+# marker was delivered. Persisted in the Instance row so the marker is sent
+# exactly once per installation, across restarts.
+INSTALL_COMPLETED_EMITTED_KEY = "install_completed_emitted_at"
+
 # Truthy values for the opt-out variables: true/1/t/yes, case-insensitive,
 # surrounding whitespace ignored. Must stay aligned with the Go CLI's parsing
 # in cli/internal/telemetry/optout.go — one variable, one parsing rule.
@@ -171,11 +183,79 @@ def _is_enterprise() -> bool:
         return False
 
 
+def _installer_timestamps() -> dict:
+    """Installer-stamped timestamps from the environment, when present.
+
+    Returns:
+        Dict with ``install_started_at``/``install_completed_at`` for each
+        stamp the installer actually wrote into the .env; empty otherwise.
+        Timestamps are passed through verbatim, never synthesized.
+    """
+    stamps: dict = {}
+    started = os.getenv(INSTALL_STARTED_AT_ENV, "").strip()
+    completed = os.getenv(INSTALL_COMPLETED_AT_ENV, "").strip()
+    if started:
+        stamps["install_started_at"] = started
+    if completed:
+        stamps["install_completed_at"] = completed
+    return stamps
+
+
+def should_emit_install_completed(instance: "Instance") -> bool:
+    """Whether this check-in should carry the one-time install_completed marker.
+
+    Suppressed by the same gates as the update banner (telemetry disabled,
+    hosted preloop.ai deployment) and by the persisted emitted flag once the
+    marker has been delivered successfully.
+    """
+    if is_telemetry_disabled() or is_hosted_instance():
+        return False
+    metadata = getattr(instance, "metadata_", None) or {}
+    return INSTALL_COMPLETED_EMITTED_KEY not in metadata
+
+
+def _mark_install_completed_emitted(instance: "Instance") -> None:
+    """Persist the install_completed emitted flag (exactly-once guard).
+
+    Updates both the long-lived in-memory instance (used by the periodic
+    checker between restarts) and the Instance row (used across restarts).
+    """
+    emitted_at = datetime.now(timezone.utc).isoformat()
+    instance.metadata_ = {
+        **(instance.metadata_ or {}),
+        INSTALL_COMPLETED_EMITTED_KEY: emitted_at,
+    }
+
+    from preloop.models.db.session import get_db_session
+    from preloop.models.models import Instance
+
+    try:
+        db = next(get_db_session())
+        try:
+            row = db.query(Instance).first()
+            if row is None:
+                return
+            row.metadata_ = {
+                **(row.metadata_ or {}),
+                INSTALL_COMPLETED_EMITTED_KEY: emitted_at,
+            }
+            db.commit()
+        finally:
+            db.close()
+    except Exception as e:
+        logger.debug(f"Could not persist install_completed marker: {e}")
+
+
 async def send_version_check(instance: "Instance") -> bool:
     """Send version check POST to preloop.ai.
 
     This is opt-out telemetry that helps us understand adoption.
     Set PRELOOP_DISABLE_TELEMETRY=true to disable.
+
+    The first successful check-in of a fresh instance additionally carries a
+    one-time ``install_completed`` marker in the payload metadata (the
+    install-funnel signal). It rides this existing channel — no new outbound
+    surface — and is marked emitted only after a successful delivery.
 
     Args:
         instance: The local instance record.
@@ -188,11 +268,17 @@ async def send_version_check(instance: "Instance") -> bool:
         return False
 
     try:
+        metadata = dict(instance.metadata_ or {})
+        include_install_completed = should_emit_install_completed(instance)
+        if include_install_completed:
+            metadata["install_completed"] = True
+            metadata.update(_installer_timestamps())
+
         payload = {
             "instance_uuid": str(instance.instance_uuid),
             "version": instance.version,
             "edition": instance.edition,
-            "metadata": instance.metadata_ or {},
+            "metadata": metadata,
         }
 
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -205,6 +291,9 @@ async def send_version_check(instance: "Instance") -> bool:
                         f"Update available: {data.get('current_version')} "
                         f"(you have {instance.version})"
                     )
+                if include_install_completed:
+                    # Delivered: never send the marker again.
+                    _mark_install_completed_emitted(instance)
                 # Persist the result so the web UI (and /api/v1/version) can
                 # surface an update banner to admins between checks.
                 _persist_version_check_result(data)

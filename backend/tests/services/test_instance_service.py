@@ -22,6 +22,8 @@ def _reset_module_state(monkeypatch):
     monkeypatch.delenv("PRELOOP_DISABLE_TELEMETRY", raising=False)
     monkeypatch.delenv("DISABLE_VERSION_CHECK", raising=False)
     monkeypatch.delenv("PRELOOP_HOSTED", raising=False)
+    monkeypatch.delenv("PRELOOP_INSTALL_STARTED_AT", raising=False)
+    monkeypatch.delenv("PRELOOP_INSTALL_COMPLETED_AT", raising=False)
     instance_service._current_instance = None
     instance_service._version_check_task = None
     yield
@@ -79,7 +81,15 @@ async def test_send_version_check_skips_when_disabled(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_send_version_check_success_posts_expected_payload():
-    instance = _make_instance(version="9.9.9", edition="enterprise")
+    # Marker already emitted: this test checks the steady-state payload.
+    instance = _make_instance(
+        version="9.9.9",
+        edition="enterprise",
+        metadata_={
+            "key": "value",
+            instance_service.INSTALL_COMPLETED_EMITTED_KEY: "2026-01-01T00:00:00+00:00",
+        },
+    )
 
     mock_response = MagicMock()
     mock_response.status_code = 200
@@ -101,7 +111,10 @@ async def test_send_version_check_success_posts_expected_payload():
     assert payload["instance_uuid"] == str(instance.instance_uuid)
     assert payload["version"] == "9.9.9"
     assert payload["edition"] == "enterprise"
-    assert payload["metadata"] == {"key": "value"}
+    assert payload["metadata"] == {
+        "key": "value",
+        instance_service.INSTALL_COMPLETED_EMITTED_KEY: "2026-01-01T00:00:00+00:00",
+    }
 
 
 @pytest.mark.asyncio
@@ -167,6 +180,7 @@ async def test_send_version_check_handles_generic_error():
 
 @pytest.mark.asyncio
 async def test_send_version_check_defaults_metadata_to_empty(monkeypatch):
+    """None metadata becomes a dict; a fresh instance carries only the marker."""
     instance = _make_instance(metadata_=None)
     mock_response = MagicMock()
     mock_response.status_code = 200
@@ -176,10 +190,173 @@ async def test_send_version_check_defaults_metadata_to_empty(monkeypatch):
     mock_client.__aenter__.return_value = mock_client
     mock_client.__aexit__.return_value = None
 
-    with patch.object(instance_service.httpx, "AsyncClient", return_value=mock_client):
+    with (
+        patch.object(instance_service.httpx, "AsyncClient", return_value=mock_client),
+        patch(
+            "preloop.models.db.session.get_db_session",
+            side_effect=lambda: iter([MagicMock()]),
+        ),
+    ):
         await send_version_check(instance)
     payload = mock_client.post.call_args.kwargs["json"]
-    assert payload["metadata"] == {}
+    assert payload["metadata"] == {"install_completed": True}
+
+
+# --- install_completed funnel marker ----------------------------------------
+
+
+def _mock_success_client(response_json=None):
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = response_json or {}
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_response
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    return mock_client
+
+
+class TestInstallCompletedMarker:
+    """The one-time install_completed marker on the version-check channel."""
+
+    @pytest.mark.asyncio
+    async def test_sent_on_first_successful_checkin_and_flag_persists(self):
+        instance = _make_instance(metadata_={})
+        row = SimpleNamespace(metadata_={})
+        db = _mock_db_with_row(row)
+        mock_client = _mock_success_client()
+
+        with (
+            patch.object(
+                instance_service.httpx, "AsyncClient", return_value=mock_client
+            ),
+            patch(
+                "preloop.models.db.session.get_db_session",
+                side_effect=lambda: iter([db]),
+            ),
+        ):
+            assert await send_version_check(instance) is True
+
+        payload = mock_client.post.call_args.kwargs["json"]
+        assert payload["metadata"]["install_completed"] is True
+        # Exactly-once guard persisted in the Instance row AND in-memory.
+        key = instance_service.INSTALL_COMPLETED_EMITTED_KEY
+        assert key in row.metadata_
+        assert key in instance.metadata_
+
+    @pytest.mark.asyncio
+    async def test_sent_exactly_once_across_consecutive_checks(self):
+        instance = _make_instance(metadata_={})
+        row = SimpleNamespace(metadata_={})
+        db = _mock_db_with_row(row)
+        mock_client = _mock_success_client()
+
+        with (
+            patch.object(
+                instance_service.httpx, "AsyncClient", return_value=mock_client
+            ),
+            patch(
+                "preloop.models.db.session.get_db_session",
+                side_effect=lambda: iter([db]),
+            ),
+        ):
+            await send_version_check(instance)
+            await send_version_check(instance)
+
+        first_payload = mock_client.post.call_args_list[0].kwargs["json"]
+        second_payload = mock_client.post.call_args_list[1].kwargs["json"]
+        assert first_payload["metadata"]["install_completed"] is True
+        assert "install_completed" not in second_payload["metadata"]
+
+    @pytest.mark.asyncio
+    async def test_not_marked_emitted_when_post_fails(self):
+        """A failed delivery must retry the marker on the next check-in."""
+        instance = _make_instance(metadata_={})
+        mock_response = MagicMock()
+        mock_response.status_code = 503
+        mock_response.text = "unavailable"
+        mock_client = AsyncMock()
+        mock_client.post.return_value = mock_response
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+
+        with patch.object(
+            instance_service.httpx, "AsyncClient", return_value=mock_client
+        ):
+            assert await send_version_check(instance) is False
+
+        payload = mock_client.post.call_args.kwargs["json"]
+        assert payload["metadata"]["install_completed"] is True
+        # Not emitted: the flag must not persist on failure.
+        assert instance_service.INSTALL_COMPLETED_EMITTED_KEY not in instance.metadata_
+
+    def test_suppressed_when_telemetry_disabled(self, monkeypatch):
+        monkeypatch.setenv("PRELOOP_DISABLE_TELEMETRY", "true")
+        instance = _make_instance(metadata_={})
+        assert instance_service.should_emit_install_completed(instance) is False
+
+    @pytest.mark.asyncio
+    async def test_suppressed_when_hosted(self, monkeypatch):
+        """Hosted preloop.ai must never report its own install as a funnel hit."""
+        monkeypatch.setenv("PRELOOP_HOSTED", "1")
+        instance = _make_instance(metadata_={})
+        mock_client = _mock_success_client()
+
+        with patch.object(
+            instance_service.httpx, "AsyncClient", return_value=mock_client
+        ):
+            await send_version_check(instance)
+
+        payload = mock_client.post.call_args.kwargs["json"]
+        assert "install_completed" not in payload["metadata"]
+        assert instance_service.INSTALL_COMPLETED_EMITTED_KEY not in instance.metadata_
+
+    @pytest.mark.asyncio
+    async def test_installer_timestamps_included_when_stamped(self, monkeypatch):
+        monkeypatch.setenv("PRELOOP_INSTALL_STARTED_AT", "2026-07-18T10:00:00Z")
+        monkeypatch.setenv("PRELOOP_INSTALL_COMPLETED_AT", "2026-07-18T10:04:30Z")
+        instance = _make_instance(metadata_={})
+        row = SimpleNamespace(metadata_={})
+        db = _mock_db_with_row(row)
+        mock_client = _mock_success_client()
+
+        with (
+            patch.object(
+                instance_service.httpx, "AsyncClient", return_value=mock_client
+            ),
+            patch(
+                "preloop.models.db.session.get_db_session",
+                side_effect=lambda: iter([db]),
+            ),
+        ):
+            await send_version_check(instance)
+
+        metadata = mock_client.post.call_args.kwargs["json"]["metadata"]
+        assert metadata["install_started_at"] == "2026-07-18T10:00:00Z"
+        assert metadata["install_completed_at"] == "2026-07-18T10:04:30Z"
+
+    @pytest.mark.asyncio
+    async def test_installer_timestamps_never_synthesized(self):
+        """No .env stamps -> no timestamp fields, not even empty ones."""
+        instance = _make_instance(metadata_={})
+        row = SimpleNamespace(metadata_={})
+        db = _mock_db_with_row(row)
+        mock_client = _mock_success_client()
+
+        with (
+            patch.object(
+                instance_service.httpx, "AsyncClient", return_value=mock_client
+            ),
+            patch(
+                "preloop.models.db.session.get_db_session",
+                side_effect=lambda: iter([db]),
+            ),
+        ):
+            await send_version_check(instance)
+
+        metadata = mock_client.post.call_args.kwargs["json"]["metadata"]
+        assert "install_started_at" not in metadata
+        assert "install_completed_at" not in metadata
 
 
 # --- version comparison ----------------------------------------------------

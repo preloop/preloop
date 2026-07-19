@@ -263,6 +263,10 @@ The installer detects the existing install and keeps its configuration (public U
 
 For Kubernetes/prod-like deployments, use the Helm chart in [`helm/preloop`](helm/preloop) and connect the CLI with `preloop login --url https://your-preloop.example.com`.
 
+### Telemetry
+
+Self-hosted instances and the CLI send a daily, pseudonymous version check-in (random UUID, version, platform — no user data), which also carries one-time `install_completed` / `cli_first_run` markers. Set `PRELOOP_DISABLE_TELEMETRY=true` (in the instance `.env`, or in the CLI's environment) to disable it entirely; the bash installer itself never phones home. The complete event and field list is in [SECURITY.md](SECURITY.md#telemetry).
+
 ### Release smoke test
 
 Every tagged release is verified automatically before it is published: the `verify-oss-install` job in the release workflow runs [`scripts/release_smoke_test.sh`](scripts/release_smoke_test.sh), which boots `docker-compose.release.yaml` with the tagged images, checks API/gateway/console health, exercises first-user sign-up and login, and fails if any service restart-loops. You can run the same script locally with `PRELOOP_VERSION=0.12.6 ./scripts/release_smoke_test.sh`.

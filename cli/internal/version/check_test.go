@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -73,7 +74,7 @@ func TestFetchVersionInfoPostsRichPayload(t *testing.T) {
 	// Isolate config dir so the test never touches the real ~/.preloop.
 	testenv.SetHome(t, t.TempDir())
 
-	info, err := fetchVersionInfo()
+	info, err := fetchVersionInfo("11111111-2222-4333-8444-555555555555", false)
 	if err != nil {
 		t.Fatalf("fetchVersionInfo: %v", err)
 	}
@@ -83,9 +84,9 @@ func TestFetchVersionInfoPostsRichPayload(t *testing.T) {
 	if gotPath != CliVersionCheckPath {
 		t.Errorf("expected POST to %s, got %s", CliVersionCheckPath, gotPath)
 	}
-	// The payload must carry the install id + platform.
-	if gotBody["client_id"] == nil || gotBody["client_id"] == "" {
-		t.Error("payload missing client_id")
+	// The payload must carry the threaded install id + platform.
+	if gotBody["client_id"] != "11111111-2222-4333-8444-555555555555" {
+		t.Errorf("payload client_id = %v", gotBody["client_id"])
 	}
 	if gotBody["version"] != Version {
 		t.Errorf("payload version = %v", gotBody["version"])
@@ -124,7 +125,7 @@ func TestFetchVersionInfoFallsBackToLegacyEndpoint(t *testing.T) {
 	defer func() { VersionCheckOrigin = oldOrigin }()
 	testenv.SetHome(t, t.TempDir())
 
-	info, err := fetchVersionInfo()
+	info, err := fetchVersionInfo("", false)
 	if err != nil {
 		t.Fatalf("fetchVersionInfo with legacy fallback: %v", err)
 	}
@@ -133,6 +134,95 @@ func TestFetchVersionInfoFallsBackToLegacyEndpoint(t *testing.T) {
 	}
 	if len(paths) != 2 || !strings.HasSuffix(paths[1], LegacyVersionPath) {
 		t.Errorf("expected rich attempt then legacy fallback, got %v", paths)
+	}
+}
+
+func TestBuildCheckInPayloadFirstRunFlag(t *testing.T) {
+	testenv.SetHome(t, t.TempDir())
+
+	payload, _ := buildCheckInPayload("some-id", true)
+	if payload.ClientID != "some-id" {
+		t.Errorf("client_id = %q, want the threaded id", payload.ClientID)
+	}
+	if payload.Metadata["first_run"] != true {
+		t.Errorf("first_run must be true when threaded in, got %v", payload.Metadata)
+	}
+
+	payload, _ = buildCheckInPayload("some-id", false)
+	if _, present := payload.Metadata["first_run"]; present {
+		t.Errorf("first_run must be absent on later runs, got %v", payload.Metadata)
+	}
+}
+
+func TestCheckForUpdateThreadsFirstRunIntoPayload(t *testing.T) {
+	// Regression: CheckForUpdate used to create the client id, then payload
+	// construction re-derived it via a second GetOrCreateClientIDWithNew
+	// call — which found the id already on disk and reported first_run=false
+	// on the very first run. The flag must be threaded from the single call
+	// that actually created the id.
+	var bodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			bodies = append(bodies, body)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"latest_version": Version, // no update prompt noise
+			})
+		}))
+	defer server.Close()
+
+	oldOrigin := VersionCheckOrigin
+	VersionCheckOrigin = server.URL
+	defer func() { VersionCheckOrigin = oldOrigin }()
+
+	// Fresh HOME: no client id yet — this run is THE first run. Test runs
+	// set PRELOOP_DISABLE_TELEMETRY=true globally (so tests never pollute
+	// adoption data); neutralize it here scoped to this test, because the
+	// check-in against the local httptest server IS the behavior under test.
+	testenv.SetHome(t, t.TempDir())
+	t.Setenv(telemetry.DisableTelemetryEnv, "")
+	t.Setenv(telemetry.DisableVersionCheckEnv, "")
+
+	if err := CheckForUpdate(); err != nil {
+		t.Fatalf("first CheckForUpdate: %v", err)
+	}
+	if len(bodies) != 1 {
+		t.Fatalf("expected 1 check-in, got %d", len(bodies))
+	}
+	metadata, _ := bodies[0]["metadata"].(map[string]any)
+	if metadata == nil || metadata["first_run"] != true {
+		t.Fatalf("very first check-in must carry first_run=true, got %v", bodies[0])
+	}
+	firstClientID, _ := bodies[0]["client_id"].(string)
+	if firstClientID == "" {
+		t.Fatal("first check-in must carry the freshly created client_id")
+	}
+
+	// Force a second check with the SAME install: drop only the last-check
+	// timestamp, keeping the client id.
+	lastCheckPath, err := getLastCheckPath()
+	if err != nil {
+		t.Fatalf("getLastCheckPath: %v", err)
+	}
+	if err := os.Remove(lastCheckPath); err != nil {
+		t.Fatalf("removing last-check file: %v", err)
+	}
+
+	if err := CheckForUpdate(); err != nil {
+		t.Fatalf("second CheckForUpdate: %v", err)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("expected 2 check-ins, got %d", len(bodies))
+	}
+	if metadata, _ := bodies[1]["metadata"].(map[string]any); metadata != nil {
+		if _, present := metadata["first_run"]; present {
+			t.Errorf("second check-in must not carry first_run, got %v", metadata)
+		}
+	}
+	if secondClientID, _ := bodies[1]["client_id"].(string); secondClientID != firstClientID {
+		t.Errorf("client_id changed between runs: %q vs %q",
+			firstClientID, secondClientID)
 	}
 }
 

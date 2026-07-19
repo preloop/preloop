@@ -81,6 +81,34 @@ class CRUDEvent(CRUDBase[Event]):
             db.flush()
         return event
 
+    def has_conversion_event(
+        self, db: Session, *, account_id: UUID, conversion_event: str
+    ) -> bool:
+        """Whether an account already has a given conversion event recorded.
+
+        Used by plugins to keep once-per-account conversion events (e.g.
+        ``first_session_seen``) deduplicated. Same-transaction flushed rows
+        are visible, so a flush-then-check within one request stays exact.
+
+        Args:
+            db: Database session.
+            account_id: Account to check.
+            conversion_event: Conversion event name.
+
+        Returns:
+            True when a matching ``conversion`` event exists.
+        """
+        return (
+            db.query(Event.id)
+            .filter(
+                Event.account_id == account_id,
+                Event.event_type == "conversion",
+                Event.conversion_event == conversion_event,
+            )
+            .first()
+            is not None
+        )
+
     def get_session_start(self, db: Session, *, session_id: UUID) -> Optional[Event]:
         """The session_start row for a WebSocket session, if persisted."""
         return (
