@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 import time
-from typing import Optional
+from typing import Optional, Sequence
 
 from sqlalchemy.orm import Session
 
@@ -13,8 +13,15 @@ from preloop.api.auth.jwt import (
     get_user_from_token_if_valid,
     _managed_agent_for_api_key,
 )
-from preloop.models.crud import crud_api_key, crud_runtime_session, crud_user
+from preloop.models.crud import (
+    crud_api_key,
+    crud_managed_agent,
+    crud_managed_agent_ai_model_binding,
+    crud_runtime_session,
+    crud_user,
+)
 from preloop.models.crud.oauth_mcp_token import crud_oauth_mcp_access_token
+from preloop.models.models.ai_model import AIModel
 from preloop.models.models.api_key import ApiKey
 from preloop.models.models.oauth_mcp_token import OAuthMCPAccessToken
 from preloop.models.models.user import User
@@ -109,3 +116,103 @@ async def authenticate_bearer_token(
         user=oauth_user,
         oauth_access_token=oauth_token,
     )
+
+
+def resolve_managed_agent_id_for_context(
+    db: Session, auth_context: ModelGatewayAuthContext
+) -> Optional[str]:
+    """Resolve the managed-agent identity behind a gateway principal.
+
+    Args:
+        db: Active database session.
+        auth_context: Authenticated model gateway request context.
+
+    Returns:
+        The managed agent id string when the credential carries one — either
+        directly via ``context_data.managed_agent_id`` or indirectly via its
+        runtime principal source identity — otherwise ``None``.
+    """
+    api_key = auth_context.api_key
+    context_data = (
+        api_key.context_data
+        if api_key is not None and isinstance(api_key.context_data, dict)
+        else {}
+    )
+    managed_agent_id = context_data.get("managed_agent_id")
+    if managed_agent_id:
+        return str(managed_agent_id)
+
+    runtime_principal = context_data.get("runtime_principal") or {}
+    session_source_type = runtime_principal.get("type")
+    session_source_id = runtime_principal.get("id")
+    if not session_source_type or not session_source_id:
+        return None
+
+    managed_agent = crud_managed_agent.get_by_source(
+        db,
+        account_id=str(auth_context.user.account_id),
+        session_source_type=session_source_type,
+        session_source_id=session_source_id,
+    )
+    return str(managed_agent.id) if managed_agent is not None else None
+
+
+def compute_authorized_model_ids(
+    db: Session,
+    auth_context: ModelGatewayAuthContext,
+    account_models: Sequence[AIModel],
+) -> frozenset[str]:
+    """Compute the ids of ``account_models`` this gateway principal may use.
+
+    Authorization rules, in order:
+
+    - BYOK / API-key-backed / ambient models are authorized for every
+      principal in the account (unchanged behavior).
+    - Subscription-OAuth models (``is_principal_bound_oauth``) are authorized
+      ONLY for the managed-agent principal whose id has an active row in
+      ``managed_agent_ai_model_binding`` for that model.
+    - User tokens (console-originated calls, no API key and no OAuth MCP
+      token) keep full visibility of the account inventory.
+    - Fail closed: credentials that resolve to no managed agent — legacy
+      gateway keys without ``managed_agent_id`` and OAuth MCP client tokens —
+      are never authorized for principal-bound models, and bound models with
+      no binding row are authorized for nobody but user tokens.
+
+    Args:
+        db: Active database session.
+        auth_context: Authenticated model gateway request context.
+        account_models: Full account model inventory to authorize against.
+
+    Returns:
+        Frozen set of authorized ``AIModel`` id strings.
+    """
+    all_ids = frozenset(str(ai_model.id) for ai_model in account_models)
+    bound_ids = {
+        str(ai_model.id)
+        for ai_model in account_models
+        if bool(getattr(ai_model, "is_principal_bound_oauth", False))
+    }
+    if not bound_ids:
+        return all_ids
+
+    is_user_token = (
+        auth_context.api_key is None and auth_context.oauth_access_token is None
+    )
+    if is_user_token:
+        return all_ids
+
+    authorized = set(all_ids - bound_ids)
+    managed_agent_id = resolve_managed_agent_id_for_context(db, auth_context)
+    if managed_agent_id is None:
+        return frozenset(authorized)
+
+    bindings = crud_managed_agent_ai_model_binding.list_for_agent(
+        db,
+        account_id=str(auth_context.user.account_id),
+        agent_id=managed_agent_id,
+    )
+    for binding in bindings:
+        bound_model_id = str(binding.ai_model_id)
+        if bound_model_id in bound_ids:
+            authorized.add(bound_model_id)
+    return frozenset(authorized)

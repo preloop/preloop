@@ -471,7 +471,14 @@ class GeminiGatewayService(OpenAIGatewayService):
     def _resolve_gemini_model_alias(self, model_name: str) -> str:
         requested_name = self._public_model_name(model_name)
         matches: List[str] = []
-        for ai_model in self._get_account_models():
+        account_models = self._get_account_models()
+        authorized_ids = self._authorized_model_ids(account_models)
+        for ai_model in account_models:
+            if str(ai_model.id) not in authorized_ids:
+                # Principal-bound models outside this credential's authorized
+                # set must not resolve here either — _resolve_requested_model
+                # below turns them into the shared model_not_authorized 400.
+                continue
             runtime = resolve_ai_model_runtime(ai_model)
             alias = runtime.model_gateway_model_alias
             if not alias:

@@ -48,7 +48,11 @@ from preloop.services.context_optimization import (
     tool_choice_named_tool,
     tool_definition_name,
 )
-from preloop.services.model_gateway_auth import ModelGatewayAuthContext
+from preloop.services.model_gateway_auth import (
+    ModelGatewayAuthContext,
+    compute_authorized_model_ids,
+    resolve_managed_agent_id_for_context,
+)
 from preloop.services.model_gateway_budget import (
     BudgetCheckResult,
     ModelGatewayBudgetService,
@@ -259,6 +263,10 @@ class OpenAIGatewayService:
         # never a false dollar claim. Set at both credential-resolution
         # choke points; reset there per request to avoid stale carryover.
         self._last_upstream_credential_type: Optional[str] = None
+        # Per-request memo of the authorized model-id set for this principal.
+        # Computed once from the account inventory on first use so listing,
+        # alias resolution, and default selection all consume the same set.
+        self._authorized_model_ids_cache: Optional[frozenset[str]] = None
 
     def _resolve_runtime_session(self) -> Optional[str]:
         if self._resolved_runtime_session_attempted:
@@ -355,33 +363,7 @@ class OpenAIGatewayService:
         return runtime_session_id
 
     def _resolve_managed_agent_id(self) -> Optional[str]:
-        api_key = self.auth_context.api_key
-        context_data = (
-            api_key.context_data
-            if api_key and isinstance(api_key.context_data, dict)
-            else {}
-        )
-        managed_agent_id = (
-            context_data.get("managed_agent_id") if context_data else None
-        )
-        if managed_agent_id:
-            return str(managed_agent_id)
-
-        runtime_principal = context_data.get("runtime_principal") or {}
-        session_source_type = runtime_principal.get("type")
-        session_source_id = runtime_principal.get("id")
-        if not session_source_type or not session_source_id:
-            return None
-
-        from preloop.models.crud.managed_agent import crud_managed_agent
-
-        managed_agent = crud_managed_agent.get_by_source(
-            self.db,
-            account_id=str(self.auth_context.user.account_id),
-            session_source_type=session_source_type,
-            session_source_id=session_source_id,
-        )
-        return str(managed_agent.id) if managed_agent is not None else None
+        return resolve_managed_agent_id_for_context(self.db, self.auth_context)
 
     def _emit_gateway_request_started(
         self,
@@ -427,9 +409,13 @@ class OpenAIGatewayService:
         )
 
     def list_models(self) -> Dict[str, Any]:
-        """List gateway-enabled models available to the authenticated account."""
+        """List gateway-enabled models available to this gateway principal."""
         data = []
-        for ai_model in self._get_account_models():
+        account_models = self._get_account_models()
+        authorized_ids = self._authorized_model_ids(account_models)
+        for ai_model in account_models:
+            if str(ai_model.id) not in authorized_ids:
+                continue
             runtime = resolve_ai_model_runtime(ai_model)
             if not runtime.model_gateway_enabled:
                 continue
@@ -1772,15 +1758,43 @@ class OpenAIGatewayService:
 
         return crud_ai_model.get_all_for_account(self.db, account_id=account_id)
 
+    def _authorized_model_ids(self, account_models: List[AIModel]) -> frozenset[str]:
+        """Return the model-id set this principal may use (memoized per request).
+
+        Args:
+            account_models: Full account model inventory.
+
+        Returns:
+            Frozen set of authorized ``AIModel`` id strings computed once per
+            service instance so every surface (listing, alias resolution,
+            default selection) consumes the same set.
+        """
+        if self._authorized_model_ids_cache is None:
+            self._authorized_model_ids_cache = compute_authorized_model_ids(
+                self.db, self.auth_context, account_models
+            )
+        return self._authorized_model_ids_cache
+
     def _resolve_requested_model(
         self, requested_model: Optional[str], *, provider: GatewayProvider
     ) -> AIModel:
         models = self._get_account_models()
+        authorized_ids = self._authorized_model_ids(models)
         gateway_enabled_models: List[tuple[AIModel, str]] = []
+        unauthorized_gateway_models: List[tuple[AIModel, str]] = []
         default_gateway_model: Optional[AIModel] = None
         for ai_model in models:
             runtime = resolve_ai_model_runtime(ai_model)
             if runtime.model_gateway_enabled and runtime.model_gateway_model_alias:
+                if str(ai_model.id) not in authorized_ids:
+                    # Principal-bound models outside this credential's
+                    # authorized set never match or become the default; they
+                    # are kept only to distinguish 400 (bound to another
+                    # agent) from 404 (unknown model) below.
+                    unauthorized_gateway_models.append(
+                        (ai_model, runtime.model_gateway_model_alias)
+                    )
+                    continue
                 gateway_enabled_models.append(
                     (ai_model, runtime.model_gateway_model_alias)
                 )
@@ -1807,6 +1821,26 @@ class OpenAIGatewayService:
                     suffix_match = ai_model
             if suffix_match is not None:
                 return suffix_match
+            for _, alias in unauthorized_gateway_models:
+                if alias == requested_model or alias.endswith(f"/{requested_model}"):
+                    available = (
+                        ", ".join(
+                            authorized_alias
+                            for _, authorized_alias in gateway_enabled_models
+                        )
+                        or "none"
+                    )
+                    raise ModelGatewayAPIError(
+                        provider=provider,
+                        status_code=400,
+                        message=(
+                            f"Model '{requested_model}' is bound to another "
+                            "agent's subscription credentials and can't serve "
+                            "this credential. Models available to this "
+                            f"credential: {available}."
+                        ),
+                        code="model_not_authorized",
+                    )
             raise ModelGatewayAPIError(
                 provider=provider,
                 status_code=404,
