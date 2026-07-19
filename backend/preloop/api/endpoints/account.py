@@ -1204,13 +1204,9 @@ async def extract_agent_name(
             raise HTTPException(status_code=400, detail="No AI models configured")
         default_model = sorted(all_models, key=lambda m: m.created_at, reverse=True)[0]
 
-    from preloop.services.policy_generation import _PROVIDER_PREFIX
+    from preloop.services.litellm_routing import to_litellm_model
 
-    provider = (default_model.provider_name or "openai").lower()
-    prefix = _PROVIDER_PREFIX.get(provider, provider)
-    litellm_model = default_model.model_identifier
-    if "/" not in litellm_model:
-        litellm_model = f"{prefix}/{litellm_model}"
+    litellm_model = to_litellm_model(default_model)
 
     kwargs = {
         "model": litellm_model,

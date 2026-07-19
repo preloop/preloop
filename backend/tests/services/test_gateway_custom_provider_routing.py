@@ -10,6 +10,8 @@ litellm's generic OpenAI-compatible adapter instead.
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from preloop.services.litellm_routing import known_litellm_providers
 from preloop.services.openai_gateway import OpenAIGatewayService
 
@@ -82,3 +84,31 @@ def test_unknown_headed_identifier_still_gets_prefixed():
         )
         == "openrouter/meta-llama/llama-3.1-70b"
     )
+
+
+@pytest.mark.asyncio
+async def test_extract_agent_name_uses_shared_routing(mocker):
+    # Regression: this endpoint lazily imported the removed _PROVIDER_PREFIX
+    # from policy_generation, which module-level import checks never caught.
+    from preloop.api.endpoints import account as account_endpoint
+
+    model = _model("kimi-for-coding", "k3", "https://api.kimi.example/v1")
+    model.api_key = None
+    crud = mocker.patch.object(account_endpoint, "crud_ai_model")
+    crud.get_default_active_model.return_value = model
+    completion = mocker.patch("litellm.completion")
+    completion.return_value.choices[0].message.content = "  AgentX  "
+
+    response = await account_endpoint.extract_agent_name(
+        request=account_endpoint.AgentNameExtractionRequest(
+            identity_content="# I am AgentX"
+        ),
+        account=MagicMock(id="acc-1"),
+        current_user=MagicMock(),
+        db=MagicMock(),
+    )
+
+    assert response.name == "AgentX"
+    kwargs = completion.call_args.kwargs
+    assert kwargs["model"] == "openai/k3"
+    assert kwargs["api_base"] == "https://api.kimi.example/v1"

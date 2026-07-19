@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Models imported from custom OpenAI-compatible providers failed at the
+  gateway.** Hermes configs can declare arbitrary provider names for
+  OpenAI-compatible endpoints (`model.provider: custom`, e.g. a
+  `kimi-for-coding/k3` entry); the gateway forwarded the name to litellm as a
+  provider prefix, which litellm rejects ("LLM Provider NOT provided") even
+  with `api_base` set — so onboarding live-validation and all model traffic
+  for such agents failed. Unknown providers with their own endpoint now route
+  through litellm's generic OpenAI-compatible adapter. All litellm
+  model-string building is unified in one shared module, fixing the same
+  latent break in policy generation, approval summaries, session-explorer
+  analysis, and agent-name extraction when the account default model is a
+  custom-provider one.
+
 ## [0.12.7] - 2026-07-19
 
 ### Added
