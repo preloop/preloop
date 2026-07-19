@@ -916,7 +916,7 @@ async function generateSlottedContentForRoute(
     <!-- Landing-view component will read and display this content -->
 
     <!-- Hero content slots -->
-    <h1 slot="hero-title">${escapeHtml(hero.title || '')}</h1>
+    <h1 slot="hero-title">${escapeHtmlAllowingGradientSpan(hero.title || '')}</h1>
     <p slot="hero-lead">${escapeHtml(hero.lead || '')}</p>
     <span slot="cta-primary">${escapeHtml(hero.cta_primary || '')}</span>
     ${hero.cta_primary_url ? `<span slot="cta-primary-url">${escapeAttr(hero.cta_primary_url)}</span>` : ''}
@@ -1613,6 +1613,26 @@ function escapeHtml(value: string | number | null | undefined): string {
 
 function escapeAttr(value: string | number | null | undefined): string {
   return escapeHtml(value);
+}
+
+/**
+ * Escape a hero title while preserving its one sanctioned piece of markup:
+ * the brand-highlight span, written in brands.yaml exactly as
+ * `<span class="gradient-product">…</span>`. Everything else is escaped, so
+ * a config carrying any other tag renders it as text rather than HTML.
+ * landing-view renders the result with unsafeHTML on both the SSR-slot and
+ * landing-content.json paths, so the emitted markup must match what the
+ * component expects.
+ */
+function escapeHtmlAllowingGradientSpan(
+  value: string | number | null | undefined
+): string {
+  return escapeHtml(value)
+    .replaceAll(
+      '&lt;span class=&quot;gradient-product&quot;&gt;',
+      '<span class="gradient-product">'
+    )
+    .replaceAll('&lt;/span&gt;', '</span>');
 }
 
 function formatPlanPrice(plan: any): string {
