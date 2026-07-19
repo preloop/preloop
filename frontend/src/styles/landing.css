@@ -104,7 +104,7 @@ p.lead {
 /* Two-column hero: copy on the left, static product shot on the right. */
 .hero-inner.has-visual {
   align-items: center;
-  gap: 4rem;
+  gap: 3rem;
 }
 
 .hero-inner.has-visual .hero-content {
@@ -119,7 +119,7 @@ p.lead {
 }
 
 .hero-visual {
-  flex: 1.5 1 0;
+  flex: 1.75 1 0;
   min-width: 0;
   flex-shrink: 0;
   cursor: pointer;

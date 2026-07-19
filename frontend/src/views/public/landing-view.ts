@@ -321,6 +321,10 @@ export class LandingView extends LitElement {
         transform: none;
       }
 
+      /* Deliberately NOT the product's sky primary: the button floats over a
+         real console screenshot, and a sky fill reads as part of the depicted
+         UI (it sat right above the gateway node in the shot). Dark translucent
+         chrome reads as a video affordance instead. */
       .hero-video-play {
         position: absolute;
         top: 50%;
@@ -332,9 +336,11 @@ export class LandingView extends LitElement {
         width: 4.5rem;
         height: 3.25rem;
         padding: 0;
-        background: #0284c7;
+        background: rgba(15, 18, 26, 0.72);
+        backdrop-filter: blur(4px);
+        -webkit-backdrop-filter: blur(4px);
         color: #ffffff;
-        border: none;
+        border: 1px solid rgba(255, 255, 255, 0.28);
         border-radius: 4px;
         cursor: pointer;
         box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
@@ -342,7 +348,7 @@ export class LandingView extends LitElement {
       }
 
       .hero-video-play:hover {
-        background: #0273ac;
+        background: rgba(15, 18, 26, 0.88);
       }
 
       .hero-video-play:focus-visible {
@@ -1825,7 +1831,7 @@ export class LandingView extends LitElement {
                       <sl-button
                         variant="text"
                         size="large"
-                        href="/request-demo"
+                        href=${this._ctaSecondaryUrl || '/request-demo'}
                         @click=${this._handleSecondaryCta}
                         data-track="cta_demo_footer"
                         >Request a Demo</sl-button
