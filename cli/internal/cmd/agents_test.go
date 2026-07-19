@@ -2816,6 +2816,227 @@ func TestApplyClaudeManagedGatewayConfiguresEnv(t *testing.T) {
 	if got := plan.ManagedDocument["model"]; got != "haiku" {
 		t.Fatalf("expected Claude settings model to stay on haiku, got %#v", got)
 	}
+	// Anthropic-family models keep the single-family pinning: the other
+	// family selectors and the subagent override must NOT be invented.
+	for _, key := range []string{
+		"ANTHROPIC_DEFAULT_OPUS_MODEL",
+		"ANTHROPIC_DEFAULT_SONNET_MODEL",
+		"CLAUDE_CODE_SUBAGENT_MODEL",
+	} {
+		if _, exists := env[key]; exists {
+			t.Fatalf("did not expect %s for an Anthropic-family model: %#v", key, env)
+		}
+	}
+}
+
+// A managed model outside the Claude families (the Kimi K3 case) must map
+// every selector Claude Code can emit at the managed alias. ANTHROPIC_MODEL
+// alone only covers the main loop: background/fast-path calls request
+// built-in claude-haiku-* identifiers and subagents resolve
+// CLAUDE_CODE_SUBAGENT_MODEL, and the gateway 404s both unless they are
+// pointed at the managed alias too.
+func TestApplyClaudeManagedGatewayNonAnthropicModelMapsAllSelectors(t *testing.T) {
+	plan := managedMCPEnrollmentPlan{
+		ManagedDocument: map[string]interface{}{
+			"mcpServers": map[string]interface{}{
+				"preloop": map[string]interface{}{
+					"url": "https://preloop.example/mcp/v1",
+				},
+			},
+		},
+	}
+	plan, err := applyClaudeManagedGateway(
+		plan,
+		"https://preloop.example",
+		"claude-durable-token",
+		"moonshot/kimi-k3-0905",
+	)
+	if err != nil {
+		t.Fatalf("unexpected gateway apply error: %v", err)
+	}
+
+	env := plan.ManagedDocument["env"].(map[string]interface{})
+	if env["ANTHROPIC_MODEL"] != "moonshot/kimi-k3-0905" {
+		t.Fatalf("expected main model pinned to managed alias: %#v", env)
+	}
+	if env["ANTHROPIC_CUSTOM_MODEL_OPTION"] != "moonshot/kimi-k3-0905" {
+		t.Fatalf("expected custom model option pinned to managed alias: %#v", env)
+	}
+	for _, key := range []string{
+		"ANTHROPIC_DEFAULT_OPUS_MODEL",
+		"ANTHROPIC_DEFAULT_SONNET_MODEL",
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL",
+		"CLAUDE_CODE_SUBAGENT_MODEL",
+	} {
+		if env[key] != "moonshot/kimi-k3-0905" {
+			t.Fatalf("expected %s pinned to managed alias, got %#v", key, env[key])
+		}
+	}
+	if _, exists := plan.ManagedDocument["model"]; exists {
+		t.Fatalf(
+			"did not expect a root model selection key for a non-family model, got %#v",
+			plan.ManagedDocument["model"],
+		)
+	}
+	if plan.ManagedModelAlias != "moonshot/kimi-k3-0905" {
+		t.Fatalf("unexpected managed model alias: %q", plan.ManagedModelAlias)
+	}
+}
+
+// Re-onboarding from a non-family model to an Anthropic-family model must not
+// leave the all-selector mapping behind: a stale CLAUDE_CODE_SUBAGENT_MODEL or
+// sibling-family key would keep routing part of the traffic at the old model.
+func TestApplyClaudeManagedGatewayReonboardToAnthropicClearsNonFamilySelectors(t *testing.T) {
+	plan := managedMCPEnrollmentPlan{
+		ManagedDocument: map[string]interface{}{},
+	}
+	plan, err := applyClaudeManagedGateway(
+		plan,
+		"https://preloop.example",
+		"claude-durable-token",
+		"moonshot/kimi-k3-0905",
+	)
+	if err != nil {
+		t.Fatalf("unexpected gateway apply error: %v", err)
+	}
+	plan, err = applyClaudeManagedGateway(
+		plan,
+		"https://preloop.example",
+		"claude-durable-token",
+		"anthropic/claude-sonnet-4-5",
+	)
+	if err != nil {
+		t.Fatalf("unexpected gateway re-apply error: %v", err)
+	}
+
+	env := plan.ManagedDocument["env"].(map[string]interface{})
+	if env["ANTHROPIC_MODEL"] != "sonnet" {
+		t.Fatalf("expected family selection key after re-onboard, got %#v", env["ANTHROPIC_MODEL"])
+	}
+	if env["ANTHROPIC_DEFAULT_SONNET_MODEL"] != "anthropic/claude-sonnet-4-5" {
+		t.Fatalf("expected sonnet family key after re-onboard: %#v", env)
+	}
+	for _, key := range []string{
+		"ANTHROPIC_DEFAULT_OPUS_MODEL",
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL",
+		"CLAUDE_CODE_SUBAGENT_MODEL",
+	} {
+		if value, exists := env[key]; exists {
+			t.Fatalf("stale non-family selector %s survived re-onboard: %#v", key, value)
+		}
+	}
+}
+
+// Switching between two non-family models must refresh every selector — no
+// env key may still point at the previous alias.
+func TestApplyClaudeManagedGatewayReonboardBetweenNonFamilyModelsRefreshes(t *testing.T) {
+	plan := managedMCPEnrollmentPlan{
+		ManagedDocument: map[string]interface{}{},
+	}
+	plan, err := applyClaudeManagedGateway(
+		plan,
+		"https://preloop.example",
+		"claude-durable-token",
+		"moonshot/kimi-k3-0905",
+	)
+	if err != nil {
+		t.Fatalf("unexpected gateway apply error: %v", err)
+	}
+	plan, err = applyClaudeManagedGateway(
+		plan,
+		"https://preloop.example",
+		"claude-durable-token",
+		"openai/gpt-5.4",
+	)
+	if err != nil {
+		t.Fatalf("unexpected gateway re-apply error: %v", err)
+	}
+
+	env := plan.ManagedDocument["env"].(map[string]interface{})
+	for key, value := range env {
+		text, ok := value.(string)
+		if !ok {
+			continue
+		}
+		if strings.Contains(text, "kimi-k3") {
+			t.Fatalf("env key %s still points at the previous alias: %q", key, text)
+		}
+	}
+	for _, key := range []string{
+		"ANTHROPIC_MODEL",
+		"ANTHROPIC_DEFAULT_OPUS_MODEL",
+		"ANTHROPIC_DEFAULT_SONNET_MODEL",
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL",
+		"CLAUDE_CODE_SUBAGENT_MODEL",
+	} {
+		if env[key] != "openai/gpt-5.4" {
+			t.Fatalf("expected %s refreshed to new alias, got %#v", key, env[key])
+		}
+	}
+}
+
+// Offboard-style env restore must remove the all-selector mapping written for
+// a non-family model, mirroring how ANTHROPIC_MODEL itself is cleaned.
+func TestRestoreClaudeGatewayEnvFromOriginalRemovesNonFamilySelectors(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "settings.json")
+	original := []byte(`{
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "sk-ant-oat01-local"
+  }
+}`)
+	if err := os.WriteFile(configPath, original, 0644); err != nil {
+		t.Fatalf("failed to write original config: %v", err)
+	}
+
+	agent := AgentConfig{Name: "Claude Code", ConfigPath: configPath}
+	plan := managedMCPEnrollmentPlan{
+		Agent: agent,
+		ManagedDocument: map[string]interface{}{
+			"env": map[string]interface{}{
+				"ANTHROPIC_AUTH_TOKEN": "sk-ant-oat01-local",
+			},
+		},
+	}
+	managed, err := applyClaudeManagedGateway(
+		plan,
+		"https://preloop.example",
+		"preloop-token",
+		"moonshot/kimi-k3-0905",
+	)
+	if err != nil {
+		t.Fatalf("applyClaudeManagedGateway returned error: %v", err)
+	}
+	if err := writeAgentConfigDocument(agent, managed.ManagedDocument); err != nil {
+		t.Fatalf("failed to write managed Claude config: %v", err)
+	}
+
+	if err := restoreClaudeGatewayEnvFromOriginal(agent, original, io.Discard); err != nil {
+		t.Fatalf("restoreClaudeGatewayEnvFromOriginal returned error: %v", err)
+	}
+
+	restored, err := loadAgentConfigDocument(agent)
+	if err != nil {
+		t.Fatalf("failed to load restored config: %v", err)
+	}
+	env := restored["env"].(map[string]interface{})
+	if env["ANTHROPIC_AUTH_TOKEN"] != "sk-ant-oat01-local" {
+		t.Fatalf("expected original Claude auth restored, got %#v", env)
+	}
+	for _, key := range []string{
+		"ANTHROPIC_MODEL",
+		"ANTHROPIC_DEFAULT_OPUS_MODEL",
+		"ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
+		"ANTHROPIC_DEFAULT_SONNET_MODEL",
+		"ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL",
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+		"CLAUDE_CODE_SUBAGENT_MODEL",
+	} {
+		if value, exists := env[key]; exists {
+			t.Fatalf("expected %s removed by restore, got %#v", key, value)
+		}
+	}
 }
 
 func TestRestoreClaudeGatewayEnvFromOriginalRestoresLocalAuth(t *testing.T) {
