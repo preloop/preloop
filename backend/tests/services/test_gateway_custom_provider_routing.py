@@ -10,10 +10,8 @@ litellm's generic OpenAI-compatible adapter instead.
 
 from unittest.mock import MagicMock
 
-from preloop.services.openai_gateway import (
-    OpenAIGatewayService,
-    _known_litellm_providers,
-)
+from preloop.services.litellm_routing import known_litellm_providers
+from preloop.services.openai_gateway import OpenAIGatewayService
 
 
 def _model(provider: str, identifier: str, endpoint: str = "") -> MagicMock:
@@ -37,7 +35,7 @@ def test_known_prefix_map_providers_keep_their_prefix():
 
 def test_litellm_native_provider_passes_through():
     # mistral is not in the local prefix map but litellm routes it natively.
-    assert "mistral" in _known_litellm_providers()
+    assert "mistral" in known_litellm_providers()
     assert (
         OpenAIGatewayService._to_litellm_model(
             _model("mistral", "mistral-large", "https://api.mistral.ai/v1")
@@ -48,7 +46,7 @@ def test_litellm_native_provider_passes_through():
 
 def test_unknown_provider_with_endpoint_routes_openai_compatible():
     # The tester-reported case: Hermes custom provider kimi-for-coding/k3.
-    assert "kimi-for-coding" not in _known_litellm_providers()
+    assert "kimi-for-coding" not in known_litellm_providers()
     assert (
         OpenAIGatewayService._to_litellm_model(
             _model("kimi-for-coding", "k3", "https://api.kimi.example/v1")
@@ -63,4 +61,24 @@ def test_unknown_provider_without_endpoint_keeps_name():
     assert (
         OpenAIGatewayService._to_litellm_model(_model("kimi-for-coding", "k3"))
         == "kimi-for-coding/k3"
+    )
+
+
+def test_prefixed_identifier_passes_through():
+    # Stored identifiers that already carry a routable prefix must not be
+    # double-prefixed (pinned behavior of the pre-unification copies).
+    assert (
+        OpenAIGatewayService._to_litellm_model(_model("openai", "azure/gpt-5.4"))
+        == "azure/gpt-5.4"
+    )
+
+
+def test_unknown_headed_identifier_still_gets_prefixed():
+    # "meta-llama/llama-3" is a model path, not a litellm prefix - the
+    # provider prefix must still be applied.
+    assert (
+        OpenAIGatewayService._to_litellm_model(
+            _model("openrouter", "meta-llama/llama-3.1-70b")
+        )
+        == "openrouter/meta-llama/llama-3.1-70b"
     )

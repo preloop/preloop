@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from preloop.models.crud.ai_model import ai_model as crud_ai_model
 from preloop.models.crud.audit_log import crud_audit_log
 from preloop.models.models.ai_model import AIModel
+from preloop.services.litellm_routing import to_litellm_model
 from preloop.services.policy import export_current_policy
 from preloop.services.policy.schema import PolicyDocument
 
@@ -33,13 +34,6 @@ logger = logging.getLogger(__name__)
 
 # Mapping from our provider_name to litellm prefix.
 # litellm uses prefixes like "openai/", "anthropic/", etc.
-_PROVIDER_PREFIX: Dict[str, str] = {
-    "openai": "openai",
-    "anthropic": "anthropic",
-    "google": "gemini",
-    "qwen": "openai",  # Qwen uses OpenAI-compatible API
-    "deepseek": "deepseek",
-}
 
 
 class PolicyGenerationError(Exception):
@@ -373,16 +367,7 @@ If a "CURRENT ACCOUNT CONFIGURATION" block is provided below:
     @staticmethod
     def _to_litellm_model(model: AIModel) -> str:
         """Convert our AIModel to a litellm model string."""
-        provider = (model.provider_name or "openai").lower()
-        identifier = model.model_identifier
-
-        prefix = _PROVIDER_PREFIX.get(provider, provider)
-
-        # If the identifier already contains a prefix, use it as-is
-        if "/" in identifier:
-            return identifier
-
-        return f"{prefix}/{identifier}"
+        return to_litellm_model(model)
 
     @staticmethod
     def _extract_yaml(raw: str) -> str:

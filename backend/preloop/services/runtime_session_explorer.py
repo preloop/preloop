@@ -24,6 +24,7 @@ from preloop.models.crud import (
     crud_runtime_session_optimization_result,
 )
 from preloop.models.models.account import Account
+from preloop.services.litellm_routing import to_litellm_model
 from preloop.schemas.gateway_usage import (
     AccountGatewayUsageSearchResponse,
     AccountRuntimeSessionDetailResponse,
@@ -48,18 +49,6 @@ MAX_TITLES_PER_LIST_REQUEST = 8
 # Refresh a session's title once its request count has grown by at least this
 # many requests since the title was last generated.
 TITLE_REFRESH_REQUEST_DELTA = 5
-
-_PROVIDER_PREFIX = {
-    "openai": "openai",
-    "anthropic": "anthropic",
-    "google": "gemini",
-    "gemini": "gemini",
-    "mistral": "mistral",
-    "deepseek": "deepseek",
-    "openrouter": "openrouter",
-    "bedrock": "bedrock",
-    "azure": "azure",
-}
 
 
 class RuntimeSessionExplorerService:
@@ -644,11 +633,7 @@ class RuntimeSessionExplorerService:
 
     @staticmethod
     def _to_litellm_model(model: AIModel) -> str:
-        provider = (model.provider_name or "openai").lower()
-        identifier = model.model_identifier
-        if "/" in identifier:
-            return identifier
-        return f"{_PROVIDER_PREFIX.get(provider, provider)}/{identifier}"
+        return to_litellm_model(model)
 
     def _call_interaction_summary_model(
         self,
