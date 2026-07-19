@@ -44,6 +44,9 @@ PROVIDER_PREFIX: Dict[str, str] = {
     "mistral": "mistral",
     "openrouter": "openrouter",
     "azure": "azure",
+    "aws": "bedrock",
+    "vertex": "vertex_ai",
+    "vertex_ai": "vertex_ai",
 }
 
 
