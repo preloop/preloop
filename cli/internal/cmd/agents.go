@@ -851,6 +851,7 @@ func promptToOnboardDiscoveredAgents(
 			// (e.g. stale OpenClaw plugin cleanup) auto-accept under -y.
 			AutoApprove:       autoApprove,
 			SkipConfirmation:  true,
+			AgentPrepared:     true,
 			LiveValidate:      true,
 			SkipLiveValidate:  skipLiveValidate,
 			DeferLiveValidate: deferLiveValidate,
@@ -994,6 +995,7 @@ func onboardCandidatesBestEffort(
 		agentOpts := opts
 		agentOpts.AutoApprove = true
 		agentOpts.SkipConfirmation = true
+		agentOpts.AgentPrepared = true
 		agentOpts.DeferLiveValidate = deferLiveValidate
 		if err := enroll(prepared, agentOpts); err != nil {
 			// A skipped managed launcher is a partial success (MCP and
@@ -1043,6 +1045,15 @@ func printAgentOnboardingFailures(
 		writer,
 		"Re-run `preloop agents onboard <agent> -y` after fixing the listed agent environment.",
 	)
+}
+
+// shouldPromptForEnrollmentName reports whether executeManagedEnrollment must
+// run its own prepareAgentForEnrollment (which prompts for the display name in
+// interactive runs). Callers that already prepared the agent — the discover
+// and `onboard` batch loops call prepareAgentForEnrollment before enrolling —
+// set AgentPrepared so the user is asked for the agent name exactly once.
+func shouldPromptForEnrollmentName(opts managedEnrollmentOptions) bool {
+	return !opts.SkipConfirmation && !opts.AutoApprove && !opts.AgentPrepared
 }
 
 func prepareAgentForEnrollment(
@@ -1252,6 +1263,11 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 			agentOpts := opts
 			agentOpts.SkipConfirmation = autoApprove
 			agentOpts.DeferLiveValidate = deferLiveValidate
+			// promptToOnboardCandidates already ran
+			// prepareAgentForEnrollment (name prompt) for this agent; the
+			// enrollment must keep its plan/apply confirmation but not ask
+			// for the agent name a second time.
+			agentOpts.AgentPrepared = true
 			return executeManagedEnrollment(a, agentOpts)
 		})
 		if err != nil {

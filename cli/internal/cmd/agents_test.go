@@ -1813,6 +1813,46 @@ func TestPromptForApprovalsOptIn(t *testing.T) {
 	})
 }
 
+func TestShouldPromptForEnrollmentName(t *testing.T) {
+	cases := []struct {
+		name string
+		opts managedEnrollmentOptions
+		want bool
+	}{
+		{
+			name: "interactive single-agent onboard prompts once",
+			opts: managedEnrollmentOptions{},
+			want: true,
+		},
+		{
+			name: "auto-approve never prompts",
+			opts: managedEnrollmentOptions{AutoApprove: true},
+			want: false,
+		},
+		{
+			name: "skip-confirmation never prompts",
+			opts: managedEnrollmentOptions{SkipConfirmation: true},
+			want: false,
+		},
+		{
+			// Regression: the discover/onboard batch loops prepare the agent
+			// (name prompt) before calling executeManagedEnrollment; the
+			// enrollment must not ask for the agent name a second time even
+			// when its own confirmation prompts stay interactive.
+			name: "already-prepared agent is not re-prompted",
+			opts: managedEnrollmentOptions{AgentPrepared: true},
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldPromptForEnrollmentName(tc.opts); got != tc.want {
+				t.Fatalf("shouldPromptForEnrollmentName(%+v) = %v, want %v", tc.opts, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPrepareAgentForEnrollment_AllowsEditingAgentName(t *testing.T) {
 	agent, err := prepareAgentForEnrollment(
 		bufio.NewReader(strings.NewReader("Octavia\n")),
