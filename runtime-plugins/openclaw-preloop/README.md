@@ -65,7 +65,7 @@ credentials for you:
 
 ```bash
 curl -fsSL https://preloop.ai/install/cli | sh
-preloop signup                          # or: preloop login --url http://localhost:8000
+preloop signup                          # or: preloop login --url http://localhost:3000
 preloop agents onboard openclaw
 preloop agents install-plugin openclaw
 preloop agents validate openclaw

@@ -24,7 +24,7 @@ curl -fsSL https://preloop.ai/install/cli | sh
 
 # 2. Connect it to a control plane:
 preloop signup                                # Preloop Cloud (fastest), or
-preloop login --url http://localhost:8000    # your self-hosted instance (see Getting Started)
+preloop login --url http://localhost:3000    # your self-hosted instance (see Getting Started)
 
 # 3. Bring your local agents under governance
 preloop agents discover
@@ -227,11 +227,11 @@ curl -fsSL https://preloop.ai/install/oss | sh
 
 # Install the CLI and connect it to YOUR instance instead of preloop.ai
 curl -fsSL https://preloop.ai/install/cli | sh
-preloop login --url http://localhost:8000
+preloop login --url http://localhost:3000
 preloop agents discover
 ```
 
-The console is at `http://localhost:3000` — create the first user there or let `preloop login` walk you through it. You can also set the instance URL via the environment (`PRELOOP_URL=http://localhost:8000 preloop login`); the CLI stores it in `~/.preloop/config.yaml`, so every later command targets your instance. Without `--url` or `PRELOOP_URL`, the CLI defaults to `https://preloop.ai`.
+The console is at `http://localhost:3000` — create the first user there or let `preloop login` walk you through it. You can also set the instance URL via the environment (`PRELOOP_URL=http://localhost:3000 preloop login`); the CLI stores it in `~/.preloop/config.yaml`, so every later command targets your instance. Without `--url` or `PRELOOP_URL`, the CLI defaults to `https://preloop.ai`.
 
 #### Public deployments: HTTPS and email
 
