@@ -482,6 +482,7 @@ func printAgentOnboardingSummary(w io.Writer, outcomes []agentOnboardingOutcome)
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
 	fmt.Fprintf(tw, "  Agent\tStatus\tReason\n") //nolint:errcheck
 	missingExecutable := false
+	anyFailed := false
 	for _, outcome := range outcomes {
 		reason := outcome.Reason
 		if reason == "" {
@@ -497,12 +498,18 @@ func printAgentOnboardingSummary(w io.Writer, outcomes []agentOnboardingOutcome)
 		if outcome.MissingExecutable {
 			missingExecutable = true
 		}
+		if outcome.Status == agentOnboardingStatusFailed {
+			anyFailed = true
+		}
 	}
 	tw.Flush() //nolint:errcheck
 	if missingExecutable {
 		if hint := wslMissingExecutableHint(); hint != "" {
 			fmt.Fprintf(w, "  Hint: %s\n", hint) //nolint:errcheck
 		}
+	}
+	if anyFailed {
+		printTroubleshootingFooter(w)
 	}
 }
 
@@ -1064,6 +1071,7 @@ func printAgentOnboardingFailures(
 		writer,
 		"Re-run `preloop agents onboard <agent> -y` after fixing the listed agent environment.",
 	)
+	printTroubleshootingFooter(writer)
 }
 
 // shouldPromptForEnrollmentName reports whether executeManagedEnrollment must
@@ -1341,7 +1349,11 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 
 	// A skipped managed launcher (missing agent binary) is a partial success:
 	// the warning has been printed and the command exits 0.
-	return ignoreLauncherSkipped(executeManagedEnrollment(agent, opts))
+	if err := ignoreLauncherSkipped(executeManagedEnrollment(agent, opts)); err != nil {
+		printTroubleshootingFooter(os.Stdout)
+		return err
+	}
+	return nil
 }
 
 func ensureAgentControlOnboarding(
@@ -1752,6 +1764,7 @@ func runAgentsValidate(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  routing: %s\n", onboardingStateNote(onboardingStateFromValidation(result)))
 
 	if status != "validated" {
+		printTroubleshootingFooter(os.Stdout)
 		return fmt.Errorf("managed enrollment validation failed")
 	}
 	return nil
