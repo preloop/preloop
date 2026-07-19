@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.7] - 2026-07-19
+
 ### Added
 
 - **Bootstrap setup token for the first registration.** On a fresh (zero-user)
