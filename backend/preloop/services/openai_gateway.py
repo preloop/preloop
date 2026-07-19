@@ -11,6 +11,7 @@ import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+from functools import lru_cache
 from typing import Any, Dict, Iterator, List, Optional, Protocol
 from urllib import error as urllib_error
 from urllib import request as urllib_request
@@ -93,6 +94,19 @@ _PROVIDER_PREFIX: Dict[str, str] = {
 }
 
 logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=1)
+def _known_litellm_providers() -> frozenset:
+    """Provider names litellm can route natively (mistral, groq, ...)."""
+    try:
+        return frozenset(
+            str(getattr(entry, "value", entry)) for entry in litellm.provider_list
+        )
+    except Exception:  # pragma: no cover - defensive against litellm changes
+        return frozenset()
+
+
 _RUNTIME_SESSION_ACTIVITY_TOUCH_MIN_INTERVAL = timedelta(seconds=30)
 _RUNTIME_SESSION_SUMMARY_REFRESH_EVERY_REQUESTS = 10
 
@@ -3943,7 +3957,20 @@ class OpenAIGatewayService:
     @staticmethod
     def _to_litellm_model(ai_model: AIModel) -> str:
         provider = (ai_model.provider_name or "openai").strip().lower()
-        prefix = _PROVIDER_PREFIX.get(provider, provider)
+        prefix = _PROVIDER_PREFIX.get(provider)
+        if prefix is None:
+            if provider in _known_litellm_providers():
+                prefix = provider
+            elif ai_model.api_endpoint:
+                # Provider names imported from agent configs can be arbitrary
+                # (Hermes "custom" providers like kimi-for-coding). litellm
+                # rejects unknown prefixes outright ("LLM Provider NOT
+                # provided") even when api_base is set, so route these through
+                # its generic OpenAI-compatible adapter — the kwargs builder
+                # already passes ai_model.api_endpoint as api_base.
+                prefix = "openai"
+            else:
+                prefix = provider
         return f"{prefix}/{ai_model.model_identifier}"
 
     @staticmethod
