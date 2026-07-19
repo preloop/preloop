@@ -5630,6 +5630,50 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/ai-models/{model_id}/credentials/export:
+    post:
+      tags:
+      - AI Models
+      - AI Models
+      summary: Export Subscription OAuth Credential
+      description: 'Export the live subscription-OAuth bundle for an account AI model.
+
+
+        Only principal-bound subscription OAuth credentials (Claude Code, Codex)
+
+        are exportable: their provider refresh tokens are single-use and rotate on
+
+        every server-side refresh, so once imported the Preloop copy is the only
+
+        live lineage. The CLI calls this at offboard time to restore the agent''s
+
+        local login before the Preloop-held credential is removed. API-key
+
+        credentials are never exportable.'
+      operationId: export_ai_model_credentials_api_v1_ai_models__model_id__credentials_export_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: model_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Model Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelCredentialExportResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/audio/transcriptions:
     post:
       tags:
@@ -7694,6 +7738,44 @@ components:
       - model_identifier
       title: AIModelCreate
       description: Schema for creating a new AIModel entry.
+    AIModelCredentialExportResponse:
+      properties:
+        credential_type:
+          type: string
+          title: Credential Type
+        access:
+          type: string
+          title: Access
+        refresh:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Refresh
+        expires:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Expires
+        account_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Account Id
+      type: object
+      required:
+      - credential_type
+      - access
+      title: AIModelCredentialExportResponse
+      description: 'Live subscription-OAuth bundle exported to the owning operator.
+
+
+        Returned once over the authenticated API so the CLI can restore an
+
+        agent''s local login at offboard time (subscription refresh tokens are
+
+        single-use, so the Preloop-held copy is the only live lineage after a
+
+        server-side refresh). Token material must never be logged.'
     AIModelGatewayUsageSummaryResponse:
       properties:
         ai_model_id:

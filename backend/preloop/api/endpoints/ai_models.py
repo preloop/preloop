@@ -10,9 +10,15 @@ from preloop.api.auth.jwt import get_current_active_user
 from preloop.models.crud import crud_account
 from preloop.schemas.ai_model import (
     AIModelCreate,
+    AIModelCredentialExportResponse,
     AIModelGatewayUsageSummaryResponse,
     AIModelRead,
     AIModelUpdate,
+)
+from preloop.services.secret_service import (
+    PRINCIPAL_BOUND_OAUTH_CREDENTIAL_TYPES,
+    CredentialRefreshError,
+    get_secret_service,
 )
 from preloop.models.crud import crud_ai_model
 from preloop.models.db.session import get_db_session
@@ -268,6 +274,77 @@ def delete_ai_model(
 
     # No content returned for HTTP 204
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/ai-models/{model_id}/credentials/export",
+    response_model=AIModelCredentialExportResponse,
+    summary="Export Subscription OAuth Credential",
+    tags=["AI Models"],
+)
+@require_permission("edit_ai_models")
+def export_ai_model_credentials(
+    model_id: uuid.UUID,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_active_user),
+) -> AIModelCredentialExportResponse:
+    """Export the live subscription-OAuth bundle for an account AI model.
+
+    Only principal-bound subscription OAuth credentials (Claude Code, Codex)
+    are exportable: their provider refresh tokens are single-use and rotate on
+    every server-side refresh, so once imported the Preloop copy is the only
+    live lineage. The CLI calls this at offboard time to restore the agent's
+    local login before the Preloop-held credential is removed. API-key
+    credentials are never exportable.
+    """
+    db_model = _get_account_ai_model(
+        db=db, model_id=model_id, current_user=current_user
+    )
+    service = get_secret_service()
+    try:
+        resolved = service.resolve_ai_model_credentials(
+            db_model, db=db, allow_refresh=True
+        )
+    except CredentialRefreshError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Credential refresh failed: {exc.safe_summary()}",
+        )
+    if (
+        resolved is None
+        or resolved.credential_type not in PRINCIPAL_BOUND_OAUTH_CREDENTIAL_TYPES
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only subscription OAuth credentials can be exported",
+        )
+    payload = resolved.payload or {}
+    access = str(payload.get("access") or "").strip()
+    if not access:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Stored credential has no access token",
+        )
+    expires: Optional[int] = None
+    expires_raw = payload.get("expires")
+    if isinstance(expires_raw, (int, float)) and expires_raw > 0:
+        expires = int(expires_raw)
+    logger.info(
+        "Exported subscription OAuth credential: model=%s type=%s account=%s user=%s",
+        model_id,
+        resolved.credential_type,
+        current_user.account_id,
+        current_user.id,
+    )
+    refresh = str(payload.get("refresh") or "").strip() or None
+    account_id = str(payload.get("account_id") or "").strip() or None
+    return AIModelCredentialExportResponse(
+        credential_type=resolved.credential_type,
+        access=access,
+        refresh=refresh,
+        expires=expires,
+        account_id=account_id,
+    )
 
 
 @public_router.get(
