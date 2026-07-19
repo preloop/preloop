@@ -3840,6 +3840,27 @@ func installAgentControlRuntimePlugin(agent AgentConfig, writer io.Writer) map[s
 			message = err.Error()
 		}
 		pipInstalled := false
+		npmTarballInstalled := false
+		if runtimeSessionSourceTypeForAgent(agent.Name) == "openclaw" &&
+			strings.HasPrefix(strings.TrimSpace(installTarget), "@") {
+			// OpenClaw's ClawHub download path can fail client-side (the zip
+			// never lands: "ENOENT ... openclaw-plugin.zip") even when both
+			// registries serve the version. The same plugin ships on npm, and
+			// OpenClaw installs local tarballs fine — fetch the npm tarball
+			// and install that instead.
+			var npmError string
+			npmTarballInstalled, npmError = installOpenClawPluginViaNpmTarball(
+				installerPath, installTarget, writer,
+			)
+			if npmTarballInstalled {
+				result["control_plugin_installer"] = "openclaw+npm-tarball"
+				result["control_plugin_marketplace_install_error"] = message
+			} else if npmError != "" {
+				message = fmt.Sprintf(
+					"%s (npm tarball fallback also failed: %s)", message, npmError,
+				)
+			}
+		}
 		if runtimeSessionSourceTypeForAgent(agent.Name) == hermesSourceType {
 			// Hermes has no PyPI-backed plugin marketplace: `hermes plugins
 			// install` only accepts Git URLs or owner/repo shorthands, while the
@@ -3856,7 +3877,7 @@ func installAgentControlRuntimePlugin(agent AgentConfig, writer io.Writer) map[s
 				message = fmt.Sprintf("%s (pip fallback also failed: %s)", message, pipError)
 			}
 		}
-		if !pipInstalled {
+		if !pipInstalled && !npmTarballInstalled {
 			status, remediation := classifyRuntimePluginInstallFailure(installer, message)
 			result["control_plugin_install_status"] = status
 			result["control_plugin_install_error"] = message
@@ -3884,6 +3905,72 @@ func installAgentControlRuntimePlugin(agent AgentConfig, writer io.Writer) map[s
 		result = mergeStringMaps(result, ensureManagedAgentControlSidecar(agent, writer))
 	}
 	return result
+}
+
+// installOpenClawPluginViaNpmTarball downloads the plugin's npm tarball and
+// installs it as a local file. OpenClaw resolves bare package names through
+// ClawHub, whose client-side download path can fail (zip never written,
+// "ENOENT"); local-tarball installs use a separate, working code path. npm is
+// a safe dependency here — OpenClaw itself is installed via npm.
+// resolveNpmExecutable is a seam for tests: resolveRuntimeExecutable consults
+// fixed fallback paths beyond PATH, so tests cannot mask the real npm.
+var resolveNpmExecutable = func() (string, error) {
+	return resolveRuntimeExecutable("npm")
+}
+
+func installOpenClawPluginViaNpmTarball(
+	installerPath string,
+	installTarget string,
+	writer io.Writer,
+) (bool, string) {
+	npmPath, err := resolveNpmExecutable()
+	if err != nil {
+		return false, "npm not found for tarball fallback"
+	}
+	tmpDir, err := os.MkdirTemp("", "preloop-openclaw-plugin-")
+	if err != nil {
+		return false, fmt.Sprintf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir) //nolint:errcheck
+
+	if writer != nil {
+		fmt.Fprintf(
+			writer,
+			"  Marketplace install failed; fetching %s from npm and installing the tarball instead...\n",
+			installTarget,
+		) //nolint:errcheck
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	packCmd := exec.CommandContext(ctx, npmPath, "pack", installTarget)
+	packCmd.Dir = tmpDir
+	if packOut, packErr := packCmd.CombinedOutput(); packErr != nil {
+		message := strings.TrimSpace(string(packOut))
+		if message == "" {
+			message = packErr.Error()
+		}
+		return false, fmt.Sprintf("npm pack failed: %s", message)
+	}
+	tarballs, _ := filepath.Glob(filepath.Join(tmpDir, "*.tgz"))
+	if len(tarballs) != 1 {
+		return false, fmt.Sprintf(
+			"npm pack produced %d tarballs, expected exactly 1", len(tarballs),
+		)
+	}
+
+	installCtx, installCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer installCancel()
+	output, err := exec.CommandContext(
+		installCtx, installerPath, "plugins", "install", tarballs[0],
+	).CombinedOutput()
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		return false, fmt.Sprintf("tarball install failed: %s", message)
+	}
+	return true, ""
 }
 
 func classifyRuntimePluginInstallFailure(installer string, message string) (string, string) {
