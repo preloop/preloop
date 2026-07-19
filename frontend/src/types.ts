@@ -711,6 +711,22 @@ export interface RuntimeSessionOptimizationResponse {
   example_pricing_note?: string | null;
 }
 
+/** Acknowledgement for an accepted async optimization analysis job. */
+export interface RuntimeSessionOptimizationJobSubmitResponse {
+  job_id: string;
+  status: 'pending' | 'running' | 'succeeded' | 'failed' | string;
+}
+
+/** Poll response for one async optimization analysis job. */
+export interface RuntimeSessionOptimizationJobStatusResponse {
+  job_id: string;
+  status: 'pending' | 'running' | 'succeeded' | 'failed' | string;
+  /** Shaped exactly like the inline response; set only on success. */
+  result: RuntimeSessionOptimizationResponse | null;
+  /** User-facing failure message; set only on failure. */
+  error: string | null;
+}
+
 export interface RuntimeSessionReplayResponse {
   id: string;
   runtime_session_id: string;

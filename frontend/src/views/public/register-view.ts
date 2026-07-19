@@ -40,6 +40,12 @@ export function humanizeRegisterError(message: string): string {
   return `That didn't work: ${raw}`;
 }
 
+/** Parse a bootstrap token out of a location hash like `#bootstrap=abc123`. */
+export function parseBootstrapFragment(hash: string): string {
+  const match = /^#bootstrap=([^&]+)/.exec(hash || '');
+  return match ? decodeURIComponent(match[1]) : '';
+}
+
 @customElement('register-view')
 export class RegisterView extends LitElement {
   @state()
@@ -55,6 +61,20 @@ export class RegisterView extends LitElement {
   // account being created becomes the admin account.
   @state()
   private firstAccountPending = false;
+
+  // True while the instance is unclaimed (zero users + bootstrap token
+  // configured server-side): signups need the setup link from the install.
+  @state()
+  private bootstrapPending = false;
+
+  // Backend said the instance already has its admin account (403 on a
+  // signup that carried a setup-link token).
+  @state()
+  private alreadyClaimed = false;
+
+  // Token from the setup link fragment (#bootstrap=<token>). Held in memory
+  // only; the fragment is stripped from the URL immediately on load.
+  private bootstrapToken = '';
 
   static styles = [
     formStyles,
@@ -106,11 +126,50 @@ export class RegisterView extends LitElement {
         line-height: 1.5;
         margin: 0 0 1rem;
       }
+
+      /* Setup-link notices: 4px left border, console-compact type
+         (14px primary / 13px secondary). */
+      .bootstrap-notice {
+        border-radius: 4px;
+        border-left: 4px solid #f2a93b;
+        background: rgba(242, 169, 59, 0.12);
+        padding: 12px 16px;
+        margin: 0 0 1rem;
+        font-size: 14px;
+        line-height: 1.4;
+        text-align: left;
+      }
+
+      .bootstrap-notice.claimed {
+        border-left-color: #ff5d5d;
+        background: rgba(255, 93, 93, 0.12);
+      }
+
+      .bootstrap-notice .notice-title {
+        font-weight: 600;
+      }
+
+      .bootstrap-notice .notice-detail {
+        font-size: 13px;
+        opacity: 0.85;
+        margin-top: 2px;
+      }
     `,
   ];
 
   connectedCallback() {
     super.connectedCallback();
+    // Setup link: read the bootstrap token out of the fragment, keep it in
+    // memory only, and strip it from the URL immediately (history, referrer
+    // and share safety).
+    this.bootstrapToken = parseBootstrapFragment(window.location.hash);
+    if (this.bootstrapToken) {
+      history.replaceState(
+        null,
+        '',
+        window.location.pathname + window.location.search
+      );
+    }
     this._checkFeatures();
   }
 
@@ -121,15 +180,19 @@ export class RegisterView extends LitElement {
       this.oauthProviders = Array.isArray(providers) ? providers : [];
       this.firstAccountPending =
         features.features['first_account_pending'] === true;
+      this.bootstrapPending =
+        features.features['registration_bootstrap_pending'] === true;
     } catch (error) {
       this.oauthProviders = [];
       this.firstAccountPending = false;
+      this.bootstrapPending = false;
     }
   }
 
   private async handleRegister(event: SubmitEvent) {
     event.preventDefault();
     this._loading = true;
+    this.alreadyClaimed = false;
     const form = event.target as HTMLFormElement;
     const formData = new FormData(form);
     const username = formData.get('username') as string;
@@ -137,11 +200,11 @@ export class RegisterView extends LitElement {
     const password = formData.get('password') as string;
 
     try {
-      const registerResult = await post('/api/v1/auth/register', {
-        username,
-        email,
-        password,
-      });
+      const payload: Record<string, unknown> = { username, email, password };
+      if (this.bootstrapToken) {
+        payload.bootstrap_token = this.bootstrapToken;
+      }
+      const registerResult = await post('/api/v1/auth/register', payload);
 
       // If the backend returns an error in the payload instead of throwing an HTTP error
       if (registerResult && registerResult.error) {
@@ -197,7 +260,25 @@ export class RegisterView extends LitElement {
     } catch (error) {
       this._loading = false;
       if (error instanceof Error) {
-        this.error = humanizeRegisterError(error.message);
+        const message = error.message || '';
+        if (/setup link required/i.test(message)) {
+          // Unclaimed instance and our token was missing or stale: show the
+          // amber setup-link notice instead of a generic error. Drop the
+          // stale token so the notice renders.
+          this.bootstrapToken = '';
+          this.bootstrapPending = true;
+          this.error = '';
+        } else if (
+          this.bootstrapToken &&
+          /registration is disabled/i.test(message)
+        ) {
+          // A setup-link signup on an instance that already has its admin:
+          // the link is being reused after the instance was claimed.
+          this.alreadyClaimed = true;
+          this.error = '';
+        } else {
+          this.error = humanizeRegisterError(message);
+        }
       } else {
         this.error = 'Failed to create an account';
       }
@@ -205,6 +286,44 @@ export class RegisterView extends LitElement {
       // Ensure we don't proceed with checkout if registration failed
       return;
     }
+  }
+
+  private _renderBootstrapNotice() {
+    if (this.alreadyClaimed) {
+      return html`
+        <div
+          id="bootstrap-notice"
+          class="bootstrap-notice claimed"
+          role="alert"
+          aria-live="assertive"
+        >
+          <div class="notice-title">
+            This instance has already been claimed.
+          </div>
+          <div class="notice-detail">
+            An admin account exists — ask them to invite you, or
+            <a href="/login">sign in</a>.
+          </div>
+        </div>
+      `;
+    }
+    if (this.bootstrapPending && !this.bootstrapToken) {
+      return html`
+        <div
+          id="bootstrap-notice"
+          class="bootstrap-notice"
+          role="alert"
+          aria-live="assertive"
+        >
+          <div class="notice-title">Setup link required</div>
+          <div class="notice-detail">
+            Use the link printed at the end of the install, or run
+            create_first_user.py on the server.
+          </div>
+        </div>
+      `;
+    }
+    return nothing;
   }
 
   private _renderOAuthButtons() {
@@ -252,13 +371,22 @@ export class RegisterView extends LitElement {
                 </p>`
               : ''
           }
+          ${this._renderBootstrapNotice()}
           ${
             this.error
               ? html`<div class="error-message">${this.error}</div>`
               : ''
           }
           ${this._renderOAuthButtons()}
-          <form @submit=${this.handleRegister}>
+          <form
+            @submit=${this.handleRegister}
+            aria-describedby=${
+              this.alreadyClaimed ||
+              (this.bootstrapPending && !this.bootstrapToken)
+                ? 'bootstrap-notice'
+                : nothing
+            }
+          >
             <div class="form-group">
               <sl-input
                 label="Username"

@@ -1,7 +1,11 @@
 import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 import './register-view';
-import { RegisterView, humanizeRegisterError } from './register-view';
+import {
+  RegisterView,
+  humanizeRegisterError,
+  parseBootstrapFragment,
+} from './register-view';
 import { invalidateApiCaches } from '../../api';
 
 describe('RegisterView', () => {
@@ -280,6 +284,246 @@ describe('RegisterView', () => {
       await new Promise((resolve) => setTimeout(resolve, 100));
       await el.updateComplete;
       expect(el.shadowRoot?.querySelector('.first-account-note')).to.not.exist;
+    });
+  });
+
+  describe('parseBootstrapFragment', () => {
+    it('extracts the token from a #bootstrap fragment', () => {
+      expect(parseBootstrapFragment('#bootstrap=abc123')).to.equal('abc123');
+    });
+
+    it('decodes URI-encoded tokens', () => {
+      expect(parseBootstrapFragment('#bootstrap=a%2Bb')).to.equal('a+b');
+    });
+
+    it('returns empty for other fragments and empty hashes', () => {
+      expect(parseBootstrapFragment('')).to.equal('');
+      expect(parseBootstrapFragment('#other=1')).to.equal('');
+      expect(parseBootstrapFragment('#bootstrap=')).to.equal('');
+    });
+  });
+
+  describe('bootstrap setup link', () => {
+    const featuresResponse = (bootstrapPending: boolean) =>
+      new Response(
+        JSON.stringify({
+          plugins: [],
+          features: {
+            registration: true,
+            first_account_pending: true,
+            registration_bootstrap_pending: bootstrapPending,
+          },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+
+    afterEach(() => {
+      // Never leak a test fragment into the next test.
+      history.replaceState(null, '', window.location.pathname);
+      localStorage.removeItem('accessToken');
+      localStorage.removeItem('refreshToken');
+    });
+
+    it('reads the fragment token, strips it from the URL, and submits it', async () => {
+      window.location.hash = '#bootstrap=tok1234567890';
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.includes('/api/v1/features')) {
+          return featuresResponse(true);
+        }
+        if (url.includes('/api/v1/auth/token/json')) {
+          return new Response(
+            JSON.stringify({
+              access_token: 'test-token',
+              refresh_token: 'test-refresh',
+            }),
+            { status: 200 }
+          );
+        }
+        return new Response(JSON.stringify({}), { status: 200 });
+      });
+      invalidateApiCaches();
+
+      const el = (await fixture(
+        html`<register-view></register-view>`
+      )) as RegisterView;
+
+      // The fragment is stripped immediately on load.
+      expect(window.location.hash).to.equal('');
+
+      const usernameInput = el.shadowRoot?.querySelector<any>('#username');
+      const emailInput = el.shadowRoot?.querySelector<any>('#email');
+      const passwordInput = el.shadowRoot?.querySelector<any>('#password');
+      usernameInput.value = 'firstadmin';
+      emailInput.value = 'admin@example.com';
+      passwordInput.value = 'password123';
+
+      const form = el.shadowRoot?.querySelector('form') as HTMLFormElement;
+      form.dispatchEvent(
+        new SubmitEvent('submit', { bubbles: true, cancelable: true })
+      );
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await el.updateComplete;
+
+      const registerCall = fetchStub
+        .getCalls()
+        .find((call: any) => String(call.args[0]).includes('/auth/register'));
+      expect(registerCall).to.exist;
+      const body = JSON.parse(registerCall.args[1].body);
+      expect(body.bootstrap_token).to.equal('tok1234567890');
+    });
+
+    it('shows no notice when a valid token is present (form looks normal)', async () => {
+      window.location.hash = '#bootstrap=tok1234567890';
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.includes('/api/v1/features')) {
+          return featuresResponse(true);
+        }
+        return new Response(JSON.stringify({}), { status: 200 });
+      });
+      invalidateApiCaches();
+
+      const el = (await fixture(
+        html`<register-view></register-view>`
+      )) as RegisterView;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await el.updateComplete;
+
+      expect(el.shadowRoot?.querySelector('.bootstrap-notice')).to.not.exist;
+      expect(el.shadowRoot?.querySelector('form')).to.exist;
+    });
+
+    it('shows the amber setup-link notice when bootstrap is pending and no token is present', async () => {
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.includes('/api/v1/features')) {
+          return featuresResponse(true);
+        }
+        return new Response(JSON.stringify({}), { status: 200 });
+      });
+      invalidateApiCaches();
+
+      const el = (await fixture(
+        html`<register-view></register-view>`
+      )) as RegisterView;
+      await waitUntil(
+        () => el.shadowRoot?.querySelector('.bootstrap-notice'),
+        'setup-link notice did not appear'
+      );
+
+      const notice = el.shadowRoot?.querySelector('.bootstrap-notice');
+      expect(notice?.classList.contains('claimed')).to.be.false;
+      expect(notice?.getAttribute('aria-live')).to.equal('assertive');
+      expect(notice?.textContent?.replace(/\s+/g, ' ')).to.contain(
+        'Setup link required'
+      );
+      expect(notice?.textContent?.replace(/\s+/g, ' ')).to.contain(
+        'Use the link printed at the end of the install, or run create_first_user.py on the server.'
+      );
+      expect(
+        el.shadowRoot?.querySelector('form')?.getAttribute('aria-describedby')
+      ).to.equal('bootstrap-notice');
+    });
+
+    it('shows the error-red already-claimed notice on a 403 with a token', async () => {
+      window.location.hash = '#bootstrap=staletoken123';
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.includes('/api/v1/features')) {
+          return featuresResponse(false);
+        }
+        if (url.includes('/auth/register')) {
+          return new Response(
+            JSON.stringify({
+              detail:
+                'Registration is disabled. Please contact an administrator for an invitation.',
+            }),
+            { status: 403 }
+          );
+        }
+        return new Response(JSON.stringify({}), { status: 200 });
+      });
+      invalidateApiCaches();
+
+      const el = (await fixture(
+        html`<register-view></register-view>`
+      )) as RegisterView;
+
+      const usernameInput = el.shadowRoot?.querySelector<any>('#username');
+      const emailInput = el.shadowRoot?.querySelector<any>('#email');
+      const passwordInput = el.shadowRoot?.querySelector<any>('#password');
+      usernameInput.value = 'latecomer';
+      emailInput.value = 'late@example.com';
+      passwordInput.value = 'password123';
+
+      const form = el.shadowRoot?.querySelector('form') as HTMLFormElement;
+      form.dispatchEvent(
+        new SubmitEvent('submit', { bubbles: true, cancelable: true })
+      );
+      await waitUntil(
+        () => el.shadowRoot?.querySelector('.bootstrap-notice.claimed'),
+        'already-claimed notice did not appear'
+      );
+
+      const notice = el.shadowRoot?.querySelector('.bootstrap-notice.claimed');
+      expect(notice?.getAttribute('aria-live')).to.equal('assertive');
+      expect(notice?.textContent?.replace(/\s+/g, ' ')).to.contain(
+        'This instance has already been claimed.'
+      );
+      expect(notice?.textContent?.replace(/\s+/g, ' ')).to.contain(
+        'An admin account exists — ask them to invite you, or sign in'
+      );
+      // The generic error banner stays hidden for this state.
+      expect(el.shadowRoot?.querySelector('.error-message')).to.not.exist;
+    });
+
+    it('falls back to the amber notice when the backend demands the setup link', async () => {
+      window.location.hash = '#bootstrap=corruptedtoken';
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.includes('/api/v1/features')) {
+          return featuresResponse(true);
+        }
+        if (url.includes('/auth/register')) {
+          return new Response(
+            JSON.stringify({
+              detail:
+                'Setup link required. Use the link printed at the end of the install, or run create_first_user.py on the server.',
+            }),
+            { status: 403 }
+          );
+        }
+        return new Response(JSON.stringify({}), { status: 200 });
+      });
+      invalidateApiCaches();
+
+      const el = (await fixture(
+        html`<register-view></register-view>`
+      )) as RegisterView;
+
+      const usernameInput = el.shadowRoot?.querySelector<any>('#username');
+      const emailInput = el.shadowRoot?.querySelector<any>('#email');
+      const passwordInput = el.shadowRoot?.querySelector<any>('#password');
+      usernameInput.value = 'badlink';
+      emailInput.value = 'bad@example.com';
+      passwordInput.value = 'password123';
+
+      const form = el.shadowRoot?.querySelector('form') as HTMLFormElement;
+      form.dispatchEvent(
+        new SubmitEvent('submit', { bubbles: true, cancelable: true })
+      );
+      await waitUntil(
+        () =>
+          el.shadowRoot?.querySelector('.bootstrap-notice:not(.claimed)') &&
+          !el.shadowRoot?.querySelector('.error-message'),
+        'setup-link notice did not appear after the 403'
+      );
+
+      const notice = el.shadowRoot?.querySelector('.bootstrap-notice');
+      expect(notice?.textContent?.replace(/\s+/g, ' ')).to.contain(
+        'Setup link required'
+      );
     });
   });
 });

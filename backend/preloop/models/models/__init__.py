@@ -60,6 +60,7 @@ from .instance import Instance
 from .cli_client import CliClient
 from .github_app_installation import OAuthAppInstallation, GitHubAppInstallation
 from .github_oauth_token import OAuthToken, GitHubOAuthToken
+from .optimization_job import OptimizationJob
 from .policy_snapshot import PolicySnapshot
 from .runtime_session import RuntimeSession
 from .runtime_session_activity import RuntimeSessionActivity
@@ -150,6 +151,7 @@ __all__ = [
     "GitHubAppInstallation",  # Backward compatibility alias
     "OAuthToken",
     "GitHubOAuthToken",  # Backward compatibility alias
+    "OptimizationJob",
     "PolicySnapshot",
     "RuntimeSession",
     "RuntimeSessionActivity",

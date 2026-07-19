@@ -41,6 +41,8 @@ import type {
   RuntimeSessionRequestListResponse,
   RuntimeSessionSummaryInsight,
   RuntimeSessionInteractionSummary,
+  RuntimeSessionOptimizationJobStatusResponse,
+  RuntimeSessionOptimizationJobSubmitResponse,
   RuntimeSessionOptimizationResponse,
   RuntimeSessionReplayResponse,
   RuntimeSessionOptimizationActionSpec,
@@ -1323,6 +1325,62 @@ export async function optimizeRuntimeSession(
   );
   if (!response.ok) {
     throw new Error('Failed to optimize runtime session');
+  }
+  return response.json();
+}
+
+/**
+ * Submit the optimization analysis as an async background job.
+ * POST /api/v1/billing/cost/runtime-sessions/{id}/optimizations/jobs
+ *
+ * The backend is idempotent: while a job for this session is still active,
+ * re-submitting returns that job instead of queuing a second model pass.
+ */
+export async function submitRuntimeSessionOptimizationJob(
+  runtimeSessionId: string,
+  options: {
+    regenerate?: boolean;
+    modelId?: string | null;
+    eventIds?: string[];
+    sourceKinds?: string[];
+    fromIndex?: number;
+    toIndex?: number;
+  } = {}
+): Promise<RuntimeSessionOptimizationJobSubmitResponse> {
+  const response = await fetchWithAuth(
+    `/api/v1/billing/cost/runtime-sessions/${runtimeSessionId}/optimizations/jobs`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        regenerate: Boolean(options.regenerate),
+        model_id: options.modelId || null,
+        event_ids: options.eventIds || [],
+        source_kinds: options.sourceKinds || [],
+        from_index: options.fromIndex ?? null,
+        to_index: options.toIndex ?? null,
+      }),
+    }
+  );
+  if (!response.ok) {
+    throw new Error('Failed to submit optimization job');
+  }
+  return response.json();
+}
+
+/**
+ * Poll one async optimization job's status, result, and error.
+ * GET /api/v1/billing/cost/runtime-sessions/{id}/optimizations/jobs/{jobId}
+ */
+export async function getRuntimeSessionOptimizationJob(
+  runtimeSessionId: string,
+  jobId: string
+): Promise<RuntimeSessionOptimizationJobStatusResponse> {
+  const response = await fetchWithAuth(
+    `/api/v1/billing/cost/runtime-sessions/${runtimeSessionId}/optimizations/jobs/${jobId}`
+  );
+  if (!response.ok) {
+    throw new Error(`Failed to load optimization job (${response.status})`);
   }
   return response.json();
 }

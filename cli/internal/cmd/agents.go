@@ -2051,8 +2051,15 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 
 	fmt.Printf("✓ Offboarded %s\n", resolveAgentDisplayName(agent))
 	fmt.Printf("  Restored config: %s\n", agent.ConfigPath)
-	if isClaudeCodeAgent(agent) {
-		printClaudeCodeOAuthOffboardNote(os.Stdout)
+	if isClaudeCodeAgent(agent) || isCodexCLIAgent(agent) {
+		// Subscription refresh tokens rotate server-side while onboarded, so
+		// write the live Preloop-held bundle back to the local credential
+		// store before cleanup can delete it. The note is the fallback when
+		// no bundle could be restored.
+		if !restoreSubscriptionLoginOnOffboard(client, agent, detail, os.Stdout) &&
+			isClaudeCodeAgent(agent) {
+			printClaudeCodeOAuthOffboardNote(os.Stdout)
+		}
 	}
 	if detail != nil {
 		fmt.Printf("  Removed managed agent: %s\n", detail.Agent.ID)

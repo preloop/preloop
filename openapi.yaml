@@ -12,8 +12,9 @@ paths:
       description: "Register a new user.\n\nArgs:\n    user_data: User creation data.\n\
         \    background_tasks: Background tasks for sending emails.\n    request:\
         \ The incoming request object.\n\nReturns:\n    The created user.\n\nRaises:\n\
-        \    HTTPException: If the username or email is already taken, or if registration\
-        \ is disabled."
+        \    HTTPException: If the username or email is already taken, if\n      \
+        \  registration is disabled, or if the instance is unclaimed and the\n   \
+        \     bootstrap token is missing or invalid."
       operationId: register_api_v1_auth_register_post
       requestBody:
         content:
@@ -5629,6 +5630,50 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/ai-models/{model_id}/credentials/export:
+    post:
+      tags:
+      - AI Models
+      - AI Models
+      summary: Export Subscription OAuth Credential
+      description: 'Export the live subscription-OAuth bundle for an account AI model.
+
+
+        Only principal-bound subscription OAuth credentials (Claude Code, Codex)
+
+        are exportable: their provider refresh tokens are single-use and rotate on
+
+        every server-side refresh, so once imported the Preloop copy is the only
+
+        live lineage. The CLI calls this at offboard time to restore the agent''s
+
+        local login before the Preloop-held credential is removed. API-key
+
+        credentials are never exportable.'
+      operationId: export_ai_model_credentials_api_v1_ai_models__model_id__credentials_export_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: model_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Model Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelCredentialExportResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/audio/transcriptions:
     post:
       tags:
@@ -5824,7 +5869,14 @@ paths:
       - Session Optimization
       - Session Optimization
       summary: Optimize Account Runtime Session
-      description: Suggest cost and context optimizations for one runtime session.
+      description: 'Suggest cost and context optimizations for one runtime session.
+
+
+        Legacy inline path: runs the shared worker function synchronously and
+
+        returns the results in this response — semantics identical to before the
+
+        async job endpoints existed (no submit-then-poll behind the scenes).'
       operationId: optimize_account_runtime_session_api_v1_billing_cost_runtime_sessions__runtime_session_id__optimizations_post
       security:
       - bearerAuth: []
@@ -5850,6 +5902,91 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RuntimeSessionOptimizationResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/billing/cost/runtime-sessions/{runtime_session_id}/optimizations/jobs:
+    post:
+      tags:
+      - Session Optimization
+      - Session Optimization
+      summary: Submit Account Runtime Session Optimization Job
+      description: 'Queue the (slow, LLM-backed) optimization analysis as a background
+        job.
+
+
+        Idempotent: while a job for this session is still pending or running,
+
+        re-submitting returns THAT job instead of queuing a second model pass, so
+
+        a double-click never spends the model budget twice.'
+      operationId: submit_account_runtime_session_optimization_job_api_v1_billing_cost_runtime_sessions__runtime_session_id__optimizations_jobs_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: runtime_session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Runtime Session Id
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/RuntimeSessionOptimizationRequest'
+              - type: 'null'
+              title: Request
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeSessionOptimizationJobSubmitResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/billing/cost/runtime-sessions/{runtime_session_id}/optimizations/jobs/{job_id}:
+    get:
+      tags:
+      - Session Optimization
+      - Session Optimization
+      summary: Get Account Runtime Session Optimization Job
+      description: "Poll one async optimization job's status, result, and error.\n\
+        \nA job id belonging to another account, or attached to a different\nsession,\
+        \ is indistinguishable from a missing one (404) by design.\n\nRaises:\n  \
+        \  HTTPException: 404 when the job is absent, malformed, or out of scope."
+      operationId: get_account_runtime_session_optimization_job_api_v1_billing_cost_runtime_sessions__runtime_session_id__optimizations_jobs__job_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: runtime_session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Runtime Session Id
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeSessionOptimizationJobStatusResponse'
         '422':
           description: Validation Error
           content:
@@ -7601,6 +7738,44 @@ components:
       - model_identifier
       title: AIModelCreate
       description: Schema for creating a new AIModel entry.
+    AIModelCredentialExportResponse:
+      properties:
+        credential_type:
+          type: string
+          title: Credential Type
+        access:
+          type: string
+          title: Access
+        refresh:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Refresh
+        expires:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Expires
+        account_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Account Id
+      type: object
+      required:
+      - credential_type
+      - access
+      title: AIModelCredentialExportResponse
+      description: 'Live subscription-OAuth bundle exported to the owning operator.
+
+
+        Returned once over the authenticated API so the CLI can restore an
+
+        agent''s local login at offboard time (subscription refresh tokens are
+
+        single-use, so the Preloop-held copy is the only live lineage after a
+
+        server-side refresh). Token material must never be logged.'
     AIModelGatewayUsageSummaryResponse:
       properties:
         ai_model_id:
@@ -9696,6 +9871,13 @@ components:
           - type: string
           - type: 'null'
           title: Full Name
+        bootstrap_token:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bootstrap Token
+          description: First-user setup token from the install (required while the
+            instance has zero users and PRELOOP_BOOTSTRAP_TOKEN is set).
       type: object
       required:
       - username
@@ -14261,6 +14443,43 @@ components:
       - action
       title: RuntimeSessionOptimizationApplyRequest
       description: Request payload to apply one suggestion's action server-side.
+    RuntimeSessionOptimizationJobStatusResponse:
+      properties:
+        job_id:
+          type: string
+          title: Job Id
+        status:
+          type: string
+          title: Status
+        result:
+          anyOf:
+          - $ref: '#/components/schemas/RuntimeSessionOptimizationResponse'
+          - type: 'null'
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error
+      type: object
+      required:
+      - job_id
+      - status
+      title: RuntimeSessionOptimizationJobStatusResponse
+      description: Poll response for one async optimization job.
+    RuntimeSessionOptimizationJobSubmitResponse:
+      properties:
+        job_id:
+          type: string
+          title: Job Id
+        status:
+          type: string
+          title: Status
+      type: object
+      required:
+      - job_id
+      - status
+      title: RuntimeSessionOptimizationJobSubmitResponse
+      description: Acknowledgement for an accepted async optimization job.
     RuntimeSessionOptimizationRequest:
       properties:
         model_id:

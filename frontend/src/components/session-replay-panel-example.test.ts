@@ -216,9 +216,10 @@ describe('session-replay-panel bundled example', () => {
     expect(exampleRequestCount, 'no example fetch when not needed').to.equal(0);
   });
 
-  it('shows the example when a short session yields zero savings', async () => {
-    // The reported symptom: a tiny session still produces a fallback
-    // suggestion, but with no savings figure — the tab looks broken.
+  it('shows the approved no-waste state when a short session yields zero savings', async () => {
+    // Approved launch state 3A: a real analysis that finds nothing renders
+    // the calm no-waste state (with the demo-video link) instead of the
+    // bundled example.
     stubFetch();
     const element = await mountOptimizePanel({
       suggestions: [realSuggestion(0)],
@@ -230,18 +231,22 @@ describe('session-replay-panel bundled example', () => {
       },
     });
 
-    await waitUntil(
-      () => Boolean(element.shadowRoot?.querySelector('.example-banner')),
-      'example should back-fill a zero-savings result'
-    );
-    const text = element.shadowRoot?.textContent || '';
-    expect(text).to.include('not your data');
-    // The session's own result panel is still rendered alongside the example,
-    // so the user keeps their (zero-savings) analysis rather than losing it.
-    const panels = element.shadowRoot?.querySelectorAll(
+    await waitUntil(() => {
+      const panel = element.shadowRoot?.querySelector(
+        'session-optimization-panel'
+      );
+      return Boolean(panel?.shadowRoot?.querySelector('.job-no-waste'));
+    }, 'no-waste state should render for a zero-savings result');
+    const panel = element.shadowRoot?.querySelector(
       'session-optimization-panel'
     );
-    expect(panels?.length, 'real result and example both render').to.equal(2);
+    const text = panel?.shadowRoot?.textContent || '';
+    expect(text).to.include('No recoverable waste in this session');
+    // The example is reserved for sessions with no result at all.
+    expect(element.shadowRoot?.querySelector('.example-banner')).to.not.exist;
+    expect(exampleRequestCount, 'no example fetch for a real result').to.equal(
+      0
+    );
   });
 
   it('falls back to the normal empty state when the example is unavailable', async () => {

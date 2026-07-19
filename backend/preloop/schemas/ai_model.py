@@ -228,6 +228,22 @@ class AIModelRead(AIModelInDBBase):
     pass
 
 
+class AIModelCredentialExportResponse(BaseModel):
+    """Live subscription-OAuth bundle exported to the owning operator.
+
+    Returned once over the authenticated API so the CLI can restore an
+    agent's local login at offboard time (subscription refresh tokens are
+    single-use, so the Preloop-held copy is the only live lineage after a
+    server-side refresh). Token material must never be logged.
+    """
+
+    credential_type: str
+    access: str
+    refresh: Optional[str] = None
+    expires: Optional[int] = None
+    account_id: Optional[str] = None
+
+
 class AIModelGatewayUsageSummaryResponse(BaseModel):
     """Gateway usage summary for one durable AI model."""
 

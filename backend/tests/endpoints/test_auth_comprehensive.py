@@ -530,8 +530,11 @@ class TestRegistrationFlows:
 
     def test_registration_disabled_returns_403(self, db_session_mock):
         """Test that registration returns 403 when disabled."""
-        with patch("preloop.api.auth.router.settings") as mock_settings:
+        # The computed rule lives in preloop.api.auth.bootstrap (shared with
+        # /features), so the effective settings seam is the bootstrap module.
+        with patch("preloop.api.auth.bootstrap.settings") as mock_settings:
             mock_settings.registration_enabled = False
+            mock_settings.bootstrap_token = ""
 
             response = client.post(
                 "/auth/register",

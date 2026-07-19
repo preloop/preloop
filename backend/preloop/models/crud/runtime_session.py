@@ -270,6 +270,12 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             session_source_id=session_source_id,
         )
         if db_obj is None:
+            is_account_first_session = (
+                db.query(self.model.id)
+                .filter(self.model.account_id == account_id)
+                .first()
+                is None
+            )
             db_obj = RuntimeSession(
                 account_id=account_id,
                 session_source_type=session_source_type,
@@ -284,6 +290,27 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             )
             db.add(db_obj)
             db.flush()
+            if is_account_first_session:
+                # Every session-recording path funnels through this creation
+                # branch, so it is the single chokepoint for the account's
+                # first-session signal. The notification is an inert no-op
+                # unless an EE plugin registered a hook (see
+                # preloop.services.session_events); it never raises. Lazy
+                # import keeps the models package importable standalone.
+                try:
+                    from preloop.services.session_events import (
+                        notify_first_session_recorded,
+                    )
+                except ImportError:  # pragma: no cover - models-only contexts
+                    pass
+                else:
+                    notify_first_session_recorded(
+                        db,
+                        account_id=account_id,
+                        occurred_at=db_obj.started_at
+                        or db_obj.last_activity_at
+                        or datetime.now(UTC),
+                    )
             return db_obj
 
         if session_reference is not None:

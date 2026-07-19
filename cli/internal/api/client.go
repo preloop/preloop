@@ -35,6 +35,16 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
+	if e.StatusCode == http.StatusUnauthorized {
+		// Sessions started with `preloop login --token` carry no refresh
+		// token, so they expire silently — point at the recovery path
+		// instead of surfacing a bare 401.
+		return fmt.Sprintf(
+			"API error (status %d): %s\nYour session has expired or is invalid - run `preloop login` to re-authenticate.",
+			e.StatusCode,
+			e.Body,
+		)
+	}
 	return fmt.Sprintf("API error (status %d): %s", e.StatusCode, e.Body)
 }
 

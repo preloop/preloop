@@ -15,8 +15,9 @@ Usage:
 import sys
 from pathlib import Path
 
-# Add parent directory to path so we can import from preloop.models
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Import preloop from THIS repo's backend/, ahead of any installed package
+# (an editable install may point at a different checkout).
+sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
 
 from sqlalchemy.orm import Session
 from preloop.models.db.session import get_db_session

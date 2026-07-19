@@ -97,12 +97,21 @@ func CheckForUpdate() error {
 	if telemetry.Disabled() {
 		return nil
 	}
-	_, firstRun, _ := config.GetOrCreateClientIDWithNew()
+	// Derive the client id and the first-run flag ONCE and thread both
+	// through to the payload. A second GetOrCreateClientIDWithNew call in
+	// payload construction would find the id this call just created and
+	// report first_run=false on the very first run.
+	clientID, firstRun, err := config.GetOrCreateClientIDWithNew()
+	if err != nil {
+		// Degrade to an anonymous check: the update prompt must still work.
+		clientID = ""
+		firstRun = false
+	}
 	if !firstRun && !shouldCheck() {
 		return nil
 	}
 
-	info, err := fetchVersionInfo()
+	info, err := fetchVersionInfo(clientID, firstRun)
 	if err != nil {
 		return err
 	}
@@ -205,22 +214,25 @@ func sameOrigin(a, b string) bool {
 	return ua.Scheme == ub.Scheme && ua.Host == ub.Host
 }
 
-// buildCheckInPayload assembles the check-in body from local state. Config
-// load failures degrade to an anonymous payload rather than skipping the
-// check — the update prompt must still work on a broken config.
-func buildCheckInPayload() (checkInPayload, string) {
+// buildCheckInPayload assembles the check-in body from local state. The
+// client id and first-run flag are derived once by the caller (where the id
+// is created) and threaded through — re-deriving them here would read
+// first_run=false on the very first run. An empty clientID degrades to an
+// anonymous payload rather than skipping the check — the update prompt must
+// still work on a broken config.
+func buildCheckInPayload(clientID string, firstRun bool) (checkInPayload, string) {
 	payload := checkInPayload{
-		Version: Version,
-		OS:      runtime.GOOS,
-		Arch:    runtime.GOARCH,
+		ClientID: clientID,
+		Version:  Version,
+		OS:       runtime.GOOS,
+		Arch:     runtime.GOARCH,
 	}
 
 	metadata := map[string]any{}
-	if clientID, created, err := config.GetOrCreateClientIDWithNew(); err == nil {
-		payload.ClientID = clientID
-		if created {
-			metadata["first_run"] = true
-		}
+	if firstRun {
+		// The cli_first_run funnel signal: exactly one check-in per install
+		// carries it, the one that created the client id.
+		metadata["first_run"] = true
 	}
 	for category, count := range telemetry.Load() {
 		metadata["cmd_"+category] = count
@@ -240,13 +252,14 @@ func buildCheckInPayload() (checkInPayload, string) {
 
 // fetchVersionInfo fetches the latest version information from the server.
 // It POSTs the rich check-in first and falls back to the legacy GET when the
-// server predates the rich endpoint.
-func fetchVersionInfo() (*VersionInfo, error) {
+// server predates the rich endpoint. clientID and firstRun come from the
+// caller's single GetOrCreateClientIDWithNew call (see CheckForUpdate).
+func fetchVersionInfo(clientID string, firstRun bool) (*VersionInfo, error) {
 	client := &http.Client{
 		Timeout: 5 * time.Second,
 	}
 
-	payload, accessToken := buildCheckInPayload()
+	payload, accessToken := buildCheckInPayload(clientID, firstRun)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode version check payload: %w", err)
@@ -343,7 +356,15 @@ func ForceCheck() (*VersionInfo, error) {
 			telemetry.DisableTelemetryEnv,
 		)
 	}
-	info, err := fetchVersionInfo()
+	// A forced check on a fresh install IS the first run: the id gets
+	// created right here, so the first_run signal is threaded the same way
+	// as in CheckForUpdate.
+	clientID, firstRun, err := config.GetOrCreateClientIDWithNew()
+	if err != nil {
+		clientID = ""
+		firstRun = false
+	}
+	info, err := fetchVersionInfo(clientID, firstRun)
 	if err != nil {
 		return nil, err
 	}

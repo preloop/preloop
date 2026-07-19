@@ -117,7 +117,7 @@ credentials for you:
 
 ```bash
 curl -fsSL https://preloop.ai/install/cli | sh
-preloop signup                        # or: preloop login --url http://localhost:8000
+preloop signup                        # or: preloop login --url http://localhost:3000
 preloop agents onboard hermes
 preloop agents install-plugin hermes
 preloop agents validate hermes

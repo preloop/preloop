@@ -23,9 +23,30 @@ URL = riglib.env("RIG_URL").rstrip("/")
 STATE = riglib.run_dir() / "state" / "browser-state.json"
 
 
+def bootstrap_register_url() -> str:
+    """Return the register URL, tokenized when the installer printed one.
+
+    Module 05 captures the installer's terminal output (including the
+    "Next steps" footer with the setup link) in logs/05-install.txt. Newer
+    releases print a ``/register#bootstrap=<token>`` link there; the first
+    signup must go through it. Older releases have no token — fall back to
+    the plain register URL. The token itself is never logged.
+    """
+    log_path = riglib.run_dir() / "logs" / "05-install.txt"
+    try:
+        installer_output = log_path.read_text()
+    except OSError:
+        return f"{URL}/register"
+    match = re.search(r"/register#bootstrap=([0-9a-fA-F]+)", installer_output)
+    if not match:
+        return f"{URL}/register"
+    riglib.note("using the tokenized bootstrap setup link from the installer output")
+    return f"{URL}/register#bootstrap={match.group(1)}"
+
+
 def register(page, creds) -> str:
     """Try to register; returns 'registered', 'needs-login' or 'exists'."""
-    page.goto(f"{URL}/register", wait_until="networkidle")
+    page.goto(bootstrap_register_url(), wait_until="networkidle")
     browserlib.screenshot(page, "07-register-form")
     browserlib.fill_sl_input(page, "username", creds["username"])
     browserlib.fill_sl_input(page, "email", creds["email"])

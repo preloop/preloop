@@ -24,7 +24,7 @@ curl -fsSL https://preloop.ai/install/cli | sh
 
 # 2. Connect it to a control plane:
 preloop signup                                # Preloop Cloud (fastest), or
-preloop login --url http://localhost:8000    # your self-hosted instance (see Getting Started)
+preloop login --url http://localhost:3000    # your self-hosted instance (see Getting Started)
 
 # 3. Bring your local agents under governance
 preloop agents discover
@@ -227,11 +227,11 @@ curl -fsSL https://preloop.ai/install/oss | sh
 
 # Install the CLI and connect it to YOUR instance instead of preloop.ai
 curl -fsSL https://preloop.ai/install/cli | sh
-preloop login --url http://localhost:8000
+preloop login --url http://localhost:3000
 preloop agents discover
 ```
 
-The console is at `http://localhost:3000` — create the first user there or let `preloop login` walk you through it. You can also set the instance URL via the environment (`PRELOOP_URL=http://localhost:8000 preloop login`); the CLI stores it in `~/.preloop/config.yaml`, so every later command targets your instance. Without `--url` or `PRELOOP_URL`, the CLI defaults to `https://preloop.ai`.
+The console is at `http://localhost:3000` — create the first user there or let `preloop login` walk you through it. You can also set the instance URL via the environment (`PRELOOP_URL=http://localhost:3000 preloop login`); the CLI stores it in `~/.preloop/config.yaml`, so every later command targets your instance. Without `--url` or `PRELOOP_URL`, the CLI defaults to `https://preloop.ai`.
 
 #### Public deployments: HTTPS and email
 
@@ -262,6 +262,10 @@ curl -fsSL https://preloop.ai/install/oss | sh
 The installer detects the existing install and keeps its configuration (public URL, TLS setup, SMTP credentials, `SECRET_KEY`, database password), pulls the new images, **dumps the database to `~/.preloop-oss/backups/` first**, applies schema migrations automatically (the `migrate` service runs `alembic upgrade head`), and removes containers for services a new version dropped. Setting an environment variable overrides that one setting; everything else is preserved.
 
 For Kubernetes/prod-like deployments, use the Helm chart in [`helm/preloop`](helm/preloop) and connect the CLI with `preloop login --url https://your-preloop.example.com`.
+
+### Telemetry
+
+Self-hosted instances and the CLI send a daily, pseudonymous version check-in (random UUID, version, platform — no user data), which also carries one-time `install_completed` / `cli_first_run` markers. Set `PRELOOP_DISABLE_TELEMETRY=true` (in the instance `.env`, or in the CLI's environment) to disable it entirely; the bash installer itself never phones home. The complete event and field list is in [SECURITY.md](SECURITY.md#telemetry).
 
 ### Release smoke test
 

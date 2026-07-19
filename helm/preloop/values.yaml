@@ -34,7 +34,7 @@ worker:
   # Worker resources (background tasks)
   resources:
     requests:
-      cpu: "500m"
+      cpu: "50m"
       memory: "512Mi"
     limits:
       cpu: "2"
@@ -139,7 +139,7 @@ api:
   replicaCount: null
   resources:
     requests:
-      cpu: "500m"
+      cpu: "50m"
       memory: "512Mi"
     limits:
       cpu: "2"
@@ -149,7 +149,7 @@ api:
 scheduler:
   resources:
     requests:
-      cpu: "100m"
+      cpu: "50m"
       memory: "128Mi"
     limits:
       cpu: "500m"
@@ -159,7 +159,7 @@ scheduler:
 monitor:
   resources:
     requests:
-      cpu: "100m"
+      cpu: "50m"
       memory: "128Mi"
     limits:
       cpu: "500m"
