@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Bootstrap setup token for the first registration.** On a fresh (zero-user)
+  instance with `PRELOOP_BOOTSTRAP_TOKEN` configured, `/register` requires the
+  token: the installer generates one, persists it to the instance `.env`, and
+  prints a `/register#bootstrap=<token>` setup link to the terminal only. This
+  closes the race where a stranger could claim a freshly installed public
+  instance before its operator. First signup is serialized with a database
+  advisory lock, and account+user+role now commit in a single transaction.
+- **Async session-optimization jobs.** `POST /account/runtime-sessions/{id}/optimizations/jobs`
+  runs the analysis in a bounded background worker and returns `202` with a
+  pollable job; the console Optimize tab shows analyzing / failed+retry /
+  no-waste states instead of a spinnerless multi-minute wait. The synchronous
+  endpoint is unchanged.
+- **Activation telemetry markers.** Self-hosted instances report a one-time
+  `install_completed` marker on the existing daily version check-in, and the
+  CLI reports a one-time `cli_first_run` marker — both suppressed by
+  `PRELOOP_DISABLE_TELEMETRY`. A new in-instance `first_session_seen` hook
+  registry lets plugins observe first agent activity; the event never leaves
+  the instance. The full contract is documented in SECURITY.md.
+
+### Fixed
+
+- **Per-principal model authorization at the gateway.** Model listing,
+  requested-model resolution (exact and suffix), and default-model selection
+  now all consume one authorized-model computation: principal-bound
+  subscription-OAuth models are visible only to their bound managed agent, and
+  credentials with no bound models fail closed instead of seeing everything.
+  Rejections return `model_not_authorized` with the usable model ids.
+- CLI first-run telemetry read `first_run=false` on the very first run.
+
 ## [0.12.6] - 2026-07-19
 
 ### Fixed

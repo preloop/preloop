@@ -13,10 +13,11 @@ import yaml
 # (honored by preloop.plugins.base at discovery time).
 os.environ["DISABLE_PROPRIETARY_PLUGINS"] = "true"
 
-# Ensure the project root is in the Python path
-# This allows importing preloop modules when running the script directly
+# Generate from THIS repo's code, not from an installed preloop package: the
+# package root is backend/, and it must win over site-packages (an editable
+# install may point at a different checkout, silently producing a stale spec).
 project_root = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(project_root / "backend"))
 
 try:
     from preloop.api.app import create_app

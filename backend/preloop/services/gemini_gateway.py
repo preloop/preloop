@@ -491,6 +491,8 @@ class GeminiGatewayService(OpenAIGatewayService):
         if len(matches) == 1:
             return matches[0]
 
+        # Called for its side effect: raises the shared model_not_authorized
+        # 400 when the requested name resolves to no authorized model.
         self._resolve_requested_model(requested_name, provider="gemini")
         return requested_name
 
