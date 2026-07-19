@@ -649,12 +649,6 @@ export class DashboardView extends AuthedElement {
         gap: var(--sl-spacing-large);
       }
 
-      .updated-at {
-        color: var(--sl-color-neutral-500);
-        font-size: var(--sl-font-size-small);
-        margin-top: -37px;
-      }
-
       .summary-grid,
       .control-plane-grid,
       .analytics-grid {
@@ -695,7 +689,6 @@ export class DashboardView extends AuthedElement {
       .analytics-subtext,
       .step-description,
       .empty-state,
-      .updated-at,
       .row-meta,
       .summary-item span:last-child,
       .capsule-hint {
@@ -3972,17 +3965,17 @@ export class DashboardView extends AuthedElement {
     }
 
     return html`
-      <view-header headerText="Overview" width="extra-wide"></view-header>
-      <p></p>
+      <view-header headerText="Overview" width="extra-wide">
+        <div class="updated-at" slot="description">
+          Last updated ${this.formatLastUpdatedLabel()}
+        </div>
+      </view-header>
       <div class="extra-wide" style="margin-bottom: var(--sl-spacing-large);">
         ${
           this.error
             ? html`<sl-alert variant="danger" open>${this.error}</sl-alert>`
             : nothing
         }
-        <div class="updated-at">
-          Last updated ${this.formatLastUpdatedLabel()}
-        </div>
         ${this.renderWelcomeCard()}
       </div>
 

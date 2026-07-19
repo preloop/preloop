@@ -1,4 +1,4 @@
-import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
+import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import consoleStyles from '../styles/console-styles.css?inline';
 
@@ -16,6 +16,12 @@ export class ViewHeader extends LitElement {
   static styles = [
     unsafeCSS(consoleStyles),
     css`
+      :host {
+        display: block;
+        /* The header owns the gap to the page content below it. Pages must
+           not add their own spacers or negative margins to compensate. */
+        margin-bottom: var(--sl-spacing-large);
+      }
       .header {
         display: flex;
         justify-content: space-between;
@@ -25,7 +31,8 @@ export class ViewHeader extends LitElement {
       h1 {
         margin: 0;
       }
-      .description {
+      .description,
+      ::slotted([slot='description']) {
         margin: var(--sl-spacing-2x-small) 0 0;
         color: var(--sl-color-neutral-500);
         font-size: 0.9rem;
@@ -47,7 +54,7 @@ export class ViewHeader extends LitElement {
           ${
             this.description
               ? html`<p class="description">${this.description}</p>`
-              : nothing
+              : html`<slot name="description"></slot>`
           }
         </div>
       </div>

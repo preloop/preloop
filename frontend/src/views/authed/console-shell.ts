@@ -196,7 +196,7 @@ export class ConsoleShell extends LitElement {
       .main-view {
         flex-grow: 1;
         display: grid;
-        grid-template-rows: auto 1fr; /* Header row, Content row */
+        grid-template-rows: auto auto 1fr; /* Header, bypass banner, content */
         overflow-y: hidden;
         background-color: var(--sl-color-neutral-0);
       }
