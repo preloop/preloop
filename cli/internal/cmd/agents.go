@@ -3529,6 +3529,11 @@ func applyClaudeManagedGateway(plan managedMCPEnrollmentPlan, baseURL, token, mo
 		env[envKey] = modelAlias
 		env[envKey+"_NAME"] = "Preloop " + modelAlias
 	} else {
+		// Also replace settings.model: a stale explicit selection (e.g.
+		// "claude-fable-5[1m]") outranks the env pin, and when it is not
+		// honorable in API-key mode Claude Code silently switches to its API
+		// default model instead of the managed alias (tester #4, 2026-07-20).
+		plan.ManagedDocument["model"] = modelAlias
 		env["ANTHROPIC_MODEL"] = modelAlias
 	}
 	plan.ManagedModelAlias = modelAlias

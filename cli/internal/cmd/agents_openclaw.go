@@ -1796,8 +1796,24 @@ func parseClaudeManagedGatewayUpstream(agent AgentConfig) (*managedGatewayUpstre
 	if looksManagedGatewayModelRef(modelRef) && modelRef != "" {
 		modelRef = ""
 	}
-	if modelRef == "" || strings.Contains(modelRef, "[") {
+	// Claude Code stores context-window variants as "<model>[1m]" (common for
+	// Max accounts defaulted to Fable's 1M-context form). Strip the suffix and
+	// route the base model instead of discarding the ref — bailing here left
+	// Fable-defaulted users with no model pin at all (tester #4, 2026-07-20).
+	if base, stripped := stripClaudeContextWindowSuffix(modelRef); stripped {
+		notes = append(
+			notes,
+			fmt.Sprintf(
+				"Claude Code's configured model %s uses a context-window variant; routing the base model %s through Preloop.",
+				modelRef,
+				base,
+			),
+		)
+		modelRef = base
+	}
+	if modelRef == "" {
 		if recentModel := resolveClaudeRecentModelRef(); recentModel != "" {
+			recentModel, _ = stripClaudeContextWindowSuffix(recentModel)
 			modelRef = recentModel
 			notes = append(
 				notes,
@@ -1805,7 +1821,7 @@ func parseClaudeManagedGatewayUpstream(agent AgentConfig) (*managedGatewayUpstre
 			)
 		}
 	}
-	if modelRef == "" || strings.Contains(modelRef, "[") {
+	if modelRef == "" {
 		return nil, nil
 	}
 	if selection := claudeSelectionFromModelRef(modelRef); selection != "" {
@@ -1877,6 +1893,10 @@ func parseClaudeManagedGatewayUpstream(agent AgentConfig) (*managedGatewayUpstre
 		}
 		apiKey = ""
 		notes = append(notes, claudeCodeOAuthGatewayWarningNote())
+		notes = append(
+			notes,
+			"Claude Code will display \"API billing\" after onboarding — that is the label for its gateway token, not how you are billed: model calls still ride your Anthropic subscription through Preloop, and the Preloop Console records them at $0 spend.",
+		)
 	}
 	if apiKeyNote != "" {
 		notes = append(notes, apiKeyNote)
@@ -1943,6 +1963,23 @@ func claudeCodeOAuthGatewayWarningNote() string {
 
 func claudeCodeAPIBillingRequiredNote() string {
 	return "Claude Code did not expose an importable Anthropic API billing credential. Claude Code will stay MCP proxy only. To fully onboard Claude Code through Preloop, set ANTHROPIC_API_KEY to an Anthropic API key and rerun `preloop agents onboard \"Claude Code\" -y`."
+}
+
+// stripClaudeContextWindowSuffix removes a trailing bracketed context-window
+// marker from a Claude model ref ("claude-fable-5[1m]" -> "claude-fable-5").
+// Returns the base ref and whether a suffix was stripped. Refs without a
+// well-formed trailing "[...]" pass through unchanged.
+func stripClaudeContextWindowSuffix(modelRef string) (string, bool) {
+	trimmed := strings.TrimSpace(modelRef)
+	open := strings.LastIndex(trimmed, "[")
+	if open <= 0 || !strings.HasSuffix(trimmed, "]") {
+		return trimmed, false
+	}
+	base := strings.TrimSpace(trimmed[:open])
+	if base == "" {
+		return trimmed, false
+	}
+	return base, true
 }
 
 func isClaudeCodeOAuthAccessToken(token string) bool {
