@@ -546,7 +546,10 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		}
 	}
 
-	if note := mcpOnlyAgentModelNote(agent); note != "" {
+	// The MCP-only support note claims active MCP-firewall governance, which
+	// would contradict a skipped MCP-config step (Claude Desktop without
+	// npx) — the skip note in plan.Notes already explains that case.
+	if note := mcpOnlyAgentModelNote(agent); note != "" && !plan.MCPConfigSkipped {
 		plan.Notes = append(plan.Notes, note)
 	}
 
@@ -801,6 +804,14 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		validationResult,
 		defaultManagedLiveValidationResult(agent),
 	)
+	if plan.MCPConfigSkipped {
+		// The MCP-config step was deliberately skipped (Claude Desktop
+		// without npx/node for the mcp-remote bridge). Record it so the
+		// enrollment reads as "skipped, here is why", not as a silent
+		// validation failure.
+		validationResult["mcp_config_skipped"] = true
+		validationResult["mcp_config_skip_reason"] = "npx (Node.js) not found on PATH"
+	}
 
 	appliedAt := timeNowUTC()
 	enrollment, err := createManagedEnrollmentRecord(
@@ -984,6 +995,13 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	onboardingState := onboardingStateFromValidation(validationResult)
 	fmt.Printf("  Onboarding mode: %s\n", onboardingStateLabel(onboardingState))
 	fmt.Printf("  Routing: %s\n", onboardingStateNote(onboardingState))
+	if plan.MCPConfigSkipped {
+		fmt.Printf("  MCP config: skipped\n")
+		fmt.Printf(
+			"  Note: %s\n",
+			publicPlanNote(claudeDesktopBridgeSkippedNote(plan.ManagedServerURL)),
+		)
+	}
 	if supportsAgentControlChannel(agent) {
 		fmt.Printf("  Agent Control config: %s\n", boolStatus(validationResult["control_config_written"]))
 		fmt.Printf("  Agent Control runtime plugin: %s\n", agentControlPluginStatus(validationResult))

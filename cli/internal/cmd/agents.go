@@ -202,6 +202,11 @@ func isDevinAgent(agent AgentConfig) bool {
 	return strings.EqualFold(strings.TrimSpace(agent.Name), devinAgentName)
 }
 
+// isClaudeDesktopAgent reports whether the agent is the Claude Desktop app.
+func isClaudeDesktopAgent(agent AgentConfig) bool {
+	return strings.EqualFold(strings.TrimSpace(agent.Name), "claude desktop")
+}
+
 // mcpOnlyAgentModelNote returns a clear, agent-specific note explaining why
 // an agent is onboarded for tool-call governance only and its model traffic
 // is not routed through the Preloop gateway. These agents either expose no
@@ -642,7 +647,12 @@ type managedMCPEnrollmentPlan struct {
 	ManagedControlWSURL string
 	ManagedModelAlias   string
 	ManagedProviderName string
-	Notes               []string
+	// MCPConfigSkipped is set when the plan deliberately writes no managed
+	// Preloop MCP entry (currently only Claude Desktop when the npx/node
+	// runtime for the mcp-remote stdio bridge is missing). The reason and
+	// the user's options are carried in Notes.
+	MCPConfigSkipped bool
+	Notes            []string
 }
 
 type remoteServerSyncResult struct {
@@ -3205,7 +3215,11 @@ func printEnrollmentPlan(plan managedMCPEnrollmentPlan, dryRun bool) {
 	fmt.Printf("%s managed MCP onboarding for %s\n", mode, resolveAgentDisplayName(plan.Agent))
 	fmt.Printf("  Agent type: %s\n", plan.Agent.Name)
 	fmt.Printf("  Config: %s\n", plan.Agent.ConfigPath)
-	fmt.Printf("  Managed server: %s -> %s\n", plan.ManagedServerName, plan.ManagedServerURL)
+	if plan.MCPConfigSkipped {
+		fmt.Printf("  Managed server: skipped — npx/Node.js not found (see notes)\n")
+	} else {
+		fmt.Printf("  Managed server: %s -> %s\n", plan.ManagedServerName, plan.ManagedServerURL)
+	}
 	if plan.ManagedControlWSURL != "" {
 		fmt.Printf("  Agent Control config target: %s\n", plan.ManagedControlWSURL)
 		fmt.Println("  Agent Control runtime plugin: install/verify when supported")
@@ -3223,6 +3237,56 @@ func printEnrollmentPlan(plan managedMCPEnrollmentPlan, dryRun bool) {
 		// print via a dedicated helper so taint from companion return
 		// values in upstream resolvers does not flow into logging sinks.
 		fmt.Printf("  Note: %s\n", publicPlanNote(note))
+	}
+}
+
+// resolveClaudeDesktopBridgeRuntime is a package-level seam for tests (in the
+// style of resolveNpmExecutable). The managed Claude Desktop entry launches
+// the mcp-remote stdio bridge via npx, so onboarding must not write it when
+// the runtime is missing: Claude Desktop's config file cannot express a
+// remote url/headers server, and an entry whose command cannot start (or the
+// remote shape itself) can wedge the app's whole MCP subsystem.
+var resolveClaudeDesktopBridgeRuntime = func() error {
+	if _, err := resolveRuntimeExecutable("npx"); err != nil {
+		return fmt.Errorf("npx is not available on PATH: %w", err)
+	}
+	// npx ships with Node.js, but probe node too so a broken partial
+	// install does not produce a bridge entry that can never start.
+	if _, err := resolveRuntimeExecutable("node"); err != nil {
+		return fmt.Errorf("node is not available on PATH: %w", err)
+	}
+	return nil
+}
+
+// claudeDesktopBridgeSkippedNote explains why no Preloop MCP entry was
+// written for Claude Desktop and what the user can do about it.
+func claudeDesktopBridgeSkippedNote(mcpURL string) string {
+	return "Skipped writing the Preloop MCP entry for Claude Desktop: the entry " +
+		"runs the mcp-remote bridge via npx, and npx (Node.js) was not found on " +
+		"PATH. Claude Desktop's config file only supports stdio MCP servers, so " +
+		"a remote URL entry cannot be written instead. Your options: install " +
+		"Node.js (https://nodejs.org) and re-run onboarding, or add Preloop as a " +
+		"custom connector in Claude Desktop under Settings → Connectors using " +
+		"the MCP URL " + mcpURL + " (Preloop's MCP endpoint supports the OAuth " +
+		"flow MCP clients use)."
+}
+
+// stringArgsFromConfigValue coerces a config `args` value — []string when
+// freshly built, []interface{} after a JSON round-trip — into []string.
+func stringArgsFromConfigValue(value interface{}) []string {
+	switch typed := value.(type) {
+	case []string:
+		return typed
+	case []interface{}:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
 	}
 }
 
@@ -3248,7 +3312,20 @@ func buildManagedMCPEnrollmentPlan(agent AgentConfig, baseURL, token string) (ma
 		return managedMCPEnrollmentPlan{}, err
 	}
 	removedPreloopServers := prunePreloopOwnedMCPServersFromDocument(managedDoc)
-	container["preloop"] = adapter.BuildManagedServer(baseURL, token)
+	mcpConfigSkipped := false
+	if isClaudeDesktopAgent(agent) {
+		if runtimeErr := resolveClaudeDesktopBridgeRuntime(); runtimeErr != nil {
+			// Without npx/node the mcp-remote bridge cannot start, and no
+			// other shape is writable (Claude Desktop's config file cannot
+			// express remote servers). Write no Preloop entry at all — the
+			// prune above still cleans up any broken entry from an earlier
+			// onboard — and tell the user their options in the notes.
+			mcpConfigSkipped = true
+		}
+	}
+	if !mcpConfigSkipped {
+		container["preloop"] = adapter.BuildManagedServer(baseURL, token)
+	}
 	ensureLegacyCodexMCPServer(agent, managedDoc, baseURL, token)
 	if supportsAgentControlChannel(agent) {
 		applyAgentControlConfigToDocument(
@@ -3277,6 +3354,12 @@ func buildManagedMCPEnrollmentPlan(agent AgentConfig, baseURL, token string) (ma
 	sanitizeConfigSnapshot(sanitizedManaged)
 
 	notes := []string{}
+	if mcpConfigSkipped {
+		notes = append(
+			notes,
+			claudeDesktopBridgeSkippedNote(strings.TrimRight(baseURL, "/")+"/mcp/v1"),
+		)
+	}
 	if len(removedPreloopServers) > 0 {
 		notes = append(
 			notes,
@@ -3301,6 +3384,7 @@ func buildManagedMCPEnrollmentPlan(agent AgentConfig, baseURL, token string) (ma
 		ManagedServerName:   "preloop",
 		ManagedServerURL:    strings.TrimRight(baseURL, "/") + "/mcp/v1",
 		ManagedControlWSURL: controlWSURL,
+		MCPConfigSkipped:    mcpConfigSkipped,
 		Notes:               notes,
 	}, nil
 }
@@ -4364,6 +4448,30 @@ func (a genericManagedMCPAdapter) BuildManagedServer(baseURL, token string) map[
 				"Authorization": "Bearer " + token,
 			},
 		}
+	case "claude desktop":
+		// claude_desktop_config.json only supports stdio servers
+		// (command/args/env); remote HTTP servers are added through the
+		// app's Settings → Connectors UI, never through this file. A
+		// url/headers entry here is invalid and can wedge Claude Desktop's
+		// entire MCP subsystem (observed on older builds). Bridge to the
+		// remote endpoint with mcp-remote instead. The Authorization header
+		// is split into a space-free "Authorization:${AUTH_HEADER}" arg
+		// plus an env block because Claude Desktop mangles spaces inside
+		// args on some versions — this is the workaround documented in the
+		// mcp-remote README ("note no spaces around ':'").
+		return map[string]interface{}{
+			"command": "npx",
+			"args": []interface{}{
+				"-y",
+				"mcp-remote",
+				url,
+				"--header",
+				"Authorization:${AUTH_HEADER}",
+			},
+			"env": map[string]interface{}{
+				"AUTH_HEADER": "Bearer " + token,
+			},
+		}
 	default:
 		transport := "http-streaming"
 		if usesNestedMCPServers(a.agent) {
@@ -4440,6 +4548,54 @@ func (a genericManagedMCPAdapter) ValidateManagedConfig(doc map[string]interface
 				result["authorization_header_ok"] = true
 			}
 		}
+	}
+	if isClaudeDesktopAgent(a.agent) {
+		// The managed Claude Desktop entry is an mcp-remote stdio bridge
+		// (command/args/env), not a remote url/headers entry — Claude
+		// Desktop cannot read the remote shape from its config file at all.
+		// Validate the bridge shape and deliberately reject the legacy
+		// url/headers form this override replaces: preloop_url_ok requires
+		// the endpoint URL inside args, transport_ok requires npx +
+		// mcp-remote, and authorization_header_ok requires the --header
+		// Authorization arg (env-indirected or literal bearer).
+		command, _ := preloop["command"].(string)
+		args := stringArgsFromConfigValue(preloop["args"])
+		bridgeCommandOK := strings.EqualFold(
+			filepath.Base(strings.TrimSpace(command)),
+			"npx",
+		)
+		bridgeArgOK := false
+		bridgeURLOK := false
+		headerArg := ""
+		for i, arg := range args {
+			switch strings.TrimSpace(arg) {
+			case "mcp-remote":
+				bridgeArgOK = true
+			case expectedURL:
+				bridgeURLOK = true
+			case "--header":
+				if i+1 < len(args) {
+					headerArg = strings.TrimSpace(args[i+1])
+				}
+			}
+		}
+		bridgeAuthOK := false
+		if value, ok := strings.CutPrefix(headerArg, "Authorization:"); ok {
+			if strings.Contains(value, "${AUTH_HEADER}") {
+				if env, ok := asObjectMap(preloop["env"]); ok {
+					if raw, ok := env["AUTH_HEADER"].(string); ok &&
+						strings.HasPrefix(strings.TrimSpace(raw), "Bearer ") {
+						bridgeAuthOK = true
+					}
+				}
+			} else if strings.HasPrefix(strings.TrimSpace(value), "Bearer ") {
+				bridgeAuthOK = true
+			}
+		}
+		result["bridge_command_ok"] = bridgeCommandOK && bridgeArgOK
+		result["preloop_url_ok"] = bridgeURLOK
+		result["transport_ok"] = bridgeCommandOK && bridgeArgOK
+		result["authorization_header_ok"] = bridgeAuthOK
 	}
 	result["validation_passed"] =
 		result["preloop_server_present"] == true &&
