@@ -125,6 +125,41 @@ func TestPrintAgentOnboardingFailuresReportsRecordedFailures(t *testing.T) {
 	}
 }
 
+func TestFailureFootersPointAtTroubleshootingDocs(t *testing.T) {
+	t.Run("summary with a failed agent links the docs once", func(t *testing.T) {
+		var output bytes.Buffer
+		printAgentOnboardingSummary(&output, []agentOnboardingOutcome{
+			{Agent: AgentConfig{Name: "Codex CLI"}, Status: agentOnboardingStatusOnboarded},
+			{Agent: AgentConfig{Name: "Gemini CLI"}, Status: agentOnboardingStatusFailed, Reason: "boom"},
+		})
+		if strings.Count(output.String(), troubleshootingDocsURL) != 1 {
+			t.Fatalf("expected exactly one troubleshooting link, got:\n%s", output.String())
+		}
+	})
+
+	t.Run("fully successful summary stays clean", func(t *testing.T) {
+		var output bytes.Buffer
+		printAgentOnboardingSummary(&output, []agentOnboardingOutcome{
+			{Agent: AgentConfig{Name: "Codex CLI"}, Status: agentOnboardingStatusOnboarded},
+			{Agent: AgentConfig{Name: "Gemini CLI"}, Status: agentOnboardingStatusPartial, Reason: "launcher skipped"},
+		})
+		if strings.Contains(output.String(), troubleshootingDocsURL) {
+			t.Fatalf("expected no troubleshooting link without failures, got:\n%s", output.String())
+		}
+	})
+
+	t.Run("batch failure report links the docs once", func(t *testing.T) {
+		var output bytes.Buffer
+		printAgentOnboardingFailures(&output, []agentOnboardingFailure{
+			{Agent: AgentConfig{Name: "Codex CLI"}, Err: fmt.Errorf("boom")},
+			{Agent: AgentConfig{Name: "Gemini CLI"}, Err: fmt.Errorf("also boom")},
+		})
+		if strings.Count(output.String(), troubleshootingDocsURL) != 1 {
+			t.Fatalf("expected exactly one troubleshooting link, got:\n%s", output.String())
+		}
+	})
+}
+
 func TestResolveManagedAgentExecutablePathUsesNVMFallback(t *testing.T) {
 	skipManagedLauncherOnWindows(t, "resolving an agent binary from the nvm fallback path")
 	home := t.TempDir()
@@ -1811,6 +1846,46 @@ func TestPromptForApprovalsOptIn(t *testing.T) {
 			t.Fatalf("expected no prompt output, got %q", output.String())
 		}
 	})
+}
+
+func TestShouldPromptForEnrollmentName(t *testing.T) {
+	cases := []struct {
+		name string
+		opts managedEnrollmentOptions
+		want bool
+	}{
+		{
+			name: "interactive single-agent onboard prompts once",
+			opts: managedEnrollmentOptions{},
+			want: true,
+		},
+		{
+			name: "auto-approve never prompts",
+			opts: managedEnrollmentOptions{AutoApprove: true},
+			want: false,
+		},
+		{
+			name: "skip-confirmation never prompts",
+			opts: managedEnrollmentOptions{SkipConfirmation: true},
+			want: false,
+		},
+		{
+			// Regression: the discover/onboard batch loops prepare the agent
+			// (name prompt) before calling executeManagedEnrollment; the
+			// enrollment must not ask for the agent name a second time even
+			// when its own confirmation prompts stay interactive.
+			name: "already-prepared agent is not re-prompted",
+			opts: managedEnrollmentOptions{AgentPrepared: true},
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldPromptForEnrollmentName(tc.opts); got != tc.want {
+				t.Fatalf("shouldPromptForEnrollmentName(%+v) = %v, want %v", tc.opts, got, tc.want)
+			}
+		})
+	}
 }
 
 func TestPrepareAgentForEnrollment_AllowsEditingAgentName(t *testing.T) {

@@ -290,9 +290,16 @@ type managedEnrollmentOptions struct {
 	// would-prompt tool calls to Preloop's mobile/watch approval flow. Off by
 	// default; enabled via `preloop agents onboard --approvals`.
 	Approvals bool
-	Tags      map[string]string
-	Input     io.Reader
-	Output    io.Writer
+	// AgentPrepared marks that the caller already ran
+	// prepareAgentForEnrollment on the agent (display name confirmed,
+	// runtime principal generated). executeManagedEnrollment must not run
+	// the name prompt again in that case: the discover/onboard batch loops
+	// prepare each agent before enrolling it, and re-preparing inside the
+	// enrollment made interactive onboarding ask for the agent name twice.
+	AgentPrepared bool
+	Tags          map[string]string
+	Input         io.Reader
+	Output        io.Writer
 }
 
 type managedLiveValidationOutcome struct {
@@ -460,7 +467,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	}
 
 	agent = normalizeDiscoveredAgent(agent)
-	if !opts.SkipConfirmation && !opts.AutoApprove {
+	if shouldPromptForEnrollmentName(opts) {
 		agent, err = prepareAgentForEnrollment(bufio.NewReader(input), output, agent, false)
 		if err != nil {
 			return err

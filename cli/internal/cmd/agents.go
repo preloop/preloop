@@ -41,7 +41,13 @@ type AgentConfig struct {
 	// SupportLevel is the per-agent-type capability: "full" (MCP + model
 	// routing) or "mcp-only" (model traffic not routable for this agent
 	// type) — see supportLevelForAgent.
-	SupportLevel         string   `json:"support_level,omitempty"`
+	SupportLevel string `json:"support_level,omitempty"`
+	// RuntimeState reports whether the agent's runtime (executable or app
+	// bundle) was actually found: present / missing / unknown — see
+	// detectAgentRuntimeState. "missing" flags a config-only leftover from
+	// an uninstalled agent; "unknown" is treated as present.
+	RuntimeState         string   `json:"runtime_state,omitempty"`
+	RuntimeDetail        string   `json:"runtime_detail,omitempty"`
 	ConfigDrift          bool     `json:"config_drift,omitempty"`
 	ReonboardRecommended bool     `json:"reonboard_recommended,omitempty"`
 	DriftReasons         []string `json:"drift_reasons,omitempty"`
@@ -476,6 +482,7 @@ func printAgentOnboardingSummary(w io.Writer, outcomes []agentOnboardingOutcome)
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
 	fmt.Fprintf(tw, "  Agent\tStatus\tReason\n") //nolint:errcheck
 	missingExecutable := false
+	anyFailed := false
 	for _, outcome := range outcomes {
 		reason := outcome.Reason
 		if reason == "" {
@@ -491,12 +498,18 @@ func printAgentOnboardingSummary(w io.Writer, outcomes []agentOnboardingOutcome)
 		if outcome.MissingExecutable {
 			missingExecutable = true
 		}
+		if outcome.Status == agentOnboardingStatusFailed {
+			anyFailed = true
+		}
 	}
 	tw.Flush() //nolint:errcheck
 	if missingExecutable {
 		if hint := wslMissingExecutableHint(); hint != "" {
 			fmt.Fprintf(w, "  Hint: %s\n", hint) //nolint:errcheck
 		}
+	}
+	if anyFailed {
+		printTroubleshootingFooter(w)
 	}
 }
 
@@ -774,6 +787,9 @@ func runAgentsDiscover(cmd *cobra.Command, args []string) error {
 		fmt.Printf("     Runtime principal: %s\n", runtimePrincipalIDForAgent(agent))
 		fmt.Printf("     Config: %s\n", agent.ConfigPath)
 		fmt.Printf("     Auth: %s\n", agentAuthListingLabel(agent))
+		if runtimeLabel := agentRuntimeListingLabel(agent); runtimeLabel != "" {
+			fmt.Printf("     Runtime: %s\n", runtimeLabel)
+		}
 		fmt.Printf("     Support: %s\n", agentSupportListingLabel(agent))
 		if agent.IsOnboarded {
 			fmt.Printf(
@@ -836,6 +852,16 @@ func promptToOnboardDiscoveredAgents(
 		return nil
 	}
 
+	// Config-only agents (runtime uninstalled, config files left behind) are
+	// never onboarded by the discover-driven batch — neither under --yes nor
+	// via the interactive prompts. Explicit `preloop agents onboard <name>`
+	// still works, with a warning.
+	candidates, configOnly := splitRuntimeMissingCandidates(candidates)
+	printRuntimeMissingOnboardingSkips(os.Stdout, configOnly)
+	if len(candidates) == 0 {
+		return nil
+	}
+
 	// We defer live validation so that all agents in the discover-driven batch
 	// are onboarded first, then their live checks run concurrently in a single
 	// post-onboarding phase (see runDeferredLiveValidationsParallel). This
@@ -844,13 +870,14 @@ func promptToOnboardDiscoveredAgents(
 	// take ~5s) and a slow upstream for one agent never blocks subsequent
 	// agents from being touched.
 	deferLiveValidate := !skipLiveValidate
-	outcomes, err := promptToOnboardCandidates(os.Stdin, os.Stdout, candidates, autoApprove, true, func(agent AgentConfig, approvals bool) error {
+	outcomes, err := promptToOnboardCandidatesTiered(os.Stdin, os.Stdout, client, candidates, autoApprove, true, func(agent AgentConfig, approvals bool) error {
 		return executeManagedEnrollment(agent, managedEnrollmentOptions{
 			Client: client,
 			// AutoApprove carries the -y flag so per-agent sub-prompts
 			// (e.g. stale OpenClaw plugin cleanup) auto-accept under -y.
 			AutoApprove:       autoApprove,
 			SkipConfirmation:  true,
+			AgentPrepared:     true,
 			LiveValidate:      true,
 			SkipLiveValidate:  skipLiveValidate,
 			DeferLiveValidate: deferLiveValidate,
@@ -994,6 +1021,7 @@ func onboardCandidatesBestEffort(
 		agentOpts := opts
 		agentOpts.AutoApprove = true
 		agentOpts.SkipConfirmation = true
+		agentOpts.AgentPrepared = true
 		agentOpts.DeferLiveValidate = deferLiveValidate
 		if err := enroll(prepared, agentOpts); err != nil {
 			// A skipped managed launcher is a partial success (MCP and
@@ -1043,6 +1071,16 @@ func printAgentOnboardingFailures(
 		writer,
 		"Re-run `preloop agents onboard <agent> -y` after fixing the listed agent environment.",
 	)
+	printTroubleshootingFooter(writer)
+}
+
+// shouldPromptForEnrollmentName reports whether executeManagedEnrollment must
+// run its own prepareAgentForEnrollment (which prompts for the display name in
+// interactive runs). Callers that already prepared the agent — the discover
+// and `onboard` batch loops call prepareAgentForEnrollment before enrolling —
+// set AgentPrepared so the user is asked for the agent name exactly once.
+func shouldPromptForEnrollmentName(opts managedEnrollmentOptions) bool {
+	return !opts.SkipConfirmation && !opts.AutoApprove && !opts.AgentPrepared
 }
 
 func prepareAgentForEnrollment(
@@ -1185,6 +1223,12 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
+		// Batch onboarding (with or without --all/--yes) never touches
+		// config-only agents whose runtime is reliably missing; they need an
+		// explicit `preloop agents onboard <name>`.
+		var configOnly []AgentConfig
+		candidates, configOnly = splitRuntimeMissingCandidates(candidates)
+		printRuntimeMissingOnboardingSkips(os.Stdout, configOnly)
 		if len(candidates) == 0 {
 			if runAll {
 				if err := ensureAgentControlOnboarding(client, discovered, opts); err != nil {
@@ -1223,14 +1267,31 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 					return nil
 				}
 			}
+			// Validate-first ordering: agents with verified model routing
+			// onboard first; the MCP-only/unverified tier follows its printed
+			// explanation. --all keeps onboarding everything.
+			verified, unverified, reasons := partitionCandidatesByModelRouting(client, candidates)
 			enrolled, failures := onboardCandidatesBestEffort(
 				os.Stdin,
 				os.Stdout,
-				candidates,
+				verified,
 				opts,
 				deferLiveValidate,
 				executeManagedEnrollment,
 			)
+			if len(unverified) > 0 {
+				printModelRoutingTierExplanation(os.Stdout, unverified, reasons, true)
+				secondTier, secondFailures := onboardCandidatesBestEffort(
+					os.Stdin,
+					os.Stdout,
+					unverified,
+					opts,
+					deferLiveValidate,
+					executeManagedEnrollment,
+				)
+				enrolled = append(enrolled, secondTier...)
+				failures = append(failures, secondFailures...)
+			}
 			if deferLiveValidate && len(enrolled) > 0 {
 				runDeferredLiveValidationsParallel(client, enrolled, os.Stdout)
 			}
@@ -1248,10 +1309,15 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 
 		// askApprovals=false: executeManagedEnrollment prompts for the
 		// approvals hook itself when this path runs interactively.
-		outcomes, err := promptToOnboardCandidates(os.Stdin, os.Stdout, candidates, autoApprove, false, func(a AgentConfig, _ bool) error {
+		outcomes, err := promptToOnboardCandidatesTiered(os.Stdin, os.Stdout, client, candidates, autoApprove, false, func(a AgentConfig, _ bool) error {
 			agentOpts := opts
 			agentOpts.SkipConfirmation = autoApprove
 			agentOpts.DeferLiveValidate = deferLiveValidate
+			// promptToOnboardCandidates already ran
+			// prepareAgentForEnrollment (name prompt) for this agent; the
+			// enrollment must keep its plan/apply confirmation but not ask
+			// for the agent name a second time.
+			agentOpts.AgentPrepared = true
 			return executeManagedEnrollment(a, agentOpts)
 		})
 		if err != nil {
@@ -1276,9 +1342,18 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Explicitly named config-only agents may still be onboarded, but say up
+	// front that the runtime is missing so the result is not mistaken for a
+	// working enrollment.
+	printRuntimeMissingOnboardingWarning(os.Stdout, agent)
+
 	// A skipped managed launcher (missing agent binary) is a partial success:
 	// the warning has been printed and the command exits 0.
-	return ignoreLauncherSkipped(executeManagedEnrollment(agent, opts))
+	if err := ignoreLauncherSkipped(executeManagedEnrollment(agent, opts)); err != nil {
+		printTroubleshootingFooter(os.Stdout)
+		return err
+	}
+	return nil
 }
 
 func ensureAgentControlOnboarding(
@@ -1689,6 +1764,7 @@ func runAgentsValidate(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  routing: %s\n", onboardingStateNote(onboardingStateFromValidation(result)))
 
 	if status != "validated" {
+		printTroubleshootingFooter(os.Stdout)
 		return fmt.Errorf("managed enrollment validation failed")
 	}
 	return nil
@@ -2933,9 +3009,9 @@ func discoverAgents(w io.Writer, printWarnings bool) ([]AgentConfig, error) {
 				ConfigPath: fullPath,
 				MCPServers: servers,
 			})
-			discovered[len(discovered)-1] = withDetectedAuthState(
+			discovered[len(discovered)-1] = withDetectedRuntimeState(withDetectedAuthState(
 				normalizeDiscoveredAgent(discovered[len(discovered)-1]),
-			)
+			))
 			discoveredSpec = true
 			break
 		}
@@ -2943,11 +3019,11 @@ func discoverAgents(w io.Writer, printWarnings bool) ([]AgentConfig, error) {
 			continue
 		}
 		if fallbackPath, ok := detectInstalledAgent(home, spec); ok {
-			discovered = append(discovered, withDetectedAuthState(normalizeDiscoveredAgent(AgentConfig{
+			discovered = append(discovered, withDetectedRuntimeState(withDetectedAuthState(normalizeDiscoveredAgent(AgentConfig{
 				Name:       spec.Name,
 				ConfigPath: fallbackPath,
 				MCPServers: map[string]MCPDef{},
-			})))
+			}))))
 		}
 	}
 	return discovered, nil
