@@ -212,7 +212,7 @@ export class AgentsView extends LitElement {
   private hasAutoOpenedOnboarding = false;
 
   // Switcher state
-  @state() private currentView: 'cards' | 'canvas' = 'canvas';
+  @state() private currentView: 'cards' | 'canvas' = 'cards';
 
   // VM Provisioning state variables
   @state() private computeFeatureEnabled = false;
@@ -324,6 +324,14 @@ export class AgentsView extends LitElement {
       .view-switcher-group sl-radio-group {
         white-space: nowrap;
       }
+      .view-switcher-group sl-icon {
+        margin-right: var(--sl-spacing-x-small);
+      }
+      .results-count {
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
+        white-space: nowrap;
+      }
       .toolbar-divider {
         width: 1px;
         height: 32px;
@@ -341,9 +349,13 @@ export class AgentsView extends LitElement {
       }
       .cards {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-        gap: var(--sl-spacing-large);
-        padding: 1rem 1rem 0 2rem;
+        grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+        gap: var(--sl-spacing-medium);
+        padding: 0;
+        width: 100%;
+      }
+      .cards > .empty-state {
+        grid-column: 1 / -1;
       }
       .deploy-grid {
         display: grid;
@@ -360,7 +372,6 @@ export class AgentsView extends LitElement {
         height: 100%;
       }
       .agent-card {
-        max-width: 400px;
         cursor: pointer;
       }
       .agent-card:focus-visible::part(base) {
@@ -3624,14 +3635,14 @@ export class AgentsView extends LitElement {
                 }}
               >
                 <sl-icon slot="prefix" name="cloud-arrow-up"></sl-icon>
-                Deploy Agent
+                Deploy new agent
               </sl-button>
               <sl-button
                 variant="primary"
                 @click=${() => (this.showOnboardingDialog = true)}
               >
                 <sl-icon slot="prefix" name="plus-lg"></sl-icon>
-                Onboard Agents
+                Onboard existing agent
               </sl-button>
             </div>
           </view-header>
@@ -3693,6 +3704,7 @@ export class AgentsView extends LitElement {
               </sl-dropdown>
 
               <sl-select
+                aria-label="Last seen"
                 value=${this.lastSeenAfter}
                 @sl-change=${this.handleLastSeenAfterChange}
               >
@@ -3705,17 +3717,27 @@ export class AgentsView extends LitElement {
             </form>
 
             <div class="view-switcher-group">
+              <span class="results-count">
+                ${this.agents?.total || 0}
+                ${(this.agents?.total || 0) === 1 ? 'agent' : 'agents'}
+              </span>
               <span class="toolbar-divider" aria-hidden="true"></span>
               <sl-radio-group
+                label="Agent view"
                 value=${this.currentView}
                 @sl-change=${(e: any) => this.setCurrentView(e.target.value)}
                 size="small"
               >
-                <sl-radio-button value="cards" title="Cards View">
-                  <sl-icon name="grid"></sl-icon>
+                <sl-radio-button value="cards" title="Agents list">
+                  <sl-icon name="person-vcard"></sl-icon>
+                  Agents
                 </sl-radio-button>
-                <sl-radio-button value="canvas" title="Canvas View">
-                  <sl-icon name="share"></sl-icon>
+                <sl-radio-button
+                  value="canvas"
+                  title="Agent relationships"
+                >
+                  <sl-icon name="diagram-3"></sl-icon>
+                  Relationships
                 </sl-radio-button>
               </sl-radio-group>
             </div>
@@ -3733,7 +3755,7 @@ export class AgentsView extends LitElement {
           this.currentView === 'canvas'
             ? this.renderCanvas()
             : html`
-                <div class="cards">
+                <div class="cards content-bounds">
                   ${
                     (!this.agents ||
                       (this.agents.items.length === 0 &&

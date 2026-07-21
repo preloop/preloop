@@ -144,8 +144,18 @@ describe('AgentsView', () => {
       'Onboard agents you already run with the CLI, or deploy new ones.'
     );
 
-    const agentNode = el.shadowRoot?.querySelector('.agent-node');
-    expect(agentNode).to.exist;
+    const agentCard = el.shadowRoot?.querySelector('.agent-card');
+    expect(agentCard).to.exist;
+    expect(agentCard?.getAttribute('role')).to.equal('link');
+
+    const controls = el.shadowRoot?.querySelector('.view-switcher-group');
+    expect(controls?.textContent).to.contain('1 agent');
+    expect(controls?.textContent).to.contain('Agents');
+    expect(controls?.textContent).to.contain('Relationships');
+    expect(controls?.querySelector('sl-icon[name="share"]')).to.not.exist;
+
+    expect(text).to.contain('Deploy new agent');
+    expect(text).to.contain('Onboard existing agent');
   });
 
   it('renders claude_desktop agents and agents of unknown kinds', async () => {
@@ -162,8 +172,8 @@ describe('AgentsView', () => {
     expect(text).to.contain('My Claude Desktop');
     expect(text).to.contain('Mystery Agent');
 
-    const agentNodes = el.shadowRoot?.querySelectorAll('.agent-node');
-    expect(agentNodes?.length).to.equal(2);
+    const agentCards = el.shadowRoot?.querySelectorAll('.agent-card');
+    expect(agentCards?.length).to.equal(2);
   });
 
   it('omits the agent kind allowlist by default so unknown kinds are fetched', async () => {
