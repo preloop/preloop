@@ -487,6 +487,17 @@ describe('DashboardView', () => {
 
     const header = element.shadowRoot?.querySelector('view-header');
     expect(header?.getAttribute('headerText')).to.equal('Overview');
+    expect(
+      header?.querySelector('[slot="title-suffix"]')?.textContent
+    ).to.contain('Last updated');
+    expect(
+      element.shadowRoot?.querySelector('.dashboard-pair--activity')?.children
+        .length
+    ).to.equal(2);
+    expect(
+      element.shadowRoot?.querySelector('.dashboard-pair--insights')?.children
+        .length
+    ).to.equal(2);
     expect(element.shadowRoot?.textContent).to.contain(
       'Recent Flow Executions'
     );

@@ -36,4 +36,20 @@ describe('ViewHeader', () => {
 
     expect(el.shadowRoot?.querySelector('.description')).to.equal(null);
   });
+
+  it('supports compact metadata beside the page title', async () => {
+    const el = (await fixture(html`
+      <view-header headerText="Overview">
+        <span slot="title-suffix">Last updated just now</span>
+      </view-header>
+    `)) as ViewHeader;
+
+    const suffixSlot = el.shadowRoot?.querySelector<HTMLSlotElement>(
+      'slot[name="title-suffix"]'
+    );
+    expect(suffixSlot).to.exist;
+    expect(suffixSlot?.assignedElements()[0]?.textContent).to.contain(
+      'Last updated just now'
+    );
+  });
 });

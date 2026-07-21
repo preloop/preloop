@@ -280,10 +280,10 @@ export class DashboardView extends AuthedElement {
       .metrics-grid {
         display: grid;
         grid-template-columns: repeat(5, minmax(0, 1fr));
-        gap: var(--sl-spacing-large);
-        row-gap: var(--sl-spacing-2x-large);
+        gap: var(--sl-spacing-medium);
+        row-gap: var(--sl-spacing-large);
         align-items: start;
-        margin-bottom: var(--sl-spacing-2x-large);
+        margin-bottom: var(--sl-spacing-large);
       }
       .budget-track {
         position: relative;
@@ -646,7 +646,30 @@ export class DashboardView extends AuthedElement {
       .dashboard-stack {
         display: flex;
         flex-direction: column;
-        gap: var(--sl-spacing-large);
+        gap: var(--sl-spacing-medium);
+      }
+
+      .dashboard-pair {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: var(--sl-spacing-medium);
+        align-items: stretch;
+      }
+
+      .dashboard-pair > * {
+        min-width: 0;
+      }
+
+      .dashboard-pair sl-card::part(base) {
+        height: 100%;
+      }
+
+      .dashboard-pair .empty-state {
+        min-height: 72px;
+        padding: var(--sl-spacing-medium);
+        display: flex;
+        align-items: center;
+        justify-content: center;
       }
 
       .summary-grid,
@@ -901,6 +924,10 @@ export class DashboardView extends AuthedElement {
         }
       }
       @media (max-width: 800px) {
+        .dashboard-pair {
+          grid-template-columns: 1fr;
+        }
+
         .card-header,
         .card-header-with-action,
         .row-main,
@@ -3966,9 +3993,9 @@ export class DashboardView extends AuthedElement {
 
     return html`
       <view-header headerText="Overview" width="extra-wide">
-        <div class="updated-at" slot="description">
+        <span class="updated-at" slot="title-suffix">
           Last updated ${this.formatLastUpdatedLabel()}
-        </div>
+        </span>
       </view-header>
       <div class="extra-wide" style="margin-bottom: var(--sl-spacing-large);">
         ${
@@ -3979,24 +4006,22 @@ export class DashboardView extends AuthedElement {
         ${this.renderWelcomeCard()}
       </div>
 
-      <div class="column-layout dashboard extra-wide">
-        <div class="main-column">
-          <div class="dashboard-stack">
-            ${this.renderPreloopGatewayCard()}
-            ${this.renderActiveExecutionsCard()}
-            ${this.renderRecentFlowExecutionsCard()}
+      <div class="dashboard-stack extra-wide">
+        ${this.renderPreloopGatewayCard()}
+        ${this.renderPendingApprovalsCard()}
 
-            <div
-              style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sl-spacing-large); margin-top: var(--sl-spacing-large);"
-            >
-              ${this.renderGatewayFailuresCard()}
-              ${this.renderAuditExceptionsCard()}
-            </div>
-          </div>
+        <div class="dashboard-pair dashboard-pair--activity">
+          ${this.renderActiveExecutionsCard()}
+          ${this.renderRecentFlowExecutionsCard()}
         </div>
 
-        <div class="side-column">
-          ${this.renderPendingApprovalsCard()} ${this.renderBudgetHealthCard()}
+        <div class="dashboard-pair dashboard-pair--exceptions">
+          ${this.renderGatewayFailuresCard()}
+          ${this.renderAuditExceptionsCard()}
+        </div>
+
+        <div class="dashboard-pair dashboard-pair--insights">
+          ${this.renderBudgetHealthCard()}
           ${this.renderTopModelsCard()}
         </div>
         <mcp-setup-dialog

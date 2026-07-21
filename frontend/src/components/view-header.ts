@@ -37,6 +37,11 @@ export class ViewHeader extends LitElement {
         color: var(--sl-color-neutral-500);
         font-size: 0.9rem;
       }
+      ::slotted([slot='title-suffix']) {
+        color: var(--sl-color-neutral-500);
+        font-size: var(--sl-font-size-small);
+        font-weight: 400;
+      }
     `,
   ];
 
@@ -47,7 +52,9 @@ export class ViewHeader extends LitElement {
           <slot name="top"></slot>
           <div class="header">
             <h1 style="display: flex; align-items: center; gap: 12px;">
-              <slot name="title-prefix"></slot>${this.headerText}
+              <slot name="title-prefix"></slot>${this.headerText}<slot
+                name="title-suffix"
+              ></slot>
             </h1>
             <slot name="main-column"></slot>
           </div>
