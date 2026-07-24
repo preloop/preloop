@@ -3530,6 +3530,24 @@ func applyClaudeManagedGateway(plan managedMCPEnrollmentPlan, baseURL, token, mo
 		env[envKey+"_NAME"] = "Preloop " + modelAlias
 	} else {
 		env["ANTHROPIC_MODEL"] = modelAlias
+		// Non-family managed model (e.g. a Kimi K3 alias): Claude Code's
+		// background/fast-path requests resolve through the built-in
+		// claude-haiku-* family identifiers and subagents through
+		// CLAUDE_CODE_SUBAGENT_MODEL, none of which exist at the gateway
+		// for a non-Anthropic account model. Map every selector at the
+		// managed alias so those calls resolve instead of 404ing.
+		// clearClaudePinnedModelEnv above wipes these same keys first, so
+		// re-onboarding and model changes always refresh them.
+		for key, value := range claudeNonFamilyModelEnv(modelAlias) {
+			env[key] = value
+		}
+		plan.Notes = append(
+			plan.Notes,
+			fmt.Sprintf(
+				"All Claude Code model selectors (opus/sonnet/haiku, background, and subagent models) will resolve to %s through Preloop.",
+				modelAlias,
+			),
+		)
 	}
 	plan.ManagedModelAlias = modelAlias
 	plan.ManagedProviderName = "preloop"
@@ -3755,6 +3773,7 @@ func claudeManagedGatewayEnvKeys() []string {
 		"ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
 		"ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
 		"ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES",
+		claudeSubagentModelEnvKey,
 	}
 }
 
@@ -3772,6 +3791,7 @@ func clearClaudePinnedModelEnv(env map[string]interface{}) {
 		"ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
 		"ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
 		"ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES",
+		claudeSubagentModelEnvKey,
 	} {
 		delete(env, key)
 	}

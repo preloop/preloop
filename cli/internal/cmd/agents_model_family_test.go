@@ -115,6 +115,86 @@ func TestClaudeFamilyModelEnvIsOrderIndependentAcrossFamilies(t *testing.T) {
 	}
 }
 
+// The Kimi K3 case: a managed model outside the Claude families must map every
+// selector Claude Code can emit — the three family env vars plus the subagent
+// override — at the managed alias, or background/fast-path calls and subagents
+// request built-in claude-* identifiers the gateway rejects with 404.
+func TestClaudeNonFamilyModelEnvMapsEverySelector(t *testing.T) {
+	env := claudeNonFamilyModelEnv("moonshot/kimi-k3-0905")
+
+	want := map[string]string{
+		"ANTHROPIC_DEFAULT_OPUS_MODEL":        "moonshot/kimi-k3-0905",
+		"ANTHROPIC_DEFAULT_OPUS_MODEL_NAME":   "Preloop moonshot/kimi-k3-0905",
+		"ANTHROPIC_DEFAULT_SONNET_MODEL":      "moonshot/kimi-k3-0905",
+		"ANTHROPIC_DEFAULT_SONNET_MODEL_NAME": "Preloop moonshot/kimi-k3-0905",
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL":       "moonshot/kimi-k3-0905",
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME":  "Preloop moonshot/kimi-k3-0905",
+		"CLAUDE_CODE_SUBAGENT_MODEL":          "moonshot/kimi-k3-0905",
+	}
+	if !reflect.DeepEqual(env, want) {
+		t.Fatalf("claudeNonFamilyModelEnv() = %#v, want %#v", env, want)
+	}
+}
+
+func TestClaudeNonFamilyModelEnvTrimsAlias(t *testing.T) {
+	env := claudeNonFamilyModelEnv("  moonshot/kimi-k3-0905  ")
+	if got := env["ANTHROPIC_DEFAULT_HAIKU_MODEL"]; got != "moonshot/kimi-k3-0905" {
+		t.Fatalf("expected trimmed alias, got %q", got)
+	}
+}
+
+// Family aliases must produce nothing: for those the pinned-selection path
+// writes the one correct family key, and inventing entries for the other
+// families would advertise models the account may not hold.
+func TestClaudeNonFamilyModelEnvEmptyForFamilyAliases(t *testing.T) {
+	for _, alias := range []string{
+		"anthropic/claude-opus-4-1",
+		"anthropic/claude-sonnet-4-5",
+		"amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0",
+	} {
+		if env := claudeNonFamilyModelEnv(alias); len(env) != 0 {
+			t.Fatalf("expected no entries for family alias %q, got %#v", alias, env)
+		}
+	}
+}
+
+func TestClaudeNonFamilyModelEnvEmptyForBlankAlias(t *testing.T) {
+	for _, alias := range []string{"", "   "} {
+		if env := claudeNonFamilyModelEnv(alias); len(env) != 0 {
+			t.Fatalf("expected no entries for blank alias %q, got %#v", alias, env)
+		}
+	}
+}
+
+// Re-onboarding refreshes by clear-then-set, so every key the non-family map
+// emits must be wiped by clearClaudePinnedModelEnv — anything it misses would
+// survive a model change and keep routing traffic at the old alias.
+func TestClearClaudePinnedModelEnvRemovesEveryNonFamilyKey(t *testing.T) {
+	env := map[string]interface{}{}
+	for key, value := range claudeNonFamilyModelEnv("moonshot/kimi-k3-0905") {
+		env[key] = value
+	}
+	clearClaudePinnedModelEnv(env)
+	if len(env) != 0 {
+		t.Fatalf("clearClaudePinnedModelEnv left non-family keys behind: %#v", env)
+	}
+}
+
+// Offboard's env restore (restoreClaudeGatewayEnvFromOriginal) walks
+// claudeManagedGatewayEnvKeys, so every key the non-family map emits must be
+// listed there — anything missing would be left behind after offboard.
+func TestClaudeManagedGatewayEnvKeysCoverEveryNonFamilyKey(t *testing.T) {
+	managed := map[string]bool{}
+	for _, key := range claudeManagedGatewayEnvKeys() {
+		managed[key] = true
+	}
+	for key := range claudeNonFamilyModelEnv("moonshot/kimi-k3-0905") {
+		if !managed[key] {
+			t.Fatalf("claudeManagedGatewayEnvKeys() is missing %q; offboard restore would leave it behind", key)
+		}
+	}
+}
+
 // A key pointing at a model the gateway cannot serve is worse than no key: it
 // would appear in /model and then 404.
 func TestClaudeStaleFamilyEnvKeysClearsOnlyAbsentFamilies(t *testing.T) {
