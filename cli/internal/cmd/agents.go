@@ -1790,6 +1790,18 @@ func runAgentsInstallPlugin(cmd *cobra.Command, args []string) error {
 			err,
 		)
 	}
+	// OpenClaw's plugin trust gate (plugins.allow) must admit the plugin or
+	// the install registers nothing; ensure it before installing so the
+	// standalone command matches what onboarding writes.
+	if runtimeSessionSourceTypeForAgent(agentName) == "openclaw" {
+		if err := ensureOpenClawPluginAllowlistedOnDisk(agentName); err != nil {
+			fmt.Fprintf(
+				cmd.ErrOrStderr(),
+				"Warning: could not update OpenClaw's plugins.allow list: %v\n",
+				err,
+			)
+		}
+	}
 	command := exec.Command(executable, installArgs...)
 	output, err := command.CombinedOutput()
 	if len(output) > 0 {
@@ -1801,6 +1813,27 @@ func runAgentsInstallPlugin(cmd *cobra.Command, args []string) error {
 			message = err.Error()
 		}
 		agent := AgentConfig{Name: agentName}
+		if runtimeSessionSourceTypeForAgent(agent.Name) == "openclaw" {
+			// Same ClawHub client failure the onboarding path works around:
+			// fetch the npm tarball and install it as a local file.
+			if installed, npmError := installOpenClawPluginViaNpmTarball(
+				executable,
+				agentControlPluginInstallTarget(agent),
+				cmd.ErrOrStderr(),
+			); installed {
+				fmt.Fprintf(
+					cmd.OutOrStdout(),
+					"\nInstalled %s from the npm tarball. Run `preloop agents validate %s` to verify plugin load and control readiness.\n",
+					agentControlPluginPackageName(agent),
+					agentName,
+				)
+				return nil
+			} else if npmError != "" {
+				message = fmt.Sprintf(
+					"%s (npm tarball fallback also failed: %s)", message, npmError,
+				)
+			}
+		}
 		if runtimeSessionSourceTypeForAgent(agent.Name) == hermesSourceType {
 			// Hermes' `plugins install` only accepts Git URLs or owner/repo
 			// shorthands; the Preloop plugin ships on PyPI, so fall back to a

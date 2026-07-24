@@ -3611,10 +3611,95 @@ func applyAgentControlConfigToDocument(
 			openClawPreloopPluginID,
 		)
 		pluginEntry["config"] = control
+		ensureOpenClawPluginAllowlisted(doc)
 		return
 	}
 	preloop := ensureObjectPath(doc, "preloop")
 	preloop["control"] = control
+}
+
+// ensureOpenClawPluginAllowlisted makes OpenClaw's plugin trust gate
+// (plugins.allow, introduced in OpenClaw 2026.3.x) admit the Preloop plugin —
+// without it, the installed plugin fails to register and Agent Control never
+// verifies. Appending to an existing list is safe; when the list is ABSENT,
+// creating it flips OpenClaw from permissive mode into strict allowlist mode,
+// which would silently disable every OTHER plugin the user runs — so a fresh
+// list is seeded with all configured entry ids plus everything already
+// installed under the extensions directory.
+func ensureOpenClawPluginAllowlisted(doc map[string]interface{}) {
+	plugins := ensureObjectPath(doc, "plugins")
+	if list, ok := plugins["allow"].([]interface{}); ok {
+		for _, item := range list {
+			if id, ok := item.(string); ok && id == openClawPreloopPluginID {
+				return
+			}
+		}
+		plugins["allow"] = append(list, openClawPreloopPluginID)
+		return
+	}
+	seen := map[string]bool{openClawPreloopPluginID: true}
+	allow := []interface{}{}
+	appendID := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		allow = append(allow, id)
+	}
+	if entries, ok := asObjectMap(plugins["entries"]); ok {
+		ids := make([]string, 0, len(entries))
+		for id := range entries {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			appendID(id)
+		}
+	}
+	for _, id := range installedOpenClawExtensionIDs() {
+		appendID(id)
+	}
+	plugins["allow"] = append(allow, openClawPreloopPluginID)
+}
+
+// ensureOpenClawPluginAllowlistedOnDisk applies the allowlist rule to the
+// live openclaw.json for the standalone install-plugin command, which does
+// not run the onboarding config rewrite. No-op when nothing changes.
+func ensureOpenClawPluginAllowlistedOnDisk(agentName string) error {
+	agent := AgentConfig{Name: agentName}
+	doc, err := loadAgentConfigDocument(agent)
+	if err != nil {
+		return err
+	}
+	before, _ := json.Marshal(doc["plugins"])
+	ensureOpenClawPluginAllowlisted(doc)
+	after, _ := json.Marshal(doc["plugins"])
+	if string(before) == string(after) {
+		return nil
+	}
+	return writeAgentConfigDocument(agent, doc)
+}
+
+// installedOpenClawExtensionIDs lists plugin ids already installed under
+// ~/.openclaw/extensions, so seeding a fresh allowlist keeps them loadable.
+func installedOpenClawExtensionIDs() []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	dirEntries, err := os.ReadDir(filepath.Join(home, ".openclaw", "extensions"))
+	if err != nil {
+		return nil
+	}
+	ids := make([]string, 0, len(dirEntries))
+	for _, entry := range dirEntries {
+		if entry.IsDir() {
+			ids = append(ids, entry.Name())
+		}
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func validateAgentControlConfig(
@@ -3987,6 +4072,12 @@ func classifyRuntimePluginInstallFailure(installer string, message string) (stri
 		strings.Contains(normalizedMessage, "invalid plugin identifier") {
 		return "runtime_marketplace_rejected_identifier",
 			"Hermes' `plugins install` only accepts Git URLs or owner/repo shorthands; the Preloop plugin is distributed on PyPI. Install it with `pip install preloop-hermes-plugin` using Hermes' Python environment, then restart Hermes."
+	}
+	if normalizedInstaller == "openclaw" &&
+		strings.Contains(normalizedMessage, "control_ws_url") &&
+		strings.Contains(normalizedMessage, "required property") {
+		return "runtime_plugin_config_missing",
+			"OpenClaw's Preloop plugin needs its Agent Control config before it can load. Run `preloop agents onboard openclaw` first, then retry the plugin install."
 	}
 	if normalizedInstaller == "openclaw" &&
 		(strings.Contains(normalizedMessage, "requires node") ||
