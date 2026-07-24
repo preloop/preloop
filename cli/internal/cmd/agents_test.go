@@ -2626,6 +2626,166 @@ func TestManagedServerSchemaDevin(t *testing.T) {
 	}
 }
 
+// TestManagedServerSchemaClaudeDesktop asserts the Claude Desktop MCP entry
+// is an mcp-remote stdio bridge (command/args/env) — never a remote
+// url/headers entry, which claude_desktop_config.json cannot express and
+// which can wedge the app's MCP subsystem — and that a freshly built entry
+// round-trips through ValidateManagedConfig.
+func TestManagedServerSchemaClaudeDesktop(t *testing.T) {
+	adapter := managedMCPAdapterForAgent(AgentConfig{Name: "Claude Desktop"})
+	entry := adapter.BuildManagedServer("https://preloop.example", "durable-token")
+	if entry["command"] != "npx" {
+		t.Fatalf("expected npx bridge command for Claude Desktop, got %#v", entry)
+	}
+	for _, forbidden := range []string{"url", "transport", "headers"} {
+		if _, has := entry[forbidden]; has {
+			t.Fatalf("Claude Desktop entry must not carry %q (remote shape), got %#v", forbidden, entry)
+		}
+	}
+	args := stringArgsFromConfigValue(entry["args"])
+	expectedArgs := []string{
+		"-y",
+		"mcp-remote",
+		"https://preloop.example/mcp/v1",
+		"--header",
+		"Authorization:${AUTH_HEADER}",
+	}
+	if len(args) != len(expectedArgs) {
+		t.Fatalf("unexpected bridge args: %#v", args)
+	}
+	for i, expected := range expectedArgs {
+		if args[i] != expected {
+			t.Fatalf("bridge arg %d: expected %q, got %q (full: %#v)", i, expected, args[i], args)
+		}
+	}
+	// The Authorization value lives in env (spaces intact) while the arg
+	// stays space-free — the mcp-remote README workaround for Claude
+	// Desktop's arg-space mangling.
+	env, _ := entry["env"].(map[string]interface{})
+	if env["AUTH_HEADER"] != "Bearer durable-token" {
+		t.Fatalf("expected AUTH_HEADER env with bearer token, got %#v", entry)
+	}
+	result := adapter.ValidateManagedConfig(map[string]interface{}{
+		"mcpServers": map[string]interface{}{"preloop": entry},
+	}, "https://preloop.example")
+	if result["validation_passed"] != true {
+		t.Fatalf("expected claude desktop bridge validation to pass, got %+v", result)
+	}
+}
+
+// TestClaudeDesktopValidateAcceptsJSONRoundTrippedBridge ensures validation
+// still passes after the entry has been serialized to disk and reloaded
+// (args become []interface{}).
+func TestClaudeDesktopValidateAcceptsJSONRoundTrippedBridge(t *testing.T) {
+	adapter := managedMCPAdapterForAgent(AgentConfig{Name: "Claude Desktop"})
+	entry := adapter.BuildManagedServer("https://preloop.example", "durable-token")
+	raw, err := json.Marshal(map[string]interface{}{
+		"mcpServers": map[string]interface{}{"preloop": entry},
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal document: %v", err)
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("failed to unmarshal document: %v", err)
+	}
+	result := adapter.ValidateManagedConfig(doc, "https://preloop.example")
+	if result["validation_passed"] != true {
+		t.Fatalf("expected round-tripped bridge validation to pass, got %+v", result)
+	}
+}
+
+// TestClaudeDesktopValidateRejectsLegacyRemoteShape ensures the remote
+// url/headers shape that bricked Claude Desktop is treated as invalid.
+func TestClaudeDesktopValidateRejectsLegacyRemoteShape(t *testing.T) {
+	adapter := managedMCPAdapterForAgent(AgentConfig{Name: "Claude Desktop"})
+	result := adapter.ValidateManagedConfig(map[string]interface{}{
+		"mcpServers": map[string]interface{}{
+			"preloop": map[string]interface{}{
+				"url":       "https://preloop.example/mcp/v1",
+				"transport": "http",
+				"headers": map[string]interface{}{
+					"Authorization": "Bearer durable-token",
+				},
+			},
+		},
+	}, "https://preloop.example")
+	if result["validation_passed"] != false {
+		t.Fatalf("expected legacy remote shape to fail validation, got %+v", result)
+	}
+	if result["transport_ok"] != false {
+		t.Fatalf("expected transport_ok=false for legacy remote shape, got %+v", result)
+	}
+}
+
+// TestClaudeDesktopPlanWritesBridgeWhenNpxPresent asserts onboarding writes
+// the stdio bridge entry when the npx/node runtime resolves.
+func TestClaudeDesktopPlanWritesBridgeWhenNpxPresent(t *testing.T) {
+	original := resolveClaudeDesktopBridgeRuntime
+	t.Cleanup(func() { resolveClaudeDesktopBridgeRuntime = original })
+	resolveClaudeDesktopBridgeRuntime = func() error { return nil }
+
+	configPath := filepath.Join(t.TempDir(), "claude_desktop_config.json")
+	if err := os.WriteFile(configPath, []byte(`{"mcpServers": {}}`), 0o600); err != nil {
+		t.Fatalf("failed to seed config: %v", err)
+	}
+	agent := AgentConfig{Name: "Claude Desktop", ConfigPath: configPath}
+	plan, err := buildManagedMCPEnrollmentPlan(agent, "https://preloop.example", "durable-token")
+	if err != nil {
+		t.Fatalf("failed to build plan: %v", err)
+	}
+	if plan.MCPConfigSkipped {
+		t.Fatalf("expected MCP config not to be skipped when npx resolves, plan: %+v", plan)
+	}
+	servers, _ := plan.ManagedDocument["mcpServers"].(map[string]interface{})
+	preloop, _ := servers["preloop"].(map[string]interface{})
+	if preloop == nil || preloop["command"] != "npx" {
+		t.Fatalf("expected npx bridge entry in managed document, got %#v", plan.ManagedDocument)
+	}
+}
+
+// TestClaudeDesktopPlanSkipsMCPEntryWhenNpxMissing asserts onboarding writes
+// NO Preloop entry when npx is unavailable (Claude Desktop cannot read a
+// remote fallback shape), prunes any broken entry left by an earlier
+// onboard, and tells the user their options.
+func TestClaudeDesktopPlanSkipsMCPEntryWhenNpxMissing(t *testing.T) {
+	original := resolveClaudeDesktopBridgeRuntime
+	t.Cleanup(func() { resolveClaudeDesktopBridgeRuntime = original })
+	resolveClaudeDesktopBridgeRuntime = func() error {
+		return fmt.Errorf("npx is not available on PATH")
+	}
+
+	configPath := filepath.Join(t.TempDir(), "claude_desktop_config.json")
+	// Seed with the broken remote-shaped entry an earlier CLI version wrote.
+	seed := `{"mcpServers": {"preloop": {"url": "https://old.example/mcp/v1", "transport": "http", "headers": {"Authorization": "Bearer stale"}}}}`
+	if err := os.WriteFile(configPath, []byte(seed), 0o600); err != nil {
+		t.Fatalf("failed to seed config: %v", err)
+	}
+	agent := AgentConfig{Name: "Claude Desktop", ConfigPath: configPath}
+	plan, err := buildManagedMCPEnrollmentPlan(agent, "https://preloop.example", "durable-token")
+	if err != nil {
+		t.Fatalf("failed to build plan: %v", err)
+	}
+	if !plan.MCPConfigSkipped {
+		t.Fatalf("expected MCP config to be skipped without npx, plan: %+v", plan)
+	}
+	servers, _ := plan.ManagedDocument["mcpServers"].(map[string]interface{})
+	if _, has := servers["preloop"]; has {
+		t.Fatalf("expected no preloop entry without npx, got %#v", plan.ManagedDocument)
+	}
+	foundOptionsNote := false
+	for _, note := range plan.Notes {
+		if strings.Contains(note, "Settings → Connectors") &&
+			strings.Contains(note, "Node.js") &&
+			strings.Contains(note, "https://preloop.example/mcp/v1") {
+			foundOptionsNote = true
+		}
+	}
+	if !foundOptionsNote {
+		t.Fatalf("expected a skip note listing user options, got %#v", plan.Notes)
+	}
+}
+
 // TestManagedServerSchemaCodex asserts the Codex MCP entry uses `url` +
 // http_headers (the format Codex actually reads) with no transport field and
 // no [auth] sub-table, and that no-token enrollment falls back to
