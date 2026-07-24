@@ -3107,9 +3107,11 @@ func TestApplyClaudeManagedGatewayNonAnthropicModelMapsAllSelectors(t *testing.T
 			t.Fatalf("expected %s pinned to managed alias, got %#v", key, env[key])
 		}
 	}
-	if _, exists := plan.ManagedDocument["model"]; exists {
+	// A stale settings.model outranks the env pin in API-key mode, so
+	// non-family aliases must also replace the root model key.
+	if plan.ManagedDocument["model"] != "moonshot/kimi-k3-0905" {
 		t.Fatalf(
-			"did not expect a root model selection key for a non-family model, got %#v",
+			"expected root model pinned to managed alias, got %#v",
 			plan.ManagedDocument["model"],
 		)
 	}
