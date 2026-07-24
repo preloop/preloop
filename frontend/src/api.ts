@@ -3337,7 +3337,7 @@ export async function updateUser(
   return response.json();
 }
 
-export async function deleteUser(userId: string): Promise<void> {
+export async function deactivateUser(userId: string): Promise<void> {
   const response = await fetchWithAuth(`/api/v1/users/${userId}/deactivate`, {
     method: 'POST',
   });

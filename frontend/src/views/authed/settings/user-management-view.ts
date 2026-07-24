@@ -5,7 +5,7 @@ import {
   getUsers,
   createUser,
   updateUser,
-  deleteUser,
+  deactivateUser,
   getRoles,
   getUserRoles,
   assignUserRole,
@@ -262,7 +262,7 @@ export class UserManagementView extends LitElement {
     }
   }
 
-  async handleDeleteUser(user: User) {
+  async handleDeactivateUser(user: User) {
     if (
       !confirm(
         `Are you sure you want to deactivate user "${user.username}"? This will prevent them from logging in.`
@@ -272,7 +272,7 @@ export class UserManagementView extends LitElement {
     }
 
     try {
-      await deleteUser(user.id);
+      await deactivateUser(user.id);
       await this.fetchUsers();
     } catch (error) {
       this.error =
@@ -430,9 +430,10 @@ export class UserManagementView extends LitElement {
                   <sl-button
                     size="small"
                     variant="danger"
-                    @click=${() => this.handleDeleteUser(user)}
+                    title="Deactivate user"
+                    @click=${() => this.handleDeactivateUser(user)}
                   >
-                    <sl-icon name="trash"></sl-icon>
+                    <sl-icon name="person-dash"></sl-icon>
                   </sl-button>
                 </div>
               </div>

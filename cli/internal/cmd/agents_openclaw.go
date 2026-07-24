@@ -546,7 +546,10 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		}
 	}
 
-	if note := mcpOnlyAgentModelNote(agent); note != "" {
+	// The MCP-only support note claims active MCP-firewall governance, which
+	// would contradict a skipped MCP-config step (Claude Desktop without
+	// npx) — the skip note in plan.Notes already explains that case.
+	if note := mcpOnlyAgentModelNote(agent); note != "" && !plan.MCPConfigSkipped {
 		plan.Notes = append(plan.Notes, note)
 	}
 
@@ -763,6 +766,11 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	if err := syncClaudeCodeManagedMCPServer(agent, baseURL, credentialResp.Token); err != nil {
 		return err
 	}
+	if err := ensureClaudeAPIKeyPreApproved(agent, credentialResp.Token, output); err != nil {
+		// Non-fatal: the enrollment itself succeeded; older Claude Code
+		// builds will just show their API-key approval dialog.
+		fmt.Fprintf(output, "  Warning: could not pre-approve the gateway key in Claude Code's user config: %v\n", err) //nolint:errcheck
+	}
 	var launcherSkipped *managedLauncherSkippedError
 	if err := syncManagedAgentRuntimeArtifacts(agent, baseURL, credentialResp.Token); err != nil {
 		if !errors.As(err, &launcherSkipped) {
@@ -801,6 +809,14 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		validationResult,
 		defaultManagedLiveValidationResult(agent),
 	)
+	if plan.MCPConfigSkipped {
+		// The MCP-config step was deliberately skipped (Claude Desktop
+		// without npx/node for the mcp-remote bridge). Record it so the
+		// enrollment reads as "skipped, here is why", not as a silent
+		// validation failure.
+		validationResult["mcp_config_skipped"] = true
+		validationResult["mcp_config_skip_reason"] = "npx (Node.js) not found on PATH"
+	}
 
 	appliedAt := timeNowUTC()
 	enrollment, err := createManagedEnrollmentRecord(
@@ -984,6 +1000,13 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	onboardingState := onboardingStateFromValidation(validationResult)
 	fmt.Printf("  Onboarding mode: %s\n", onboardingStateLabel(onboardingState))
 	fmt.Printf("  Routing: %s\n", onboardingStateNote(onboardingState))
+	if plan.MCPConfigSkipped {
+		fmt.Printf("  MCP config: skipped\n")
+		fmt.Printf(
+			"  Note: %s\n",
+			publicPlanNote(claudeDesktopBridgeSkippedNote(plan.ManagedServerURL)),
+		)
+	}
 	if supportsAgentControlChannel(agent) {
 		fmt.Printf("  Agent Control config: %s\n", boolStatus(validationResult["control_config_written"]))
 		fmt.Printf("  Agent Control runtime plugin: %s\n", agentControlPluginStatus(validationResult))
@@ -1796,8 +1819,24 @@ func parseClaudeManagedGatewayUpstream(agent AgentConfig) (*managedGatewayUpstre
 	if looksManagedGatewayModelRef(modelRef) && modelRef != "" {
 		modelRef = ""
 	}
-	if modelRef == "" || strings.Contains(modelRef, "[") {
+	// Claude Code stores context-window variants as "<model>[1m]" (common for
+	// Max accounts defaulted to Fable's 1M-context form). Strip the suffix and
+	// route the base model instead of discarding the ref — bailing here left
+	// Fable-defaulted users with no model pin at all (tester #4, 2026-07-20).
+	if base, stripped := stripClaudeContextWindowSuffix(modelRef); stripped {
+		notes = append(
+			notes,
+			fmt.Sprintf(
+				"Claude Code's configured model %s uses a context-window variant; routing the base model %s through Preloop.",
+				modelRef,
+				base,
+			),
+		)
+		modelRef = base
+	}
+	if modelRef == "" {
 		if recentModel := resolveClaudeRecentModelRef(); recentModel != "" {
+			recentModel, _ = stripClaudeContextWindowSuffix(recentModel)
 			modelRef = recentModel
 			notes = append(
 				notes,
@@ -1805,7 +1844,7 @@ func parseClaudeManagedGatewayUpstream(agent AgentConfig) (*managedGatewayUpstre
 			)
 		}
 	}
-	if modelRef == "" || strings.Contains(modelRef, "[") {
+	if modelRef == "" {
 		return nil, nil
 	}
 	if selection := claudeSelectionFromModelRef(modelRef); selection != "" {
@@ -1877,6 +1916,10 @@ func parseClaudeManagedGatewayUpstream(agent AgentConfig) (*managedGatewayUpstre
 		}
 		apiKey = ""
 		notes = append(notes, claudeCodeOAuthGatewayWarningNote())
+		notes = append(
+			notes,
+			"Claude Code will display \"API billing\" after onboarding — that is the label for its gateway token, not how you are billed: model calls still ride your Anthropic subscription through Preloop, and the Preloop Console records them at $0 spend.",
+		)
 	}
 	if apiKeyNote != "" {
 		notes = append(notes, apiKeyNote)
@@ -1943,6 +1986,23 @@ func claudeCodeOAuthGatewayWarningNote() string {
 
 func claudeCodeAPIBillingRequiredNote() string {
 	return "Claude Code did not expose an importable Anthropic API billing credential. Claude Code will stay MCP proxy only. To fully onboard Claude Code through Preloop, set ANTHROPIC_API_KEY to an Anthropic API key and rerun `preloop agents onboard \"Claude Code\" -y`."
+}
+
+// stripClaudeContextWindowSuffix removes a trailing bracketed context-window
+// marker from a Claude model ref ("claude-fable-5[1m]" -> "claude-fable-5").
+// Returns the base ref and whether a suffix was stripped. Refs without a
+// well-formed trailing "[...]" pass through unchanged.
+func stripClaudeContextWindowSuffix(modelRef string) (string, bool) {
+	trimmed := strings.TrimSpace(modelRef)
+	open := strings.LastIndex(trimmed, "[")
+	if open <= 0 || !strings.HasSuffix(trimmed, "]") {
+		return trimmed, false
+	}
+	base := strings.TrimSpace(trimmed[:open])
+	if base == "" {
+		return trimmed, false
+	}
+	return base, true
 }
 
 func isClaudeCodeOAuthAccessToken(token string) bool {
@@ -3611,10 +3671,95 @@ func applyAgentControlConfigToDocument(
 			openClawPreloopPluginID,
 		)
 		pluginEntry["config"] = control
+		ensureOpenClawPluginAllowlisted(doc)
 		return
 	}
 	preloop := ensureObjectPath(doc, "preloop")
 	preloop["control"] = control
+}
+
+// ensureOpenClawPluginAllowlisted makes OpenClaw's plugin trust gate
+// (plugins.allow, introduced in OpenClaw 2026.3.x) admit the Preloop plugin —
+// without it, the installed plugin fails to register and Agent Control never
+// verifies. Appending to an existing list is safe; when the list is ABSENT,
+// creating it flips OpenClaw from permissive mode into strict allowlist mode,
+// which would silently disable every OTHER plugin the user runs — so a fresh
+// list is seeded with all configured entry ids plus everything already
+// installed under the extensions directory.
+func ensureOpenClawPluginAllowlisted(doc map[string]interface{}) {
+	plugins := ensureObjectPath(doc, "plugins")
+	if list, ok := plugins["allow"].([]interface{}); ok {
+		for _, item := range list {
+			if id, ok := item.(string); ok && id == openClawPreloopPluginID {
+				return
+			}
+		}
+		plugins["allow"] = append(list, openClawPreloopPluginID)
+		return
+	}
+	seen := map[string]bool{openClawPreloopPluginID: true}
+	allow := []interface{}{}
+	appendID := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		allow = append(allow, id)
+	}
+	if entries, ok := asObjectMap(plugins["entries"]); ok {
+		ids := make([]string, 0, len(entries))
+		for id := range entries {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			appendID(id)
+		}
+	}
+	for _, id := range installedOpenClawExtensionIDs() {
+		appendID(id)
+	}
+	plugins["allow"] = append(allow, openClawPreloopPluginID)
+}
+
+// ensureOpenClawPluginAllowlistedOnDisk applies the allowlist rule to the
+// live openclaw.json for the standalone install-plugin command, which does
+// not run the onboarding config rewrite. No-op when nothing changes.
+func ensureOpenClawPluginAllowlistedOnDisk(agentName string) error {
+	agent := AgentConfig{Name: agentName}
+	doc, err := loadAgentConfigDocument(agent)
+	if err != nil {
+		return err
+	}
+	before, _ := json.Marshal(doc["plugins"])
+	ensureOpenClawPluginAllowlisted(doc)
+	after, _ := json.Marshal(doc["plugins"])
+	if string(before) == string(after) {
+		return nil
+	}
+	return writeAgentConfigDocument(agent, doc)
+}
+
+// installedOpenClawExtensionIDs lists plugin ids already installed under
+// ~/.openclaw/extensions, so seeding a fresh allowlist keeps them loadable.
+func installedOpenClawExtensionIDs() []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	dirEntries, err := os.ReadDir(filepath.Join(home, ".openclaw", "extensions"))
+	if err != nil {
+		return nil
+	}
+	ids := make([]string, 0, len(dirEntries))
+	for _, entry := range dirEntries {
+		if entry.IsDir() {
+			ids = append(ids, entry.Name())
+		}
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func validateAgentControlConfig(
@@ -3987,6 +4132,12 @@ func classifyRuntimePluginInstallFailure(installer string, message string) (stri
 		strings.Contains(normalizedMessage, "invalid plugin identifier") {
 		return "runtime_marketplace_rejected_identifier",
 			"Hermes' `plugins install` only accepts Git URLs or owner/repo shorthands; the Preloop plugin is distributed on PyPI. Install it with `pip install preloop-hermes-plugin` using Hermes' Python environment, then restart Hermes."
+	}
+	if normalizedInstaller == "openclaw" &&
+		strings.Contains(normalizedMessage, "control_ws_url") &&
+		strings.Contains(normalizedMessage, "required property") {
+		return "runtime_plugin_config_missing",
+			"OpenClaw's Preloop plugin needs its Agent Control config before it can load. Run `preloop agents onboard openclaw` first, then retry the plugin install."
 	}
 	if normalizedInstaller == "openclaw" &&
 		(strings.Contains(normalizedMessage, "requires node") ||

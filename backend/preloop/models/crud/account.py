@@ -1,7 +1,7 @@
 """CRUD operations for Account model."""
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 from sqlalchemy.future import select
@@ -130,6 +130,50 @@ class CRUDAccount(CRUDBase[Account]):
             },
         )
         db.commit()
+
+    def purge(
+        self, db: Session, *, account_id: str, commit: bool = True
+    ) -> Optional[Account]:
+        """Hard-delete an account and everything it owns.
+
+        Deletes each user via ``crud_user.hard_delete`` so per-user SSO
+        artifacts (``oauth_token``, ``identity_link``) are removed explicitly,
+        then deletes the account row; remaining children are removed by the
+        ORM relationship cascades and DB-level ``ON DELETE CASCADE``
+        constraints.
+
+        This method does NOT touch external systems (e.g. Stripe customers or
+        subscriptions) — callers own that cleanup before purging.
+
+        Args:
+            db: Database session.
+            account_id: Account ID to purge.
+            commit: When False, flush only so callers can batch the purge into
+                a larger atomic transaction and commit themselves.
+
+        Returns:
+            The deleted account if found, None otherwise.
+        """
+        from ..models.user import User
+        from .user import crud_user
+
+        account = db.query(Account).filter(Account.id == account_id).first()
+        if not account:
+            return None
+
+        user_ids = [
+            row[0]
+            for row in db.query(User.id).filter(User.account_id == account.id).all()
+        ]
+        for user_id in user_ids:
+            crud_user.hard_delete(db, user_id=user_id, commit=False)
+
+        db.delete(account)
+        if commit:
+            db.commit()
+        else:
+            db.flush()
+        return account
 
     def get_organizations(self, db: Session, *, account_id: str) -> Dict[str, str]:
         """Get all organizations and roles for an account."""

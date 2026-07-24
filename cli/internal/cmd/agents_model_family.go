@@ -96,6 +96,49 @@ func claudeFamilyModelEnv(aliases []string) map[string]string {
 	return env
 }
 
+// claudeSubagentModelEnvKey is the variable Claude Code reads to pick the
+// model for subagent (Task tool) runs. It bypasses the family selectors, so a
+// non-family managed model must pin it explicitly or subagents fall back to
+// built-in claude-* identifiers the gateway cannot serve.
+const claudeSubagentModelEnvKey = "CLAUDE_CODE_SUBAGENT_MODEL"
+
+// claudeNonFamilyModelEnv builds the env entries that route every one of
+// Claude Code's model selectors at a managed alias OUTSIDE the known Claude
+// families (a Kimi K3 alias, any other OpenAI-compatible model, ...).
+//
+// Setting ANTHROPIC_MODEL alone is not enough for these models: Claude Code's
+// background/fast-path requests ask for its built-in claude-haiku-* family
+// identifiers, and subagents resolve CLAUDE_CODE_SUBAGENT_MODEL. Neither is in
+// the account registry when the managed model is not an Anthropic-family
+// model, so the gateway answers 404 model_not_authorized. Pointing all three
+// family selectors and the subagent override at the managed alias closes that
+// gap — the same mapping Moonshot documents for running Claude Code against
+// Kimi models.
+//
+// Aliases that DO belong to a Claude family return an empty map: for those the
+// pinned-selection path (claudePinnedModelSelection) already writes the one
+// correct family key, and inventing entries for the other families would
+// advertise models the account may not hold.
+//
+// Like claudeFamilyModelEnv, this is deliberately pure — no config reads, no
+// file writes — so it is exhaustively testable before being wired anywhere.
+func claudeNonFamilyModelEnv(modelAlias string) map[string]string {
+	alias := strings.TrimSpace(modelAlias)
+	if alias == "" {
+		return map[string]string{}
+	}
+	if _, isFamily := claudeFamilyForAlias(alias); isFamily {
+		return map[string]string{}
+	}
+	env := make(map[string]string, 2*len(claudeModelFamilies)+1)
+	for _, family := range claudeModelFamilies {
+		env[family.envKey] = alias
+		env[family.envKey+"_NAME"] = "Preloop " + alias
+	}
+	env[claudeSubagentModelEnvKey] = alias
+	return env
+}
+
 // claudeStaleFamilyEnvKeys lists the family env keys that must be removed
 // because the account has no model for that family.
 //

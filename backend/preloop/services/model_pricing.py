@@ -10,23 +10,13 @@ from typing import Any, Dict, Iterable, Optional
 import litellm
 
 from preloop.models.models.ai_model import AIModel
+from preloop.services.litellm_routing import PROVIDER_PREFIX as _PROVIDER_PREFIX
 
 logger = logging.getLogger(__name__)
 
-_PROVIDER_PREFIX: Dict[str, str] = {
-    "openai": "openai",
-    "anthropic": "anthropic",
-    "google": "gemini",
-    "gemini": "gemini",
-    "qwen": "openai",
-    "deepseek": "deepseek",
-    "aws": "bedrock",
-    "bedrock": "bedrock",
-    "amazon-bedrock": "bedrock",
-    "azure": "azure",
-    "vertex": "vertex_ai",
-    "vertex_ai": "vertex_ai",
-}
+# _PROVIDER_PREFIX is the shared gateway-routing map (imported above). Pricing
+# only uses it to GENERATE candidate catalog keys alongside the unprefixed
+# identifier, so routing-oriented entries are harmless here.
 
 # Bedrock cross-region inference profiles prefix the model id with a region
 # marker that litellm's price map does not include.
