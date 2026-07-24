@@ -665,7 +665,7 @@ const anthropicAPIVersion = "2023-06-01"
 
 func isClaudeSelectionKey(model string) bool {
 	switch strings.ToLower(strings.TrimSpace(model)) {
-	case "haiku", "sonnet", "opus":
+	case "haiku", "sonnet", "opus", "fable":
 		return true
 	default:
 		return false
@@ -761,6 +761,7 @@ var claudeSelectionFallbackModelIDs = map[string]string{
 	"haiku":  "claude-haiku-4-5",
 	"sonnet": "claude-sonnet-4-5",
 	"opus":   "claude-opus-4-6",
+	"fable":  "claude-fable-5",
 }
 
 // claudeSelectionFallbackModelID returns the built-in default model id for
