@@ -2142,6 +2142,11 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 		}
 	}
 
+	// Strip the gateway key's pre-approval from ~/.claude.json while the
+	// managed settings (and therefore the key) are still readable.
+	if err := removeClaudeAPIKeyApproval(agent); err != nil {
+		fmt.Printf("  Warning: could not remove the gateway key approval from Claude Code's user config: %v\n", err)
+	}
 	if state != nil {
 		if _, err := restoreAgentFromBackup(agent, state); err != nil {
 			return err
@@ -3687,6 +3692,10 @@ func restoreClaudeGatewayEnvFromOriginal(
 ) error {
 	if !isClaudeCodeAgent(agent) {
 		return nil
+	}
+	// The managed key is being reverted — drop its dialog pre-approval too.
+	if err := removeClaudeAPIKeyApproval(agent); err != nil && writer != nil {
+		fmt.Fprintf(writer, "  Warning: could not remove the gateway key approval from Claude Code's user config: %v\n", err) //nolint:errcheck
 	}
 	current, err := loadAgentConfigDocument(agent)
 	if err != nil {

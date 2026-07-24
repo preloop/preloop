@@ -128,8 +128,11 @@ class User(Base):
     api_keys: Mapped[List["ApiKey"]] = relationship(
         "ApiKey", back_populates="creator", cascade="all, delete-orphan"
     )
+    # No delete cascade: usage rows must survive user deletion so account
+    # cost history stays intact (the DB FK is ON DELETE SET NULL); the ORM
+    # nulls user_id instead of deleting rows.
     api_usages: Mapped[List["ApiUsage"]] = relationship(
-        "ApiUsage", back_populates="user", cascade="all, delete-orphan"
+        "ApiUsage", back_populates="user"
     )
     team_memberships: Mapped[List["TeamMembership"]] = relationship(
         "TeamMembership",
@@ -143,8 +146,10 @@ class User(Base):
         cascade="all, delete-orphan",
         foreign_keys="[UserRole.user_id]",
     )
+    # No delete cascade: audit logs must survive user deletion (the DB FK is
+    # ON DELETE SET NULL); the ORM nulls user_id instead of deleting rows.
     audit_logs: Mapped[List["AuditLog"]] = relationship(
-        "AuditLog", back_populates="user", cascade="all, delete-orphan"
+        "AuditLog", back_populates="user"
     )
     notification_preferences: Mapped[Optional["NotificationPreferences"]] = (
         relationship(
@@ -154,10 +159,11 @@ class User(Base):
             cascade="all, delete-orphan",
         )
     )
+    # No delete cascade: events must survive user deletion (the DB FK is
+    # ON DELETE SET NULL); the ORM nulls user_id instead of deleting rows.
     events: Mapped[List["Event"]] = relationship(
         "Event",
         back_populates="user",
-        cascade="all, delete-orphan",
         foreign_keys="[Event.user_id]",
     )
     oauth_tokens: Mapped[List["OAuthToken"]] = relationship(

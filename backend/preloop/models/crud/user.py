@@ -130,6 +130,67 @@ class CRUDUser(CRUDBase[User]):
             .all()
         )
 
+    def count_by_account(self, db: Session, *, account_id: str) -> int:
+        """Count all users belonging to an account.
+
+        Args:
+            db: Database session.
+            account_id: Account ID.
+
+        Returns:
+            Number of users in the account.
+        """
+        return db.query(User.id).filter(User.account_id == account_id).count()
+
+    def hard_delete(
+        self, db: Session, *, user_id: uuid.UUID, commit: bool = True
+    ) -> Optional[User]:
+        """Permanently delete a user, including their SSO/OAuth identity records.
+
+        The SSO identity fields (``user_source``, ``oauth_provider``,
+        ``oauth_id``, ``external_id``) live on the user row itself and are
+        removed with it. Provider token rows (``oauth_token``) and identity
+        graph edges (``identity_link``) are removed explicitly rather than
+        relying on DB-level ``ON DELETE CASCADE`` so behavior is identical on
+        backends/test setups where FK cascades are not enforced.
+
+        Audit logs and events referencing the user are preserved with
+        ``user_id`` set to NULL (see the relationship configuration on
+        :class:`~preloop.models.models.user.User`).
+
+        Args:
+            db: Database session.
+            user_id: User ID to delete.
+            commit: When False, flush only so callers can batch several
+                deletions into one atomic transaction and commit themselves.
+
+        Returns:
+            The deleted user if found, None otherwise.
+        """
+        from ..models.github_oauth_token import OAuthToken
+        from ..models.identity_link import IdentityLink
+
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return None
+
+        # Explicit SSO artifact cleanup (also covered by DB FK cascades).
+        # ORM-level deletes (not bulk .delete()) so the session stays
+        # consistent with the delete-orphan cascade on User.oauth_tokens.
+        for token in db.query(OAuthToken).filter(OAuthToken.user_id == user_id).all():
+            db.delete(token)
+        for link in (
+            db.query(IdentityLink).filter(IdentityLink.user_id == user_id).all()
+        ):
+            db.delete(link)
+
+        db.delete(user)
+        if commit:
+            db.commit()
+        else:
+            db.flush()
+        return user
+
     def deactivate(self, db: Session, *, user_id: uuid.UUID) -> Optional[User]:
         """Deactivate a user (soft delete).
 

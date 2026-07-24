@@ -766,6 +766,11 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	if err := syncClaudeCodeManagedMCPServer(agent, baseURL, credentialResp.Token); err != nil {
 		return err
 	}
+	if err := ensureClaudeAPIKeyPreApproved(agent, credentialResp.Token, output); err != nil {
+		// Non-fatal: the enrollment itself succeeded; older Claude Code
+		// builds will just show their API-key approval dialog.
+		fmt.Fprintf(output, "  Warning: could not pre-approve the gateway key in Claude Code's user config: %v\n", err) //nolint:errcheck
+	}
 	var launcherSkipped *managedLauncherSkippedError
 	if err := syncManagedAgentRuntimeArtifacts(agent, baseURL, credentialResp.Token); err != nil {
 		if !errors.As(err, &launcherSkipped) {
