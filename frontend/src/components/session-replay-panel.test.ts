@@ -153,23 +153,167 @@ describe('SessionReplayPanel', () => {
         .events=${events}
       ></session-replay-panel>
     `);
-    const oldestThenNewest =
+    // Newest-first is the default: the latest turn renders before older ones.
+    const oldestIndex =
       element.shadowRoot?.textContent?.indexOf('OLDEST_TURN') ?? -1;
-    const newestEarly =
+    const newestIndex =
       element.shadowRoot?.textContent?.indexOf('NEWEST_TURN') ?? -1;
-    expect(oldestThenNewest).to.be.lessThan(newestEarly);
+    expect(newestIndex).to.be.lessThan(oldestIndex);
 
     const select = element.shadowRoot?.querySelector(
       'select[aria-label="Sort turns"]'
     ) as HTMLSelectElement;
-    select.value = 'newest';
+    select.value = 'oldest';
     select.dispatchEvent(new Event('change'));
     await element.updateComplete;
 
     const text = element.shadowRoot?.textContent || '';
-    expect(text.indexOf('NEWEST_TURN')).to.be.lessThan(
-      text.indexOf('OLDEST_TURN')
+    expect(text.indexOf('OLDEST_TURN')).to.be.lessThan(
+      text.indexOf('NEWEST_TURN')
     );
+  });
+
+  it('orders messages inside a turn to match the turn sort', async () => {
+    const events: FlowGatewayEvent[] = [
+      previewEvent('e1', '2026-06-07T12:00:00Z', [
+        { role: 'user', text: 'TURN_PROMPT' },
+        { role: 'assistant', text: 'TURN_REPLY' },
+      ]),
+    ];
+    const element = await fixture<SessionReplayPanel>(html`
+      <session-replay-panel
+        replayMode="timeline"
+        .session=${SESSION}
+        .events=${events}
+      ></session-replay-panel>
+    `);
+    // Newest-first (default): the latest message of the turn renders first.
+    let text = element.shadowRoot?.textContent || '';
+    expect(text.indexOf('TURN_REPLY')).to.be.lessThan(
+      text.indexOf('TURN_PROMPT')
+    );
+
+    // Oldest-first restores natural conversation order.
+    const select = element.shadowRoot?.querySelector(
+      'select[aria-label="Sort turns"]'
+    ) as HTMLSelectElement;
+    select.value = 'oldest';
+    select.dispatchEvent(new Event('change'));
+    await element.updateComplete;
+    text = element.shadowRoot?.textContent || '';
+    expect(text.indexOf('TURN_PROMPT')).to.be.lessThan(
+      text.indexOf('TURN_REPLY')
+    );
+  });
+
+  it('collapses the re-sent (cached) prefix inside full request context', async () => {
+    const events: FlowGatewayEvent[] = [
+      previewEvent('e1', '2026-06-07T12:00:00Z', [
+        { role: 'user', text: 'EARLIER_TURN_MESSAGE' },
+      ]),
+      previewEvent(
+        'e2',
+        '2026-06-07T12:01:00Z',
+        [
+          { role: 'user', text: 'EARLIER_TURN_MESSAGE' },
+          { role: 'user', text: 'FRESH_TAIL_MESSAGE' },
+        ],
+        { usage_details: { prompt_tokens_details: { cached_tokens: 640 } } }
+      ),
+    ];
+    const element = await fixture<SessionReplayPanel>(html`
+      <session-replay-panel
+        replayMode="timeline"
+        .session=${SESSION}
+        .events=${events}
+      ></session-replay-panel>
+    `);
+    // Expand the SECOND turn's full context (its request re-sends turn 1).
+    element.eventDetails = {
+      e2: {
+        ...events[1],
+        payload: {
+          ...events[1].payload,
+          request: {
+            messages: [
+              { role: 'system', content: 'CACHED_SYSTEM_PROMPT' },
+              { role: 'user', content: 'EARLIER_TURN_MESSAGE' },
+              { role: 'user', content: 'FRESH_TAIL_MESSAGE' },
+            ],
+          },
+        },
+      },
+    };
+    const expandButtons = Array.from(
+      element.shadowRoot?.querySelectorAll('sl-button') || []
+    ).filter((button) =>
+      (button.textContent || '').includes('Expand full context')
+    ) as HTMLElement[];
+    // Newest-first: the first expand button belongs to the newest turn (e2).
+    expandButtons[0].click();
+    await element.updateComplete;
+    await waitUntil(() =>
+      element.shadowRoot?.querySelector('.cached-prefix-details')
+    );
+
+    const prefix = element.shadowRoot?.querySelector(
+      '.cached-prefix-details'
+    ) as HTMLElement & { open?: boolean };
+    expect(prefix, 'cached prefix container present').to.exist;
+    // Collapsed by default, labelled with the count and cache annotation.
+    expect(Boolean(prefix.open)).to.equal(false);
+    const summaryText = (
+      prefix.querySelector('[slot="summary"]')?.textContent || ''
+    ).replace(/\s+/g, ' ');
+    expect(summaryText).to.contain('re-sent from previous turns');
+    expect(summaryText).to.contain('640');
+    // The prefix holds ONLY the re-sent context; the fresh tail stays outside.
+    expect(prefix.textContent).to.contain('CACHED_SYSTEM_PROMPT');
+    expect(prefix.textContent).to.contain('EARLIER_TURN_MESSAGE');
+    expect(prefix.textContent).to.not.contain('FRESH_TAIL_MESSAGE');
+  });
+
+  it('shows the full context unsplit when no delta message matches', async () => {
+    const events: FlowGatewayEvent[] = [
+      previewEvent('e1', '2026-06-07T12:00:00Z', [
+        { role: 'user', text: 'PREVIEW_ONLY_TEXT' },
+      ]),
+    ];
+    const element = await fixture<SessionReplayPanel>(html`
+      <session-replay-panel
+        replayMode="timeline"
+        .session=${SESSION}
+        .events=${events}
+      ></session-replay-panel>
+    `);
+    // The raw request text differs from the preview (e.g. truncation), so no
+    // signature matches: nothing must be hidden as "cached".
+    element.eventDetails = {
+      e1: {
+        ...events[0],
+        payload: {
+          ...events[0].payload,
+          request: {
+            messages: [
+              { role: 'system', content: 'RAW_SYSTEM_PROMPT' },
+              { role: 'user', content: 'RAW_DIVERGENT_TEXT' },
+            ],
+          },
+        },
+      },
+    };
+    const expandButton = Array.from(
+      element.shadowRoot?.querySelectorAll('sl-button') || []
+    ).find((button) =>
+      (button.textContent || '').includes('Expand full context')
+    ) as HTMLElement;
+    expandButton.click();
+    await element.updateComplete;
+    await waitUntil(() =>
+      (element.shadowRoot?.textContent || '').includes('RAW_SYSTEM_PROMPT')
+    );
+    expect(element.shadowRoot?.querySelector('.cached-prefix-details')).to.not
+      .exist;
   });
 
   it('hides turns below the token threshold', async () => {

@@ -555,6 +555,127 @@ describe('PreloopSessionObserver', () => {
       .exist;
   });
 
+  describe('Collapsing session list', () => {
+    const secondSession = {
+      ...session,
+      id: 'runtime-session-2',
+      session_reference: 'claude-session-43',
+      runtime_principal_name: 'Second Workspace',
+    };
+
+    it('keeps the full list visible after auto-selection on load', async () => {
+      const el = (await fixture(
+        html`<preloop-session-observer
+          .sessions=${[session, secondSession]}
+        ></preloop-session-observer>`
+      )) as PreloopSessionObserver;
+      await waitUntil(
+        () => deepText(el.shadowRoot).includes('Build a widget'),
+        '',
+        { timeout: 3000 }
+      );
+      // Auto-selection is not operator intent: the browsable list must stay.
+      expect(el.shadowRoot?.querySelector('session-list-panel')).to.exist;
+      expect(el.shadowRoot?.querySelector('.session-picker-bar')).to.not.exist;
+    });
+
+    it('collapses the list into a picker bar when the operator selects a session', async () => {
+      const el = (await fixture(
+        html`<preloop-session-observer
+          .sessions=${[session, secondSession]}
+        ></preloop-session-observer>`
+      )) as PreloopSessionObserver;
+      await waitUntil(
+        () => deepText(el.shadowRoot).includes('Build a widget'),
+        '',
+        { timeout: 3000 }
+      );
+      const listPanel = el.shadowRoot?.querySelector('session-list-panel');
+      expect(listPanel).to.exist;
+      listPanel!.dispatchEvent(
+        new CustomEvent('session-selected', {
+          detail: { sessionId: 'runtime-session-2' },
+          bubbles: true,
+          composed: true,
+        })
+      );
+      await el.updateComplete;
+
+      // The sidebar column is gone; a compact picker bar replaces it.
+      expect(el.shadowRoot?.querySelector('session-list-panel')).to.not.exist;
+      const picker = el.shadowRoot?.querySelector('.session-picker-bar');
+      expect(picker, 'picker bar present').to.exist;
+      const pickerSelect = picker?.querySelector(
+        'select[aria-label="Switch session"]'
+      ) as HTMLSelectElement;
+      expect(pickerSelect, 'picker select present').to.exist;
+      expect(pickerSelect.value).to.equal('runtime-session-2');
+      expect(pickerSelect.options.length).to.equal(2);
+      expect((picker?.textContent || '').replace(/\s+/g, ' ')).to.contain(
+        '2 sessions'
+      );
+    });
+
+    it('re-expands the list from the picker bar toggle', async () => {
+      const el = (await fixture(
+        html`<preloop-session-observer
+          .sessions=${[session, secondSession]}
+        ></preloop-session-observer>`
+      )) as PreloopSessionObserver;
+      await waitUntil(
+        () => deepText(el.shadowRoot).includes('Build a widget'),
+        '',
+        { timeout: 3000 }
+      );
+      el.shadowRoot!.querySelector('session-list-panel')!.dispatchEvent(
+        new CustomEvent('session-selected', {
+          detail: { sessionId: 'runtime-session-1' },
+          bubbles: true,
+          composed: true,
+        })
+      );
+      await el.updateComplete;
+      const toggle = el.shadowRoot?.querySelector(
+        'sl-icon-button[label="Show session list"]'
+      ) as HTMLElement;
+      expect(toggle, 'expand toggle present').to.exist;
+      toggle.click();
+      await el.updateComplete;
+      expect(el.shadowRoot?.querySelector('session-list-panel')).to.exist;
+      expect(el.shadowRoot?.querySelector('.session-picker-bar')).to.not.exist;
+    });
+
+    it('switches sessions from the picker dropdown while staying collapsed', async () => {
+      const el = (await fixture(
+        html`<preloop-session-observer
+          .sessions=${[session, secondSession]}
+        ></preloop-session-observer>`
+      )) as PreloopSessionObserver;
+      await waitUntil(
+        () => deepText(el.shadowRoot).includes('Build a widget'),
+        '',
+        { timeout: 3000 }
+      );
+      el.shadowRoot!.querySelector('session-list-panel')!.dispatchEvent(
+        new CustomEvent('session-selected', {
+          detail: { sessionId: 'runtime-session-1' },
+          bubbles: true,
+          composed: true,
+        })
+      );
+      await el.updateComplete;
+      const pickerSelect = el.shadowRoot?.querySelector(
+        'select[aria-label="Switch session"]'
+      ) as HTMLSelectElement;
+      pickerSelect.value = 'runtime-session-2';
+      pickerSelect.dispatchEvent(new Event('change'));
+      await el.updateComplete;
+      expect((el as any).activeSessionId).to.equal('runtime-session-2');
+      // Still collapsed: switching within the picker is inspect intent too.
+      expect(el.shadowRoot?.querySelector('.session-picker-bar')).to.exist;
+    });
+  });
+
   describe('Optimize first-use hint', () => {
     beforeEach(() => {
       localStorage.removeItem('optimize_hint_dismissed');
