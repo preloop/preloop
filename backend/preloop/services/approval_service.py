@@ -316,6 +316,7 @@ class ApprovalService:
                 "summary": approval_request.summary,
                 "tool_args": redact_dict(approval_request.tool_args or {}),
                 "agent_reasoning": approval_request.agent_reasoning,
+                "managed_agent_name": approval_request.managed_agent_name,
                 "status": approval_request.status,
                 "requested_at": approval_request.requested_at.isoformat(),
                 "resolved_at": (

@@ -22,8 +22,17 @@ type claudeModelFamily struct {
 
 // claudeModelFamilies is ordered most- to least-capable. The order is only used
 // to make output deterministic; it implies no preference.
+//
+// "fable" was missing from this table even though the live-validation side
+// (isClaudeSelectionKey, claudeSelectionFallbackModelIDs) already treated it as
+// a first-class family. That inconsistency sent fable-defaulted Max accounts
+// down the non-family collapse path, which flattens every selector onto one
+// alias and destroys /model switching. The env key follows the same
+// ANTHROPIC_DEFAULT_<FAMILY>_MODEL convention Claude Code uses for the other
+// families.
 var claudeModelFamilies = []claudeModelFamily{
 	{selector: "opus", envKey: "ANTHROPIC_DEFAULT_OPUS_MODEL", aliasMarkers: []string{"claude-opus", "/opus"}},
+	{selector: "fable", envKey: "ANTHROPIC_DEFAULT_FABLE_MODEL", aliasMarkers: []string{"claude-fable", "/fable"}},
 	{selector: "sonnet", envKey: "ANTHROPIC_DEFAULT_SONNET_MODEL", aliasMarkers: []string{"claude-sonnet", "/sonnet"}},
 	{selector: "haiku", envKey: "ANTHROPIC_DEFAULT_HAIKU_MODEL", aliasMarkers: []string{"claude-haiku", "/haiku"}},
 }
@@ -91,9 +100,22 @@ func claudeFamilyModelEnv(aliases []string) map[string]string {
 			continue
 		}
 		env[family.envKey] = alias
-		env[family.envKey+"_NAME"] = "Preloop " + alias
+		env[family.envKey+"_NAME"] = claudeFamilyDisplayName(family)
 	}
 	return env
+}
+
+// claudeFamilyDisplayName renders the `/model` picker label for a family
+// entry. Stock Claude Code shows short family names ("Opus", "Sonnet"), so
+// the managed entries keep that shape — with a "(Preloop)" marker so the
+// operator can see the selection is gateway-routed — instead of exposing a
+// raw gateway alias in the picker.
+func claudeFamilyDisplayName(family claudeModelFamily) string {
+	selector := family.selector
+	if selector == "" {
+		return "Preloop"
+	}
+	return strings.ToUpper(selector[:1]) + selector[1:] + " (Preloop)"
 }
 
 // claudeSubagentModelEnvKey is the variable Claude Code reads to pick the

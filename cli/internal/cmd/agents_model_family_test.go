@@ -39,22 +39,27 @@ func TestClaudeFamilyForAlias(t *testing.T) {
 	}
 }
 
-// The behaviour this whole change exists for: an account holding all three
-// families must produce all three env keys, so /model can reach each one.
+// The behaviour this whole change exists for: an account holding every
+// family must produce every family env key, so /model can reach each one.
+// Display names keep stock Claude Code's short family labels (plus a
+// "(Preloop)" marker) so the picker UX stays recognisable.
 func TestClaudeFamilyModelEnvCoversEveryFamily(t *testing.T) {
 	env := claudeFamilyModelEnv([]string{
 		"anthropic/claude-opus-4-1",
+		"anthropic/claude-fable-5",
 		"anthropic/claude-sonnet-4-5",
 		"anthropic/claude-haiku-4-5",
 	})
 
 	want := map[string]string{
 		"ANTHROPIC_DEFAULT_OPUS_MODEL":        "anthropic/claude-opus-4-1",
-		"ANTHROPIC_DEFAULT_OPUS_MODEL_NAME":   "Preloop anthropic/claude-opus-4-1",
+		"ANTHROPIC_DEFAULT_OPUS_MODEL_NAME":   "Opus (Preloop)",
+		"ANTHROPIC_DEFAULT_FABLE_MODEL":       "anthropic/claude-fable-5",
+		"ANTHROPIC_DEFAULT_FABLE_MODEL_NAME":  "Fable (Preloop)",
 		"ANTHROPIC_DEFAULT_SONNET_MODEL":      "anthropic/claude-sonnet-4-5",
-		"ANTHROPIC_DEFAULT_SONNET_MODEL_NAME": "Preloop anthropic/claude-sonnet-4-5",
+		"ANTHROPIC_DEFAULT_SONNET_MODEL_NAME": "Sonnet (Preloop)",
 		"ANTHROPIC_DEFAULT_HAIKU_MODEL":       "anthropic/claude-haiku-4-5",
-		"ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME":  "Preloop anthropic/claude-haiku-4-5",
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME":  "Haiku (Preloop)",
 	}
 	if !reflect.DeepEqual(env, want) {
 		t.Fatalf("claudeFamilyModelEnv() = %#v, want %#v", env, want)
@@ -116,7 +121,7 @@ func TestClaudeFamilyModelEnvIsOrderIndependentAcrossFamilies(t *testing.T) {
 }
 
 // The Kimi K3 case: a managed model outside the Claude families must map every
-// selector Claude Code can emit — the three family env vars plus the subagent
+// selector Claude Code can emit — every family env var plus the subagent
 // override — at the managed alias, or background/fast-path calls and subagents
 // request built-in claude-* identifiers the gateway rejects with 404.
 func TestClaudeNonFamilyModelEnvMapsEverySelector(t *testing.T) {
@@ -125,6 +130,8 @@ func TestClaudeNonFamilyModelEnvMapsEverySelector(t *testing.T) {
 	want := map[string]string{
 		"ANTHROPIC_DEFAULT_OPUS_MODEL":        "moonshot/kimi-k3-0905",
 		"ANTHROPIC_DEFAULT_OPUS_MODEL_NAME":   "Preloop moonshot/kimi-k3-0905",
+		"ANTHROPIC_DEFAULT_FABLE_MODEL":       "moonshot/kimi-k3-0905",
+		"ANTHROPIC_DEFAULT_FABLE_MODEL_NAME":  "Preloop moonshot/kimi-k3-0905",
 		"ANTHROPIC_DEFAULT_SONNET_MODEL":      "moonshot/kimi-k3-0905",
 		"ANTHROPIC_DEFAULT_SONNET_MODEL_NAME": "Preloop moonshot/kimi-k3-0905",
 		"ANTHROPIC_DEFAULT_HAIKU_MODEL":       "moonshot/kimi-k3-0905",
@@ -201,6 +208,10 @@ func TestClaudeStaleFamilyEnvKeysClearsOnlyAbsentFamilies(t *testing.T) {
 	stale := claudeStaleFamilyEnvKeys([]string{"anthropic/claude-sonnet-4-5"})
 
 	want := []string{
+		"ANTHROPIC_DEFAULT_FABLE_MODEL",
+		"ANTHROPIC_DEFAULT_FABLE_MODEL_DESCRIPTION",
+		"ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
+		"ANTHROPIC_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES",
 		"ANTHROPIC_DEFAULT_HAIKU_MODEL",
 		"ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
 		"ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
@@ -224,14 +235,15 @@ func TestClaudeStaleFamilyEnvKeysClearsOnlyAbsentFamilies(t *testing.T) {
 
 func TestClaudeStaleFamilyEnvKeysClearsAllWhenNoFamiliesPresent(t *testing.T) {
 	stale := claudeStaleFamilyEnvKeys([]string{"openai/gpt-5"})
-	if len(stale) != 12 {
-		t.Fatalf("expected all 12 family keys stale, got %d: %#v", len(stale), stale)
+	if want := 4 * len(claudeModelFamilies); len(stale) != want {
+		t.Fatalf("expected all %d family keys stale, got %d: %#v", want, len(stale), stale)
 	}
 }
 
 func TestClaudeStaleFamilyEnvKeysEmptyWhenAllFamiliesPresent(t *testing.T) {
 	stale := claudeStaleFamilyEnvKeys([]string{
 		"anthropic/claude-opus-4-1",
+		"anthropic/claude-fable-5",
 		"anthropic/claude-sonnet-4-5",
 		"anthropic/claude-haiku-4-5",
 	})

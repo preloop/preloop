@@ -26,6 +26,7 @@ import {
   fetchWithAuth,
   getApprovalWorkflows,
   getAgentGovernance,
+  getAccountGovernanceDefaults,
   getAccountAgent,
   getAccountRuntimeSessionDetail,
   getFeatures,
@@ -167,6 +168,13 @@ export class AgentDetailView extends LitElement {
     approval_workflow_id: null,
     native_tool_approvals: null,
   };
+
+  /**
+   * Account-wide native tool-approval default this agent inherits when its
+   * own setting is null. Loaded best-effort; null means unknown.
+   */
+  @state()
+  private accountNativeApprovalDefault: 'enforce' | 'off' | null = null;
 
   @state()
   private allowedModelsText = '';
@@ -590,6 +598,15 @@ export class AgentDetailView extends LitElement {
         };
       }
       this.governance = governance.config;
+      // Resolve what "inherit" currently means for the approvals selector.
+      void getAccountGovernanceDefaults()
+        .then((defaults) => {
+          this.accountNativeApprovalDefault =
+            defaults.defaults.native_tool_approvals ?? 'enforce';
+        })
+        .catch(() => {
+          this.accountNativeApprovalDefault = null;
+        });
       this.scopedToolRules = normalizeScopedToolRules(
         governance.config.tool_rules
       );
@@ -1137,8 +1154,12 @@ export class AgentDetailView extends LitElement {
     void this.saveGovernance();
   }
 
-  private saveNativeToolApprovalsToggle(enforce: boolean): void {
-    const next: 'off' | null = enforce ? null : 'off';
+  private saveNativeToolApprovalsMode(mode: string): void {
+    // Tri-state: '' = inherit account default, 'enforce' and 'off' are
+    // explicit per-agent overrides in either direction. An explicit
+    // 'enforce' shields this agent from an account default of 'off'.
+    const next: 'enforce' | 'off' | null =
+      mode === 'enforce' || mode === 'off' ? mode : null;
     if ((this.governance.native_tool_approvals ?? null) === next) {
       return;
     }
@@ -1147,6 +1168,15 @@ export class AgentDetailView extends LitElement {
       native_tool_approvals: next,
     };
     void this.saveGovernance();
+  }
+
+  /** The approvals mode in effect after inheritance resolution. */
+  private effectiveNativeToolApprovals(): 'enforce' | 'off' {
+    const own = this.governance.native_tool_approvals ?? null;
+    if (own === 'enforce' || own === 'off') {
+      return own;
+    }
+    return this.accountNativeApprovalDefault === 'off' ? 'off' : 'enforce';
   }
 
   private getGovernanceTool(toolName: string): GovernanceToolDefinition | null {
@@ -2671,42 +2701,59 @@ export class AgentDetailView extends LitElement {
                                 Native tool approvals
                               </div>
                               <div class="meta-line">
-                                Approval workflow used when this agent's native
-                                tool calls (e.g. shell commands, file edits)
-                                require human approval.
+                                Whether this agent's native tool calls (e.g.
+                                shell commands, file edits) require human
+                                approval, and which workflow decides. The
+                                account default is configured in
+                                <a href="/console/tools">Tools</a>.
                               </div>
                             </div>
                             <div
                               style="display: flex; align-items: center; gap: var(--sl-spacing-medium); flex-shrink: 0;"
                             >
-                              <sl-switch
-                                id="agent-native-tool-approvals-switch"
+                              <sl-select
+                                id="agent-native-tool-approvals-mode"
                                 size="small"
-                                ?checked=${
-                                  this.governance.native_tool_approvals !==
-                                  'off'
+                                hoist
+                                style="min-width: 250px;"
+                                .value=${
+                                  this.governance.native_tool_approvals ?? ''
                                 }
                                 @sl-change=${(e: Event) => {
-                                  this.saveNativeToolApprovalsToggle(
-                                    (e.target as HTMLInputElement).checked
+                                  this.saveNativeToolApprovalsMode(
+                                    (e.target as HTMLSelectElement).value
                                   );
                                 }}
                               >
-                                Require approval for native tool calls
-                              </sl-switch>
+                                <sl-option value="">
+                                  Inherit account default
+                                  (${
+                                    this.accountNativeApprovalDefault === 'off'
+                                      ? 'currently: Off'
+                                      : this.accountNativeApprovalDefault ===
+                                          'enforce'
+                                        ? 'currently: Enforce'
+                                        : 'Enforce'
+                                  })
+                                </sl-option>
+                                <sl-option value="enforce">
+                                  Enforce — always require approval
+                                </sl-option>
+                                <sl-option value="off">
+                                  Off — auto-approve (recorded)
+                                </sl-option>
+                              </sl-select>
                               <sl-select
                                 id="agent-approval-workflow-select"
                                 size="small"
                                 hoist
                                 style=${
-                                  this.governance.native_tool_approvals ===
-                                  'off'
+                                  this.effectiveNativeToolApprovals() === 'off'
                                     ? 'min-width: 280px; opacity: 0.5;'
                                     : 'min-width: 280px;'
                                 }
                                 ?disabled=${
-                                  this.governance.native_tool_approvals ===
-                                  'off'
+                                  this.effectiveNativeToolApprovals() === 'off'
                                 }
                                 .value=${
                                   this.governance.approval_workflow_id ?? ''
@@ -2737,7 +2784,7 @@ export class AgentDetailView extends LitElement {
                             </div>
                           </div>
                           ${
-                            this.governance.native_tool_approvals === 'off'
+                            this.effectiveNativeToolApprovals() === 'off'
                               ? html`
                                   <sl-alert
                                     id="agent-native-tool-approvals-off-note"

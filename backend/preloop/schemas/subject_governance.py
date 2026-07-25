@@ -42,3 +42,36 @@ class SubjectGovernanceResponse(BaseModel):
     subject_type: str
     subject_id: str
     config: SubjectGovernanceConfig
+
+
+class AccountGovernanceDefaults(BaseModel):
+    """Account-wide governance defaults inherited by every managed agent.
+
+    A per-agent subject-governance config with an explicit value overrides
+    these; an absent/None per-agent value inherits. The final fallback when
+    both are unset is "enforce" (fail safe).
+    """
+
+    native_tool_approvals: Optional[Literal["enforce", "off"]] = Field(
+        None,
+        description=(
+            "Account default for native tool-call approvals. Agents without "
+            "an explicit per-agent setting inherit this; absent/None means "
+            '"enforce".'
+        ),
+    )
+    approval_workflow_id: Optional[str] = Field(
+        None,
+        description=(
+            "Account default approval workflow for native tool-call "
+            "approvals. Agents without a per-agent pin inherit this; absent "
+            "falls back to the account's default workflow."
+        ),
+    )
+
+
+class AccountGovernanceDefaultsResponse(BaseModel):
+    defaults: AccountGovernanceDefaults
+    # How many managed agents carry an explicit override, so the console can
+    # say "N agents override this" next to the default editor.
+    override_agent_ids: List[str] = Field(default_factory=list)

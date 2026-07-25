@@ -233,9 +233,13 @@ func installApprovalHooks(agent AgentConfig, baseURL, token string, out io.Write
 			return err
 		}
 	case permissionSourceCursor:
+		// beforeShellExecution / beforeMCPExecution cover terminal + MCP.
+		// preToolUse is required for native file tools (Write / StrReplace /
+		// Edit) — the path that Claude Code's PreToolUse was incorrectly
+		// gating when Cursor loaded ~/.claude/settings.json as third-party.
 		if err := upsertFlatCommandHook(
 			configPath,
-			[]string{"beforeShellExecution", "beforeMCPExecution"},
+			[]string{"beforeShellExecution", "beforeMCPExecution", "preToolUse"},
 			command,
 			timeoutSeconds,
 		); err != nil {
@@ -247,6 +251,15 @@ func installApprovalHooks(agent AgentConfig, baseURL, token string, out io.Write
 		fmt.Fprintf(out, "  Mobile approvals: installed %s hook (%s)\n", source, configPath)                                                //nolint:errcheck
 		fmt.Fprintf(out, "  Approval wait timeout: %ds (re-run onboard --approvals after changing the workflow timeout)\n", timeoutSeconds) //nolint:errcheck
 		printAgentPolicySummary(out, source, policyPaths, workspaceRoot)
+		if source == permissionSourceClaudeCode {
+			// Cursor loads ~/.claude/settings.json as third-party hooks; the
+			// permission-hook auto-allows under Cursor so this install cannot
+			// accidentally gate Cursor Agent. Spell that out so operators know
+			// how to govern Cursor separately.
+			fmt.Fprintln(out, "  Note: Cursor may load this Claude Code hook as a third-party config.")               //nolint:errcheck
+			fmt.Fprintln(out, "        Preloop auto-allows those Cursor invocations so Cursor Agent is not blocked.") //nolint:errcheck
+			fmt.Fprintln(out, "        To govern Cursor itself, run: preloop agents onboard Cursor --approvals")      //nolint:errcheck
+		}
 		if source == permissionSourceCursor {
 			fmt.Fprintln(out, "  Note: Cursor reliably enforces only DENY from a hook; an allow may be overridden by Cursor's in-app allowlist.") //nolint:errcheck
 		}
@@ -311,7 +324,7 @@ func removeApprovalHooks(agent AgentConfig, out io.Writer) error {
 	case permissionSourceCursor:
 		if err := removeFlatCommandHook(
 			configPath,
-			[]string{"beforeShellExecution", "beforeMCPExecution"},
+			[]string{"beforeShellExecution", "beforeMCPExecution", "preToolUse"},
 			true,
 		); err != nil {
 			return err
@@ -348,18 +361,22 @@ func writePermissionHookCredential(
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = defaultApprovalHookTimeoutSeconds
 	}
-	safeReadAutoAllow := true
+	// Cursor's real allowlist lives in opaque IDE state, so without the
+	// read-only auto-allow an absent permissions.json would turn every "ls"
+	// into a blocking approval. Claude Code's policy is fully readable from
+	// its settings files, so the hook mirrors it exactly: every call the
+	// agent itself would prompt for is routed to Preloop as an approval
+	// request — no hook-side widening. Users can flip the flag by hand.
+	safeReadAutoAllow := source == permissionSourceCursor
 	cred := permissionHookCredential{
-		BaseURL:          resolvedBase,
-		Token:            token,
-		Source:           source,
-		RuntimePrincipal: runtimePrincipalIDForAgent(agent),
-		ConfigPath:       agent.ConfigPath,
-		TimeoutSeconds:   timeoutSeconds,
-		PolicyPaths:      policyPaths,
-		WorkspaceRoot:    workspaceRoot,
-		// Auto-allow obviously read-only shell commands (ls, git status, ...)
-		// instead of escalating them; users can flip this to false by hand.
+		BaseURL:           resolvedBase,
+		Token:             token,
+		Source:            source,
+		RuntimePrincipal:  runtimePrincipalIDForAgent(agent),
+		ConfigPath:        agent.ConfigPath,
+		TimeoutSeconds:    timeoutSeconds,
+		PolicyPaths:       policyPaths,
+		WorkspaceRoot:     workspaceRoot,
 		SafeReadAutoAllow: &safeReadAutoAllow,
 	}
 	data, err := json.MarshalIndent(cred, "", "  ")

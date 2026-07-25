@@ -45,10 +45,12 @@ func TestFableIsAKnownClaudeSelection(t *testing.T) {
 	}
 }
 
-func TestApplyClaudeManagedGatewayPinsSettingsModelForNonFamilyAlias(t *testing.T) {
-	// The managed document simulates a Max user whose explicit selection was
-	// the 1M-context Fable variant; the stale selection must be replaced or
-	// it outranks the env pin in API-key mode.
+func TestApplyClaudeManagedGatewayTreatsFableAsFamily(t *testing.T) {
+	// Fable is a first-class Claude family: a fable-pinned Max account keeps
+	// the selector form in settings.model (like opus/sonnet/haiku) and gets
+	// its alias mapped through ANTHROPIC_DEFAULT_FABLE_MODEL, NOT collapsed
+	// through the non-family path that flattens every selector onto one
+	// alias and destroys /model switching.
 	plan := managedMCPEnrollmentPlan{
 		ManagedDocument: map[string]interface{}{
 			"model": "claude-fable-5[1m]",
@@ -64,26 +66,108 @@ func TestApplyClaudeManagedGatewayPinsSettingsModelForNonFamilyAlias(t *testing.
 		"https://preloop.example",
 		"claude-durable-token",
 		"anthropic/claude-fable-5",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected gateway apply error: %v", err)
 	}
 
-	if plan.ManagedDocument["model"] != "anthropic/claude-fable-5" {
+	if plan.ManagedDocument["model"] != "fable" {
 		t.Errorf(
-			"stale settings.model must be replaced by the managed alias, got %#v",
+			"fable aliases keep the selector form in settings.model, got %#v",
 			plan.ManagedDocument["model"],
 		)
 	}
 	env := plan.ManagedDocument["env"].(map[string]interface{})
-	if env["ANTHROPIC_MODEL"] != "anthropic/claude-fable-5" {
+	if env["ANTHROPIC_MODEL"] != "fable" {
 		t.Errorf("unexpected ANTHROPIC_MODEL: %#v", env["ANTHROPIC_MODEL"])
+	}
+	if env["ANTHROPIC_DEFAULT_FABLE_MODEL"] != "anthropic/claude-fable-5" {
+		t.Errorf(
+			"unexpected ANTHROPIC_DEFAULT_FABLE_MODEL: %#v",
+			env["ANTHROPIC_DEFAULT_FABLE_MODEL"],
+		)
 	}
 	if env["ANTHROPIC_CUSTOM_MODEL_OPTION"] != "anthropic/claude-fable-5" {
 		t.Errorf(
 			"unexpected ANTHROPIC_CUSTOM_MODEL_OPTION: %#v",
 			env["ANTHROPIC_CUSTOM_MODEL_OPTION"],
 		)
+	}
+	// The subagent override must stay unset: with family keys covered,
+	// subagents resolve through the same selector chain as stock Claude Code.
+	if _, ok := env[claudeSubagentModelEnvKey]; ok {
+		t.Errorf("CLAUDE_CODE_SUBAGENT_MODEL must not be pinned for family models")
+	}
+}
+
+func TestApplyClaudeManagedGatewayWritesSiblingFamilyEnv(t *testing.T) {
+	// Sibling family aliases imported at onboard time must each land on
+	// their own ANTHROPIC_DEFAULT_<FAMILY>_MODEL key so /model switching,
+	// background (haiku fast-path) requests, and subagents on another
+	// family resolve at the gateway instead of 404ing.
+	plan := managedMCPEnrollmentPlan{
+		ManagedDocument: map[string]interface{}{
+			"model": "claude-fable-5[1m]",
+		},
+	}
+	plan, err := applyClaudeManagedGateway(
+		plan,
+		"https://preloop.example",
+		"claude-durable-token",
+		"anthropic/claude-fable-5",
+		[]string{
+			"anthropic/claude-opus-4-6",
+			"anthropic/claude-sonnet-4-5",
+			"anthropic/claude-haiku-4-5",
+		},
+	)
+	if err != nil {
+		t.Fatalf("unexpected gateway apply error: %v", err)
+	}
+	env := plan.ManagedDocument["env"].(map[string]interface{})
+	for key, want := range map[string]string{
+		"ANTHROPIC_DEFAULT_FABLE_MODEL":  "anthropic/claude-fable-5",
+		"ANTHROPIC_DEFAULT_OPUS_MODEL":   "anthropic/claude-opus-4-6",
+		"ANTHROPIC_DEFAULT_SONNET_MODEL": "anthropic/claude-sonnet-4-5",
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL":  "anthropic/claude-haiku-4-5",
+	} {
+		if env[key] != want {
+			t.Errorf("env[%q] = %#v, want %q", key, env[key], want)
+		}
+	}
+	// The pinned family's alias wins over any sibling alias for the same
+	// family: the pinned alias is prepended to the coverage list.
+	if env["ANTHROPIC_MODEL"] != "fable" {
+		t.Errorf("unexpected ANTHROPIC_MODEL: %#v", env["ANTHROPIC_MODEL"])
+	}
+}
+
+func TestApplyClaudeManagedGatewaySiblingEnvClearedOnReonboard(t *testing.T) {
+	// Re-onboarding with a smaller family set must clear the keys of
+	// families that no longer resolve — a /model entry that 404s is worse
+	// than no entry.
+	plan := managedMCPEnrollmentPlan{
+		ManagedDocument: map[string]interface{}{
+			"env": map[string]interface{}{
+				"ANTHROPIC_DEFAULT_OPUS_MODEL":      "anthropic/claude-opus-4-6",
+				"ANTHROPIC_DEFAULT_OPUS_MODEL_NAME": "Opus (Preloop)",
+			},
+		},
+	}
+	plan, err := applyClaudeManagedGateway(
+		plan,
+		"https://preloop.example",
+		"claude-durable-token",
+		"anthropic/claude-fable-5",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("unexpected gateway apply error: %v", err)
+	}
+	env := plan.ManagedDocument["env"].(map[string]interface{})
+	if _, ok := env["ANTHROPIC_DEFAULT_OPUS_MODEL"]; ok {
+		t.Errorf("stale opus key must be cleared when the family is no longer covered")
 	}
 }
 
@@ -103,6 +187,7 @@ func TestApplyClaudeManagedGatewayKeepsFamilySelectionBehavior(t *testing.T) {
 		"https://preloop.example",
 		"claude-durable-token",
 		"anthropic/claude-sonnet-4-5",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected gateway apply error: %v", err)

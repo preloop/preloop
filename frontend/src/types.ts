@@ -528,6 +528,21 @@ export interface SubjectGovernanceResponse {
   config: SubjectGovernanceConfig;
 }
 
+/**
+ * Account-wide governance defaults inherited by every managed agent that
+ * carries no explicit per-agent value. Final fallback is "enforce".
+ */
+export interface AccountGovernanceDefaults {
+  native_tool_approvals?: 'enforce' | 'off' | null;
+  approval_workflow_id?: string | null;
+}
+
+export interface AccountGovernanceDefaultsResponse {
+  defaults: AccountGovernanceDefaults;
+  /** Managed agent ids carrying an explicit per-agent override. */
+  override_agent_ids: string[];
+}
+
 export interface RuntimeSessionUpdateRequest {
   action: 'end';
   reason?: string | null;

@@ -322,14 +322,15 @@ type gatewayUsageSearchItem struct {
 }
 
 type aiModelResponse struct {
-	ID              string                 `json:"id"`
-	Name            string                 `json:"name"`
-	ProviderName    string                 `json:"provider_name"`
-	ModelIdentifier string                 `json:"model_identifier"`
-	APIEndpoint     string                 `json:"api_endpoint"`
-	MetaData        map[string]interface{} `json:"meta_data"`
-	CredentialType  string                 `json:"credential_type"`
-	HasAPIKey       bool                   `json:"has_api_key"`
+	ID                  string                 `json:"id"`
+	Name                string                 `json:"name"`
+	ProviderName        string                 `json:"provider_name"`
+	ModelIdentifier     string                 `json:"model_identifier"`
+	APIEndpoint         string                 `json:"api_endpoint"`
+	MetaData            map[string]interface{} `json:"meta_data"`
+	CredentialType      string                 `json:"credential_type"`
+	CredentialsSecretID string                 `json:"credentials_secret_id"`
+	HasAPIKey           bool                   `json:"has_api_key"`
 }
 
 type aiModelCreateRequest struct {
@@ -341,7 +342,11 @@ type aiModelCreateRequest struct {
 	APIKey          string                 `json:"api_key,omitempty"`
 	CredentialType  string                 `json:"credential_type,omitempty"`
 	CredentialsJSON map[string]interface{} `json:"credential_payload,omitempty"`
-	MetaData        map[string]interface{} `json:"meta_data,omitempty"`
+	// CredentialsSecretID reuses an existing account SecretReference so
+	// several AIModel rows (one per Claude family) share one provider
+	// credential instead of duplicating token material per model.
+	CredentialsSecretID string                 `json:"credentials_secret_id,omitempty"`
+	MetaData            map[string]interface{} `json:"meta_data,omitempty"`
 }
 
 type managedAgentModelBindingSummary struct {
@@ -524,6 +529,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 				baseURL,
 				"<token created at apply time>",
 				upstream.ManagedModelAlias,
+				previewClaudeSiblingFamilyAliases(upstream),
 			)
 			if err != nil {
 				return err
@@ -697,6 +703,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 			plan.Notes = append(plan.Notes, gatewayNotes...)
 		}
 		if upstream != nil && (upstream.CanRouteThroughGateway() || syncedModel != nil) {
+			var familyAliases []string
 			if syncedModel != nil {
 				modelBindings = []managedAgentModelBindingSyncItem{
 					{
@@ -708,6 +715,38 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 						Status:       "gateway_ready",
 					},
 				}
+				// Claude Code: import the sibling model families (opus /
+				// fable / sonnet / haiku minus the pinned one) so `/model`
+				// switching, background fast-path requests, and subagents on
+				// another family resolve at the gateway instead of 404ing.
+				// Sibling rows share the primary model's credential secret —
+				// one live OAuth token lineage — and get their own bindings
+				// so principal-bound model authorization admits them.
+				if isClaudeCodeAgent(agent) {
+					familyBindings, familyAliasList, familyNotes, familyErr :=
+						syncClaudeSiblingFamilyAIModels(
+							client,
+							managedAgent,
+							agent,
+							upstream,
+							syncedModel,
+							strings.TrimRight(baseURL, "/")+openClawGatewayPath,
+						)
+					if familyErr != nil {
+						// Family import is an enhancement on top of a valid
+						// single-model enrollment; a failure here must not
+						// abort onboarding, only narrow /model coverage.
+						plan.Notes = append(plan.Notes, fmt.Sprintf(
+							"Could not import sibling Claude model families (continuing with %s only): %v",
+							upstream.ManagedModelAlias,
+							familyErr,
+						))
+					} else {
+						modelBindings = append(modelBindings, familyBindings...)
+						familyAliases = familyAliasList
+						plan.Notes = append(plan.Notes, familyNotes...)
+					}
+				}
 			}
 			plan, err = applyManagedGatewayForAgent(
 				plan,
@@ -715,6 +754,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 				baseURL,
 				credentialResp.Token,
 				upstream.ManagedModelAlias,
+				familyAliases,
 			)
 			if err != nil {
 				return err

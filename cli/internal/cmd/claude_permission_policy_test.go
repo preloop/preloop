@@ -124,6 +124,55 @@ func TestEvaluateClaudePermissionPolicy(t *testing.T) {
 			want:  "ask",
 		},
 		{
+			// Claude Code prompts for edits in default permission mode, so
+			// the mirror must ask too — routing the approval to Preloop —
+			// rather than silently auto-allowing workspace writes.
+			name:  "relative Write path asks",
+			tool:  "Write",
+			input: map[string]interface{}{"file_path": "src/foo.ts"},
+			want:  "ask",
+		},
+		{
+			name:  "workspace Write path asks",
+			tool:  "Write",
+			input: map[string]interface{}{"file_path": "/repo/src/foo.ts"},
+			want:  "ask",
+		},
+		{
+			name:  "outside workspace Write path asks",
+			tool:  "Write",
+			input: map[string]interface{}{"file_path": "/etc/passwd"},
+			want:  "ask",
+		},
+		{
+			name:  "relative escape Write path asks",
+			tool:  "Write",
+			input: map[string]interface{}{"file_path": "../.ssh/id_rsa"},
+			want:  "ask",
+		},
+		{
+			name:   "Write deny rule wins",
+			policy: claudePermissionPolicy{Deny: []string{"Write"}},
+			tool:   "Write",
+			input:  map[string]interface{}{"file_path": "src/foo.ts"},
+			want:   "deny",
+		},
+		{
+			name:   "Write ask rule wins",
+			policy: claudePermissionPolicy{Ask: []string{"Write"}},
+			tool:   "Write",
+			input:  map[string]interface{}{"file_path": "src/foo.ts"},
+			want:   "ask",
+		},
+		{
+			// Edits ask in default mode — mirrored exactly so the approval
+			// reaches Preloop; acceptEdits mode still auto-allows below.
+			name:  "StrReplace local path asks",
+			tool:  "StrReplace",
+			input: map[string]interface{}{"path": "src/foo.ts"},
+			want:  "ask",
+		},
+		{
 			name:   "defaultMode from policy is honored when event mode empty",
 			policy: claudePermissionPolicy{DefaultMode: "bypassPermissions"},
 			tool:   "Bash",
@@ -140,7 +189,7 @@ func TestEvaluateClaudePermissionPolicy(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := evaluateClaudePermissionPolicy(tc.policy, tc.mode, tc.tool, tc.input)
+			got := evaluateClaudePermissionPolicy(tc.policy, tc.mode, tc.tool, tc.input, "/repo")
 			if got != tc.want {
 				t.Errorf("evaluateClaudePermissionPolicy = %q, want %q", got, tc.want)
 			}
@@ -215,7 +264,7 @@ func TestEvaluateClaudePermissionPolicyBashPrefixRules(t *testing.T) {
 	}
 	for _, tc := range cases {
 		input := map[string]interface{}{"command": tc.command}
-		if got := evaluateClaudePermissionPolicy(policy, "", "Bash", input); got != tc.want {
+		if got := evaluateClaudePermissionPolicy(policy, "", "Bash", input, "/repo"); got != tc.want {
 			t.Errorf("evaluate(%q) = %q, want %q", tc.command, got, tc.want)
 		}
 	}
@@ -269,11 +318,11 @@ func TestLoadClaudePermissionPolicyProjectAndManaged(t *testing.T) {
 
 	// A project allow rule is honored and the managed deny always wins.
 	if got := evaluateClaudePermissionPolicy(policy, "", "Bash",
-		map[string]interface{}{"command": "npm run test unit"}); got != "allow" {
+		map[string]interface{}{"command": "npm run test unit"}, project); got != "allow" {
 		t.Errorf("project allow rule not honored, got %q", got)
 	}
 	if got := evaluateClaudePermissionPolicy(policy, "", "Bash",
-		map[string]interface{}{"command": "curl https://evil.example"}); got != "deny" {
+		map[string]interface{}{"command": "curl https://evil.example"}, project); got != "deny" {
 		t.Errorf("managed deny rule not honored, got %q", got)
 	}
 }

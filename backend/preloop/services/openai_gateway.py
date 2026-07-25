@@ -26,6 +26,7 @@ from preloop.models.crud import (
     crud_ai_model,
     crud_api_usage,
     crud_managed_agent,
+    crud_managed_agent_ai_model_binding,
     crud_runtime_session,
     crud_runtime_session_activity,
 )
@@ -1803,11 +1804,23 @@ class OpenAIGatewayService:
             # match on a later one; without the stable ordering behind (2) a bare
             # "claude-sonnet-4-5" could resolve to anthropic/... on one request
             # and bedrock/... on the next, silently changing the price.
+            # Context-window variant markers ("claude-fable-5[1m]") address
+            # the same registry row as their base id; the variant selector
+            # itself is preserved in the request payload and forwarded
+            # verbatim on the Anthropic OAuth passthrough, so the user's 1M
+            # selection keeps working while authorization and pricing key on
+            # the base model.
+            normalized_requested = self._strip_claude_variant_marker(
+                str(requested_model)
+            )
             suffix_match: Optional[AIModel] = None
             for ai_model, alias in gateway_enabled_models:
-                if alias == requested_model:
+                if alias == requested_model or alias == normalized_requested:
                     return ai_model
-                if suffix_match is None and alias.endswith(f"/{requested_model}"):
+                if suffix_match is None and (
+                    alias.endswith(f"/{requested_model}")
+                    or alias.endswith(f"/{normalized_requested}")
+                ):
                     suffix_match = ai_model
             if suffix_match is not None:
                 return suffix_match
@@ -1831,6 +1844,13 @@ class OpenAIGatewayService:
                         ),
                         code="model_not_authorized",
                     )
+            autoregistered = self._maybe_autoregister_claude_family_model(
+                requested_model,
+                provider=provider,
+                gateway_enabled_models=gateway_enabled_models,
+            )
+            if autoregistered is not None:
+                return autoregistered
             raise ModelGatewayAPIError(
                 provider=provider,
                 status_code=404,
@@ -1845,6 +1865,173 @@ class OpenAIGatewayService:
             status_code=404,
             message="No gateway-enabled default model configured",
         )
+
+    @staticmethod
+    def _strip_claude_variant_marker(model_ref: str) -> str:
+        """Strip a trailing bracketed context-window marker.
+
+        Claude Code addresses context-window variants as ``<model>[1m]``. The
+        variant is a real upstream selector (forwarded verbatim on the OAuth
+        passthrough) but registry rows and pricing keys use the base id.
+        """
+        trimmed = (model_ref or "").strip()
+        open_idx = trimmed.rfind("[")
+        if open_idx > 0 and trimmed.endswith("]"):
+            base = trimmed[:open_idx].strip()
+            if base:
+                return base
+        return trimmed
+
+    def _maybe_autoregister_claude_family_model(
+        self,
+        requested_model: Optional[str],
+        *,
+        provider: GatewayProvider,
+        gateway_enabled_models: List[tuple[AIModel, str]],
+    ) -> Optional[AIModel]:
+        """Auto-register an unknown ``claude-*`` model for subscription OAuth.
+
+        Claude Code updates ship new built-in dated model identifiers (and the
+        family env pins may reference a family the onboarding import missed).
+        With a registry snapshotted at onboard time those requests would 404
+        until the user re-onboards — even though Anthropic itself authorizes
+        whatever the subscription may use. When this account already holds an
+        authorized Anthropic subscription-OAuth model, an unknown ``claude-*``
+        request lazily creates a sibling ``AIModel`` row sharing the same
+        credential secret (one live OAuth token lineage — never a copy), binds
+        it to the requesting managed agent so principal-bound authorization
+        admits it, and serves the request. Mirrors the self-healing price
+        lookup pattern: first request pays a small write, every later request
+        resolves normally.
+
+        Only the registry check is relaxed. Budget preflight, subject-scoped
+        ``allowed_models``, attribution, and usage accounting run unchanged on
+        the returned model.
+
+        Args:
+            requested_model: The client's requested model string.
+            provider: Gateway protocol of the request.
+            gateway_enabled_models: Authorized (model, alias) pairs for this
+                principal, from the caller's resolution pass.
+
+        Returns:
+            The newly registered model, or ``None`` when preconditions fail
+            (feature disabled, non-Anthropic protocol, non-claude identifier,
+            or no subscription-OAuth template model to share credentials
+            with) — the caller then raises its usual 404.
+        """
+        if not settings.model_gateway_claude_family_autoregister_enabled:
+            return None
+        if provider != "anthropic" or not requested_model:
+            return None
+        base_requested = self._strip_claude_variant_marker(str(requested_model))
+        # Accept "anthropic/<id>" and bare "<id>" spellings; reject other
+        # providers ("bedrock/...") — their identifiers are not reachable
+        # through the shared Anthropic OAuth credential.
+        prefix, separator, tail = base_requested.partition("/")
+        if separator:
+            if prefix.strip().lower() != "anthropic":
+                return None
+            base_requested = tail.strip()
+        if not base_requested.lower().startswith("claude-"):
+            return None
+
+        template: Optional[AIModel] = None
+        for ai_model, _alias in gateway_enabled_models:
+            if (
+                (ai_model.provider_name or "").strip().lower() == "anthropic"
+                and ai_model.credential_type
+                == ANTHROPIC_CLAUDE_CODE_OAUTH_CREDENTIAL_TYPE
+                and ai_model.credentials_secret_id is not None
+            ):
+                template = ai_model
+                break
+        if template is None:
+            return None
+
+        managed_agent_id = resolve_managed_agent_id_for_context(
+            self.db, self.auth_context
+        )
+        if managed_agent_id is None:
+            # Principal-bound OAuth models are only authorized through an
+            # agent binding; without an agent to bind, the new row would be
+            # unauthorized for this credential on the very next request.
+            return None
+
+        account_id = self.auth_context.user.account_id
+        alias = f"anthropic/{base_requested}"
+        template_meta = (
+            template.meta_data if isinstance(template.meta_data, dict) else {}
+        )
+        template_gateway = (
+            template_meta.get("gateway")
+            if isinstance(template_meta.get("gateway"), dict)
+            else {}
+        )
+        try:
+            created = crud_ai_model.create_with_account(
+                self.db,
+                obj_in={
+                    "name": f"Claude Code {alias}",
+                    "description": (
+                        "Auto-registered by the model gateway for a Claude "
+                        "Code subscription-OAuth request."
+                    ),
+                    "provider_name": "anthropic",
+                    "model_identifier": base_requested,
+                    "api_endpoint": template.api_endpoint,
+                    "credentials_secret_id": template.credentials_secret_id,
+                    "meta_data": {
+                        "gateway": {
+                            "enabled": True,
+                            "url": template_gateway.get("url"),
+                            "provider_adapter": template_gateway.get(
+                                "provider_adapter", "preloop"
+                            ),
+                            "model_alias": alias,
+                        },
+                        "managed_by": "model-gateway claude-family autoregister",
+                        "source_agent": "claude_code",
+                        "managed_agent_id": managed_agent_id,
+                        "autoregistered_from_ai_model_id": str(template.id),
+                    },
+                },
+                account_id=account_id,
+            )
+            from datetime import timezone as _tz
+
+            now = datetime.now(_tz.utc)
+            crud_managed_agent_ai_model_binding.create(
+                self.db,
+                obj_in={
+                    "account_id": account_id,
+                    "managed_agent_id": managed_agent_id,
+                    "ai_model_id": created.id,
+                    "binding_type": "configured",
+                    "config_key": f"gateway.autoregister.{base_requested}",
+                    "gateway_alias": alias,
+                    "is_primary": False,
+                    "status": "gateway_ready",
+                    "first_seen_at": now,
+                    "last_seen_at": now,
+                },
+            )
+        except (SQLAlchemyError, ValueError):
+            logger.warning(
+                "Claude family auto-registration failed for %s",
+                requested_model,
+                exc_info=True,
+            )
+            self.db.rollback()
+            return None
+        # The memoized authorized-id set predates the new row and binding.
+        self._authorized_model_ids_cache = None
+        logger.info(
+            "Auto-registered Claude family model %s for managed agent %s",
+            alias,
+            managed_agent_id,
+        )
+        return created
 
     def _is_openai_codex_model(self, ai_model: AIModel) -> bool:
         return (ai_model.provider_name or "").strip().lower() == "openai-codex"
@@ -3013,6 +3200,29 @@ class OpenAIGatewayService:
             self._last_context_optimization = None
             return payload
 
+    def _passthrough_upstream_model_ref(
+        self, ai_model: AIModel, requested_model: Any
+    ) -> str:
+        """Choose the upstream model string for the OAuth passthrough.
+
+        Normally the account model's identifier. When the client requested a
+        context-window variant of that same model ("claude-fable-5[1m]"),
+        forward the variant verbatim: the bracket marker is a real Anthropic
+        selector (the 1M-context form) that authorization and pricing key on
+        the base id, but silently dropping it would downgrade the user's
+        selected context window.
+        """
+        requested = str(requested_model or "").strip()
+        base_identifier = (ai_model.model_identifier or "").strip()
+        if requested and requested != base_identifier:
+            requested_tail = requested.rpartition("/")[2]
+            if (
+                requested_tail != base_identifier
+                and self._strip_claude_variant_marker(requested_tail) == base_identifier
+            ):
+                return requested_tail
+        return base_identifier
+
     def _prepare_anthropic_passthrough(
         self,
         *,
@@ -3050,7 +3260,9 @@ class OpenAIGatewayService:
         self._capture_tools_meta(original_tools)
 
         body: Dict[str, Any] = dict(payload)
-        body["model"] = ai_model.model_identifier
+        body["model"] = self._passthrough_upstream_model_ref(
+            ai_model, payload.get("model")
+        )
         body["stream"] = bool(stream)
 
         base_url = (

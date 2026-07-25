@@ -15,11 +15,17 @@ SUBJECT_TYPE_MANAGED_AGENTS = "managed_agents"
 SUBJECT_TYPE_API_KEYS = "api_keys"
 SUBJECT_TYPES = (SUBJECT_TYPE_MANAGED_AGENTS, SUBJECT_TYPE_API_KEYS)
 
+# Account-wide governance defaults that per-subject configs inherit from.
+# Lives beside the per-subject buckets inside the same store so one JSON
+# read serves both resolution steps.
+ACCOUNT_DEFAULTS_KEY = "account_defaults"
+
 
 def empty_subject_governance_store() -> dict[str, Any]:
     return {
         SUBJECT_TYPE_MANAGED_AGENTS: {},
         SUBJECT_TYPE_API_KEYS: {},
+        ACCOUNT_DEFAULTS_KEY: {},
     }
 
 
@@ -34,6 +40,12 @@ def normalize_subject_governance_store(
     for subject_type in SUBJECT_TYPES:
         value = store.get(subject_type)
         normalized[subject_type] = value if isinstance(value, dict) else {}
+    # account_defaults must survive every normalize/rewrite cycle: a
+    # per-agent governance save round-trips the whole store through this
+    # function, and dropping the key here would silently erase the account
+    # default on the next unrelated write.
+    defaults = store.get(ACCOUNT_DEFAULTS_KEY)
+    normalized[ACCOUNT_DEFAULTS_KEY] = defaults if isinstance(defaults, dict) else {}
     return normalized
 
 
@@ -64,6 +76,52 @@ def set_subject_governance(
         subject_bucket.pop(str(subject_id), None)
     normalized_meta[SUBJECT_GOVERNANCE_KEY] = store
     return normalized_meta
+
+
+def get_account_governance_defaults(
+    meta_data: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    """Return the account-wide governance defaults bucket."""
+    store = normalize_subject_governance_store(meta_data)
+    defaults = store.get(ACCOUNT_DEFAULTS_KEY)
+    return deepcopy(defaults) if isinstance(defaults, dict) else {}
+
+
+def set_account_governance_defaults(
+    meta_data: Optional[dict[str, Any]],
+    *,
+    defaults: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    """Persist sanitized account-wide governance defaults into meta_data."""
+    normalized_meta = deepcopy(meta_data or {})
+    store = normalize_subject_governance_store(normalized_meta)
+    store[ACCOUNT_DEFAULTS_KEY] = sanitize_account_governance_defaults(defaults or {})
+    normalized_meta[SUBJECT_GOVERNANCE_KEY] = store
+    return normalized_meta
+
+
+def sanitize_account_governance_defaults(defaults: dict[str, Any]) -> dict[str, Any]:
+    """Keep only the fields account defaults may carry.
+
+    Deliberately a subset of the per-subject config: defaults are about
+    approval behavior, not per-subject tool/model scoping.
+    """
+    sanitized: dict[str, Any] = {
+        "native_tool_approvals": None,
+        "approval_workflow_id": None,
+    }
+    native_tool_approvals = defaults.get("native_tool_approvals")
+    if isinstance(native_tool_approvals, str):
+        normalized_value = native_tool_approvals.strip().lower()
+        if normalized_value in (
+            NATIVE_TOOL_APPROVALS_ENFORCE,
+            NATIVE_TOOL_APPROVALS_OFF,
+        ):
+            sanitized["native_tool_approvals"] = normalized_value
+    approval_workflow_id = defaults.get("approval_workflow_id")
+    if approval_workflow_id is not None and str(approval_workflow_id).strip():
+        sanitized["approval_workflow_id"] = str(approval_workflow_id).strip()
+    return sanitized
 
 
 def sanitize_subject_governance_config(config: dict[str, Any]) -> dict[str, Any]:

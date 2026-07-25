@@ -70,6 +70,14 @@ class AgentPermissionCheckResponse(BaseModel):
     decision: str = Field(..., description="'allow' or 'deny'")
     reason: str = ""
     request_id: Optional[str] = None
+    timed_out: bool = Field(
+        False,
+        description=(
+            "True when the deny is only the expiry of an unanswered approval "
+            "request, not a human decision. Adapters with a native 'ask' "
+            "verdict may fall back to the agent's local prompt."
+        ),
+    )
 
 
 @router.post(
@@ -122,8 +130,13 @@ async def agent_permission_check(
     tool_input = dict(payload.tool_input or {})
     if payload.cwd:
         tool_input["cwd"] = payload.cwd
+    # The approval model intentionally has no adapter column. Preserve the
+    # non-sensitive origin alongside the native tool input so approver
+    # surfaces can distinguish the adapter without a schema migration.
+    if payload.source and payload.source.strip():
+        tool_input["_preloop_source"] = payload.source.strip()
 
-    decision, reason, request_id = await request_agent_permission(
+    decision, reason, request_id, timed_out = await request_agent_permission(
         base_url=_permission_check_base_url(),
         account_id=str(api_key.account_id),
         user_id=user.id,
@@ -139,5 +152,5 @@ async def agent_permission_check(
         client_decision=payload.client_decision,
     )
     return AgentPermissionCheckResponse(
-        decision=decision, reason=reason, request_id=request_id
+        decision=decision, reason=reason, request_id=request_id, timed_out=timed_out
     )

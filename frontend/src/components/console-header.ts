@@ -18,6 +18,7 @@ import {
   formatRelativeTime,
   parseUTCDate,
 } from '../utils/date';
+import { formatApprovalRequester } from '../utils/approval-identity';
 
 interface UserDetails {
   username: string;
@@ -43,6 +44,7 @@ interface ApprovalRequest {
   expires_at?: string;
   execution_id?: string;
   agent_reasoning?: string;
+  managed_agent_name?: string | null;
 }
 
 interface UserNotification {
@@ -314,6 +316,7 @@ export class ConsoleHeader extends LitElement {
           expires_at: approval.expires_at,
           execution_id: approval.execution_id,
           agent_reasoning: approval.agent_reasoning,
+          managed_agent_name: approval.managed_agent_name,
         }))
         .filter((approval: ApprovalRequest) =>
           this.isUnexpiredPendingApproval(approval)
@@ -477,6 +480,7 @@ export class ConsoleHeader extends LitElement {
             expires_at: message.expires_at,
             execution_id: message.execution_id,
             agent_reasoning: message.agent_reasoning,
+            managed_agent_name: message.managed_agent_name || null,
           };
 
           // Add to pending approvals if not already there
@@ -698,8 +702,8 @@ export class ConsoleHeader extends LitElement {
 
     try {
       const body = approval.agent_reasoning
-        ? `${approval.tool_name}: ${approval.agent_reasoning.substring(0, 100)}${approval.agent_reasoning.length > 100 ? '...' : ''}`
-        : `${approval.tool_name} requires your approval`;
+        ? `${formatApprovalRequester(approval.managed_agent_name, approval.tool_args)}: ${approval.tool_name}: ${approval.agent_reasoning.substring(0, 100)}${approval.agent_reasoning.length > 100 ? '...' : ''}`
+        : `${formatApprovalRequester(approval.managed_agent_name, approval.tool_args)} requests approval for ${approval.tool_name}`;
 
       const notification = new Notification('Approval Required', {
         body,
@@ -864,7 +868,11 @@ export class ConsoleHeader extends LitElement {
               >
                 <div class="approval-name">${approval.tool_name}</div>
                 <div class="approval-time">
-                  ${formatRelativeTime(approval.requested_at)}
+                  ${formatApprovalRequester(
+                    approval.managed_agent_name,
+                    approval.tool_args
+                  )}
+                  • ${formatRelativeTime(approval.requested_at)}
                   ${
                     approval.expires_at
                       ? html` • Expires
