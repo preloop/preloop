@@ -1968,61 +1968,72 @@ class OpenAIGatewayService:
             if isinstance(template_meta.get("gateway"), dict)
             else {}
         )
+        # Savepoint scope: a failure here must undo ONLY the auto-registration
+        # writes. A session-level rollback would also discard unrelated pending
+        # state from earlier in the request pipeline, so both rows flush inside
+        # one nested transaction (commit=False keeps the CRUD layer from
+        # committing the outer transaction mid-savepoint) and the final commit
+        # happens only after the savepoint released cleanly.
         try:
-            created = crud_ai_model.create_with_account(
-                self.db,
-                obj_in={
-                    "name": f"Claude Code {alias}",
-                    "description": (
-                        "Auto-registered by the model gateway for a Claude "
-                        "Code subscription-OAuth request."
-                    ),
-                    "provider_name": "anthropic",
-                    "model_identifier": base_requested,
-                    "api_endpoint": template.api_endpoint,
-                    "credentials_secret_id": template.credentials_secret_id,
-                    "meta_data": {
-                        "gateway": {
-                            "enabled": True,
-                            "url": template_gateway.get("url"),
-                            "provider_adapter": template_gateway.get(
-                                "provider_adapter", "preloop"
-                            ),
-                            "model_alias": alias,
+            with self.db.begin_nested():
+                created = crud_ai_model.create_with_account(
+                    self.db,
+                    obj_in={
+                        "name": f"Claude Code {alias}",
+                        "description": (
+                            "Auto-registered by the model gateway for a Claude "
+                            "Code subscription-OAuth request."
+                        ),
+                        "provider_name": "anthropic",
+                        "model_identifier": base_requested,
+                        "api_endpoint": template.api_endpoint,
+                        "credentials_secret_id": template.credentials_secret_id,
+                        "meta_data": {
+                            "gateway": {
+                                "enabled": True,
+                                "url": template_gateway.get("url"),
+                                "provider_adapter": template_gateway.get(
+                                    "provider_adapter", "preloop"
+                                ),
+                                "model_alias": alias,
+                            },
+                            "managed_by": ("model-gateway claude-family autoregister"),
+                            "source_agent": "claude_code",
+                            "managed_agent_id": managed_agent_id,
+                            "autoregistered_from_ai_model_id": str(template.id),
                         },
-                        "managed_by": "model-gateway claude-family autoregister",
-                        "source_agent": "claude_code",
-                        "managed_agent_id": managed_agent_id,
-                        "autoregistered_from_ai_model_id": str(template.id),
                     },
-                },
-                account_id=account_id,
-            )
-            from datetime import timezone as _tz
+                    account_id=account_id,
+                    commit=False,
+                )
+                from datetime import timezone as _tz
 
-            now = datetime.now(_tz.utc)
-            crud_managed_agent_ai_model_binding.create(
-                self.db,
-                obj_in={
-                    "account_id": account_id,
-                    "managed_agent_id": managed_agent_id,
-                    "ai_model_id": created.id,
-                    "binding_type": "configured",
-                    "config_key": f"gateway.autoregister.{base_requested}",
-                    "gateway_alias": alias,
-                    "is_primary": False,
-                    "status": "gateway_ready",
-                    "first_seen_at": now,
-                    "last_seen_at": now,
-                },
-            )
+                now = datetime.now(_tz.utc)
+                crud_managed_agent_ai_model_binding.create(
+                    self.db,
+                    obj_in={
+                        "account_id": account_id,
+                        "managed_agent_id": managed_agent_id,
+                        "ai_model_id": created.id,
+                        "binding_type": "configured",
+                        "config_key": f"gateway.autoregister.{base_requested}",
+                        "gateway_alias": alias,
+                        "is_primary": False,
+                        "status": "gateway_ready",
+                        "first_seen_at": now,
+                        "last_seen_at": now,
+                    },
+                    commit=False,
+                )
+            self.db.commit()
         except (SQLAlchemyError, ValueError):
+            # begin_nested already rolled back to the savepoint; unrelated
+            # pending session state from earlier in the pipeline survives.
             logger.warning(
                 "Claude family auto-registration failed for %s",
                 requested_model,
                 exc_info=True,
             )
-            self.db.rollback()
             return None
         # The memoized authorized-id set predates the new row and binding.
         self._authorized_model_ids_cache = None

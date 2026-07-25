@@ -654,23 +654,23 @@ func TestEvaluateClaudePermissionPolicySafeTools(t *testing.T) {
 	t.Parallel()
 
 	policy := claudePermissionPolicy{}
-	if got := evaluateClaudePermissionPolicy(policy, "", "Grep", nil, "/repo"); got != "allow" {
+	if got := evaluateClaudePermissionPolicy(policy, "", "Grep", nil); got != "allow" {
 		t.Fatalf("Grep = %q, want allow", got)
 	}
-	if got := evaluateClaudePermissionPolicy(policy, "", "Read", nil, "/repo"); got != "allow" {
+	if got := evaluateClaudePermissionPolicy(policy, "", "Read", nil); got != "allow" {
 		t.Fatalf("Read = %q, want allow", got)
 	}
-	if got := evaluateClaudePermissionPolicy(policy, "", "Bash", map[string]interface{}{"command": "ls"}, "/repo"); got != "ask" {
+	if got := evaluateClaudePermissionPolicy(policy, "", "Bash", map[string]interface{}{"command": "ls"}); got != "ask" {
 		t.Fatalf("Bash = %q, want ask", got)
 	}
 
 	policy.Allow = []string{"Bash"}
-	if got := evaluateClaudePermissionPolicy(policy, "", "Bash", map[string]interface{}{"command": "ls"}, "/repo"); got != "allow" {
+	if got := evaluateClaudePermissionPolicy(policy, "", "Bash", map[string]interface{}{"command": "ls"}); got != "allow" {
 		t.Fatalf("allowed Bash = %q, want allow", got)
 	}
 
 	policy = claudePermissionPolicy{Deny: []string{"Grep"}}
-	if got := evaluateClaudePermissionPolicy(policy, "", "Grep", nil, "/repo"); got != "deny" {
+	if got := evaluateClaudePermissionPolicy(policy, "", "Grep", nil); got != "deny" {
 		t.Fatalf("denied Grep = %q, want deny", got)
 	}
 }

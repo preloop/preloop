@@ -271,6 +271,50 @@ def test_disabled_flag_never_autoregisters(db_session, test_user, monkeypatch):
     assert err.value.status_code == 404
 
 
+def test_failed_autoregistration_preserves_unrelated_pending_state(
+    db_session, test_user, monkeypatch
+):
+    """A registration failure rolls back ONLY the savepoint, not the session.
+
+    The gateway request pipeline may hold unrelated pending writes when the
+    lazy registration runs; a session-level rollback would silently discard
+    them. The registration writes live under ``begin_nested`` so a failure
+    releases just the savepoint.
+    """
+    agent, _pinned, service = _enrolled_service(db_session, test_user)
+
+    # Unrelated pending (uncommitted) state from "earlier in the pipeline".
+    agent.display_name = "Renamed Before Autoregister"
+    db_session.flush()
+
+    def _boom(*args, **kwargs):
+        raise ValueError("simulated registration failure")
+
+    monkeypatch.setattr(
+        "preloop.services.openai_gateway.crud_managed_agent_ai_model_binding.create",
+        _boom,
+    )
+
+    with pytest.raises(ModelGatewayAPIError) as err:
+        service._resolve_requested_model("claude-sonnet-4-9", provider="anthropic")
+    assert err.value.status_code == 404
+
+    # The unrelated pending write survived the failed registration.
+    assert agent.display_name == "Renamed Before Autoregister"
+    db_session.commit()
+    db_session.refresh(agent)
+    assert agent.display_name == "Renamed Before Autoregister"
+    # And no half-registered model row leaked.
+    leaked = [
+        model
+        for model in crud_ai_model.get_by_account(
+            db_session, account_id=test_user.account_id
+        )
+        if model.model_identifier == "claude-sonnet-4-9"
+    ]
+    assert leaked == []
+
+
 def test_user_token_never_autoregisters(db_session, test_user):
     """Without a managed agent to bind, no row is created (fail closed)."""
     _make_subscription_model(db_session, test_user)

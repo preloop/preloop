@@ -189,7 +189,7 @@ func TestEvaluateClaudePermissionPolicy(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := evaluateClaudePermissionPolicy(tc.policy, tc.mode, tc.tool, tc.input, "/repo")
+			got := evaluateClaudePermissionPolicy(tc.policy, tc.mode, tc.tool, tc.input)
 			if got != tc.want {
 				t.Errorf("evaluateClaudePermissionPolicy = %q, want %q", got, tc.want)
 			}
@@ -264,7 +264,7 @@ func TestEvaluateClaudePermissionPolicyBashPrefixRules(t *testing.T) {
 	}
 	for _, tc := range cases {
 		input := map[string]interface{}{"command": tc.command}
-		if got := evaluateClaudePermissionPolicy(policy, "", "Bash", input, "/repo"); got != tc.want {
+		if got := evaluateClaudePermissionPolicy(policy, "", "Bash", input); got != tc.want {
 			t.Errorf("evaluate(%q) = %q, want %q", tc.command, got, tc.want)
 		}
 	}
@@ -318,11 +318,11 @@ func TestLoadClaudePermissionPolicyProjectAndManaged(t *testing.T) {
 
 	// A project allow rule is honored and the managed deny always wins.
 	if got := evaluateClaudePermissionPolicy(policy, "", "Bash",
-		map[string]interface{}{"command": "npm run test unit"}, project); got != "allow" {
+		map[string]interface{}{"command": "npm run test unit"}); got != "allow" {
 		t.Errorf("project allow rule not honored, got %q", got)
 	}
 	if got := evaluateClaudePermissionPolicy(policy, "", "Bash",
-		map[string]interface{}{"command": "curl https://evil.example"}, project); got != "deny" {
+		map[string]interface{}{"command": "curl https://evil.example"}); got != "deny" {
 		t.Errorf("managed deny rule not honored, got %q", got)
 	}
 }

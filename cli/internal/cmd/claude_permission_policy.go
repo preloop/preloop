@@ -128,14 +128,18 @@ func readClaudeSettingsDocument(path string) (claudeSettingsDocument, bool, erro
 //  4. acceptEdits mode + edit tool -> allow
 //  5. a matching allow rule   -> allow
 //  6. safe read/search tools  -> allow (Claude's practical default)
-//  7. a local workspace edit  -> allow
-//  8. otherwise               -> ask (the default "would prompt" case)
+//  7. otherwise               -> ask (the default "would prompt" case)
+//
+// Workspace edits deliberately have no auto-allow step here: stock Claude
+// Code prompts for Edit/Write in default permission mode, so the mirror asks
+// too. Only Cursor's policy path consults the workspace root (see
+// cursorPermissionClientDecision / isLocalWorkspaceEdit), because
+// auto-applying edits IS Cursor's default behavior.
 func evaluateClaudePermissionPolicy(
 	policy claudePermissionPolicy,
 	mode string,
 	toolName string,
 	toolInput map[string]interface{},
-	cwd string,
 ) string {
 	effectiveMode := strings.TrimSpace(mode)
 	if effectiveMode == "" {

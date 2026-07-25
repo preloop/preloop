@@ -504,7 +504,7 @@ func claudePermissionClientDecision(
 		return "ask"
 	}
 	mode := firstStringField(event, "permission_mode")
-	decision := evaluateClaudePermissionPolicy(policy, mode, req.ToolName, req.ToolInput, req.Cwd)
+	decision := evaluateClaudePermissionPolicy(policy, mode, req.ToolName, req.ToolInput)
 	// Claude Code's own policy is fully readable, so the mirror defaults to
 	// exact fidelity (default OFF): a read-only Bash command the agent would
 	// have prompted for is routed to Preloop as an approval request instead
