@@ -324,7 +324,7 @@ func isLocalWorkspaceEdit(
 	if path == "" || strings.HasPrefix(path, "~") {
 		return false
 	}
-	if !filepath.IsAbs(path) {
+	if !isRootedPath(path) {
 		// Relative paths are treated as workspace-local, but reject escapes
 		// like "../.ssh/id_rsa" that Clean would still leave outside the tree.
 		cleanRel := filepath.Clean(path)
@@ -337,7 +337,7 @@ func isLocalWorkspaceEdit(
 	cleanPath := filepath.Clean(path)
 	for _, root := range workspaceRoots {
 		root = strings.TrimSpace(root)
-		if root == "" || !filepath.IsAbs(root) {
+		if root == "" || !isRootedPath(root) {
 			continue
 		}
 		rel, err := filepath.Rel(filepath.Clean(root), cleanPath)
@@ -346,6 +346,18 @@ func isLocalWorkspaceEdit(
 		}
 	}
 	return false
+}
+
+// isRootedPath reports absolute-intent paths. filepath.IsAbs alone is not
+// enough on Windows: "/etc/passwd" has no drive letter so IsAbs is false
+// there, which would send slash-rooted paths down the relative branch and
+// auto-allow them as "workspace-local" on Windows only. Agents emit
+// slash-rooted paths regardless of host OS, so treat any slash- or
+// backslash-prefixed path as rooted everywhere.
+func isRootedPath(path string) bool {
+	return filepath.IsAbs(path) ||
+		strings.HasPrefix(path, "/") ||
+		strings.HasPrefix(path, "\\")
 }
 
 // isClaudeSafeReadTool reports tools Claude Code typically auto-allows without
