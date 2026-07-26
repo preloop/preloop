@@ -20,6 +20,7 @@ import (
 
 	toml "github.com/pelletier/go-toml/v2"
 	"github.com/spf13/cobra"
+	json5 "github.com/yosuke-furukawa/json5/encoding/json5"
 
 	"github.com/preloop/preloop/cli/internal/api"
 	"github.com/preloop/preloop/cli/internal/config"
@@ -3943,6 +3944,142 @@ func recoverManagedGatewayAfterLiveValidationFailure(
 	}
 	if isOpenCodeAgent(agent) {
 		return restoreOpenCodeGatewaySelectionFromOriginal(agent, originalBytes, writer)
+	}
+	if isHermesAgent(agent) {
+		return restoreHermesGatewaySelectionFromOriginal(agent, originalBytes, writer)
+	}
+	if isOpenClawAgent(agent) {
+		return restoreOpenClawGatewaySelectionFromOriginal(agent, originalBytes, writer)
+	}
+	return nil
+}
+
+// restoreHermesGatewaySelectionFromOriginal reverts the managed model
+// gateway pieces of a Hermes config (the rewritten `model:` mapping pointing
+// provider/base_url/api_key at Preloop) back to the pre-onboarding selection
+// when live validation fails. The managed MCP configuration stays in place —
+// MCP onboarding is validated separately and a model-side auth failure says
+// nothing about it.
+func restoreHermesGatewaySelectionFromOriginal(
+	agent AgentConfig,
+	originalBytes []byte,
+	writer io.Writer,
+) error {
+	if !isHermesAgent(agent) {
+		return nil
+	}
+	current, err := loadAgentConfigDocument(agent)
+	if err != nil {
+		return err
+	}
+	original := map[string]interface{}{}
+	if len(bytes.TrimSpace(originalBytes)) > 0 {
+		decoded, decodeErr := decodeHermesYAMLDocument(originalBytes)
+		if decodeErr != nil {
+			return fmt.Errorf("failed to parse original Hermes config: %w", decodeErr)
+		}
+		original = decoded
+	}
+	// The gateway apply only touches the `model` block (provider, base_url,
+	// api_key, default). Restore it wholesale from the pre-onboarding
+	// snapshot; when the original had none, drop the managed block entirely
+	// so Hermes falls back to its own defaults instead of a dead gateway.
+	if originalModel, exists := original["model"]; exists &&
+		!hermesModelBlockPointsAtPreloop(originalModel) {
+		current["model"] = originalModel
+	} else {
+		delete(current, "model")
+	}
+	if err := writeAgentConfigDocument(agent, current); err != nil {
+		return err
+	}
+	if writer != nil {
+		fmt.Fprintf(
+			writer,
+			"  Note: Restored Hermes' local model provider because Preloop gateway live validation failed. MCP remains onboarded; configure a working provider credential and rerun onboarding to enable model gateway routing.\n",
+		) //nolint:errcheck
+	}
+	return nil
+}
+
+// hermesModelBlockPointsAtPreloop reports whether a Hermes `model:` value
+// (string shorthand or structured mapping) already routes through Preloop —
+// e.g. a backup captured after a previous managed onboarding. Restoring such
+// a block would reinstate the failing gateway route, so callers drop it.
+func hermesModelBlockPointsAtPreloop(value interface{}) bool {
+	switch typed := value.(type) {
+	case string:
+		return looksManagedGatewayModelRef(strings.TrimSpace(typed)) &&
+			strings.TrimSpace(typed) != ""
+	case map[string]interface{}:
+		baseURL := strings.ToLower(strings.TrimSpace(lookupString(typed, "base_url")))
+		if strings.Contains(baseURL, "preloop") {
+			return true
+		}
+		defaultRef := strings.TrimSpace(lookupString(typed, "default"))
+		return defaultRef != "" && looksManagedGatewayModelRef(defaultRef)
+	default:
+		return false
+	}
+}
+
+// restoreOpenClawGatewaySelectionFromOriginal reverts the managed model
+// gateway pieces of an OpenClaw config (the injected models.providers.preloop
+// entry and the rewritten model selectors under `agents`) back to the
+// pre-onboarding selection when live validation fails. The managed MCP server
+// entry and agent-control config stay in place for the same reason as the
+// other agents: MCP onboarding is validated separately.
+func restoreOpenClawGatewaySelectionFromOriginal(
+	agent AgentConfig,
+	originalBytes []byte,
+	writer io.Writer,
+) error {
+	if !isOpenClawAgent(agent) {
+		return nil
+	}
+	current, err := loadAgentConfigDocument(agent)
+	if err != nil {
+		return err
+	}
+	original := map[string]interface{}{}
+	if len(bytes.TrimSpace(originalBytes)) > 0 {
+		if err := json5.Unmarshal(originalBytes, &original); err != nil {
+			return fmt.Errorf("failed to parse original OpenClaw config: %w", err)
+		}
+	}
+	// The gateway apply touches exactly two subtrees: `models` (provider
+	// injection + provider-model rewrites) and `agents` (model selector
+	// rewrites to preloop/<alias>). Restore both wholesale from the
+	// pre-onboarding snapshot, or drop them when the original had none.
+	for _, key := range []string{"models", "agents"} {
+		if originalValue, exists := original[key]; exists {
+			current[key] = originalValue
+		} else {
+			delete(current, key)
+		}
+	}
+	// Defensive: if the restored `models` still carries a preloop provider
+	// (backup captured after a previous managed onboarding), strip it so we
+	// never reinstate the failing gateway route.
+	if models, ok := asObjectMap(current["models"]); ok {
+		if providers, ok := asObjectMap(models["providers"]); ok {
+			delete(providers, "preloop")
+			if len(providers) == 0 {
+				delete(models, "providers")
+			}
+		}
+		if len(models) == 0 {
+			delete(current, "models")
+		}
+	}
+	if err := writeAgentConfigDocument(agent, current); err != nil {
+		return err
+	}
+	if writer != nil {
+		fmt.Fprintf(
+			writer,
+			"  Note: Restored OpenClaw's local model provider because Preloop gateway live validation failed. MCP remains onboarded; configure a working provider credential and rerun onboarding to enable model gateway routing.\n",
+		) //nolint:errcheck
 	}
 	return nil
 }

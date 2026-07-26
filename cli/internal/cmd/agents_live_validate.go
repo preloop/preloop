@@ -1257,7 +1257,9 @@ func recoverDeferredGatewayValidationFailure(
 	if !isClaudeCodeAgent(result.Agent) &&
 		!isCodexCLIAgent(result.Agent) &&
 		!isGeminiCLIAgent(result.Agent) &&
-		!isOpenCodeAgent(result.Agent) {
+		!isOpenCodeAgent(result.Agent) &&
+		!isHermesAgent(result.Agent) &&
+		!isOpenClawAgent(result.Agent) {
 		return
 	}
 	state, err := loadLocalEnrollmentState(result.Agent)

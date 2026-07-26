@@ -993,7 +993,9 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		} else if isClaudeCodeAgent(agent) ||
 			isCodexCLIAgent(agent) ||
 			isGeminiCLIAgent(agent) ||
-			isOpenCodeAgent(agent) {
+			isOpenCodeAgent(agent) ||
+			isHermesAgent(agent) ||
+			isOpenClawAgent(agent) {
 			clearManagedGatewayValidationFlags(validationResult)
 			plan.ManagedModelAlias = ""
 			plan.ManagedProviderName = ""
