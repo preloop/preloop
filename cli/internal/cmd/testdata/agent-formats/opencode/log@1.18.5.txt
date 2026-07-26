@@ -1,0 +1,3 @@
+timestamp=2026-07-26T14:06:17.321Z level=INFO run=7672b312 message=created id=ses_061408316ffevgismtsLGRYBrN slug=neon-falcon version=1.18.5 agent=build model.id=k3 model.providerID=kimi-for-coding model.variant=high
+timestamp=2026-07-26T14:06:17.343Z level=INFO run=7672b312 message=stream providerID=kimi-for-coding modelID=k3 session.id=ses_061408316ffevgismtsLGRYBrN small=true agent=title mode=primary
+timestamp=2026-07-26T14:08:39.044Z level=INFO run=7672b312 message=stream providerID=moonshotai modelID=kimi-k3 session.id=ses_061408316ffevgismtsLGRYBrN small=false agent=build mode=primary

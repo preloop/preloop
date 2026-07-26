@@ -3248,6 +3248,15 @@ func resolveCodexRecentModelRef() string {
 			if strings.HasPrefix(strings.ToLower(trimmed), "preloop/") {
 				trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "preloop/"))
 			}
+			// Codex session rollouts store bare model IDs ("gpt-5.6-sol",
+			// no provider prefix; see testdata/agent-formats/codex-cli).
+			// Return bare refs as-is: the caller resolves the provider from
+			// config/auth mode (ChatGPT OAuth → openai). Running them
+			// through splitOpenClawModelRef here stamped its "anthropic"
+			// default onto GPT models and bypassed that fallback.
+			if !strings.Contains(trimmed, "/") {
+				return trimmed
+			}
 			if providerID, modelID := splitOpenClawModelRef(trimmed); providerID != "" && modelID != "" {
 				return providerID + "/" + modelID
 			}

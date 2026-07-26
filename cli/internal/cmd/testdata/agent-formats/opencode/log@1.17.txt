@@ -1,0 +1,3 @@
+timestamp=2026-05-11T09:14:02.101Z level=INFO run=aa11bb22 message=init count=42
+timestamp=2026-05-11T09:14:07.334Z level=INFO run=aa11bb22 service=llm providerID=anthropic modelID=claude-opus-4-6 session.id=ses_legacy001
+timestamp=2026-05-11T09:14:09.812Z level=INFO run=aa11bb22 service=llm providerID=zai modelID=glm-5-turbo session.id=ses_legacy001
