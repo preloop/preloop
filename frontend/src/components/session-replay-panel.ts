@@ -1476,6 +1476,10 @@ export class SessionReplayPanel extends LitElement {
     if (this.replayScrollSyncTimer !== null) {
       window.clearTimeout(this.replayScrollSyncTimer);
     }
+    if (this.jumpHighlightTimer !== null) {
+      window.clearTimeout(this.jumpHighlightTimer);
+      this.jumpHighlightTimer = null;
+    }
   }
 
   updated(changed: Map<string | number | symbol, unknown>): void {
@@ -4456,23 +4460,41 @@ export class SessionReplayPanel extends LitElement {
     return topTurn.id;
   }
 
+  private prefersReducedMotion(): boolean {
+    try {
+      return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    } catch {
+      return false;
+    }
+  }
+
   // Scroll a turn into view and flash it. Direct DOM class manipulation (not
   // reactive state) because the highlight is transient eye-candy — routing it
   // through Lit state would force a full re-render just to fade an outline.
+  private jumpHighlightTimer: number | null = null;
+
   private jumpToTurn(eventId: string): void {
     const turn = this.shadowRoot?.querySelector(
       `.chat-turn[data-event-id="${eventId}"]`
     ) as HTMLElement | null;
     if (!turn) return;
-    const reduceMotion = window.matchMedia(
-      '(prefers-reduced-motion: reduce)'
-    ).matches;
     turn.scrollIntoView({
-      behavior: reduceMotion ? 'auto' : 'smooth',
+      behavior: this.prefersReducedMotion() ? 'auto' : 'smooth',
       block: 'center',
     });
+    // One highlight at a time: a second jump moves the flash to its new
+    // target instead of leaving two turns glowing.
+    if (this.jumpHighlightTimer !== null) {
+      window.clearTimeout(this.jumpHighlightTimer);
+      this.shadowRoot
+        ?.querySelectorAll('.chat-turn.jump-highlight')
+        .forEach((el) => el.classList.remove('jump-highlight'));
+    }
     turn.classList.add('jump-highlight');
-    window.setTimeout(() => turn.classList.remove('jump-highlight'), 1600);
+    this.jumpHighlightTimer = window.setTimeout(() => {
+      this.jumpHighlightTimer = null;
+      turn.classList.remove('jump-highlight');
+    }, 1600);
   }
 
   // First failed request turn in the order the user currently sees, so the

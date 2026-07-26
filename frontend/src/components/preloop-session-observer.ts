@@ -565,6 +565,10 @@ export class PreloopSessionObserver extends LitElement {
   connectedCallback(): void {
     super.connectedCallback();
     this.replayMode = this.replayModeFromUrl() ?? this.defaultReplayMode;
+    // An invalid/unavailable ?replay= value (e.g. a stale optimize link with
+    // the feature off) falls back to the default mode above — clean the
+    // param up front so the URL never advertises a mode that is not active.
+    this.syncReplayModeToUrl();
     this.connectRealtime();
     // These typed optimization actions bubble up from the replay panel (and its
     // dialogs). Listen on the host so the buttons actually do something.

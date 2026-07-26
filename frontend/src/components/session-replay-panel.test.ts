@@ -807,9 +807,14 @@ describe('SessionReplayPanel', () => {
   // --- UX: relative timestamps with absolute on hover -----------------------
 
   it('shows a relative turn timestamp with the absolute time on hover', async () => {
-    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    // Mid-minute anchor: even if fixture setup takes a few seconds, the
+    // elapsed time stays within the "5m ago" minute, keeping the assertion
+    // deterministic without faking the clock.
+    const fiveAndAHalfMinutesAgo = new Date(
+      Date.now() - 5.5 * 60 * 1000
+    ).toISOString();
     const events: FlowGatewayEvent[] = [
-      previewEvent('e1', fiveMinutesAgo, [
+      previewEvent('e1', fiveAndAHalfMinutesAgo, [
         { role: 'user', text: 'RECENT_TURN' },
       ]),
     ];
@@ -970,6 +975,86 @@ describe('SessionReplayPanel', () => {
       new KeyboardEvent('keydown', { key: 'k', bubbles: true, composed: true })
     );
     await element.updateComplete;
+    expect(element.shadowRoot?.activeElement).to.equal(turns[0]);
+  });
+
+  it('supports arrow keys, Home/End, and o for expansion', async () => {
+    const events: FlowGatewayEvent[] = [
+      previewEvent('e1', '2026-06-07T12:00:00Z', [
+        { role: 'user', text: 'TURN_ONE' },
+      ]),
+      previewEvent('e2', '2026-06-07T12:01:00Z', [
+        { role: 'user', text: 'TURN_TWO' },
+      ]),
+      previewEvent('e3', '2026-06-07T12:02:00Z', [
+        { role: 'user', text: 'TURN_THREE' },
+      ]),
+    ];
+    let requestedEventId: string | null = null;
+    const element = await fixture<SessionReplayPanel>(html`
+      <session-replay-panel
+        replayMode="chat"
+        .session=${SESSION}
+        .events=${events}
+        @session-event-detail-requested=${(event: CustomEvent) => {
+          requestedEventId = event.detail.eventId;
+        }}
+      ></session-replay-panel>
+    `);
+    const turns = Array.from(
+      element.shadowRoot?.querySelectorAll('.chat-turn') || []
+    ) as HTMLElement[];
+    expect(turns.length).to.equal(3);
+    const press = (target: HTMLElement, key: string) =>
+      target.dispatchEvent(
+        new KeyboardEvent('keydown', { key, bubbles: true, composed: true })
+      );
+
+    turns[0].focus();
+    press(turns[0], 'ArrowDown');
+    expect(element.shadowRoot?.activeElement).to.equal(turns[1]);
+    press(turns[1], 'ArrowUp');
+    expect(element.shadowRoot?.activeElement).to.equal(turns[0]);
+    press(turns[0], 'End');
+    expect(element.shadowRoot?.activeElement).to.equal(turns[2]);
+    press(turns[2], 'Home');
+    expect(element.shadowRoot?.activeElement).to.equal(turns[0]);
+
+    // o expands the focused turn, same as Enter.
+    press(turns[0], 'o');
+    await element.updateComplete;
+    expect(requestedEventId).to.equal(turns[0].getAttribute('data-event-id'));
+  });
+
+  it('ignores navigation keys originating from interactive controls', async () => {
+    const events: FlowGatewayEvent[] = [
+      previewEvent('e1', '2026-06-07T12:00:00Z', [
+        { role: 'user', text: 'TURN_ONE' },
+      ]),
+      previewEvent('e2', '2026-06-07T12:01:00Z', [
+        { role: 'user', text: 'TURN_TWO' },
+      ]),
+    ];
+    const element = await fixture<SessionReplayPanel>(html`
+      <session-replay-panel
+        replayMode="chat"
+        .session=${SESSION}
+        .events=${events}
+      ></session-replay-panel>
+    `);
+    const turns = Array.from(
+      element.shadowRoot?.querySelectorAll('.chat-turn') || []
+    ) as HTMLElement[];
+    turns[0].focus();
+    // Simulate a keystroke whose composedPath starts at a button inside the
+    // turn (e.g. the expand button): navigation must not steal it.
+    const button = turns[0].querySelector('sl-button') as HTMLElement;
+    expect(button, 'a button exists inside the turn').to.exist;
+    button.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'j', bubbles: true, composed: true })
+    );
+    await element.updateComplete;
+    // Focus did not move: the keystroke belonged to the control.
     expect(element.shadowRoot?.activeElement).to.equal(turns[0]);
   });
 });

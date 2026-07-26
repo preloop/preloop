@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Session History navigation and readability.** The session transcript
+  gained keyboard navigation (`j`/`k` or arrow keys move between turns,
+  `Home`/`End` jump to the ends, `Enter`/`o` expands the focused turn's full
+  request context), clickable summary-bar stats (Cost jumps to the most
+  expensive turn, Outcome to the first failed one), relative turn timestamps
+  ("5m ago") with the absolute time on hover, and a deep-linkable replay mode
+  (`?replay=` on the runtime sessions page, alongside the existing
+  `?sessionId=`). The session list's auto-collapse into a compact picker bar
+  now animates — the sidebar visibly slides shut and the picker fades in — so
+  the hand-off is legible to new users; all motion respects
+  `prefers-reduced-motion`.
+
 ## [0.12.8] - 2026-07-19
 
 ### Fixed

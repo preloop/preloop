@@ -905,6 +905,11 @@ describe('PreloopSessionObserver', () => {
         { timeout: 3000 }
       );
       expect((el as any).replayMode).to.equal('timeline');
+      // The stale param is scrubbed on init so the URL never advertises a
+      // mode that is not actually active.
+      expect(
+        new URLSearchParams(window.location.search).get('replay')
+      ).to.equal(null);
     });
   });
 });
