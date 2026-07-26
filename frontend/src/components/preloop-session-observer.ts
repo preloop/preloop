@@ -159,6 +159,12 @@ export class PreloopSessionObserver extends LitElement {
   @property({ type: String })
   selectedSessionId: string | null = null;
 
+  // Deep-linkable replay mode: when the host view owns the URL (e.g. the
+  // runtime sessions page), it opts in and the observer mirrors the active
+  // mode into the "replay" query param so links land on the right tab.
+  @property({ type: Boolean })
+  syncModeToUrl = false;
+
   /** Optional override for the sidebar's no-sessions message. */
   @property({ type: String })
   emptyText = '';
@@ -501,7 +507,7 @@ export class PreloopSessionObserver extends LitElement {
 
   connectedCallback(): void {
     super.connectedCallback();
-    this.replayMode = this.defaultReplayMode;
+    this.replayMode = this.replayModeFromUrl() ?? this.defaultReplayMode;
     this.connectRealtime();
     // These typed optimization actions bubble up from the replay panel (and its
     // dialogs). Listen on the host so the buttons actually do something.
@@ -1355,9 +1361,36 @@ export class PreloopSessionObserver extends LitElement {
     return tabs;
   }
 
+  // Reads the deep-linked replay mode. Invalid values (or 'optimize' when the
+  // feature is off) fall back to defaultReplayMode so a stale link cannot open
+  // an unavailable tab.
+  private replayModeFromUrl(): SessionReplayMode | null {
+    if (!this.syncModeToUrl) return null;
+    const raw = new URLSearchParams(window.location.search).get('replay');
+    if (raw === 'timeline' || raw === 'replay') return raw;
+    if (raw === 'optimize' && this.enabledFeatures.optimization) return raw;
+    return null;
+  }
+
+  // Mirrors the active mode into the URL so the current tab survives reloads
+  // and can be shared. replaceState only: mode switches are not navigation
+  // steps, and pushState would pollute the back button.
+  private syncReplayModeToUrl(): void {
+    if (!this.syncModeToUrl) return;
+    const url = new URL(window.location.href);
+    if (this.replayMode === this.defaultReplayMode) {
+      // The default mode needs no marker; dropping it keeps shared URLs clean.
+      url.searchParams.delete('replay');
+    } else {
+      url.searchParams.set('replay', this.replayMode);
+    }
+    window.history.replaceState(window.history.state, '', url.toString());
+  }
+
   private setReplayMode(mode: SessionReplayMode): void {
     if (this.replayMode === mode) return;
     this.replayMode = mode;
+    this.syncReplayModeToUrl();
     if (mode === 'optimize') {
       // Opening the drawer retires the first-use hint for good.
       this.dismissOptimizeHint();

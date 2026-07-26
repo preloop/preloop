@@ -1993,6 +1993,7 @@ export class RuntimeSessionsView extends LitElement {
                         .sessions=${this.sessions?.items || []}
                         .emptyText=${this.emptySessionsText()}
                         .selectedSessionId=${this.selectedSessionId}
+                        .syncModeToUrl=${true}
                         layout="full"
                         defaultReplayMode="timeline"
                         .features=${{

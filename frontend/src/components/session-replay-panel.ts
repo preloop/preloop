@@ -1009,6 +1009,22 @@ export class SessionReplayPanel extends LitElement {
       color: var(--sl-color-danger-700);
     }
 
+    /* Clickable summary stats: visually identical to the plain spans so the
+       bar stays a quiet dashboard, with only cursor + hover underline hinting
+       at the jump affordance. */
+    .chat-summary-link {
+      background: transparent;
+      border: none;
+      color: inherit;
+      cursor: pointer;
+      font: inherit;
+      padding: 0;
+    }
+
+    .chat-summary-link:hover .chat-summary-value {
+      text-decoration: underline;
+    }
+
     .chat-summary-sub {
       color: var(--sl-color-neutral-500);
     }
@@ -1026,6 +1042,28 @@ export class SessionReplayPanel extends LitElement {
       flex-direction: column;
       gap: var(--sl-spacing-x-small);
       padding: var(--sl-spacing-small);
+    }
+
+    /* Keyboard navigation target: turns are focusable (j/k navigation), so
+       they need a visible focus ring that doesn't fire on mouse clicks. */
+    .chat-turn:focus-visible {
+      outline: 2px solid var(--sl-color-primary-400);
+      outline-offset: 1px;
+    }
+
+    /* Transient landing marker for summary-bar jumps. Outline (not
+       box-shadow) so it composes with the inset failed/most-expensive
+       accents — those are exactly the turns being jumped to. The fade-out is
+       animated only for users who have not asked for reduced motion. */
+    .chat-turn.jump-highlight {
+      outline: 3px solid var(--sl-color-primary-300);
+      outline-offset: 1px;
+    }
+
+    @media (prefers-reduced-motion: no-preference) {
+      .chat-turn {
+        transition: outline-color 0.6s ease;
+      }
     }
 
     .chat-turn.failed {
@@ -1495,6 +1533,26 @@ export class SessionReplayPanel extends LitElement {
     const parsed = new Date(value);
     if (Number.isNaN(parsed.getTime())) return value;
     return parsed.toLocaleTimeString();
+  }
+
+  // Relative "5m ago" labels for chat turn headers: the elapsed time is what
+  // matters when scanning a session, and the precise timestamp stays one hover
+  // away (title attribute). The component does not re-render on a timer, so
+  // the label reflects render time — acceptable for a replay/history view.
+  private formatRelativeTime(value: string | null | undefined): string {
+    if (!value) return 'Unknown time';
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return value;
+    const elapsedMs = Date.now() - parsed.getTime();
+    if (elapsedMs < 60_000) return 'just now';
+    const minutes = Math.floor(elapsedMs / 60_000);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    if (days < 7) return `${days}d ago`;
+    // Beyond a week, "42d ago" is harder to place than a plain clock time.
+    return this.formatTime(value);
   }
 
   private formatDateTime(value: string | null | undefined): string {
@@ -4398,6 +4456,82 @@ export class SessionReplayPanel extends LitElement {
     return topTurn.id;
   }
 
+  // Scroll a turn into view and flash it. Direct DOM class manipulation (not
+  // reactive state) because the highlight is transient eye-candy — routing it
+  // through Lit state would force a full re-render just to fade an outline.
+  private jumpToTurn(eventId: string): void {
+    const turn = this.shadowRoot?.querySelector(
+      `.chat-turn[data-event-id="${eventId}"]`
+    ) as HTMLElement | null;
+    if (!turn) return;
+    const reduceMotion = window.matchMedia(
+      '(prefers-reduced-motion: reduce)'
+    ).matches;
+    turn.scrollIntoView({
+      behavior: reduceMotion ? 'auto' : 'smooth',
+      block: 'center',
+    });
+    turn.classList.add('jump-highlight');
+    window.setTimeout(() => turn.classList.remove('jump-highlight'), 1600);
+  }
+
+  // First failed request turn in the order the user currently sees, so the
+  // jump lands on the failure nearest the top of the visible thread.
+  private getFirstFailedVisibleEventId(): string | null {
+    const failed = this.getVisibleChatTurns().find(
+      (turn) => turn.failed && turn.event
+    );
+    return failed?.event?.id ?? null;
+  }
+
+  // Vim-style keyboard navigation over the chat thread, delegated from the
+  // .chat-thread container so per-turn listeners are unnecessary. Only fires
+  // when focus is already inside the thread — page-level keys stay untouched.
+  private handleChatThreadKeydown(event: KeyboardEvent): void {
+    // Never steal keystrokes from interactive controls inside turns
+    // (expand buttons, selects, threshold inputs, etc.).
+    const origin = event.composedPath()[0] as HTMLElement | undefined;
+    const originTag = origin?.tagName?.toLowerCase() || '';
+    if (
+      ['input', 'select', 'textarea', 'button', 'sl-button'].includes(originTag)
+    ) {
+      return;
+    }
+    const active = this.shadowRoot?.activeElement as HTMLElement | null;
+    const focusedTurn = active?.closest('.chat-turn') as HTMLElement | null;
+    if (!focusedTurn) return;
+    const turns = Array.from(
+      this.shadowRoot?.querySelectorAll('.chat-turn') || []
+    ) as HTMLElement[];
+    const index = turns.indexOf(focusedTurn);
+    if (index === -1) return;
+    switch (event.key) {
+      case 'j':
+      case 'ArrowDown':
+        turns[Math.min(index + 1, turns.length - 1)]?.focus();
+        break;
+      case 'k':
+      case 'ArrowUp':
+        turns[Math.max(index - 1, 0)]?.focus();
+        break;
+      case 'Home':
+        turns[0]?.focus();
+        break;
+      case 'End':
+        turns[turns.length - 1]?.focus();
+        break;
+      case 'Enter':
+      case 'o': {
+        const eventId = focusedTurn.dataset.eventId;
+        if (eventId) this.toggleTurnExpanded(eventId);
+        break;
+      }
+      default:
+        return;
+    }
+    event.preventDefault();
+  }
+
   private toggleTurnExpanded(eventId: string): void {
     const next = new Set(this.expandedTurnEventIds);
     if (next.has(eventId)) {
@@ -4507,7 +4641,11 @@ export class SessionReplayPanel extends LitElement {
                 </span>`
               : nothing
           }
-          <span class="chat-turn-time">${this.formatTime(turn.timestamp)}</span>
+          <span
+            class="chat-turn-time"
+            title=${this.formatDateTime(turn.timestamp)}
+            >${this.formatRelativeTime(turn.timestamp)}</span
+          >
         </div>
         <div class="chat-turn-badges">
           ${
@@ -4735,6 +4873,7 @@ export class SessionReplayPanel extends LitElement {
           isMostExpensive ? 'most-expensive' : ''
         } ${needsSummary ? 'summary-candidate' : ''}"
         data-event-id=${event ? event.id : nothing}
+        tabindex="0"
       >
         ${this.renderChatTurnHeader(turn, isMostExpensive)}
         ${
@@ -4815,18 +4954,38 @@ export class SessionReplayPanel extends LitElement {
   private renderChatSummaryBar() {
     const summary = this.getChatSummary();
     if (!summary.requestCount) return nothing;
+    // Stats double as navigation when there is a turn worth jumping to: Cost
+    // links to the most-expensive turn, Outcome to the first visible failure.
+    // Buttons (not spans with click handlers) keep them keyboard accessible.
+    const mostExpensiveTurnId = this.getMostExpensiveTurnId();
+    const firstFailedEventId = summary.failedCount
+      ? this.getFirstFailedVisibleEventId()
+      : null;
     return html`
       <div
         class="chat-summary-bar"
         role="group"
         aria-label="Session cost summary"
       >
-        <span class="chat-summary-item">
-          <span class="chat-summary-label">Cost</span>
-          <span class="chat-summary-value"
-            >${formatCost(summary.totalCost)}</span
-          >
-        </span>
+        ${
+          mostExpensiveTurnId
+            ? html`<button
+                class="chat-summary-item chat-summary-link"
+                title="Jump to most expensive turn"
+                @click=${() => this.jumpToTurn(mostExpensiveTurnId)}
+              >
+                <span class="chat-summary-label">Cost</span>
+                <span class="chat-summary-value"
+                  >${formatCost(summary.totalCost)}</span
+                >
+              </button>`
+            : html`<span class="chat-summary-item">
+                <span class="chat-summary-label">Cost</span>
+                <span class="chat-summary-value"
+                  >${formatCost(summary.totalCost)}</span
+                >
+              </span>`
+        }
         <span class="chat-summary-item">
           <span class="chat-summary-label">Tokens</span>
           <span class="chat-summary-value"
@@ -4860,16 +5019,30 @@ export class SessionReplayPanel extends LitElement {
             >${formatNumber(summary.requestCount)}</span
           >
         </span>
-        <span class="chat-summary-item">
-          <span class="chat-summary-label">Outcome</span>
-          <span
-            class="chat-summary-value ${
-              summary.failedCount ? 'has-failures' : ''
-            }"
-            >${formatNumber(summary.okCount)} ok /
-            ${formatNumber(summary.failedCount)} failed</span
-          >
-        </span>
+        ${
+          firstFailedEventId
+            ? html`<button
+                class="chat-summary-item chat-summary-link"
+                title="Jump to first failed turn"
+                @click=${() => this.jumpToTurn(firstFailedEventId)}
+              >
+                <span class="chat-summary-label">Outcome</span>
+                <span class="chat-summary-value has-failures"
+                  >${formatNumber(summary.okCount)} ok /
+                  ${formatNumber(summary.failedCount)} failed</span
+                >
+              </button>`
+            : html`<span class="chat-summary-item">
+                <span class="chat-summary-label">Outcome</span>
+                <span
+                  class="chat-summary-value ${
+                    summary.failedCount ? 'has-failures' : ''
+                  }"
+                  >${formatNumber(summary.okCount)} ok /
+                  ${formatNumber(summary.failedCount)} failed</span
+                >
+              </span>`
+        }
       </div>
     `;
   }
@@ -4998,7 +5171,10 @@ export class SessionReplayPanel extends LitElement {
         ${
           turns.length
             ? html`
-                <div class="chat-thread">
+                <div
+                  class="chat-thread"
+                  @keydown=${this.handleChatThreadKeydown}
+                >
                   ${repeat(
                     turns,
                     (turn) => turn.id,

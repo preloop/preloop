@@ -803,4 +803,173 @@ describe('SessionReplayPanel', () => {
       element.shadowRoot?.querySelectorAll('.chat-turn.most-expensive').length
     ).to.equal(0);
   });
+
+  // --- UX: relative timestamps with absolute on hover -----------------------
+
+  it('shows a relative turn timestamp with the absolute time on hover', async () => {
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const events: FlowGatewayEvent[] = [
+      previewEvent('e1', fiveMinutesAgo, [
+        { role: 'user', text: 'RECENT_TURN' },
+      ]),
+    ];
+    const element = await fixture<SessionReplayPanel>(html`
+      <session-replay-panel
+        replayMode="chat"
+        .session=${SESSION}
+        .events=${events}
+      ></session-replay-panel>
+    `);
+    const time = element.shadowRoot?.querySelector(
+      '.chat-turn-time'
+    ) as HTMLElement;
+    expect(time, 'turn time present').to.exist;
+    expect(time.textContent || '').to.match(/5m ago/);
+    // The precise timestamp stays one hover away.
+    expect(time.getAttribute('title') || '').to.not.equal('');
+  });
+
+  // --- UX: clickable summary-bar stats jump to turns -------------------------
+
+  it('jumps to the most-expensive turn from the Cost summary stat', async () => {
+    // jsdom-less browsers in the test runner may lack scrollIntoView on some
+    // elements; stub it so the click handler can run end to end.
+    const originalScrollIntoView = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = () => {};
+    try {
+      const events: FlowGatewayEvent[] = [
+        previewEvent(
+          'e1',
+          '2026-06-07T12:00:00Z',
+          [{ role: 'user', text: 'CHEAP_TURN' }],
+          { estimated_cost: 0.01 }
+        ),
+        previewEvent(
+          'e2',
+          '2026-06-07T12:01:00Z',
+          [{ role: 'user', text: 'PRICEY_TURN' }],
+          { estimated_cost: 2.5 }
+        ),
+      ];
+      const element = await fixture<SessionReplayPanel>(html`
+        <session-replay-panel
+          replayMode="chat"
+          .session=${SESSION}
+          .events=${events}
+        ></session-replay-panel>
+      `);
+      const costLink = Array.from(
+        element.shadowRoot?.querySelectorAll('button.chat-summary-link') || []
+      ).find((button) =>
+        (button.textContent || '').includes('Cost')
+      ) as HTMLElement;
+      expect(costLink, 'clickable Cost stat present').to.exist;
+      costLink.click();
+      await element.updateComplete;
+      const highlighted = element.shadowRoot?.querySelector(
+        '.chat-turn.jump-highlight'
+      );
+      expect(highlighted, 'a turn is highlighted').to.exist;
+      expect(highlighted?.getAttribute('data-event-id')).to.equal('e2');
+    } finally {
+      Element.prototype.scrollIntoView = originalScrollIntoView;
+    }
+  });
+
+  it('jumps to the first failed turn from the Outcome summary stat', async () => {
+    const originalScrollIntoView = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = () => {};
+    try {
+      const events: FlowGatewayEvent[] = [
+        previewEvent('e1', '2026-06-07T12:00:00Z', [
+          { role: 'user', text: 'OK_TURN' },
+        ]),
+        previewEvent(
+          'e2',
+          '2026-06-07T12:01:00Z',
+          [{ role: 'user', text: 'FAILED_TURN' }],
+          { outcome: 'error', status_code: 500 }
+        ),
+      ];
+      const element = await fixture<SessionReplayPanel>(html`
+        <session-replay-panel
+          replayMode="chat"
+          .session=${SESSION}
+          .events=${events}
+        ></session-replay-panel>
+      `);
+      const outcomeLink = Array.from(
+        element.shadowRoot?.querySelectorAll('button.chat-summary-link') || []
+      ).find((button) =>
+        (button.textContent || '').includes('Outcome')
+      ) as HTMLElement;
+      expect(outcomeLink, 'clickable Outcome stat present').to.exist;
+      outcomeLink.click();
+      await element.updateComplete;
+      const highlighted = element.shadowRoot?.querySelector(
+        '.chat-turn.jump-highlight'
+      );
+      expect(highlighted, 'a turn is highlighted').to.exist;
+      expect(highlighted?.getAttribute('data-event-id')).to.equal('e2');
+      expect(highlighted?.textContent || '').to.contain('FAILED_TURN');
+    } finally {
+      Element.prototype.scrollIntoView = originalScrollIntoView;
+    }
+  });
+
+  // --- UX: keyboard navigation over the chat thread --------------------------
+
+  it('navigates turns with j/k and expands with Enter', async () => {
+    const events: FlowGatewayEvent[] = [
+      previewEvent('e1', '2026-06-07T12:00:00Z', [
+        { role: 'user', text: 'FIRST_TURN' },
+      ]),
+      previewEvent('e2', '2026-06-07T12:01:00Z', [
+        { role: 'user', text: 'SECOND_TURN' },
+      ]),
+    ];
+    let requestedEventId: string | null = null;
+    const element = await fixture<SessionReplayPanel>(html`
+      <session-replay-panel
+        replayMode="chat"
+        .session=${SESSION}
+        .events=${events}
+        @session-event-detail-requested=${(event: CustomEvent) => {
+          requestedEventId = event.detail.eventId;
+        }}
+      ></session-replay-panel>
+    `);
+    const turns = Array.from(
+      element.shadowRoot?.querySelectorAll('.chat-turn') || []
+    ) as HTMLElement[];
+    expect(turns.length).to.equal(2);
+    turns[0].focus();
+    expect(element.shadowRoot?.activeElement).to.equal(turns[0]);
+
+    // j moves focus to the next turn in DOM order.
+    turns[0].dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'j', bubbles: true, composed: true })
+    );
+    await element.updateComplete;
+    expect(element.shadowRoot?.activeElement).to.equal(turns[1]);
+
+    // Enter toggles full-context expansion of the focused turn, which lazily
+    // requests the event detail (same contract as clicking the expand button).
+    turns[1].dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Enter',
+        bubbles: true,
+        composed: true,
+      })
+    );
+    await element.updateComplete;
+    expect(requestedEventId).to.equal(turns[1].getAttribute('data-event-id'));
+
+    // k moves focus back to the previous turn.
+    turns[1].dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'k', bubbles: true, composed: true })
+    );
+    await element.updateComplete;
+    expect(element.shadowRoot?.activeElement).to.equal(turns[0]);
+  });
 });

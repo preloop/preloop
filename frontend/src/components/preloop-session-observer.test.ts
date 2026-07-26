@@ -759,4 +759,84 @@ describe('PreloopSessionObserver', () => {
       expect(text).to.contain('optimize-hint-enter');
     });
   });
+
+  describe('URL-synced replay mode', () => {
+    const restoreUrl = () =>
+      window.history.replaceState({}, '', window.location.pathname);
+
+    afterEach(restoreUrl);
+
+    it('initializes replay mode from the URL when syncModeToUrl is set', async () => {
+      window.history.replaceState(
+        {},
+        '',
+        `${window.location.pathname}?replay=replay`
+      );
+      const el = (await fixture(
+        html`<preloop-session-observer
+          .sessions=${[session]}
+          .syncModeToUrl=${true}
+        ></preloop-session-observer>`
+      )) as PreloopSessionObserver;
+
+      await waitUntil(
+        () => deepText(el.shadowRoot).includes('Build a widget'),
+        '',
+        { timeout: 3000 }
+      );
+      expect((el as any).replayMode).to.equal('replay');
+    });
+
+    it('writes the replay mode to the URL on change', async () => {
+      const el = (await fixture(
+        html`<preloop-session-observer
+          .sessions=${[session]}
+          .syncModeToUrl=${true}
+        ></preloop-session-observer>`
+      )) as PreloopSessionObserver;
+
+      await waitUntil(
+        () => deepText(el.shadowRoot).includes('Build a widget'),
+        '',
+        { timeout: 3000 }
+      );
+      const findTab = (label: string) =>
+        Array.from(el.shadowRoot?.querySelectorAll('sl-button') || []).find(
+          (button) => button.textContent?.trim() === label
+        );
+
+      findTab('Replay')!.click();
+      await el.updateComplete;
+      expect(
+        new URLSearchParams(window.location.search).get('replay')
+      ).to.equal('replay');
+
+      // Returning to the default mode clears the param to keep URLs clean.
+      findTab('Transcript')!.click();
+      await el.updateComplete;
+      expect(new URLSearchParams(window.location.search).get('replay')).to.be
+        .null;
+    });
+
+    it('ignores an invalid replay param', async () => {
+      window.history.replaceState(
+        {},
+        '',
+        `${window.location.pathname}?replay=bogus`
+      );
+      const el = (await fixture(
+        html`<preloop-session-observer
+          .sessions=${[session]}
+          .syncModeToUrl=${true}
+        ></preloop-session-observer>`
+      )) as PreloopSessionObserver;
+
+      await waitUntil(
+        () => deepText(el.shadowRoot).includes('Build a widget'),
+        '',
+        { timeout: 3000 }
+      );
+      expect((el as any).replayMode).to.equal('timeline');
+    });
+  });
 });
