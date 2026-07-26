@@ -1,0 +1,10 @@
+{
+  "sessionId": "b1946ac9-2f65-4a3e-a5d1-000000000000",
+  "projectHash": "deadbeef",
+  "startTime": "2026-07-19T12:00:00.000Z",
+  "lastUpdated": "2026-07-19T12:05:00.000Z",
+  "messages": [
+    {"id": "m1", "type": "user", "content": "hello", "timestamp": "2026-07-19T12:00:01.000Z"},
+    {"id": "m2", "type": "gemini", "content": "hi", "model": "gemini-3-pro-preview", "timestamp": "2026-07-19T12:00:04.000Z"}
+  ]
+}

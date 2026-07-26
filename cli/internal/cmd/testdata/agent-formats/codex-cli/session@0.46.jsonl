@@ -1,0 +1,2 @@
+{"timestamp":"2026-07-15T23:20:01.000Z","type":"session_meta","payload":{"id":"019f67a6-a28e-7793-a199-fc940500e78f","cwd":"/tmp/w","collaboration_mode":{"mode":"default","settings":{"model":"gpt-5.6-sol","reasoning_effort":"high","developer_instructions":null}}}}
+{"timestamp":"2026-07-15T23:20:02.000Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}
