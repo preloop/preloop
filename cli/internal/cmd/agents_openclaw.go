@@ -501,6 +501,30 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 
 	syncAgent := prepareAgentForRemoteServerSync(agent, baseURL)
 
+	// Resolve upstream ambiguity interactively before building the plan
+	// preview: when the agent's local state offers several credentialed
+	// providers and no way to pick one (e.g. OpenCode with multiple auth
+	// profiles and no configured or recently-used model), silently degrading
+	// to MCP-only hides the choice from the operator. Non-interactive runs
+	// (--yes / --dry-run / PRELOOP_CONFIRM) keep the degrade behavior; the
+	// preview note explains how to resolve it.
+	gatewayHints := managedGatewayResolutionHints{}
+	if supportsManagedGateway(agent) &&
+		!opts.DryRun &&
+		!opts.AutoApprove &&
+		!opts.SkipConfirmation &&
+		!nonInteractiveAutoConfirm() {
+		selectedProvider, promptErr := maybePromptForAmbiguousGatewayProvider(
+			agent,
+			bufio.NewReader(input),
+			output,
+		)
+		if promptErr != nil {
+			return promptErr
+		}
+		gatewayHints.PreferredProviderID = selectedProvider
+	}
+
 	plan, err := buildManagedMCPEnrollmentPlan(
 		agent,
 		baseURL,
@@ -513,7 +537,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		plan.Notes = append(plan.Notes, staleOpenClawPluginEntriesNote(staleEntries))
 	}
 	if supportsManagedGateway(agent) {
-		upstream, upstreamErr := resolveManagedGatewayUpstream(agent)
+		upstream, upstreamErr := resolveManagedGatewayUpstreamWithHints(agent, gatewayHints)
 		if upstreamErr != nil {
 			return upstreamErr
 		}
@@ -682,7 +706,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		return err
 	}
 	if supportsManagedGateway(agent) {
-		upstream, upstreamErr := resolveManagedGatewayUpstream(agent)
+		upstream, upstreamErr := resolveManagedGatewayUpstreamWithHints(agent, gatewayHints)
 		if upstreamErr != nil {
 			return upstreamErr
 		}
@@ -1609,10 +1633,26 @@ func shouldPreferCurrentConfigForGatewayResolution(agent AgentConfig, current ma
 	return !strings.EqualFold(providerID, "preloop") && !looksManagedGatewayModelRef(modelRef)
 }
 
+// managedGatewayResolutionHints carries operator-supplied disambiguation for
+// upstream resolution. Today the only hint is a preferred provider ID for
+// agents whose local state is ambiguous (e.g. OpenCode with several auth
+// profiles and no configured or recently-used model); resolvers ignore hints
+// they do not need.
+type managedGatewayResolutionHints struct {
+	PreferredProviderID string
+}
+
 func resolveManagedGatewayUpstream(agent AgentConfig) (*managedGatewayUpstream, error) {
+	return resolveManagedGatewayUpstreamWithHints(agent, managedGatewayResolutionHints{})
+}
+
+func resolveManagedGatewayUpstreamWithHints(
+	agent AgentConfig,
+	hints managedGatewayResolutionHints,
+) (*managedGatewayUpstream, error) {
 	switch strings.ToLower(strings.TrimSpace(agent.Name)) {
 	case "opencode":
-		return parseOpenCodeManagedGatewayUpstream(agent)
+		return parseOpenCodeManagedGatewayUpstreamWithHints(agent, hints)
 	case "gemini cli":
 		return parseGeminiManagedGatewayUpstream(agent)
 	case "claude code":
@@ -1656,7 +1696,120 @@ type openCodeAuthProfile struct {
 	Key  string `json:"key"`
 }
 
+// detectAmbiguousGatewayProviders returns the candidate provider IDs when the
+// agent's upstream resolution would fail purely because several credentialed
+// providers exist and nothing (configured model, recent-session model) picks
+// between them. It returns nil when resolution is not ambiguous — either it
+// succeeds on its own or it fails for a different reason (no credentials at
+// all, unparseable config, ...), where a provider prompt would not help.
+//
+// Today only OpenCode exhibits this shape (multiple auth.json profiles); other
+// agents either have a single credential source or encode the provider choice
+// in their config.
+func detectAmbiguousGatewayProviders(agent AgentConfig) []string {
+	if !strings.EqualFold(strings.TrimSpace(agent.Name), "OpenCode") {
+		return nil
+	}
+	upstream, err := parseOpenCodeManagedGatewayUpstream(agent)
+	if err != nil || upstream != nil {
+		// Resolution succeeds (or fails hard) without a hint; nothing to ask.
+		return nil
+	}
+	document, err := readAgentConfigForGatewayResolution(agent)
+	if err != nil {
+		return nil
+	}
+	if modelRef := strings.TrimSpace(lookupString(document, "model")); modelRef != "" &&
+		!strings.HasPrefix(strings.ToLower(modelRef), "preloop/") {
+		// A configured model exists, so the failure is not about provider
+		// choice.
+		return nil
+	}
+	authProfiles, err := loadOpenCodeAuthProfiles()
+	if err != nil || len(authProfiles) < 2 {
+		return nil
+	}
+	candidates := make([]string, 0, len(authProfiles))
+	for providerID, profile := range authProfiles {
+		if strings.TrimSpace(profile.Key) == "" {
+			continue
+		}
+		// Only offer providers we can actually resolve to a gateway model:
+		// either the config declares models for it or we ship a default.
+		providers, _ := asObjectMap(document["provider"])
+		if singleOpenCodeProviderModel(providers, providerID) == "" &&
+			openCodeDefaultModelByProvider[strings.ToLower(providerID)] == "" {
+			continue
+		}
+		candidates = append(candidates, providerID)
+	}
+	if len(candidates) < 2 {
+		return nil
+	}
+	sort.Strings(candidates)
+	return candidates
+}
+
+// maybePromptForAmbiguousGatewayProvider asks the operator to pick an upstream
+// provider when detectAmbiguousGatewayProviders reports a genuine tie. Returns
+// the selected provider ID, or "" when there is nothing to ask or the operator
+// declines (blank answer), in which case enrollment proceeds with the existing
+// degrade-to-MCP-only behavior.
+func maybePromptForAmbiguousGatewayProvider(
+	agent AgentConfig,
+	reader *bufio.Reader,
+	writer io.Writer,
+) (string, error) {
+	candidates := detectAmbiguousGatewayProviders(agent)
+	if len(candidates) == 0 {
+		return "", nil
+	}
+	fmt.Fprintf(
+		writer,
+		"%s has credentials for multiple model providers and no configured model:\n",
+		resolveAgentDisplayName(agent),
+	) //nolint:errcheck
+	for index, providerID := range candidates {
+		fmt.Fprintf(writer, "  %d) %s\n", index+1, providerID) //nolint:errcheck
+	}
+	answer, err := promptForTextInput(
+		reader,
+		writer,
+		fmt.Sprintf(
+			"Route model traffic through Preloop using which provider? [1-%d, blank to keep model traffic direct]: ",
+			len(candidates),
+		),
+	)
+	if err != nil {
+		return "", fmt.Errorf("failed to read provider selection: %w", err)
+	}
+	answer = strings.TrimSpace(answer)
+	if answer == "" {
+		return "", nil
+	}
+	if index, convErr := strconv.Atoi(answer); convErr == nil {
+		if index >= 1 && index <= len(candidates) {
+			return candidates[index-1], nil
+		}
+		return "", nil
+	}
+	// Accept the provider name itself as an answer too.
+	for _, providerID := range candidates {
+		if strings.EqualFold(providerID, answer) {
+			return providerID, nil
+		}
+	}
+	return "", nil
+}
+
 func parseOpenCodeManagedGatewayUpstream(agent AgentConfig) (*managedGatewayUpstream, error) {
+	return parseOpenCodeManagedGatewayUpstreamWithHints(agent, managedGatewayResolutionHints{})
+}
+
+func parseOpenCodeManagedGatewayUpstreamWithHints(
+	agent AgentConfig,
+	hints managedGatewayResolutionHints,
+) (*managedGatewayUpstream, error) {
 	document, err := readAgentConfigForGatewayResolution(agent)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse OpenCode config: %w", err)
@@ -1692,6 +1845,17 @@ func parseOpenCodeManagedGatewayUpstream(agent AgentConfig) (*managedGatewayUpst
 	}
 	if providerID == "" {
 		providerID = singleOpenCodeAuthProvider(authProfiles)
+	}
+	if providerID == "" {
+		if preferred := strings.ToLower(strings.TrimSpace(hints.PreferredProviderID)); preferred != "" {
+			if _, ok := authProfiles[preferred]; ok {
+				providerID = preferred
+				notes = append(
+					notes,
+					fmt.Sprintf("Using operator-selected OpenCode provider %s.", providerID),
+				)
+			}
+		}
 	}
 	if modelID == "" {
 		modelID = singleOpenCodeProviderModel(providers, providerID)
