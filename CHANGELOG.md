@@ -9,17 +9,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Session History navigation and readability.** The session transcript
-  gained keyboard navigation (`j`/`k` or arrow keys move between turns,
-  `Home`/`End` jump to the ends, `Enter`/`o` expands the focused turn's full
-  request context), clickable summary-bar stats (Cost jumps to the most
-  expensive turn, Outcome to the first failed one), relative turn timestamps
-  ("5m ago") with the absolute time on hover, and a deep-linkable replay mode
-  (`?replay=` on the runtime sessions page, alongside the existing
-  `?sessionId=`). The session list's auto-collapse into a compact picker bar
-  now animates — the sidebar visibly slides shut and the picker fades in — so
-  the hand-off is legible to new users; all motion respects
+- **Account-wide governance defaults for native tool approvals.** New
+  `GET/PUT /api/v1/account/governance-defaults` endpoints store account-level
+  defaults that every managed agent inherits, with per-agent
+  inherit/override controls in the Console (Tools view account panel and the
+  agent detail view). Resolution is fail-closed: explicit per-agent value →
+  account default → enforce.
+
+- **Claude Code model-family fidelity.** Onboarding imports one gateway
+  model per selectable Claude family (opus/fable/sonnet/haiku) sharing a
+  single credential secret, so `/model` switching, background fast-path
+  requests, and subagents keep native UX while routing through Preloop. The
+  gateway lazily auto-registers unknown `claude-*` identifiers requested
+  over a subscription-OAuth credential (e.g. new dated snapshots after a
+  Claude Code update) against the same credential
+  (`MODEL_GATEWAY_CLAUDE_FAMILY_AUTOREGISTER_ENABLED`, default on). Fable is
+  now a first-class family, and Fable-defaulted Max accounts (including
+  `[1m]` context-window variants) route correctly.
+
+- **Session History redesign.** The transcript now defaults to newest-first
+  (messages within each turn follow the turn sort), partially cached
+  requests collapse their re-sent prompt-cached prefix behind a labeled
+  strip, and the session list hands its column to the transcript once a
+  session is selected — collapsing into a compact picker bar with an
+  animated hand-off. Plus: keyboard navigation (`j`/`k`/arrows, `Home`/`End`,
+  `Enter`/`o` to expand), clickable summary-bar stats (Cost jumps to the most
+  expensive turn, Outcome to the first failure), relative turn timestamps
+  with the absolute time on hover, and a deep-linkable replay mode
+  (`?replay=` alongside `?sessionId=`). All motion respects
   `prefers-reduced-motion`.
+
+- **Onboarding UX hardening (CLI).** Batch onboarding runs verified-model
+  agents first, uninstalled runtimes left behind as config-only are
+  detected and skipped, interactive onboarding asks for the agent name
+  exactly once, failures point at the troubleshooting docs, and OpenClaw's
+  plugin trust gate is satisfied with guidance for unboarded installs.
+  Claude Desktop onboarding writes a stdio `mcp-remote` bridge, and
+  non-Anthropic managed models map all Claude Code model selectors so
+  background/fast-path requests resolve too.
+
+- **User hard-delete.** User/account hard-delete CRUD that preserves
+  audit/usage history; Claude Code custom API key fingerprints are
+  pre-approved on onboard. Permanent delete stays out of the OSS console
+  (site-admin/billing paths own Stripe cleanup when the billing plugin is
+  present).
+
+### Changed
+
+- **Native `Write`/`Edit` mirroring for Claude Code asks by default.** The
+  permission hook now mirrors stock Claude Code — which prompts for
+  workspace edits in default permission mode — instead of silently
+  auto-allowing them. Approval-timeout denials now carry a `timed_out`
+  marker so hook adapters with a native "ask" verdict hand the prompt back
+  to the agent's local UI instead of hard-denying.
+
+### Fixed
+
+- **Windows: slash-rooted paths in the workspace-edit check.**
+  `filepath.IsAbs("/etc/passwd")` is false on Windows, which routed
+  slash-rooted paths down the workspace-local branch and auto-allowed them
+  on Windows only. Slash- and backslash-prefixed paths are now treated as
+  rooted on every host OS.
+
+- **Claude family auto-registration is savepoint-scoped.** A registration
+  failure now rolls back only its own writes instead of discarding
+  unrelated pending state from the request pipeline.
 
 ## [0.12.8] - 2026-07-19
 
