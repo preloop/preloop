@@ -3941,6 +3941,57 @@ func recoverManagedGatewayAfterLiveValidationFailure(
 	if isGeminiCLIAgent(agent) {
 		return restoreGeminiGatewaySelectionFromOriginal(agent, originalBytes, writer)
 	}
+	if isOpenCodeAgent(agent) {
+		return restoreOpenCodeGatewaySelectionFromOriginal(agent, originalBytes, writer)
+	}
+	return nil
+}
+
+// restoreOpenCodeGatewaySelectionFromOriginal reverts the managed model
+// gateway pieces of an OpenCode config (the injected "preloop" provider and
+// the "preloop/<alias>" model pin) back to the pre-onboarding selection when
+// live validation fails. The managed MCP server entry is intentionally left
+// in place: MCP onboarding is validated separately and a model-side auth
+// failure says nothing about it.
+func restoreOpenCodeGatewaySelectionFromOriginal(
+	agent AgentConfig,
+	originalBytes []byte,
+	writer io.Writer,
+) error {
+	if !isOpenCodeAgent(agent) {
+		return nil
+	}
+	current, err := loadAgentConfigDocument(agent)
+	if err != nil {
+		return err
+	}
+	original := map[string]interface{}{}
+	if len(bytes.TrimSpace(originalBytes)) > 0 {
+		if err := json.Unmarshal(originalBytes, &original); err != nil {
+			return fmt.Errorf("failed to parse original OpenCode config: %w", err)
+		}
+	}
+	if providers, ok := asObjectMap(current["provider"]); ok {
+		delete(providers, "preloop")
+		if len(providers) == 0 {
+			delete(current, "provider")
+		}
+	}
+	originalModel := strings.TrimSpace(lookupString(original, "model"))
+	if originalModel != "" && !strings.HasPrefix(strings.ToLower(originalModel), "preloop/") {
+		current["model"] = originalModel
+	} else {
+		delete(current, "model")
+	}
+	if err := writeAgentConfigDocument(agent, current); err != nil {
+		return err
+	}
+	if writer != nil {
+		fmt.Fprintf(
+			writer,
+			"  Note: Restored OpenCode's local model provider because Preloop gateway live validation failed. MCP remains onboarded; sign in with a working provider credential (opencode auth login) and rerun onboarding to enable model gateway routing.\n",
+		) //nolint:errcheck
+	}
 	return nil
 }
 
@@ -4066,6 +4117,10 @@ func isCodexCLIAgent(agent AgentConfig) bool {
 
 func isGeminiCLIAgent(agent AgentConfig) bool {
 	return strings.EqualFold(strings.TrimSpace(agent.Name), "Gemini CLI")
+}
+
+func isOpenCodeAgent(agent AgentConfig) bool {
+	return strings.EqualFold(strings.TrimSpace(agent.Name), "OpenCode")
 }
 
 // claudeFamilyEnvKeyVariants lists every env key Claude Code derives from one

@@ -61,9 +61,9 @@ type ApprovalRequest struct {
 	ToolInput   string    `json:"tool_input,omitempty" yaml:"tool_input,omitempty"`
 	Status      string    `json:"status" yaml:"status"`
 	RequestedBy string    `json:"requested_by,omitempty" yaml:"requested_by,omitempty"`
-	RequestedAt time.Time `json:"requested_at" yaml:"requested_at"`
+	RequestedAt api.Time  `json:"requested_at" yaml:"requested_at"`
 	ResolvedBy  string    `json:"resolved_by,omitempty" yaml:"resolved_by,omitempty"`
-	ResolvedAt  time.Time `json:"resolved_at,omitempty" yaml:"resolved_at,omitempty"`
+	ResolvedAt  api.Time  `json:"resolved_at,omitempty" yaml:"resolved_at,omitempty"`
 	Reason      string    `json:"reason,omitempty" yaml:"reason,omitempty"`
 	SessionID   string    `json:"session_id,omitempty" yaml:"session_id,omitempty"`
 }
@@ -238,7 +238,7 @@ func runApprovalsPending(cmd *cobra.Command, args []string) error {
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "ID\tTOOL\tREQUESTED BY\tAGE\tINPUT") //nolint:errcheck
 		for _, r := range requests {
-			age := formatDuration(time.Since(r.RequestedAt))
+			age := formatDuration(time.Since(r.RequestedAt.Time))
 			input := r.ToolInput
 			if len(input) > 40 {
 				input = input[:37] + "..."
