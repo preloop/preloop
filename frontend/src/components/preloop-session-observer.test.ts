@@ -599,9 +599,14 @@ describe('PreloopSessionObserver', () => {
           composed: true,
         })
       );
-      await el.updateComplete;
-
-      // The sidebar column is gone; a compact picker bar replaces it.
+      // The collapse animates: the column shrinks shut first, then the DOM
+      // swaps to the picker bar. Wait for the swap rather than asserting
+      // synchronously.
+      await waitUntil(
+        () => el.shadowRoot?.querySelector('.session-picker-bar'),
+        'picker bar did not appear after collapse animation',
+        { timeout: 3000 }
+      );
       expect(el.shadowRoot?.querySelector('session-list-panel')).to.not.exist;
       const picker = el.shadowRoot?.querySelector('.session-picker-bar');
       expect(picker, 'picker bar present').to.exist;
@@ -634,7 +639,11 @@ describe('PreloopSessionObserver', () => {
           composed: true,
         })
       );
-      await el.updateComplete;
+      await waitUntil(
+        () => el.shadowRoot?.querySelector('.session-picker-bar'),
+        'picker bar did not appear after collapse animation',
+        { timeout: 3000 }
+      );
       const toggle = el.shadowRoot?.querySelector(
         'sl-icon-button[label="Show session list"]'
       ) as HTMLElement;
@@ -663,7 +672,12 @@ describe('PreloopSessionObserver', () => {
           composed: true,
         })
       );
-      await el.updateComplete;
+      await waitUntil(
+        () =>
+          el.shadowRoot?.querySelector('select[aria-label="Switch session"]'),
+        'picker select did not appear after collapse animation',
+        { timeout: 3000 }
+      );
       const pickerSelect = el.shadowRoot?.querySelector(
         'select[aria-label="Switch session"]'
       ) as HTMLSelectElement;
@@ -673,6 +687,60 @@ describe('PreloopSessionObserver', () => {
       expect((el as any).activeSessionId).to.equal('runtime-session-2');
       // Still collapsed: switching within the picker is inspect intent too.
       expect(el.shadowRoot?.querySelector('.session-picker-bar')).to.exist;
+    });
+
+    it('animates the collapse: column shrinks shut before the picker swap', async () => {
+      const el = (await fixture(
+        html`<preloop-session-observer
+          .sessions=${[session, secondSession]}
+        ></preloop-session-observer>`
+      )) as PreloopSessionObserver;
+      await waitUntil(
+        () => deepText(el.shadowRoot).includes('Build a widget'),
+        '',
+        { timeout: 3000 }
+      );
+      el.shadowRoot!.querySelector('session-list-panel')!.dispatchEvent(
+        new CustomEvent('session-selected', {
+          detail: { sessionId: 'runtime-session-2' },
+          bubbles: true,
+          composed: true,
+        })
+      );
+      await el.updateComplete;
+      // Mid-animation: the sidebar is still mounted but its grid column is
+      // transitioning shut (sidebar-anim-closed), teaching where the list
+      // goes. The picker bar must NOT appear until the column has closed.
+      const observer = el.shadowRoot?.querySelector('.observer');
+      expect(
+        observer?.classList.contains('sidebar-anim-closed'),
+        'collapse animates via sidebar-anim-closed'
+      ).to.equal(true);
+      expect(el.shadowRoot?.querySelector('session-list-panel')).to.exist;
+      expect(el.shadowRoot?.querySelector('.session-picker-bar')).to.not.exist;
+      // After the animation the DOM swaps to the picker bar.
+      await waitUntil(
+        () => el.shadowRoot?.querySelector('.session-picker-bar'),
+        'picker bar did not appear after collapse animation',
+        { timeout: 3000 }
+      );
+      expect(el.shadowRoot?.querySelector('session-list-panel')).to.not.exist;
+    });
+
+    it('ships the sidebar motion behind the reduced-motion guard', () => {
+      const styles = ((ctor: unknown) =>
+        (ctor as { styles: Array<{ cssText: string }> }).styles)(
+        customElements.get('preloop-session-observer')
+      );
+      const text = styles.map((style) => style.cssText).join('\n');
+      // The grid-column transition and picker fade-in exist only inside the
+      // no-preference media block, so reduced-motion users get instant swaps.
+      const noPreferenceBlock = text
+        .split('@media (prefers-reduced-motion: no-preference)')
+        .slice(1)
+        .join('\n');
+      expect(noPreferenceBlock).to.contain('grid-template-columns 250ms');
+      expect(noPreferenceBlock).to.contain('picker-bar-enter');
     });
   });
 
@@ -757,6 +825,91 @@ describe('PreloopSessionObserver', () => {
       expect(text).to.contain('@media (prefers-reduced-motion: reduce)');
       expect(text).to.contain('@media (prefers-reduced-motion: no-preference)');
       expect(text).to.contain('optimize-hint-enter');
+    });
+  });
+
+  describe('URL-synced replay mode', () => {
+    const restoreUrl = () =>
+      window.history.replaceState({}, '', window.location.pathname);
+
+    afterEach(restoreUrl);
+
+    it('initializes replay mode from the URL when syncModeToUrl is set', async () => {
+      window.history.replaceState(
+        {},
+        '',
+        `${window.location.pathname}?replay=replay`
+      );
+      const el = (await fixture(
+        html`<preloop-session-observer
+          .sessions=${[session]}
+          .syncModeToUrl=${true}
+        ></preloop-session-observer>`
+      )) as PreloopSessionObserver;
+
+      await waitUntil(
+        () => deepText(el.shadowRoot).includes('Build a widget'),
+        '',
+        { timeout: 3000 }
+      );
+      expect((el as any).replayMode).to.equal('replay');
+    });
+
+    it('writes the replay mode to the URL on change', async () => {
+      const el = (await fixture(
+        html`<preloop-session-observer
+          .sessions=${[session]}
+          .syncModeToUrl=${true}
+        ></preloop-session-observer>`
+      )) as PreloopSessionObserver;
+
+      await waitUntil(
+        () => deepText(el.shadowRoot).includes('Build a widget'),
+        '',
+        { timeout: 3000 }
+      );
+      const findTab = (label: string) =>
+        Array.from(el.shadowRoot?.querySelectorAll('sl-button') || []).find(
+          (button) => button.textContent?.trim() === label
+        );
+
+      findTab('Replay')!.click();
+      await el.updateComplete;
+      expect(
+        new URLSearchParams(window.location.search).get('replay')
+      ).to.equal('replay');
+
+      // Returning to the default mode clears the param to keep URLs clean.
+      findTab('Transcript')!.click();
+      await el.updateComplete;
+      expect(new URLSearchParams(window.location.search).get('replay')).to.be
+        .null;
+    });
+
+    it('ignores an invalid replay param', async () => {
+      window.history.replaceState(
+        {},
+        '',
+        `${window.location.pathname}?replay=bogus`
+      );
+      const el = (await fixture(
+        html`<preloop-session-observer
+          .sessions=${[session]}
+          .syncModeToUrl=${true}
+        ></preloop-session-observer>`
+      )) as PreloopSessionObserver;
+
+      await waitUntil(
+        () => deepText(el.shadowRoot).includes('Build a widget'),
+        '',
+        { timeout: 3000 }
+      );
+      expect((el as any).replayMode).to.equal('timeline');
+      // The stale param is scrubbed on init so the URL never advertises a
+      // mode that is not actually active.
+      expect(
+        new URLSearchParams(window.location.search).get('replay')
+      ).to.equal(null);
     });
   });
 });

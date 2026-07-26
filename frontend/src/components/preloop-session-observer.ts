@@ -67,6 +67,12 @@ type EventPageState = {
 const EVENT_PAGE_SIZE = 25;
 const REPLAY_METADATA_LIMIT = 5000;
 
+// Sidebar collapse/expand animation duration. Must match the CSS transition
+// below: the collapse completion (DOM swap to the picker bar) is driven by a
+// timeout of this length rather than transitionend, which is unreliable when
+// the tab is backgrounded or the transition is interrupted.
+const SIDEBAR_ANIMATION_MS = 250;
+
 // First-use hint for the Optimize tab: rendered once per user (same
 // localStorage mechanism as dashboard_welcome_dismissed) until the drawer is
 // opened or the hint is dismissed.
@@ -159,6 +165,12 @@ export class PreloopSessionObserver extends LitElement {
   @property({ type: String })
   selectedSessionId: string | null = null;
 
+  // Deep-linkable replay mode: when the host view owns the URL (e.g. the
+  // runtime sessions page), it opts in and the observer mirrors the active
+  // mode into the "replay" query param so links land on the right tab.
+  @property({ type: Boolean })
+  syncModeToUrl = false;
+
   /** Optional override for the sidebar's no-sessions message. */
   @property({ type: String })
   emptyText = '';
@@ -176,6 +188,12 @@ export class PreloopSessionObserver extends LitElement {
   // list open until the next selection.
   @state()
   private sidebarCollapsed = false;
+
+  // Transitional state while the sidebar column animates shut or open. An
+  // instant swap read as "magical" — the list just vanished — so the column
+  // visibly shrinks/grows to teach where it went. null when at rest.
+  @state()
+  private sidebarAnimating: 'collapsing' | 'expanding' | null = null;
 
   @state()
   private loadedEvents: Record<string, FlowGatewayEvent[]> = {};
@@ -331,6 +349,51 @@ export class PreloopSessionObserver extends LitElement {
          compact picker bar replaces the sidebar. */
       .observer.sidebar-collapsed {
         grid-template-columns: minmax(0, 1fr);
+      }
+
+      /* Animated hand-off between list and picker bar: the sidebar column
+         visibly shrinks shut (or grows open) before the DOM swap, so the
+         list's disappearance reads as "it slid away" rather than a sudden
+         vanish new users cannot place. Both endpoints are minmax() tracks
+         because grid-track interpolation requires matching functions. */
+      .observer.with-sidebar.sidebar-anim-closed {
+        grid-template-columns: minmax(0px, 0px) minmax(0, 1fr);
+      }
+
+      .observer.with-sidebar .sidebar {
+        min-width: 0;
+        overflow: hidden;
+      }
+
+      .observer.with-sidebar.sidebar-anim-closed .sidebar {
+        opacity: 0;
+      }
+
+      @media (prefers-reduced-motion: no-preference) {
+        .observer.with-sidebar {
+          transition: grid-template-columns 250ms ease;
+        }
+
+        .observer.with-sidebar .sidebar {
+          transition: opacity 200ms ease;
+        }
+
+        /* The picker bar takes the stage right after the column closes; a
+           short fade-in ties it to the just-departed list. */
+        .session-picker-bar {
+          animation: picker-bar-enter 200ms ease;
+        }
+
+        @keyframes picker-bar-enter {
+          from {
+            opacity: 0;
+            transform: translateY(-4px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
       }
 
       .session-picker-bar {
@@ -501,7 +564,11 @@ export class PreloopSessionObserver extends LitElement {
 
   connectedCallback(): void {
     super.connectedCallback();
-    this.replayMode = this.defaultReplayMode;
+    this.replayMode = this.replayModeFromUrl() ?? this.defaultReplayMode;
+    // An invalid/unavailable ?replay= value (e.g. a stale optimize link with
+    // the feature off) falls back to the default mode above — clean the
+    // param up front so the URL never advertises a mode that is not active.
+    this.syncReplayModeToUrl();
     this.connectRealtime();
     // These typed optimization actions bubble up from the replay panel (and its
     // dialogs). Listen on the host so the buttons actually do something.
@@ -524,6 +591,7 @@ export class PreloopSessionObserver extends LitElement {
     this.removeEventListener('session-create-budget', this.handleCreateBudget);
     if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
     if (this.livePulseTimer !== null) window.clearTimeout(this.livePulseTimer);
+    this.clearSidebarAnimationTimer();
     for (const sessionId of Object.keys(this.optimizationJobPollTimers)) {
       this.clearOptimizationJobPollTimer(sessionId);
     }
@@ -726,6 +794,64 @@ export class PreloopSessionObserver extends LitElement {
     }
   }
 
+  private sidebarAnimationTimer: number | null = null;
+
+  private clearSidebarAnimationTimer(): void {
+    if (this.sidebarAnimationTimer !== null) {
+      window.clearTimeout(this.sidebarAnimationTimer);
+      this.sidebarAnimationTimer = null;
+    }
+  }
+
+  private prefersReducedMotion(): boolean {
+    try {
+      return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    } catch {
+      return false;
+    }
+  }
+
+  // Animated collapse: shrink the sidebar column shut first, THEN swap in the
+  // compact picker bar. The staging teaches new users where the list went —
+  // an instant swap read as the list simply vanishing. Reduced-motion users
+  // get the immediate swap they asked for.
+  private collapseSidebar(): void {
+    if (this.sidebarCollapsed || this.hideSidebar) return;
+    this.clearSidebarAnimationTimer();
+    if (this.prefersReducedMotion()) {
+      this.sidebarAnimating = null;
+      this.sidebarCollapsed = true;
+      return;
+    }
+    this.sidebarAnimating = 'collapsing';
+    this.sidebarAnimationTimer = window.setTimeout(() => {
+      this.sidebarAnimationTimer = null;
+      this.sidebarAnimating = null;
+      this.sidebarCollapsed = true;
+    }, SIDEBAR_ANIMATION_MS);
+  }
+
+  // Animated expand: render the sidebar in its closed-column state first,
+  // then release it next frame so the column visibly grows open.
+  private expandSidebar(): void {
+    if (!this.sidebarCollapsed) return;
+    this.clearSidebarAnimationTimer();
+    this.sidebarCollapsed = false;
+    if (this.prefersReducedMotion()) {
+      this.sidebarAnimating = null;
+      return;
+    }
+    this.sidebarAnimating = 'expanding';
+    // Two frames: one to paint the closed state, one to start the transition.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (this.sidebarAnimating === 'expanding') {
+          this.sidebarAnimating = null;
+        }
+      });
+    });
+  }
+
   private async selectSession(
     sessionId: string,
     options: { force?: boolean; userInitiated?: boolean } = {}
@@ -733,7 +859,7 @@ export class PreloopSessionObserver extends LitElement {
     if (sessionId === this.activeSessionId && !options.force) {
       // Re-clicking the already-active session still expresses "inspect this"
       // intent, so it may collapse the list even though nothing reloads.
-      if (options.userInitiated) this.sidebarCollapsed = true;
+      if (options.userInitiated) this.collapseSidebar();
       return;
     }
     this.activeSessionId = sessionId;
@@ -741,7 +867,7 @@ export class PreloopSessionObserver extends LitElement {
     // Auto-selection on load must leave the list visible: the operator has
     // not chosen anything yet, and hiding the list would make the page feel
     // like a single-session view.
-    if (options.userInitiated) this.sidebarCollapsed = true;
+    if (options.userInitiated) this.collapseSidebar();
     // Deep links can land straight in optimize mode; resume any persisted
     // in-flight analysis job for the newly active session.
     if (this.replayMode === 'optimize') {
@@ -1355,9 +1481,36 @@ export class PreloopSessionObserver extends LitElement {
     return tabs;
   }
 
+  // Reads the deep-linked replay mode. Invalid values (or 'optimize' when the
+  // feature is off) fall back to defaultReplayMode so a stale link cannot open
+  // an unavailable tab.
+  private replayModeFromUrl(): SessionReplayMode | null {
+    if (!this.syncModeToUrl) return null;
+    const raw = new URLSearchParams(window.location.search).get('replay');
+    if (raw === 'timeline' || raw === 'replay') return raw;
+    if (raw === 'optimize' && this.enabledFeatures.optimization) return raw;
+    return null;
+  }
+
+  // Mirrors the active mode into the URL so the current tab survives reloads
+  // and can be shared. replaceState only: mode switches are not navigation
+  // steps, and pushState would pollute the back button.
+  private syncReplayModeToUrl(): void {
+    if (!this.syncModeToUrl) return;
+    const url = new URL(window.location.href);
+    if (this.replayMode === this.defaultReplayMode) {
+      // The default mode needs no marker; dropping it keeps shared URLs clean.
+      url.searchParams.delete('replay');
+    } else {
+      url.searchParams.set('replay', this.replayMode);
+    }
+    window.history.replaceState(window.history.state, '', url.toString());
+  }
+
   private setReplayMode(mode: SessionReplayMode): void {
     if (this.replayMode === mode) return;
     this.replayMode = mode;
+    this.syncReplayModeToUrl();
     if (mode === 'optimize') {
       // Opening the drawer retires the first-use hint for good.
       this.dismissOptimizeHint();
@@ -1757,11 +1910,17 @@ export class PreloopSessionObserver extends LitElement {
 
     const listCollapsed =
       !this.hideSidebar && this.sidebarCollapsed && Boolean(this.activeSession);
+    // While animating, the sidebar DOM stays mounted and only the column
+    // width transitions; sidebar-anim-closed is the closed endpoint for both
+    // directions (collapsing adds it, expanding starts from it and drops it).
+    const animClosed =
+      this.sidebarAnimating === 'collapsing' ||
+      this.sidebarAnimating === 'expanding';
     const observerClass = this.hideSidebar
       ? 'observer'
       : listCollapsed
         ? 'observer sidebar-collapsed'
-        : 'observer with-sidebar';
+        : `observer with-sidebar${animClosed ? ' sidebar-anim-closed' : ''}`;
     return html`
       <div
         class=${observerClass}
@@ -1779,9 +1938,7 @@ export class PreloopSessionObserver extends LitElement {
                       name="layout-sidebar"
                       label="Show session list"
                       title="Show session list"
-                      @click=${() => {
-                        this.sidebarCollapsed = false;
-                      }}
+                      @click=${() => this.expandSidebar()}
                     ></sl-icon-button>
                     <select
                       class="picker-select"
