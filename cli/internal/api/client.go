@@ -32,10 +32,16 @@ const (
 type APIError struct {
 	StatusCode int
 	Body       string
+	// SuppressLoginHint omits the "run `preloop login`" recovery hint on 401
+	// responses. Set for clients that authenticate with non-session tokens
+	// (e.g. gateway probes using durable agent credentials), where a 401
+	// usually comes from the upstream model provider — telling the operator
+	// to re-run `preloop login` would be misleading.
+	SuppressLoginHint bool
 }
 
 func (e *APIError) Error() string {
-	if e.StatusCode == http.StatusUnauthorized {
+	if e.StatusCode == http.StatusUnauthorized && !e.SuppressLoginHint {
 		// Sessions started with `preloop login --token` carry no refresh
 		// token, so they expire silently — point at the recovery path
 		// instead of surfacing a bare 401.
@@ -46,6 +52,59 @@ func (e *APIError) Error() string {
 		)
 	}
 	return fmt.Sprintf("API error (status %d): %s", e.StatusCode, e.Body)
+}
+
+// Time is a time.Time that tolerates the timestamp formats the Preloop
+// backend actually emits. Python/FastAPI serializes naive datetimes without
+// a timezone offset (e.g. "2026-07-25T22:09:24.940820"), which the stdlib
+// RFC 3339 parser rejects ('cannot parse "" as "Z07:00"'). Naive values are
+// interpreted as UTC, matching how the backend stores them.
+type Time struct {
+	time.Time
+}
+
+// apiTimeLayouts lists accepted formats, most specific first.
+var apiTimeLayouts = []string{
+	time.RFC3339Nano,
+	"2006-01-02T15:04:05.999999999", // naive datetime with fractional seconds
+	"2006-01-02T15:04:05",           // naive datetime
+	"2006-01-02",                    // date only
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (t *Time) UnmarshalJSON(data []byte) error {
+	raw := strings.Trim(strings.TrimSpace(string(data)), `"`)
+	if raw == "" || raw == "null" {
+		t.Time = time.Time{}
+		return nil
+	}
+	var lastErr error
+	for _, layout := range apiTimeLayouts {
+		parsed, err := time.Parse(layout, raw)
+		if err == nil {
+			t.Time = parsed.UTC()
+			return nil
+		}
+		lastErr = err
+	}
+	return fmt.Errorf("unrecognized timestamp %q: %w", raw, lastErr)
+}
+
+// MarshalJSON implements json.Marshaler, emitting RFC 3339 (or null when
+// zero) so round-trips always produce timezone-explicit values.
+func (t Time) MarshalJSON() ([]byte, error) {
+	if t.IsZero() {
+		return []byte("null"), nil
+	}
+	return json.Marshal(t.Time.Format(time.RFC3339Nano))
+}
+
+// MarshalYAML mirrors MarshalJSON for `--format yaml` output paths.
+func (t Time) MarshalYAML() (interface{}, error) {
+	if t.IsZero() {
+		return nil, nil
+	}
+	return t.Time.Format(time.RFC3339Nano), nil
 }
 
 // IsStatus reports whether err is an *APIError with the given HTTP status.
@@ -62,6 +121,11 @@ type Client struct {
 	refreshToken   string
 	refreshEnabled bool
 	persistTokens  bool
+	// gatewayProbe marks this client as authenticating with a durable
+	// gateway credential rather than the operator's login session. 401s
+	// from such clients originate at the model gateway / upstream provider
+	// and must not advise `preloop login` (see APIError.SuppressLoginHint).
+	gatewayProbe bool
 }
 
 // NewClient creates a new Preloop API client.
@@ -101,6 +165,17 @@ func NewClientWithToken(baseURL, token string) *Client {
 		},
 		token: token,
 	}
+}
+
+// NewGatewayProbeClient creates a client that authenticates with a durable
+// gateway credential (agent token) instead of the operator's login session.
+// Its 401 errors omit the `preloop login` recovery hint, because they almost
+// always reflect an upstream model-provider auth failure surfaced through the
+// gateway, not an expired CLI session.
+func NewGatewayProbeClient(baseURL, token string) *Client {
+	client := NewClientWithToken(baseURL, token)
+	client.gatewayProbe = true
+	return client
 }
 
 // Get performs a GET request to the specified path.
@@ -243,7 +318,11 @@ func (c *Client) doWithBodyAndHeaders(
 	}
 
 	if statusCode < 200 || statusCode >= 300 {
-		return &APIError{StatusCode: statusCode, Body: string(responseBody)}
+		return &APIError{
+			StatusCode:        statusCode,
+			Body:              string(responseBody),
+			SuppressLoginHint: c.gatewayProbe,
+		}
 	}
 
 	if result != nil && len(responseBody) > 0 {

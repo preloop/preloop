@@ -231,7 +231,13 @@ func maybeRemoveStaleOpenClawPluginEntries(
 var openClawEnvPattern = regexp.MustCompile(`^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$`)
 var opencodeEnvPattern = regexp.MustCompile(`^\{env:([A-Za-z_][A-Za-z0-9_]*)\}$`)
 var opencodeBearerEnvPattern = regexp.MustCompile(`^[Bb]earer\s+\{env:([A-Za-z_][A-Za-z0-9_]*)\}$`)
-var managedGatewayLLMLogPattern = regexp.MustCompile(`service=llm providerID=([^\s]+) modelID=([^\s]+)`)
+// managedGatewayLLMLogPattern matches OpenCode's model-usage log lines across
+// log-format generations: older builds tagged LLM calls with ``service=llm``,
+// while 1.18+ logs streaming requests as ``message=stream`` — both carry
+// ``providerID=<provider> modelID=<model>`` pairs.
+var managedGatewayLLMLogPattern = regexp.MustCompile(
+	`(?:service=llm|message=stream) providerID=([^\s]+) modelID=([^\s]+)`,
+)
 
 const (
 	geminiAPIKeyServiceName   = "gemini-cli-api-key"
@@ -241,11 +247,17 @@ const (
 )
 
 var openCodeDefaultModelByProvider = map[string]string{
-	"zai": "glm-5-turbo",
+	"zai":             "glm-5-turbo",
+	"kimi-for-coding": "kimi-for-coding",
+	"moonshotai":      "kimi-k2.7-code",
+	"moonshotai-cn":   "kimi-k2.7-code",
 }
 
 var openCodeDefaultEndpointByProvider = map[string]string{
-	"zai": "https://api.z.ai/api/coding/paas/v4",
+	"zai":             "https://api.z.ai/api/coding/paas/v4",
+	"kimi-for-coding": "https://api.kimi.com/coding/v1",
+	"moonshotai":      "https://api.moonshot.ai/v1",
+	"moonshotai-cn":   "https://api.moonshot.cn/v1",
 }
 
 type managedEnrollmentOptions struct {
@@ -980,7 +992,8 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 			) //nolint:errcheck
 		} else if isClaudeCodeAgent(agent) ||
 			isCodexCLIAgent(agent) ||
-			isGeminiCLIAgent(agent) {
+			isGeminiCLIAgent(agent) ||
+			isOpenCodeAgent(agent) {
 			clearManagedGatewayValidationFlags(validationResult)
 			plan.ManagedModelAlias = ""
 			plan.ManagedProviderName = ""
@@ -1309,7 +1322,7 @@ func runCodexLiveValidation(
 	)
 	requestPayload := buildCodexLiveValidationPayload(managedModelAlias, prompt)
 
-	gatewayClient := api.NewClientWithToken(baseURL, token)
+	gatewayClient := api.NewGatewayProbeClient(baseURL, token)
 	var gatewayResponse map[string]interface{}
 	requestErr := gatewayClient.Post(
 		"/openai/v1/responses",

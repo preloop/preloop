@@ -288,6 +288,37 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 
+	// Scrub ambient agent/model env vars so upstream-resolution tests see a
+	// hermetic environment. When the test suite itself runs inside a managed
+	// agent session (e.g. Preloop-managed Claude Code exporting
+	// ANTHROPIC_BASE_URL=https://.../anthropic), resolvers like
+	// parseClaudeManagedGatewayUpstream read os.Getenv and correctly refuse
+	// to treat the managed gateway as an upstream — failing tests that
+	// expect detection. Tests that need these vars set them via t.Setenv.
+	scrubPrefixes := []string{"ANTHROPIC_", "CLAUDE_CODE_", "CLAUDE_"}
+	scrubExact := []string{
+		"AWS_BEARER_TOKEN_BEDROCK",
+		"GEMINI_API_KEY",
+		"GOOGLE_API_KEY",
+		"OPENAI_API_KEY",
+		"CLAUDECODE",
+	}
+	for _, entry := range os.Environ() {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		for _, prefix := range scrubPrefixes {
+			if strings.HasPrefix(key, prefix) {
+				_ = os.Unsetenv(key)
+				break
+			}
+		}
+	}
+	for _, key := range scrubExact {
+		_ = os.Unsetenv(key)
+	}
+
 	code := m.Run()
 
 	restoreHome()

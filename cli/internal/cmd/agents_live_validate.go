@@ -233,7 +233,7 @@ func runGatewayLiveValidation(
 		))
 	}
 
-	gatewayClient := api.NewClientWithToken(baseURL, spec.Token)
+	gatewayClient := api.NewGatewayProbeClient(baseURL, spec.Token)
 	postProbe := func() error {
 		var gatewayResponse map[string]interface{}
 		if len(spec.Headers) == 0 {
@@ -1256,7 +1256,8 @@ func recoverDeferredGatewayValidationFailure(
 	}
 	if !isClaudeCodeAgent(result.Agent) &&
 		!isCodexCLIAgent(result.Agent) &&
-		!isGeminiCLIAgent(result.Agent) {
+		!isGeminiCLIAgent(result.Agent) &&
+		!isOpenCodeAgent(result.Agent) {
 		return
 	}
 	state, err := loadLocalEnrollmentState(result.Agent)
