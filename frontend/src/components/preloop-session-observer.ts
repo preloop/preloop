@@ -67,6 +67,12 @@ type EventPageState = {
 const EVENT_PAGE_SIZE = 25;
 const REPLAY_METADATA_LIMIT = 5000;
 
+// Sidebar collapse/expand animation duration. Must match the CSS transition
+// below: the collapse completion (DOM swap to the picker bar) is driven by a
+// timeout of this length rather than transitionend, which is unreliable when
+// the tab is backgrounded or the transition is interrupted.
+const SIDEBAR_ANIMATION_MS = 250;
+
 // First-use hint for the Optimize tab: rendered once per user (same
 // localStorage mechanism as dashboard_welcome_dismissed) until the drawer is
 // opened or the hint is dismissed.
@@ -182,6 +188,12 @@ export class PreloopSessionObserver extends LitElement {
   // list open until the next selection.
   @state()
   private sidebarCollapsed = false;
+
+  // Transitional state while the sidebar column animates shut or open. An
+  // instant swap read as "magical" — the list just vanished — so the column
+  // visibly shrinks/grows to teach where it went. null when at rest.
+  @state()
+  private sidebarAnimating: 'collapsing' | 'expanding' | null = null;
 
   @state()
   private loadedEvents: Record<string, FlowGatewayEvent[]> = {};
@@ -337,6 +349,51 @@ export class PreloopSessionObserver extends LitElement {
          compact picker bar replaces the sidebar. */
       .observer.sidebar-collapsed {
         grid-template-columns: minmax(0, 1fr);
+      }
+
+      /* Animated hand-off between list and picker bar: the sidebar column
+         visibly shrinks shut (or grows open) before the DOM swap, so the
+         list's disappearance reads as "it slid away" rather than a sudden
+         vanish new users cannot place. Both endpoints are minmax() tracks
+         because grid-track interpolation requires matching functions. */
+      .observer.with-sidebar.sidebar-anim-closed {
+        grid-template-columns: minmax(0px, 0px) minmax(0, 1fr);
+      }
+
+      .observer.with-sidebar .sidebar {
+        min-width: 0;
+        overflow: hidden;
+      }
+
+      .observer.with-sidebar.sidebar-anim-closed .sidebar {
+        opacity: 0;
+      }
+
+      @media (prefers-reduced-motion: no-preference) {
+        .observer.with-sidebar {
+          transition: grid-template-columns 250ms ease;
+        }
+
+        .observer.with-sidebar .sidebar {
+          transition: opacity 200ms ease;
+        }
+
+        /* The picker bar takes the stage right after the column closes; a
+           short fade-in ties it to the just-departed list. */
+        .session-picker-bar {
+          animation: picker-bar-enter 200ms ease;
+        }
+
+        @keyframes picker-bar-enter {
+          from {
+            opacity: 0;
+            transform: translateY(-4px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
       }
 
       .session-picker-bar {
@@ -530,6 +587,7 @@ export class PreloopSessionObserver extends LitElement {
     this.removeEventListener('session-create-budget', this.handleCreateBudget);
     if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
     if (this.livePulseTimer !== null) window.clearTimeout(this.livePulseTimer);
+    this.clearSidebarAnimationTimer();
     for (const sessionId of Object.keys(this.optimizationJobPollTimers)) {
       this.clearOptimizationJobPollTimer(sessionId);
     }
@@ -732,6 +790,64 @@ export class PreloopSessionObserver extends LitElement {
     }
   }
 
+  private sidebarAnimationTimer: number | null = null;
+
+  private clearSidebarAnimationTimer(): void {
+    if (this.sidebarAnimationTimer !== null) {
+      window.clearTimeout(this.sidebarAnimationTimer);
+      this.sidebarAnimationTimer = null;
+    }
+  }
+
+  private prefersReducedMotion(): boolean {
+    try {
+      return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    } catch {
+      return false;
+    }
+  }
+
+  // Animated collapse: shrink the sidebar column shut first, THEN swap in the
+  // compact picker bar. The staging teaches new users where the list went —
+  // an instant swap read as the list simply vanishing. Reduced-motion users
+  // get the immediate swap they asked for.
+  private collapseSidebar(): void {
+    if (this.sidebarCollapsed || this.hideSidebar) return;
+    this.clearSidebarAnimationTimer();
+    if (this.prefersReducedMotion()) {
+      this.sidebarAnimating = null;
+      this.sidebarCollapsed = true;
+      return;
+    }
+    this.sidebarAnimating = 'collapsing';
+    this.sidebarAnimationTimer = window.setTimeout(() => {
+      this.sidebarAnimationTimer = null;
+      this.sidebarAnimating = null;
+      this.sidebarCollapsed = true;
+    }, SIDEBAR_ANIMATION_MS);
+  }
+
+  // Animated expand: render the sidebar in its closed-column state first,
+  // then release it next frame so the column visibly grows open.
+  private expandSidebar(): void {
+    if (!this.sidebarCollapsed) return;
+    this.clearSidebarAnimationTimer();
+    this.sidebarCollapsed = false;
+    if (this.prefersReducedMotion()) {
+      this.sidebarAnimating = null;
+      return;
+    }
+    this.sidebarAnimating = 'expanding';
+    // Two frames: one to paint the closed state, one to start the transition.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (this.sidebarAnimating === 'expanding') {
+          this.sidebarAnimating = null;
+        }
+      });
+    });
+  }
+
   private async selectSession(
     sessionId: string,
     options: { force?: boolean; userInitiated?: boolean } = {}
@@ -739,7 +855,7 @@ export class PreloopSessionObserver extends LitElement {
     if (sessionId === this.activeSessionId && !options.force) {
       // Re-clicking the already-active session still expresses "inspect this"
       // intent, so it may collapse the list even though nothing reloads.
-      if (options.userInitiated) this.sidebarCollapsed = true;
+      if (options.userInitiated) this.collapseSidebar();
       return;
     }
     this.activeSessionId = sessionId;
@@ -747,7 +863,7 @@ export class PreloopSessionObserver extends LitElement {
     // Auto-selection on load must leave the list visible: the operator has
     // not chosen anything yet, and hiding the list would make the page feel
     // like a single-session view.
-    if (options.userInitiated) this.sidebarCollapsed = true;
+    if (options.userInitiated) this.collapseSidebar();
     // Deep links can land straight in optimize mode; resume any persisted
     // in-flight analysis job for the newly active session.
     if (this.replayMode === 'optimize') {
@@ -1790,11 +1906,17 @@ export class PreloopSessionObserver extends LitElement {
 
     const listCollapsed =
       !this.hideSidebar && this.sidebarCollapsed && Boolean(this.activeSession);
+    // While animating, the sidebar DOM stays mounted and only the column
+    // width transitions; sidebar-anim-closed is the closed endpoint for both
+    // directions (collapsing adds it, expanding starts from it and drops it).
+    const animClosed =
+      this.sidebarAnimating === 'collapsing' ||
+      this.sidebarAnimating === 'expanding';
     const observerClass = this.hideSidebar
       ? 'observer'
       : listCollapsed
         ? 'observer sidebar-collapsed'
-        : 'observer with-sidebar';
+        : `observer with-sidebar${animClosed ? ' sidebar-anim-closed' : ''}`;
     return html`
       <div
         class=${observerClass}
@@ -1812,9 +1934,7 @@ export class PreloopSessionObserver extends LitElement {
                       name="layout-sidebar"
                       label="Show session list"
                       title="Show session list"
-                      @click=${() => {
-                        this.sidebarCollapsed = false;
-                      }}
+                      @click=${() => this.expandSidebar()}
                     ></sl-icon-button>
                     <select
                       class="picker-select"
