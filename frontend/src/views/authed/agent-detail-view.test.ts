@@ -161,6 +161,19 @@ describe('AgentDetailView', () => {
           );
         }
 
+        if (url === '/api/v1/account/governance-defaults') {
+          return new Response(
+            JSON.stringify({
+              defaults: {
+                native_tool_approvals: null,
+                approval_workflow_id: null,
+              },
+              override_agent_ids: [],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+
         if (url === '/api/v1/agents/agent-1/governance') {
           if (init?.method === 'PUT') {
             // Echo the submitted config back, as the real endpoint does.
@@ -539,18 +552,19 @@ describe('AgentDetailView', () => {
     (element as any).activeTab = 'tools';
     await element.updateComplete;
 
-    // Default (field absent) renders as enforced: switch on, no warning.
-    const switchEl = element.shadowRoot?.querySelector(
-      '#agent-native-tool-approvals-switch'
+    // Default (field absent) renders as inherit; with no account default of
+    // "off", the effective mode is enforce: no bypass warning.
+    const modeSelect = element.shadowRoot?.querySelector(
+      '#agent-native-tool-approvals-mode'
     ) as any;
-    expect(switchEl).to.exist;
-    expect(switchEl.checked).to.be.true;
+    expect(modeSelect).to.exist;
+    expect(modeSelect.value).to.equal('');
     expect(
       element.shadowRoot?.querySelector('#agent-native-tool-approvals-off-note')
     ).to.not.exist;
 
-    // Toggling off persists native_tool_approvals="off" via the governance PUT.
-    (element as any).saveNativeToolApprovalsToggle(false);
+    // Selecting "off" persists native_tool_approvals="off" via the PUT.
+    (element as any).saveNativeToolApprovalsMode('off');
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     const putCall = fetchStub
@@ -578,8 +592,8 @@ describe('AgentDetailView', () => {
     expect(noteText).to.contain('Approvals are bypassed server-side');
     expect(noteText).to.contain('How to fully disable the hook locally');
 
-    // Toggling back on clears the field (absent = enforce).
-    (element as any).saveNativeToolApprovalsToggle(true);
+    // Selecting inherit clears the field (absent = inherit account default).
+    (element as any).saveNativeToolApprovalsMode('');
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     const enforcePut = fetchStub

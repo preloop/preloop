@@ -129,6 +129,12 @@ func readClaudeSettingsDocument(path string) (claudeSettingsDocument, bool, erro
 //  5. a matching allow rule   -> allow
 //  6. safe read/search tools  -> allow (Claude's practical default)
 //  7. otherwise               -> ask (the default "would prompt" case)
+//
+// Workspace edits deliberately have no auto-allow step here: stock Claude
+// Code prompts for Edit/Write in default permission mode, so the mirror asks
+// too. Only Cursor's policy path consults the workspace root (see
+// cursorPermissionClientDecision / isLocalWorkspaceEdit), because
+// auto-applying edits IS Cursor's default behavior.
 func evaluateClaudePermissionPolicy(
 	policy claudePermissionPolicy,
 	mode string,
@@ -157,6 +163,14 @@ func evaluateClaudePermissionPolicy(
 	if isClaudeSafeReadTool(toolName) {
 		return "allow"
 	}
+	// Workspace edits deliberately stay "ask": in default permission mode
+	// Claude Code itself prompts for Edit/Write, so auto-allowing them here
+	// would swallow approval requests the operator expects to see in Preloop.
+	// The agent's own acceptEdits mode (handled above) and explicit allow
+	// rules remain the ways edits skip approval — mirroring, never widening,
+	// the agent's real policy. (Cursor keeps its own workspace-edit allow in
+	// cursorPermissionClientDecision because auto-applying edits IS Cursor's
+	// default behavior.)
 	return "ask"
 }
 
@@ -266,7 +280,8 @@ func claudeRuleTarget(toolName string, toolInput map[string]interface{}) string 
 	switch strings.ToLower(strings.TrimSpace(toolName)) {
 	case "bash":
 		return stringField(toolInput, "command")
-	case "read", "edit", "write", "multiedit", "notebookedit":
+	case "read", "edit", "write", "multiedit", "notebookedit", "editnotebook",
+		"strreplace", "search_replace":
 		return firstNonEmptyString(
 			stringField(toolInput, "file_path"),
 			stringField(toolInput, "path"),
@@ -290,11 +305,63 @@ func claudeRuleTarget(toolName string, toolInput map[string]interface{}) string 
 
 func isClaudeEditTool(toolName string) bool {
 	switch strings.ToLower(strings.TrimSpace(toolName)) {
-	case "edit", "write", "multiedit", "notebookedit":
+	case "edit", "write", "multiedit", "notebookedit", "editnotebook",
+		"strreplace", "search_replace":
 		return true
 	default:
 		return false
 	}
+}
+
+// isLocalWorkspaceEdit reports whether an edit tool targets a relative path or
+// a path beneath one of the workspace roots. An empty path or a tilde path
+// cannot be verified as local, so both deliberately remain would-ask calls.
+func isLocalWorkspaceEdit(
+	toolName string,
+	toolInput map[string]interface{},
+	workspaceRoots ...string,
+) bool {
+	if !isClaudeEditTool(toolName) {
+		return false
+	}
+	path := claudeRuleTarget(toolName, toolInput)
+	if path == "" || strings.HasPrefix(path, "~") {
+		return false
+	}
+	if !isRootedPath(path) {
+		// Relative paths are treated as workspace-local, but reject escapes
+		// like "../.ssh/id_rsa" that Clean would still leave outside the tree.
+		cleanRel := filepath.Clean(path)
+		if cleanRel == ".." ||
+			strings.HasPrefix(cleanRel, ".."+string(filepath.Separator)) {
+			return false
+		}
+		return true
+	}
+	cleanPath := filepath.Clean(path)
+	for _, root := range workspaceRoots {
+		root = strings.TrimSpace(root)
+		if root == "" || !isRootedPath(root) {
+			continue
+		}
+		rel, err := filepath.Rel(filepath.Clean(root), cleanPath)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// isRootedPath reports absolute-intent paths. filepath.IsAbs alone is not
+// enough on Windows: "/etc/passwd" has no drive letter so IsAbs is false
+// there, which would send slash-rooted paths down the relative branch and
+// auto-allow them as "workspace-local" on Windows only. Agents emit
+// slash-rooted paths regardless of host OS, so treat any slash- or
+// backslash-prefixed path as rooted everywhere.
+func isRootedPath(path string) bool {
+	return filepath.IsAbs(path) ||
+		strings.HasPrefix(path, "/") ||
+		strings.HasPrefix(path, "\\")
 }
 
 // isClaudeSafeReadTool reports tools Claude Code typically auto-allows without

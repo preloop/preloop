@@ -30,6 +30,8 @@ import type {
   ManagedAgentSummary,
   ManagedAgentModelBindingSummary,
   ManagedAgentUpdateRequest,
+  AccountGovernanceDefaults,
+  AccountGovernanceDefaultsResponse,
   SubjectGovernanceConfig,
   SubjectGovernanceResponse,
   AccountGatewayUsageSearchResponse,
@@ -1204,6 +1206,28 @@ export async function sendAgentControlVoiceTranscript(
       'Failed to send Agent Control voice transcript'
     )
   );
+}
+
+export async function getAccountGovernanceDefaults(): Promise<AccountGovernanceDefaultsResponse> {
+  const response = await fetchWithAuth('/api/v1/account/governance-defaults');
+  if (!response.ok) {
+    throw new Error('Failed to fetch account governance defaults');
+  }
+  return response.json();
+}
+
+export async function updateAccountGovernanceDefaults(
+  defaults: AccountGovernanceDefaults
+): Promise<AccountGovernanceDefaultsResponse> {
+  const response = await fetchWithAuth('/api/v1/account/governance-defaults', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(defaults),
+  });
+  if (!response.ok) {
+    throw new Error('Failed to update account governance defaults');
+  }
+  return response.json();
 }
 
 export async function getAgentGovernance(

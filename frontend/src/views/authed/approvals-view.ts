@@ -9,6 +9,7 @@ import {
   formatRelativeTime,
   parseUTCDate,
 } from '../../utils/date';
+import { formatApprovalRequester } from '../../utils/approval-identity';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -20,6 +21,9 @@ import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/tag/tag.js';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
+import '@shoelace-style/shoelace/dist/components/dropdown/dropdown.js';
+import '@shoelace-style/shoelace/dist/components/menu/menu.js';
+import '@shoelace-style/shoelace/dist/components/menu-item/menu-item.js';
 import '@shoelace-style/shoelace/dist/components/divider/divider.js';
 import '@shoelace-style/shoelace/dist/components/progress-bar/progress-bar.js';
 import consoleStyles from '../../styles/console-styles.css?inline';
@@ -295,6 +299,7 @@ export class ApprovalsView extends AuthedElement {
         summary: message.summary || null,
         tool_args: message.tool_args || {},
         agent_reasoning: message.agent_reasoning || null,
+        managed_agent_name: message.managed_agent_name || null,
         status: 'pending',
         requested_at: message.requested_at || new Date().toISOString(),
         resolved_at: null,
@@ -452,6 +457,7 @@ export class ApprovalsView extends AuthedElement {
         (r) =>
           r.tool_name.toLowerCase().includes(query) ||
           r.summary?.toLowerCase().includes(query) ||
+          r.managed_agent_name?.toLowerCase().includes(query) ||
           r.execution_id?.toLowerCase().includes(query) ||
           r.agent_reasoning?.toLowerCase().includes(query) ||
           JSON.stringify(r.tool_args).toLowerCase().includes(query)
@@ -648,13 +654,35 @@ export class ApprovalsView extends AuthedElement {
     return html`
       <view-header
         headerText="Approval Requests"
-        description="Tool calls that waited for a human decision — who approved, who denied, and how long it took. Choose which tools require approval in Tools."
+        description="Tool calls that waited for a human decision — who approved, who denied, and how long it took. Approval policies are configured elsewhere: MCP tool rules and native tool-call defaults live in Tools; per-agent overrides live on each agent's detail page."
         width="wide"
       >
-        <sl-button href="/console/tools" size="small">
-          <sl-icon slot="prefix" name="gear"></sl-icon>
-          Configure Approvals
-        </sl-button>
+        <sl-dropdown>
+          <sl-button slot="trigger" size="small" caret>
+            <sl-icon slot="prefix" name="gear"></sl-icon>
+            Configure Approvals
+          </sl-button>
+          <sl-menu>
+            <sl-menu-item
+              @click=${() => (window.location.href = '/console/tools')}
+            >
+              <sl-icon slot="prefix" name="tools"></sl-icon>
+              MCP tool access rules
+            </sl-menu-item>
+            <sl-menu-item
+              @click=${() => (window.location.href = '/console/tools')}
+            >
+              <sl-icon slot="prefix" name="shield-lock"></sl-icon>
+              Native tool approvals (account default)
+            </sl-menu-item>
+            <sl-menu-item
+              @click=${() => (window.location.href = '/console/agents')}
+            >
+              <sl-icon slot="prefix" name="robot"></sl-icon>
+              Per-agent overrides
+            </sl-menu-item>
+          </sl-menu>
+        </sl-dropdown>
       </view-header>
       <div class="column-layout wide">
         <div class="main-column">
@@ -850,6 +878,16 @@ export class ApprovalsView extends AuthedElement {
                                       ? 'timed out'
                                       : request.status
                                   }
+                                </sl-tag>
+                                <sl-tag size="small" variant="neutral">
+                                  <sl-icon
+                                    name="cpu"
+                                    style="margin-right: 4px;"
+                                  ></sl-icon>
+                                  ${formatApprovalRequester(
+                                    request.managed_agent_name,
+                                    request.tool_args
+                                  )}
                                 </sl-tag>
                                 ${
                                   request.auto_approved_reason

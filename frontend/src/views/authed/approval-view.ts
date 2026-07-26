@@ -3,6 +3,12 @@ import { customElement, state, property } from 'lit/decorators.js';
 import { AuthedElement } from '../../api';
 import type { ApprovalDecisionOptions, ApprovalRequest } from '../../types';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
+import {
+  formatApprovalRequester,
+  formatApprovalSource,
+  getApprovalSource,
+  withoutApprovalMetadata,
+} from '../../utils/approval-identity';
 import '../../components/question-answer-panel';
 import type { QuestionAnswerDetail } from '../../components/question-answer-panel';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
@@ -429,7 +435,16 @@ export class ApprovalView extends AuthedElement {
         ? 'TIMED OUT'
         : this.approvalRequest.status.toUpperCase();
 
-    const toolArgs = this.formatToolArgs(this.approvalRequest.tool_args);
+    const toolArgs = this.formatToolArgs(
+      withoutApprovalMetadata(this.approvalRequest.tool_args)
+    );
+    const source = formatApprovalSource(
+      getApprovalSource(this.approvalRequest.tool_args)
+    );
+    const requester = formatApprovalRequester(
+      this.approvalRequest.managed_agent_name,
+      this.approvalRequest.tool_args
+    );
 
     const isQuestion = this.isQuestion;
 
@@ -450,8 +465,8 @@ export class ApprovalView extends AuthedElement {
         <p>
           ${
             isQuestion
-              ? 'The agent is waiting on your answer before it continues'
-              : 'Review and approve or decline this tool execution request'
+              ? `${requester} is waiting on your answer before it continues`
+              : `Review ${requester}'s tool execution request`
           }
         </p>
       </div>
@@ -525,6 +540,20 @@ export class ApprovalView extends AuthedElement {
         <div class="content-section">
           <h2>Tool Information</h2>
           <div class="info-grid">
+            <div class="info-label">Requested by:</div>
+            <div class="info-value">
+              <strong>${requester}</strong>
+            </div>
+
+            ${
+              source
+                ? html`
+                    <div class="info-label">Adapter:</div>
+                    <div class="info-value">${source}</div>
+                  `
+                : ''
+            }
+
             <div class="info-label">Tool Name:</div>
             <div class="info-value">
               <strong>${this.approvalRequest.tool_name}</strong>

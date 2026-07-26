@@ -63,6 +63,8 @@ from preloop.schemas.gateway_usage import (
     DashboardTelemetryResponse,
 )
 from preloop.schemas.subject_governance import (
+    AccountGovernanceDefaults,
+    AccountGovernanceDefaultsResponse,
     SubjectGovernanceConfig,
     SubjectGovernanceResponse,
 )
@@ -80,7 +82,10 @@ from preloop.services.model_gateway_usage import ModelGatewayUsageService
 from preloop.services.runtime_session_explorer import RuntimeSessionExplorerService
 from preloop.services.subject_governance import (
     SUBJECT_TYPE_MANAGED_AGENTS,
+    get_account_governance_defaults,
     get_subject_governance,
+    normalize_subject_governance_store,
+    set_account_governance_defaults,
     set_subject_governance,
 )
 from preloop.utils.permissions import require_permission
@@ -1331,6 +1336,82 @@ async def replace_account_managed_agent_model_bindings(
         commit=True,
     )
     return [_managed_agent_binding_summary(binding) for binding in rows]
+
+
+def _governance_defaults_response(
+    account: Account,
+) -> AccountGovernanceDefaultsResponse:
+    """Build the defaults response including per-agent override ids."""
+    store = normalize_subject_governance_store(account.meta_data or {})
+    agents_bucket = store.get(SUBJECT_TYPE_MANAGED_AGENTS) or {}
+    override_agent_ids = sorted(
+        agent_id
+        for agent_id, config in agents_bucket.items()
+        if isinstance(config, dict)
+        and (
+            config.get("native_tool_approvals") is not None
+            or config.get("approval_workflow_id")
+        )
+    )
+    return AccountGovernanceDefaultsResponse(
+        defaults=AccountGovernanceDefaults.model_validate(
+            get_account_governance_defaults(account.meta_data or {})
+        ),
+        override_agent_ids=override_agent_ids,
+    )
+
+
+@router.get(
+    "/account/governance-defaults",
+    response_model=AccountGovernanceDefaultsResponse,
+)
+@require_permission("view_policies")
+async def get_account_governance_defaults_endpoint(
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> AccountGovernanceDefaultsResponse:
+    """Account-wide native tool-approval defaults every agent inherits."""
+    return _governance_defaults_response(account)
+
+
+@router.put(
+    "/account/governance-defaults",
+    response_model=AccountGovernanceDefaultsResponse,
+)
+@require_permission("manage_policies")
+async def update_account_governance_defaults_endpoint(
+    payload: AccountGovernanceDefaults,
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> AccountGovernanceDefaultsResponse:
+    """Update account-wide native tool-approval defaults."""
+    if payload.approval_workflow_id:
+        try:
+            workflow_id = UUID(payload.approval_workflow_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid approval workflow id",
+            )
+        workflow = crud_approval_workflow.get(
+            db, id=workflow_id, account_id=str(account.id)
+        )
+        if workflow is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Approval workflow not found in this account",
+            )
+    account.meta_data = set_account_governance_defaults(
+        account.meta_data or {},
+        defaults=payload.model_dump(),
+    )
+    db.add(account)
+    db.commit()
+    db.refresh(account)
+    invalidate_account_governance_cache(str(account.id))
+    return _governance_defaults_response(account)
 
 
 @router.get(

@@ -86,6 +86,50 @@ describe('ToolsView (approvals + conditions)', () => {
           });
         }
 
+        // Native tool approvals account-defaults card
+        if (url.endsWith('/api/v1/account/governance-defaults')) {
+          if (method === 'PUT') {
+            return new Response(
+              JSON.stringify({
+                defaults: JSON.parse(String(init?.body)),
+                override_agent_ids: [],
+              }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
+          return new Response(
+            JSON.stringify({
+              defaults: {
+                native_tool_approvals: null,
+                approval_workflow_id: null,
+              },
+              override_agent_ids: ['agent-override-1'],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+
+        if (url.includes('/api/v1/agents?') || url.endsWith('/api/v1/agents')) {
+          return new Response(
+            JSON.stringify({
+              query: null,
+              agent_kind: null,
+              last_seen_after: null,
+              status: 'all',
+              total: 1,
+              limit: 100,
+              offset: 0,
+              items: [
+                {
+                  id: 'agent-override-1',
+                  display_name: 'Claude Code Workspace',
+                },
+              ],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+
         // Regression path: enable approval => create tool configuration
         if (url.endsWith('/api/v1/tool-configurations') && method === 'POST') {
           return new Response(JSON.stringify({ id: 'cfg-1' }), {
@@ -180,6 +224,57 @@ describe('ToolsView (approvals + conditions)', () => {
     const note = el.shadowRoot?.querySelector('.unavailable-note');
     expect(note).to.exist;
     expect(note?.textContent).to.contain('Requires a connected tracker');
+  });
+
+  it('renders the native tool approvals account-default card with override links', async () => {
+    const element = await fixture<ToolsView>(html`<tools-view></tools-view>`);
+    await waitUntil(
+      () =>
+        !(element as any).loading &&
+        (element as any).governanceDefaults !== null,
+      'Tools view did not load governance defaults'
+    );
+    await element.updateComplete;
+
+    const card = element.shadowRoot?.querySelector(
+      '#native-approvals-defaults-card'
+    );
+    expect(card).to.exist;
+
+    // Default (null) renders as enforce: switch on, no bypass warning.
+    const switchEl = element.shadowRoot?.querySelector(
+      '#native-approvals-default-switch'
+    ) as any;
+    expect(switchEl).to.exist;
+    expect(switchEl.checked).to.be.true;
+
+    // The override list resolves agent names and links to agent detail.
+    const overrides = element.shadowRoot?.querySelector(
+      '#native-approvals-override-list'
+    );
+    expect(overrides).to.exist;
+    const link = overrides?.querySelector('a');
+    expect(link?.getAttribute('href')).to.equal(
+      '/console/agents/agent-override-1'
+    );
+    expect(link?.textContent).to.contain('Claude Code Workspace');
+
+    // Switching off persists via PUT with native_tool_approvals="off".
+    await (element as any)._saveGovernanceDefaults({
+      native_tool_approvals: 'off',
+    });
+    const putCall = fetchStub
+      .getCalls()
+      .find(
+        (call) =>
+          String(call.args[0]).endsWith(
+            '/api/v1/account/governance-defaults'
+          ) && call.args[1]?.method === 'PUT'
+      );
+    expect(putCall).to.exist;
+    expect(
+      JSON.parse(String(putCall!.args[1]!.body)).native_tool_approvals
+    ).to.equal('off');
   });
 
   it('does not create tool configuration twice when adding a rule immediately after toggling enabled', async () => {

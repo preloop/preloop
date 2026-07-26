@@ -7,6 +7,7 @@ import '@shoelace-style/shoelace/dist/components/button-group/button-group.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
+import '@shoelace-style/shoelace/dist/components/icon-button/icon-button.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import {
@@ -168,6 +169,14 @@ export class PreloopSessionObserver extends LitElement {
   @state()
   private activeSessionId: string | null = null;
 
+  // Collapsed session list: once a session is selected the list gives its
+  // grid column to the transcript and shrinks into a compact picker bar.
+  // The operator's browse-vs-inspect intent drives it: browsing wants the
+  // list, inspecting wants the real estate. Manually re-expanding pins the
+  // list open until the next selection.
+  @state()
+  private sidebarCollapsed = false;
+
   @state()
   private loadedEvents: Record<string, FlowGatewayEvent[]> = {};
 
@@ -316,6 +325,32 @@ export class PreloopSessionObserver extends LitElement {
 
       .observer.with-sidebar {
         grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+      }
+
+      /* Collapsed list: single column, transcript takes the full width and a
+         compact picker bar replaces the sidebar. */
+      .observer.sidebar-collapsed {
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      .session-picker-bar {
+        align-items: center;
+        border: 1px solid var(--sl-color-neutral-200);
+        border-radius: var(--sl-border-radius-medium);
+        background: var(--sl-color-neutral-0);
+        display: flex;
+        gap: var(--sl-spacing-small);
+        margin-bottom: var(--sl-spacing-small);
+        padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
+      }
+
+      .session-picker-bar .picker-select {
+        flex: 1;
+        font: inherit;
+        max-width: 480px;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
 
       .sidebar,
@@ -693,12 +728,20 @@ export class PreloopSessionObserver extends LitElement {
 
   private async selectSession(
     sessionId: string,
-    options: { force?: boolean } = {}
+    options: { force?: boolean; userInitiated?: boolean } = {}
   ): Promise<void> {
     if (sessionId === this.activeSessionId && !options.force) {
+      // Re-clicking the already-active session still expresses "inspect this"
+      // intent, so it may collapse the list even though nothing reloads.
+      if (options.userInitiated) this.sidebarCollapsed = true;
       return;
     }
     this.activeSessionId = sessionId;
+    // Only a USER selection hands the list's column to the transcript.
+    // Auto-selection on load must leave the list visible: the operator has
+    // not chosen anything yet, and hiding the list would make the page feel
+    // like a single-session view.
+    if (options.userInitiated) this.sidebarCollapsed = true;
     // Deep links can land straight in optimize mode; resume any persisted
     // in-flight analysis job for the newly active session.
     if (this.replayMode === 'optimize') {
@@ -1712,9 +1755,16 @@ export class PreloopSessionObserver extends LitElement {
       </div>
     `;
 
+    const listCollapsed =
+      !this.hideSidebar && this.sidebarCollapsed && Boolean(this.activeSession);
+    const observerClass = this.hideSidebar
+      ? 'observer'
+      : listCollapsed
+        ? 'observer sidebar-collapsed'
+        : 'observer with-sidebar';
     return html`
       <div
-        class="observer ${this.hideSidebar ? '' : 'with-sidebar'}"
+        class=${observerClass}
         style=${
           this.layout === 'full' ? 'min-height: 720px;' : 'min-height: 520px;'
         }
@@ -1722,32 +1772,77 @@ export class PreloopSessionObserver extends LitElement {
         ${
           this.hideSidebar
             ? nothing
-            : html`
-                <div class="sidebar">
-                  <sl-input
-                    placeholder="Search sessions"
-                    clearable
-                    .value=${this.searchQuery}
-                    @sl-input=${(event: Event) => {
-                      this.searchQuery = (
-                        event.target as HTMLInputElement
-                      ).value;
-                    }}
-                    style="margin-bottom: var(--sl-spacing-small);"
-                  >
-                    <sl-icon name="search" slot="prefix"></sl-icon>
-                  </sl-input>
-                  <session-list-panel
-                    .sessions=${this.filteredSessions}
-                    .activeSessionId=${this.activeSessionId}
-                    .emptyText=${
-                      this.observedSessions.length === 0 ? this.emptyText : ''
-                    }
-                    @session-selected=${(event: CustomEvent) =>
-                      this.selectSession(event.detail.sessionId)}
-                  ></session-list-panel>
-                </div>
-              `
+            : listCollapsed
+              ? html`
+                  <div class="session-picker-bar">
+                    <sl-icon-button
+                      name="layout-sidebar"
+                      label="Show session list"
+                      title="Show session list"
+                      @click=${() => {
+                        this.sidebarCollapsed = false;
+                      }}
+                    ></sl-icon-button>
+                    <select
+                      class="picker-select"
+                      aria-label="Switch session"
+                      .value=${this.activeSessionId || ''}
+                      @change=${(event: Event) => {
+                        const sessionId = (event.target as HTMLSelectElement)
+                          .value;
+                        if (sessionId)
+                          void this.selectSession(sessionId, {
+                            userInitiated: true,
+                          });
+                      }}
+                    >
+                      ${this.observedSessions.map(
+                        (session) => html`
+                          <option
+                            value=${session.id}
+                            ?selected=${session.id === this.activeSessionId}
+                          >
+                            ${session.title}${
+                              session.subtitle ? ` — ${session.subtitle}` : ''
+                            }
+                          </option>
+                        `
+                      )}
+                    </select>
+                    <span class="meta">
+                      ${this.observedSessions.length}
+                      session${this.observedSessions.length === 1 ? '' : 's'}
+                    </span>
+                  </div>
+                `
+              : html`
+                  <div class="sidebar">
+                    <sl-input
+                      placeholder="Search sessions"
+                      clearable
+                      .value=${this.searchQuery}
+                      @sl-input=${(event: Event) => {
+                        this.searchQuery = (
+                          event.target as HTMLInputElement
+                        ).value;
+                      }}
+                      style="margin-bottom: var(--sl-spacing-small);"
+                    >
+                      <sl-icon name="search" slot="prefix"></sl-icon>
+                    </sl-input>
+                    <session-list-panel
+                      .sessions=${this.filteredSessions}
+                      .activeSessionId=${this.activeSessionId}
+                      .emptyText=${
+                        this.observedSessions.length === 0 ? this.emptyText : ''
+                      }
+                      @session-selected=${(event: CustomEvent) =>
+                        this.selectSession(event.detail.sessionId, {
+                          userInitiated: true,
+                        })}
+                    ></session-list-panel>
+                  </div>
+                `
         }
         ${content}
       </div>

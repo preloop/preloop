@@ -157,7 +157,8 @@ func stripJSONCComments(s string) string {
 //  1. Preloop-owned MCP tools → allow (MCP firewall already gates them)
 //  2. terminalAllowlist / mcpAllowlist match → allow
 //  3. sandboxed shell → allow
-//  4. otherwise → ask
+//  4. local workspace file edits → allow
+//  5. otherwise → ask
 func evaluateCursorPermissionPolicy(
 	policy cursorPermissionPolicy,
 	toolName string,
@@ -185,6 +186,9 @@ func evaluateCursorPermissionPolicy(
 		return "ask"
 	}
 	if matchCursorMCPAllowlist(policy.MCPAllowlist, event, toolName) {
+		return "allow"
+	}
+	if isLocalWorkspaceEdit(toolName, toolInput, workspaceRootsFromEvent(event)...) {
 		return "allow"
 	}
 	return "ask"

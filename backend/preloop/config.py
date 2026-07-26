@@ -254,6 +254,20 @@ class Settings(BaseSettings):
             "Current supported value: litellm"
         ),
     )
+    model_gateway_claude_family_autoregister_enabled: bool = Field(
+        True,
+        description=(
+            "When an Anthropic-protocol gateway request over a Claude Code "
+            "subscription-OAuth credential asks for a claude-* model the "
+            "account has not registered (e.g. a new dated snapshot shipped "
+            "by a Claude Code update, or a family the onboarding import "
+            "missed), auto-register the model against the same OAuth "
+            "credential and bind it to the requesting managed agent instead "
+            "of answering 404 model_not_authorized. Anthropic itself remains "
+            "the authorization boundary for what the subscription may use; "
+            "subject-scoped allowed_models checks still apply afterwards."
+        ),
+    )
     model_price_live_lookup_enabled: bool = Field(
         True,
         description=(

@@ -19,7 +19,11 @@ import {
   deleteAccessRule,
   fetchWithAuth,
   generatePolicy,
+  getAccountGovernanceDefaults,
+  updateAccountGovernanceDefaults,
+  getAccountAgents,
 } from '../../api';
+import type { AccountGovernanceDefaults } from '../../types';
 import '../../components/mcp-server-form';
 import '../../components/mcp-server-card';
 import '../../components/tools-editor-component';
@@ -45,6 +49,9 @@ import '@shoelace-style/shoelace/dist/components/menu-item/menu-item.js';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
+import '@shoelace-style/shoelace/dist/components/switch/switch.js';
+import '@shoelace-style/shoelace/dist/components/select/select.js';
+import '@shoelace-style/shoelace/dist/components/option/option.js';
 import consoleStyles from '../../styles/console-styles.css?inline';
 
 import type { ToolWithRules } from '../../components/tools-editor-component';
@@ -70,6 +77,14 @@ export class ToolsView extends LitElement {
   @state() private approvalPolicies: ApprovalWorkflow[] = [];
   @state() private loading = true;
   @state() private error: string | null = null;
+  // Account-wide native tool-approval defaults (inherited by agents).
+  @state() private governanceDefaults: AccountGovernanceDefaults | null = null;
+  @state() private governanceOverrideAgents: {
+    id: string;
+    name: string;
+    setting: string;
+  }[] = [];
+  @state() private savingGovernanceDefaults = false;
   @state() private isAddingMCPServer = false;
   @state() private editingMCPServer: MCPServer | null = null;
   @state() private currentUser: { id?: string } | null = null;
@@ -783,6 +798,8 @@ export class ToolsView extends LitElement {
       // Tool usage stats are intentionally async and must not block the tools
       // list — kick off after list data is assigned so first paint stays fast.
       void this._loadToolUsageStats();
+      // Same for the native-approvals defaults card: best-effort side data.
+      void this._loadGovernanceDefaults();
 
       if (
         this._pendingStarterPolicyServerId ||
@@ -1593,6 +1610,171 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
     this.filterPolicyId = null;
   }
 
+  private async _loadGovernanceDefaults() {
+    try {
+      const response = await getAccountGovernanceDefaults();
+      this.governanceDefaults = response.defaults;
+      if (response.override_agent_ids.length > 0) {
+        // Resolve override agent names for the "N agents override" line.
+        // One list call covers typical fleets; unknown ids degrade to
+        // showing the id so the link still works.
+        try {
+          const agents = await getAccountAgents({ limit: 100 });
+          const byId = new Map(
+            (agents.items || []).map((agent) => [agent.id, agent])
+          );
+          this.governanceOverrideAgents = response.override_agent_ids.map(
+            (id) => ({
+              id,
+              name: byId.get(id)?.display_name || id,
+              setting: '',
+            })
+          );
+        } catch {
+          this.governanceOverrideAgents = response.override_agent_ids.map(
+            (id) => ({ id, name: id, setting: '' })
+          );
+        }
+      } else {
+        this.governanceOverrideAgents = [];
+      }
+    } catch {
+      // Card is additive; a load failure must not degrade the Tools page.
+      this.governanceDefaults = null;
+    }
+  }
+
+  private async _saveGovernanceDefaults(
+    patch: Partial<AccountGovernanceDefaults>
+  ) {
+    const next: AccountGovernanceDefaults = {
+      ...(this.governanceDefaults || {}),
+      ...patch,
+    };
+    this.savingGovernanceDefaults = true;
+    try {
+      const response = await updateAccountGovernanceDefaults(next);
+      this.governanceDefaults = response.defaults;
+    } catch {
+      this.error = 'Failed to save native tool approval defaults';
+    } finally {
+      this.savingGovernanceDefaults = false;
+    }
+  }
+
+  /**
+   * Account-default card for native tool-call approvals (hook-based Bash /
+   * Edit / shell approvals), rendered above the MCP tool groups so both
+   * policy planes are visible — and distinguishable — on one page.
+   */
+  private _renderNativeApprovalDefaultsCard() {
+    if (!this.governanceDefaults) {
+      return html``;
+    }
+    const defaults = this.governanceDefaults;
+    const enforced = defaults.native_tool_approvals !== 'off';
+    const overrides = this.governanceOverrideAgents;
+    return html`
+      <div
+        class="stat-card"
+        id="native-approvals-defaults-card"
+        style="display: flex; flex-direction: column; gap: var(--sl-spacing-x-small); margin-bottom: var(--sl-spacing-medium);"
+      >
+        <div
+          style="display: flex; align-items: center; justify-content: space-between; gap: var(--sl-spacing-medium); flex-wrap: wrap;"
+        >
+          <div>
+            <div
+              class="stat-label"
+              style="display: flex; align-items: center; gap: 6px;"
+            >
+              <sl-icon name="shield-lock"></sl-icon>
+              Native tool approvals — account default
+            </div>
+            <div class="meta-line">
+              Native tool calls (shell commands, file edits) from agents
+              onboarded with approval hooks. Agents inherit this unless
+              overridden on their detail page. MCP tools are governed separately
+              by the access rules below.
+            </div>
+          </div>
+          <div
+            style="display: flex; align-items: center; gap: var(--sl-spacing-medium); flex-shrink: 0;"
+          >
+            <sl-switch
+              id="native-approvals-default-switch"
+              size="small"
+              ?checked=${enforced}
+              ?disabled=${this.savingGovernanceDefaults}
+              @sl-change=${(e: Event) =>
+                this._saveGovernanceDefaults({
+                  native_tool_approvals: (e.target as HTMLInputElement).checked
+                    ? 'enforce'
+                    : 'off',
+                })}
+            >
+              Require approval
+            </sl-switch>
+            <sl-select
+              id="native-approvals-default-workflow"
+              size="small"
+              hoist
+              style="min-width: 260px;${enforced ? '' : ' opacity: 0.5;'}"
+              ?disabled=${!enforced || this.savingGovernanceDefaults}
+              .value=${defaults.approval_workflow_id ?? ''}
+              @sl-change=${(e: Event) =>
+                this._saveGovernanceDefaults({
+                  approval_workflow_id:
+                    (e.target as HTMLSelectElement).value || null,
+                })}
+            >
+              <sl-option value="">Account default workflow</sl-option>
+              ${this.approvalPolicies.map(
+                (workflow) => html`
+                  <sl-option value=${workflow.id}>
+                    ${workflow.name}${
+                      workflow.is_default ? ' (account default)' : ''
+                    }
+                  </sl-option>
+                `
+              )}
+            </sl-select>
+          </div>
+        </div>
+        ${
+          !enforced
+            ? html`
+                <sl-alert variant="warning" open>
+                  <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+                  Approvals are bypassed account-wide: Preloop auto-approves
+                  escalated native tool calls without asking anyone (still
+                  recorded and audited). Agents with an explicit per-agent
+                  "enforce" keep asking.
+                </sl-alert>
+              `
+            : ''
+        }
+        ${
+          overrides.length > 0
+            ? html`
+                <div class="meta-line" id="native-approvals-override-list">
+                  ${overrides.length} agent${overrides.length === 1 ? '' : 's'}
+                  override${overrides.length === 1 ? 's' : ''} this default:
+                  ${overrides.map(
+                    (agent, index) =>
+                      html`${index > 0 ? ', ' : ''}<a
+                          href="/console/agents/${agent.id}"
+                          >${agent.name}</a
+                        >`
+                  )}
+                </div>
+              `
+            : ''
+        }
+      </div>
+    `;
+  }
+
   private _renderTopSection() {
     const apiUrl = window.location.origin;
     const mcpUrl = `${apiUrl}/mcp`;
@@ -2029,6 +2211,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
                   <sl-spinner></sl-spinner>
                 </div>`
               : html` ${this._renderTopSection()}
+                  ${this._renderNativeApprovalDefaultsCard()}
                   <div class="tool-groups">
                     ${this._renderFilterBar()}
                     <tools-editor-component

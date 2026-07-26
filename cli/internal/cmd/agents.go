@@ -1347,7 +1347,7 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 		return agentOnboardingSummaryError(outcomes)
 	}
 
-	agent, err := findDiscoveredAgent(discovered, args[0])
+	agent, err := findDiscoveredAgent(discovered, strings.Join(args, " "))
 	if err != nil {
 		return err
 	}
@@ -3230,19 +3230,187 @@ func onboardingStateNote(state string) string {
 }
 
 func findDiscoveredAgent(discovered []AgentConfig, value string) (AgentConfig, error) {
-	for _, agent := range discovered {
-		if strings.EqualFold(agent.Name, value) ||
-			strings.EqualFold(agent.DisplayName, value) ||
-			strings.EqualFold(runtimePrincipalIDForAgent(agent), value) {
+	return matchAgentConfigs(discovered, value)
+}
+
+// resolveAgentTypeName maps a user-supplied agent type string to a canonical
+// agentSpecs Name (e.g. "claude-code" → "Claude Code"). Used when a command
+// needs the type even if the agent is not present on disk.
+func resolveAgentTypeName(value string) (string, error) {
+	candidates := make([]AgentConfig, 0, len(agentSpecs))
+	for _, spec := range agentSpecs {
+		candidates = append(candidates, AgentConfig{Name: spec.Name})
+	}
+	agent, err := matchAgentConfigs(candidates, value)
+	if err != nil {
+		return "", err
+	}
+	return agent.Name, nil
+}
+
+// matchAgentConfigs resolves a user-supplied agent identifier against a list
+// of candidates. Matching is case-insensitive and accepts:
+//  1. Exact Name / DisplayName / runtime principal ID
+//  2. Slug equality (spaces, hyphens, underscores interchangeable)
+//  3. Unique slug prefix or unique leading slug token (e.g. "claude", "codex")
+//
+// Ambiguous matches return an error listing the candidates with their slugs.
+func matchAgentConfigs(candidates []AgentConfig, value string) (AgentConfig, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return AgentConfig{}, fmt.Errorf(
+			"agent %q not found. Available agents: %s",
+			value,
+			formatAvailableAgents(candidates),
+		)
+	}
+
+	for _, agent := range candidates {
+		if strings.EqualFold(strings.TrimSpace(agent.Name), trimmed) ||
+			strings.EqualFold(strings.TrimSpace(agent.DisplayName), trimmed) ||
+			strings.EqualFold(runtimePrincipalIDForAgent(agent), trimmed) {
 			return agent, nil
 		}
 	}
-	available := make([]string, 0, len(discovered))
-	for _, agent := range discovered {
-		available = append(available, agent.Name)
+
+	inputSlug := slugifyAgentName(trimmed)
+	var slugMatches []AgentConfig
+	for _, agent := range candidates {
+		if inputSlug == slugifyAgentName(agent.Name) ||
+			(strings.TrimSpace(agent.DisplayName) != "" &&
+				inputSlug == slugifyAgentName(agent.DisplayName)) {
+			slugMatches = append(slugMatches, agent)
+		}
 	}
-	sort.Strings(available)
-	return AgentConfig{}, fmt.Errorf("agent %q not found. Available agents: %s", value, strings.Join(available, ", "))
+	slugMatches = uniqueAgentConfigs(slugMatches)
+	if len(slugMatches) == 1 {
+		return slugMatches[0], nil
+	}
+	if len(slugMatches) > 1 {
+		return AgentConfig{}, ambiguousAgentError(trimmed, slugMatches)
+	}
+
+	var prefixMatches []AgentConfig
+	for _, agent := range candidates {
+		if agentMatchesPrefixOrToken(inputSlug, slugifyAgentName(agent.Name)) {
+			prefixMatches = append(prefixMatches, agent)
+			continue
+		}
+		if strings.TrimSpace(agent.DisplayName) != "" &&
+			agentMatchesPrefixOrToken(inputSlug, slugifyAgentName(agent.DisplayName)) {
+			prefixMatches = append(prefixMatches, agent)
+		}
+	}
+	prefixMatches = uniqueAgentConfigs(prefixMatches)
+	if len(prefixMatches) == 1 {
+		return prefixMatches[0], nil
+	}
+	if len(prefixMatches) > 1 {
+		return AgentConfig{}, ambiguousAgentError(trimmed, prefixMatches)
+	}
+
+	return AgentConfig{}, fmt.Errorf(
+		"agent %q not found. Available agents: %s",
+		trimmed,
+		formatAvailableAgents(candidates),
+	)
+}
+
+func agentMatchesPrefixOrToken(inputSlug, candidateSlug string) bool {
+	if inputSlug == "" || candidateSlug == "" {
+		return false
+	}
+	if candidateSlug == inputSlug {
+		return true
+	}
+	if strings.HasPrefix(candidateSlug, inputSlug+"-") {
+		return true
+	}
+	first, _, _ := strings.Cut(candidateSlug, "-")
+	return first == inputSlug
+}
+
+func uniqueAgentConfigs(agents []AgentConfig) []AgentConfig {
+	if len(agents) <= 1 {
+		return agents
+	}
+	seen := make(map[string]struct{}, len(agents))
+	out := make([]AgentConfig, 0, len(agents))
+	for _, agent := range agents {
+		key := strings.ToLower(strings.TrimSpace(agent.Name)) + "\x00" + filepath.Clean(agent.ConfigPath)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, agent)
+	}
+	return out
+}
+
+func formatAvailableAgents(agents []AgentConfig) string {
+	if len(agents) == 0 {
+		return "(none discovered)"
+	}
+	labels := make([]string, 0, len(agents))
+	for _, agent := range agents {
+		name := strings.TrimSpace(agent.Name)
+		if name == "" {
+			name = strings.TrimSpace(agent.DisplayName)
+		}
+		slug := slugifyAgentName(name)
+		if slug != "" && !strings.EqualFold(slug, name) {
+			labels = append(labels, fmt.Sprintf("%s (%s)", name, slug))
+		} else {
+			labels = append(labels, name)
+		}
+	}
+	sort.Strings(labels)
+	return strings.Join(labels, ", ")
+}
+
+func ambiguousAgentError(value string, matches []AgentConfig) error {
+	return fmt.Errorf(
+		"agent %q is ambiguous; matches: %s",
+		value,
+		formatAvailableAgents(matches),
+	)
+}
+
+// completeDiscoveredAgentArgs suggests discovered agent display names and
+// slugs for shell completion.
+func completeDiscoveredAgentArgs(
+	_ *cobra.Command,
+	args []string,
+	_ string,
+) ([]string, cobra.ShellCompDirective) {
+	if len(args) > 0 {
+		// Multi-word names are joined at runtime; once the user has started a
+		// second positional token we stop suggesting full replacements.
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	discovered, err := discoverAgents(io.Discard, false)
+	if err != nil || len(discovered) == 0 {
+		suggestions := make([]string, 0, len(agentSpecs)*2)
+		for _, spec := range agentSpecs {
+			suggestions = append(suggestions, spec.Name)
+			if slug := slugifyAgentName(spec.Name); slug != "" && !strings.EqualFold(slug, spec.Name) {
+				suggestions = append(suggestions, slug)
+			}
+		}
+		return suggestions, cobra.ShellCompDirectiveNoFileComp
+	}
+	suggestions := make([]string, 0, len(discovered)*2)
+	for _, agent := range discovered {
+		name := strings.TrimSpace(agent.Name)
+		if name == "" {
+			continue
+		}
+		suggestions = append(suggestions, name)
+		if slug := slugifyAgentName(name); slug != "" && !strings.EqualFold(slug, name) {
+			suggestions = append(suggestions, slug)
+		}
+	}
+	return suggestions, cobra.ShellCompDirectiveNoFileComp
 }
 
 func printEnrollmentPlan(plan managedMCPEnrollmentPlan, dryRun bool) {
@@ -3452,6 +3620,7 @@ func applyManagedGatewayForAgent(
 	baseURL string,
 	token string,
 	modelAlias string,
+	familyAliases []string,
 ) (managedMCPEnrollmentPlan, error) {
 	switch strings.ToLower(strings.TrimSpace(agent.Name)) {
 	case "codex cli":
@@ -3459,7 +3628,7 @@ func applyManagedGatewayForAgent(
 	case "opencode":
 		return applyOpenCodeManagedGateway(plan, baseURL, token, modelAlias)
 	case "claude code":
-		return applyClaudeManagedGateway(plan, baseURL, token, modelAlias)
+		return applyClaudeManagedGateway(plan, baseURL, token, modelAlias, familyAliases)
 	case "gemini cli":
 		return applyGeminiManagedGateway(plan, baseURL, token, modelAlias)
 	case "hermes":
@@ -3612,7 +3781,11 @@ func applyOpenCodeManagedGateway(plan managedMCPEnrollmentPlan, baseURL, token, 
 	return refreshManagedPlanSnapshots(plan)
 }
 
-func applyClaudeManagedGateway(plan managedMCPEnrollmentPlan, baseURL, token, modelAlias string) (managedMCPEnrollmentPlan, error) {
+func applyClaudeManagedGateway(
+	plan managedMCPEnrollmentPlan,
+	baseURL, token, modelAlias string,
+	familyAliases []string,
+) (managedMCPEnrollmentPlan, error) {
 	env, ok := asObjectMap(plan.ManagedDocument["env"])
 	if !ok {
 		env = make(map[string]interface{})
@@ -3648,8 +3821,21 @@ func applyClaudeManagedGateway(plan managedMCPEnrollmentPlan, baseURL, token, mo
 	if selection, envKey := claudePinnedModelSelection(modelAlias); envKey != "" {
 		plan.ManagedDocument["model"] = selection
 		env["ANTHROPIC_MODEL"] = selection
-		env[envKey] = modelAlias
-		env[envKey+"_NAME"] = "Preloop " + modelAlias
+		// The pinned model's alias goes first so it wins within its own
+		// family; sibling family aliases follow so `/model` switching,
+		// background/fast-path (haiku) requests, and subagents pinned to a
+		// different family all resolve at the gateway instead of 404ing.
+		// clearClaudePinnedModelEnv above wiped every family key, and
+		// claudeFamilyModelEnv only re-adds families that actually resolve,
+		// so no key is ever left pointing at a model the account lacks.
+		// CLAUDE_CODE_SUBAGENT_MODEL stays unset on purpose: with the
+		// family keys covered, subagents resolve through the same selector
+		// chain as stock Claude Code, preserving default model-selection UX.
+		coverage := append([]string{modelAlias}, familyAliases...)
+		for key, value := range claudeFamilyModelEnv(coverage) {
+			env[key] = value
+		}
+		plan.Notes = append(plan.Notes, describeClaudeFamilyCoverage(coverage))
 	} else {
 		// Also replace settings.model: a stale explicit selection (e.g.
 		// "claude-fable-5[1m]") outranks the env pin, and when it is not
@@ -3882,8 +4068,30 @@ func isGeminiCLIAgent(agent AgentConfig) bool {
 	return strings.EqualFold(strings.TrimSpace(agent.Name), "Gemini CLI")
 }
 
-func claudeManagedGatewayEnvKeys() []string {
+// claudeFamilyEnvKeyVariants lists every env key Claude Code derives from one
+// family's ANTHROPIC_DEFAULT_<FAMILY>_MODEL base key.
+func claudeFamilyEnvKeyVariants(envKey string) []string {
 	return []string{
+		envKey,
+		envKey + "_NAME",
+		envKey + "_DESCRIPTION",
+		envKey + "_SUPPORTED_CAPABILITIES",
+	}
+}
+
+// claudeAllFamilyEnvKeys returns the family-selector env keys for every family
+// in claudeModelFamilies. Derived from the table (not hand-listed) so adding a
+// family — e.g. fable — automatically extends clearing and offboard restore.
+func claudeAllFamilyEnvKeys() []string {
+	keys := make([]string, 0, 4*len(claudeModelFamilies))
+	for _, family := range claudeModelFamilies {
+		keys = append(keys, claudeFamilyEnvKeyVariants(family.envKey)...)
+	}
+	return keys
+}
+
+func claudeManagedGatewayEnvKeys() []string {
+	keys := []string{
 		"ANTHROPIC_BASE_URL",
 		"ANTHROPIC_API_KEY",
 		"ANTHROPIC_AUTH_TOKEN",
@@ -3892,40 +4100,16 @@ func claudeManagedGatewayEnvKeys() []string {
 		"ANTHROPIC_MODEL",
 		"ANTHROPIC_CUSTOM_MODEL_OPTION",
 		"ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
-		"ANTHROPIC_DEFAULT_OPUS_MODEL",
-		"ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
-		"ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION",
-		"ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES",
-		"ANTHROPIC_DEFAULT_SONNET_MODEL",
-		"ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
-		"ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION",
-		"ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES",
-		"ANTHROPIC_DEFAULT_HAIKU_MODEL",
-		"ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
-		"ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
-		"ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES",
-		claudeSubagentModelEnvKey,
 	}
+	keys = append(keys, claudeAllFamilyEnvKeys()...)
+	return append(keys, claudeSubagentModelEnvKey)
 }
 
 func clearClaudePinnedModelEnv(env map[string]interface{}) {
-	for _, key := range []string{
-		"ANTHROPIC_DEFAULT_OPUS_MODEL",
-		"ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
-		"ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION",
-		"ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES",
-		"ANTHROPIC_DEFAULT_SONNET_MODEL",
-		"ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
-		"ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION",
-		"ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES",
-		"ANTHROPIC_DEFAULT_HAIKU_MODEL",
-		"ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
-		"ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
-		"ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES",
-		claudeSubagentModelEnvKey,
-	} {
+	for _, key := range claudeAllFamilyEnvKeys() {
 		delete(env, key)
 	}
+	delete(env, claudeSubagentModelEnvKey)
 }
 
 func ensureLegacyCodexMCPServer(agent AgentConfig, doc map[string]interface{}, baseURL string, token string) {

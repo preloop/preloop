@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -190,6 +191,80 @@ func TestResolvePermissionDecisionFailDefault(t *testing.T) {
 	}
 }
 
+func TestResolvePermissionDecisionSkipsClaudeHookUnderCursor(t *testing.T) {
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+
+	// Even with a durable credential that would otherwise escalate (and fail
+	// closed on an unreachable Preloop), Cursor's third-party load of the
+	// Claude Code PreToolUse hook must auto-allow.
+	agent := AgentConfig{Name: "Claude Code", ConfigPath: filepath.Join(home, ".claude", "settings.json")}
+	writeTestPermissionCredential(t, home, runtimePrincipalIDForAgent(agent), permissionHookCredential{
+		BaseURL: "https://preloop.ai",
+		Token:   "agt_cursor_cross_talk",
+		Source:  permissionSourceClaudeCode,
+	})
+
+	prevGetenv := permissionHookGetenv
+	t.Cleanup(func() { permissionHookGetenv = prevGetenv })
+	permissionHookGetenv = func(key string) string {
+		switch key {
+		case "CURSOR_AGENT":
+			return "1"
+		case "CURSOR_VERSION":
+			return "1.0.0-test"
+		default:
+			return ""
+		}
+	}
+
+	raw := []byte(`{"tool_name":"Write","tool_input":{"file_path":"/tmp/x","content":"hi"}}`)
+	decision := resolvePermissionDecision(permissionSourceClaudeCode, raw, false)
+	if decision.Behavior != "allow" {
+		t.Fatalf("expected allow under Cursor host, got %q (%s)", decision.Behavior, decision.Reason)
+	}
+	if !strings.Contains(decision.Reason, "Cursor") {
+		t.Errorf("reason should mention Cursor, got %q", decision.Reason)
+	}
+
+	// Codex / Cursor sources are unaffected by the Claude-under-Cursor guard.
+	permissionHookGetenv = func(string) string { return "" }
+	codexDecision := resolvePermissionDecision(permissionSourceCodexCLI, raw, false)
+	if codexDecision.Behavior != "deny" {
+		t.Errorf("codex without credential should still fail closed, got %q", codexDecision.Behavior)
+	}
+}
+
+func TestIsCursorHostInvokingClaudeHook(t *testing.T) {
+	prevGetenv := permissionHookGetenv
+	t.Cleanup(func() { permissionHookGetenv = prevGetenv })
+
+	permissionHookGetenv = func(string) string { return "" }
+	if isCursorHostInvokingClaudeHook() {
+		t.Fatal("expected false with empty env")
+	}
+
+	permissionHookGetenv = func(key string) string {
+		if key == "CURSOR_PROJECT_DIR" {
+			return "/repo"
+		}
+		return ""
+	}
+	if !isCursorHostInvokingClaudeHook() {
+		t.Fatal("expected true when CURSOR_PROJECT_DIR is set")
+	}
+
+	permissionHookGetenv = func(key string) string {
+		if key == "CURSOR_AGENT" {
+			return "true"
+		}
+		return ""
+	}
+	if !isCursorHostInvokingClaudeHook() {
+		t.Fatal("expected true when CURSOR_AGENT is truthy")
+	}
+}
+
 func TestResolvePermissionDecisionClientFallbackAllow(t *testing.T) {
 	home := t.TempDir()
 	testenv.SetHome(t, home)
@@ -291,8 +366,12 @@ func TestInstallRemoveApprovalHooksClaudeCode(t *testing.T) {
 		t.Fatalf("write settings: %v", err)
 	}
 
-	if err := installApprovalHooks(agent, "https://preloop.ai", "agt_x", nil); err != nil {
+	var installOut strings.Builder
+	if err := installApprovalHooks(agent, "https://preloop.ai", "agt_x", &installOut); err != nil {
 		t.Fatalf("installApprovalHooks: %v", err)
+	}
+	if note := installOut.String(); !strings.Contains(note, "onboard Cursor --approvals") {
+		t.Errorf("expected Cursor cross-talk note in onboarding output, got %q", note)
 	}
 
 	doc := readJSONDoc(t, settingsPath)
@@ -382,7 +461,7 @@ func TestInstallRemoveApprovalHooksCursor(t *testing.T) {
 		t.Errorf("cursor hooks version missing/wrong: %v", doc["version"])
 	}
 	hooks := doc["hooks"].(map[string]interface{})
-	for _, key := range []string{"beforeShellExecution", "beforeMCPExecution"} {
+	for _, key := range []string{"beforeShellExecution", "beforeMCPExecution", "preToolUse"} {
 		arr, _ := hooks[key].([]interface{})
 		if len(arr) != 1 {
 			t.Fatalf("expected one %s entry, got %v", key, arr)
@@ -680,21 +759,27 @@ func TestClaudeSafeReadBashFallback(t *testing.T) {
 		return req
 	}
 
-	// With no configured rules, read-only Bash commands are auto-allowed...
-	if req := build("git status", permissionHookCredential{}); req.ClientDecision != "allow" {
-		t.Errorf("safe-read Bash should auto-allow, got %q", req.ClientDecision)
+	// Claude Code's default is exact policy fidelity: with no configured
+	// rules, even read-only Bash commands escalate to Preloop, mirroring the
+	// prompt Claude Code itself would have shown.
+	if req := build("git status", permissionHookCredential{}); req.ClientDecision != "ask" {
+		t.Errorf("safe-read Bash should ask by default, got %q", req.ClientDecision)
 	}
-	// ...but mutating or chained commands still escalate.
+	// Mutating or chained commands escalate too.
 	if req := build("git status && git push", permissionHookCredential{}); req.ClientDecision != "ask" {
 		t.Errorf("chained command should ask, got %q", req.ClientDecision)
 	}
 	if req := build("git push", permissionHookCredential{}); req.ClientDecision != "ask" {
 		t.Errorf("mutating command should ask, got %q", req.ClientDecision)
 	}
-	// The credential file can switch the fallback off.
-	off := permissionHookCredential{SafeReadAutoAllow: boolPtr(false)}
-	if req := build("git status", off); req.ClientDecision != "ask" {
-		t.Errorf("disabled safe-read should ask, got %q", req.ClientDecision)
+	// The credential file can opt in to the read-only auto-allow...
+	on := permissionHookCredential{SafeReadAutoAllow: boolPtr(true)}
+	if req := build("git status", on); req.ClientDecision != "allow" {
+		t.Errorf("opted-in safe-read should auto-allow, got %q", req.ClientDecision)
+	}
+	// ...without widening mutating commands.
+	if req := build("git push", on); req.ClientDecision != "ask" {
+		t.Errorf("mutating command should still ask when opted in, got %q", req.ClientDecision)
 	}
 
 	// A configured deny rule wins over the safe-read fallback.
@@ -757,6 +842,45 @@ func TestCursorSafeReadAutoAllow(t *testing.T) {
 	}
 }
 
+func TestCursorLocalWorkspaceEditsAutoAllow(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "Write relative path allows",
+			raw:  `{"cwd":"/repo","tool_name":"Write","tool_input":{"file_path":"src/foo.ts"}}`,
+			want: "allow",
+		},
+		{
+			name: "StrReplace workspace path allows",
+			raw:  `{"cwd":"/repo","tool_name":"StrReplace","tool_input":{"path":"/repo/src/foo.ts"}}`,
+			want: "allow",
+		},
+		{
+			name: "Write outside workspace asks",
+			raw:  `{"cwd":"/repo","tool_name":"Write","tool_input":{"file_path":"/etc/passwd"}}`,
+			want: "ask",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := buildPermissionRequest(
+				permissionSourceCursor,
+				[]byte(tc.raw),
+				permissionHookCredential{},
+			)
+			if err != nil {
+				t.Fatalf("buildPermissionRequest: %v", err)
+			}
+			if req.ClientDecision != tc.want {
+				t.Fatalf("client_decision = %q, want %q", req.ClientDecision, tc.want)
+			}
+		})
+	}
+}
+
 func TestFailureDecisionReasonsAreActionable(t *testing.T) {
 	home := t.TempDir()
 	testenv.SetHome(t, home)
@@ -792,13 +916,109 @@ func TestFailureDecisionReasonsAreActionable(t *testing.T) {
 	}
 	for _, want := range []string{
 		"could not reach Preloop at http://127.0.0.1:1" + permissionCheckPath,
-		"Failing closed",
+		"denied by default",
 		"preloop agents onboard \"Codex CLI\" --approvals",
 		filepath.Join(home, ".codex", "hooks.json"),
 	} {
 		if !containsOne(decision.Reason, want) {
 			t.Errorf("unreachable reason lacks %q:\n%s", want, decision.Reason)
 		}
+	}
+}
+
+// Claude Code and Cursor have a native "ask" verdict, so a Preloop hard
+// failure hands the prompt back to the agent's local UI instead of denying;
+// Codex (no ask verdict) stays fail-closed, and --fail-open still wins.
+func TestFailureDecisionAskFallbackBySource(t *testing.T) {
+	t.Parallel()
+	if got := failureDecision(permissionSourceClaudeCode, false, "boom"); got.Behavior != "ask" {
+		t.Errorf("claude_code failure should ask locally, got %q", got.Behavior)
+	}
+	if got := failureDecision(permissionSourceCursor, false, "boom"); got.Behavior != "ask" {
+		t.Errorf("cursor failure should ask locally, got %q", got.Behavior)
+	}
+	if got := failureDecision(permissionSourceCodexCLI, false, "boom"); got.Behavior != "deny" {
+		t.Errorf("codex failure should fail closed, got %q", got.Behavior)
+	}
+	if got := failureDecision(permissionSourceClaudeCode, true, "boom"); got.Behavior != "allow" {
+		t.Errorf("fail-open should win over ask fallback, got %q", got.Behavior)
+	}
+}
+
+// A timed-out (unanswered) Preloop approval re-surfaces the agent's local
+// prompt on ask-capable adapters; an explicit human deny never does.
+func TestResolvePermissionDecisionTimeoutAskFallback(t *testing.T) {
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+	overrideManagedSettingsPath(t, filepath.Join(t.TempDir(), "absent.json"))
+
+	respond := func(resp permissionCheckResponse) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(resp)
+		}))
+	}
+	raw := []byte(`{"tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/x"}}`)
+
+	// Timed out -> ask locally (Claude Code).
+	server := respond(permissionCheckResponse{
+		Decision: "deny", Reason: "Approval request timed out", TimedOut: true,
+	})
+	writeTestPermissionCredential(t, home, "claude-agent", permissionHookCredential{
+		BaseURL: server.URL, Token: "agt_test", Source: permissionSourceClaudeCode,
+	})
+	decision := resolvePermissionDecision(permissionSourceClaudeCode, raw, false)
+	server.Close()
+	if decision.Behavior != "ask" {
+		t.Errorf("timed-out approval should fall back to local ask, got %q (%s)", decision.Behavior, decision.Reason)
+	}
+
+	// Explicit human deny -> deny, never downgraded.
+	server = respond(permissionCheckResponse{Decision: "deny", Reason: "Declined on watch"})
+	writeTestPermissionCredential(t, home, "claude-agent", permissionHookCredential{
+		BaseURL: server.URL, Token: "agt_test", Source: permissionSourceClaudeCode,
+	})
+	decision = resolvePermissionDecision(permissionSourceClaudeCode, raw, false)
+	server.Close()
+	if decision.Behavior != "deny" || decision.Reason != "Declined on watch" {
+		t.Errorf("human deny must stay deny, got %+v", decision)
+	}
+
+	// Codex has no ask verdict: a timed-out approval stays deny.
+	server = respond(permissionCheckResponse{
+		Decision: "deny", Reason: "Approval request timed out", TimedOut: true,
+	})
+	writeTestPermissionCredential(t, home, "codex-agent", permissionHookCredential{
+		BaseURL: server.URL, Token: "agt_test", Source: permissionSourceCodexCLI,
+	})
+	decision = resolvePermissionDecision(permissionSourceCodexCLI, raw, false)
+	server.Close()
+	if decision.Behavior != "deny" {
+		t.Errorf("codex timeout must stay deny, got %q", decision.Behavior)
+	}
+}
+
+// The ask verdict renders into each adapter's native schema.
+func TestRenderHookDecisionAsk(t *testing.T) {
+	t.Parallel()
+	ask := hookDecision{Behavior: "ask", Reason: "ask locally"}
+
+	claude := renderHookDecision(permissionSourceClaudeCode, ask)
+	cs := claude["hookSpecificOutput"].(map[string]interface{})
+	if cs["permissionDecision"] != "ask" {
+		t.Errorf("claude ask mapping wrong: %v", cs)
+	}
+
+	cursor := renderHookDecision(permissionSourceCursor, ask)
+	if cursor["permission"] != "ask" {
+		t.Errorf("cursor ask mapping wrong: %v", cursor)
+	}
+
+	// Codex degrades ask to deny (schema has no ask verdict).
+	codex := renderHookDecision(permissionSourceCodexCLI, ask)
+	co := codex["hookSpecificOutput"].(map[string]interface{})
+	dec := co["decision"].(map[string]interface{})
+	if dec["behavior"] != "deny" {
+		t.Errorf("codex ask should degrade to deny, got %v", dec)
 	}
 }
 

@@ -60,8 +60,17 @@ async def test_resolve_workflow_recovers_from_duplicate_name_race() -> None:
     empty_result.scalars.return_value.first.return_value = None
     existing_result = MagicMock()
     existing_result.scalars.return_value.first.return_value = existing
+    # Lookups before the create attempt: account-defaults pin, account
+    # default workflow, any workflow, the named agent-tool workflow; after
+    # the IntegrityError one more fetch finds the concurrently created row.
     db.execute = AsyncMock(
-        side_effect=[empty_result, empty_result, empty_result, existing_result]
+        side_effect=[
+            empty_result,
+            empty_result,
+            empty_result,
+            empty_result,
+            existing_result,
+        ]
     )
 
     workflow = await _resolve_workflow(db, account_id, uuid.uuid4())
@@ -172,16 +181,26 @@ def _governance_off_db(default_workflow: models.ApprovalWorkflow) -> AsyncMock:
     account = MagicMock()
     account.meta_data = {}
 
+    # _native_tool_approvals_disabled reads (agent_setting, account_default)
+    # as one row.
     setting_result = MagicMock()
-    setting_result.scalar.return_value = "off"
+    setting_result.first.return_value = ("off", None)
     account_and_workflow = MagicMock()
     account_and_workflow.first.return_value = (account, None)
+    # Account-defaults workflow pin lookup (no pin configured).
+    defaults_pin_result = MagicMock()
+    defaults_pin_result.scalars.return_value.first.return_value = None
     default_result = MagicMock()
     default_result.scalars.return_value.first.return_value = default_workflow
 
     db = AsyncMock()
     db.execute = AsyncMock(
-        side_effect=[setting_result, account_and_workflow, default_result]
+        side_effect=[
+            setting_result,
+            account_and_workflow,
+            defaults_pin_result,
+            default_result,
+        ]
     )
     return db
 
@@ -232,7 +251,7 @@ async def test_request_agent_permission_disabled_records_auto_approval() -> None
         mock_service.create_and_notify = AsyncMock(return_value=approval)
         mock_service_cls.return_value = mock_service
 
-        decision, _reason, request_id = await request_agent_permission(
+        decision, _reason, request_id, _timed_out = await request_agent_permission(
             base_url="http://localhost",
             account_id=account_id,
             user_id=uuid.uuid4(),
@@ -300,7 +319,7 @@ async def test_request_agent_permission_disabled_allows_when_recording_fails() -
         )
         mock_service_cls.return_value = mock_service
 
-        decision, reason, request_id = await request_agent_permission(
+        decision, reason, request_id, _timed_out = await request_agent_permission(
             base_url="http://localhost",
             account_id=account_id,
             user_id=uuid.uuid4(),
@@ -435,7 +454,7 @@ async def test_request_agent_permission_absent_setting_runs_approval_path() -> N
         mock_service.create_and_notify = AsyncMock(return_value=approval)
         mock_service_cls.return_value = mock_service
 
-        decision, reason, request_id = await request_agent_permission(
+        decision, reason, request_id, _timed_out = await request_agent_permission(
             base_url="http://localhost",
             account_id=account_id,
             user_id=uuid.uuid4(),

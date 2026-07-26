@@ -605,6 +605,7 @@ func buildClaudeCodeLiveValidationSpec(ctx liveValidationContext) (gatewayLiveVa
 	for _, key := range []string{
 		"ANTHROPIC_CUSTOM_MODEL_OPTION",
 		"ANTHROPIC_DEFAULT_OPUS_MODEL",
+		"ANTHROPIC_DEFAULT_FABLE_MODEL",
 		"ANTHROPIC_DEFAULT_SONNET_MODEL",
 		"ANTHROPIC_DEFAULT_HAIKU_MODEL",
 		"ANTHROPIC_MODEL",

@@ -313,9 +313,11 @@ export class SessionReplayPanel extends LitElement {
   @state()
   private transcriptFilter: TranscriptFilter = 'all';
 
-  // Unified sortable chat controls.
+  // Unified sortable chat controls. Newest-first is the default: operators
+  // open a session to see what it is doing NOW (or what just failed), and the
+  // most recent turn answers that without scrolling past the whole history.
   @state()
-  private chatSort: ChatSort = 'oldest';
+  private chatSort: ChatSort = 'newest';
 
   @state()
   private chatTypeFilter: ChatTypeFilter = 'all';
@@ -452,6 +454,17 @@ export class SessionReplayPanel extends LitElement {
       flex-direction: column;
       gap: var(--sl-spacing-small);
       margin-top: var(--sl-spacing-small);
+    }
+
+    /* Collapsed re-sent context: a quiet secondary strip, not a content card —
+       it hides repetition, so it must not compete with the fresh messages. */
+    .cached-prefix-details::part(base) {
+      background: var(--sl-color-neutral-50);
+      border: 1px dashed var(--sl-color-neutral-300);
+    }
+
+    .cached-prefix-details::part(header) {
+      padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
     }
 
     .chat-message.user {
@@ -4249,6 +4262,14 @@ export class SessionReplayPanel extends LitElement {
     return turns;
   }
 
+  // Message order inside a turn follows the turn sort: with newest-first
+  // turns, the latest message of each request also renders first, so the very
+  // latest exchange is the first thing on screen. Chronological (oldest) sort
+  // keeps natural conversation order.
+  private orderMessagesForChatSort<T>(messages: T[]): T[] {
+    return this.chatSort === 'newest' ? [...messages].reverse() : messages;
+  }
+
   private turnPassesTypeFilter(turn: ChatTurn): boolean {
     if (this.chatTypeFilter === 'all') return true;
     if (this.chatTypeFilter === 'tools') return turn.toolCallCount > 0;
@@ -4545,6 +4566,32 @@ export class SessionReplayPanel extends LitElement {
     const fullMessages = this.getRequestMessages(detail);
     const payload = detail.payload || {};
     const cachedTokens = this.getEventCachedTokens(detail);
+    // Split the full context into the re-sent prefix (messages this turn did
+    // NOT add — the part the provider serves from prompt cache on agentic
+    // loops) and the fresh tail. The prefix is collapsed by default: it
+    // repeats content already shown in earlier turns and, on long sessions,
+    // buries the one new exchange the operator expanded the turn to see.
+    const turnSignatures = new Set(
+      turn.deltaMessages.map((message) => message.signature)
+    );
+    let prefixEnd = 0;
+    while (
+      prefixEnd < fullMessages.length &&
+      !turnSignatures.has(this.getMessageSignature(fullMessages[prefixEnd]))
+    ) {
+      prefixEnd += 1;
+    }
+    // The turn has delta messages but NONE matched the raw request payload
+    // (e.g. preview truncation/redaction changed the text). A confident split
+    // is impossible — show everything rather than mislabel the whole request
+    // as re-sent context.
+    if (turnSignatures.size > 0 && prefixEnd >= fullMessages.length) {
+      prefixEnd = 0;
+    }
+    const cachedPrefix = fullMessages.slice(0, prefixEnd);
+    const freshMessages = this.orderMessagesForChatSort(
+      fullMessages.slice(prefixEnd)
+    );
     const tools = Array.isArray(
       (payload.request as Record<string, unknown>)?.tools
     )
@@ -4575,13 +4622,37 @@ export class SessionReplayPanel extends LitElement {
           </div>
           <div class="message-list">
             ${
-              fullMessages.length
-                ? fullMessages.map((message) =>
+              cachedPrefix.length
+                ? html`
+                    <sl-details class="cached-prefix-details">
+                      <div slot="summary" class="event-meta">
+                        ${cachedPrefix.length} earlier context
+                        message${cachedPrefix.length === 1 ? '' : 's'} re-sent
+                        from previous
+                        turns${
+                          cachedTokens
+                            ? ` (~${formatNumber(cachedTokens)} tok prompt-cached)`
+                            : ''
+                        }
+                        — expand to view
+                      </div>
+                      ${cachedPrefix.map((message) =>
+                        this.renderMessage(message, 'chat', message.key)
+                      )}
+                    </sl-details>
+                  `
+                : nothing
+            }
+            ${
+              freshMessages.length
+                ? freshMessages.map((message) =>
                     this.renderMessage(message, 'chat', message.key)
                   )
-                : html`<div class="event-meta">
-                    No request messages captured for this event.
-                  </div>`
+                : cachedPrefix.length
+                  ? nothing
+                  : html`<div class="event-meta">
+                      No request messages captured for this event.
+                    </div>`
             }
           </div>
         </sl-details>
@@ -4697,7 +4768,7 @@ export class SessionReplayPanel extends LitElement {
                   ${
                     turn.deltaMessages.length
                       ? repeat(
-                          turn.deltaMessages,
+                          this.orderMessagesForChatSort(turn.deltaMessages),
                           (message) => message.key,
                           (message) => this.renderChatBubble(message)
                         )

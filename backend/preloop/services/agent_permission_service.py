@@ -22,7 +22,10 @@ from sqlalchemy.exc import IntegrityError
 
 from preloop.models import models
 from preloop.models.db.session import get_async_db_session
-from preloop.schemas.subject_governance import NATIVE_TOOL_APPROVALS_OFF
+from preloop.schemas.subject_governance import (
+    NATIVE_TOOL_APPROVALS_ENFORCE,
+    NATIVE_TOOL_APPROVALS_OFF,
+)
 from preloop.services.approval_workflow_service import DEFAULT_APPROVAL_TYPE
 from preloop.services.subject_governance import (
     SUBJECT_TYPE_MANAGED_AGENTS,
@@ -67,25 +70,52 @@ def _managed_agent_approval_workflow_pin(managed_agent_id: uuid.UUID):
     return _managed_agent_governance_field(managed_agent_id, "approval_workflow_id")
 
 
+def _account_defaults_governance_field(field: str):
+    """SQL expression extracting an account-defaults governance field as text.
+
+    Same ``json_extract_path_text`` shape as the per-agent extractor (see
+    that docstring for why ``#>>`` must not be used here).
+    """
+    return func.json_extract_path_text(
+        models.Account.meta_data,
+        "subject_governance",
+        "account_defaults",
+        field,
+    )
+
+
 async def _native_tool_approvals_disabled(
     db: Any, account_id: str, managed_agent_id: uuid.UUID
 ) -> bool:
     """Return True when native tool approvals are switched off for this agent.
 
-    Reads ``Account.meta_data.subject_governance.managed_agents.<agent_id>.
-    native_tool_approvals``; any value other than ``"off"`` (including an
-    absent field) means approvals are enforced.
+    Resolution chain, first explicit value wins:
+
+    1. Per-agent ``subject_governance.managed_agents.<agent_id>.
+       native_tool_approvals`` ("enforce" or "off").
+    2. Account-wide ``subject_governance.account_defaults.
+       native_tool_approvals``.
+    3. Enforce (fail safe) when neither is set.
+
+    An explicit per-agent "enforce" therefore shields the agent from an
+    account default of "off" — overrides are bidirectional, not just
+    "off wins".
     """
     result = await db.execute(
         select(
-            _managed_agent_governance_field(managed_agent_id, "native_tool_approvals")
+            _managed_agent_governance_field(managed_agent_id, "native_tool_approvals"),
+            _account_defaults_governance_field("native_tool_approvals"),
         )
         .select_from(models.Account)
         .where(models.Account.id == account_id)
         .limit(1)
     )
-    setting = result.scalar()
-    return (str(setting or "")).strip().lower() == NATIVE_TOOL_APPROVALS_OFF
+    row = result.first()
+    agent_setting = str((row[0] if row else None) or "").strip().lower()
+    account_setting = str((row[1] if row else None) or "").strip().lower()
+    if agent_setting in (NATIVE_TOOL_APPROVALS_ENFORCE, NATIVE_TOOL_APPROVALS_OFF):
+        return agent_setting == NATIVE_TOOL_APPROVALS_OFF
+    return account_setting == NATIVE_TOOL_APPROVALS_OFF
 
 
 async def _fetch_agent_tool_approvals_workflow(
@@ -168,10 +198,10 @@ async def _resolve_workflow(
     """Resolve the approval workflow to use, creating a minimal one if needed.
 
     Prefers the workflow the operator configured for the managed agent
-    (subject governance), then the account default, then any existing
-    workflow, then creates a dedicated "Agent Tool Approvals" standard
-    workflow that notifies the calling user so the request can reach their
-    devices.
+    (subject governance), then the account-defaults governance pin, then the
+    account default workflow, then any existing workflow, then creates a
+    dedicated "Agent Tool Approvals" standard workflow that notifies the
+    calling user so the request can reach their devices.
     """
     if managed_agent_id is not None:
         workflow = await _resolve_agent_configured_workflow(
@@ -179,6 +209,27 @@ async def _resolve_workflow(
         )
         if workflow is not None:
             return workflow
+
+    # Account-defaults governance pin (Tools page "Native tool approvals"
+    # card). Same join-as-text shape as the per-agent pin so malformed JSON
+    # never raises a cast error.
+    result = await db.execute(
+        select(models.ApprovalWorkflow)
+        .select_from(models.Account)
+        .join(
+            models.ApprovalWorkflow,
+            and_(
+                models.ApprovalWorkflow.account_id == models.Account.id,
+                cast(models.ApprovalWorkflow.id, String)
+                == _account_defaults_governance_field("approval_workflow_id"),
+            ),
+        )
+        .where(models.Account.id == account_id)
+        .limit(1)
+    )
+    workflow = result.scalars().first()
+    if workflow is not None:
+        return workflow
 
     result = await db.execute(
         select(models.ApprovalWorkflow)
@@ -310,15 +361,18 @@ async def request_agent_permission(
             ``ask`` to escalate to human approval.
 
     Returns:
-        Tuple of ``(decision, reason, request_id)`` where ``decision`` is
-        ``"allow"`` or ``"deny"`` and ``request_id`` is set when an approval
-        row was created.
+        Tuple of ``(decision, reason, request_id, timed_out)`` where
+        ``decision`` is ``"allow"`` or ``"deny"``, ``request_id`` is set when
+        an approval row was created, and ``timed_out`` is True only when the
+        deny is the expiry of an unanswered approval rather than a human (or
+        policy) judgement — adapters with a native "ask" verdict use it to
+        fall back to the agent's local prompt instead of hard-denying.
     """
     decision = (client_decision or "").strip().lower()
     if decision == "allow":
-        return ("allow", "", None)
+        return ("allow", "", None, False)
     if decision == "deny":
-        return ("deny", "Denied by client policy", None)
+        return ("deny", "Denied by client policy", None, False)
 
     from preloop.services.approval_service import ApprovalService
     from preloop.models.crud.approval_request import get_approval_request_async
@@ -381,6 +435,7 @@ async def request_agent_permission(
                 "allow",
                 "Native tool approvals are disabled for this agent in Preloop",
                 None,
+                False,
             )
 
         request_id = str(approval.id)
@@ -393,6 +448,7 @@ async def request_agent_permission(
             "allow" if status == "approved" else "deny",
             comment or f"Approval {status}",
             request_id,
+            status == "expired",
         )
 
     # Poll with a FRESH session each iteration so the external decide() commit
@@ -409,12 +465,14 @@ async def request_agent_permission(
                 poll_db, request_id=uuid.UUID(request_id)
             )
             if req is None:
-                return ("deny", "Approval request not found", request_id)
+                return ("deny", "Approval request not found", request_id, False)
             status = req.status
             comment = req.approver_comment
         if status == "approved":
-            return ("allow", comment or "", request_id)
-        if status in ("declined", "cancelled", "expired"):
-            return ("deny", comment or f"Approval {status}", request_id)
+            return ("allow", comment or "", request_id, False)
+        if status in ("declined", "cancelled"):
+            return ("deny", comment or f"Approval {status}", request_id, False)
+        if status == "expired":
+            return ("deny", comment or "Approval expired", request_id, True)
 
-    return ("deny", "Approval request timed out", request_id)
+    return ("deny", "Approval request timed out", request_id, True)

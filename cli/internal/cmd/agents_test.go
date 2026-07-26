@@ -3013,6 +3013,7 @@ func TestApplyClaudeManagedGatewayConfiguresEnv(t *testing.T) {
 		"https://preloop.example",
 		"claude-durable-token",
 		"amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected gateway apply error: %v", err)
@@ -3085,6 +3086,7 @@ func TestApplyClaudeManagedGatewayNonAnthropicModelMapsAllSelectors(t *testing.T
 		"https://preloop.example",
 		"claude-durable-token",
 		"moonshot/kimi-k3-0905",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected gateway apply error: %v", err)
@@ -3132,6 +3134,7 @@ func TestApplyClaudeManagedGatewayReonboardToAnthropicClearsNonFamilySelectors(t
 		"https://preloop.example",
 		"claude-durable-token",
 		"moonshot/kimi-k3-0905",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected gateway apply error: %v", err)
@@ -3141,6 +3144,7 @@ func TestApplyClaudeManagedGatewayReonboardToAnthropicClearsNonFamilySelectors(t
 		"https://preloop.example",
 		"claude-durable-token",
 		"anthropic/claude-sonnet-4-5",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected gateway re-apply error: %v", err)
@@ -3175,6 +3179,7 @@ func TestApplyClaudeManagedGatewayReonboardBetweenNonFamilyModelsRefreshes(t *te
 		"https://preloop.example",
 		"claude-durable-token",
 		"moonshot/kimi-k3-0905",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected gateway apply error: %v", err)
@@ -3184,6 +3189,7 @@ func TestApplyClaudeManagedGatewayReonboardBetweenNonFamilyModelsRefreshes(t *te
 		"https://preloop.example",
 		"claude-durable-token",
 		"openai/gpt-5.4",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected gateway re-apply error: %v", err)
@@ -3240,6 +3246,7 @@ func TestRestoreClaudeGatewayEnvFromOriginalRemovesNonFamilySelectors(t *testing
 		"https://preloop.example",
 		"preloop-token",
 		"moonshot/kimi-k3-0905",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("applyClaudeManagedGateway returned error: %v", err)
@@ -3316,6 +3323,7 @@ func TestRestoreClaudeGatewayEnvFromOriginalRestoresLocalAuth(t *testing.T) {
 		"https://preloop.example",
 		"preloop-token",
 		"anthropic/claude-haiku-4-5-20251001",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("applyClaudeManagedGateway returned error: %v", err)

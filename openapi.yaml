@@ -1264,6 +1264,49 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/account/governance-defaults:
+    get:
+      tags:
+      - Account
+      summary: Get Account Governance Defaults Endpoint
+      description: Account-wide native tool-approval defaults every agent inherits.
+      operationId: get_account_governance_defaults_endpoint_api_v1_account_governance_defaults_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountGovernanceDefaultsResponse'
+      security:
+      - bearerAuth: []
+    put:
+      tags:
+      - Account
+      summary: Update Account Governance Defaults Endpoint
+      description: Update account-wide native tool-approval defaults.
+      operationId: update_account_governance_defaults_endpoint_api_v1_account_governance_defaults_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountGovernanceDefaults'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountGovernanceDefaultsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
   /api/v1/agents/{agent_id}/governance:
     get:
       tags:
@@ -8334,6 +8377,49 @@ components:
       - budget
       title: AccountGatewayUsageSummaryResponse
       description: Account-scoped gateway usage summary.
+    AccountGovernanceDefaults:
+      properties:
+        native_tool_approvals:
+          anyOf:
+          - type: string
+            enum:
+            - enforce
+            - 'off'
+          - type: 'null'
+          title: Native Tool Approvals
+          description: Account default for native tool-call approvals. Agents without
+            an explicit per-agent setting inherit this; absent/None means "enforce".
+        approval_workflow_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Approval Workflow Id
+          description: Account default approval workflow for native tool-call approvals.
+            Agents without a per-agent pin inherit this; absent falls back to the
+            account's default workflow.
+      type: object
+      title: AccountGovernanceDefaults
+      description: 'Account-wide governance defaults inherited by every managed agent.
+
+
+        A per-agent subject-governance config with an explicit value overrides
+
+        these; an absent/None per-agent value inherits. The final fallback when
+
+        both are unset is "enforce" (fail safe).'
+    AccountGovernanceDefaultsResponse:
+      properties:
+        defaults:
+          $ref: '#/components/schemas/AccountGovernanceDefaults'
+        override_agent_ids:
+          items:
+            type: string
+          type: array
+          title: Override Agent Ids
+      type: object
+      required:
+      - defaults
+      title: AccountGovernanceDefaultsResponse
     AccountManagedAgentListResponse:
       properties:
         query:
@@ -8721,6 +8807,13 @@ components:
           - type: string
           - type: 'null'
           title: Request Id
+        timed_out:
+          type: boolean
+          title: Timed Out
+          description: True when the deny is only the expiry of an unanswered approval
+            request, not a human decision. Adapters with a native 'ask' verdict may
+            fall back to the agent's local prompt.
+          default: false
       type: object
       required:
       - decision

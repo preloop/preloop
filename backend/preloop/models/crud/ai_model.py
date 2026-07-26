@@ -191,8 +191,18 @@ class CRUDAIModel(CRUDBase[AIModel]):
         *,
         obj_in: Dict,
         account_id: Optional[str] = None,
+        commit: bool = True,
     ) -> AIModel:
-        """Create a new AIModel, assigning it to an account."""
+        """Create a new AIModel, assigning it to an account.
+
+        Args:
+            db: Database session.
+            obj_in: Column values for the new row.
+            account_id: Owning account.
+            commit: When False, flush only so callers can batch several
+                writes into one atomic transaction (e.g. under a savepoint)
+                and commit themselves.
+        """
         obj_data = self._normalize_model_kind_fields(dict(obj_in))
         if obj_in.get("is_default"):
             for existing_model in (
@@ -214,7 +224,10 @@ class CRUDAIModel(CRUDBase[AIModel]):
 
         db_obj = self.model(**obj_data, account_id=account_id)
         db.add(db_obj)
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
         db.refresh(db_obj)
         return db_obj
 
