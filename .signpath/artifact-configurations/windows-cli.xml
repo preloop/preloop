@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SignPath artifact configuration for Preloop Windows CLI binaries.
+
+  Used by .github/workflows/release.yml after uploading a ZIP of:
+    preloop-windows-amd64.exe
+    preloop-windows-arm64.exe
+
+  Create a matching Artifact Configuration in the SignPath project UI
+  (slug: windows-cli) and paste this XML, or sync from the repository
+  if your SignPath plan supports it.
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file path="preloop-windows-*.exe" max-matches="unbounded">
+      <authenticode-sign />
+    </pe-file>
+  </zip-file>
+</artifact-configuration>

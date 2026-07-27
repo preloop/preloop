@@ -30,12 +30,51 @@ detect_os() {
   esac
 }
 
+# detect_arch maps the host CPU to a release asset arch (amd64|arm64).
+#
+# On Windows, 32-bit Git Bash / MSYS reports `uname -m` as i686 even on
+# 64-bit machines. Prefer PROCESSOR_ARCHITEW6432 / PROCESSOR_ARCHITECTURE
+# (set by Windows) so those shells install the correct amd64/arm64 binary.
 detect_arch() {
-  case "$(uname -m)" in
+  machine="$(uname -m 2>/dev/null || true)"
+  wow64="$(printf '%s' "${PROCESSOR_ARCHITEW6432:-}" | tr '[:upper:]' '[:lower:]')"
+  proc="$(printf '%s' "${PROCESSOR_ARCHITECTURE:-}" | tr '[:upper:]' '[:lower:]')"
+
+  case "$wow64" in
+    amd64) echo "amd64"; return ;;
+    arm64) echo "arm64"; return ;;
+  esac
+
+  case "$proc" in
+    amd64|x86_64) echo "amd64"; return ;;
+    arm64|aarch64) echo "arm64"; return ;;
+    x86)
+      echo "Unsupported architecture: 32-bit Windows (x86)." >&2
+      echo "Preloop ships 64-bit Windows builds only. On 64-bit Windows, use" >&2
+      echo "PowerShell: irm https://preloop.ai/install/cli.ps1 | iex" >&2
+      exit 1
+      ;;
+  esac
+
+  case "$machine" in
     x86_64|amd64) echo "amd64" ;;
     arm64|aarch64) echo "arm64" ;;
+    i386|i686)
+      # Common false report from 32-bit Git Bash on 64-bit Windows when
+      # PROCESSOR_* env vars are unavailable. Prefer amd64 there; true
+      # 32-bit hosts should have been caught via PROCESSOR_ARCHITECTURE=x86.
+      os_name="$(uname -s 2>/dev/null || true)"
+      case "$os_name" in
+        MINGW*|MSYS*|CYGWIN*|Windows_NT)
+          echo "amd64"
+          return
+          ;;
+      esac
+      echo "Unsupported architecture: ${machine}" >&2
+      exit 1
+      ;;
     *)
-      echo "Unsupported architecture: $(uname -m)" >&2
+      echo "Unsupported architecture: ${machine:-unknown}" >&2
       exit 1
       ;;
   esac
@@ -59,6 +98,12 @@ resolve_version() {
 resolve_install_dir() {
   if [ -n "$INSTALL_DIR" ]; then
     echo "$INSTALL_DIR"
+    return
+  fi
+
+  # Prefer a user-local Windows path that does not require elevation.
+  if [ "${OS:-}" = "windows" ] && [ -n "${LOCALAPPDATA:-}" ]; then
+    echo "${LOCALAPPDATA}/Preloop/bin"
     return
   fi
 
@@ -111,6 +156,7 @@ fi
 
 ASSET="preloop-${OS}-${ARCH}${EXT}"
 URL="https://github.com/${PRELOOP_REPO}/releases/download/${TAG}/${ASSET}"
+CHECKSUMS_URL="https://github.com/${PRELOOP_REPO}/releases/download/${TAG}/SHA256SUMS"
 
 TMP_DIR="$(mktemp -d)"
 cleanup() {
@@ -119,9 +165,38 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 mkdir -p "$BIN_DIR"
-curl -fsSL "$URL" -o "${TMP_DIR}/preloop${EXT}"
-chmod +x "${TMP_DIR}/preloop${EXT}"
-mv "${TMP_DIR}/preloop${EXT}" "${BIN_DIR}/preloop${EXT}"
+DOWNLOAD_PATH="${TMP_DIR}/preloop${EXT}"
+curl -fsSL "$URL" -o "$DOWNLOAD_PATH"
+
+# SHA256SUMS verification is defense in depth. Do not block installation if
+# GitHub's checksum asset is temporarily unavailable or malformed.
+if curl -fsSL "$CHECKSUMS_URL" -o "${TMP_DIR}/SHA256SUMS"; then
+  expected_hash="$(awk -v asset="$ASSET" '$2 == asset || $2 == "*" asset { print $1; exit }' "${TMP_DIR}/SHA256SUMS")"
+  if [ -z "$expected_hash" ]; then
+    echo "Warning: could not find a SHA256 checksum for ${ASSET}; continuing without verification." >&2
+  elif command -v sha256sum >/dev/null 2>&1; then
+    actual_hash="$(sha256sum "$DOWNLOAD_PATH" | awk '{print $1}')"
+    if [ "$actual_hash" != "$expected_hash" ]; then
+      echo "Warning: SHA256 verification failed for ${ASSET}; continuing with the downloaded file." >&2
+    else
+      echo "  SHA256 verified"
+    fi
+  elif command -v shasum >/dev/null 2>&1; then
+    actual_hash="$(shasum -a 256 "$DOWNLOAD_PATH" | awk '{print $1}')"
+    if [ "$actual_hash" != "$expected_hash" ]; then
+      echo "Warning: SHA256 verification failed for ${ASSET}; continuing with the downloaded file." >&2
+    else
+      echo "  SHA256 verified"
+    fi
+  else
+    echo "Warning: no SHA256 tool is available; continuing without verification." >&2
+  fi
+else
+  echo "Warning: could not download SHA256SUMS; continuing without verification." >&2
+fi
+
+chmod +x "$DOWNLOAD_PATH"
+mv "$DOWNLOAD_PATH" "${BIN_DIR}/preloop${EXT}"
 
 PRELOOP_BIN="${BIN_DIR}/preloop${EXT}"
 

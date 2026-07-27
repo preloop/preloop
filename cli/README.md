@@ -4,24 +4,39 @@ Command-line interface for managing AI agent policies, approvals, and MCP tools.
 
 ## Installation
 
-### From Source
+### Installer (recommended)
+
+macOS / Linux:
+
+```sh
+curl -fsSL https://preloop.ai/install/cli | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://preloop.ai/install/cli.ps1 | iex
+```
+
+See [docs/windows-cli.md](../docs/windows-cli.md) for Defender false-positive
+recovery and Git Bash `i686` architecture issues.
+
+### From Source / `go install`
 
 ```bash
-# Clone the repository
+# Requires a Go toolchain — preferred on Windows when AV flags downloads
+go install github.com/preloop/preloop/cli/cmd/preloop@latest
+
+# Or clone and build
 git clone https://github.com/preloop/preloop.git
 cd preloop/cli
-
-# Build and install
-make install
-
-# Or build without installing
-make build
-./build/preloop --help
+make install   # or: make build && ./build/preloop --help
 ```
 
 ### Pre-built Binaries
 
-Download the latest release from [GitHub Releases](https://github.com/preloop/preloop/releases).
+Download the latest release from [GitHub Releases](https://github.com/preloop/preloop/releases)
+and verify against the `SHA256SUMS` asset.
 
 ## Quick Start
 

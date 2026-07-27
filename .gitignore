@@ -86,3 +86,7 @@ runtime-plugins/**/dist/
 
 # Claude
 .claude/
+
+# Windows PE version-info build products (generated in CI / locally)
+cli/winres/winres.generated.json
+cli/cmd/preloop/rsrc_windows_*.syso

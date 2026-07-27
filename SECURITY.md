@@ -19,6 +19,21 @@ Security fixes are generally applied to the latest supported release line.
 
 For self-hosted deployments, we recommend upgrading to the latest release as soon as practical.
 
+## Windows antivirus false positives
+
+Microsoft Defender sometimes quarantines unsigned or newly signed Go CLIs
+(heuristic detections often end in `!ml`). This is a known class of false
+positives for Go on Windows, not evidence that Preloop is malware.
+
+Users: restore the file from Protection history, verify `SHA256SUMS` from the
+GitHub release, and see [docs/windows-cli.md](./docs/windows-cli.md).
+
+Maintainers: Authenticode signing via SignPath Foundation and PE version
+metadata are wired in the release workflow; enable them by following
+[docs/windows-code-signing.md](./docs/windows-code-signing.md). Submit flagged
+release hashes to
+[Microsoft WDSI](https://www.microsoft.com/en-us/wdsi/filesubmission).
+
 ## Telemetry
 
 Preloop emits a small, fixed set of opt-out adoption events. All of them are pseudonymous (random UUIDs, no user data), and this section is the complete list.
