@@ -319,6 +319,61 @@ jobs:
           if-no-files-found: error
 
   # ==========================================================================
+  # VirusTotal scan (optional — P1 release hygiene)
+  # ==========================================================================
+  # Uploads finalized Windows CLI binaries when VIRUSTOTAL_API_KEY is set.
+  # Does not fail the release if the key is absent. Microsoft WDSI false-
+  # positive submission remains a manual maintainer step (see docs).
+
+  virustotal-windows-cli:
+    name: VirusTotal Windows CLI
+    runs-on: ubuntu-latest
+    needs: [sign-windows-cli, create-release]
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check VirusTotal configuration
+        id: vt-check
+        env:
+          VT_API_KEY: ${{ secrets.VIRUSTOTAL_API_KEY }}
+        run: |
+          if [ -n "$VT_API_KEY" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::VirusTotal scan enabled for Windows CLI binaries"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::VIRUSTOTAL_API_KEY missing — skip VirusTotal upload. See docs/windows-code-signing.md"
+          fi
+
+      - name: Download finalized Windows amd64 CLI
+        if: steps.vt-check.outputs.enabled == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: cli-windows-amd64
+          path: vt-windows/
+
+      - name: Download finalized Windows arm64 CLI
+        if: steps.vt-check.outputs.enabled == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: cli-windows-arm64
+          path: vt-windows/
+
+      - name: Upload Windows CLI to VirusTotal
+        if: steps.vt-check.outputs.enabled == 'true'
+        uses: crazy-max/ghaction-virustotal@v4
+        with:
+          vt_api_key: ${{ secrets.VIRUSTOTAL_API_KEY }}
+          request_rate: 4
+          update_release_body: true
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          files: |
+            vt-windows/preloop-windows-amd64.exe
+            vt-windows/preloop-windows-arm64.exe
+
+  # ==========================================================================
   # Verify OSS Install (release smoke test)
   # ==========================================================================
   # Boots docker-compose.release.yaml with the just-pushed images — the same

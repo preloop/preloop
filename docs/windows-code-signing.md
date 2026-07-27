@@ -65,7 +65,7 @@ Optional:
 
 | Kind | Name | Purpose |
 |------|------|---------|
-| **Secret** | `VIRUSTOTAL_API_KEY` | Future release scanning (not required for signing) |
+| **Secret** | `VIRUSTOTAL_API_KEY` | Upload Windows CLI binaries to VirusTotal on each tag release |
 
 ### 4. Verify on the next tag
 
@@ -81,12 +81,30 @@ Optional:
 Until step 3 is done, the workflow prints a warning and publishes **unsigned**
 binaries (same as today).
 
+## Priority checklist (P0 / P1 / P2)
+
+| Priority | Item | Status in this repo |
+|----------|------|---------------------|
+| **P0** | Fix `detect_arch` for Git Bash `i686` / WOW64 | Done — `scripts/install-cli.sh` |
+| **P0** | Ship PowerShell installer as the Windows path | Done — `scripts/install-cli.ps1` + docs |
+| **P1** | Authenticode-sign Windows release binaries (SignPath) | Wired — enable with secrets (this doc) |
+| **P1** | Embed PE version info (`go-winres`) | Done — release `build-cli` job |
+| **P1** | VirusTotal scan each Windows release | Wired — optional `VIRUSTOTAL_API_KEY` |
+| **P1** | Submit Microsoft WDSI false positives when flagged | Manual — see below (cannot automate portal) |
+| **P2** | Docs: Windows install, Defender recovery, checksums | Done — [windows-cli.md](./windows-cli.md), SECURITY.md |
+| **P2** | Official `go install` / build-from-source escape hatch | Done — root + `cli/README.md` |
+
 ## Ongoing release hygiene
+
+When `VIRUSTOTAL_API_KEY` is set, the release workflow uploads
+`preloop-windows-*.exe` to VirusTotal and appends analysis links to the
+release notes.
 
 After each Windows release (especially before SignPath reputation builds):
 
-1. Upload `preloop-windows-amd64.exe` to [VirusTotal](https://www.virustotal.com/)
-2. If Microsoft flags it, submit a false positive at
+1. Open the VirusTotal links from the release notes (or upload manually if the
+   secret is not configured)
+2. If Microsoft flags the binary, submit a false positive at
    [WDSI file submission](https://www.microsoft.com/en-us/wdsi/filesubmission)
    with the GitHub release URL and source repo
 3. Keep PE metadata and signing enabled — reputation accumulates over signed

@@ -33,8 +33,9 @@ preloop login --url http://localhost:3000    # your self-hosted instance (see Ge
 preloop agents discover
 ```
 
-Windows install, Defender false-positive recovery, and code-signing status:
-[docs/windows-cli.md](./docs/windows-cli.md).
+Windows install, Defender false-positive recovery, `go install`, and
+code-signing / VirusTotal status: [docs/windows-cli.md](./docs/windows-cli.md),
+[docs/windows-code-signing.md](./docs/windows-code-signing.md).
 
 <p align="center">
   <img alt="Preloop onboarding local agents into the control plane" src="frontend/public/assets/screenshots/quickstart/dark/agents-onboarding.webp" style="width: 100%; max-width: 1135px; border-radius: 12px;" />

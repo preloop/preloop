@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `irm https://preloop.ai/install/cli.ps1 | iex`, release `SHA256SUMS`, and
   docs for Defender false-positive recovery (`docs/windows-cli.md`).
 - **Optional SignPath Authenticode signing** for Windows CLI release
-  binaries, plus PE version metadata via `go-winres`
+  binaries, plus PE version metadata via `go-winres`, and optional
+  VirusTotal upload when `VIRUSTOTAL_API_KEY` is set
   (`docs/windows-code-signing.md`).
 
 ### Fixed
