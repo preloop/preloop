@@ -1,5 +1,10 @@
 # Windows code signing (SignPath Foundation)
 
+> **Code signing policy (user-facing):** see
+> [code-signing-policy.md](./code-signing-policy.md).
+> Free code signing provided by [SignPath.io](https://about.signpath.io/),
+> certificate by [SignPath Foundation](https://signpath.org/).
+
 Preloop’s release workflow can Authenticode-sign Windows CLI binaries via
 [SignPath Foundation](https://signpath.org/) (free for open-source projects).
 Signing is **optional until credentials are configured**: releases still

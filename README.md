@@ -37,6 +37,17 @@ Windows install, Defender false-positive recovery, `go install`, and
 code-signing / VirusTotal status: [docs/windows-cli.md](./docs/windows-cli.md),
 [docs/windows-code-signing.md](./docs/windows-code-signing.md).
 
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io/),
+certificate by [SignPath Foundation](https://signpath.org/).
+
+Windows CLI release binaries (`preloop-windows-amd64.exe`,
+`preloop-windows-arm64.exe`) on
+[GitHub Releases](https://github.com/preloop/preloop/releases) are
+Authenticode-signed via SignPath. Full policy (roles, privacy):
+[docs/code-signing-policy.md](./docs/code-signing-policy.md).
+
 <p align="center">
   <img alt="Preloop onboarding local agents into the control plane" src="frontend/public/assets/screenshots/quickstart/dark/agents-onboarding.webp" style="width: 100%; max-width: 1135px; border-radius: 12px;" />
 </p>
