@@ -100,6 +100,7 @@ $installDir = if ([string]::IsNullOrWhiteSpace($env:INSTALL_DIR)) {
 $asset = "preloop-windows-$arch.exe"
 $tag = "v$version"
 $url = "https://github.com/$repo/releases/download/$tag/$asset"
+$checksumsUrl = "https://github.com/$repo/releases/download/$tag/SHA256SUMS"
 $target = Join-Path $installDir 'preloop.exe'
 
 Write-Host "Installing Preloop CLI $version ($arch)..."
@@ -108,16 +109,45 @@ Write-Host "  target: $target"
 
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("preloop-install-" + [guid]::NewGuid().ToString('N') + '.exe')
+$checksumsTmp = Join-Path ([System.IO.Path]::GetTempPath()) ("preloop-checksums-" + [guid]::NewGuid().ToString('N'))
 try {
   Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
+
+  # SHA256SUMS verification is defense in depth. Do not block installation if
+  # GitHub's checksum asset is temporarily unavailable or malformed.
+  try {
+    Invoke-WebRequest -Uri $checksumsUrl -OutFile $checksumsTmp -UseBasicParsing
+    $assetPattern = "^\s*([0-9A-Fa-f]{64})\s+\*?$([Regex]::Escape($asset))\s*$"
+    $checksumMatch = Select-String -Path $checksumsTmp -Pattern $assetPattern | Select-Object -First 1
+    if ($null -eq $checksumMatch) {
+      Write-Warning "Could not find a SHA256 checksum for $asset; continuing without verification."
+    } else {
+      $expectedHash = $checksumMatch.Matches[0].Groups[1].Value
+      $actualHash = (Get-FileHash -Path $tmp -Algorithm SHA256).Hash
+      if (-not $actualHash.Equals($expectedHash, [StringComparison]::OrdinalIgnoreCase)) {
+        Write-Warning "SHA256 verification failed for $asset; continuing with the downloaded file."
+      } else {
+        Write-Host "  SHA256 verified"
+      }
+    }
+  } catch {
+    Write-Warning "Could not verify SHA256 for $asset; continuing without verification. $($_.Exception.Message)"
+  }
+
+  Move-Item -Force -Path $tmp -Destination $target
   # Remove Mark of the Web so SmartScreen/Defender treat a verified download
   # less harshly after the user explicitly installed it.
-  Unblock-File -Path $tmp -ErrorAction SilentlyContinue
-  Move-Item -Force -Path $tmp -Destination $target
-  Unblock-File -Path $target -ErrorAction SilentlyContinue
+  $unblockErr = $null
+  Unblock-File -Path $target -ErrorAction SilentlyContinue -ErrorVariable unblockErr
+  if ($unblockErr) {
+    Write-Debug "Could not unblock $target: $unblockErr"
+  }
 } finally {
   if (Test-Path -LiteralPath $tmp) {
     Remove-Item -Force -LiteralPath $tmp -ErrorAction SilentlyContinue
+  }
+  if (Test-Path -LiteralPath $checksumsTmp) {
+    Remove-Item -Force -LiteralPath $checksumsTmp -ErrorAction SilentlyContinue
   }
 }
 

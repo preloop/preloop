@@ -156,6 +156,7 @@ fi
 
 ASSET="preloop-${OS}-${ARCH}${EXT}"
 URL="https://github.com/${PRELOOP_REPO}/releases/download/${TAG}/${ASSET}"
+CHECKSUMS_URL="https://github.com/${PRELOOP_REPO}/releases/download/${TAG}/SHA256SUMS"
 
 TMP_DIR="$(mktemp -d)"
 cleanup() {
@@ -164,9 +165,38 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 mkdir -p "$BIN_DIR"
-curl -fsSL "$URL" -o "${TMP_DIR}/preloop${EXT}"
-chmod +x "${TMP_DIR}/preloop${EXT}"
-mv "${TMP_DIR}/preloop${EXT}" "${BIN_DIR}/preloop${EXT}"
+DOWNLOAD_PATH="${TMP_DIR}/preloop${EXT}"
+curl -fsSL "$URL" -o "$DOWNLOAD_PATH"
+
+# SHA256SUMS verification is defense in depth. Do not block installation if
+# GitHub's checksum asset is temporarily unavailable or malformed.
+if curl -fsSL "$CHECKSUMS_URL" -o "${TMP_DIR}/SHA256SUMS"; then
+  expected_hash="$(awk -v asset="$ASSET" '$2 == asset || $2 == "*" asset { print $1; exit }' "${TMP_DIR}/SHA256SUMS")"
+  if [ -z "$expected_hash" ]; then
+    echo "Warning: could not find a SHA256 checksum for ${ASSET}; continuing without verification." >&2
+  elif command -v sha256sum >/dev/null 2>&1; then
+    actual_hash="$(sha256sum "$DOWNLOAD_PATH" | awk '{print $1}')"
+    if [ "$actual_hash" != "$expected_hash" ]; then
+      echo "Warning: SHA256 verification failed for ${ASSET}; continuing with the downloaded file." >&2
+    else
+      echo "  SHA256 verified"
+    fi
+  elif command -v shasum >/dev/null 2>&1; then
+    actual_hash="$(shasum -a 256 "$DOWNLOAD_PATH" | awk '{print $1}')"
+    if [ "$actual_hash" != "$expected_hash" ]; then
+      echo "Warning: SHA256 verification failed for ${ASSET}; continuing with the downloaded file." >&2
+    else
+      echo "  SHA256 verified"
+    fi
+  else
+    echo "Warning: no SHA256 tool is available; continuing without verification." >&2
+  fi
+else
+  echo "Warning: could not download SHA256SUMS; continuing without verification." >&2
+fi
+
+chmod +x "$DOWNLOAD_PATH"
+mv "$DOWNLOAD_PATH" "${BIN_DIR}/preloop${EXT}"
 
 PRELOOP_BIN="${BIN_DIR}/preloop${EXT}"
 
