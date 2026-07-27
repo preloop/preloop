@@ -19,8 +19,11 @@ Build automations with templates like the [Pull Request Reviewer](./backend/pres
 Preloop has two parts: the **control plane** (API, console, MCP firewall, and model gateway — use [Preloop Cloud](https://preloop.ai) or self-host the open-source stack) and the **CLI**, which discovers your local agents and onboards them to whichever control plane you connect it to.
 
 ```bash
-# 1. Install the CLI
+# 1. Install the CLI (macOS / Linux)
 curl -fsSL https://preloop.ai/install/cli | sh
+
+# Windows (PowerShell):
+#   irm https://preloop.ai/install/cli.ps1 | iex
 
 # 2. Connect it to a control plane:
 preloop signup                                # Preloop Cloud (fastest), or
@@ -29,6 +32,9 @@ preloop login --url http://localhost:3000    # your self-hosted instance (see Ge
 # 3. Bring your local agents under governance
 preloop agents discover
 ```
+
+Windows install, Defender false-positive recovery, and code-signing status:
+[docs/windows-cli.md](./docs/windows-cli.md).
 
 <p align="center">
   <img alt="Preloop onboarding local agents into the control plane" src="frontend/public/assets/screenshots/quickstart/dark/agents-onboarding.webp" style="width: 100%; max-width: 1135px; border-radius: 12px;" />

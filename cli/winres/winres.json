@@ -1,0 +1,38 @@
+{
+  "RT_VERSION": {
+    "#1": {
+      "0000": {
+        "fixed": {
+          "file_version": "0.0.0.0",
+          "product_version": "0.0.0.0"
+        },
+        "info": {
+          "0409": {
+            "CompanyName": "Preloop",
+            "FileDescription": "Preloop CLI — AI agent control plane",
+            "FileVersion": "0.0.0",
+            "InternalName": "preloop",
+            "LegalCopyright": "Copyright (c) Preloop contributors",
+            "OriginalFilename": "preloop.exe",
+            "ProductName": "Preloop",
+            "ProductVersion": "0.0.0"
+          }
+        }
+      }
+    }
+  },
+  "RT_MANIFEST": {
+    "#1": {
+      "0409": {
+        "identity": {
+          "name": "Preloop.CLI",
+          "version": "0.0.0.0"
+        },
+        "description": "Preloop CLI",
+        "minimum-os": "win7",
+        "execution-level": "as invoker",
+        "ui-access": false
+      }
+    }
+  }
+}

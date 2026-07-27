@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Windows PowerShell CLI installer** (`install-cli.ps1`) with
+  `irm https://preloop.ai/install/cli.ps1 | iex`, release `SHA256SUMS`, and
+  docs for Defender false-positive recovery (`docs/windows-cli.md`).
+- **Optional SignPath Authenticode signing** for Windows CLI release
+  binaries, plus PE version metadata via `go-winres`
+  (`docs/windows-code-signing.md`).
+
+### Fixed
+
+- **CLI installer on 32-bit Git Bash / MSYS**: `detect_arch` now prefers
+  `PROCESSOR_ARCHITEW6432` / `PROCESSOR_ARCHITECTURE` so 64-bit Windows no
+  longer fails with `Unsupported architecture: i686`.
+
 ## [0.13.0] - 2026-07-26
 
 ### Added
