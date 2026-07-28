@@ -540,15 +540,19 @@ jobs:
             curl -fsSL https://preloop.ai/install/cli | sh
             ```
 
-            Windows (PowerShell — recommended):
+            ### Windows binaries
+
+            Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+
+            Download `preloop-windows-amd64.exe` or `preloop-windows-arm64.exe` from the assets below (Authenticode-signed), or install with PowerShell:
 
             ```powershell
             irm https://preloop.ai/install/cli.ps1 | iex
             ```
 
-            Or download a platform-specific `preloop-*` binary below and verify it against `SHA256SUMS`. Pin with `PRELOOP_VERSION=${{ steps.version.outputs.package_version }}`.
+            Verify against `SHA256SUMS`. Pin with `PRELOOP_VERSION=${{ steps.version.outputs.package_version }}`.
 
-            Windows Defender notes and SignPath setup: [docs/windows-cli.md](https://github.com/preloop/preloop/blob/main/docs/windows-cli.md)
+            Code signing policy: [docs/code-signing-policy.md](https://github.com/preloop/preloop/blob/main/docs/code-signing-policy.md). Defender notes: [docs/windows-cli.md](https://github.com/preloop/preloop/blob/main/docs/windows-cli.md).
 
             ## Install Open Source Edition
 

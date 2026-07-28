@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **SignPath code signing policy** on the README and release notes (Windows
+  binary section), required for SignPath Foundation attribution
+  (`docs/code-signing-policy.md`).
+
 - **Windows PowerShell CLI installer** (`install-cli.ps1`) with
   `irm https://preloop.ai/install/cli.ps1 | iex`, release `SHA256SUMS`, and
   docs for Defender false-positive recovery (`docs/windows-cli.md`).
