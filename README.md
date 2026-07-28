@@ -351,6 +351,10 @@ Preloop Cloud and Preloop Enterprise extend the core open-source components with
 
 Contact sales@preloop.ai for Preloop Enterprise licensing requests.
 
+## Community
+
+Join the [Preloop Discord](https://discord.gg/P6nWSee4jv) for help, feedback, and the founder's build log.
+
 ## Contributing
 
 Contributions are welcome! Please see our [Contributing Guidelines](CONTRIBUTING.md) for details on how to get started.
