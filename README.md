@@ -1,5 +1,7 @@
 # <img alt="Preloop Logo" src="frontend/public/assets/preloop-badge.png" style="height: 22px;" height="22px" /> Preloop - The Open-Source AI Agent Control Plane
 
+[![MCP Toplist](https://mcptoplist.com/badge/glama%2Fpreloop.svg)](https://mcptoplist.com/server/glama%2Fpreloop)
+
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
