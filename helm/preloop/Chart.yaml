@@ -6,10 +6,10 @@ description: The open-source AI agent control plane - MCP firewall, model gatewa
 type: application
 
 # Chart version
-version: 0.13.0
+version: 0.13.1
 
 # Application version
-appVersion: "0.13.0"
+appVersion: "0.13.1"
 
 # Keywords for the chart
 keywords:
