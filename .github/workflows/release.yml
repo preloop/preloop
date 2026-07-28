@@ -544,7 +544,7 @@ jobs:
 
             Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
 
-            Download `preloop-windows-amd64.exe` or `preloop-windows-arm64.exe` from the assets below (Authenticode-signed), or install with PowerShell:
+            Download `preloop-windows-amd64.exe` or `preloop-windows-arm64.exe` from the assets below (Authenticode signing via SignPath pending certificate approval — verify with `SHA256SUMS`), or install with PowerShell:
 
             ```powershell
             irm https://preloop.ai/install/cli.ps1 | iex
