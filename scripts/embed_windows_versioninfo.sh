@@ -44,7 +44,7 @@ sed \
   -e "s/\"product_version\": \"[^\"]*\"/\"product_version\": \"${QUAD_ESC}\"/" \
   -e "s/\"FileVersion\": \"[^\"]*\"/\"FileVersion\": \"${VERSION_ESC}\"/" \
   -e "s/\"ProductVersion\": \"[^\"]*\"/\"ProductVersion\": \"${VERSION_ESC}\"/" \
-  -e '/"identity": {/,/^[[:space:]]*}/ s/"version": "[^"]*"/"version": "${QUAD_ESC}"/' \
+  -e "/\"identity\": {/,/^[[:space:]]*}/ s/\"version\": \"[^\"]*\"/\"version\": \"${QUAD_ESC}\"/" \
   "$TEMPLATE" > "$GEN_JSON"
 
 if ! command -v go-winres >/dev/null 2>&1; then
