@@ -1,7 +1,10 @@
 # <img alt="Preloop Logo" src="frontend/public/assets/preloop-badge.png" style="height: 22px;" height="22px" /> Preloop - The Open-Source AI Agent Control Plane
 
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/preloop/preloop/ci.yml?branch=main&label=CI)](https://github.com/preloop/preloop/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/preloop/preloop)](https://github.com/preloop/preloop/releases/latest)
+[![PyPI](https://img.shields.io/pypi/v/preloop)](https://pypi.org/project/preloop/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
 **Preloop is the open-source AI agent control plane.** It unifies an **MCP firewall** for tool access, an **AI model gateway** for cost, safety and attribution, **policy-as-code** with **human approvals**, **runtime session observability**, and **audit trails** - in a single self-hostable platform.
 
@@ -39,13 +42,16 @@ code-signing / VirusTotal status: [docs/windows-cli.md](./docs/windows-cli.md),
 
 ## Code signing policy
 
+Releases ship a `SHA256SUMS` asset and a VirusTotal scan of the Windows binaries; SignPath Authenticode signing is pending. See [docs/windows-cli.md](./docs/windows-cli.md) and [docs/windows-code-signing.md](./docs/windows-code-signing.md).
+
 Free code signing provided by [SignPath.io](https://about.signpath.io/),
 certificate by [SignPath Foundation](https://signpath.org/).
 
 Windows CLI release binaries (`preloop-windows-amd64.exe`,
 `preloop-windows-arm64.exe`) on
-[GitHub Releases](https://github.com/preloop/preloop/releases) are
-Authenticode-signed via SignPath. Full policy (roles, privacy):
+[GitHub Releases](https://github.com/preloop/preloop/releases) will be
+Authenticode-signed via SignPath once the signing policy is active. Full
+policy (roles, privacy):
 [docs/code-signing-policy.md](./docs/code-signing-policy.md).
 
 <p align="center">
