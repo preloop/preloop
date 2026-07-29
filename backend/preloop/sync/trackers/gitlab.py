@@ -1791,19 +1791,38 @@ class GitLabTracker(BaseTracker):
         try:
             project = await self._make_request(self.gl.projects.get, project_id)
             mr = await self._make_request(project.mergerequests.get, mr_iid)
-
-            # Unapprove the merge request
-            await self._make_request(mr.unapprove)
-
-            return {
-                "id": str(mr.id),
-                "iid": mr.iid,
-                "approved": False,
-            }
-
         except Exception as e:
             logger.error(f"Error unapproving merge request {mr_iid}: {e}")
             raise TrackerResponseError(f"Failed to unapprove merge request: {e}")
+
+        try:
+            # Unapprove the merge request
+            await self._make_request(mr.unapprove)
+        except Exception as e:
+            # GitLab returns 404 when there is no approval from the current
+            # user to revoke (or the approvals feature is unavailable on this
+            # plan/instance). Treat this as a successful no-op instead of
+            # failing the whole review flow.
+            if is_not_found_error(e):
+                logger.warning(
+                    f"Unapprove skipped for MR {mr_iid}: no approval to revoke "
+                    f"or approvals not available (404). Treating as no-op."
+                )
+                return {
+                    "id": str(mr.id),
+                    "iid": mr.iid,
+                    "approved": False,
+                    "skipped": True,
+                    "reason": "no approval to revoke (404)",
+                }
+            logger.error(f"Error unapproving merge request {mr_iid}: {e}")
+            raise TrackerResponseError(f"Failed to unapprove merge request: {e}")
+
+        return {
+            "id": str(mr.id),
+            "iid": mr.iid,
+            "approved": False,
+        }
 
     async def get_mr_discussions(
         self, mr_iid: str, filter_author: Optional[str] = None

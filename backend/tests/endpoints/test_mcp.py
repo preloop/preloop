@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 from unittest.mock import patch, AsyncMock, MagicMock
 
 import pytest
-from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from preloop.api.endpoints import mcp
@@ -727,10 +726,11 @@ async def test_add_comment_inline_github_pr(db_session: Session, test_user: User
 @pytest.mark.asyncio
 async def test_add_comment_inline_gitlab_mr(db_session: Session, test_user: User):
     """
-    Tests that inline comments on GitLab MRs return 501 (not implemented).
+    Tests that inline comments on GitLab MRs degrade gracefully to a general
+    discussion referencing the file/line (GlitchTip issue 3274).
 
     GitLab inline diff comments require position data (base_sha, start_sha, head_sha)
-    which is not available through this API.
+    which is not available through this API, so we fall back instead of erroring.
     """
     tracker = Tracker(
         name="test-tracker",
@@ -777,20 +777,26 @@ async def test_add_comment_inline_gitlab_mr(db_session: Session, test_user: User
 
         mock_tracker = MagicMock()
         mock_tracker.tracker_type = "gitlab"
+        mock_tracker.create_mr_discussion = AsyncMock(return_value={"id": "disc-456"})
         mock_get_tracker.return_value = mock_tracker
 
-        # GitLab inline comments (with path/line) should return 501
-        with pytest.raises(HTTPException) as exc_info:
-            await mcp.add_comment(
-                target="https://gitlab.com/group/project/-/merge_requests/5",
-                comment="Consider refactoring this",
-                path="lib/utils.py",
-                line=100,
-            )
+        # GitLab inline comments (with path/line) fall back to a general
+        # discussion that references the file/line in the body.
+        response = await mcp.add_comment(
+            target="https://gitlab.com/group/project/-/merge_requests/5",
+            comment="Consider refactoring this",
+            path="lib/utils.py",
+            line=100,
+        )
 
-        assert exc_info.value.status_code == 501
-        assert "GitLab inline diff comments" in exc_info.value.detail
-        assert "not yet supported" in exc_info.value.detail
+    assert response.status == "created"
+    assert response.comment_id == "disc-456"
+    assert "lib/utils.py:100" in response.message
+    mock_tracker.create_mr_discussion.assert_called_once()
+    call_kwargs = mock_tracker.create_mr_discussion.call_args.kwargs
+    assert call_kwargs["mr_iid"] == "5"
+    assert "**lib/utils.py:100**" in call_kwargs["body"]
+    assert "Consider refactoring this" in call_kwargs["body"]
 
 
 @pytest.mark.asyncio

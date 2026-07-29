@@ -1401,16 +1401,28 @@ async def add_comment(
                             url=None,
                         )
 
-                    # GitLab inline diff comments require position data (base_sha, start_sha,
-                    # head_sha, new_path, new_line) which is not available in this context.
-                    # Return a clear error instead of silently creating a non-anchored discussion.
-                    raise HTTPException(
-                        status_code=501,
-                        detail="GitLab inline diff comments (path/line) are not yet supported. "
-                        "GitLab requires diff position data (base_sha, start_sha, head_sha) "
-                        "which is not available in this API. Use a general discussion instead "
-                        "by omitting path and line parameters, or use in_reply_to to reply "
-                        "to an existing discussion.",
+                    # GitLab inline diff comments require position data (base_sha,
+                    # start_sha, head_sha, new_path, new_line) which is not available
+                    # in this context. Degrade gracefully: create a general discussion
+                    # that references the file/line in the body text (same fallback
+                    # update_pull_request uses for review_comments).
+                    logger.info(
+                        f"GitLab inline comment on MR {target_id} at {path}:{line} "
+                        "falling back to general discussion (no diff position data)"
+                    )
+                    discussion_result = await tracker_client.create_mr_discussion(
+                        mr_iid=target_id,
+                        body=f"**{path}:{line}**\n\n{comment}",
+                    )
+                    return AddCommentResponse(
+                        comment_id=str(discussion_result.get("id", "")),
+                        status="created",
+                        message=(
+                            f"Added comment to MR {target_id} as a general discussion "
+                            f"referencing {path}:{line} (GitLab inline diff positioning "
+                            "requires diff position data which is not available)"
+                        ),
+                        url=None,
                     )
 
             # Regular PR/MR comment (not inline)

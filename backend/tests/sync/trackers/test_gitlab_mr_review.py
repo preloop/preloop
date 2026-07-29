@@ -121,6 +121,36 @@ class TestUnapproveMergeRequest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Project ID not found", str(context.exception))
 
     @patch("preloop.sync.trackers.gitlab.gitlab.Gitlab")
+    async def test_unapprove_merge_request_404_is_noop(self, mock_gitlab_constructor):
+        """A 404 from the unapprove call (no approval to revoke, or approvals
+        unavailable on this plan) is treated as a successful no-op instead of
+        raising (GlitchTip issues 3270-3273)."""
+        import gitlab as gitlab_lib
+
+        mock_gl_instance = MagicMock()
+        mock_gitlab_constructor.return_value = mock_gl_instance
+        mock_gl_instance.auth.return_value = None
+
+        mock_project = MagicMock()
+        mock_gl_instance.projects.get.return_value = mock_project
+
+        mock_mr = MagicMock()
+        mock_mr.id = 12345
+        mock_mr.iid = 1
+        mock_mr.unapprove.side_effect = gitlab_lib.exceptions.GitlabHttpError(
+            "404 Not Found", response_code=404
+        )
+        mock_project.mergerequests.get.return_value = mock_mr
+
+        tracker = GitLabTracker("tracker-1", "api-key", {"project_id": "proj-1"})
+        result = await tracker.unapprove_merge_request("1")
+
+        self.assertEqual(result["id"], "12345")
+        self.assertEqual(result["iid"], 1)
+        self.assertFalse(result["approved"])
+        self.assertTrue(result["skipped"])
+
+    @patch("preloop.sync.trackers.gitlab.gitlab.Gitlab")
     async def test_unapprove_merge_request_api_error(self, mock_gitlab_constructor):
         """Test unapproval handles API errors."""
         mock_gl_instance = MagicMock()

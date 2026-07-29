@@ -384,15 +384,25 @@ async def unified_websocket(websocket: WebSocket):
             manager_connection_id = str(session.connection_id)
             manager.active_connections[manager_connection_id] = websocket
 
-        # Send initial handshake confirmation
-        await websocket.send_json(
-            {
-                "type": "handshake",
-                "session_id": session.id,
-                "authenticated": session.is_authenticated,
-                "message": "Connected to unified WebSocket",
-            }
-        )
+        # Send initial handshake confirmation. The client may already have
+        # disconnected between accept() and this send — uvloop then raises a
+        # bare RuntimeError ("unable to perform operation on <TCPTransport
+        # closed=True ...>"). Treat that as a normal early disconnect rather
+        # than an unexpected server error.
+        try:
+            await websocket.send_json(
+                {
+                    "type": "handshake",
+                    "session_id": session.id,
+                    "authenticated": session.is_authenticated,
+                    "message": "Connected to unified WebSocket",
+                }
+            )
+        except RuntimeError as e:
+            logger.info(
+                f"Session {session.id} disconnected before handshake completed: {e}"
+            )
+            return
 
         # Message loop
         while True:

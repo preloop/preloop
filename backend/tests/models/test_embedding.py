@@ -432,3 +432,62 @@ def test_similarity_search_with_embedding_type(
             embedding_type="another_invalid",
             limit=5,
         )
+
+
+def test_create_embeddings_concurrent_insert_race(
+    db_session, create_issue, create_comment, create_embedding_model, mocker
+):
+    """A concurrent insert between the existence check and our insert must not
+    blow up with IntegrityError (uix_issue_embedding_model) — it should fall
+    back to updating the concurrently-inserted row (GlitchTip issue 2526).
+    """
+    from preloop.models.models.issue import EmbeddingModel
+
+    issue = create_issue()
+    comment = create_comment(
+        issue_id=str(issue.id), external_id="902", body="Race condition comment."
+    )
+    model = create_embedding_model()
+
+    # Deactivate any other (seeded) embedding models so the simulated
+    # concurrent insert below races against exactly our model's row.
+    db_session.query(EmbeddingModel).filter(EmbeddingModel.id != model.id).update(
+        {"is_active": False}
+    )
+    db_session.flush()
+
+    mock_generate_embedding = mocker.patch(
+        "preloop.models.crud.crud_issue_embedding._generate_embedding_vector"
+    )
+
+    def _simulate_concurrent_insert(*args, **kwargs):
+        # Another webhook delivery wins the race: insert the row AFTER the
+        # existence check ran but BEFORE create_embeddings inserts its own.
+        competing = IssueEmbedding(
+            id=IssueEmbedding.generate_id(),
+            issue_id=issue.id,
+            comment_id=comment.id,
+            embedding_model_id=model.id,
+            embedding=[0.5] * model.dimensions,
+            meta_data={"source": "concurrent writer"},
+        )
+        db_session.add(competing)
+        db_session.flush()
+        return [0.1] * model.dimensions
+
+    mock_generate_embedding.side_effect = _simulate_concurrent_insert
+
+    result = crud_issue_embedding.create_embeddings(
+        db_session, issue_id=issue.id, comment_id=comment.id, force_update=False
+    )
+
+    # No "error_for_..." result: the duplicate insert was recovered by
+    # updating the concurrently-created row.
+    assert model.name in result
+    assert "error" not in result[model.name]
+    assert f"updated_for_comment {comment.id}" in result[model.name]
+
+    embeddings = crud_issue_embedding.get_for_comment(db_session, comment_id=comment.id)
+    embedding = embeddings[model.name]
+    # The recovered row now carries our vector, not the competing one.
+    assert embedding.embedding[0] == pytest.approx(0.1)
