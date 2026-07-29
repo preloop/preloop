@@ -5,6 +5,7 @@ from datetime import datetime, UTC
 from typing import Dict, List, Optional, Tuple, Union
 
 from sqlalchemy import func, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..models.comment import Comment
@@ -288,15 +289,19 @@ class CRUDIssueEmbedding(CRUDBase[IssueEmbedding]):
                     text=text_to_embed, model=model, api_key=api_key
                 )
 
+                meta_data = {
+                    "source": source_entity_description,
+                    "text_processed": text_to_embed[:100] + "..."
+                    if len(text_to_embed) > 100
+                    else text_to_embed,
+                }
+
                 # Create or update embedding
                 if existing:
                     existing.embedding = embedding_vector
                     existing.meta_data = {
                         "updated_at": datetime.now(UTC).isoformat(),
-                        "source": source_entity_description,
-                        "text_processed": text_to_embed[:100] + "..."
-                        if len(text_to_embed) > 100
-                        else text_to_embed,
+                        **meta_data,
                     }
                     db.add(existing)
                     results[model.name] = f"updated_for_{source_entity_description}"
@@ -307,15 +312,35 @@ class CRUDIssueEmbedding(CRUDBase[IssueEmbedding]):
                         comment_id=comment_id,  # Pass comment_id
                         embedding_model_id=model.id,
                         embedding=embedding_vector,
-                        meta_data={
-                            "source": source_entity_description,
-                            "text_processed": text_to_embed[:100] + "..."
-                            if len(text_to_embed) > 100
-                            else text_to_embed,
-                        },
+                        meta_data=meta_data,
                     )
-                    db.add(new_embedding)
-                    results[model.name] = f"created_for_{source_entity_description}"
+                    # Flush inside a savepoint so a concurrent insert (e.g. two
+                    # webhook deliveries for the same comment racing through the
+                    # check-then-insert above) surfaces here as an IntegrityError
+                    # we can recover from, instead of blowing up the whole
+                    # transaction at commit time (uix_issue_embedding_model).
+                    try:
+                        with db.begin_nested():
+                            db.add(new_embedding)
+                            db.flush()
+                        results[model.name] = f"created_for_{source_entity_description}"
+                    except IntegrityError:
+                        # Row was inserted concurrently; update it instead.
+                        concurrent = query.first()
+                        if concurrent is not None:
+                            concurrent.embedding = embedding_vector
+                            concurrent.meta_data = {
+                                "updated_at": datetime.now(UTC).isoformat(),
+                                **meta_data,
+                            }
+                            db.add(concurrent)
+                            results[model.name] = (
+                                f"updated_for_{source_entity_description}"
+                            )
+                        else:
+                            results[model.name] = (
+                                f"already_exists_for_{source_entity_description}"
+                            )
             except Exception as e:
                 results[model.name] = f"error_for_{source_entity_description}: {str(e)}"
 

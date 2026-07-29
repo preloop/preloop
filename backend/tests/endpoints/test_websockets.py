@@ -310,3 +310,54 @@ class TestUnifiedWebSocket:
 
         # Verify session cleanup was called
         mock_session_manager.end_session.assert_called_once()
+
+    @patch("preloop.api.endpoints.websockets.handle_activity")
+    @patch("preloop.api.endpoints.websockets.session_manager")
+    @patch("preloop.api.endpoints.websockets.manager")
+    def test_unified_websocket_client_gone_before_handshake(
+        self,
+        mock_manager,
+        mock_session_manager,
+        mock_handle_activity,
+    ):
+        """If the client transport is already closed when the handshake is sent,
+        uvloop raises a bare RuntimeError ("unable to perform operation on
+        <TCPTransport closed=True ...>"). The endpoint must treat this as a
+        normal early disconnect and still run cleanup (GlitchTip issue 3275).
+        """
+        import asyncio
+
+        from preloop.api.endpoints.websockets import unified_websocket
+
+        # Session mocks
+        mock_session = MagicMock()
+        mock_session.id = "test-session-id"
+        mock_session.connection_id = "test-connection-id"
+        mock_session.is_authenticated = False
+        mock_session_manager.create_session = AsyncMock(return_value=mock_session)
+        mock_session_manager.end_session = AsyncMock()
+        mock_session_manager.sessions = {}
+
+        mock_manager.active_connections = {}
+        mock_manager.disconnect = MagicMock()
+
+        # WebSocket whose transport died between accept() and the handshake send
+        mock_websocket = MagicMock()
+        mock_websocket.accept = AsyncMock()
+        mock_websocket.close = AsyncMock()
+        mock_websocket.scope = {"state": {"user": None}}
+        mock_websocket.query_params = {"fingerprint": "test-fingerprint"}
+        mock_websocket.headers = {"user-agent": "test-agent"}
+        mock_websocket.client = MagicMock(host="127.0.0.1")
+        mock_websocket.send_json = AsyncMock(
+            side_effect=RuntimeError(
+                "unable to perform operation on <TCPTransport closed=True "
+                "reading=False 0xdeadbeef>; the handler is closed"
+            )
+        )
+
+        # Must not raise — early disconnect is a normal condition
+        asyncio.run(unified_websocket(mock_websocket))
+
+        # Cleanup still ran
+        mock_session_manager.end_session.assert_called_once_with("test-session-id")
