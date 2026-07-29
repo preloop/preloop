@@ -527,3 +527,45 @@ def test_stream_generate_content_streams_gemini_sse(app, client, db_session, tes
         "candidatesTokenCount": 4,
         "totalTokenCount": 7,
     }
+
+
+def test_stream_generate_content_midstream_failure_emits_gemini_error_event(
+    app, client, db_session, test_user
+):
+    """Regression for issue #109: mid-stream upstream failures must surface as
+    a Gemini-native SSE error event, not a silently truncated stream."""
+    from preloop.api.endpoints.gemini_gateway import get_gemini_gateway_auth_context
+
+    _create_gateway_model(db_session, test_user.account_id)
+    app.dependency_overrides[get_gemini_gateway_auth_context] = lambda: (
+        ModelGatewayAuthContext(token="gateway-token", user=test_user)
+    )
+
+    def _exploding_stream():
+        yield {"choices": [{"delta": {"content": "Hel"}}]}
+        raise Exception("upstream connection reset")
+
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value=_exploding_stream(),
+    ):
+        response = client.post(
+            "/gemini/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse",
+            headers={"x-goog-api-key": "ignored"},
+            json={
+                "contents": [{"role": "user", "parts": [{"text": "Hello"}]}],
+            },
+        )
+
+    assert response.status_code == 200
+    payloads = _parse_sse_payloads(response.text)
+    assert payloads, f"expected SSE payloads, got: {response.text!r}"
+    error_payloads = [p for p in payloads if "error" in p]
+    assert error_payloads, f"expected a Gemini error event, got: {payloads!r}"
+    assert "upstream connection reset" in error_payloads[-1]["error"]["message"]
+    # The final STOP candidate must not be emitted after a failure.
+    assert not any(
+        candidate.get("finishReason") == "STOP"
+        for p in payloads
+        for candidate in p.get("candidates", [])
+    )

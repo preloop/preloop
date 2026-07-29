@@ -524,3 +524,247 @@ def test_responses_endpoint_streams_sse(app, client, db_session, test_user):
     assert "response.created" in response.text
     assert "response.completed" in response.text
     assert "data: [DONE]" in response.text
+
+
+def _create_gateway_model(db_session, test_user):
+    """Create a gateway-enabled model for streaming regression tests."""
+    return crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Gateway Model",
+            "provider_name": "openai",
+            "model_identifier": "gpt-5",
+            "api_key": "provider-secret",
+            "meta_data": {
+                "gateway": {
+                    "enabled": True,
+                    "model_alias": "openai/gpt-5",
+                    "provider_adapter": "preloop",
+                }
+            },
+        },
+        account_id=test_user.account_id,
+    )
+
+
+def test_chat_completions_stream_with_tools_returns_chunks(
+    app, client, db_session, test_user
+):
+    """Regression for issue #109: tool-bearing streaming requests must stream.
+
+    A request with a tools array must forward the tools upstream and relay the
+    tool-call delta chunks plus [DONE] to the client.
+    """
+    _create_gateway_model(db_session, test_user)
+    app.dependency_overrides[get_model_gateway_auth_context] = lambda: (
+        ModelGatewayAuthContext(token="runtime-token", user=test_user)
+    )
+
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value=iter(
+            [
+                {
+                    "id": "chatcmpl_tools",
+                    "created": 1710000000,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "get_time",
+                                            "arguments": "{}",
+                                        },
+                                    }
+                                ]
+                            },
+                        }
+                    ],
+                },
+                {
+                    "id": "chatcmpl_tools",
+                    "created": 1710000000,
+                    "choices": [
+                        {"index": 0, "delta": {}, "finish_reason": "tool_calls"}
+                    ],
+                    "usage": {
+                        "prompt_tokens": 5,
+                        "completion_tokens": 2,
+                        "total_tokens": 7,
+                    },
+                },
+            ]
+        ),
+    ) as mock_completion:
+        response = client.post(
+            "/openai/v1/chat/completions",
+            headers={"Authorization": "Bearer ignored"},
+            json={
+                "model": "openai/gpt-5",
+                "messages": [{"role": "user", "content": "What time is it?"}],
+                "stream": True,
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "get_time",
+                            "description": "Get the current time",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert len(response.text) > 0
+    assert "get_time" in response.text
+    assert "tool_calls" in response.text
+    assert "data: [DONE]" in response.text
+    # Tools were forwarded upstream, not dropped.
+    assert mock_completion.call_args.kwargs["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_time",
+                "description": "Get the current time",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+
+
+def test_chat_completions_stream_first_chunk_failure_returns_error_status(
+    app, client, db_session, test_user
+):
+    """Regression for issue #109: a first-chunk upstream failure must be a
+    non-200 response, never an empty HTTP 200 SSE stream."""
+    _create_gateway_model(db_session, test_user)
+    app.dependency_overrides[get_model_gateway_auth_context] = lambda: (
+        ModelGatewayAuthContext(token="runtime-token", user=test_user)
+    )
+
+    def _failing_stream():
+        raise Exception("upstream rejected the tools payload")
+        yield  # pragma: no cover
+
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value=_failing_stream(),
+    ):
+        response = client.post(
+            "/openai/v1/chat/completions",
+            headers={"Authorization": "Bearer ignored"},
+            json={
+                "model": "openai/gpt-5",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "stream": True,
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {"name": "noop", "parameters": {"type": "object"}},
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 502
+    body = response.json()
+    assert body["error"]["type"] == "api_error"
+    assert "upstream rejected the tools payload" in body["error"]["message"]
+
+
+def test_chat_completions_stream_midstream_failure_emits_sse_error_event(
+    app, client, db_session, test_user
+):
+    """Regression for issue #109: a mid-stream upstream failure must emit a
+    visible SSE error event, never leave the client with a truncated body."""
+    _create_gateway_model(db_session, test_user)
+    app.dependency_overrides[get_model_gateway_auth_context] = lambda: (
+        ModelGatewayAuthContext(token="runtime-token", user=test_user)
+    )
+
+    def _exploding_stream():
+        yield {
+            "id": "chatcmpl_mid",
+            "created": 1710000000,
+            "choices": [{"index": 0, "delta": {"content": "Hel"}}],
+        }
+        raise Exception("upstream connection reset")
+
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value=_exploding_stream(),
+    ):
+        response = client.post(
+            "/openai/v1/chat/completions",
+            headers={"Authorization": "Bearer ignored"},
+            json={
+                "model": "openai/gpt-5",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "stream": True,
+            },
+        )
+
+    assert response.status_code == 200
+    # The delta consumed before the failure is relayed...
+    assert "Hel" in response.text
+    # ...and the failure is surfaced as an explicit SSE error event.
+    error_events = [
+        json.loads(line[len("data: ") :])
+        for line in response.text.splitlines()
+        if line.startswith("data: ") and '"error"' in line
+    ]
+    assert error_events, f"expected an SSE error event, got: {response.text!r}"
+    assert "upstream connection reset" in error_events[-1]["error"]["message"]
+    assert error_events[-1]["error"]["type"] == "api_error"
+    # No [DONE] marker: the stream did not complete successfully.
+    assert "data: [DONE]" not in response.text
+
+
+def test_responses_stream_midstream_failure_emits_sse_error_event(
+    app, client, db_session, test_user
+):
+    """Responses-API streams must also surface mid-stream failures (issue #109)."""
+    _create_gateway_model(db_session, test_user)
+    app.dependency_overrides[get_model_gateway_auth_context] = lambda: (
+        ModelGatewayAuthContext(token="runtime-token", user=test_user)
+    )
+
+    def _exploding_stream():
+        yield {
+            "id": "chatcmpl_mid",
+            "created": 1710000000,
+            "choices": [{"index": 0, "delta": {"content": "Hel"}}],
+        }
+        raise Exception("upstream connection reset")
+
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value=_exploding_stream(),
+    ):
+        response = client.post(
+            "/openai/v1/responses",
+            headers={"Authorization": "Bearer ignored"},
+            json={
+                "model": "openai/gpt-5",
+                "input": "Hello",
+                "stream": True,
+            },
+        )
+
+    assert response.status_code == 200
+    error_events = [
+        json.loads(line[len("data: ") :])
+        for line in response.text.splitlines()
+        if line.startswith("data: ") and '"type": "error"' in line
+    ]
+    assert error_events, f"expected an SSE error event, got: {response.text!r}"
+    assert "upstream connection reset" in error_events[-1]["message"]
+    assert "data: [DONE]" not in response.text

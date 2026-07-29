@@ -126,6 +126,21 @@ class GeminiGatewayService(OpenAIGatewayService):
                     final_usage = response.get("usage")
                     response_id = response.get("id")
                     model_version = response.get("model") or model_name
+                elif event_type == "error":
+                    # The upstream OpenAI-compatible stream failed mid-stream
+                    # (issue #109). Relay it as a Gemini-native error event and
+                    # stop without emitting the final STOP candidate.
+                    yield self._sse_event(
+                        {
+                            "error": {
+                                "code": 502,
+                                "message": parsed.get("message")
+                                or "Gateway upstream error",
+                                "status": "INTERNAL",
+                            }
+                        }
+                    )
+                    return
 
             final_payload: Dict[str, Any] = {
                 "candidates": [
