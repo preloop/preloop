@@ -359,5 +359,7 @@ class TestUnifiedWebSocket:
         # Must not raise — early disconnect is a normal condition
         asyncio.run(unified_websocket(mock_websocket))
 
-        # Cleanup still ran
+        # Full cleanup chain ran despite the dead transport
         mock_session_manager.end_session.assert_called_once_with("test-session-id")
+        mock_manager.disconnect.assert_called_once_with("test-connection-id")
+        mock_websocket.close.assert_called_once()
