@@ -11,6 +11,7 @@ import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+from itertools import chain
 from typing import Any, Dict, Iterator, List, Optional, Protocol
 from urllib import error as urllib_error
 from urllib import request as urllib_request
@@ -847,11 +848,14 @@ class OpenAIGatewayService:
                     url=url, headers=headers, body=body
                 )
             else:
-                upstream_stream = self._call_litellm(
-                    model,
-                    messages=messages,
-                    payload=payload,
-                    stream=True,
+                upstream_stream = self._prefetch_upstream_stream(
+                    self._call_litellm(
+                        model,
+                        messages=messages,
+                        payload=payload,
+                        stream=True,
+                        provider="anthropic",
+                    ),
                     provider="anthropic",
                 )
         except ModelGatewayAPIError as exc:
@@ -1161,7 +1165,14 @@ class OpenAIGatewayService:
                         request_payload=payload,
                     )
                     recorded = True
-                raise
+                # Status 200 is already on the wire; emit an Anthropic-style
+                # SSE error event instead of truncating silently (issue #109).
+                logger.error(
+                    "Gateway anthropic-messages stream failed mid-stream: %s",
+                    exc,
+                    exc_info=True,
+                )
+                yield self._anthropic_stream_error_event(exc)
             finally:
                 # Client disconnect raises GeneratorExit (a BaseException) at the
                 # paused yield, which the except above does not catch — so
@@ -1233,11 +1244,14 @@ class OpenAIGatewayService:
                     started_at=started_at,
                     budget_result=budget_result,
                 )
-            upstream_stream = self._call_litellm(
-                model,
-                messages=messages,
-                payload=payload,
-                stream=True,
+            upstream_stream = self._prefetch_upstream_stream(
+                self._call_litellm(
+                    model,
+                    messages=messages,
+                    payload=payload,
+                    stream=True,
+                    provider="openai",
+                ),
                 provider="openai",
             )
         except ModelGatewayAPIError as exc:
@@ -1403,7 +1417,17 @@ class OpenAIGatewayService:
                         request_payload=payload,
                     )
                     recorded = True
-                raise
+                # The HTTP 200 status line is already committed once the ASGI
+                # layer starts the stream, so re-raising here would hand the
+                # client a silent, truncated body (issue #109). Emit a visible
+                # SSE error event instead so clients can distinguish an
+                # upstream failure from a network fault.
+                logger.error(
+                    "Gateway chat-completions stream failed mid-stream: %s",
+                    exc,
+                    exc_info=True,
+                )
+                yield self._openai_stream_error_event(exc)
             finally:
                 # See stream_message: catch the client-disconnect GeneratorExit
                 # so consumed tokens are still accounted.
@@ -1465,11 +1489,14 @@ class OpenAIGatewayService:
                     started_at=started_at,
                     budget_result=budget_result,
                 )
-            upstream_stream = self._call_litellm(
-                model,
-                messages=messages,
-                payload=payload,
-                stream=True,
+            upstream_stream = self._prefetch_upstream_stream(
+                self._call_litellm(
+                    model,
+                    messages=messages,
+                    payload=payload,
+                    stream=True,
+                    provider="openai",
+                ),
                 provider="openai",
             )
         except ModelGatewayAPIError as exc:
@@ -1725,7 +1752,14 @@ class OpenAIGatewayService:
                         request_payload=payload,
                     )
                     recorded = True
-                raise
+                # Status 200 is already on the wire; surface the failure as an
+                # SSE error event instead of silently truncating (issue #109).
+                logger.error(
+                    "Gateway responses stream failed mid-stream: %s",
+                    exc,
+                    exc_info=True,
+                )
+                yield self._responses_stream_error_event(exc)
             finally:
                 # See stream_message: account for tokens consumed before a
                 # client disconnect (GeneratorExit).
@@ -2709,8 +2743,18 @@ class OpenAIGatewayService:
             or resolve_ai_model_runtime(ai_model).model_gateway_model_alias
         )
 
-        def event_stream() -> Iterator[str]:
+        # Call the upstream BEFORE handing the generator to the ASGI layer so
+        # upstream failures surface as real error responses instead of empty
+        # HTTP 200 streams (issue #109); see _stream_openai_codex_chat_completion.
+        try:
             response_dict = self._create_openai_codex_response(ai_model, payload)
+        except ModelGatewayAPIError:
+            # Recorded by the caller's pre-stream error handler.
+            raise
+        except Exception as exc:
+            raise self._normalize_upstream_error("openai", exc) from exc
+
+        def event_stream() -> Iterator[str]:
             response_payload = self._build_responses_api_payload(
                 ai_model=ai_model,
                 requested_model=requested_model,
@@ -2833,7 +2877,14 @@ class OpenAIGatewayService:
                     error_detail=str(exc),
                     request_payload=payload,
                 )
-                raise
+                # Status 200 is already on the wire; emit an SSE error event
+                # instead of truncating silently (issue #109).
+                logger.error(
+                    "Gateway codex responses stream failed mid-stream: %s",
+                    exc,
+                    exc_info=True,
+                )
+                yield self._responses_stream_error_event(exc)
 
         return event_stream()
 
@@ -2861,22 +2912,34 @@ class OpenAIGatewayService:
             or resolve_ai_model_runtime(ai_model).model_gateway_model_alias
         )
 
+        # Call the upstream BEFORE handing the generator to the ASGI layer.
+        # StreamingResponse commits the HTTP 200 status line before pulling the
+        # first chunk, so an upstream failure raised inside the generator would
+        # reach the client as an empty 200 stream with no error event (issue
+        # #109: deterministic empty streams for tool-bearing requests when the
+        # Codex upstream rejected them). Raising here instead surfaces the real
+        # status code through the normal gateway error path.
+        try:
+            upstream_payload = self._build_openai_codex_payload_from_chat_completion(
+                payload=payload,
+                messages=messages,
+                ai_model=ai_model,
+            )
+            raw_codex_response = self._create_openai_codex_response(
+                ai_model, upstream_payload
+            )
+            response_dict = self._codex_response_to_chat_completion_dict(
+                raw_codex_response
+            )
+        except ModelGatewayAPIError:
+            # Recorded by the caller's pre-stream error handler.
+            raise
+        except Exception as exc:
+            raise self._normalize_upstream_error("openai", exc) from exc
+
         def event_stream() -> Iterator[str]:
             recorded = False
             try:
-                upstream_payload = (
-                    self._build_openai_codex_payload_from_chat_completion(
-                        payload=payload,
-                        messages=messages,
-                        ai_model=ai_model,
-                    )
-                )
-                raw_codex_response = self._create_openai_codex_response(
-                    ai_model, upstream_payload
-                )
-                response_dict = self._codex_response_to_chat_completion_dict(
-                    raw_codex_response
-                )
                 response_id = response_dict.get("id", f"chatcmpl_{int(time.time())}")
                 created_at = int(response_dict.get("created", time.time()))
                 message = (response_dict.get("choices") or [{}])[0].get("message") or {}
@@ -3004,29 +3067,18 @@ class OpenAIGatewayService:
                 )
                 recorded = True
                 yield self._sse_done()
-            except ModelGatewayAPIError as exc:
-                if not recorded:
-                    self._record_gateway_request(
-                        endpoint="/openai/v1/chat/completions",
-                        method="POST",
-                        status_code=exc.status_code,
-                        duration=time.perf_counter() - started_at,
-                        ai_model=ai_model,
-                        requested_model=payload.get("model"),
-                        response_payload=None,
-                        upstream_response=None,
-                        endpoint_kind="chat_completions_stream",
-                        budget_result=budget_result,
-                        error_detail=exc.message,
-                        request_payload=payload,
-                    )
-                raise
             except Exception as exc:
+                status_code = (
+                    exc.status_code if isinstance(exc, ModelGatewayAPIError) else 502
+                )
+                error_detail = (
+                    exc.message if isinstance(exc, ModelGatewayAPIError) else str(exc)
+                )
                 if not recorded:
                     self._record_gateway_request(
                         endpoint="/openai/v1/chat/completions",
                         method="POST",
-                        status_code=502,
+                        status_code=status_code,
                         duration=time.perf_counter() - started_at,
                         ai_model=ai_model,
                         requested_model=payload.get("model"),
@@ -3034,10 +3086,17 @@ class OpenAIGatewayService:
                         upstream_response=None,
                         endpoint_kind="chat_completions_stream",
                         budget_result=budget_result,
-                        error_detail=str(exc),
+                        error_detail=error_detail,
                         request_payload=payload,
                     )
-                raise
+                # Status 200 is already on the wire; emit an SSE error event
+                # instead of truncating silently (issue #109).
+                logger.error(
+                    "Gateway codex chat stream failed mid-stream: %s",
+                    exc,
+                    exc_info=True,
+                )
+                yield self._openai_stream_error_event(exc)
 
         return event_stream()
 
@@ -3549,7 +3608,14 @@ class OpenAIGatewayService:
                         request_payload=payload,
                     )
                     recorded = True
-                raise
+                # Status 200 is already on the wire; emit an Anthropic-style
+                # SSE error event instead of truncating silently (issue #109).
+                logger.error(
+                    "Gateway anthropic passthrough stream failed mid-stream: %s",
+                    exc,
+                    exc_info=True,
+                )
+                yield self._anthropic_stream_error_event(exc)
             finally:
                 # GeneratorExit (client disconnect) bypasses the except above;
                 # bill already-consumed upstream tokens best-effort.
@@ -3746,6 +3812,68 @@ class OpenAIGatewayService:
             return self.upstream_backend.completion(**kwargs)
         except Exception as exc:
             raise self._normalize_upstream_error(provider, exc) from exc
+
+    def _prefetch_upstream_stream(
+        self, upstream_stream: Any, *, provider: GatewayProvider
+    ) -> Iterator[Any]:
+        """Pull the first upstream chunk before SSE headers are committed.
+
+        ``StreamingResponse`` sends the HTTP 200 status line before iterating
+        the body, so any upstream failure raised on the FIRST chunk inside the
+        generator would surface to the client as an empty 200 stream (issue
+        #109). Fetching one chunk eagerly converts first-chunk failures into a
+        normal pre-stream ``ModelGatewayAPIError`` with a real status code.
+
+        Args:
+            upstream_stream: The stream returned by the upstream backend.
+            provider: Gateway provider used to shape normalized errors.
+
+        Returns:
+            An iterator yielding the prefetched chunk followed by the rest.
+
+        Raises:
+            ModelGatewayAPIError: When the first chunk cannot be obtained.
+        """
+        iterator = iter(upstream_stream)
+        try:
+            first_chunk = next(iterator)
+        except StopIteration:
+            return iter(())
+        except ModelGatewayAPIError:
+            raise
+        except Exception as exc:
+            raise self._normalize_upstream_error(provider, exc) from exc
+        return chain([first_chunk], iterator)
+
+    def _stream_error(
+        self, provider: GatewayProvider, exc: Exception
+    ) -> ModelGatewayAPIError:
+        """Coerce a mid-stream exception into a gateway error for SSE emission."""
+        if isinstance(exc, ModelGatewayAPIError):
+            return exc
+        return self._normalize_upstream_error(provider, exc)
+
+    def _openai_stream_error_event(self, exc: Exception) -> str:
+        """Render a mid-stream failure as an OpenAI-style SSE error event."""
+        return self._sse_event(self._stream_error("openai", exc).to_payload())
+
+    def _responses_stream_error_event(self, exc: Exception) -> str:
+        """Render a mid-stream failure as a Responses-API SSE error event."""
+        error = self._stream_error("openai", exc)
+        return self._sse_event(
+            {
+                "type": "error",
+                "code": error.code or error.error_type,
+                "message": error.message,
+                "param": error.param,
+            }
+        )
+
+    def _anthropic_stream_error_event(self, exc: Exception) -> str:
+        """Render a mid-stream failure as an Anthropic-style SSE error event."""
+        return self._anthropic_sse_event(
+            "error", self._stream_error("anthropic", exc).to_payload()
+        )
 
     def _capture_tools_meta(self, original_tools: Any) -> None:
         """Stash per-tool cost attribution for the usage row.

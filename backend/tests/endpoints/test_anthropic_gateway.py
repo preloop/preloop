@@ -256,3 +256,115 @@ def test_messages_endpoint_forwards_anthropic_headers_to_service(
     call_kwargs = mock_service.create_message.call_args.kwargs
     assert call_kwargs["anthropic_version"] == "2023-06-01"
     assert call_kwargs["anthropic_beta"] == "prompt-caching-2024-07-31"
+
+
+def test_messages_stream_first_chunk_failure_returns_error_status(
+    app, client, db_session, test_user
+):
+    """Regression for issue #109: first-chunk failures must not become
+    empty HTTP 200 SSE streams."""
+    crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Claude Gateway Model",
+            "provider_name": "anthropic",
+            "model_identifier": "claude-sonnet-4-5",
+            "api_key": "provider-secret",
+            "meta_data": {
+                "gateway": {
+                    "enabled": True,
+                    "model_alias": "anthropic/claude-sonnet-4-5",
+                    "provider_adapter": "preloop",
+                }
+            },
+        },
+        account_id=test_user.account_id,
+    )
+    app.dependency_overrides[get_anthropic_gateway_auth_context] = lambda: (
+        ModelGatewayAuthContext(token="runtime-token", user=test_user)
+    )
+
+    def _failing_stream():
+        raise Exception("upstream rejected the request")
+        yield  # pragma: no cover
+
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value=_failing_stream(),
+    ):
+        response = client.post(
+            "/anthropic/v1/messages",
+            headers={
+                "x-api-key": "ignored",
+                "anthropic-version": "2023-06-01",
+            },
+            json={
+                "model": "anthropic/claude-sonnet-4-5",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "max_tokens": 256,
+                "stream": True,
+            },
+        )
+
+    assert response.status_code == 502
+    body = response.json()
+    assert body["type"] == "error"
+    assert "upstream rejected the request" in body["error"]["message"]
+
+
+def test_messages_stream_midstream_failure_emits_sse_error_event(
+    app, client, db_session, test_user
+):
+    """Regression for issue #109: mid-stream failures must emit an
+    Anthropic-style SSE error event, not silently truncate."""
+    crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Claude Gateway Model",
+            "provider_name": "anthropic",
+            "model_identifier": "claude-sonnet-4-5",
+            "api_key": "provider-secret",
+            "meta_data": {
+                "gateway": {
+                    "enabled": True,
+                    "model_alias": "anthropic/claude-sonnet-4-5",
+                    "provider_adapter": "preloop",
+                }
+            },
+        },
+        account_id=test_user.account_id,
+    )
+    app.dependency_overrides[get_anthropic_gateway_auth_context] = lambda: (
+        ModelGatewayAuthContext(token="runtime-token", user=test_user)
+    )
+
+    def _exploding_stream():
+        yield {
+            "id": "msg_123",
+            "choices": [{"index": 0, "delta": {"content": "Hel"}}],
+        }
+        raise Exception("upstream connection reset")
+
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value=_exploding_stream(),
+    ):
+        response = client.post(
+            "/anthropic/v1/messages",
+            headers={
+                "x-api-key": "ignored",
+                "anthropic-version": "2023-06-01",
+            },
+            json={
+                "model": "anthropic/claude-sonnet-4-5",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "max_tokens": 256,
+                "stream": True,
+            },
+        )
+
+    assert response.status_code == 200
+    assert "event: message_start" in response.text
+    assert "event: error" in response.text
+    assert "upstream connection reset" in response.text
+    assert "event: message_stop" not in response.text
