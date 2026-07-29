@@ -2131,10 +2131,81 @@ class OpenAIGatewayService:
             )
         return resolved
 
+    # Parameters the ChatGPT Codex backend accepts, measured empirically
+    # against ``chatgpt.com/backend-api/codex/responses`` (2026-07-30).
+    # The backend rejects EVERY other top-level key with HTTP 400
+    # ``{"detail": "Unsupported parameter: <name>"}``, including standard
+    # Responses-API tunables such as ``max_output_tokens``, ``temperature``
+    # and ``top_p``, so there is no translation target for token limits:
+    # they must be dropped. ``store`` must be present and exactly ``false``
+    # (absent or ``true`` both fail with "Store must be set to false").
+    _CODEX_SUPPORTED_PARAMS = frozenset(
+        {
+            "model",
+            "instructions",
+            "input",
+            "store",
+            "stream",
+            "tools",
+            "tool_choice",
+            "parallel_tool_calls",
+            "reasoning",
+            "include",
+            "prompt_cache_key",
+            "text",
+        }
+    )
+
+    def _sanitize_openai_codex_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Reduce a payload to the parameter set the Codex backend accepts.
+
+        The subscription-OAuth Codex backend is strict: any top-level key
+        outside ``_CODEX_SUPPORTED_PARAMS`` fails the whole request with
+        HTTP 400 ``Unsupported parameter: <name>`` (prod failure 2026-07-29
+        22:22 UTC: Hermes sent ``max_completion_tokens`` and every request
+        died; follow-up to issue #109). ``max_completion_tokens`` has no
+        accepted equivalent (``max_output_tokens`` and ``max_tokens`` are
+        rejected too), so unsupported tunables are dropped rather than
+        translated. The one translation we can do: ``reasoning_effort``
+        (chat-completions form) becomes ``reasoning: {"effort": ...}``.
+
+        Args:
+            payload: The candidate upstream payload (already deep-copied).
+
+        Returns:
+            The payload containing only supported keys, with ``store``
+            forced to ``False``.
+        """
+        sanitized: Dict[str, Any] = {}
+        dropped: List[str] = []
+        for key, value in payload.items():
+            if key in self._CODEX_SUPPORTED_PARAMS:
+                sanitized[key] = value
+                continue
+            if (
+                key == "reasoning_effort"
+                and isinstance(value, str)
+                and not isinstance(payload.get("reasoning"), dict)
+            ):
+                sanitized["reasoning"] = {"effort": value}
+                continue
+            dropped.append(key)
+        # Codex rejects requests without ``store: false`` (HTTP 400 "Store
+        # must be set to false"); force it regardless of client input.
+        sanitized["store"] = False
+        if dropped:
+            logger.debug(
+                "Dropped parameters unsupported by the OpenAI Codex backend: %s",
+                sorted(dropped),
+            )
+        return sanitized
+
     def _build_openai_codex_payload(
         self, ai_model: AIModel, payload: Dict[str, Any], *, stream: bool = False
     ) -> Dict[str, Any]:
-        upstream_payload = json.loads(json.dumps(payload))
+        upstream_payload = self._sanitize_openai_codex_payload(
+            json.loads(json.dumps(payload))
+        )
         upstream_payload["model"] = ai_model.model_identifier
         if stream:
             upstream_payload["stream"] = True
@@ -2277,15 +2348,42 @@ class OpenAIGatewayService:
             # flag; we must replicate it for chat-completion clients too.
             "store": False,
         }
-        for key in (
-            "temperature",
-            "top_p",
-            "max_output_tokens",
-            "max_completion_tokens",
-            "parallel_tool_calls",
-        ):
-            if payload.get(key) is not None:
-                upstream_payload[key] = payload[key]
+        # Only ``parallel_tool_calls`` survives among the chat-completions
+        # tunables: the Codex backend rejects ``temperature``, ``top_p``,
+        # ``max_completion_tokens``, ``max_output_tokens`` and ``max_tokens``
+        # outright with HTTP 400 ``Unsupported parameter`` (measured
+        # 2026-07-30; prod failure 2026-07-29 22:22 UTC when Hermes sent
+        # ``max_completion_tokens``). There is no accepted token-limit
+        # parameter to translate to, so they are dropped and logged.
+        if payload.get("parallel_tool_calls") is not None:
+            upstream_payload["parallel_tool_calls"] = payload["parallel_tool_calls"]
+        if isinstance(payload.get("reasoning"), dict):
+            upstream_payload["reasoning"] = payload["reasoning"]
+        elif isinstance(payload.get("reasoning_effort"), str):
+            # chat-completions ``reasoning_effort`` maps onto the accepted
+            # Responses-API ``reasoning.effort`` field.
+            upstream_payload["reasoning"] = {"effort": payload["reasoning_effort"]}
+        dropped = sorted(
+            key
+            for key in payload
+            if key not in self._CODEX_SUPPORTED_PARAMS
+            and key
+            not in {
+                # Consumed by this translation (or intentionally mapped).
+                "messages",
+                "reasoning_effort",
+                # Belong to the chat-completions envelope, not the upstream.
+                "stream",
+                "stream_options",
+            }
+            and payload.get(key) is not None
+        )
+        if dropped:
+            logger.debug(
+                "Dropped chat-completion parameters unsupported by the "
+                "OpenAI Codex backend: %s",
+                dropped,
+            )
 
         # Tools and tool_choice need shape translation: chat-completions nests
         # the function spec under a ``function`` key, while the Codex Responses
@@ -3293,6 +3391,77 @@ class OpenAIGatewayService:
                 return requested_tail
         return base_identifier
 
+    # OpenAI-protocol parameters that the Anthropic Messages API rejects
+    # with HTTP 400 ``invalid_request_error`` ("Extra inputs are not
+    # permitted") when forwarded verbatim. Clients speaking the OpenAI
+    # dialect (or generic SDKs with provider-agnostic knobs) leak these into
+    # Anthropic-protocol requests; one stray key fails the whole request.
+    # This is a denylist (not an allowlist) on purpose: the passthrough must
+    # keep forwarding unknown Anthropic-native fields verbatim so new
+    # Anthropic features work without a gateway release.
+    _ANTHROPIC_PASSTHROUGH_DROP_PARAMS = frozenset(
+        {
+            "frequency_penalty",
+            "presence_penalty",
+            "seed",
+            "logprobs",
+            "top_logprobs",
+            "logit_bias",
+            "n",
+            "response_format",
+            "stop",
+            "user",
+            "stream_options",
+            "reasoning_effort",
+            "parallel_tool_calls",
+            "modalities",
+            "prediction",
+            "store",
+            "instructions",
+            "input",
+        }
+    )
+
+    def _sanitize_anthropic_passthrough_payload(
+        self, body: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Remove OpenAI-protocol strays before the OAuth passthrough.
+
+        Only top-level OpenAI-dialect keys are touched; ``system``,
+        ``messages``, ``tools`` and every nested ``cache_control`` marker
+        stay byte-identical (the whole point of the passthrough). The OpenAI
+        token-limit spellings (``max_completion_tokens``,
+        ``max_output_tokens``) are translated to Anthropic's ``max_tokens``
+        when the client did not send it; everything else on the denylist is
+        dropped and logged at debug level.
+
+        Args:
+            body: A shallow copy of the client payload (safe to mutate).
+
+        Returns:
+            The same dict, with stray keys removed.
+        """
+        dropped: List[str] = []
+        for alias in ("max_completion_tokens", "max_output_tokens"):
+            if alias not in body:
+                continue
+            value = body.pop(alias)
+            if body.get("max_tokens") is None and isinstance(value, int):
+                body["max_tokens"] = value
+            else:
+                dropped.append(alias)
+        for key in self._ANTHROPIC_PASSTHROUGH_DROP_PARAMS:
+            if key in body:
+                body.pop(key)
+                dropped.append(key)
+        if dropped:
+            logger.debug(
+                "Dropped parameters unsupported by the Anthropic Messages "
+                "API from the OAuth passthrough: %s",
+                sorted(dropped),
+            )
+        return body
+
     def _prepare_anthropic_passthrough(
         self,
         *,
@@ -3307,9 +3476,10 @@ class OpenAIGatewayService:
 
         The body is a shallow copy of the client payload: ``system``,
         ``messages``, ``tools`` and all nested ``cache_control`` blocks are
-        the client's own objects, forwarded untouched. Only ``model`` (the
-        account model's upstream identifier) and ``stream`` are set by
-        Preloop.
+        the client's own objects, forwarded untouched. Preloop sets
+        ``model`` (the account model's upstream identifier) and ``stream``,
+        and strips top-level OpenAI-dialect strays the upstream would 400
+        on (see ``_sanitize_anthropic_passthrough_payload``).
 
         Args:
             ai_model: The resolved gateway model.
@@ -3329,7 +3499,9 @@ class OpenAIGatewayService:
         payload = self._strip_anthropic_passthrough_tools(payload)
         self._capture_tools_meta(original_tools)
 
-        body: Dict[str, Any] = dict(payload)
+        body: Dict[str, Any] = self._sanitize_anthropic_passthrough_payload(
+            dict(payload)
+        )
         body["model"] = self._passthrough_upstream_model_ref(
             ai_model, payload.get("model")
         )
