@@ -28,19 +28,11 @@ Expected output: Progress handler should be called for each table backup (5 time
 
 ### Preloop Progress Test
 
-Tests that progress reporting works with Preloop's stateless HTTP mode.
-
-**Prerequisites:**
-- Preloop server running on `http://localhost:8001`
-- Valid API key/token
-
-**Run the test:**
-```bash
-export PRELOOP_TOKEN="your-api-key-here"
-python scripts/manual_tests/test_preloop_progress.py
-```
-
-Expected output: Progress handler should be called during `test_progress` tool execution.
+Progress reporting against a live Preloop server is covered by the unit test
+`backend/tests/services/test_initialize_mcp.py::TestRegisteredToolBehaviour::test_report_progress_through_dynamic_fastmcp`
+(the old user-visible `test_progress` debug tool was removed). For manual
+verification of streaming progress, use `test_approval_streaming.py` or
+`test_proxied_approval_streaming.py`.
 
 **Note:** If progress updates are not received with `stateless_http=True`, you may need to investigate whether FastMCP's stateless mode supports SSE streaming for progress notifications. The `json_response=None` parameter should enable this, but it may require verification.
 

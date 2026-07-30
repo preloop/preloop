@@ -351,6 +351,193 @@ class TestListTools:
         # Should NOT include internal name in results
         assert not any(t.name == internal_name for t in result)
 
+    async def test_list_tools_excludes_explicitly_disabled_builtin(
+        self, dynamic_mcp, user_context
+    ):
+        """A builtin tool with an is_enabled=False config row must be hidden."""
+        dynamic_mcp._user_context_provider = lambda: user_context
+        user_context.tracker_types = ["github"]
+
+        default_tools = [
+            Tool(name="get_issue", description="Get issue", parameters={}),
+            Tool(name="create_issue", description="Create issue", parameters={}),
+        ]
+
+        disabled_config = MagicMock()
+        disabled_config.tool_name = "get_issue"
+        disabled_config.tool_source = "builtin"
+        disabled_config.is_enabled = False
+        disabled_config.justification_mode = None
+
+        with patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db:
+            mock_db = MagicMock()
+            mock_get_db.side_effect = lambda: iter([mock_db])
+
+            with (
+                patch(
+                    "preloop.services.mcp_tool_discovery._get_proxied_tools_sync",
+                    return_value=[],
+                ),
+                patch(
+                    "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+                    return_value=[disabled_config],
+                ),
+                patch(
+                    "preloop.models.crud.crud_account.get",
+                    return_value=MagicMock(meta_data={}),
+                ),
+                patch.object(
+                    FastMCP, "list_tools", new=AsyncMock(return_value=default_tools)
+                ),
+            ):
+                result = await dynamic_mcp.list_tools()
+
+        names = {t.name for t in result}
+        assert "get_issue" not in names
+        assert "create_issue" in names
+
+    async def test_list_tools_excludes_default_disabled_builtin_without_config(
+        self, dynamic_mcp, user_context
+    ):
+        """Default-disabled compliance tools are hidden when no config exists."""
+        dynamic_mcp._user_context_provider = lambda: user_context
+        user_context.tracker_types = ["github"]
+
+        default_tools = [
+            Tool(name="estimate_compliance", description="EC", parameters={}),
+            Tool(name="improve_compliance", description="IC", parameters={}),
+            Tool(name="get_issue", description="Get issue", parameters={}),
+        ]
+
+        with patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db:
+            mock_db = MagicMock()
+            mock_get_db.side_effect = lambda: iter([mock_db])
+
+            with (
+                patch(
+                    "preloop.services.mcp_tool_discovery._get_proxied_tools_sync",
+                    return_value=[],
+                ),
+                patch(
+                    "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+                    return_value=[],
+                ),
+                patch(
+                    "preloop.models.crud.crud_account.get",
+                    return_value=MagicMock(meta_data={}),
+                ),
+                patch.object(
+                    FastMCP, "list_tools", new=AsyncMock(return_value=default_tools)
+                ),
+            ):
+                result = await dynamic_mcp.list_tools()
+
+        names = {t.name for t in result}
+        assert "estimate_compliance" not in names
+        assert "improve_compliance" not in names
+        assert "get_issue" in names
+
+    async def test_list_tools_explicit_enable_overrides_default_disabled(
+        self, dynamic_mcp, user_context
+    ):
+        """An explicit is_enabled=True config re-enables a default-disabled tool."""
+        dynamic_mcp._user_context_provider = lambda: user_context
+        user_context.tracker_types = ["github"]
+
+        default_tools = [
+            Tool(name="estimate_compliance", description="EC", parameters={}),
+            Tool(name="improve_compliance", description="IC", parameters={}),
+        ]
+
+        enable_config = MagicMock()
+        enable_config.tool_name = "estimate_compliance"
+        enable_config.tool_source = "builtin"
+        enable_config.is_enabled = True
+        enable_config.justification_mode = None
+
+        with patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db:
+            mock_db = MagicMock()
+            mock_get_db.side_effect = lambda: iter([mock_db])
+
+            with (
+                patch(
+                    "preloop.services.mcp_tool_discovery._get_proxied_tools_sync",
+                    return_value=[],
+                ),
+                patch(
+                    "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+                    return_value=[enable_config],
+                ),
+                patch(
+                    "preloop.models.crud.crud_account.get",
+                    return_value=MagicMock(meta_data={}),
+                ),
+                patch.object(
+                    FastMCP, "list_tools", new=AsyncMock(return_value=default_tools)
+                ),
+            ):
+                result = await dynamic_mcp.list_tools()
+
+        names = {t.name for t in result}
+        assert "estimate_compliance" in names
+        assert "improve_compliance" not in names
+
+    async def test_list_tools_flow_execution_bypasses_enable_filter(self, dynamic_mcp):
+        """Flow executions with an explicit allow-list see their tools even if
+        the account disabled them (presets opt in explicitly)."""
+        user_context = UserContext(
+            user_id="1",
+            account_id="1",
+            username="test",
+            has_tracker=True,
+            enabled_default_tools=[],
+            enabled_proxied_tools=[],
+            tracker_types=["github"],
+            flow_execution_id="flow-exec-1",
+            allowed_flow_tools=["get_issue", "estimate_compliance"],
+        )
+        dynamic_mcp._user_context_provider = lambda: user_context
+
+        default_tools = [
+            Tool(name="get_issue", description="Get issue", parameters={}),
+            Tool(name="estimate_compliance", description="EC", parameters={}),
+            Tool(name="create_issue", description="Create issue", parameters={}),
+        ]
+
+        disabled_config = MagicMock()
+        disabled_config.tool_name = "get_issue"
+        disabled_config.tool_source = "builtin"
+        disabled_config.is_enabled = False
+        disabled_config.justification_mode = None
+
+        with patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db:
+            mock_db = MagicMock()
+            mock_get_db.side_effect = lambda: iter([mock_db])
+
+            with (
+                patch(
+                    "preloop.services.mcp_tool_discovery._get_proxied_tools_sync",
+                    return_value=[],
+                ),
+                patch(
+                    "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+                    return_value=[disabled_config],
+                ),
+                patch(
+                    "preloop.models.crud.crud_account.get",
+                    return_value=MagicMock(meta_data={}),
+                ),
+                patch.object(
+                    FastMCP, "list_tools", new=AsyncMock(return_value=default_tools)
+                ),
+            ):
+                result = await dynamic_mcp.list_tools()
+
+        names = {t.name for t in result}
+        # Account-disabled get_issue and default-disabled estimate_compliance
+        # are still visible because the flow explicitly allows them.
+        assert names == {"get_issue", "estimate_compliance"}
+
     async def test_list_tools_error_loading_proxied(self, dynamic_mcp, user_context):
         """Test handling error when loading proxied tools."""
         dynamic_mcp._user_context_provider = lambda: user_context
@@ -476,6 +663,72 @@ class TestMCPCallTool:
                     run_middleware=True,
                     task_meta=None,
                 )
+
+    async def test_call_disabled_builtin_tool_rejected(self, dynamic_mcp, user_context):
+        """A builtin tool disabled by ToolConfiguration cannot be invoked by name."""
+        from fastmcp.tools.tool import ToolResult
+
+        dynamic_mcp._user_context_provider = lambda: user_context
+
+        disabled_config = MagicMock()
+        disabled_config.tool_name = "get_issue"
+        disabled_config.tool_source = "builtin"
+        disabled_config.is_enabled = False
+        disabled_config.justification_mode = None
+
+        with (
+            patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db,
+            patch(
+                "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+                return_value=[disabled_config],
+            ),
+            patch.object(
+                dynamic_mcp.__class__.__bases__[0],
+                "call_tool",
+                new=AsyncMock(),
+                create=True,
+            ) as mock_super,
+        ):
+            mock_db = MagicMock()
+            mock_get_db.side_effect = lambda: iter([mock_db])
+
+            result = await dynamic_mcp.call_tool("get_issue", {"issue": "ABC-1"})
+
+        mock_super.assert_not_called()
+        assert isinstance(result, ToolResult)
+        assert "disabled" in result.content[0].text.lower()
+
+    async def test_call_default_disabled_builtin_tool_rejected(
+        self, dynamic_mcp, user_context
+    ):
+        """A default-disabled builtin tool with no config cannot be invoked."""
+        from fastmcp.tools.tool import ToolResult
+
+        dynamic_mcp._user_context_provider = lambda: user_context
+
+        with (
+            patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db,
+            patch(
+                "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+                return_value=[],
+            ),
+            patch.object(
+                dynamic_mcp.__class__.__bases__[0],
+                "call_tool",
+                new=AsyncMock(),
+                create=True,
+            ) as mock_super,
+        ):
+            mock_db = MagicMock()
+            mock_get_db.side_effect = lambda: iter([mock_db])
+
+            result = await dynamic_mcp.call_tool(
+                "estimate_compliance", {"issues": ["ABC-1"]}
+            )
+
+        mock_super.assert_not_called()
+        assert isinstance(result, ToolResult)
+        assert "disabled" in result.content[0].text.lower()
 
     async def test_call_tool_require_approval_without_workflow_blocks(
         self, dynamic_mcp, user_context

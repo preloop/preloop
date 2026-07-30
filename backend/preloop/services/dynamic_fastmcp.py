@@ -315,6 +315,7 @@ class DynamicFastMCP(FastMCP):
         # Now with dynamic registration for streaming approval support
         proxied_tools_data = []
         justification_modes = {}
+        builtin_enabled_map = {}
         account_meta = {}
 
         try:
@@ -337,9 +338,14 @@ class DynamicFastMCP(FastMCP):
                         for tc in configs
                         if tc.justification_mode in ("optional", "required")
                     }
+                    enabled = {
+                        tc.tool_name: tc.is_enabled
+                        for tc in configs
+                        if tc.tool_source == "builtin"
+                    }
                     acc = crud_account.get(db, id=user_context.account_id)
                     meta = getattr(acc, "meta_data", {}) or {}
-                    return proxied, modes, meta
+                    return proxied, modes, enabled, meta
                 finally:
                     db.close()
 
@@ -348,6 +354,7 @@ class DynamicFastMCP(FastMCP):
             (
                 proxied_tools_data,
                 justification_modes,
+                builtin_enabled_map,
                 account_meta,
             ) = await asyncio.wait_for(
                 loop.run_in_executor(None, _fetch_list_tools_metadata),
@@ -429,6 +436,45 @@ class DynamicFastMCP(FastMCP):
         except Exception as e:
             logger.error(f"Error loading proxied tools: {e}", exc_info=True)
             # Continue with just default tools
+
+        # ── Enforce builtin tool enable/disable configuration ────────────
+        # A builtin tool is exposed only if:
+        #   - an explicit ToolConfiguration row enables it, or
+        #   - no config row exists AND its metadata does not default-disable it.
+        # Flow executions are exempt: they carry an explicit allow-list
+        # (allowed_flow_tools) that opts into exactly the tools the flow
+        # needs, so account-level disables must not break preset flows.
+        if user_context.allowed_flow_tools is None:
+            before_count = len(available_tools)
+            enabled_filtered = []
+            for tool in available_tools:
+                meta = builtin_meta.get(tool.name)
+                if meta is None:
+                    # Not a builtin tool (proxied); handled elsewhere
+                    enabled_filtered.append(tool)
+                    continue
+                explicit = builtin_enabled_map.get(tool.name)
+                if explicit is not None:
+                    if explicit:
+                        enabled_filtered.append(tool)
+                    else:
+                        logger.info(
+                            f"Skipping builtin tool '{tool.name}' "
+                            "(disabled by tool configuration)"
+                        )
+                elif meta.get("default_enabled", True):
+                    enabled_filtered.append(tool)
+                else:
+                    logger.info(
+                        f"Skipping builtin tool '{tool.name}' "
+                        "(default-disabled, no explicit enable configured)"
+                    )
+            available_tools = enabled_filtered
+            if before_count != len(available_tools):
+                logger.info(
+                    f"Builtin enable/disable filter removed "
+                    f"{before_count - len(available_tools)} tools"
+                )
 
         # SECURITY: Enforce flow-specific tool restrictions if present
         # This provides defense-in-depth: even if an agent is compromised,
@@ -863,7 +909,7 @@ async def {internal_name}({params_str}) -> str:
         if user_context and not _bypass_approval_var.get(False):
             try:
 
-                def _check_justification_mode():
+                def _check_tool_config():
                     db = next(get_db())
                     try:
                         configs = crud_tool_configuration.get_multi_by_account(
@@ -871,22 +917,57 @@ async def {internal_name}({params_str}) -> str:
                             account_id=str(user_context.account_id),
                             limit=1000,
                         )
+                        requires_just = False
+                        builtin_enabled = None
                         for tc in configs:
-                            if (
-                                tc.tool_name == name
-                                and tc.justification_mode == "required"
-                            ):
-                                return True
-                        return False
+                            if tc.tool_name != name:
+                                continue
+                            if tc.justification_mode == "required":
+                                requires_just = True
+                            if tc.tool_source == "builtin":
+                                builtin_enabled = tc.is_enabled
+                        return requires_just, builtin_enabled
                     finally:
                         db.close()
 
-                requires_justification = await asyncio.wait_for(
-                    asyncio.get_event_loop().run_in_executor(
-                        None, _check_justification_mode
-                    ),
+                (
+                    requires_justification,
+                    builtin_explicit_enabled,
+                ) = await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(None, _check_tool_config),
                     timeout=30,
                 )
+
+                # ── Enforce builtin tool enable/disable at call time ──────
+                # Mirrors the list_tools filter: a disabled builtin tool must
+                # not be invocable by name either. Flow executions are exempt
+                # because their explicit allow-list (allowed_flow_tools) is
+                # enforced separately via the list_tools access check below.
+                builtin_call_meta = next(
+                    (t for t in BUILTIN_TOOLS if t["name"] == name), None
+                )
+                if (
+                    builtin_call_meta is not None
+                    and user_context.allowed_flow_tools is None
+                ):
+                    is_disabled = builtin_explicit_enabled is False or (
+                        builtin_explicit_enabled is None
+                        and not builtin_call_meta.get("default_enabled", True)
+                    )
+                    if is_disabled:
+                        logger.warning(f"Blocked call to disabled builtin tool: {name}")
+                        return ToolResult(
+                            content=[
+                                TextContent(
+                                    type="text",
+                                    text=(
+                                        f"Access denied: Tool '{name}' is disabled "
+                                        "for this account. Enable it on the Tools "
+                                        "page to use it."
+                                    ),
+                                )
+                            ]
+                        )
                 if requires_justification and not justification:
                     from fastmcp.tools.tool import ToolResult
                     from mcp.types import TextContent

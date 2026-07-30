@@ -55,7 +55,7 @@ async def test_mcp_list_tools():
         assert len(tool_names) > 0, "Expected at least one MCP tool"
 
         # Tools that are always present (no tracker required)
-        expected_tools = {"test_progress", "request_approval"}
+        expected_tools = {"ask_user", "request_approval"}
         present = expected_tools & set(tool_names)
         assert present, (
             f"None of the expected core tools {expected_tools} found in {tool_names}"

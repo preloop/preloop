@@ -91,7 +91,6 @@ EXPECTED_TOOLS = {
     "search",
     "estimate_compliance",
     "improve_compliance",
-    "test_progress",
     "request_approval",
     "add_comment",
     "update_comment",
@@ -184,18 +183,41 @@ class TestRegisteredToolBehaviour:
         assert result == '{"issue": "ok"}'
         mock_router.assert_awaited_once_with("ABC-1")
 
-    async def test_test_progress_without_context(self, mcp_server):
-        fn = await self._fn(mcp_server, "test_progress")
-        result = await fn(count=3, ctx=None)
-        assert "No Context available" in result
+    async def test_removed_test_progress_tool_not_registered(self, mcp_server):
+        """The old test_progress debug tool must no longer ship to users."""
+        assert await mcp_server.get_tool("test_progress") is None
 
-    async def test_test_progress_reports_progress(self, mcp_server):
-        fn = await self._fn(mcp_server, "test_progress")
+    async def test_report_progress_through_dynamic_fastmcp(self):
+        """ctx.report_progress works for tools registered on DynamicFastMCP.
+
+        Replaces the coverage previously provided by the user-visible
+        test_progress tool with a throwaway tool registered only here.
+        """
+        from typing import Optional
+
+        from fastmcp import Context
+
+        mcp = DynamicFastMCP("test-progress-coverage")
+
+        @mcp.tool()
+        async def _progress_probe(count: int = 2, ctx: Optional[Context] = None) -> str:
+            if not ctx:
+                return "no context"
+            for i in range(count):
+                await ctx.report_progress(
+                    progress=i + 1, total=count, message=f"step {i + 1}"
+                )
+            return f"done {count}"
+
+        tool = await mcp.get_tool("_progress_probe")
+        assert tool is not None
+
         ctx = MagicMock()
         ctx.report_progress = AsyncMock()
-        result = await fn(count=2, ctx=ctx)
-        assert "Processed 2 items" in result
-        assert ctx.report_progress.await_count == 2
+        result = await tool.fn(count=3, ctx=ctx)
+
+        assert result == "done 3"
+        assert ctx.report_progress.await_count == 3
 
     async def test_request_approval_no_user_context(self, mcp_server):
         fn = await self._fn(mcp_server, "request_approval")

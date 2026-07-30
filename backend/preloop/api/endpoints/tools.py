@@ -176,6 +176,7 @@ BUILTIN_TOOLS = [
         "source": "builtin",
         "requires_tracker": True,
         "required_tracker_types": [],
+        "default_enabled": False,
         "schema": {
             "type": "object",
             "properties": {
@@ -191,6 +192,7 @@ BUILTIN_TOOLS = [
         "source": "builtin",
         "requires_tracker": True,
         "required_tracker_types": [],
+        "default_enabled": False,
         "schema": {
             "type": "object",
             "properties": {
@@ -582,7 +584,9 @@ def list_all_tools(
                 "source_id": None,
                 "source_name": "Built-in",
                 "schema": builtin_tool["schema"],
-                "is_enabled": config.is_enabled if config else True,
+                "is_enabled": config.is_enabled
+                if config
+                else builtin_tool.get("default_enabled", True),
                 "requires_tracker": requires_tracker,
                 "required_tracker_types": required_tracker_types,
                 "is_supported": is_supported,
