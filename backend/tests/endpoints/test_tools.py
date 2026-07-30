@@ -78,7 +78,45 @@ class TestListAllTools:
         # Should return all builtin tools with defaults
         assert len(result) == len(tools.BUILTIN_TOOLS)
         assert all(tool["source"] == "builtin" for tool in result)
-        assert all(tool["is_enabled"] is True for tool in result)
+        # Default-disabled tools report is_enabled=False without a config row
+        default_disabled = {
+            t["name"] for t in tools.BUILTIN_TOOLS if not t.get("default_enabled", True)
+        }
+        assert default_disabled == {"estimate_compliance", "improve_compliance"}
+        for tool in result:
+            expected = tool["name"] not in default_disabled
+            assert tool["is_enabled"] is expected
+
+    async def test_default_disabled_tool_enabled_by_config(
+        self, mock_db, mock_user, mock_account, mocker
+    ):
+        """An explicit enable config row overrides default_enabled=False."""
+        config = MagicMock(spec=ToolConfiguration)
+        config.id = uuid.uuid4()
+        config.tool_name = "estimate_compliance"
+        config.tool_source = "builtin"
+        config.mcp_server_id = None
+        config.is_enabled = True
+        config.approval_workflow_id = None
+        config.justification_mode = None
+
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_tool_configuration.get_multi_by_account",
+            return_value=[config],
+        )
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_mcp_server.get_active_by_account",
+            return_value=[],
+        )
+
+        result = tools.list_all_tools(
+            account=mock_account, current_user=mock_user, db=mock_db
+        )
+
+        estimate = next(t for t in result if t["name"] == "estimate_compliance")
+        improve = next(t for t in result if t["name"] == "improve_compliance")
+        assert estimate["is_enabled"] is True
+        assert improve["is_enabled"] is False
 
     async def test_list_tools_with_configs(
         self, mock_db, mock_user, mock_account, mocker

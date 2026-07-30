@@ -8,7 +8,6 @@ import pytest
 from preloop.services.mcp_tool_discovery import (
     get_all_enabled_proxied_tools,
     get_cached_tools_for_server,
-    get_enabled_builtin_tools,
     scan_mcp_server_tools,
 )
 from preloop.models.models.mcp_server import MCPServer
@@ -397,109 +396,6 @@ class TestGetAllEnabledProxiedTools:
 
         # Execute
         result = await get_all_enabled_proxied_tools(account_id, mock_db)
-
-        # Verify
-        assert len(result) == 0
-
-
-class TestGetEnabledBuiltinTools:
-    """Test get_enabled_builtin_tools function."""
-
-    async def test_get_enabled_builtin_tools_default_enabled(self):
-        """Test getting builtin tools with default enabled state."""
-        mock_db = MagicMock()
-        account_id = str(uuid.uuid4())
-
-        # Mock builtin tools
-        tool1 = MagicMock()
-        tool1.name = "get_issue"
-        tool2 = MagicMock()
-        tool2.name = "search_issues"
-
-        all_builtin_tools = [tool1, tool2]
-
-        # Mock database query - no configurations
-        mock_db.query.return_value.filter.return_value.all.return_value = []
-
-        # Execute
-        result = await get_enabled_builtin_tools(account_id, all_builtin_tools, mock_db)
-
-        # Verify - should include all tools as default is enabled
-        assert len(result) == 2
-        assert result[0].name == "get_issue"
-        assert result[1].name == "search_issues"
-
-    async def test_get_enabled_builtin_tools_with_disabled_tool(self):
-        """Test getting builtin tools with one explicitly disabled."""
-        mock_db = MagicMock()
-        account_id = str(uuid.uuid4())
-
-        # Mock builtin tools
-        tool1 = MagicMock()
-        tool1.name = "get_issue"
-        tool2 = MagicMock()
-        tool2.name = "search_issues"
-
-        all_builtin_tools = [tool1, tool2]
-
-        # Mock tool configuration (search_issues is disabled)
-        config = MagicMock(spec=ToolConfiguration)
-        config.tool_name = "search_issues"
-        config.is_enabled = False
-
-        mock_db.query.return_value.filter.return_value.all.return_value = [config]
-
-        # Execute
-        result = await get_enabled_builtin_tools(account_id, all_builtin_tools, mock_db)
-
-        # Verify - should only include get_issue
-        assert len(result) == 1
-        assert result[0].name == "get_issue"
-
-    async def test_get_enabled_builtin_tools_all_disabled(self):
-        """Test getting builtin tools when all are disabled."""
-        mock_db = MagicMock()
-        account_id = str(uuid.uuid4())
-
-        # Mock builtin tools
-        tool1 = MagicMock()
-        tool1.name = "get_issue"
-        tool2 = MagicMock()
-        tool2.name = "search_issues"
-
-        all_builtin_tools = [tool1, tool2]
-
-        # Mock tool configurations (all disabled)
-        config1 = MagicMock(spec=ToolConfiguration)
-        config1.tool_name = "get_issue"
-        config1.is_enabled = False
-
-        config2 = MagicMock(spec=ToolConfiguration)
-        config2.tool_name = "search_issues"
-        config2.is_enabled = False
-
-        mock_db.query.return_value.filter.return_value.all.return_value = [
-            config1,
-            config2,
-        ]
-
-        # Execute
-        result = await get_enabled_builtin_tools(account_id, all_builtin_tools, mock_db)
-
-        # Verify - should return empty list
-        assert len(result) == 0
-
-    async def test_get_enabled_builtin_tools_empty_input(self):
-        """Test getting builtin tools with empty input list."""
-        mock_db = MagicMock()
-        account_id = str(uuid.uuid4())
-
-        all_builtin_tools = []
-
-        mock_db.query.return_value.filter.return_value.all.return_value = []
-
-        # Execute
-        result = await get_enabled_builtin_tools(account_id, all_builtin_tools, mock_db)
 
         # Verify
         assert len(result) == 0

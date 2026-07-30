@@ -348,40 +348,6 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         )
         return result.model_dump_json()
 
-    # Register TEST TOOL: test_progress (simple progress without approval)
-    @mcp.tool()
-    async def test_progress(count: int = 5, ctx: Optional[Context] = None) -> str:
-        """Test tool to verify progress reporting works in DynamicFastMCP."""
-        import asyncio
-
-        logger.info(f"🔧 test_progress called with Context: {ctx is not None}")
-
-        if not ctx:
-            logger.warning("❌ No Context available in test_progress!")
-            return "No Context available - progress reporting not possible"
-
-        logger.info(f"✅ Context available: {type(ctx)}")
-        logger.info(f"   Has report_progress: {hasattr(ctx, 'report_progress')}")
-
-        items = []
-        for i in range(count):
-            await asyncio.sleep(0.5)
-            items.append(f"item_{i + 1}")
-
-            # Report progress
-            try:
-                logger.info(f"   Calling ctx.report_progress({i + 1}, {count})...")
-                await ctx.report_progress(
-                    progress=i + 1,
-                    total=count,
-                    message=f"Processing item {i + 1}/{count}",
-                )
-                logger.info(f"   ✅ Progress reported: {i + 1}/{count}")
-            except Exception as e:
-                logger.error(f"   ❌ Failed to report progress: {e}", exc_info=True)
-
-        return f"Processed {count} items: {', '.join(items)}"
-
     # Register Tool 7: request_approval (standalone approval request)
     # NOTE: Description must match BUILTIN_TOOLS in preloop/api/endpoints/tools.py
     @mcp.tool()
