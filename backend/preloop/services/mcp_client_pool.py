@@ -271,28 +271,28 @@ class MCPClient:
             ):
                 result = await session.list_tools()
             return result.tools
-        except Exception as e:
-            logger.error(f"Error listing tools: {e}", exc_info=True)
-            raise
         except BaseException as e:
-            target_exc = e
-            if type(e).__name__ in ("ExceptionGroup", "BaseExceptionGroup"):
-                exceptions = getattr(e, "exceptions", [])
-                for exc in exceptions:
-                    if isinstance(exc, Exception):
-                        target_exc = exc
-                        break
+            # NOTE: ExceptionGroup (py3.11) subclasses Exception, so a plain
+            # `except Exception` would catch it first and re-raise verbatim as
+            # "unhandled errors in a TaskGroup (N sub-exceptions)", hiding the
+            # real cause (e.g. connection refused on an unreachable server).
+            # Unwrap to the meaningful leaf, mirroring call_tool().
+            target_exc = _unwrap_exception_group(e)
 
-            logger.error(f"Error listing tools: {target_exc}")
+            logger.error(
+                "Error listing tools on %s: %s", self.url, target_exc, exc_info=True
+            )
 
             if isinstance(target_exc, Exception):
-                raise target_exc
+                raise target_exc from None
 
             if "cancel scope" in str(target_exc).lower() or type(e).__name__ in (
                 "ExceptionGroup",
                 "BaseExceptionGroup",
             ):
-                raise ConnectionError(f"Operation aborted: {target_exc}")
+                raise ConnectionError(
+                    f"MCP server '{self.url}' is unavailable: {target_exc}"
+                ) from None
 
             raise e
 

@@ -10,6 +10,13 @@ spec:
   {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.api.replicaCount | default .Values.replicaCount }}
   {{- end }}
+  # Zero-downtime rollouts: never take a serving pod down before its
+  # replacement is Ready (surge first, drain after).
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       {{- include "preloop.selectorLabels" . | nindent 6 }}
@@ -301,6 +308,12 @@ spec:
             {{- end }}
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
+          # Delay SIGTERM so ingress/kube-proxy endpoint updates propagate
+          # before the server stops accepting; avoids 502s during rollouts.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "10"]
           livenessProbe:
             httpGet:
               path: /api/v1/ping
