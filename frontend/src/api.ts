@@ -75,7 +75,14 @@ import type {
 } from './types';
 
 // Global refresh promise to prevent concurrent refresh requests
-let refreshPromise: Promise<string | null> | null = null;
+interface RefreshResult {
+  token: string | null;
+  // True when the refresh token was definitively rejected (401/403) and the
+  // session is over. False for transient failures (5xx, network) where the
+  // session must be preserved so a deploy blip does not log the user out.
+  terminal: boolean;
+}
+let refreshPromise: Promise<RefreshResult> | null = null;
 
 // Short-TTL in-memory caches with single-flight dedupe for hot auth/bootstrap
 // endpoints. Invalidated on logout / auth-change so navigations reuse results
@@ -148,31 +155,83 @@ export function extractErrorMessage(
   return defaultMessage;
 }
 
-async function refreshToken(): Promise<string | null> {
+async function attemptRefresh(refreshTokenValue: string): Promise<Response> {
+  return fetch(`/api/v1/auth/refresh`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ refresh_token: refreshTokenValue }),
+  });
+}
+
+function endSessionAndRedirect(): void {
+  localStorage.removeItem('accessToken');
+  localStorage.removeItem('refreshToken');
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent('auth-change', { bubbles: true, composed: true })
+    );
+    if (
+      !window.location.pathname.startsWith('/login') &&
+      !window.location.pathname.startsWith('/register')
+    ) {
+      localStorage.setItem(
+        'loginRedirect',
+        window.location.pathname + window.location.search + window.location.hash
+      );
+    }
+  }
+
+  Router.go('/login');
+}
+
+async function refreshToken(): Promise<RefreshResult> {
   // If a refresh is already in progress, wait for it
   if (refreshPromise) {
     return refreshPromise;
   }
 
   // Start a new refresh
-  refreshPromise = (async () => {
+  refreshPromise = (async (): Promise<RefreshResult> => {
     try {
       const refreshTokenValue = localStorage.getItem('refreshToken');
       if (!refreshTokenValue) {
         console.error('No refresh token available');
-        return null;
+        endSessionAndRedirect();
+        return { token: null, terminal: true };
       }
 
-      const response = await fetch(`/api/v1/auth/refresh`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ refresh_token: refreshTokenValue }),
-      });
+      let response: Response | null = null;
+      try {
+        response = await attemptRefresh(refreshTokenValue);
+      } catch {
+        // Network error (offline, deploy blip). Retry once below.
+        response = null;
+      }
+
+      // Retry once on transient failure (network error or 5xx). Only a
+      // definitive 401/403 means the refresh token itself is dead.
+      if (!response || response.status >= 500) {
+        try {
+          response = await attemptRefresh(refreshTokenValue);
+        } catch {
+          response = null;
+        }
+      }
+
+      if (!response || response.status >= 500) {
+        // Still transient: keep the session. The next 401 will try again.
+        console.error('Token refresh failed transiently; keeping session');
+        return { token: null, terminal: false };
+      }
 
       if (!response.ok) {
-        throw new Error('Failed to refresh token');
+        // Definitive rejection (401/403/4xx): session is over.
+        console.error(`Token refresh rejected with status ${response.status}`);
+        endSessionAndRedirect();
+        return { token: null, terminal: true };
       }
 
       const data = await response.json();
@@ -186,32 +245,12 @@ async function refreshToken(): Promise<string | null> {
         );
       }
 
-      return data.access_token;
+      return { token: data.access_token, terminal: false };
     } catch (error) {
+      // Unexpected error (e.g. malformed JSON body). Treat as transient so a
+      // broken deploy cannot log everyone out.
       console.error('Error refreshing token:', error);
-      // Clear tokens and redirect to login
-      localStorage.removeItem('accessToken');
-      localStorage.removeItem('refreshToken');
-
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(
-          new CustomEvent('auth-change', { bubbles: true, composed: true })
-        );
-        if (
-          !window.location.pathname.startsWith('/login') &&
-          !window.location.pathname.startsWith('/register')
-        ) {
-          localStorage.setItem(
-            'loginRedirect',
-            window.location.pathname +
-              window.location.search +
-              window.location.hash
-          );
-        }
-      }
-
-      Router.go('/login');
-      return null;
+      return { token: null, terminal: false };
     } finally {
       // Clear the refresh promise so future requests can refresh again
       refreshPromise = null;
@@ -281,17 +320,19 @@ export async function fetchWithAuth(
       return fetch(url, options);
     }
 
-    const newAccessToken = await refreshToken();
-    if (newAccessToken) {
-      headers.set('Authorization', `Bearer ${newAccessToken}`);
+    const refreshResult = await refreshToken();
+    if (refreshResult.token) {
+      headers.set('Authorization', `Bearer ${refreshResult.token}`);
       options.headers = headers;
       // Retry the request with the new token
       response = await fetch(url, options);
-    } else {
-      // If refresh fails, the refreshToken function will handle redirection
-      Router.go('/login');
+    } else if (refreshResult.terminal) {
+      // Refresh token definitively rejected; refreshToken() already cleared
+      // storage and redirected to /login.
       throw new Error('Failed to refresh token, redirecting to login.');
     }
+    // Transient refresh failure: fall through and return the original 401
+    // response without destroying the session. The next request retries.
   }
 
   if (response.status === 429) {

@@ -6,7 +6,7 @@ import os
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, UTC
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
@@ -32,6 +32,12 @@ from preloop.config import settings
 SECRET_KEY: str = settings.security.secret_key
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
+# Refresh tokens rotate on every /refresh call (sliding window). Each rotation
+# carries the original session start forward in the "sat" claim so the sliding
+# window can be capped: an active user is never logged out inside
+# MAX_SESSION_DAYS, and a stolen refresh token cannot be rotated forever.
+REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
+MAX_SESSION_DAYS = int(os.getenv("MAX_SESSION_DAYS", "30"))
 
 # Password context for hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -368,6 +374,35 @@ def create_access_token(
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
+def create_refresh_token(
+    sub: str,
+    scopes: Optional[List[str]] = None,
+    session_started_at: Optional[datetime] = None,
+) -> str:
+    """Create a JWT refresh token carrying the session start claim.
+
+    Args:
+        sub: Subject (user id) for the token.
+        scopes: OAuth scopes to carry through rotation.
+        session_started_at: When this login session originally started. On
+            first login this is now; on rotation the previous token's value is
+            carried forward so MAX_SESSION_DAYS caps the sliding window.
+
+    Returns:
+        Encoded JWT refresh token.
+    """
+    started = session_started_at or datetime.now(UTC)
+    return create_access_token(
+        data={
+            "sub": sub,
+            "scopes": scopes or [],
+            "refresh": True,
+            "sat": int(started.timestamp()),
+        },
+        expires_delta=timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+    )
+
+
 def decode_token(token: str) -> TokenData:
     """Decode a JWT token.
 
@@ -394,12 +429,14 @@ def decode_token(token: str) -> TokenData:
         scopes = payload.get("scopes", [])
         exp = payload.get("exp")
         refresh = payload.get("refresh", False)
+        sat = payload.get("sat")
 
         return TokenData(
             sub=sub,
             scopes=scopes,
             exp=datetime.fromtimestamp(exp) if exp else None,
             refresh=refresh,
+            session_started_at=(datetime.fromtimestamp(sat, tz=UTC) if sat else None),
         )
     except JWTError:
         raise HTTPException(

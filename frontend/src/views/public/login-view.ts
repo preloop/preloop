@@ -126,6 +126,11 @@ export class LoginView extends LitElement {
       });
 
       localStorage.setItem('accessToken', data.access_token);
+      // Without the refresh token in storage, refreshToken() cannot renew the
+      // session and the user is hard-logged-out when the access token expires.
+      if (data.refresh_token) {
+        localStorage.setItem('refreshToken', data.refresh_token);
+      }
       this.error = '';
       this.successMessage = '';
       // Returning-user conversion: distinguishes sign-ins from new signups.
