@@ -211,6 +211,44 @@ class TestScanMCPServerTools:
         assert mock_db.commit.called
         mock_notify.assert_called_once()
 
+    async def test_scan_already_error_skips_notification(self, mocker):
+        """Rescanning an already-unhealthy server must not re-notify admins."""
+        mock_db = MagicMock()
+        server_id = uuid.uuid4()
+
+        mock_server = MagicMock(spec=MCPServer)
+        mock_server.id = server_id
+        mock_server.name = "Test Server"
+        mock_server.url = "http://test.com"
+        mock_server.auth_type = "none"
+        mock_server.auth_config = {}
+        mock_server.transport = "http"
+        mock_server.status = "error"  # already unhealthy
+
+        mock_db.query.return_value.filter.return_value.first.return_value = mock_server
+        cached_tool = MagicMock(spec=MCPTool)
+        cached_tool.name = "cached_tool"
+
+        mock_client = AsyncMock()
+        mock_client.list_tools.side_effect = Exception("Connection failed")
+        mock_client_pool = MagicMock()
+        mock_client_pool.get_client = AsyncMock(return_value=mock_client)
+        mocker.patch(
+            "preloop.services.mcp_tool_discovery.get_mcp_client_pool",
+            return_value=mock_client_pool,
+        )
+        mock_notify = mocker.patch("preloop.sync.tasks.notify_admins")
+        mocker.patch(
+            "preloop.services.mcp_tool_discovery.crud_mcp_tool.get_by_server",
+            return_value=[cached_tool],
+        )
+
+        result = await scan_mcp_server_tools(server_id, mock_db)
+
+        assert result == [cached_tool]
+        assert mock_server.status == "error"
+        mock_notify.assert_not_called()
+
 
 class TestGetCachedToolsForServer:
     """Test get_cached_tools_for_server function."""
