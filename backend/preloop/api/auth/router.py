@@ -23,7 +23,9 @@ from sqlalchemy.orm import Session
 from preloop.api.auth import bootstrap
 from preloop.api.auth.jwt import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
+    MAX_SESSION_DAYS,
     create_access_token,
+    create_refresh_token,
     decode_token,
     get_current_active_user,
     get_password_hash,
@@ -732,11 +734,10 @@ async def login_form(
         expires_delta=access_token_expires,
     )
 
-    # Create refresh token with longer expiration
-    refresh_token_expires = timedelta(days=7)  # 7 days
-    refresh_token = create_access_token(
-        data={"sub": str(user.id), "scopes": form_data.scopes or [], "refresh": True},
-        expires_delta=refresh_token_expires,
+    # Create refresh token with longer expiration; a fresh login starts a new
+    # sliding session window (sat claim).
+    refresh_token = create_refresh_token(
+        sub=str(user.id), scopes=form_data.scopes or []
     )
 
     return {
@@ -782,12 +783,9 @@ async def login_json(
         expires_delta=access_token_expires,
     )
 
-    # Create refresh token with longer expiration
-    refresh_token_expires = timedelta(days=7)  # 7 days
-    refresh_token = create_access_token(
-        data={"sub": str(user.id), "scopes": [], "refresh": True},
-        expires_delta=refresh_token_expires,
-    )
+    # Create refresh token with longer expiration; a fresh login starts a new
+    # sliding session window (sat claim).
+    refresh_token = create_refresh_token(sub=str(user.id), scopes=[])
 
     return {
         "access_token": access_token,
@@ -820,6 +818,16 @@ async def refresh_token(
         # Decode and validate the refresh token
         token_data = decode_token(request.refresh_token)
 
+        # Check if it's a refresh token before touching the database: an
+        # access token presented here is always invalid, regardless of user
+        # state.
+        if not token_data.refresh:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid refresh token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
         # Parse user_id from token
         try:
             user_id = UUID(token_data.sub)
@@ -840,11 +848,17 @@ async def refresh_token(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-        # Check if it's a refresh token
-        if not token_data.refresh:
+        # Enforce the sliding-session cap: rotation extends the session by
+        # REFRESH_TOKEN_EXPIRE_DAYS each time, but the chain as a whole may
+        # not outlive MAX_SESSION_DAYS from the original login. Tokens minted
+        # before the sat claim existed have no session start; treat this
+        # rotation as the start of their session window.
+        session_started_at = token_data.session_started_at or datetime.now(UTC)
+        session_age = datetime.now(UTC) - session_started_at
+        if session_age > timedelta(days=MAX_SESSION_DAYS):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid refresh token",
+                detail="Session expired, please sign in again",
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
@@ -855,11 +869,12 @@ async def refresh_token(
             expires_delta=access_token_expires,
         )
 
-        # Create a new refresh token
-        refresh_token_expires = timedelta(days=7)  # 7 days
-        refresh_token = create_access_token(
-            data={"sub": token_data.sub, "scopes": token_data.scopes, "refresh": True},
-            expires_delta=refresh_token_expires,
+        # Rotate the refresh token, carrying the original session start
+        # forward so the 30-day cap survives rotation.
+        refresh_token = create_refresh_token(
+            sub=token_data.sub,
+            scopes=token_data.scopes,
+            session_started_at=session_started_at,
         )
 
         return {
@@ -868,6 +883,8 @@ async def refresh_token(
             "token_type": "bearer",
             "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,  # in seconds
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -1619,11 +1636,7 @@ async def complete_onboarding(
         data={"sub": str(user.id), "scopes": []},
         expires_delta=access_token_expires,
     )
-    refresh_token_expires = timedelta(days=7)
-    refresh_token = create_access_token(
-        data={"sub": str(user.id), "scopes": [], "refresh": True},
-        expires_delta=refresh_token_expires,
-    )
+    refresh_token = create_refresh_token(sub=str(user.id), scopes=[])
 
     return {
         "access_token": access_token,

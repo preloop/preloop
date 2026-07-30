@@ -36,7 +36,7 @@ services:
       DEBUG: 'true'
       SECRET_KEY: development_secret_key_do_not_use_in_production
       JWT_ALGORITHM: HS256
-      ACCESS_TOKEN_EXPIRE_MINUTES: 60
+      ACCESS_TOKEN_EXPIRE_MINUTES: 1440
       LOG_LEVEL: DEBUG
       INIT_TEST_DATA: 'true'
       PRELOOP_SERVICE_ROLE: api
@@ -63,7 +63,7 @@ services:
       DEBUG: 'true'
       SECRET_KEY: development_secret_key_do_not_use_in_production
       JWT_ALGORITHM: HS256
-      ACCESS_TOKEN_EXPIRE_MINUTES: 60
+      ACCESS_TOKEN_EXPIRE_MINUTES: 1440
       LOG_LEVEL: DEBUG
       INIT_TEST_DATA: 'true'
       PRELOOP_SERVICE_ROLE: gateway
@@ -90,7 +90,7 @@ services:
       DEBUG: 'true'
       SECRET_KEY: development_secret_key_do_not_use_in_production
       JWT_ALGORITHM: HS256
-      ACCESS_TOKEN_EXPIRE_MINUTES: 60
+      ACCESS_TOKEN_EXPIRE_MINUTES: 1440
       LOG_LEVEL: DEBUG
       INIT_TEST_DATA: 'true'
     volumes:
@@ -114,7 +114,7 @@ services:
       DEBUG: 'true'
       SECRET_KEY: development_secret_key_do_not_use_in_production
       JWT_ALGORITHM: HS256
-      ACCESS_TOKEN_EXPIRE_MINUTES: 60
+      ACCESS_TOKEN_EXPIRE_MINUTES: 1440
       LOG_LEVEL: DEBUG
       INIT_TEST_DATA: 'true'
     volumes:

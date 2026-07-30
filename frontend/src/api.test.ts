@@ -141,6 +141,103 @@ describe('api', () => {
       expect(threw).to.be.true;
       expect(routerGoStub).to.have.been.calledWith('/login');
     });
+
+    it('clears tokens when refresh is definitively rejected', async () => {
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.includes('/api/v1/auth/refresh')) {
+          return new Response(
+            JSON.stringify({ detail: 'Invalid refresh token' }),
+            { status: 401, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        return new Response(JSON.stringify({}), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+
+      try {
+        await fetchWithAuth('/api/v1/test');
+      } catch {
+        // expected
+      }
+      expect(localStorage.getItem('accessToken')).to.be.null;
+      expect(localStorage.getItem('refreshToken')).to.be.null;
+    });
+
+    it('keeps session and retries once when refresh fails transiently', async () => {
+      let refreshCalls = 0;
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.includes('/api/v1/auth/refresh')) {
+          refreshCalls++;
+          // Simulate a deploy blip: both refresh attempts return 502.
+          return new Response('Bad Gateway', { status: 502 });
+        }
+        return new Response(JSON.stringify({}), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+
+      const response = await fetchWithAuth('/api/v1/test');
+
+      // Transient failure: original 401 response is returned, session intact.
+      expect(response.status).to.equal(401);
+      expect(refreshCalls).to.equal(2); // initial attempt + one retry
+      expect(localStorage.getItem('accessToken')).to.equal('test-access-token');
+      expect(localStorage.getItem('refreshToken')).to.equal(
+        'test-refresh-token'
+      );
+      expect(routerGoStub).to.not.have.been.calledWith('/login');
+    });
+
+    it('recovers when the transient retry succeeds', async () => {
+      let refreshCalls = 0;
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.includes('/api/v1/auth/refresh')) {
+          refreshCalls++;
+          if (refreshCalls === 1) {
+            return new Response('Bad Gateway', { status: 502 });
+          }
+          return new Response(
+            JSON.stringify({
+              access_token: 'recovered-access-token',
+              refresh_token: 'recovered-refresh-token',
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        const headers =
+          (fetchStub.lastCall?.args[1] as RequestInit | undefined)?.headers ??
+          null;
+        const auth =
+          headers instanceof Headers ? headers.get('Authorization') : null;
+        if (auth === 'Bearer recovered-access-token') {
+          return new Response(JSON.stringify({ data: 'ok' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response(JSON.stringify({}), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+
+      const response = await fetchWithAuth('/api/v1/test');
+
+      expect(response.status).to.equal(200);
+      expect(refreshCalls).to.equal(2);
+      expect(localStorage.getItem('accessToken')).to.equal(
+        'recovered-access-token'
+      );
+      expect(localStorage.getItem('refreshToken')).to.equal(
+        'recovered-refresh-token'
+      );
+    });
   });
 
   describe('getFlowExecutions', () => {

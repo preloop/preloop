@@ -242,7 +242,9 @@ environment:
   # JWT settings
   jwtSecret: "b6fe6fa9-cf7c-4798-8328-f778712062df"
   jwtAlgorithm: "HS256"
-  jwtExpireMinutes: 60
+  # Access token lifetime. 1440 (24h) matches the documented session design:
+  # 24h access token + 7 day rotating refresh token capped at 30 days.
+  jwtExpireMinutes: 1440
 
 # Configuration for external APIs
 config:

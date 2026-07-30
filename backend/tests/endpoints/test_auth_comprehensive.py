@@ -21,7 +21,9 @@ from sqlalchemy.orm import Session
 
 from preloop.api.auth.router import router as auth_router, authenticate_user
 from preloop.api.auth.jwt import (
+    MAX_SESSION_DAYS,
     create_access_token,
+    create_refresh_token,
     decode_token,
     verify_password,
     get_password_hash,
@@ -367,6 +369,94 @@ class TestTokenRefresh:
         assert "access_token" in data
         assert "refresh_token" in data
         assert data["token_type"] == "bearer"
+
+    def test_refresh_rotation_carries_session_start(self, db_session_mock, mock_user):
+        """The sat (session start) claim survives refresh-token rotation."""
+        started = datetime.now(timezone.utc) - timedelta(days=3)
+        refresh_token = create_refresh_token(
+            sub=str(mock_user.id), scopes=[], session_started_at=started
+        )
+
+        with patch("preloop.api.auth.router.crud_user") as mock_crud:
+            mock_crud.get.return_value = mock_user
+
+            response = client.post(
+                "/auth/refresh",
+                json={"refresh_token": refresh_token},
+            )
+
+        assert response.status_code == 200
+        rotated = decode_token(response.json()["refresh_token"])
+        assert rotated.session_started_at is not None
+        # Carried forward, not reset: still ~3 days old.
+        age = datetime.now(timezone.utc) - rotated.session_started_at
+        assert timedelta(days=2, hours=23) < age < timedelta(days=3, hours=1)
+
+    def test_refresh_rejected_after_session_cap(self, db_session_mock, mock_user):
+        """A refresh chain older than MAX_SESSION_DAYS is rejected with 401."""
+        started = datetime.now(timezone.utc) - timedelta(days=MAX_SESSION_DAYS + 1)
+        refresh_token = create_refresh_token(
+            sub=str(mock_user.id), scopes=[], session_started_at=started
+        )
+
+        with patch("preloop.api.auth.router.crud_user") as mock_crud:
+            mock_crud.get.return_value = mock_user
+
+            response = client.post(
+                "/auth/refresh",
+                json={"refresh_token": refresh_token},
+            )
+
+        assert response.status_code == 401
+        assert "Session expired" in response.json()["detail"]
+
+    def test_refresh_legacy_token_without_sat_still_works(
+        self, db_session_mock, mock_user
+    ):
+        """Refresh tokens minted before the sat claim existed still refresh.
+
+        Their rotated replacement gains a sat claim so the cap applies from
+        this rotation onward.
+        """
+        legacy_refresh = create_access_token(
+            data={"sub": str(mock_user.id), "scopes": [], "refresh": True},
+            expires_delta=timedelta(days=7),
+        )
+
+        with patch("preloop.api.auth.router.crud_user") as mock_crud:
+            mock_crud.get.return_value = mock_user
+
+            response = client.post(
+                "/auth/refresh",
+                json={"refresh_token": legacy_refresh},
+            )
+
+        assert response.status_code == 200
+        rotated = decode_token(response.json()["refresh_token"])
+        assert rotated.session_started_at is not None
+        # Session window started now for legacy chains.
+        age = datetime.now(timezone.utc) - rotated.session_started_at
+        assert age < timedelta(minutes=1)
+
+    def test_login_json_returns_refresh_token_with_sat(
+        self, db_session_mock, mock_user
+    ):
+        """Password login mints a refresh token that starts the session window."""
+        with patch(
+            "preloop.api.auth.router.authenticate_user",
+            return_value=mock_user,
+        ):
+            response = client.post(
+                "/auth/token/json",
+                json={"username": "testuser", "password": "password123"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "refresh_token" in data
+        token_data = decode_token(data["refresh_token"])
+        assert token_data.refresh is True
+        assert token_data.session_started_at is not None
 
     def test_refresh_token_not_refresh_type(self, db_session_mock):
         """Test refresh fails when using access token instead of refresh token."""

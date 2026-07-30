@@ -23,6 +23,9 @@ class TokenData(BaseModel):
     scopes: List[str] = []
     exp: Optional[datetime] = None
     refresh: Optional[bool] = False
+    # When the login session originally started ("sat" claim). Carried through
+    # refresh-token rotations so the sliding session window can be capped.
+    session_started_at: Optional[datetime] = None
 
 
 class User(BaseModel):
