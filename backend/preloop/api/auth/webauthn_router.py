@@ -53,9 +53,11 @@ from preloop.api.auth.jwt import (
     create_refresh_token,
     get_current_active_user,
 )
-from preloop.models.crud import crud_user, crud_webauthn_credential
+from preloop.models.crud import crud_audit_log, crud_user, crud_webauthn_credential
 from preloop.models.db.session import get_db_session
 from preloop.models.models.user import User
+from preloop.models.models.webauthn_credential import WebAuthnCredential
+from preloop.utils.request import get_client_ip
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +82,48 @@ def _require_enabled() -> None:
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Passkey support is disabled",
         )
+
+
+# ---------------------------------------------------------------------------
+# Rate limiting for challenge generation
+# ---------------------------------------------------------------------------
+# The challenge endpoints sign a JWT per call, and /authenticate/options is
+# unauthenticated, so an anonymous caller could burn CPU on JWT signing and
+# option generation. Simple in-process sliding-window per-IP throttle; the
+# tokens are stateless so there is no storage to exhaust, only CPU to protect.
+# Multi-replica deployments get N x the budget, which is acceptable for this
+# purpose (protecting compute, not enforcing a strict global quota).
+
+_RATE_LIMIT_MAX_CALLS = int(os.getenv("WEBAUTHN_CHALLENGE_RATE_LIMIT", "30"))
+_RATE_LIMIT_WINDOW_SECONDS = 60
+_rate_buckets: dict[str, list[float]] = {}
+
+
+def _check_challenge_rate_limit(request: Request) -> None:
+    import time
+
+    ip = get_client_ip(request)
+    now = time.monotonic()
+    window_start = now - _RATE_LIMIT_WINDOW_SECONDS
+
+    bucket = [t for t in _rate_buckets.get(ip, []) if t > window_start]
+    if len(bucket) >= _RATE_LIMIT_MAX_CALLS:
+        _rate_buckets[ip] = bucket
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many passkey challenge requests; try again shortly",
+        )
+    bucket.append(now)
+    _rate_buckets[ip] = bucket
+
+    # Opportunistic cleanup so the map cannot grow unbounded across many IPs.
+    if len(_rate_buckets) > 10_000:
+        for stale_ip in [
+            k
+            for k, v in _rate_buckets.items()
+            if not v or v[-1] <= window_start
+        ]:
+            _rate_buckets.pop(stale_ip, None)
 
 
 def _rp_id(request: Request) -> str:
@@ -199,6 +243,7 @@ def registration_options(
 ) -> RegistrationOptionsResponse:
     """Begin passkey registration for the signed-in user."""
     _require_enabled()
+    _check_challenge_rate_limit(request)
 
     existing = crud_webauthn_credential.list_for_user(db, user_id=current_user.id)
     exclude: List[PublicKeyCredentialDescriptor] = [
@@ -270,7 +315,6 @@ def registration_verify(
         )
 
     transports = body.credential.get("response", {}).get("transports")
-    from preloop.models.models.webauthn_credential import WebAuthnCredential
 
     cred = WebAuthnCredential(
         user_id=current_user.id,
@@ -308,6 +352,7 @@ def registration_verify(
 def authentication_options(request: Request) -> AuthenticationOptionsResponse:
     """Begin passkey sign-in. Discoverable credentials: no username needed."""
     _require_enabled()
+    _check_challenge_rate_limit(request)
 
     options = generate_authentication_options(
         rp_id=_rp_id(request),
@@ -369,6 +414,59 @@ def authentication_verify(
     crud_webauthn_credential.touch(
         db, obj=cred, sign_count=verification.new_sign_count
     )
+
+    # Audit and notification parity with password login (authenticate_user in
+    # auth/router.py): update last_login, write a user.login audit event, and
+    # notify admins on login after prolonged inactivity.
+    import threading
+
+    from preloop.services.account_setup_service import (
+        notify_admins_user_login_after_inactivity,
+        should_notify_on_login,
+    )
+
+    source_ip = get_client_ip(request)
+    old_last_login = user.last_login
+    user.last_login = datetime.now(UTC)
+    db.commit()
+    db.refresh(user)
+
+    try:
+        crud_audit_log.log_action(
+            db,
+            account_id=user.account_id,
+            user_id=user.id,
+            action="user.login",
+            resource_type="user",
+            resource_id=str(user.id),
+            status="success",
+            ip_address=source_ip,
+            details={"method": "passkey", "credential_id": str(cred.id)},
+        )
+    except Exception:
+        logger.debug("Failed to audit passkey login", exc_info=True)
+
+    if (
+        should_notify_on_login(old_last_login, days_threshold=7)
+        and source_ip != "testclient"
+    ):
+        username_str = user.username
+        email_str = user.email
+
+        def send_login_notification():
+            try:
+                notify_admins_user_login_after_inactivity(
+                    username=username_str,
+                    email=email_str,
+                    last_login=old_last_login,
+                    source_ip=source_ip,
+                )
+            except Exception as e:
+                logger.error(f"Failed to send login notification: {e}")
+
+        thread = threading.Thread(target=send_login_notification)
+        thread.daemon = True
+        thread.start()
 
     access_token = create_access_token(
         data={"sub": str(user.id), "scopes": []},

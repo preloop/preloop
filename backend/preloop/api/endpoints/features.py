@@ -59,8 +59,13 @@ def get_features(db: Session = Depends(get_db_session)) -> Dict[str, Any]:
 
     # Passkey (WebAuthn) support: PASSKEYS_ENABLED env, default true. The
     # login page uses this to decide whether to render "Sign in with passkey".
-    from preloop.api.auth.webauthn_router import passkeys_enabled
+    # Import guarded so a missing/broken webauthn dependency degrades to
+    # "passkeys: false" instead of breaking the whole features endpoint.
+    try:
+        from preloop.api.auth.webauthn_router import passkeys_enabled
 
-    result["features"]["passkeys"] = passkeys_enabled()
+        result["features"]["passkeys"] = passkeys_enabled()
+    except Exception:
+        result["features"]["passkeys"] = False
 
     return result

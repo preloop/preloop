@@ -34,11 +34,16 @@ def _b64url(data: bytes) -> str:
 
 @pytest.fixture
 def mock_user():
+    from datetime import UTC, datetime
+
     user = MagicMock(spec=User)
     user.id = uuid.uuid4()
+    user.account_id = uuid.uuid4()
     user.username = "testuser"
+    user.email = "testuser@example.com"
     user.full_name = "Test User"
     user.is_active = True
+    user.last_login = datetime.now(UTC)  # recent: no inactivity notification
     return user
 
 
@@ -372,6 +377,127 @@ class TestAuthenticationCeremony:
         )
         assert response.status_code == 400
         assert "Invalid or expired" in response.json()["detail"]
+
+
+class TestLoginParityAndRateLimit:
+    def test_verify_writes_audit_event(self, db_session_mock, mock_user):
+        """Passkey sign-ins must be visible in the audit trail (user.login)."""
+        challenge_token = _issue_challenge_token(b"auth-chal", "authenticate")
+
+        cred = MagicMock()
+        cred.id = uuid.uuid4()
+        cred.user_id = mock_user.id
+        cred.public_key = _b64url(b"public-key-bytes")
+        cred.sign_count = 5
+
+        verification = MagicMock()
+        verification.new_sign_count = 6
+
+        with (
+            patch(
+                "preloop.api.auth.webauthn_router.crud_webauthn_credential"
+            ) as mock_crud,
+            patch(
+                "preloop.api.auth.webauthn_router.verify_authentication_response",
+                return_value=verification,
+            ),
+            patch("preloop.api.auth.webauthn_router.crud_user") as mock_crud_user,
+            patch(
+                "preloop.api.auth.webauthn_router.crud_audit_log"
+            ) as mock_audit,
+        ):
+            mock_crud.get_by_credential_id.return_value = cred
+            mock_crud_user.get.return_value = mock_user
+
+            response = client.post(
+                "/auth/webauthn/authenticate/verify",
+                json={
+                    "credential": {"id": "abc", "rawId": _b64url(b"cred-id")},
+                    "challenge_token": challenge_token,
+                },
+            )
+
+        assert response.status_code == 200
+        mock_audit.log_action.assert_called_once()
+        kwargs = mock_audit.log_action.call_args.kwargs
+        assert kwargs["action"] == "user.login"
+        assert kwargs["user_id"] == mock_user.id
+        assert kwargs["details"]["method"] == "passkey"
+
+    def test_verify_notifies_after_inactivity(self, db_session_mock, mock_user):
+        """Inactivity notification parity with password login."""
+        from datetime import UTC, datetime, timedelta as td
+
+        mock_user.last_login = datetime.now(UTC) - td(days=30)
+        challenge_token = _issue_challenge_token(b"auth-chal", "authenticate")
+
+        cred = MagicMock()
+        cred.id = uuid.uuid4()
+        cred.user_id = mock_user.id
+        cred.public_key = _b64url(b"public-key-bytes")
+        cred.sign_count = 5
+
+        verification = MagicMock()
+        verification.new_sign_count = 6
+
+        with (
+            patch(
+                "preloop.api.auth.webauthn_router.crud_webauthn_credential"
+            ) as mock_crud,
+            patch(
+                "preloop.api.auth.webauthn_router.verify_authentication_response",
+                return_value=verification,
+            ),
+            patch("preloop.api.auth.webauthn_router.crud_user") as mock_crud_user,
+            patch(
+                "preloop.services.account_setup_service.notify_admins_user_login_after_inactivity"
+            ) as mock_notify,
+            # TestClient reports source_ip="testclient", which the parity code
+            # (matching password login) deliberately skips; use a real-looking IP.
+            patch(
+                "preloop.api.auth.webauthn_router.get_client_ip",
+                return_value="203.0.113.7",
+            ),
+        ):
+            mock_crud.get_by_credential_id.return_value = cred
+            mock_crud_user.get.return_value = mock_user
+
+            response = client.post(
+                "/auth/webauthn/authenticate/verify",
+                json={
+                    "credential": {"id": "abc", "rawId": _b64url(b"cred-id")},
+                    "challenge_token": challenge_token,
+                },
+            )
+
+        assert response.status_code == 200
+        # Notification runs in a daemon thread; give it a beat.
+        import time
+
+        for _ in range(20):
+            if mock_notify.called:
+                break
+            time.sleep(0.05)
+        mock_notify.assert_called_once()
+
+    def test_challenge_rate_limit(self, db_session_mock):
+        """Unauthenticated challenge endpoint throttles per IP."""
+        from preloop.api.auth import webauthn_router
+
+        original = webauthn_router._rate_buckets.copy()
+        webauthn_router._rate_buckets.clear()
+        try:
+            with patch.object(webauthn_router, "_RATE_LIMIT_MAX_CALLS", 3):
+                codes = [
+                    client.post("/auth/webauthn/authenticate/options").status_code
+                    for _ in range(5)
+                ]
+            assert codes[:3] == [200, 200, 200]
+            assert codes[3] == 429
+            assert codes[4] == 429
+        finally:
+            webauthn_router._rate_buckets.clear()
+            webauthn_router._rate_buckets.update(original)
 
 
 class TestCredentialManagement:
