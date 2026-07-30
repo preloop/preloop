@@ -284,6 +284,37 @@ class TestMCPClientListTools:
         with pytest.raises(RuntimeError, match="not connected"):
             await client.list_tools()
 
+    async def test_list_tools_unwraps_exception_group_to_leaf(self):
+        """list_tools must surface the meaningful leaf cause of a TaskGroup
+        ExceptionGroup, not the opaque "unhandled errors in a TaskGroup"
+        wrapper (regression: prod admin alerts for unreachable servers)."""
+        client = MCPClient(url="http://localhost:8001/mcp")
+        client._connected = True
+
+        leaf = ConnectionRefusedError("All connection attempts failed")
+        nested = ExceptionGroup(
+            "unhandled errors in a TaskGroup",
+            [ExceptionGroup("inner", [leaf])],
+        )
+
+        mock_streams, mock_session = mock_mcp_session()
+        mock_session.list_tools = AsyncMock(side_effect=nested)
+
+        with (
+            patch(
+                "preloop.services.mcp_client_pool.streamablehttp_client",
+                return_value=mock_streams,
+            ),
+            patch(
+                "preloop.services.mcp_client_pool.ClientSession",
+                return_value=mock_session,
+            ),
+        ):
+            with pytest.raises(
+                ConnectionRefusedError, match="All connection attempts failed"
+            ):
+                await client.list_tools()
+
     async def test_list_tools_error(self):
         """Test error handling in list_tools."""
         client = MCPClient(url="http://localhost:8001/mcp")

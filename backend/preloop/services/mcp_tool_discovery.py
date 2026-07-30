@@ -104,6 +104,7 @@ async def scan_mcp_server_tools(mcp_server_id: UUID, db: Session) -> List[MCPToo
 
     except Exception as e:
         # Update server with error status
+        was_healthy = mcp_server.status != "error"
         mcp_server.status = "error"
         mcp_server.last_error = str(e)
         db.commit()
@@ -112,6 +113,9 @@ async def scan_mcp_server_tools(mcp_server_id: UUID, db: Session) -> List[MCPToo
         try:
             from preloop.sync.tasks import notify_admins
 
+            if not was_healthy:
+                # Already known-unhealthy; avoid re-notifying on every rescan.
+                return crud_mcp_tool.get_by_server(db, server_id=mcp_server_id)
             notify_admins(
                 subject=f"MCP server scan failed: {mcp_server.name}",
                 message=(
