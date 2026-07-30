@@ -44,6 +44,7 @@ class TestGetFeatures:
                 "first_account_pending": False,
                 "registration_bootstrap_pending": False,
                 "session_optimization": True,
+                "passkeys": True,
             },
         }
         mock_get_plugin_manager.assert_called_once()
@@ -72,6 +73,7 @@ class TestGetFeatures:
                 "first_account_pending": False,
                 "registration_bootstrap_pending": False,
                 "session_optimization": True,
+                "passkeys": True,
             },
         }
 
@@ -102,7 +104,7 @@ class TestGetFeatures:
         assert "plugins" in result
         assert "features" in result
         assert len(result["plugins"]) == 3
-        assert len(result["features"]) == 8
+        assert len(result["features"]) == 9
         assert result["features"]["session_optimization"] is True
 
     @patch("preloop.api.auth.bootstrap.crud_user")

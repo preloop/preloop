@@ -119,9 +119,7 @@ def _check_challenge_rate_limit(request: Request) -> None:
     # Opportunistic cleanup so the map cannot grow unbounded across many IPs.
     if len(_rate_buckets) > 10_000:
         for stale_ip in [
-            k
-            for k, v in _rate_buckets.items()
-            if not v or v[-1] <= window_start
+            k for k, v in _rate_buckets.items() if not v or v[-1] <= window_start
         ]:
             _rate_buckets.pop(stale_ip, None)
 
@@ -411,9 +409,7 @@ def authentication_verify(
             detail="User not found or inactive",
         )
 
-    crud_webauthn_credential.touch(
-        db, obj=cred, sign_count=verification.new_sign_count
-    )
+    crud_webauthn_credential.touch(db, obj=cred, sign_count=verification.new_sign_count)
 
     # Audit and notification parity with password login (authenticate_user in
     # auth/router.py): update last_login, write a user.login audit event, and

@@ -123,9 +123,7 @@ class TestRegistrationCeremony:
         assert data["challenge_token"]
         assert data["options"]["rp"]["name"] == "Preloop"
         # Discoverable credentials required
-        assert (
-            data["options"]["authenticatorSelection"]["residentKey"] == "required"
-        )
+        assert data["options"]["authenticatorSelection"]["residentKey"] == "required"
         # Existing credential excluded from re-registration
         assert len(data["options"]["excludeCredentials"]) == 1
 
@@ -173,9 +171,7 @@ class TestRegistrationCeremony:
         assert response.json()["name"] == "My laptop"
         mock_verify.assert_called_once()
         # Challenge bytes from the token were passed to verification
-        assert (
-            mock_verify.call_args.kwargs["expected_challenge"] == b"chal"
-        )
+        assert mock_verify.call_args.kwargs["expected_challenge"] == b"chal"
         db_session_mock.add.assert_called_once()
         stored = db_session_mock.add.call_args.args[0]
         assert stored.credential_id == _b64url(b"new-cred-id")
@@ -184,9 +180,7 @@ class TestRegistrationCeremony:
     def test_verify_rejects_challenge_for_other_user(
         self, db_session_mock, authed_user
     ):
-        challenge_token = _issue_challenge_token(
-            b"chal", "register", str(uuid.uuid4())
-        )
+        challenge_token = _issue_challenge_token(b"chal", "register", str(uuid.uuid4()))
         response = client.post(
             "/auth/webauthn/register/verify",
             json={
@@ -271,9 +265,7 @@ class TestAuthenticationCeremony:
         mock_crud.touch.assert_called_once()
         assert mock_crud.touch.call_args.kwargs["sign_count"] == 6
         # Challenge from token passed to verification
-        assert (
-            mock_verify.call_args.kwargs["expected_challenge"] == b"auth-chal"
-        )
+        assert mock_verify.call_args.kwargs["expected_challenge"] == b"auth-chal"
 
     def test_verify_unknown_credential(self, db_session_mock):
         challenge_token = _issue_challenge_token(b"auth-chal", "authenticate")
@@ -402,9 +394,7 @@ class TestLoginParityAndRateLimit:
                 return_value=verification,
             ),
             patch("preloop.api.auth.webauthn_router.crud_user") as mock_crud_user,
-            patch(
-                "preloop.api.auth.webauthn_router.crud_audit_log"
-            ) as mock_audit,
+            patch("preloop.api.auth.webauthn_router.crud_audit_log") as mock_audit,
         ):
             mock_crud.get_by_credential_id.return_value = cred
             mock_crud_user.get.return_value = mock_user

@@ -9,10 +9,7 @@ import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '../../components/logo-component';
 import { trackGoal } from '../../services/web-analytics';
-import {
-  passkeysSupported,
-  signInWithPasskey,
-} from '../../services/passkeys';
+import { passkeysSupported, signInWithPasskey } from '../../services/passkeys';
 
 const OAUTH_PROVIDER_CONFIG: Record<string, { label: string; icon: string }> = {
   github: { label: 'GitHub', icon: 'github' },

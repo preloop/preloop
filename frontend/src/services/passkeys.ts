@@ -44,7 +44,9 @@ function bufferToBase64url(buffer: ArrayBuffer): string {
 
 /* Convert the JSON options from the server into the binary shapes
  * navigator.credentials expects. */
-function prepareCreationOptions(options: any): PublicKeyCredentialCreationOptions {
+function prepareCreationOptions(
+  options: any
+): PublicKeyCredentialCreationOptions {
   return {
     ...options,
     challenge: base64urlToBuffer(options.challenge),
@@ -59,7 +61,9 @@ function prepareCreationOptions(options: any): PublicKeyCredentialCreationOption
   };
 }
 
-function prepareRequestOptions(options: any): PublicKeyCredentialRequestOptions {
+function prepareRequestOptions(
+  options: any
+): PublicKeyCredentialRequestOptions {
   return {
     ...options,
     challenge: base64urlToBuffer(options.challenge),

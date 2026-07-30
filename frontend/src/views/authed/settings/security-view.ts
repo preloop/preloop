@@ -167,21 +167,23 @@ export class SecurityView extends LitElement {
               </form>
             </div>
           </div>
-          ${this.passkeysEnabled
-            ? html`
-                <div class="card">
-                  <div class="card-header">
-                    <h3>Passkeys</h3>
-                  </div>
-                  <div class="card-body">
-                    <p>
-                      Sign in without a password using your device's screen
-                      lock, fingerprint, or security key.
-                    </p>
-                    ${this.passkeys.length > 0
-                      ? html`
-                          <ul class="passkey-list">
-                            ${this.passkeys.map(
+          ${
+            this.passkeysEnabled
+              ? html`
+                  <div class="card">
+                    <div class="card-header">
+                      <h3>Passkeys</h3>
+                    </div>
+                    <div class="card-body">
+                      <p>
+                        Sign in without a password using your device's screen
+                        lock, fingerprint, or security key.
+                      </p>
+                      ${
+                      this.passkeys.length > 0
+                        ? html`
+                            <ul class="passkey-list">
+                              ${this.passkeys.map(
                               (passkey) => html`
                                 <li class="passkey-item">
                                   <span>
@@ -204,22 +206,26 @@ export class SecurityView extends LitElement {
                                 </li>
                               `
                             )}
-                          </ul>
-                        `
-                      : html`<p><em>No passkeys registered yet.</em></p>`}
-                    <sl-button
-                      variant="primary"
-                      ?loading="${this.passkeyBusy}"
-                      @click="${this.handleAddPasskey}"
-                      >Add Passkey</sl-button
-                    >
-                    ${this.passkeyMessage
-                      ? html`<p>${this.passkeyMessage}</p>`
-                      : ''}
+                            </ul>
+                          `
+                        : html`<p><em>No passkeys registered yet.</em></p>`
+                    }
+                      <sl-button
+                        variant="primary"
+                        ?loading="${this.passkeyBusy}"
+                        @click="${this.handleAddPasskey}"
+                        >Add Passkey</sl-button
+                      >
+                      ${
+                      this.passkeyMessage
+                        ? html`<p>${this.passkeyMessage}</p>`
+                        : ''
+                    }
+                    </div>
                   </div>
-                </div>
-              `
-            : ''}
+                `
+              : ''
+          }
         </div>
         <div class="side-column"></div>
       </div>

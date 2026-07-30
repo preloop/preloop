@@ -49,9 +49,7 @@ def upgrade() -> None:
         ),
         sa.Column("credential_id", sa.Text(), nullable=False),
         sa.Column("public_key", sa.Text(), nullable=False),
-        sa.Column(
-            "sign_count", sa.BigInteger(), nullable=False, server_default="0"
-        ),
+        sa.Column("sign_count", sa.BigInteger(), nullable=False, server_default="0"),
         sa.Column("transports", sa.Text(), nullable=True),
         sa.Column(
             "name",
@@ -60,9 +58,7 @@ def upgrade() -> None:
             server_default="Passkey",
         ),
         sa.Column("aaguid", sa.String(length=64), nullable=True),
-        sa.Column(
-            "is_active", sa.Boolean(), nullable=False, server_default=sa.true()
-        ),
+        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column("last_used_at", sa.DateTime(), nullable=True),
     )
     op.create_index(
@@ -83,7 +79,5 @@ def downgrade() -> None:
     op.drop_index(
         "ix_webauthn_credential_credential_id", table_name="webauthn_credential"
     )
-    op.drop_index(
-        "ix_webauthn_credential_user_id", table_name="webauthn_credential"
-    )
+    op.drop_index("ix_webauthn_credential_user_id", table_name="webauthn_credential")
     op.drop_table("webauthn_credential")
