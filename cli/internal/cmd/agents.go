@@ -223,10 +223,12 @@ func mcpOnlyAgentModelNote(agent AgentConfig) string {
 	case strings.EqualFold(strings.TrimSpace(agent.Name), "cursor"):
 		return mcpOnlySupportLabel + ": Cursor tool calls are governed through " +
 			"Preloop's MCP firewall. Cursor only accepts a custom model base URL via " +
-			"its in-app Settings → Models (global, chat-only, no config-file hook), " +
-			"so Preloop does not rewrite model traffic automatically. To route model " +
-			"spend through Preloop, set the OpenAI base URL override in Cursor " +
-			"settings to your Preloop gateway URL manually."
+			"its in-app Settings → Models (global, no config-file hook), so Preloop " +
+			"does not rewrite model traffic automatically. Setting the OpenAI base " +
+			"URL override there to your Preloop gateway URL routes the AI panel's " +
+			"third-party model calls (Ask/Plan and Agent modes) through Preloop; " +
+			"Tab, inline edit, and Cursor-billed bundled models stay on Cursor's " +
+			"backend."
 	case strings.EqualFold(strings.TrimSpace(agent.Name), "claude desktop"):
 		return mcpOnlySupportLabel + ": Claude Desktop tool calls are governed " +
 			"through Preloop's MCP firewall. Claude Desktop's model traffic is fixed " +
