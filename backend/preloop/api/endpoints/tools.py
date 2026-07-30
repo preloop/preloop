@@ -47,7 +47,7 @@ from preloop.schemas.gateway_usage import GatewayUsageByTool
 from preloop.utils.audit import log_config_change
 from preloop.utils.permissions import require_permission
 
-from preloop.tools.builtin_defs import ASK_USER_TOOL
+from preloop.tools.builtin_defs import ASK_USER_TOOL, PERMISSION_PROMPT_TOOL
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -89,6 +89,7 @@ BUILTIN_TOOLS = [
         },
     },
     ASK_USER_TOOL,
+    PERMISSION_PROMPT_TOOL,
     {
         "name": "get_issue",
         "description": "Get detailed information about an issue by its identifier (URL, key, or ID)",
