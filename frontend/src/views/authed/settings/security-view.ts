@@ -180,36 +180,36 @@ export class SecurityView extends LitElement {
                         lock, fingerprint, or security key.
                       </p>
                       ${
-                      this.passkeys.length > 0
-                        ? html`
-                            <ul class="passkey-list">
-                              ${this.passkeys.map(
-                              (passkey) => html`
-                                <li class="passkey-item">
-                                  <span>
-                                    ${passkey.name}
-                                    <small>
-                                      added
-                                      ${new Date(
-                                        passkey.created_at
-                                      ).toLocaleDateString()}
-                                    </small>
-                                  </span>
-                                  <sl-button
-                                    size="small"
-                                    variant="danger"
-                                    outline
-                                    @click="${() =>
-                                      this.handleDeletePasskey(passkey.id)}"
-                                    >Remove</sl-button
-                                  >
-                                </li>
-                              `
-                            )}
-                            </ul>
-                          `
-                        : html`<p><em>No passkeys registered yet.</em></p>`
-                    }
+                        this.passkeys.length > 0
+                          ? html`
+                              <ul class="passkey-list">
+                                ${this.passkeys.map(
+                                  (passkey) => html`
+                                    <li class="passkey-item">
+                                      <span>
+                                        ${passkey.name}
+                                        <small>
+                                          added
+                                          ${new Date(
+                                            passkey.created_at
+                                          ).toLocaleDateString()}
+                                        </small>
+                                      </span>
+                                      <sl-button
+                                        size="small"
+                                        variant="danger"
+                                        outline
+                                        @click="${() =>
+                                          this.handleDeletePasskey(passkey.id)}"
+                                        >Remove</sl-button
+                                      >
+                                    </li>
+                                  `
+                                )}
+                              </ul>
+                            `
+                          : html`<p><em>No passkeys registered yet.</em></p>`
+                      }
                       <sl-button
                         variant="primary"
                         ?loading="${this.passkeyBusy}"
@@ -217,10 +217,10 @@ export class SecurityView extends LitElement {
                         >Add Passkey</sl-button
                       >
                       ${
-                      this.passkeyMessage
-                        ? html`<p>${this.passkeyMessage}</p>`
-                        : ''
-                    }
+                        this.passkeyMessage
+                          ? html`<p>${this.passkeyMessage}</p>`
+                          : ''
+                      }
                     </div>
                   </div>
                 `
