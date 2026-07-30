@@ -14,6 +14,7 @@ from ..models import (
     Organization,
     Project,
     TrackerScopeRule,
+    WebAuthnCredential,
     Webhook,
     IssueRelationship,
     IssueSet,
@@ -49,6 +50,7 @@ from .project import CRUDProject
 from .tracker import CRUDTracker, crud_tracker
 from .tracker_scope_rule import CRUDTrackerScopeRule
 from .ai_model import CRUDAIModel
+from .webauthn_credential import CRUDWebAuthnCredential
 from .webhook import CRUDWebhook
 from .issue_compliance_result import (
     CRUDIssueComplianceResult,
@@ -148,6 +150,7 @@ crud_api_usage = CRUDApiUsage(ApiUsage)
 crud_audit_log = CRUDAuditLog(AuditLog)
 crud_ai_model = CRUDAIModel(AIModel)
 # crud_comment is already instantiated in its own file
+crud_webauthn_credential = CRUDWebAuthnCredential(WebAuthnCredential)
 crud_webhook = CRUDWebhook(Webhook)
 crud_flow = CRUDFlow()  # Instantiate CRUDFlow
 crud_flow_execution = CRUDFlowExecution()  # Instantiate CRUDFlowExecution
@@ -247,6 +250,7 @@ __all__ = [
     "crud_comment",
     "crud_ai_model",
     "crud_secret_reference",
+    "crud_webauthn_credential",
     "crud_webhook",
     "crud_flow",
     "crud_flow_execution",

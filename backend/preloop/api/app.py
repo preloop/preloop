@@ -843,6 +843,16 @@ def create_app() -> FastAPI:
 
         # Core API routers
         app.include_router(auth_router, prefix="/api/v1/auth", tags=["Auth"])
+        # WebAuthn passkey ceremonies. Mounted WITHOUT an auth dependency:
+        # the authentication ceremony must run before the user has a token.
+        # Endpoints that need a signed-in user declare it themselves.
+        from preloop.api.auth.webauthn_router import router as webauthn_router
+
+        app.include_router(
+            webauthn_router,
+            prefix="/api/v1/auth/webauthn",
+            tags=["Auth", "Passkeys"],
+        )
         app.include_router(
             account.router,
             prefix="/api/v1",

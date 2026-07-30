@@ -57,4 +57,10 @@ def get_features(db: Session = Depends(get_db_session)) -> Dict[str, Any]:
     # setdefault so a plugin that already set the flag keeps its value.
     result["features"].setdefault("session_optimization", True)
 
+    # Passkey (WebAuthn) support: PASSKEYS_ENABLED env, default true. The
+    # login page uses this to decide whether to render "Sign in with passkey".
+    from preloop.api.auth.webauthn_router import passkeys_enabled
+
+    result["features"]["passkeys"] = passkeys_enabled()
+
     return result
