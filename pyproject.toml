@@ -94,6 +94,7 @@ dependencies = [
     # gateway streaming tests.
     "litellm>=1.81.13,<1.90",
     "boto3>=1.34.0",  # For AWS Bedrock support through litellm
+    "webauthn>=2.0.0",  # WebAuthn passkey registration/authentication ceremonies
 ]
 
 [project.urls]

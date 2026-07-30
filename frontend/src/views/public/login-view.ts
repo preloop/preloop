@@ -9,6 +9,7 @@ import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '../../components/logo-component';
 import { trackGoal } from '../../services/web-analytics';
+import { passkeysSupported, signInWithPasskey } from '../../services/passkeys';
 
 const OAUTH_PROVIDER_CONFIG: Record<string, { label: string; icon: string }> = {
   github: { label: 'GitHub', icon: 'github' },
@@ -29,6 +30,9 @@ export class LoginView extends LitElement {
 
   @state()
   private registrationEnabled = true;
+
+  @state()
+  private passkeysEnabled = false;
 
   static styles = [
     formStyles,
@@ -105,10 +109,54 @@ export class LoginView extends LitElement {
       const providers = features.features['oauth_providers'];
       this.oauthProviders = Array.isArray(providers) ? providers : [];
       this.registrationEnabled = features.features['registration'] !== false;
+      this.passkeysEnabled =
+        features.features['passkeys'] !== false && passkeysSupported();
     } catch (error) {
       this.oauthProviders = [];
       // Fail open, matching the /register route guard.
       this.registrationEnabled = true;
+      this.passkeysEnabled = false;
+    }
+  }
+
+  private _navigateAfterLogin() {
+    const redirectPath = localStorage.getItem('loginRedirect');
+    if (redirectPath) {
+      localStorage.removeItem('loginRedirect');
+      if (redirectPath.startsWith('/admin')) {
+        // The admin dashboard is a separate SPA that the console's
+        // client-side router cannot reach; do a hard navigation.
+        window.location.href = redirectPath;
+      } else {
+        Router.go(redirectPath);
+      }
+    } else {
+      Router.go('/console');
+    }
+  }
+
+  private async handlePasskeySignIn() {
+    this.error = '';
+    try {
+      const data = await signInWithPasskey();
+      localStorage.setItem('accessToken', data.access_token);
+      if (data.refresh_token) {
+        localStorage.setItem('refreshToken', data.refresh_token);
+      }
+      trackGoal('Login');
+      window.dispatchEvent(
+        new CustomEvent('auth-change', { bubbles: true, composed: true })
+      );
+      this._navigateAfterLogin();
+    } catch (error) {
+      // A cancelled ceremony (user dismissed the prompt) is not an error
+      // worth showing.
+      const message =
+        error instanceof Error ? error.message : 'Passkey sign-in failed';
+      if (!message.includes('cancelled')) {
+        this.error = message;
+      }
+      console.error('Passkey sign in failed', error);
     }
   }
 
@@ -138,19 +186,7 @@ export class LoginView extends LitElement {
       window.dispatchEvent(
         new CustomEvent('auth-change', { bubbles: true, composed: true })
       );
-      const redirectPath = localStorage.getItem('loginRedirect');
-      if (redirectPath) {
-        localStorage.removeItem('loginRedirect');
-        if (redirectPath.startsWith('/admin')) {
-          // The admin dashboard is a separate SPA that the console's
-          // client-side router cannot reach; do a hard navigation.
-          window.location.href = redirectPath;
-        } else {
-          Router.go(redirectPath);
-        }
-      } else {
-        Router.go('/console');
-      }
+      this._navigateAfterLogin();
     } catch (error) {
       if (error instanceof Error) {
         this.error = error.message;
@@ -161,11 +197,28 @@ export class LoginView extends LitElement {
     }
   }
 
+  private _renderPasskeyButton() {
+    if (!this.passkeysEnabled) return nothing;
+    return html`
+      <sl-button
+        class="oauth-button"
+        variant="default"
+        size="large"
+        @click=${this.handlePasskeySignIn}
+      >
+        <sl-icon name="fingerprint" slot="prefix"></sl-icon>
+        Sign in with passkey
+      </sl-button>
+    `;
+  }
+
   private _renderOAuthButtons() {
-    if (this.oauthProviders.length === 0) return nothing;
+    if (this.oauthProviders.length === 0 && !this.passkeysEnabled)
+      return nothing;
 
     return html`
       <div class="oauth-section">
+        ${this._renderPasskeyButton()}
         ${this.oauthProviders.map((provider) => {
           const config = OAUTH_PROVIDER_CONFIG[provider];
           if (!config) return nothing;

@@ -642,6 +642,145 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/auth/webauthn/register/options:
+    post:
+      tags:
+      - Auth
+      - Passkeys
+      summary: Registration Options
+      description: Begin passkey registration for the signed-in user.
+      operationId: registration_options_api_v1_auth_webauthn_register_options_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegistrationOptionsResponse'
+      security:
+      - OAuth2PasswordBearer: []
+  /api/v1/auth/webauthn/register/verify:
+    post:
+      tags:
+      - Auth
+      - Passkeys
+      summary: Registration Verify
+      description: Complete passkey registration and store the credential.
+      operationId: registration_verify_api_v1_auth_webauthn_register_verify_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegistrationVerifyRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PasskeySummary'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - OAuth2PasswordBearer: []
+  /api/v1/auth/webauthn/authenticate/options:
+    post:
+      tags:
+      - Auth
+      - Passkeys
+      summary: Authentication Options
+      description: 'Begin passkey sign-in. Discoverable credentials: no username needed.'
+      operationId: authentication_options_api_v1_auth_webauthn_authenticate_options_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthenticationOptionsResponse'
+  /api/v1/auth/webauthn/authenticate/verify:
+    post:
+      tags:
+      - Auth
+      - Passkeys
+      summary: Authentication Verify
+      description: Complete passkey sign-in; returns access and refresh tokens.
+      operationId: authentication_verify_api_v1_auth_webauthn_authenticate_verify_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthenticationVerifyRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Authentication Verify Api V1 Auth Webauthn Authenticate
+                  Verify Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/auth/webauthn/credentials:
+    get:
+      tags:
+      - Auth
+      - Passkeys
+      summary: List Credentials
+      description: List the signed-in user's passkeys.
+      operationId: list_credentials_api_v1_auth_webauthn_credentials_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/PasskeySummary'
+                type: array
+                title: Response List Credentials Api V1 Auth Webauthn Credentials
+                  Get
+      security:
+      - OAuth2PasswordBearer: []
+  /api/v1/auth/webauthn/credentials/{credential_id}:
+    delete:
+      tags:
+      - Auth
+      - Passkeys
+      summary: Delete Credential
+      description: Remove one of the signed-in user's passkeys.
+      operationId: delete_credential_api_v1_auth_webauthn_credentials__credential_id__delete
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: credential_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Credential Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/account/details:
     get:
       tags:
@@ -10023,6 +10162,36 @@ components:
       type: object
       title: AuthUserUpdate
       description: User update model.
+    AuthenticationOptionsResponse:
+      properties:
+        options:
+          additionalProperties: true
+          type: object
+          title: Options
+        challenge_token:
+          type: string
+          title: Challenge Token
+      type: object
+      required:
+      - options
+      - challenge_token
+      title: AuthenticationOptionsResponse
+      description: Options for navigator.credentials.get plus the challenge token.
+    AuthenticationVerifyRequest:
+      properties:
+        credential:
+          additionalProperties: true
+          type: object
+          title: Credential
+        challenge_token:
+          type: string
+          title: Challenge Token
+      type: object
+      required:
+      - credential
+      - challenge_token
+      title: AuthenticationVerifyRequest
+      description: Authenticator response for the authentication ceremony.
     Body_diff_policy_api_v1_policies_diff_post:
       properties:
         file:
@@ -13672,6 +13841,32 @@ components:
       type: object
       title: OrganizationUpdate
       description: Model for updating an organization.
+    PasskeySummary:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        name:
+          type: string
+          title: Name
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        last_used_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Used At
+      type: object
+      required:
+      - id
+      - name
+      - created_at
+      title: PasskeySummary
+      description: Non-sensitive passkey metadata for the settings UI.
     PasswordChangeRequest:
       properties:
         current_password:
@@ -14235,6 +14430,41 @@ components:
       - refresh_token
       title: RefreshRequest
       description: Model for token refresh requests.
+    RegistrationOptionsResponse:
+      properties:
+        options:
+          additionalProperties: true
+          type: object
+          title: Options
+        challenge_token:
+          type: string
+          title: Challenge Token
+      type: object
+      required:
+      - options
+      - challenge_token
+      title: RegistrationOptionsResponse
+      description: Options for navigator.credentials.create plus the challenge token.
+    RegistrationVerifyRequest:
+      properties:
+        credential:
+          additionalProperties: true
+          type: object
+          title: Credential
+        challenge_token:
+          type: string
+          title: Challenge Token
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+      type: object
+      required:
+      - credential
+      - challenge_token
+      title: RegistrationVerifyRequest
+      description: Authenticator response for the registration ceremony.
     RollbackRequest:
       properties:
         preview_only:
