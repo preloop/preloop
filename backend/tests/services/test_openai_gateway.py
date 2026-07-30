@@ -1624,7 +1624,9 @@ def test_build_openai_codex_payload_from_chat_completion_extracts_system_message
 
     assert upstream["instructions"] == "You are a billing assistant."
     assert upstream["model"] == "openai/gpt-5.4"
-    assert upstream["temperature"] == 0.5
+    # Codex rejects ``temperature`` (HTTP 400 Unsupported parameter); it
+    # must NOT be forwarded.
+    assert "temperature" not in upstream
     # System message must NOT show up in input items.
     assert all(
         item.get("role") != "system"
@@ -1791,6 +1793,488 @@ def test_build_openai_codex_payload_overrides_model_with_ai_model_identifier():
         ai_model=ai_model,
     )
     assert upstream["model"] == "gpt-5-codex"
+
+
+def _codex_service() -> OpenAIGatewayService:
+    auth_context = ModelGatewayAuthContext(
+        token="token",
+        user=SimpleNamespace(id="user-1", account_id="account-1"),
+    )
+    return OpenAIGatewayService(MagicMock(), auth_context)
+
+
+def _codex_ai_model() -> SimpleNamespace:
+    return SimpleNamespace(
+        id="model-1",
+        provider_name="openai-codex",
+        model_identifier="gpt-5.6-sol",
+        api_endpoint="https://chatgpt.com/backend-api/codex",
+    )
+
+
+def test_build_openai_codex_payload_from_chat_completion_drops_rejected_tunables(
+    caplog,
+):
+    """The Codex backend 400s on ``max_completion_tokens`` (prod failure
+    2026-07-29 22:22 UTC, follow-up to #109) and on every other OpenAI
+    tunable; none of them may be forwarded, and the drop must be logged."""
+    service = _codex_service()
+    payload = {
+        "model": "openai/gpt-5.6-sol",
+        "max_completion_tokens": 1024,
+        "max_tokens": 512,
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "frequency_penalty": 0.1,
+        "presence_penalty": 0.1,
+        "seed": 42,
+        "stop": ["END"],
+        "user": "hermes",
+        "response_format": {"type": "text"},
+        "parallel_tool_calls": True,
+    }
+
+    with caplog.at_level("DEBUG", logger="preloop.services.openai_gateway"):
+        upstream = service._build_openai_codex_payload_from_chat_completion(
+            payload=payload,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+    for rejected in (
+        "max_completion_tokens",
+        "max_tokens",
+        "max_output_tokens",
+        "temperature",
+        "top_p",
+        "frequency_penalty",
+        "presence_penalty",
+        "seed",
+        "stop",
+        "user",
+        "response_format",
+    ):
+        assert rejected not in upstream, rejected
+    # The one tunable Codex accepts must survive.
+    assert upstream["parallel_tool_calls"] is True
+    assert upstream["store"] is False
+    dropped_logs = [
+        record.message
+        for record in caplog.records
+        if "unsupported by the OpenAI Codex backend" in record.message
+    ]
+    assert dropped_logs, "dropped parameters must be logged at debug level"
+    assert "max_completion_tokens" in dropped_logs[0]
+
+
+def test_build_openai_codex_payload_from_chat_completion_maps_reasoning_effort():
+    """chat-completions ``reasoning_effort`` maps to the accepted
+    Responses-API ``reasoning.effort`` shape instead of being dropped."""
+    service = _codex_service()
+
+    upstream = service._build_openai_codex_payload_from_chat_completion(
+        payload={"model": "openai/gpt-5.6-sol", "reasoning_effort": "low"},
+        messages=[{"role": "user", "content": "hi"}],
+    )
+
+    assert upstream["reasoning"] == {"effort": "low"}
+    assert "reasoning_effort" not in upstream
+
+
+def test_build_openai_codex_payload_sanitizes_responses_payload(caplog):
+    """The direct Responses-API codex path (``_build_openai_codex_payload``)
+    must strip rejected params too and force ``store: false``."""
+    service = _codex_service()
+    ai_model = _codex_ai_model()
+    payload = {
+        "model": "openai/gpt-5.6-sol",
+        "instructions": "Be terse.",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hi"}],
+            }
+        ],
+        "max_output_tokens": 256,
+        "max_completion_tokens": 256,
+        "temperature": 0.3,
+        "metadata": {"k": "v"},
+        "truncation": "auto",
+        "store": True,
+        "reasoning": {"effort": "medium"},
+        "prompt_cache_key": "cache-1",
+    }
+
+    with caplog.at_level("DEBUG", logger="preloop.services.openai_gateway"):
+        upstream = service._build_openai_codex_payload(ai_model, payload, stream=True)
+
+    for rejected in (
+        "max_output_tokens",
+        "max_completion_tokens",
+        "temperature",
+        "metadata",
+        "truncation",
+    ):
+        assert rejected not in upstream, rejected
+    assert upstream["model"] == "gpt-5.6-sol"
+    assert upstream["store"] is False
+    assert upstream["stream"] is True
+    assert upstream["instructions"] == "Be terse."
+    assert upstream["reasoning"] == {"effort": "medium"}
+    assert upstream["prompt_cache_key"] == "cache-1"
+    assert any(
+        "unsupported by the OpenAI Codex backend" in record.message
+        for record in caplog.records
+    )
+
+
+def test_create_chat_completion_codex_sanitizes_client_params():
+    """Non-streaming codex chat completions must not forward
+    ``max_completion_tokens`` upstream (the exact prod failure shape)."""
+    service = _codex_service()
+    ai_model = _codex_ai_model()
+
+    with (
+        patch.object(service, "_resolve_requested_model", return_value=ai_model),
+        patch.object(service, "_check_budget", return_value=None),
+        patch.object(service, "_record_gateway_request"),
+        patch.object(service, "_emit_gateway_request_started"),
+        patch.object(
+            service,
+            "_create_openai_codex_response",
+            return_value=_codex_responses_payload(),
+        ) as mock_create_codex,
+    ):
+        service.create_chat_completion(
+            {
+                "model": "preloop/openai/gpt-5.6-sol",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "max_completion_tokens": 4096,
+                "temperature": 0.2,
+            }
+        )
+
+    upstream_payload = mock_create_codex.call_args.args[1]
+    assert "max_completion_tokens" not in upstream_payload
+    assert "temperature" not in upstream_payload
+    assert upstream_payload["store"] is False
+
+
+def test_stream_chat_completion_codex_sanitizes_client_params():
+    """Streaming codex chat completions must not forward
+    ``max_completion_tokens`` upstream either."""
+    service = _codex_service()
+    ai_model = _codex_ai_model()
+
+    with (
+        patch.object(service, "_resolve_requested_model", return_value=ai_model),
+        patch.object(service, "_check_budget", return_value=None),
+        patch.object(service, "_record_gateway_request"),
+        patch.object(service, "_emit_gateway_request_started"),
+        patch.object(
+            service,
+            "_create_openai_codex_response",
+            return_value=_codex_responses_payload(),
+        ) as mock_create_codex,
+    ):
+        events = list(
+            service.stream_chat_completion(
+                {
+                    "model": "preloop/openai/gpt-5.6-sol",
+                    "messages": [{"role": "user", "content": "Hi"}],
+                    "stream": True,
+                    "max_completion_tokens": 4096,
+                    "top_p": 0.9,
+                }
+            )
+        )
+
+    assert events, "stream must still produce chunks"
+    upstream_payload = mock_create_codex.call_args.args[1]
+    assert "max_completion_tokens" not in upstream_payload
+    assert "top_p" not in upstream_payload
+    assert upstream_payload["store"] is False
+
+
+def test_create_openai_codex_response_sends_sanitized_body():
+    """The wire body sent to chatgpt.com/backend-api/codex must contain only
+    supported parameters (covers create_response and stream_response, which
+    both sanitize inside ``_create_openai_codex_response``)."""
+    service = _codex_service()
+    ai_model = _codex_ai_model()
+    credentials = SimpleNamespace(
+        value="oauth-token",
+        payload={"account_id": "acct-1"},
+    )
+    sse_body = (
+        b'data: {"type":"response.output_item.added","item":'
+        b'{"id":"msg_1","type":"message","role":"assistant"}}\n'
+        b"\n"
+        b'data: {"type":"response.output_text.done","item_id":"msg_1",'
+        b'"text":"OK"}\n'
+        b"\n"
+        b'data: {"type":"response.completed","response":{"id":"resp_1",'
+        b'"usage":{"input_tokens":1,"output_tokens":1}}}\n'
+        b"\n"
+    )
+
+    class _FakeResponse:
+        def __enter__(self):
+            return iter(sse_body.splitlines(keepends=True))
+
+        def __exit__(self, *args):
+            return False
+
+    captured: dict = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _FakeResponse()
+
+    with (
+        patch.object(
+            service, "_resolve_openai_codex_credentials", return_value=credentials
+        ),
+        patch(
+            "preloop.services.openai_gateway.urllib_request.urlopen",
+            side_effect=fake_urlopen,
+        ),
+    ):
+        service._create_openai_codex_response(
+            ai_model,
+            {
+                "model": "preloop/openai/gpt-5.6-sol",
+                "instructions": "Be terse.",
+                "input": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "hi"}],
+                    }
+                ],
+                "max_completion_tokens": 128,
+                "temperature": 0.5,
+            },
+        )
+
+    body = captured["body"]
+    assert "max_completion_tokens" not in body
+    assert "temperature" not in body
+    assert body["store"] is False
+    assert body["stream"] is True
+    assert body["model"] == "gpt-5.6-sol"
+
+
+def _anthropic_oauth_model() -> SimpleNamespace:
+    return SimpleNamespace(
+        id="model-a1",
+        provider_name="anthropic",
+        model_identifier="claude-fable-5",
+        api_endpoint=None,
+    )
+
+
+def test_prepare_anthropic_passthrough_translates_and_drops_openai_params(
+    caplog,
+):
+    """OpenAI-dialect strays must be removed before the OAuth passthrough:
+    one unknown top-level key 400s the whole Anthropic request. Token-limit
+    spellings translate to ``max_tokens``; Anthropic-native content
+    (system blocks, cache_control, tools) stays byte-identical."""
+    service = _codex_service()
+    ai_model = _anthropic_oauth_model()
+    system_blocks = [
+        {
+            "type": "text",
+            "text": "You are Claude Code",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+    messages = [{"role": "user", "content": "hi"}]
+    tools = [
+        {
+            "name": "get_time",
+            "description": "time",
+            "input_schema": {"type": "object", "properties": {}},
+        }
+    ]
+    payload = {
+        "model": "claude-fable-5",
+        "system": system_blocks,
+        "messages": messages,
+        "tools": tools,
+        "max_completion_tokens": 2048,
+        "frequency_penalty": 0.2,
+        "seed": 7,
+        "stream_options": {"include_usage": True},
+        "metadata": {"user_id": "u-1"},
+    }
+
+    with (
+        patch.object(
+            service, "_strip_anthropic_passthrough_tools", side_effect=lambda p: p
+        ),
+        patch.object(service, "_capture_tools_meta"),
+        caplog.at_level("DEBUG", logger="preloop.services.openai_gateway"),
+    ):
+        _url, _headers, body = service._prepare_anthropic_passthrough(
+            ai_model=ai_model,
+            payload=payload,
+            oauth_token="oauth-token",
+            anthropic_version="2023-06-01",
+            anthropic_beta=None,
+            stream=False,
+        )
+
+    # OpenAI token-limit spelling translated to the Anthropic one.
+    assert body["max_tokens"] == 2048
+    assert "max_completion_tokens" not in body
+    for stray in ("frequency_penalty", "seed", "stream_options"):
+        assert stray not in body, stray
+    # Anthropic-native fields forwarded verbatim (same objects, untouched).
+    assert body["system"] is system_blocks
+    assert body["messages"] is messages
+    assert body["tools"] is tools
+    # ``metadata`` is a real Anthropic Messages parameter; it must survive.
+    assert body["metadata"] == {"user_id": "u-1"}
+    assert body["stream"] is False
+    assert any(
+        "unsupported by the Anthropic Messages API" in record.message
+        for record in caplog.records
+    )
+
+
+def test_prepare_anthropic_passthrough_keeps_client_max_tokens():
+    """When the client already sent ``max_tokens``, the OpenAI spellings are
+    dropped rather than overwriting it."""
+    service = _codex_service()
+    ai_model = _anthropic_oauth_model()
+    payload = {
+        "model": "claude-fable-5",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 100,
+        "max_completion_tokens": 999,
+        "max_output_tokens": 888,
+    }
+
+    with (
+        patch.object(
+            service, "_strip_anthropic_passthrough_tools", side_effect=lambda p: p
+        ),
+        patch.object(service, "_capture_tools_meta"),
+    ):
+        _url, _headers, body = service._prepare_anthropic_passthrough(
+            ai_model=ai_model,
+            payload=payload,
+            oauth_token="oauth-token",
+            anthropic_version="2023-06-01",
+            anthropic_beta=None,
+            stream=True,
+        )
+
+    assert body["max_tokens"] == 100
+    assert "max_completion_tokens" not in body
+    assert "max_output_tokens" not in body
+    assert body["stream"] is True
+
+
+def test_create_message_passthrough_sends_sanitized_body():
+    """Non-streaming OAuth passthrough requests are sanitized end to end."""
+    service = _codex_service()
+    ai_model = _anthropic_oauth_model()
+
+    with (
+        patch.object(service, "_resolve_requested_model", return_value=ai_model),
+        patch.object(service, "_check_budget", return_value=None),
+        patch.object(service, "_record_gateway_request"),
+        patch.object(service, "_emit_gateway_request_started"),
+        patch.object(
+            service, "_anthropic_oauth_passthrough_token", return_value="oauth-token"
+        ),
+        patch.object(
+            service, "_strip_anthropic_passthrough_tools", side_effect=lambda p: p
+        ),
+        patch.object(service, "_capture_tools_meta"),
+        patch.object(
+            service,
+            "_anthropic_oauth_passthrough_complete",
+            return_value={
+                "id": "msg_1",
+                "content": [{"type": "text", "text": "OK"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+        ) as mock_complete,
+    ):
+        service.create_message(
+            {
+                "model": "claude-fable-5",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_completion_tokens": 64,
+                "seed": 3,
+            },
+            anthropic_version="2023-06-01",
+        )
+
+    body = mock_complete.call_args.kwargs["body"]
+    assert body["max_tokens"] == 64
+    assert "max_completion_tokens" not in body
+    assert "seed" not in body
+
+
+def test_stream_message_passthrough_sends_sanitized_body():
+    """Streaming OAuth passthrough requests are sanitized end to end."""
+    service = _codex_service()
+    ai_model = _anthropic_oauth_model()
+
+    upstream_response = MagicMock()
+    upstream_response.iter_text.return_value = iter(
+        [
+            'data: {"type":"message_start","message":{"id":"msg_1",'
+            '"usage":{"input_tokens":1}}}\n\n',
+            'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},'
+            '"usage":{"output_tokens":1}}\n\n',
+        ]
+    )
+    upstream_client = MagicMock()
+
+    with (
+        patch.object(service, "_resolve_requested_model", return_value=ai_model),
+        patch.object(service, "_check_budget", return_value=None),
+        patch.object(service, "_record_gateway_request"),
+        patch.object(service, "_emit_gateway_request_started"),
+        patch.object(
+            service, "_anthropic_oauth_passthrough_token", return_value="oauth-token"
+        ),
+        patch.object(
+            service, "_strip_anthropic_passthrough_tools", side_effect=lambda p: p
+        ),
+        patch.object(service, "_capture_tools_meta"),
+        patch.object(
+            service,
+            "_open_anthropic_oauth_passthrough_stream",
+            return_value=(upstream_client, upstream_response),
+        ) as mock_open,
+    ):
+        events = list(
+            service.stream_message(
+                {
+                    "model": "claude-fable-5",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": True,
+                    "max_output_tokens": 32,
+                    "frequency_penalty": 0.5,
+                },
+                anthropic_version="2023-06-01",
+            )
+        )
+
+    assert events, "passthrough stream must relay upstream chunks"
+    body = mock_open.call_args.kwargs["body"]
+    assert body["max_tokens"] == 32
+    assert "max_output_tokens" not in body
+    assert "frequency_penalty" not in body
+    assert body["stream"] is True
 
 
 def test_aggregate_codex_sse_stream_builds_assistant_message_from_streaming_events():
