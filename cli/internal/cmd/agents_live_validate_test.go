@@ -832,7 +832,7 @@ func TestRunDeferredLiveValidationsParallel_ConcurrentNoOpIsSafe(t *testing.T) {
 // the user's own concurrent agent traffic) commonly trips upstream rate
 // limiters; a couple of spaced retries turns most of those transient 429s
 // into a passing validation instead of a spurious gateway rollback.
-func TestPostGatewayProbeWithThrottleRetry(t *testing.T) {
+func TestPostGatewayProbeWithRetry(t *testing.T) {
 	restoreSleep := liveValidationSleep
 	defer func() { liveValidationSleep = restoreSleep }()
 	var slept []time.Duration
@@ -841,7 +841,7 @@ func TestPostGatewayProbeWithThrottleRetry(t *testing.T) {
 	t.Run("retries throttle errors and succeeds", func(t *testing.T) {
 		slept = nil
 		calls := 0
-		attempts, err := postGatewayProbeWithThrottleRetry(func() error {
+		attempts, err := postGatewayProbeWithRetry(func() error {
 			calls++
 			if calls < 3 {
 				return &api.APIError{
@@ -865,7 +865,7 @@ func TestPostGatewayProbeWithThrottleRetry(t *testing.T) {
 	t.Run("gives up after backoff schedule on persistent throttle", func(t *testing.T) {
 		slept = nil
 		calls := 0
-		attempts, err := postGatewayProbeWithThrottleRetry(func() error {
+		attempts, err := postGatewayProbeWithRetry(func() error {
 			calls++
 			return &api.APIError{
 				StatusCode: http.StatusTooManyRequests,
@@ -884,7 +884,7 @@ func TestPostGatewayProbeWithThrottleRetry(t *testing.T) {
 	t.Run("does not retry non-throttle errors", func(t *testing.T) {
 		slept = nil
 		calls := 0
-		attempts, err := postGatewayProbeWithThrottleRetry(func() error {
+		attempts, err := postGatewayProbeWithRetry(func() error {
 			calls++
 			return &api.APIError{StatusCode: http.StatusUnauthorized, Body: "unauthorized"}
 		})
@@ -901,7 +901,7 @@ func TestPostGatewayProbeWithThrottleRetry(t *testing.T) {
 
 	t.Run("succeeds first try without sleeping", func(t *testing.T) {
 		slept = nil
-		attempts, err := postGatewayProbeWithThrottleRetry(func() error { return nil })
+		attempts, err := postGatewayProbeWithRetry(func() error { return nil })
 		if err != nil || attempts != 1 || len(slept) != 0 {
 			t.Fatalf("expected clean single attempt, got attempts=%d err=%v slept=%v", attempts, err, slept)
 		}
@@ -1223,5 +1223,359 @@ func TestLiveValidationSummaryReason_FailureIncludesDetail(t *testing.T) {
 	}
 	if strings.Contains(reason, "more detail") {
 		t.Fatalf("reason must stay one line, got %q", reason)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Issue #110: transient upstream 5xx handling during onboarding live
+// validation. The regressions pinned here are:
+//   (a) a transient 502 must be retried with backoff and can succeed,
+//   (b) a persistent upstream 5xx keeps the gateway config in place so
+//       ``validate --live`` stays re-runnable,
+//   (c) a genuine rollback is LOUD: the summary/checkmark reflects the
+//       failure, the hint says ``onboard`` (never ``validate``), and
+//       single-agent invocations exit non-zero.
+// ---------------------------------------------------------------------------
+
+func TestIsUpstreamTransientValidationError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"typed 502", &api.APIError{StatusCode: http.StatusBadGateway, Body: "bad gateway"}, true},
+		{"typed 503", &api.APIError{StatusCode: http.StatusServiceUnavailable, Body: "unavailable"}, true},
+		{"typed 504", &api.APIError{StatusCode: http.StatusGatewayTimeout, Body: "timeout"}, true},
+		{"typed 500", &api.APIError{StatusCode: http.StatusInternalServerError, Body: "boom"}, true},
+		{"typed 401", &api.APIError{StatusCode: http.StatusUnauthorized, Body: "no auth"}, false},
+		{"typed 404", &api.APIError{StatusCode: http.StatusNotFound, Body: "no model"}, false},
+		{
+			// 429 has its own rate-limit classifier + throttle backoff
+			// schedule; it must not double-classify as transient.
+			"typed 429",
+			&api.APIError{StatusCode: http.StatusTooManyRequests, Body: "slow down"},
+			false,
+		},
+		{
+			// Billing refusals are never transient: retrying cannot refill a
+			// wallet, and they have their own gateway-verified classification.
+			"billing 402",
+			&api.APIError{StatusCode: http.StatusPaymentRequired, Body: "Insufficient Balance"},
+			false,
+		},
+		{"wrapped status text", errors.New("API error (status 503): upstream unavailable"), true},
+		{"wrapped bad gateway text", errors.New("upstream said bad gateway"), true},
+		{"plain config error", errors.New("managed config does not contain a token"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isUpstreamTransientValidationError(tc.err); got != tc.want {
+				t.Fatalf("isUpstreamTransientValidationError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPostGatewayProbeWithRetry_TransientUpstream(t *testing.T) {
+	restoreSleep := liveValidationSleep
+	defer func() { liveValidationSleep = restoreSleep }()
+	var slept []time.Duration
+	liveValidationSleep = func(d time.Duration) { slept = append(slept, d) }
+
+	t.Run("transient 502 then success via retry", func(t *testing.T) {
+		slept = nil
+		calls := 0
+		attempts, err := postGatewayProbeWithRetry(func() error {
+			calls++
+			if calls < 2 {
+				return &api.APIError{StatusCode: http.StatusBadGateway, Body: "bad gateway"}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("expected success after transient retry, got %v", err)
+		}
+		if attempts != 2 || calls != 2 {
+			t.Fatalf("expected 2 attempts, got attempts=%d calls=%d", attempts, calls)
+		}
+		if len(slept) != 1 {
+			t.Fatalf("expected 1 backoff sleep, got %v", slept)
+		}
+	})
+
+	t.Run("persistent 502 gives up after backoff schedule", func(t *testing.T) {
+		slept = nil
+		calls := 0
+		attempts, err := postGatewayProbeWithRetry(func() error {
+			calls++
+			return &api.APIError{StatusCode: http.StatusBadGateway, Body: "bad gateway"}
+		})
+		if err == nil {
+			t.Fatal("expected persistent transient error to surface")
+		}
+		expected := 1 + len(liveValidationTransientBackoffSchedule())
+		if attempts != expected || calls != expected {
+			t.Fatalf("expected %d attempts, got attempts=%d calls=%d", expected, attempts, calls)
+		}
+		if len(slept) != len(liveValidationTransientBackoffSchedule()) {
+			t.Fatalf("expected %d backoff sleeps, got %v", len(liveValidationTransientBackoffSchedule()), slept)
+		}
+	})
+
+	t.Run("transient backoff grows (short exponential)", func(t *testing.T) {
+		schedule := liveValidationTransientBackoffSchedule()
+		if len(schedule) < 2 {
+			t.Fatalf("expected at least 2 transient backoffs (3 attempts total), got %v", schedule)
+		}
+		for i := 1; i < len(schedule); i++ {
+			if schedule[i] <= schedule[i-1] {
+				t.Fatalf("expected growing backoff, got %v", schedule)
+			}
+		}
+	})
+
+	t.Run("transient budget is independent from throttle budget", func(t *testing.T) {
+		slept = nil
+		calls := 0
+		// Alternate 429 / 502: each schedule is consumed independently, so
+		// the total attempts is 1 + len(throttle) + len(transient).
+		attempts, err := postGatewayProbeWithRetry(func() error {
+			calls++
+			if calls%2 == 1 {
+				return &api.APIError{StatusCode: http.StatusTooManyRequests, Body: "throttling_error"}
+			}
+			return &api.APIError{StatusCode: http.StatusBadGateway, Body: "bad gateway"}
+		})
+		if err == nil {
+			t.Fatal("expected the final error to surface")
+		}
+		expected := 1 + len(liveValidationThrottleBackoffSchedule()) + len(liveValidationTransientBackoffSchedule())
+		if attempts != expected || calls != expected {
+			t.Fatalf("expected %d attempts, got attempts=%d calls=%d", expected, attempts, calls)
+		}
+	})
+}
+
+func TestLiveValidationStatusKeepsGatewayConfig(t *testing.T) {
+	cases := []struct {
+		status string
+		want   bool
+	}{
+		{"throttled", true},
+		{"upstream_unavailable", true},
+		{"upstream_transient", true},
+		{"failed", false},
+		{"passed", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		got := liveValidationStatusKeepsGatewayConfig(
+			map[string]interface{}{"live_validation_status": tc.status},
+		)
+		if got != tc.want {
+			t.Fatalf("status %q: keeps-gateway-config = %v, want %v", tc.status, got, tc.want)
+		}
+	}
+	if liveValidationStatusKeepsGatewayConfig(nil) {
+		t.Fatal("nil validation result must not keep gateway config")
+	}
+}
+
+// A transient upstream 5xx that survived the retry budget must NOT roll the
+// managed gateway config back in the deferred (parallel) recovery path:
+// rolling back leaves “validate --live“ permanently unable to succeed
+// (live_validation_skip_reason: managed model gateway provider is not
+// configured), which is the exact trap of issue #110.
+func TestRecoverDeferredGatewayValidationFailure_KeepsConfigOnTransient(t *testing.T) {
+	var buf bytes.Buffer
+	recoverDeferredGatewayValidationFailure(&buf, deferredLiveValidationResult{
+		Agent: AgentConfig{Name: "Claude Code"},
+		Outcome: &managedLiveValidationOutcome{
+			Attempted: true,
+			Passed:    false,
+			ValidationResult: map[string]interface{}{
+				"live_validation_status": "upstream_transient",
+			},
+		},
+		Err: &api.APIError{StatusCode: http.StatusBadGateway, Body: "bad gateway"},
+	})
+	rendered := buf.String()
+	if !strings.Contains(rendered, "keeping the Preloop gateway configuration") {
+		t.Fatalf("expected keep-config note in output, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "preloop agents validate") {
+		t.Fatalf("expected re-runnable validate hint, got %q", rendered)
+	}
+	if strings.Contains(rendered, "Restored") || strings.Contains(rendered, "reverted") {
+		t.Fatalf("expected no rollback for transient outcome, got %q", rendered)
+	}
+}
+
+// After a rollback the “validate --live“ hint is a dead end (the managed
+// gateway provider is gone from the config), so every user-facing hint must
+// point at re-running onboarding instead.
+func TestPrintDeferredLiveValidationLine_RolledBackPointsAtOnboard(t *testing.T) {
+	var buf bytes.Buffer
+	printDeferredLiveValidationLine(&buf, deferredLiveValidationResult{
+		Agent: AgentConfig{Name: "Hermes"},
+		Outcome: &managedLiveValidationOutcome{
+			Attempted: true,
+			Passed:    false,
+			ValidationResult: map[string]interface{}{
+				"live_validation_status":              "failed",
+				"live_validation_gateway_rolled_back": true,
+			},
+		},
+		Err:      errStringForTest("HTTP 401 bad credential"),
+		Duration: 90 * time.Millisecond,
+	})
+	out := buf.String()
+	if !strings.Contains(out, "preloop agents onboard Hermes") {
+		t.Fatalf("expected onboard hint after rollback, got %q", out)
+	}
+	if strings.Contains(out, "preloop agents validate") {
+		t.Fatalf("rolled-back failure must not suggest validate --live, got %q", out)
+	}
+}
+
+func TestLiveValidationSummaryReason_TransientKeepsValidateHint(t *testing.T) {
+	reason := liveValidationSummaryReason(deferredLiveValidationResult{
+		Agent: AgentConfig{Name: "OpenCode"},
+		Outcome: &managedLiveValidationOutcome{
+			Attempted: true,
+			Passed:    false,
+			ValidationResult: map[string]interface{}{
+				"live_validation_status": "upstream_transient",
+			},
+		},
+		Err: &api.APIError{StatusCode: http.StatusServiceUnavailable, Body: "unavailable"},
+	})
+	if !strings.Contains(reason, "transient upstream 5xx") {
+		t.Fatalf("expected transient wording, got %q", reason)
+	}
+	if !strings.Contains(reason, "preloop agents validate OpenCode --live") {
+		t.Fatalf("kept-config failure must keep the validate hint, got %q", reason)
+	}
+}
+
+func TestLiveValidationSummaryReason_RollbackPointsAtOnboard(t *testing.T) {
+	reason := liveValidationSummaryReason(deferredLiveValidationResult{
+		Agent: AgentConfig{Name: "Hermes"},
+		Outcome: &managedLiveValidationOutcome{
+			Attempted: true,
+			Passed:    false,
+			ValidationResult: map[string]interface{}{
+				"live_validation_status":              "failed",
+				"live_validation_gateway_rolled_back": true,
+			},
+		},
+		Err: errStringForTest("HTTP 401 bad credential"),
+	})
+	if !strings.Contains(reason, "model routing reverted") {
+		t.Fatalf("expected loud rollback wording, got %q", reason)
+	}
+	if !strings.Contains(reason, "re-run: preloop agents onboard Hermes") {
+		t.Fatalf("expected onboard re-run hint, got %q", reason)
+	}
+	if strings.Contains(reason, "validate") {
+		t.Fatalf("rolled-back failure must not suggest validate --live, got %q", reason)
+	}
+}
+
+func TestClearManagedGatewayValidationFlags_MarksRollback(t *testing.T) {
+	result := map[string]interface{}{
+		"gateway_provider_ok": true,
+		"gateway_token_ok":    true,
+	}
+	clearManagedGatewayValidationFlags(result)
+	if !liveValidationGatewayRolledBack(result) {
+		t.Fatal("clearing gateway flags must record the rollback marker")
+	}
+	if liveValidationGatewayRolledBack(map[string]interface{}{}) {
+		t.Fatal("empty result must not read as rolled back")
+	}
+	if liveValidationGatewayRolledBack(nil) {
+		t.Fatal("nil result must not read as rolled back")
+	}
+}
+
+// The summary checkmark must reflect the true end state (issue #110): a
+// failed live validation never renders as an unqualified "✓ Onboarded".
+func TestOnboardingCompletionHeadline(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        error
+		rolledBack bool
+		contains   []string
+		excludes   []string
+	}{
+		{
+			name:     "success",
+			err:      nil,
+			contains: []string{"✓ Onboarded Hermes"},
+		},
+		{
+			name:       "rolled back",
+			err:        errStringForTest("HTTP 401"),
+			rolledBack: true,
+			contains:   []string{"✗ Onboarding incomplete", "reverted"},
+			excludes:   []string{"✓"},
+		},
+		{
+			name:     "kept config degraded",
+			err:      errStringForTest("HTTP 503"),
+			contains: []string{"⚠ Onboarded Hermes with degraded validation"},
+			excludes: []string{"✓"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			headline := onboardingCompletionHeadline("Hermes", tc.err, tc.rolledBack)
+			for _, want := range tc.contains {
+				if !strings.Contains(headline, want) {
+					t.Fatalf("expected headline to contain %q, got %q", want, headline)
+				}
+			}
+			for _, unwanted := range tc.excludes {
+				if strings.Contains(headline, unwanted) {
+					t.Fatalf("expected headline to NOT contain %q, got %q", unwanted, headline)
+				}
+			}
+		})
+	}
+}
+
+// A rollback must surface as a non-zero exit for single-agent onboarding:
+// the typed error is not a launcher-skip (which maps to exit 0), it carries
+// the onboard re-run hint, and it never mentions the dead-end validate
+// command.
+func TestLiveValidationRollbackError_ExitAndHintSemantics(t *testing.T) {
+	rollbackErr := &liveValidationRollbackError{
+		AgentName: "Codex CLI",
+		Err:       errStringForTest("HTTP 401 bad credential"),
+	}
+	if got := ignoreLauncherSkipped(rollbackErr); got == nil {
+		t.Fatal("rollback error must not be swallowed by ignoreLauncherSkipped (single-agent exit must be non-zero)")
+	}
+	message := rollbackErr.Error()
+	if !strings.Contains(message, "re-run: preloop agents onboard \"Codex CLI\"") {
+		t.Fatalf("expected onboard re-run hint in error, got %q", message)
+	}
+	if strings.Contains(message, "validate") {
+		t.Fatalf("rollback error must not suggest validate --live, got %q", message)
+	}
+	if !errors.Is(rollbackErr, rollbackErr.Err) {
+		// errors.Is via Unwrap keeps the root cause inspectable.
+		t.Fatal("expected Unwrap to expose the underlying validation error")
+	}
+	// Batch summaries must classify the rollback as failed, with the reason
+	// carried through to the summary table.
+	outcome := classifyAgentOnboardingOutcome(AgentConfig{Name: "Codex CLI"}, rollbackErr)
+	if outcome.Status != agentOnboardingStatusFailed {
+		t.Fatalf("expected failed outcome for rollback, got %q", outcome.Status)
+	}
+	if !strings.Contains(outcome.Reason, "model routing was reverted") {
+		t.Fatalf("expected rollback reason in summary, got %q", outcome.Reason)
 	}
 }
