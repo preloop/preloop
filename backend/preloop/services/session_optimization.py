@@ -803,9 +803,15 @@ class SessionOptimizationService:
             Suggestions ordered by expected token savings.
         """
         suggestions: list[RuntimeSessionOptimizationSuggestion] = []
-        total_tokens = max(summary.token_usage.total_tokens, 1)
-        prompt_tokens = summary.token_usage.prompt_tokens
-        cost_per_token = summary.estimated_cost / total_tokens
+        token_usage = summary.token_usage
+        total_tokens = max(
+            int(token_usage.total_tokens or 0) if token_usage is not None else 0,
+            1,
+        )
+        prompt_tokens = (
+            int(token_usage.prompt_tokens or 0) if token_usage is not None else 0
+        )
+        cost_per_token = float(summary.estimated_cost or 0.0) / total_tokens
         tool_bloat = profile.tool_bloat if profile else None
         cache_profile = profile.cache_profile if profile else None
         retry_profile = profile.retry_profile if profile else None

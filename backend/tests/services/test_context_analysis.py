@@ -244,6 +244,15 @@ class TestIdleCacheExpiry:
         assert provider_cache_idle_ttl_seconds("anthropic") == 300
         assert provider_cache_idle_ttl_seconds("openai") == 600
 
+    def test_provider_ttl_uses_aliases_and_longest_compound_match(self) -> None:
+        assert provider_cache_idle_ttl_seconds("anthropic_bedrock") == 300
+        assert provider_cache_idle_ttl_seconds("azure_openai") == 600
+        assert provider_cache_idle_ttl_seconds("openai_westus") == 600
+        assert provider_cache_idle_ttl_seconds("west_openai") == 600
+        # Substring containment alone must not match.
+        assert provider_cache_idle_ttl_seconds("foopenai") == 300
+        assert provider_cache_idle_ttl_seconds("deepseekish") == 300
+
     def test_idle_gap_with_cache_collapse_is_detected(self) -> None:
         t0 = datetime(2026, 7, 31, 12, 0, tzinfo=UTC)
         base = _conversation("Question one")

@@ -256,22 +256,26 @@ class ModelGatewayEventEmitter:
                 "completion_tokens": usage.completion_tokens,
                 "total_tokens": usage.total_tokens,
                 "estimated_cost": usage.estimated_cost,
-                # Surface the prompt-cache breakdown so the session chat can show
-                # how many input tokens were cache reads (a large share of real
-                # cost). Persisted into usage_details by the gateway's
-                # _normalize_usage. OpenAI nests it under
-                # prompt_tokens_details.cached_tokens; Anthropic reports
-                # cache_read_input_tokens / cache_creation_input_tokens at the
-                # top level.
+                # Prefer authoritative ApiUsage cache columns; fall back to the
+                # raw usage_details snapshot for older rows or nested OpenAI
+                # shapes still useful in prompt_tokens_details.
                 "prompt_tokens_details": (meta_data.get("usage_details") or {}).get(
                     "prompt_tokens_details"
                 ),
-                "cache_read_input_tokens": (meta_data.get("usage_details") or {}).get(
-                    "cache_read_input_tokens"
+                "cache_read_input_tokens": (
+                    usage.cache_read_tokens
+                    if usage.cache_read_tokens is not None
+                    else (meta_data.get("usage_details") or {}).get(
+                        "cache_read_input_tokens"
+                    )
                 ),
                 "cache_creation_input_tokens": (
-                    meta_data.get("usage_details") or {}
-                ).get("cache_creation_input_tokens"),
+                    usage.cache_creation_tokens
+                    if usage.cache_creation_tokens is not None
+                    else (meta_data.get("usage_details") or {}).get(
+                        "cache_creation_input_tokens"
+                    )
+                ),
                 "runtime_session_id": str(usage.runtime_session_id)
                 if usage.runtime_session_id
                 else None,

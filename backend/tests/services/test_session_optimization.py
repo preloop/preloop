@@ -2078,3 +2078,13 @@ class TestSavingsRollupInvariant:
         assert idle.expected_savings_usd == 0.0276
         assert idle.evidence_event_ids == ["e2"]
         assert any("measured extra cost" in item for item in idle.evidence)
+
+    def test_local_suggestions_tolerate_missing_token_usage(self) -> None:
+        """``summary.token_usage`` may be None on sparse explorer rows."""
+        summary = MagicMock()
+        summary.token_usage = None
+        summary.estimated_cost = 0.0
+        summary.failed_requests = 0
+        service = SessionOptimizationService(MagicMock())
+        suggestions = service._local_optimization_suggestions(summary, profile=None)
+        assert isinstance(suggestions, list)

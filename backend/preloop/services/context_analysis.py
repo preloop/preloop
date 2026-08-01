@@ -73,6 +73,20 @@ PROVIDER_CACHE_IDLE_TTL_SECONDS: dict[str, int] = {
     "vertex_ai": 3600,
     "deepseek": 7200,
 }
+# Explicit alternate spellings only. Avoid substring fuzzy matching so a
+# short key like ``azure`` cannot steal a longer compound provider id.
+PROVIDER_CACHE_IDLE_TTL_ALIASES: dict[str, str] = {
+    "anthropic_bedrock": "anthropic",
+    "bedrock_anthropic": "anthropic",
+    "aws_bedrock_anthropic": "anthropic",
+    "amazon_bedrock_anthropic": "anthropic",
+    "openai_azure": "azure_openai",
+    "azureopenai": "azure_openai",
+    "google_ai": "google",
+    "google_genai": "google",
+    "vertex": "vertex_ai",
+    "vertexai": "vertex_ai",
+}
 
 # Write/read multipliers vs base input when the catalog lacks explicit cache
 # prices. Anthropic documents 1.25x write / 0.1x read for the 5m TTL.
@@ -592,24 +606,45 @@ def _diverged_reason(
     return "prefix_extended"
 
 
-def _payload_cache_read_tokens(payload: dict[str, Any]) -> int:
-    usage = payload.get("usage")
+def _payload_cache_token_field(
+    payload: dict[str, Any],
+    *,
+    top_level_keys: tuple[str, ...],
+    details_keys: tuple[str, ...],
+) -> int:
+    """Read the first present integer from known cache-token payload shapes.
+
+    Checks, in order: nested ``usage``, top-level keys, nested
+    ``usage_details``, and ``prompt_tokens_details`` under each.
+
+    Args:
+        payload: Stored gateway-call metadata.
+        top_level_keys: Provider top-level field names (e.g. Anthropic).
+        details_keys: Nested ``prompt_tokens_details`` field names (e.g. OpenAI).
+
+    Returns:
+        First parseable non-``None`` integer, else ``0``.
+    """
     candidates: list[Any] = []
-    if isinstance(usage, dict):
-        candidates.append(usage.get("cache_read_input_tokens"))
-        details = usage.get("prompt_tokens_details")
+
+    def _extend_from_usage_block(block: Any) -> None:
+        if not isinstance(block, dict):
+            return
+        for key in top_level_keys:
+            candidates.append(block.get(key))
+        details = block.get("prompt_tokens_details")
         if isinstance(details, dict):
-            candidates.append(details.get("cached_tokens"))
-    candidates.append(payload.get("cache_read_input_tokens"))
-    usage_details = payload.get("usage_details")
-    if isinstance(usage_details, dict):
-        candidates.append(usage_details.get("cache_read_input_tokens"))
-        details = usage_details.get("prompt_tokens_details")
-        if isinstance(details, dict):
-            candidates.append(details.get("cached_tokens"))
+            for key in details_keys:
+                candidates.append(details.get(key))
+
+    _extend_from_usage_block(payload.get("usage"))
+    for key in top_level_keys:
+        candidates.append(payload.get(key))
+    _extend_from_usage_block(payload.get("usage_details"))
     details = payload.get("prompt_tokens_details")
     if isinstance(details, dict):
-        candidates.append(details.get("cached_tokens"))
+        for key in details_keys:
+            candidates.append(details.get(key))
     for candidate in candidates:
         try:
             if candidate is not None:
@@ -617,34 +652,24 @@ def _payload_cache_read_tokens(payload: dict[str, Any]) -> int:
         except (TypeError, ValueError):
             continue
     return 0
+
+
+def _payload_cache_read_tokens(payload: dict[str, Any]) -> int:
+    """Extract cache-read tokens from a stored gateway payload."""
+    return _payload_cache_token_field(
+        payload,
+        top_level_keys=("cache_read_input_tokens",),
+        details_keys=("cached_tokens",),
+    )
 
 
 def _payload_cache_creation_tokens(payload: dict[str, Any]) -> int:
     """Extract cache-creation (write) tokens from a stored gateway payload."""
-    usage = payload.get("usage")
-    candidates: list[Any] = []
-    if isinstance(usage, dict):
-        candidates.append(usage.get("cache_creation_input_tokens"))
-        details = usage.get("prompt_tokens_details")
-        if isinstance(details, dict):
-            candidates.append(details.get("cache_creation_tokens"))
-    candidates.append(payload.get("cache_creation_input_tokens"))
-    usage_details = payload.get("usage_details")
-    if isinstance(usage_details, dict):
-        candidates.append(usage_details.get("cache_creation_input_tokens"))
-        details = usage_details.get("prompt_tokens_details")
-        if isinstance(details, dict):
-            candidates.append(details.get("cache_creation_tokens"))
-    details = payload.get("prompt_tokens_details")
-    if isinstance(details, dict):
-        candidates.append(details.get("cache_creation_tokens"))
-    for candidate in candidates:
-        try:
-            if candidate is not None:
-                return int(candidate)
-        except (TypeError, ValueError):
-            continue
-    return 0
+    return _payload_cache_token_field(
+        payload,
+        top_level_keys=("cache_creation_input_tokens",),
+        details_keys=("cache_creation_tokens",),
+    )
 
 
 def _event_cache_read_tokens(event: GatewayCallEvent) -> int:
@@ -668,6 +693,10 @@ def _normalize_provider_name(provider: Optional[str]) -> str:
 def provider_cache_idle_ttl_seconds(provider_name: Optional[str]) -> int:
     """Return the idle TTL used for idle-expiry detection for a provider.
 
+    Resolution order: exact table key, explicit alias map, then longest-first
+    prefix/suffix compound match (``anthropic_bedrock``, ``foo_openai``).
+    Substring containment is intentionally not used.
+
     Args:
         provider_name: Provider identifier from ApiUsage / event payload.
 
@@ -675,11 +704,18 @@ def provider_cache_idle_ttl_seconds(provider_name: Optional[str]) -> int:
         TTL in seconds. Defaults conservatively to Anthropic's 5-minute TTL.
     """
     normalized = _normalize_provider_name(provider_name)
+    if not normalized:
+        return DEFAULT_CACHE_IDLE_TTL_SECONDS
     if normalized in PROVIDER_CACHE_IDLE_TTL_SECONDS:
         return PROVIDER_CACHE_IDLE_TTL_SECONDS[normalized]
-    for key, ttl in PROVIDER_CACHE_IDLE_TTL_SECONDS.items():
-        if key in normalized or normalized.startswith(f"{key}_"):
-            return ttl
+    alias = PROVIDER_CACHE_IDLE_TTL_ALIASES.get(normalized)
+    if alias is not None:
+        return PROVIDER_CACHE_IDLE_TTL_SECONDS.get(
+            alias, DEFAULT_CACHE_IDLE_TTL_SECONDS
+        )
+    for key in sorted(PROVIDER_CACHE_IDLE_TTL_SECONDS, key=len, reverse=True):
+        if normalized.startswith(f"{key}_") or normalized.endswith(f"_{key}"):
+            return PROVIDER_CACHE_IDLE_TTL_SECONDS[key]
     return DEFAULT_CACHE_IDLE_TTL_SECONDS
 
 

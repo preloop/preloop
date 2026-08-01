@@ -16,6 +16,7 @@ import type {
   RuntimeSessionOptimizationAppliedAction,
   RuntimeSessionOptimizationResponse,
   RuntimeSessionReplayResponse,
+  SessionCacheProfile,
   SessionContextProfileSegment,
 } from '../types';
 import type {
@@ -1290,15 +1291,15 @@ export class SessionOptimizationPanel extends LitElement {
    * Copy stays per-session and tied to ApiUsage-backed detector output.
    */
   private renderIdleExpirySummary() {
-    const cacheProfile = this.optimization?.context_profile?.cache_profile as
-      Record<string, unknown> | null | undefined;
+    const cacheProfile: SessionCacheProfile | null | undefined =
+      this.optimization?.context_profile?.cache_profile;
     if (!cacheProfile) return nothing;
     const events = Array.isArray(cacheProfile.idle_expiry_events)
       ? cacheProfile.idle_expiry_events
       : [];
     if (!events.length) return nothing;
     const expiryCost = Number(
-      cacheProfile.measured_idle_expiry_extra_cost_usd || 0
+      cacheProfile.measured_idle_expiry_extra_cost_usd ?? 0
     );
     const sessionCost = Number(
       this.optimization?.analyzed_scope_estimated_cost ??

@@ -20,6 +20,7 @@ import type {
   RuntimeSessionInteractionSummary,
   RuntimeSessionOptimizationAppliedAction,
   RuntimeSessionOptimizationResponse,
+  SessionCacheIdleExpiryEvent,
 } from '../types';
 import type {
   ObservedSession,
@@ -265,6 +266,12 @@ export class SessionReplayPanel extends LitElement {
 
   /** Set once a fetch has been attempted, so a failure is not retried in a loop. */
   private exampleOptimizationRequested = false;
+
+  /** Memoized idle-expiry map keyed by the current optimizationResult reference. */
+  private idleExpiryByEventIdCache: {
+    source: RuntimeSessionOptimizationResponse | null;
+    map: Map<string, ChatTurnIdleExpiry>;
+  } | null = null;
 
   @state()
   private visibleActivityCount = 20;
@@ -4260,29 +4267,42 @@ export class SessionReplayPanel extends LitElement {
   /**
    * Idle-TTL expiry annotations keyed by activity/event id, from the latest
    * optimize context profile (measured ApiUsage-backed detector output).
+   * Memoized against the current ``optimizationResult`` object identity.
    */
   private getIdleExpiryByEventId(): Map<string, ChatTurnIdleExpiry> {
+    if (
+      this.idleExpiryByEventIdCache &&
+      this.idleExpiryByEventIdCache.source === this.optimizationResult
+    ) {
+      return this.idleExpiryByEventIdCache.map;
+    }
     const byId = new Map<string, ChatTurnIdleExpiry>();
-    const cacheProfile = this.optimizationResult?.context_profile
-      ?.cache_profile as Record<string, unknown> | null | undefined;
-    const events = Array.isArray(cacheProfile?.idle_expiry_events)
-      ? cacheProfile.idle_expiry_events
+    const events: SessionCacheIdleExpiryEvent[] = Array.isArray(
+      this.optimizationResult?.context_profile?.cache_profile
+        ?.idle_expiry_events
+    )
+      ? this.optimizationResult!.context_profile!.cache_profile!
+          .idle_expiry_events!
       : [];
-    for (const raw of events) {
-      if (!raw || typeof raw !== 'object') continue;
-      const event = raw as Record<string, unknown>;
-      const eventId =
-        typeof event.event_id === 'string' ? event.event_id : null;
-      if (!eventId) continue;
-      const idleSeconds = Number(event.idle_seconds || 0);
-      const rewrittenTokens = Number(event.rewritten_tokens || 0);
+    for (const event of events) {
+      if (!event || typeof event.event_id !== 'string') continue;
+      const idleSeconds = Number(event.idle_seconds ?? 0);
+      const rewrittenTokens = Number(event.rewritten_tokens ?? 0);
       const extraRaw = event.measured_extra_cost_usd;
       const extraCostUsd =
         typeof extraRaw === 'number' && Number.isFinite(extraRaw)
           ? extraRaw
           : null;
-      byId.set(eventId, { idleSeconds, extraCostUsd, rewrittenTokens });
+      byId.set(event.event_id, {
+        idleSeconds,
+        extraCostUsd,
+        rewrittenTokens,
+      });
     }
+    this.idleExpiryByEventIdCache = {
+      source: this.optimizationResult,
+      map: byId,
+    };
     return byId;
   }
 

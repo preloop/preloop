@@ -46,6 +46,12 @@ def exclude_replay_usage_condition():
     )
 
 
+# Cap for :meth:`CRUDApiUsage.get_by_ids` so a pathological caller cannot
+# build an unbounded ``IN`` clause. Matches the gateway-activity payload
+# load cap used by context analysis.
+_MAX_GET_BY_IDS = 100
+
+
 class CRUDApiUsage(CRUDBase[ApiUsage]):
     """CRUD operations for API usage tracking."""
 
@@ -58,6 +64,9 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
     ) -> List[ApiUsage]:
         """Fetch ApiUsage rows by id, optionally scoped to an account.
 
+        Invalid UUID strings are skipped. At most ``_MAX_GET_BY_IDS`` unique
+        ids are queried.
+
         Args:
             db: Database session.
             ids: ApiUsage primary keys to load.
@@ -68,7 +77,22 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         """
         if not ids:
             return []
-        query = db.query(self.model).filter(self.model.id.in_(list(ids)))
+        parsed: list[uuid.UUID] = []
+        seen: set[uuid.UUID] = set()
+        for raw in ids:
+            try:
+                value = raw if isinstance(raw, uuid.UUID) else uuid.UUID(str(raw))
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if value in seen:
+                continue
+            seen.add(value)
+            parsed.append(value)
+            if len(parsed) >= _MAX_GET_BY_IDS:
+                break
+        if not parsed:
+            return []
+        query = db.query(self.model).filter(self.model.id.in_(parsed))
         if account_id is not None:
             query = query.filter(self.model.account_id == account_id)
         return query.all()
