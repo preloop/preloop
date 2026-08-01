@@ -92,6 +92,11 @@ def format_question_notice(
     answer on the human's behalf).
     """
     lines: List[str] = []
+    # ``is_question`` is a server-controlled marker: it is injected into the
+    # approval arguments by the server-side ask_user builtin
+    # (initialize_mcp.py), never taken from agent-supplied input. It only
+    # affects presentation (question wording vs. approval wording); an
+    # unexpected caller setting it cannot change any governance behavior.
     if tool_name == "ask_user" or arguments.get("is_question"):
         question = str(arguments.get("question") or "").strip()
         lines.append("[Preloop] Question for the human operator:")

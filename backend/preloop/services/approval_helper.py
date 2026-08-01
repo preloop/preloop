@@ -7,7 +7,7 @@ with real-time progress updates via FastMCP Context.
 import asyncio
 import logging
 import os
-from typing import Optional, Tuple
+from typing import NamedTuple, Optional, Tuple
 
 from fastmcp import Context
 from preloop.models import models
@@ -20,27 +20,34 @@ logger = logging.getLogger(__name__)
 _QUESTION_TOOLS = frozenset({"ask_user", "request_approval"})
 
 
-def _session_context_for_in_band() -> tuple[
-    Optional[str], Optional[str], Optional[str]
-]:
-    """Best-effort (runtime_session_id, managed_agent_id, user_id) lookup.
+class _InBandSessionContext(NamedTuple):
+    """Session identity used to route in-band question delivery."""
 
-    Reads the MCP request's user context when available. Returns Nones for
-    non-MCP callers (flows, tests) — in-band delivery simply degrades to the
-    remote channels.
+    runtime_session_id: Optional[str]
+    managed_agent_id: Optional[str]
+    user_id: Optional[str]
+
+
+def _session_context_for_in_band() -> _InBandSessionContext:
+    """Best-effort lookup of the asking session's identity.
+
+    Reads the MCP request's user context when available. Returns all-``None``
+    for non-MCP callers (flows, tests) — in-band delivery simply degrades to
+    the remote channels.
     """
+    empty = _InBandSessionContext(None, None, None)
     try:
         from preloop.services.dynamic_fastmcp_http import get_current_user_context
 
         user_context = get_current_user_context()
     except Exception:  # pragma: no cover - context lookup is optional
-        return (None, None, None)
+        return empty
     if not user_context:
-        return (None, None, None)
-    return (
-        getattr(user_context, "runtime_session_id", None),
-        getattr(user_context, "managed_agent_id", None),
-        getattr(user_context, "user_id", None),
+        return empty
+    return _InBandSessionContext(
+        runtime_session_id=getattr(user_context, "runtime_session_id", None),
+        managed_agent_id=getattr(user_context, "managed_agent_id", None),
+        user_id=getattr(user_context, "user_id", None),
     )
 
 
@@ -49,7 +56,7 @@ async def _deliver_question_in_band(
     tool_name: str,
     arguments: dict,
     account_id: str,
-    approval_request,
+    approval_request: "models.ApprovalRequest",
     base_url: str,
 ) -> bool:
     """Best-effort in-session delivery of a pending question (issue #130).
@@ -64,8 +71,8 @@ async def _deliver_question_in_band(
             deliver_question_to_session,
         )
 
-        runtime_session_id, managed_agent_id, user_id = _session_context_for_in_band()
-        if not runtime_session_id and not managed_agent_id:
+        session_ctx = _session_context_for_in_band()
+        if not session_ctx.runtime_session_id and not session_ctx.managed_agent_id:
             return False
         return await deliver_question_to_session(
             account_id=str(account_id),
@@ -74,9 +81,9 @@ async def _deliver_question_in_band(
             arguments=arguments,
             console_url=approval_console_url(base_url, approval_request.id),
             mobile_link=approval_mobile_deep_link(approval_request.id),
-            runtime_session_id=runtime_session_id,
-            managed_agent_id=managed_agent_id,
-            user_id=user_id,
+            runtime_session_id=session_ctx.runtime_session_id,
+            managed_agent_id=session_ctx.managed_agent_id,
+            user_id=session_ctx.user_id,
             expires_at=getattr(approval_request, "expires_at", None),
         )
     except Exception:
