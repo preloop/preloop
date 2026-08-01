@@ -86,6 +86,8 @@ class TestListAllTools:
         for tool in result:
             expected = tool["name"] not in default_disabled
             assert tool["is_enabled"] is expected
+            assert isinstance(tool["schema_tokens_estimate"], int)
+            assert tool["schema_tokens_estimate"] > 0
 
     async def test_default_disabled_tool_enabled_by_config(
         self, mock_db, mock_user, mock_account, mocker
@@ -131,6 +133,7 @@ class TestListAllTools:
         config.mcp_server_id = None
         config.is_enabled = False
         config.approval_workflow_id = workflow_id
+        config.justification_mode = None
 
         # Mock CRUD operations
         mocker.patch(
@@ -150,6 +153,50 @@ class TestListAllTools:
         get_issue_tool = next(t for t in result if t["name"] == "get_issue")
         assert get_issue_tool["is_enabled"] is False
         assert get_issue_tool["approval_workflow_id"] == str(workflow_id)
+
+    async def test_list_tools_schema_tokens_include_justification(
+        self, mock_db, mock_user, mock_account, mocker
+    ):
+        """Required justification increases the served schema token estimate."""
+        config = MagicMock(spec=ToolConfiguration)
+        config.id = uuid.uuid4()
+        config.tool_name = "get_issue"
+        config.tool_source = "builtin"
+        config.mcp_server_id = None
+        config.is_enabled = True
+        config.approval_workflow_id = None
+        config.justification_mode = "required"
+
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_tool_configuration.get_multi_by_account",
+            return_value=[config],
+        )
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_mcp_server.get_active_by_account",
+            return_value=[],
+        )
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_tool_access_rule.get_multi_by_account",
+            return_value=[],
+        )
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_tracker.get_for_account",
+            return_value=[],
+        )
+
+        with_justification = tools.list_all_tools(
+            account=mock_account, current_user=mock_user, db=mock_db
+        )
+        justified = next(t for t in with_justification if t["name"] == "get_issue")
+
+        config.justification_mode = None
+        without = tools.list_all_tools(
+            account=mock_account, current_user=mock_user, db=mock_db
+        )
+        plain = next(t for t in without if t["name"] == "get_issue")
+
+        assert justified["schema_tokens_estimate"] > plain["schema_tokens_estimate"]
+        assert justified["justification_mode"] == "required"
 
     async def test_list_tools_with_mcp_servers(
         self, mock_db, mock_user, mock_account, mocker

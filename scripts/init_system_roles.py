@@ -180,6 +180,12 @@ SYSTEM_PERMISSIONS: Dict[str, List[Dict[str, str]]] = {
             "name": "manage_budgets",
             "description": "Create and manage budget policies and limits",
         },
+        {
+            "name": "import_usage",
+            "description": (
+                "Import externally observed usage/spend into cost analytics"
+            ),
+        },
     ],
     "agents": [
         {

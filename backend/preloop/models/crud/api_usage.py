@@ -1850,5 +1850,259 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         )
         return float(value or 0.0)
 
+    # ------------------------------------------------------------------
+    # Imported (observed) usage — spend the gateway cannot see (issue #123)
+    # ------------------------------------------------------------------
+    #
+    # Imported rows use ``action_type='imported_usage'`` so every gateway
+    # aggregation above (summaries, budgets, spend caps, accounting health),
+    # which filters on ``action_type == 'model_gateway'``, is structurally
+    # unable to mix imported spend into gateway-metered spend. Budget-bucket
+    # accumulation is deliberately NOT performed for imported rows.
+
+    IMPORTED_USAGE_ACTION_TYPE = "imported_usage"
+
+    #: Unique partial index enforcing per-account fingerprint dedupe in the DB.
+    IMPORTED_FINGERPRINT_INDEX = "ix_api_usage_imported_fingerprint_uniq"
+
+    def _imported_fingerprint_exists(
+        self, db: Session, *, account_id: str, import_fingerprint: str
+    ) -> bool:
+        """Return True when the account already has a row with this fingerprint.
+
+        This is a fast-path check only; the authoritative guard is the
+        unique partial index ``ix_api_usage_imported_fingerprint_uniq``,
+        which closes the check-then-insert race under concurrent imports.
+        """
+        exists = (
+            db.query(ApiUsage.id)
+            .filter(
+                ApiUsage.account_id == account_id,
+                ApiUsage.action_type == self.IMPORTED_USAGE_ACTION_TYPE,
+                ApiUsage.meta_data["import_fingerprint"].astext == import_fingerprint,
+            )
+            .first()
+        )
+        return exists is not None
+
+    def log_imported_usage_event(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        user_id: Optional[str] = None,
+        timestamp: datetime,
+        model_alias: str,
+        source: str,
+        prompt_tokens: Optional[int] = None,
+        completion_tokens: Optional[int] = None,
+        total_tokens: Optional[int] = None,
+        cache_read_tokens: Optional[int] = None,
+        cache_creation_tokens: Optional[int] = None,
+        cost_usd: Optional[float] = None,
+        runtime_principal_type: Optional[str] = None,
+        runtime_principal_id: Optional[str] = None,
+        runtime_principal_name: Optional[str] = None,
+        import_fingerprint: Optional[str] = None,
+        meta_data: Optional[Dict[str, Any]] = None,
+        commit: bool = True,
+    ) -> Optional[ApiUsage]:
+        """Record one imported usage event in the cost ledger.
+
+        Args:
+            db: Database session.
+            account_id: Owning account id.
+            user_id: Importing user's id, for audit.
+            timestamp: When the usage occurred at the source vendor.
+            model_alias: Source-reported model name (e.g. ``composer``).
+            source: Origin label (e.g. ``cursor``); stored in
+                ``meta_data.import_source``.
+            prompt_tokens: Input tokens reported by the source.
+            completion_tokens: Output tokens reported by the source.
+            total_tokens: Total tokens; derived from prompt+completion when
+                absent.
+            cache_read_tokens: Cache-read tokens reported by the source.
+            cache_creation_tokens: Cache-write tokens reported by the source.
+            cost_usd: Amount the source vendor charged, in USD. Stored in
+                ``estimated_cost`` with ``cost_source='imported'``.
+            runtime_principal_type: Managed-agent principal type attribution.
+            runtime_principal_id: Managed-agent principal id attribution.
+            runtime_principal_name: Managed-agent display name attribution.
+            import_fingerprint: Stable dedupe key; when a row with the same
+                fingerprint already exists for the account, the event is
+                skipped and ``None`` is returned (re-importing the same CSV
+                must not double-count spend). Enforced by the unique partial
+                index ``ix_api_usage_imported_fingerprint_uniq``, so two
+                concurrent imports of the same event cannot both land.
+            meta_data: Extra keys merged into the stored ``meta_data``.
+            commit: When False, flush only so callers can batch commits.
+
+        Returns:
+            The created row, or ``None`` when skipped as a duplicate.
+        """
+        if import_fingerprint and self._imported_fingerprint_exists(
+            db, account_id=account_id, import_fingerprint=import_fingerprint
+        ):
+            return None
+
+        if total_tokens is None and (
+            prompt_tokens is not None or completion_tokens is not None
+        ):
+            total_tokens = (prompt_tokens or 0) + (completion_tokens or 0)
+
+        merged_meta: Dict[str, Any] = dict(meta_data or {})
+        merged_meta["import_source"] = source
+        if import_fingerprint:
+            merged_meta["import_fingerprint"] = import_fingerprint
+
+        db_obj = ApiUsage(
+            user_id=user_id,
+            account_id=account_id,
+            endpoint=f"/usage/import/{source}",
+            method="POST",
+            status_code=200,
+            duration=0.0,
+            action_type=self.IMPORTED_USAGE_ACTION_TYPE,
+            model_alias=model_alias,
+            provider_name=source,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_creation_tokens=cache_creation_tokens,
+            estimated_cost=cost_usd,
+            currency="USD" if cost_usd is not None else None,
+            cost_source="imported" if cost_usd is not None else None,
+            usage_source="imported",
+            runtime_principal_type=runtime_principal_type,
+            runtime_principal_id=runtime_principal_id,
+            runtime_principal_name=runtime_principal_name,
+            meta_data=merged_meta,
+            timestamp=timestamp,
+        )
+        # Insert inside a savepoint so a unique-index violation (a concurrent
+        # import of the same event committed between the fast-path check and
+        # this insert) skips just this row and leaves the batch usable.
+        try:
+            with db.begin_nested():
+                db.add(db_obj)
+                db.flush()
+        except IntegrityError as exc:
+            if self.IMPORTED_FINGERPRINT_INDEX not in str(exc.orig):
+                raise
+            return None
+        if commit:
+            db.commit()
+            db.refresh(db_obj)
+        return db_obj
+
+    def get_imported_usage_summary(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        start_date: datetime,
+        end_date: datetime,
+        runtime_principal_id: Optional[str] = None,
+        source: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Aggregate imported usage totals for an account in a window.
+
+        Args:
+            db: Database session.
+            account_id: Account whose imported usage is aggregated.
+            start_date: Inclusive lower bound on event timestamp.
+            end_date: Exclusive upper bound on event timestamp.
+            runtime_principal_id: Restrict to one managed-agent principal.
+            source: Restrict to one import source label (e.g. ``cursor``).
+
+        Returns:
+            Dict with ``event_count``, ``total_tokens``, ``imported_cost``.
+        """
+        query = db.query(
+            func.count(ApiUsage.id).label("event_count"),
+            func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
+            func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
+                "imported_cost"
+            ),
+        ).filter(
+            ApiUsage.action_type == self.IMPORTED_USAGE_ACTION_TYPE,
+            ApiUsage.account_id == account_id,
+            ApiUsage.timestamp >= start_date,
+            ApiUsage.timestamp < end_date,
+        )
+        if runtime_principal_id:
+            query = query.filter(ApiUsage.runtime_principal_id == runtime_principal_id)
+        if source:
+            query = query.filter(ApiUsage.meta_data["import_source"].astext == source)
+        row = query.one()
+        return {
+            "event_count": int(row.event_count or 0),
+            "total_tokens": int(row.total_tokens or 0),
+            "imported_cost": float(row.imported_cost or 0.0),
+        }
+
+    def get_imported_usage_by_model(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        start_date: datetime,
+        end_date: datetime,
+        runtime_principal_id: Optional[str] = None,
+        source: Optional[str] = None,
+        limit: Optional[int] = 20,
+    ) -> List[Dict[str, Any]]:
+        """Group imported usage by source-reported model.
+
+        Args:
+            db: Database session.
+            account_id: Account whose imported usage is aggregated.
+            start_date: Inclusive lower bound on event timestamp.
+            end_date: Exclusive upper bound on event timestamp.
+            runtime_principal_id: Restrict to one managed-agent principal.
+            source: Restrict to one import source label.
+            limit: Maximum grouped rows, ordered by event count descending.
+
+        Returns:
+            One dict per (model, source) group with counts, tokens, cost.
+        """
+        import_source = ApiUsage.meta_data["import_source"].astext
+        query = db.query(
+            ApiUsage.model_alias,
+            import_source.label("source"),
+            func.count(ApiUsage.id).label("request_count"),
+            func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
+            func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
+                "imported_cost"
+            ),
+            func.max(ApiUsage.timestamp).label("last_event_at"),
+        ).filter(
+            ApiUsage.action_type == self.IMPORTED_USAGE_ACTION_TYPE,
+            ApiUsage.account_id == account_id,
+            ApiUsage.timestamp >= start_date,
+            ApiUsage.timestamp < end_date,
+        )
+        if runtime_principal_id:
+            query = query.filter(ApiUsage.runtime_principal_id == runtime_principal_id)
+        if source:
+            query = query.filter(import_source == source)
+        query = query.group_by(ApiUsage.model_alias, import_source).order_by(
+            func.count(ApiUsage.id).desc()
+        )
+        if limit is not None:
+            query = query.limit(limit)
+        return [
+            {
+                "model_alias": row.model_alias,
+                "source": row.source,
+                "request_count": int(row.request_count or 0),
+                "total_tokens": int(row.total_tokens or 0),
+                "imported_cost": float(row.imported_cost or 0.0),
+                "last_event_at": row.last_event_at,
+            }
+            for row in query.all()
+        ]
+
 
 crud_api_usage = CRUDApiUsage(ApiUsage)
