@@ -6,7 +6,7 @@ from datetime import datetime
 # Use TYPE_CHECKING to avoid circular imports
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, func
+from sqlalchemy import CheckConstraint, ForeignKey, Index, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Boolean, DateTime, Float, Integer, String
@@ -170,6 +170,18 @@ class ApiUsage(Base):
             "runtime_principal_id",
             "timestamp",
             postgresql_ops={"timestamp": "DESC"},
+        ),
+        # Imported-usage dedupe is enforced at the DB level: concurrent
+        # imports of the same event race past the application-level
+        # existence check under READ COMMITTED, so uniqueness of the
+        # fingerprint per account is the source of truth. NULL fingerprints
+        # are distinct, so fingerprint-less rows never conflict.
+        Index(
+            "ix_api_usage_imported_fingerprint_uniq",
+            "account_id",
+            text("(meta_data->>'import_fingerprint')"),
+            unique=True,
+            postgresql_where=text("action_type = 'imported_usage'"),
         ),
     )
 

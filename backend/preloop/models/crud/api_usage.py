@@ -1838,6 +1838,29 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
 
     IMPORTED_USAGE_ACTION_TYPE = "imported_usage"
 
+    #: Unique partial index enforcing per-account fingerprint dedupe in the DB.
+    IMPORTED_FINGERPRINT_INDEX = "ix_api_usage_imported_fingerprint_uniq"
+
+    def _imported_fingerprint_exists(
+        self, db: Session, *, account_id: str, import_fingerprint: str
+    ) -> bool:
+        """Return True when the account already has a row with this fingerprint.
+
+        This is a fast-path check only; the authoritative guard is the
+        unique partial index ``ix_api_usage_imported_fingerprint_uniq``,
+        which closes the check-then-insert race under concurrent imports.
+        """
+        exists = (
+            db.query(ApiUsage.id)
+            .filter(
+                ApiUsage.account_id == account_id,
+                ApiUsage.action_type == self.IMPORTED_USAGE_ACTION_TYPE,
+                ApiUsage.meta_data["import_fingerprint"].astext == import_fingerprint,
+            )
+            .first()
+        )
+        return exists is not None
+
     def log_imported_usage_event(
         self,
         db: Session,
@@ -1884,26 +1907,19 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             import_fingerprint: Stable dedupe key; when a row with the same
                 fingerprint already exists for the account, the event is
                 skipped and ``None`` is returned (re-importing the same CSV
-                must not double-count spend).
+                must not double-count spend). Enforced by the unique partial
+                index ``ix_api_usage_imported_fingerprint_uniq``, so two
+                concurrent imports of the same event cannot both land.
             meta_data: Extra keys merged into the stored ``meta_data``.
             commit: When False, flush only so callers can batch commits.
 
         Returns:
             The created row, or ``None`` when skipped as a duplicate.
         """
-        if import_fingerprint:
-            exists = (
-                db.query(ApiUsage.id)
-                .filter(
-                    ApiUsage.account_id == account_id,
-                    ApiUsage.action_type == self.IMPORTED_USAGE_ACTION_TYPE,
-                    ApiUsage.meta_data["import_fingerprint"].astext
-                    == import_fingerprint,
-                )
-                .first()
-            )
-            if exists is not None:
-                return None
+        if import_fingerprint and self._imported_fingerprint_exists(
+            db, account_id=account_id, import_fingerprint=import_fingerprint
+        ):
+            return None
 
         if total_tokens is None and (
             prompt_tokens is not None or completion_tokens is not None
@@ -1940,12 +1956,20 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             meta_data=merged_meta,
             timestamp=timestamp,
         )
-        db.add(db_obj)
+        # Insert inside a savepoint so a unique-index violation (a concurrent
+        # import of the same event committed between the fast-path check and
+        # this insert) skips just this row and leaves the batch usable.
+        try:
+            with db.begin_nested():
+                db.add(db_obj)
+                db.flush()
+        except IntegrityError as exc:
+            if self.IMPORTED_FINGERPRINT_INDEX not in str(exc.orig):
+                raise
+            return None
         if commit:
             db.commit()
             db.refresh(db_obj)
-        else:
-            db.flush()
         return db_obj
 
     def get_imported_usage_summary(

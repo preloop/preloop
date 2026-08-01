@@ -104,6 +104,59 @@ def test_duplicate_fingerprint_is_skipped(db_session, create_account):
     assert summary["event_count"] == 1
 
 
+def test_db_index_closes_dedupe_race(db_session, create_account, monkeypatch):
+    """The unique partial index catches duplicates the fast-path check missed.
+
+    Simulates the TOCTOU interleaving: a concurrent import commits the same
+    fingerprint after this transaction's existence check ran. Disabling the
+    fast-path check forces the insert to hit the DB index, which must skip
+    the row (return None) instead of double-recording spend or breaking the
+    session/batch.
+    """
+    account = create_account()
+
+    first = _log_imported(
+        db_session, account_id=account.id, import_fingerprint="fp-race"
+    )
+    assert first is not None
+
+    monkeypatch.setattr(
+        crud_api_usage,
+        "_imported_fingerprint_exists",
+        lambda *args, **kwargs: False,
+    )
+    second = _log_imported(
+        db_session, account_id=account.id, import_fingerprint="fp-race"
+    )
+
+    assert second is None
+    # The session survives the caught unique violation: further writes and
+    # reads in the same batch still work.
+    third = _log_imported(
+        db_session, account_id=account.id, import_fingerprint="fp-race-other"
+    )
+    assert third is not None
+
+    summary = crud_api_usage.get_imported_usage_summary(
+        db_session,
+        account_id=str(account.id),
+        start_date=_utcnow_naive() - timedelta(hours=1),
+        end_date=_utcnow_naive() + timedelta(hours=1),
+    )
+    assert summary["event_count"] == 2
+
+
+def test_fingerprintless_rows_never_conflict(db_session, create_account):
+    """Rows without a fingerprint are exempt from the unique index (NULLs)."""
+    account = create_account()
+
+    first = _log_imported(db_session, account_id=account.id)
+    second = _log_imported(db_session, account_id=account.id)
+
+    assert first is not None
+    assert second is not None
+
+
 def test_same_fingerprint_in_other_account_still_lands(db_session, create_account):
     """Dedupe is account-scoped; another account may carry the same key."""
     account_a = create_account()

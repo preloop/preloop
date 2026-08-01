@@ -14,6 +14,7 @@ and imported spend can never be silently mixed.
 from typing import Sequence, Union
 
 from alembic import op
+from sqlalchemy import text
 
 # revision identifiers, used by Alembic.
 revision: str = "20260731_usage_imported"
@@ -27,7 +28,19 @@ assert _ALEMBIC_IDENTIFIERS, "Alembic revision metadata must be defined"
 
 
 def upgrade() -> None:
-    """Extend the marker CHECK constraints with the 'imported' value."""
+    """Extend the marker CHECK constraints and add the dedupe unique index."""
+    # DB-level dedupe for imported usage: a unique partial index on
+    # (account_id, meta_data->>'import_fingerprint') closes the TOCTOU race
+    # between the application's existence check and the insert under
+    # concurrent imports. NULL fingerprints are distinct, so rows imported
+    # without a fingerprint never conflict.
+    op.create_index(
+        "ix_api_usage_imported_fingerprint_uniq",
+        "api_usage",
+        ["account_id", text("(meta_data->>'import_fingerprint')")],
+        unique=True,
+        postgresql_where=text("action_type = 'imported_usage'"),
+    )
     op.drop_constraint("ck_api_usage_cost_source", "api_usage", type_="check")
     op.drop_constraint("ck_api_usage_usage_source", "api_usage", type_="check")
     op.create_check_constraint(
@@ -47,6 +60,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Restore the previous marker CHECK constraints (clearing 'imported')."""
+    op.execute("DROP INDEX IF EXISTS ix_api_usage_imported_fingerprint_uniq")
     op.execute("UPDATE api_usage SET cost_source = NULL WHERE cost_source = 'imported'")
     op.execute(
         "UPDATE api_usage SET usage_source = NULL WHERE usage_source = 'imported'"
