@@ -535,6 +535,22 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         )
 
         if not answered:
+            # Async-approval workflows return immediately with a pending
+            # payload (request id + deep links + polling instructions); pass
+            # it through untouched so the agent surfaces the link and polls
+            # rather than concluding the user answered nothing.
+            if answer and answer.lstrip().startswith("{"):
+                try:
+                    import json as _json
+
+                    payload = _json.loads(answer)
+                except ValueError:
+                    payload = None
+                if (
+                    isinstance(payload, dict)
+                    and payload.get("status") == "pending_approval"
+                ):
+                    return answer
             # Declined / cancelled / timed out — no answer was provided.
             return f"No answer provided: {answer}" if answer else "No answer provided."
 
@@ -971,6 +987,10 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                         tool_name = approval_request.tool_name
                         tool_args = approval_request.tool_args or {}
                         req_id = approval_request.id
+                        # ask_user replay: the approver's comment IS the
+                        # human's answer — capture it before releasing the
+                        # lock so the re-executed tool can return it.
+                        approver_comment = approval_request.approver_comment
                         approval_request.tool_result = {"_executing": True}
                         await db.commit()
 
@@ -992,10 +1012,12 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                         result_preview: Optional[str] = None
                         try:
                             from preloop.services.dynamic_fastmcp import (
+                                _approved_comment_var,
                                 _bypass_approval_var,
                             )
 
                             _bypass_approval_var.set(True)
+                            _approved_comment_var.set(approver_comment)
                             try:
                                 # Try internal (namespaced) name first, fall
                                 # back to original name for built-in tools.
@@ -1020,6 +1042,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                                         raise
                             finally:
                                 _bypass_approval_var.set(False)
+                                _approved_comment_var.set(None)
 
                             # Normalise the result to a JSON-safe dict
                             if hasattr(tool_result, "model_dump"):

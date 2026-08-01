@@ -46,8 +46,56 @@ def exclude_replay_usage_condition():
     )
 
 
+# Cap for :meth:`CRUDApiUsage.get_by_ids` so a pathological caller cannot
+# build an unbounded ``IN`` clause. Matches the gateway-activity payload
+# load cap used by context analysis.
+_MAX_GET_BY_IDS = 100
+
+
 class CRUDApiUsage(CRUDBase[ApiUsage]):
     """CRUD operations for API usage tracking."""
+
+    def get_by_ids(
+        self,
+        db: Session,
+        *,
+        ids: Sequence[Union[uuid.UUID, str]],
+        account_id: Optional[Union[uuid.UUID, str]] = None,
+    ) -> List[ApiUsage]:
+        """Fetch ApiUsage rows by id, optionally scoped to an account.
+
+        Invalid UUID strings are skipped. At most ``_MAX_GET_BY_IDS`` unique
+        ids are queried.
+
+        Args:
+            db: Database session.
+            ids: ApiUsage primary keys to load.
+            account_id: When set, restrict to this account's rows.
+
+        Returns:
+            Matching rows (order not guaranteed).
+        """
+        if not ids:
+            return []
+        parsed: list[uuid.UUID] = []
+        seen: set[uuid.UUID] = set()
+        for raw in ids:
+            try:
+                value = raw if isinstance(raw, uuid.UUID) else uuid.UUID(str(raw))
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if value in seen:
+                continue
+            seen.add(value)
+            parsed.append(value)
+            if len(parsed) >= _MAX_GET_BY_IDS:
+                break
+        if not parsed:
+            return []
+        query = db.query(self.model).filter(self.model.id.in_(parsed))
+        if account_id is not None:
+            query = query.filter(self.model.account_id == account_id)
+        return query.all()
 
     def log_request(
         self,
@@ -139,6 +187,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         cost_source: Optional[str] = None,
         usage_source: Optional[str] = None,
         is_retry: Optional[bool] = None,
+        error_class: Optional[str] = None,
         runtime_principal_type: Optional[str] = None,
         runtime_principal_id: Optional[str] = None,
         runtime_principal_name: Optional[str] = None,
@@ -175,6 +224,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             cost_source=cost_source,
             usage_source=usage_source,
             is_retry=is_retry,
+            error_class=error_class,
             runtime_principal_type=runtime_principal_type,
             runtime_principal_id=runtime_principal_id,
             runtime_principal_name=runtime_principal_name,

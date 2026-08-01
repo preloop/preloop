@@ -31,6 +31,11 @@ from preloop.models.crud import (
     crud_runtime_session,
     crud_runtime_session_optimization_action,
     crud_runtime_session_optimization_result,
+    crud_tool_configuration,
+)
+from preloop.models.schemas.tool_configuration import (
+    ToolConfigurationCreate,
+    ToolConfigurationUpdate,
 )
 from preloop.models.models.account import Account
 from preloop.models.models.ai_model import AIModel
@@ -49,6 +54,12 @@ from preloop.schemas.gateway_usage import (
 )
 from preloop.services.account_governance_cache import (
     invalidate_account_governance_cache,
+)
+from preloop.services.builtin_tool_optimizer import (
+    BUILTIN_USAGE_WINDOW_DAYS,
+    UnusedBuiltinPartition,
+    invocation_counts_by_tool,
+    partition_unused_tools,
 )
 from preloop.services.context_analysis import (
     GatewayCallEvent,
@@ -76,6 +87,8 @@ from preloop.services.model_pricing import estimate_ai_model_usage_cost
 from preloop.services.model_runtime_resolver import resolve_ai_model_runtime
 from preloop.services.openai_gateway import OpenAIGatewayService
 from preloop.services.runtime_session_explorer import RuntimeSessionExplorerService
+from preloop.services.tool_schema_tokens import estimate_tool_schema_tokens
+from preloop.services.tool_usage_stats import ToolUsageStatsService
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +114,7 @@ LLM_SKIPPED_MODEL_EMPTY = "model_empty_response"
 
 # Server-applicable action types; open_events is resolved client-side.
 ACTION_SCOPE_TOOLS = "scope_tools"
+ACTION_DISABLE_BUILTIN_TOOLS = "disable_builtin_tools"
 ACTION_SET_BUDGET = "set_budget"
 ACTION_OPEN_EVENTS = "open_events"
 ACTION_ENABLE_COMPRESSION = "enable_compression"
@@ -108,6 +122,7 @@ ACTION_CAP_TOOL_RESULTS = "cap_tool_results"
 ACTION_MANAGE_OUTPUT_FILTER = "manage_output_filter"
 APPLYABLE_ACTION_TYPES = (
     ACTION_SCOPE_TOOLS,
+    ACTION_DISABLE_BUILTIN_TOOLS,
     ACTION_SET_BUDGET,
     ACTION_ENABLE_COMPRESSION,
     ACTION_CAP_TOOL_RESULTS,
@@ -197,7 +212,9 @@ class SessionOptimizationService:
             limit=GATEWAY_EVENT_LOAD_LIMIT,
         )
         profile = build_profile_from_events(runtime_session_id, gateway_events)
-        suggestions = self._local_optimization_suggestions(summary, profile)
+        suggestions = self._local_optimization_suggestions(
+            summary, profile, account=account
+        )
         llm_skipped_reason: Optional[str] = None
         if fast_model is not None and self._daily_optimization_cap_reached(account):
             logger.info(
@@ -459,6 +476,11 @@ class SessionOptimizationService:
             if profile and profile.tool_schema_overhead
             else []
         )
+        partition = self._partition_unused_for_account(account, profile)
+        tier1_builtins = list(partition.tier1_builtin_names) if partition else []
+        scope_tools = (
+            list(partition.scope_raw_names) if partition is not None else unused_tools
+        )
         suggested_budget = max(
             round(summary.estimated_cost * BUDGET_SUGGESTION_MULTIPLIER, 2), 1.0
         )
@@ -522,7 +544,13 @@ class SessionOptimizationService:
                     },
                 )
                 continue
-            if suggestion.id == "scope-tools" and agent_id and unused_tools:
+            if suggestion.id == "disable-builtin-tools" and tier1_builtins:
+                suggestion.action = RuntimeSessionOptimizationActionSpec(
+                    type=ACTION_DISABLE_BUILTIN_TOOLS,
+                    params={"tool_names": tier1_builtins},
+                )
+                continue
+            if suggestion.id == "scope-tools" and agent_id and scope_tools:
                 suggestion.action = RuntimeSessionOptimizationActionSpec(
                     type=ACTION_SCOPE_TOOLS,
                     params={
@@ -530,7 +558,7 @@ class SessionOptimizationService:
                         "subject_id": agent_id,
                         "subject_name": summary.runtime_principal_name
                         or summary.session_source_type,
-                        "tool_names": unused_tools,
+                        "tool_names": scope_tools,
                     },
                 )
             elif suggestion.id == "budget-guardrail" and agent_id:
@@ -554,7 +582,8 @@ class SessionOptimizationService:
                 inferred = self._infer_model_suggestion_action(
                     suggestion,
                     agent_id=agent_id,
-                    unused_tools=unused_tools,
+                    unused_tools=scope_tools,
+                    tier1_builtins=tier1_builtins,
                     top_oversized_field=top_oversized_field,
                     summary=summary,
                     suggested_budget=suggested_budget,
@@ -573,6 +602,7 @@ class SessionOptimizationService:
         *,
         agent_id: Optional[str],
         unused_tools: list[str],
+        tier1_builtins: list[str],
         top_oversized_field: Optional[Any],
         summary: RuntimeSessionSummary,
         suggested_budget: float,
@@ -587,7 +617,10 @@ class SessionOptimizationService:
         Args:
             suggestion: The model-authored suggestion.
             agent_id: Resolved managed-agent id, if any.
-            unused_tools: Advertised-but-unused tool names from the profile.
+            unused_tools: Advertised-but-unused tool names left for scope_tools
+                after carving out tier-1 builtins.
+            tier1_builtins: Bare builtin names with zero account-wide
+                invocations (account-wide disable candidates).
             top_oversized_field: Bulkiest droppable tool-output field, if any.
             summary: Session summary (for subject naming).
             suggested_budget: Suggested daily hard budget in USD.
@@ -615,6 +648,23 @@ class SessionOptimizationService:
                     "suggested_fields": list(top_oversized_field.field_names),
                     "managed_agent_id": agent_id,
                 },
+            )
+        # Account-wide disable of unused Preloop builtins when tier-1 evidence
+        # exists and the suggestion text targets builtins / Preloop tools.
+        targets_builtins = any(kw in text for kw in ("builtin", "built-in", "preloop"))
+        if (
+            not is_caching
+            and tier1_builtins
+            and targets_builtins
+            and "tool" in text
+            and any(
+                kw in text
+                for kw in ("unused", "advertised", "disable", "remove", "never")
+            )
+        ):
+            return RuntimeSessionOptimizationActionSpec(
+                type=ACTION_DISABLE_BUILTIN_TOOLS,
+                params={"tool_names": tier1_builtins},
             )
         # Disable advertised-but-unused tools (never for caching suggestions).
         if (
@@ -787,10 +837,124 @@ class SessionOptimizationService:
                 "Failed to cache session optimization response", exc_info=True
             )
 
+    def _builtin_catalog_names(self) -> set[str]:
+        """Return bare names from the BUILTIN_TOOLS catalog."""
+        from preloop.api.endpoints.tools import BUILTIN_TOOLS
+
+        return {
+            str(tool["name"])
+            for tool in BUILTIN_TOOLS
+            if isinstance(tool, dict) and tool.get("name")
+        }
+
+    def _builtin_catalog_by_name(self) -> dict[str, dict[str, Any]]:
+        """Return BUILTIN_TOOLS keyed by bare name."""
+        from preloop.api.endpoints.tools import BUILTIN_TOOLS
+
+        return {
+            str(tool["name"]): tool
+            for tool in BUILTIN_TOOLS
+            if isinstance(tool, dict) and tool.get("name")
+        }
+
+    def _partition_unused_for_account(
+        self,
+        account: Optional[Account],
+        profile: Optional[SessionContextProfile],
+    ) -> Optional[UnusedBuiltinPartition]:
+        """Tier unused tools using account-wide invocation stats.
+
+        Args:
+            account: Owning account; when missing, no partition is produced.
+            profile: Session context profile with unused tool names.
+
+        Returns:
+            Partition, or ``None`` when there is nothing to split.
+        """
+        if account is None or profile is None or profile.tool_schema_overhead is None:
+            return None
+        unused = list(profile.tool_schema_overhead.unused_tool_names)
+        if not unused:
+            return None
+        unused_tokens = dict(profile.tool_schema_overhead.unused_tool_tokens or {})
+        # Backfill tokens when older cached profiles omit the per-tool map.
+        unused_total = profile.tool_schema_overhead.unused_schema_tokens_estimate
+        if not unused_tokens and unused_total:
+            # Fall back to equal split only for action attachment; suggestion
+            # builders always see fresh profiles with unused_tool_tokens.
+            per = unused_total // max(len(unused), 1)
+            unused_tokens = {name: per for name in unused}
+        try:
+            end = datetime.now(timezone.utc)
+            start = end - timedelta(days=BUILTIN_USAGE_WINDOW_DAYS)
+            usage_rows = ToolUsageStatsService(self.db).get_account_usage_by_tool(
+                account_id=str(account.id),
+                start_date=start,
+                end_date=end,
+            )
+            counts = invocation_counts_by_tool(usage_rows)
+        except Exception:
+            logger.warning(
+                "Failed to load account tool usage for builtin disable tiering; "
+                "skipping account-wide disable recommendation",
+                exc_info=True,
+            )
+            # Without corroboration, keep everything on the agent-scoped path.
+            return UnusedBuiltinPartition(
+                tier1_raw_names=[],
+                tier1_builtin_names=[],
+                scope_raw_names=unused,
+                tier1_session_tokens=0,
+                scope_session_tokens=int(
+                    profile.tool_schema_overhead.unused_schema_tokens_estimate or 0
+                ),
+            )
+        return partition_unused_tools(
+            unused,
+            builtin_names=self._builtin_catalog_names(),
+            unused_tool_tokens=unused_tokens,
+            invocation_counts=counts,
+        )
+
+    def _catalog_schema_tokens_estimate(
+        self, tool_name: str, *, account: Optional[Account]
+    ) -> int:
+        """Estimate one-request schema tokens for a builtin via PR #140 helper.
+
+        Args:
+            tool_name: Bare builtin name.
+            account: Optional account for justification_mode lookup.
+
+        Returns:
+            Estimated schema tokens including justification injection when set.
+        """
+        catalog = self._builtin_catalog_by_name()
+        meta = catalog.get(tool_name)
+        if meta is None:
+            return 0
+        justification_mode: Optional[str] = None
+        if account is not None:
+            existing = crud_tool_configuration.get_by_tool_name_and_source(
+                self.db,
+                account_id=str(account.id),
+                tool_name=tool_name,
+                tool_source="builtin",
+            )
+            if existing is not None:
+                justification_mode = existing.justification_mode
+        return estimate_tool_schema_tokens(
+            name=tool_name,
+            description=str(meta.get("description") or ""),
+            schema=meta.get("schema") if isinstance(meta.get("schema"), dict) else None,
+            justification_mode=justification_mode,
+        )
+
     def _local_optimization_suggestions(
         self,
         summary: RuntimeSessionSummary,
         profile: Optional[SessionContextProfile] = None,
+        *,
+        account: Optional[Account] = None,
     ) -> list[RuntimeSessionOptimizationSuggestion]:
         """Build deterministic suggestions grounded in measured context waste.
 
@@ -798,18 +962,27 @@ class SessionOptimizationService:
             summary: Stored usage totals for the session.
             profile: Evidence-grounded context profile; savings estimates come
                 from its measured token counts instead of fixed multipliers.
+            account: Owning account; used to corroborate account-wide builtin
+                disable recommendations against 30-day tool usage stats.
 
         Returns:
             Suggestions ordered by expected token savings.
         """
         suggestions: list[RuntimeSessionOptimizationSuggestion] = []
-        total_tokens = max(summary.token_usage.total_tokens, 1)
-        prompt_tokens = summary.token_usage.prompt_tokens
-        cost_per_token = summary.estimated_cost / total_tokens
+        token_usage = summary.token_usage
+        total_tokens = max(
+            int(token_usage.total_tokens or 0) if token_usage is not None else 0,
+            1,
+        )
+        prompt_tokens = (
+            int(token_usage.prompt_tokens or 0) if token_usage is not None else 0
+        )
+        cost_per_token = float(summary.estimated_cost or 0.0) / total_tokens
         tool_bloat = profile.tool_bloat if profile else None
         cache_profile = profile.cache_profile if profile else None
         retry_profile = profile.retry_profile if profile else None
         schema_overhead = profile.tool_schema_overhead if profile else None
+        partition = self._partition_unused_for_account(account, profile)
 
         duplicate_tokens = tool_bloat.duplicate_output_tokens if tool_bloat else 0
         compressible_tokens = (
@@ -920,50 +1093,100 @@ class SessionOptimizationService:
                 )
             )
         if schema_overhead and schema_overhead.unused_schema_tokens_estimate > 0:
-            suggestions.append(
-                RuntimeSessionOptimizationSuggestion(
-                    id="scope-tools",
-                    title="Scope down advertised tools",
-                    description=(
-                        f"{len(schema_overhead.unused_tool_names)} of "
-                        f"{schema_overhead.advertised_tools} advertised tools "
-                        "were never called this session yet their schemas are "
-                        "re-sent on every request, costing ~"
-                        f"{schema_overhead.unused_schema_tokens_estimate:,} tokens "
-                        f"across {max(schema_overhead.resend_count, 1)} request(s)"
-                        + (
-                            " ("
-                            + ", ".join(schema_overhead.unused_tool_names[:4])
-                            + ")"
-                            if schema_overhead.unused_tool_names
-                            else ""
-                        )
-                        + ". Restrict tool visibility for this agent."
-                    ),
-                    # NOT multiplied by resend_count: analyze_tool_schema_overhead
-                    # already accumulates each advertised schema once per request
-                    # that carried it, so this estimate is resend-inclusive.
-                    # Multiplying again made the figure quadratic in request count
-                    # and pushed reported savings above 100% of analyzed tokens.
-                    expected_savings_tokens=(
-                        schema_overhead.unused_schema_tokens_estimate
-                    ),
-                    expected_savings_usd=round(
-                        schema_overhead.unused_schema_tokens_estimate * cost_per_token,
-                        6,
-                    ),
-                    confidence="high",
-                    action_label="Scope tool access",
-                    evidence=[
-                        (
-                            f"{len(schema_overhead.unused_tool_names)} of "
-                            f"{schema_overhead.advertised_tools} advertised "
-                            "tools never invoked"
-                        ),
-                        "Unused: " + ", ".join(schema_overhead.unused_tool_names[:5]),
-                    ],
-                )
+            # Carve unused Preloop builtins with zero account-wide invocations
+            # into a separate account-wide disable suggestion so the same
+            # schema tokens are never counted twice (#146).
+            tier1_names = partition.tier1_builtin_names if partition else []
+            tier1_tokens = partition.tier1_session_tokens if partition else 0
+            scope_names = (
+                partition.scope_raw_names
+                if partition is not None
+                else list(schema_overhead.unused_tool_names)
             )
+            scope_tokens = (
+                partition.scope_session_tokens
+                if partition is not None
+                else schema_overhead.unused_schema_tokens_estimate
+            )
+            if tier1_names and tier1_tokens > 0:
+                evidence = [
+                    (
+                        f"Account-wide window: last {BUILTIN_USAGE_WINDOW_DAYS} "
+                        "days; invocation_count = 0 for each listed builtin"
+                    ),
+                ]
+                for bare_name in tier1_names[:8]:
+                    catalog_tokens = self._catalog_schema_tokens_estimate(
+                        bare_name, account=account
+                    )
+                    evidence.append(
+                        (
+                            f"{bare_name}: invocation_count = 0; "
+                            f"schema_tokens_estimate = {catalog_tokens}"
+                        )
+                    )
+                suggestions.append(
+                    RuntimeSessionOptimizationSuggestion(
+                        id="disable-builtin-tools",
+                        title="Disable unused Preloop builtin tools",
+                        description=(
+                            f"{len(tier1_names)} Preloop builtin tool(s) were "
+                            "advertised this session but have zero invocations "
+                            f"account-wide over the last "
+                            f"{BUILTIN_USAGE_WINDOW_DAYS} days, yet their "
+                            "schemas are re-sent on every request, costing ~"
+                            f"{tier1_tokens:,} tokens across "
+                            f"{max(schema_overhead.resend_count, 1)} request(s) "
+                            f"({', '.join(tier1_names[:4])}). Disable them "
+                            "account-wide so every agent stops paying the "
+                            "schema tax; re-enable anytime on the Tools page."
+                        ),
+                        # NOT multiplied by resend_count: already resend-inclusive.
+                        expected_savings_tokens=tier1_tokens,
+                        expected_savings_usd=round(tier1_tokens * cost_per_token, 6),
+                        confidence="high",
+                        action_label="Disable builtins account-wide",
+                        evidence=evidence,
+                    )
+                )
+            if scope_names and scope_tokens > 0:
+                suggestions.append(
+                    RuntimeSessionOptimizationSuggestion(
+                        id="scope-tools",
+                        title="Scope down advertised tools",
+                        description=(
+                            f"{len(scope_names)} of "
+                            f"{schema_overhead.advertised_tools} advertised tools "
+                            "were never called this session yet their schemas are "
+                            "re-sent on every request, costing ~"
+                            f"{scope_tokens:,} tokens "
+                            f"across {max(schema_overhead.resend_count, 1)} request(s)"
+                            + (
+                                " (" + ", ".join(scope_names[:4]) + ")"
+                                if scope_names
+                                else ""
+                            )
+                            + ". Restrict tool visibility for this agent."
+                        ),
+                        # NOT multiplied by resend_count: analyze_tool_schema_overhead
+                        # already accumulates each advertised schema once per request
+                        # that carried it, so this estimate is resend-inclusive.
+                        # Multiplying again made the figure quadratic in request count
+                        # and pushed reported savings above 100% of analyzed tokens.
+                        expected_savings_tokens=scope_tokens,
+                        expected_savings_usd=round(scope_tokens * cost_per_token, 6),
+                        confidence="high",
+                        action_label="Scope tool access",
+                        evidence=[
+                            (
+                                f"{len(scope_names)} of "
+                                f"{schema_overhead.advertised_tools} advertised "
+                                "tools never invoked"
+                            ),
+                            "Unused: " + ", ".join(scope_names[:5]),
+                        ],
+                    )
+                )
         if cache_profile and cache_profile.cache_breaking_events:
             breaking = cache_profile.cache_breaking_events
             wasted_prefix_tokens = cache_profile.avg_repeated_prefix_tokens * len(
@@ -990,6 +1213,47 @@ class SessionOptimizationService:
                         + ", ".join(sorted({event.reason_hint for event in breaking})),
                     ],
                     evidence_event_ids=[event.event_id for event in breaking],
+                )
+            )
+        if cache_profile and cache_profile.idle_expiry_events:
+            idle_events = cache_profile.idle_expiry_events
+            idle_tokens = cache_profile.measured_idle_expiry_tokens
+            # Write-vs-read differential from catalog prices x ApiUsage
+            # cache_creation_tokens. Never invent a USD figure from session
+            # average cost when catalog prices are missing.
+            idle_cost = round(cache_profile.measured_idle_expiry_extra_cost_usd, 6)
+            priced_events = sum(
+                1 for event in idle_events if event.measured_extra_cost_usd is not None
+            )
+            suggestions.append(
+                RuntimeSessionOptimizationSuggestion(
+                    id="reduce-idle-cache-expiry",
+                    title="Avoid idle prompt-cache expiry",
+                    description=(
+                        "This session paused long enough for the provider "
+                        "prompt cache to expire, then re-paid cache WRITE on "
+                        "an unchanged prefix. Keep the session warmer than "
+                        "the provider TTL, or use a longer cache TTL where "
+                        "the provider supports it."
+                    ),
+                    expected_savings_tokens=idle_tokens,
+                    expected_savings_usd=idle_cost,
+                    confidence="high",
+                    action_label="Inspect idle cache expiries",
+                    evidence=[
+                        (
+                            f"{len(idle_events)} idle cache "
+                            f"expir{'y' if len(idle_events) == 1 else 'ies'}"
+                        ),
+                        f"{idle_tokens} tokens re-written after TTL lapse",
+                        (
+                            f"measured extra cost ${idle_cost:.4f} "
+                            f"({priced_events}/{len(idle_events)} expiries priced)"
+                            if priced_events
+                            else "extra cost unavailable (no catalog cache prices)"
+                        ),
+                    ],
+                    evidence_event_ids=[event.event_id for event in idle_events],
                 )
             )
         if summary.failed_requests or (retry_profile and retry_profile.failed_requests):
@@ -1488,6 +1752,10 @@ class SessionOptimizationService:
             )
         if action.type == ACTION_SCOPE_TOOLS:
             result = self._apply_scope_tools(account=account, params=action.params)
+        elif action.type == ACTION_DISABLE_BUILTIN_TOOLS:
+            result = self._apply_disable_builtin_tools(
+                account=account, params=action.params
+            )
         elif action.type in (ACTION_ENABLE_COMPRESSION, ACTION_CAP_TOOL_RESULTS):
             result = self._apply_context_optimization_settings(
                 account=account, params=action.params
@@ -1593,6 +1861,92 @@ class SessionOptimizationService:
             "subject_type": subject_type,
             "subject_id": subject_id,
             "disabled_tools": tool_names,
+        }
+
+    def _apply_disable_builtin_tools(
+        self, *, account: Account, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Disable Preloop builtins account-wide via ToolConfiguration rows.
+
+        Upserts ``tool_source="builtin"`` rows with ``is_enabled=False``. Never
+        touches rows with any other ``tool_source`` (including ``agent`` from
+        PR #132). Idempotent for already-disabled rows.
+
+        Args:
+            account: Account whose tool configurations are updated.
+            params: ``tool_names`` list of bare builtin names.
+
+        Returns:
+            Result payload listing the disabled tool names (revert via Tools
+            page re-enable).
+
+        Raises:
+            HTTPException: On empty list or unknown (non-builtin) tool names.
+        """
+        tool_names = [
+            str(name).strip()
+            for name in (params.get("tool_names") or [])
+            if str(name).strip()
+        ]
+        if not tool_names:
+            raise HTTPException(
+                status_code=400,
+                detail="disable_builtin_tools requires tool_names",
+            )
+        builtin_names = self._builtin_catalog_names()
+        unknown = sorted({name for name in tool_names if name not in builtin_names})
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "disable_builtin_tools only accepts Preloop builtin names; "
+                    f"unknown: {', '.join(unknown)}"
+                ),
+            )
+        # Deduplicate while preserving order.
+        ordered_unique: list[str] = []
+        seen: set[str] = set()
+        for name in tool_names:
+            if name in seen:
+                continue
+            seen.add(name)
+            ordered_unique.append(name)
+
+        disabled: list[str] = []
+        for tool_name in ordered_unique:
+            existing = crud_tool_configuration.get_by_tool_name_and_source(
+                self.db,
+                account_id=str(account.id),
+                tool_name=tool_name,
+                tool_source="builtin",
+            )
+            if existing is not None:
+                # Strict keying on tool_source="builtin" already; never flip
+                # agent-approval or MCP rows.
+                if existing.is_enabled:
+                    update_in = ToolConfigurationUpdate(is_enabled=False)  # type: ignore[call-arg]
+                    crud_tool_configuration.update(
+                        self.db,
+                        db_obj=existing,
+                        config_in=update_in,
+                    )
+                disabled.append(tool_name)
+                continue
+            create_in = ToolConfigurationCreate(
+                tool_name=tool_name,
+                tool_source="builtin",
+                account_id=str(account.id),
+                mcp_server_id=None,
+                is_enabled=False,
+            )  # type: ignore[call-arg]
+            crud_tool_configuration.create(self.db, config_in=create_in)
+            disabled.append(tool_name)
+        return {
+            "disabled_tools": disabled,
+            "tool_source": "builtin",
+            "revert_hint": (
+                "Re-enable these tools from the Tools page (toggle is_enabled back on)."
+            ),
         }
 
     def _apply_context_optimization_settings(

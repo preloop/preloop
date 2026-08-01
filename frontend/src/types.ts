@@ -684,13 +684,38 @@ export interface SessionContextProfileSegment {
   sample_excerpt?: string | null;
 }
 
+/** One measured idle-TTL prompt-cache expiry from context analysis. */
+export interface SessionCacheIdleExpiryEvent {
+  event_id: string;
+  previous_event_id: string;
+  api_usage_id?: string | null;
+  idle_seconds: number;
+  provider_ttl_seconds?: number;
+  provider_name?: string | null;
+  rewritten_tokens?: number;
+  previous_cache_read_tokens?: number;
+  current_cache_read_tokens?: number;
+  measured_extra_cost_usd?: number | null;
+}
+
+export interface SessionCacheProfile {
+  avg_repeated_prefix_tokens?: number;
+  repeated_prefix_share?: number;
+  prefix_stability?: string;
+  cache_breaking_events?: Array<Record<string, unknown>>;
+  measured_cache_read_tokens?: number;
+  idle_expiry_events?: SessionCacheIdleExpiryEvent[];
+  measured_idle_expiry_tokens?: number;
+  measured_idle_expiry_extra_cost_usd?: number;
+}
+
 export interface SessionContextProfileData {
   session_id: string;
   analyzed_event_count: number;
   total_prompt_tokens: number;
   total_completion_tokens: number;
   segments?: SessionContextProfileSegment[];
-  cache_profile?: Record<string, unknown> | null;
+  cache_profile?: SessionCacheProfile | null;
   retry_profile?: Record<string, unknown> | null;
   tool_bloat?: Record<string, unknown> | null;
   tool_schema_overhead?: Record<string, unknown> | null;

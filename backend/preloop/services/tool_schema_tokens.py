@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 from typing import Any, Mapping, Optional
 
 from preloop.services.context_optimization import estimate_tokens
+
+logger = logging.getLogger(__name__)
 
 # Keep in sync with dynamic_fastmcp.list_tools justification injection.
 _JUSTIFICATION_PROPERTY: dict[str, Any] = {
@@ -91,8 +94,14 @@ def estimate_tool_schema_tokens(
         "description": description or "",
         "parameters": served_schema,
     }
+    # Strict JSON only: default=str would coerce non-serializable values into
+    # strings and silently under/over-count tokens. Fail closed to 0 instead.
     try:
-        schema_json = json.dumps(definition, default=str, sort_keys=True)
+        schema_json = json.dumps(definition, sort_keys=True)
     except (TypeError, ValueError):
-        schema_json = ""
+        logger.warning(
+            "Could not serialize schema for tool %r; returning 0 token estimate",
+            name,
+        )
+        return 0
     return int(estimate_tokens(schema_json))

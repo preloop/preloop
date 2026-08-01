@@ -117,6 +117,9 @@ class ApiUsage(Base):
     rate_limit_retry_after_ms: Mapped[Optional[int]] = mapped_column(
         Integer, nullable=True
     )
+    # Stable upstream-failure taxonomy (network, upstream_overloaded, …).
+    # NULL on successes and non-upstream failures (validation, budget denials).
+    error_class: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     runtime_principal_type: Mapped[Optional[str]] = mapped_column(
         String(64), nullable=True
     )
