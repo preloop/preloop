@@ -223,10 +223,12 @@ func mcpOnlyAgentModelNote(agent AgentConfig) string {
 	case strings.EqualFold(strings.TrimSpace(agent.Name), "cursor"):
 		return mcpOnlySupportLabel + ": Cursor tool calls are governed through " +
 			"Preloop's MCP firewall. Cursor only accepts a custom model base URL via " +
-			"its in-app Settings → Models (global, chat-only, no config-file hook), " +
-			"so Preloop does not rewrite model traffic automatically. To route model " +
-			"spend through Preloop, set the OpenAI base URL override in Cursor " +
-			"settings to your Preloop gateway URL manually."
+			"its in-app Settings → Models (global, no config-file hook), so Preloop " +
+			"does not rewrite model traffic automatically. Setting the OpenAI base " +
+			"URL override there to your Preloop gateway URL routes the AI panel's " +
+			"third-party model calls (Ask/Plan and Agent modes) through Preloop; " +
+			"Tab, inline edit, and Cursor-billed bundled models stay on Cursor's " +
+			"backend."
 	case strings.EqualFold(strings.TrimSpace(agent.Name), "claude desktop"):
 		return mcpOnlySupportLabel + ": Claude Desktop tool calls are governed " +
 			"through Preloop's MCP firewall. Claude Desktop's model traffic is fixed " +
@@ -1784,6 +1786,14 @@ func runAgentsValidate(cmd *cobra.Command, args []string) error {
 func runAgentsInstallPlugin(cmd *cobra.Command, args []string) error {
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	agentName := strings.Join(args, " ")
+	if runtimeSessionSourceTypeForAgent(agentName) == hermesSourceType {
+		// Hermes' `plugins install` only accepts Git URLs or owner/repo
+		// shorthands, so the marketplace command can never install the
+		// PyPI-distributed Preloop plugin. The working path is a pip install
+		// into Hermes' own virtualenv followed by a plugin enable, so both
+		// --dry-run output and the real install go straight there.
+		return runAgentsInstallHermesPlugin(cmd, agentName, dryRun)
+	}
 	installCommand, installArgs, err := agentControlPluginInstallCommand(agentName)
 	if err != nil {
 		return err
@@ -1845,25 +1855,6 @@ func runAgentsInstallPlugin(cmd *cobra.Command, args []string) error {
 				)
 			}
 		}
-		if runtimeSessionSourceTypeForAgent(agent.Name) == hermesSourceType {
-			// Hermes' `plugins install` only accepts Git URLs or owner/repo
-			// shorthands; the Preloop plugin ships on PyPI, so fall back to a
-			// pip install into Hermes' Python environment.
-			if installed, pipError := installHermesPluginViaPip(
-				agentControlPluginInstallTarget(agent),
-				cmd.ErrOrStderr(),
-			); installed {
-				fmt.Fprintf(
-					cmd.OutOrStdout(),
-					"\nInstalled %s via pip. Run `preloop agents validate %s` to verify plugin load and control readiness.\n",
-					agentControlPluginPackageName(agent),
-					agentName,
-				)
-				return nil
-			} else if pipError != "" {
-				message = fmt.Sprintf("%s (pip fallback also failed: %s)", message, pipError)
-			}
-		}
 		_, remediation := classifyRuntimePluginInstallFailure(installCommand, message)
 		if remediation != "" {
 			return fmt.Errorf(
@@ -1878,6 +1869,41 @@ func runAgentsInstallPlugin(cmd *cobra.Command, args []string) error {
 		cmd.OutOrStdout(),
 		"\nInstalled %s. Run `preloop agents validate %s` to verify plugin load and control readiness.\n",
 		agentControlPluginPackageName(AgentConfig{Name: agentName}),
+		agentName,
+	)
+	return nil
+}
+
+// runAgentsInstallHermesPlugin installs the Preloop Hermes plugin directly via
+// pip into Hermes' virtualenv (discovered from the `Install directory:` line
+// of `hermes --version`). Hermes' marketplace installer cannot resolve PyPI
+// package names, and the system Python rejects installs on PEP 668
+// (externally-managed-environment) distributions, so the venv pip is the only
+// working path. On --dry-run this prints the actual working command.
+func runAgentsInstallHermesPlugin(cmd *cobra.Command, agentName string, dryRun bool) error {
+	agent := AgentConfig{Name: agentName}
+	installTarget := agentControlPluginInstallTarget(agent)
+	if installTarget == "" {
+		return fmt.Errorf(
+			"standalone Preloop runtime plugin target for %s was not found",
+			agentName,
+		)
+	}
+	if dryRun {
+		fmt.Fprintf(cmd.OutOrStdout(), "%s\n", hermesManualPluginInstallCommand(installTarget))
+		return nil
+	}
+	if installed, pipError := installHermesPluginViaPip(installTarget, cmd.ErrOrStderr()); !installed {
+		return fmt.Errorf(
+			"failed to install Preloop runtime plugin: %s\nManual fix: run `%s`, then restart Hermes (`hermes gateway restart`).",
+			pipError,
+			hermesManualPluginInstallCommand(installTarget),
+		)
+	}
+	fmt.Fprintf(
+		cmd.OutOrStdout(),
+		"\nInstalled %s into Hermes' virtualenv via pip. Run `preloop agents validate %s` to verify plugin load and control readiness.\n",
+		agentControlPluginPackageName(agent),
 		agentName,
 	)
 	return nil

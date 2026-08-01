@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   governed approval surfaces; first answer wins and late answers get an
   already-resolved response.
 
+- **Passkey (WebAuthn) sign-in and registration**: register passkeys in user
+  settings and sign in from the login page with discoverable credentials (no
+  username needed). Feature-flagged via `PASSKEYS_ENABLED` (default `true`);
+  relying party and origin overridable with `WEBAUTHN_RP_ID` and
+  `WEBAUTHN_ORIGIN`. Passkey logins are audit-logged and trigger the same
+  inactivity notifications as password logins.
+
 ### Fixed
 
 - **ask_user approve→execute handoff**: replaying an approved `ask_user`
@@ -26,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   human's answer) as the tool result instead of losing it; async-workflow
   pending payloads pass through to the agent instead of being misreported
   as "No answer provided".
+
+- **Sessions no longer expire aggressively**: refresh failures caused by
+  transient errors (5xx, network) no longer clear tokens and force re-login;
+  only definitive 401/403 does. OAuth logins now store refresh tokens.
+  Active sessions slide up to a 30-day cap.
 
 ## [0.13.1] - 2026-07-28
 

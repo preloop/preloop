@@ -950,12 +950,15 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 
 	var liveValidationErr error
 	liveValidationGatewayVerified := false
+	liveValidationKeepsGatewayConfig := false
+	liveValidationRolledBack := false
 	if requestedLiveValidation {
 		liveOutcome, err := runManagedAgentLiveValidation(client, agent, validationResult)
 		if liveOutcome != nil && len(liveOutcome.ValidationResult) > 0 {
 			validationResult = liveOutcome.ValidationResult
 		}
 		liveValidationGatewayVerified = liveValidationStatusGatewayVerified(validationResult)
+		liveValidationKeepsGatewayConfig = liveValidationStatusKeepsGatewayConfig(validationResult)
 		if liveOutcome != nil && liveOutcome.Attempted {
 			// A probe the upstream provider refused (rate limit, billing) is
 			// inconclusive, not a failure: the static config checks passed and
@@ -979,14 +982,16 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 			liveValidationErr = err
 		}
 	}
-	if liveValidationErr != nil && liveValidationGatewayVerified {
+	if liveValidationErr != nil && liveValidationKeepsGatewayConfig {
 		// A 429 (or a billing refusal) proves the durable credential
 		// authenticated at the gateway and the request reached the upstream
 		// provider — the wiring works, the provider just declined to serve this
 		// probe. Rolling back the gateway config here would discard a working
 		// onboarding over a condition that has nothing to do with it (and
 		// re-running onboarding to "fix" it only sends more probes into the
-		// same rate limiter / empty wallet).
+		// same rate limiter / empty wallet). The same holds for a transient
+		// upstream 5xx that survived the retry budget: keeping the gateway
+		// config in place is what keeps ``validate --live`` re-runnable.
 		quotedName := shellQuoteAgentName(resolveAgentDisplayName(agent))
 		fmt.Fprintf(
 			output,
@@ -1020,6 +1025,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 			isOpenCodeAgent(agent) ||
 			isHermesAgent(agent) ||
 			isOpenClawAgent(agent) {
+			liveValidationRolledBack = true
 			clearManagedGatewayValidationFlags(validationResult)
 			plan.ManagedModelAlias = ""
 			plan.ManagedProviderName = ""
@@ -1036,7 +1042,11 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	}
 	dedupeManagedAgentControlSidecar(agent, pluginInstallResult)
 
-	fmt.Printf("✓ Onboarded %s\n", resolveAgentDisplayName(agent))
+	fmt.Println(onboardingCompletionHeadline(
+		resolveAgentDisplayName(agent),
+		liveValidationErr,
+		liveValidationRolledBack,
+	))
 	fmt.Printf("  Managed agent: %s (%s)\n", managedAgent.ID, runtimePrincipalIDForAgent(agent))
 	if len(serverSync.Added) > 0 {
 		fmt.Printf(
@@ -1096,20 +1106,44 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	}
 	fmt.Printf("  Config updated: %s\n", agent.ConfigPath)
 	fmt.Printf("  Backup saved: %s\n", backupState.BackupPath)
+	if liveValidationErr != nil && liveValidationRolledBack {
+		// The gateway routing was reverted to the pre-onboarding provider, so
+		// ``preloop agents validate <agent> --live`` can never succeed anymore
+		// (the managed gateway provider is gone from the config). Be LOUD
+		// about the rollback, point at re-running onboarding (never at
+		// ``validate``), and surface a typed error so single-agent
+		// invocations exit non-zero instead of pretending everything worked.
+		fmt.Printf(
+			"  Warning: live validation failed and model routing was reverted to the previous provider: %v\n",
+			liveValidationErr,
+		)
+		fmt.Printf(
+			"           MCP onboarding remains in place, but managed model routing is NOT active.\n",
+		)
+		fmt.Printf(
+			"           Fix the failure above, then re-run: preloop agents onboard %s\n",
+			shellQuoteAgentName(resolveAgentDisplayName(agent)),
+		)
+		return &liveValidationRollbackError{
+			AgentName: resolveAgentDisplayName(agent),
+			Err:       liveValidationErr,
+		}
+	}
 	if liveValidationErr != nil {
-		// Live validation is informational and runs by default for every
-		// supported agent — its failure mode must NOT abort sibling agents
-		// during ``--all`` onboarding, nor exit non-zero for a single
-		// onboard, because the onboarding itself succeeded (account state
-		// applied, config rewritten, backup saved). The failure status is
-		// already persisted to ``validation_result`` and surfaces in the
-		// console UI as "Live check failed", and ``preloop agents validate
-		// <agent> --live`` is the dedicated command for "exit non-zero on
-		// live-validate failure" semantics. Print a clear warning with a
-		// recovery hint and continue.
+		// Live validation failed but the managed gateway configuration was
+		// kept in place (upstream throttle / billing refusal / transient
+		// 5xx that survived the retry budget), so ``preloop agents validate
+		// <agent> --live`` remains re-runnable and is the correct recovery
+		// hint. The failure status is already persisted to
+		// ``validation_result`` and surfaces in the console UI as "Live
+		// check failed". This degraded-but-recoverable state must NOT abort
+		// sibling agents during ``--all`` onboarding, so print a clear
+		// warning with the recovery hint and continue.
 		warningLabel := "failed"
 		if liveValidationGatewayVerified {
 			warningLabel = "inconclusive — " + liveValidationUpstreamNote(validationResult)
+		} else if liveValidationKeepsGatewayConfig {
+			warningLabel = "failed (transient upstream error after retries)"
 		}
 		fmt.Printf("  Warning: live validation %s: %v\n", warningLabel, liveValidationErr)
 		fmt.Printf(
@@ -1124,6 +1158,53 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		return launcherSkipped
 	}
 	return nil
+}
+
+// onboardingCompletionHeadline renders the first line of the onboarding
+// result so the checkmark always reflects the true end state: an
+// unqualified "✓ Onboarded" is reserved for a fully validated (or
+// not-validated-by-request) enrollment, a kept-config validation failure
+// reads as degraded, and a rollback reads as incomplete.
+func onboardingCompletionHeadline(
+	agentName string,
+	liveValidationErr error,
+	rolledBack bool,
+) string {
+	switch {
+	case liveValidationErr == nil:
+		return fmt.Sprintf("✓ Onboarded %s", agentName)
+	case rolledBack:
+		return fmt.Sprintf(
+			"✗ Onboarding incomplete for %s — model routing was reverted to the previous provider",
+			agentName,
+		)
+	default:
+		return fmt.Sprintf("⚠ Onboarded %s with degraded validation", agentName)
+	}
+}
+
+// liveValidationRollbackError marks an enrollment whose live validation
+// failed hard enough that the managed model gateway configuration was rolled
+// back to the pre-onboarding provider. MCP onboarding remains applied, but
+// managed model routing is NOT active and ``preloop agents validate <agent>
+// --live`` can never succeed until the agent is re-onboarded. Single-agent
+// invocations must exit non-zero on this error; batch flows record the agent
+// as failed in the summary.
+type liveValidationRollbackError struct {
+	AgentName string
+	Err       error
+}
+
+func (e *liveValidationRollbackError) Error() string {
+	return fmt.Sprintf(
+		"live validation failed and model routing was reverted for %s — re-run: preloop agents onboard %s",
+		e.AgentName,
+		shellQuoteAgentName(e.AgentName),
+	)
+}
+
+func (e *liveValidationRollbackError) Unwrap() error {
+	return e.Err
 }
 
 func updateManagedAgentTags(client *api.Client, agentID string, tags map[string]string) error {
@@ -4359,7 +4440,10 @@ func classifyRuntimePluginInstallFailure(installer string, message string) (stri
 	if normalizedInstaller == "hermes" &&
 		strings.Contains(normalizedMessage, "invalid plugin identifier") {
 		return "runtime_marketplace_rejected_identifier",
-			"Hermes' `plugins install` only accepts Git URLs or owner/repo shorthands; the Preloop plugin is distributed on PyPI. Install it with `pip install preloop-hermes-plugin` using Hermes' Python environment, then restart Hermes."
+			fmt.Sprintf(
+				"Hermes' `plugins install` only accepts Git URLs or owner/repo shorthands; the Preloop plugin is distributed on PyPI and must be installed into Hermes' virtualenv (never the system Python, which rejects installs on PEP 668 systems). Run `%s`, then restart Hermes (`hermes gateway restart`).",
+				hermesManualPluginInstallCommand("preloop-hermes-plugin"),
+			)
 	}
 	if normalizedInstaller == "openclaw" &&
 		strings.Contains(normalizedMessage, "control_ws_url") &&
@@ -4451,7 +4535,23 @@ func verifyAgentControlRuntimePlugin(agent AgentConfig) map[string]interface{} {
 		return result
 	}
 	path, err := resolveRuntimeExecutable(command)
+	if err != nil && runtimeSessionSourceTypeForAgent(agent.Name) == hermesSourceType {
+		// pip installs into Hermes' virtualenv put the plugin's console script
+		// in <install-dir>/venv/bin, which is usually not on PATH. Check the
+		// venv before concluding the plugin is missing.
+		if venvPath, ok := findHermesVenvExecutable(command); ok {
+			path, err = venvPath, nil
+		}
+	}
 	if err != nil {
+		if runtimeSessionSourceTypeForAgent(agent.Name) == hermesSourceType {
+			// Entry-point installs register the plugin with Hermes itself even
+			// when no console script is discoverable; `hermes plugins list` is
+			// the authoritative signal in that case.
+			if entryPoint := verifyHermesEntryPointPlugin(); entryPoint != nil {
+				return mergeStringMaps(result, entryPoint)
+			}
+		}
 		return mergeStringMaps(result, managedAgentControlSidecarVerification(agent))
 	}
 	result["control_plugin_installed"] = true

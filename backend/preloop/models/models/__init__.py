@@ -18,6 +18,7 @@ from .flow import Flow
 from .flow_execution import FlowExecution
 from .flow_execution_log import FlowExecutionLog
 from .gateway_usage_search_document import GatewayUsageSearchDocument
+from .webauthn_credential import WebAuthnCredential
 from .webhook import Webhook
 from .tracker_scope_rule import TrackerScopeRule
 from .issue_compliance_result import IssueComplianceResult
@@ -100,6 +101,7 @@ __all__ = [
     "FlowExecution",
     "FlowExecutionLog",
     "GatewayUsageSearchDocument",
+    "WebAuthnCredential",
     "Webhook",
     "TrackerScopeRule",
     "IssueComplianceResult",
