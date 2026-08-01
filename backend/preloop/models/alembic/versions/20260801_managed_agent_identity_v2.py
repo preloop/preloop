@@ -9,7 +9,7 @@ values arrive on the next CLI contact per install.
 
 NOTE: Several open PRs also revise from ``20260730_webauthn_credentials``
 (PRs #132, #137, #141, #147). This migration may need re-parenting at merge
-time if another of those lands first.
+time if another of those lands first. Coordinate with those PRs before merging.
 """
 
 from __future__ import annotations

@@ -2762,15 +2762,11 @@ func issueRuntimeSessionToken(client *api.Client, agent AgentConfig, allowedServ
 	serverNames := append([]string(nil), allowedServers...)
 	sort.Strings(serverNames)
 
-	principalID := runtimePrincipalIDForAgent(agent)
-	if strings.TrimSpace(agent.RuntimePrincipalID) == "" {
-		principalID = stableRuntimePrincipalIDForAgent(agent, identitySaltForAgent(agent))
-	}
 	request := runtimeSessionTokenRequest{
 		SessionSourceType:    runtimeSessionSourceTypeForAgent(agent.Name),
 		SessionSourceID:      runtimeSessionInstanceIDForAgent(agent),
 		SessionReference:     filepath.Clean(agent.ConfigPath),
-		RuntimePrincipalID:   principalID,
+		RuntimePrincipalID:   runtimePrincipalIDForAgent(agent),
 		RuntimePrincipalName: runtimePrincipalNameForAgent(agent),
 		ExpiresInMinutes:     120,
 		Scopes:               []string{"mcp:read", "mcp:write"},
@@ -2955,7 +2951,8 @@ func runtimePrincipalIDForAgent(agent AgentConfig) string {
 	if strings.TrimSpace(agent.RuntimePrincipalID) != "" {
 		return strings.TrimSpace(agent.RuntimePrincipalID)
 	}
-	return generatedRuntimePrincipalID(resolveAgentDisplayName(agent), agent.ConfigPath)
+	// v2 is the durable derivation; v1/legacy remain candidates only.
+	return stableRuntimePrincipalIDForAgent(agent, identitySaltForAgent(agent))
 }
 
 func enrollmentHostnameLabel() (string, bool) {

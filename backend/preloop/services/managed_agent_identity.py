@@ -16,6 +16,7 @@ from preloop.models.crud import (
 )
 from preloop.models.models.api_usage import ApiUsage
 from preloop.models.models.approval_request import ApprovalRequest
+from preloop.models.models.audit_log import AuditLog
 from preloop.models.models.budget import BudgetPolicy, BudgetSpendActivity
 from preloop.models.models.managed_agent import ManagedAgent
 from preloop.models.models.runtime_session import RuntimeSession
@@ -254,13 +255,9 @@ def rekey_managed_agent(
     _append_previous_id(agent, old_id)
     agent.session_source_id = new_id
     _apply_identity_metadata(agent, identity)
-    if identity and identity.derivation:
-        agent.identity_derivation = identity.derivation
-    elif agent.identity_derivation is None:
+    if agent.identity_derivation is None:
         agent.identity_derivation = "v2"
     db.add(agent)
-
-    from preloop.models.models.audit_log import AuditLog
 
     db.add(
         AuditLog(
@@ -358,20 +355,28 @@ def _merge_budget_policies(
         )
         .all()
     )
+    survivor_policies = (
+        db.query(BudgetPolicy)
+        .filter(
+            BudgetPolicy.account_id == account_id,
+            BudgetPolicy.subject_type == "managed_agent",
+            BudgetPolicy.subject_id == survivor_id,
+        )
+        .all()
+    )
+    survivor_by_key = {
+        (
+            policy.model_alias,
+            str(getattr(policy.period, "value", policy.period)),
+        ): policy
+        for policy in survivor_policies
+    }
     moved = 0
     dropped = 0
     dropped_details: list[dict[str, Any]] = []
     for row in rows:
-        conflict = (
-            db.query(BudgetPolicy)
-            .filter(
-                BudgetPolicy.account_id == account_id,
-                BudgetPolicy.subject_type == "managed_agent",
-                BudgetPolicy.subject_id == survivor_id,
-                BudgetPolicy.model_alias == row.model_alias,
-                BudgetPolicy.period == row.period,
-            )
-            .first()
+        conflict = survivor_by_key.get(
+            (row.model_alias, str(getattr(row.period, "value", row.period)))
         )
         if conflict is None:
             row.subject_id = survivor_id
@@ -551,8 +556,6 @@ def merge_managed_agents(
     except Exception:
         nested.rollback()
         raise
-
-    from preloop.models.models.audit_log import AuditLog
 
     db.add(
         AuditLog(
