@@ -49,6 +49,8 @@ export interface Tool {
   has_approval_condition: boolean;
   config_id: string | null;
   justification_mode?: string | null;
+  /** Estimated tokens for this tool's schema as served (incl. justification). */
+  schema_tokens_estimate?: number;
 }
 
 export interface ApprovalWorkflow {

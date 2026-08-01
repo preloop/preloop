@@ -43,6 +43,7 @@ from preloop.schemas.tool_approval_condition import (
     ConditionTestResponse,
 )
 from preloop.services.policy_evaluator import evaluate_cel_expression
+from preloop.services.tool_schema_tokens import estimate_tool_schema_tokens
 from preloop.services.tool_usage_stats import ToolUsageStatsService
 from preloop.schemas.gateway_usage import GatewayUsageByTool
 from preloop.utils.audit import log_config_change
@@ -594,6 +595,9 @@ def list_all_tools(
             required_str = ", ".join(required_tracker_types)
             unsupported_reason = f"Add a {required_str} tracker to enable this tool"
 
+        justification_mode = config.justification_mode if config else None
+        if justification_mode is not None and not isinstance(justification_mode, str):
+            justification_mode = None
         tools.append(
             {
                 "name": builtin_tool["name"],
@@ -617,8 +621,14 @@ def list_all_tools(
                 if config_id
                 else False,
                 "access_rules": rules_by_config.get(config_id, []) if config_id else [],
-                "justification_mode": config.justification_mode if config else None,
+                "justification_mode": justification_mode,
                 "enabled_for_agents": agent_scoped_enables.get(builtin_key, []),
+                "schema_tokens_estimate": estimate_tool_schema_tokens(
+                    name=builtin_tool["name"],
+                    description=builtin_tool["description"],
+                    schema=builtin_tool["schema"],
+                    justification_mode=justification_mode,
+                ),
             }
         )
 
@@ -632,10 +642,16 @@ def list_all_tools(
             mcp_key = (mcp_tool.name, "mcp", str(server.id))
             config = config_map.get(mcp_key)
             config_id = str(config.id) if config else None
+            justification_mode = config.justification_mode if config else None
+            if justification_mode is not None and not isinstance(
+                justification_mode, str
+            ):
+                justification_mode = None
+            description = mcp_tool.description or ""
             tools.append(
                 {
                     "name": mcp_tool.name,
-                    "description": mcp_tool.description or "",
+                    "description": description,
                     "source": "mcp",
                     "source_id": str(server.id),
                     "source_name": server.name,
@@ -655,8 +671,14 @@ def list_all_tools(
                     "access_rules": rules_by_config.get(config_id, [])
                     if config_id
                     else [],
-                    "justification_mode": config.justification_mode if config else None,
+                    "justification_mode": justification_mode,
                     "enabled_for_agents": agent_scoped_enables.get(mcp_key, []),
+                    "schema_tokens_estimate": estimate_tool_schema_tokens(
+                        name=mcp_tool.name,
+                        description=description,
+                        schema=mcp_tool.input_schema,
+                        justification_mode=justification_mode,
+                    ),
                 }
             )
 

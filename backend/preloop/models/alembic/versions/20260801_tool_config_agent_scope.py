@@ -1,7 +1,7 @@
 """Add optional managed-agent scope to tool_configuration.
 
 Revision ID: 20260801_tool_config_agent_scope
-Revises: 20260730_webauthn_credentials
+Revises: 20260731_usage_imported
 Create Date: 2026-08-01
 
 A ``tool_configuration`` row can now carry an optional ``managed_agent_id``.
@@ -22,7 +22,7 @@ from sqlalchemy.dialects.postgresql import UUID
 
 # revision identifiers, used by Alembic.
 revision = "20260801_tool_config_agent_scope"
-down_revision = "20260730_webauthn_credentials"
+down_revision = "20260731_usage_imported"
 branch_labels = None
 depends_on = None
 # Alembic reads these module globals by name; keep a local reference so static

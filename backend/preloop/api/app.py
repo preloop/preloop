@@ -50,6 +50,7 @@ from preloop.api.endpoints import (
     session_optimization,
     tools,
     trackers,
+    usage_import,
     version,
     embedding as embedding_router,
     webhooks,
@@ -966,6 +967,12 @@ def create_app() -> FastAPI:
             cost.router,
             prefix="/api/v1",
             tags=["Cost Analytics"],
+            dependencies=[Depends(get_current_active_user)],
+        )
+        app.include_router(
+            usage_import.router,
+            prefix="/api/v1",
+            tags=["Usage Import"],
             dependencies=[Depends(get_current_active_user)],
         )
         app.include_router(

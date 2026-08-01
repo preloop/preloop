@@ -429,6 +429,28 @@ def get_accessible_projects(
     return filtered_projects
 
 
+def get_account_or_404(db: Session, current_user: User) -> Account:
+    """Return the authenticated user's account or raise 404.
+
+    Shared by endpoints that treat a missing account row as a not-found
+    resource (e.g. cost analytics, usage import) rather than an auth error.
+
+    Args:
+        db: Database session.
+        current_user: Authenticated user.
+
+    Returns:
+        The user's Account.
+
+    Raises:
+        HTTPException: 404 when the account row does not exist.
+    """
+    account = crud_account.get(db=db, id=current_user.account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+    return account
+
+
 def get_account_for_user(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
