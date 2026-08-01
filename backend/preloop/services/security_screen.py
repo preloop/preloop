@@ -119,9 +119,12 @@ _RULES: Tuple[ScreenRule, ...] = (
         "destructive_command",
         0.90,
         "recursive_force_delete",
-        r"\brm\s+(?:--?[\w-]+\s+)*-(?:[a-z]*r[a-z]*f|[a-z]*f[a-z]*r)[a-z]*\b"
-        r"|\brm\s+(?:.*\s)?--recursive\b.*--force\b"
-        r"|\brm\s+(?:.*\s)?--force\b.*--recursive\b",
+        # Option tokens start with 1-2 dashes followed by a non-dash,
+        # non-space character so the repetition is unambiguous (no
+        # exponential backtracking on runs of dashes).
+        r"\brm\s+(?:-{1,2}[^\s-]\S*\s+)*-(?:[a-z]*r[a-z]*f|[a-z]*f[a-z]*r)[a-z]*\b"
+        r"|\brm\b[^\n]*--recursive\b[^\n]*--force\b"
+        r"|\brm\b[^\n]*--force\b[^\n]*--recursive\b",
     ),
     _rule(
         "destructive_command",
