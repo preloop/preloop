@@ -295,6 +295,25 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             .first()
         )
 
+    def list_by_kind(
+        self, db: Session, *, account_id: str, agent_kind: str
+    ) -> list[ManagedAgent]:
+        """Return the account's managed agents of one kind, newest first.
+
+        Used by the usage ingest API to resolve the default attribution
+        target (the managed Cursor agent from onboarding) when the caller
+        does not name an agent explicitly.
+        """
+        return (
+            db.query(self.model)
+            .filter(
+                self.model.account_id == account_id,
+                self.model.agent_kind == agent_kind,
+            )
+            .order_by(self.model.created_at.desc())
+            .all()
+        )
+
     def get_for_account(
         self, db: Session, *, account_id: str, agent_id: str
     ) -> Optional[ManagedAgent]:
