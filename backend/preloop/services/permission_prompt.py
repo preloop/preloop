@@ -64,10 +64,9 @@ from sqlalchemy.orm.attributes import flag_modified
 from preloop.models import models
 from preloop.models.db.session import get_async_db_session
 from preloop.services.agent_permission_service import (
-    AGENT_TOOL_SOURCE,  # noqa: F401  (re-exported: shared tool_source contract)
-    _native_tool_approvals_disabled,
-    _resolve_tool_config,
-    _resolve_workflow,
+    native_tool_approvals_disabled,
+    resolve_tool_config,
+    resolve_workflow,
 )
 
 logger = logging.getLogger(__name__)
@@ -297,12 +296,12 @@ async def evaluate_permission_prompt(
 
     async with get_async_db_session() as db:
         approvals_off = managed_agent_id is not None and (
-            await _native_tool_approvals_disabled(db, account_id, managed_agent_id)
+            await native_tool_approvals_disabled(db, account_id, managed_agent_id)
         )
-        workflow = await _resolve_workflow(
+        workflow = await resolve_workflow(
             db, account_id, user_id, managed_agent_id=managed_agent_id
         )
-        config = await _resolve_tool_config(db, account_id, tool_name, workflow.id)
+        config = await resolve_tool_config(db, account_id, tool_name, workflow.id)
 
         tool_args = dict(tool_input)
         tool_args[FINGERPRINT_KEY] = fingerprint

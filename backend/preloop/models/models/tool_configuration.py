@@ -12,6 +12,7 @@ from .base import Base
 
 if TYPE_CHECKING:
     from .account import Account
+    from .managed_agent import ManagedAgent
     from .mcp_server import MCPServer
     from .approval_request import ApprovalRequest
     from .tool_access_rule import ToolAccessRule
@@ -130,6 +131,7 @@ class ToolConfiguration(Base):
     mcp_server: Mapped[Optional["MCPServer"]] = relationship(
         "MCPServer", back_populates="tool_configurations"
     )
+    managed_agent: Mapped[Optional["ManagedAgent"]] = relationship("ManagedAgent")
     approval_workflow: Mapped[Optional["ApprovalWorkflow"]] = relationship(
         "ApprovalWorkflow",
         back_populates="tool_configurations",

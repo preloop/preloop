@@ -17,7 +17,7 @@ from preloop.models import models
 from preloop.models.crud import crud_account
 from preloop.services.agent_permission_service import (
     _account_defaults_governance_field,
-    _native_tool_approvals_disabled,
+    native_tool_approvals_disabled,
 )
 from preloop.services.subject_governance import (
     get_account_governance_defaults,
@@ -66,11 +66,11 @@ async def test_resolution_chain_on_real_database(db_session, test_user):
     db = _AsyncDBShim(db_session)
     account_id = str(test_user.account_id)
 
-    assert await _native_tool_approvals_disabled(db, account_id, agent_off) is True
+    assert await native_tool_approvals_disabled(db, account_id, agent_off) is True
     # Explicit per-agent "enforce" shields against the account "off" default.
-    assert await _native_tool_approvals_disabled(db, account_id, agent_enforce) is False
+    assert await native_tool_approvals_disabled(db, account_id, agent_enforce) is False
     # Absent per-agent setting inherits the account default.
-    assert await _native_tool_approvals_disabled(db, account_id, agent_inherit) is True
+    assert await native_tool_approvals_disabled(db, account_id, agent_inherit) is True
 
 
 @pytest.mark.asyncio
@@ -79,7 +79,7 @@ async def test_enforce_default_when_nothing_set(db_session, test_user):
     _write_meta(db_session, test_user, {"subject_governance": {}})
     db = _AsyncDBShim(db_session)
     assert (
-        await _native_tool_approvals_disabled(
+        await native_tool_approvals_disabled(
             db, str(test_user.account_id), uuid.uuid4()
         )
         is False

@@ -207,15 +207,15 @@ class TestEvaluatePermissionPrompt:
 
         with (
             patch(
-                "preloop.services.permission_prompt._native_tool_approvals_disabled",
+                "preloop.services.permission_prompt.native_tool_approvals_disabled",
                 new=AsyncMock(return_value=False),
             ),
             patch(
-                "preloop.services.permission_prompt._resolve_workflow",
+                "preloop.services.permission_prompt.resolve_workflow",
                 new=AsyncMock(return_value=workflow),
             ),
             patch(
-                "preloop.services.permission_prompt._resolve_tool_config",
+                "preloop.services.permission_prompt.resolve_tool_config",
                 new=AsyncMock(return_value=config),
             ),
             patch("preloop.services.approval_service.ApprovalService") as service_cls,
@@ -251,15 +251,15 @@ class TestEvaluatePermissionPrompt:
 
         with (
             patch(
-                "preloop.services.permission_prompt._native_tool_approvals_disabled",
+                "preloop.services.permission_prompt.native_tool_approvals_disabled",
                 new=AsyncMock(return_value=False),
             ),
             patch(
-                "preloop.services.permission_prompt._resolve_workflow",
+                "preloop.services.permission_prompt.resolve_workflow",
                 new=AsyncMock(return_value=workflow),
             ),
             patch(
-                "preloop.services.permission_prompt._resolve_tool_config",
+                "preloop.services.permission_prompt.resolve_tool_config",
                 new=AsyncMock(return_value=config),
             ),
             patch("preloop.services.approval_service.ApprovalService") as service_cls,
@@ -300,15 +300,15 @@ class TestEvaluatePermissionPrompt:
 
         with (
             patch(
-                "preloop.services.permission_prompt._native_tool_approvals_disabled",
+                "preloop.services.permission_prompt.native_tool_approvals_disabled",
                 new=AsyncMock(return_value=False),
             ),
             patch(
-                "preloop.services.permission_prompt._resolve_workflow",
+                "preloop.services.permission_prompt.resolve_workflow",
                 new=AsyncMock(return_value=workflow),
             ),
             patch(
-                "preloop.services.permission_prompt._resolve_tool_config",
+                "preloop.services.permission_prompt.resolve_tool_config",
                 new=AsyncMock(return_value=config),
             ),
             patch("preloop.services.approval_service.ApprovalService") as service_cls,
@@ -337,15 +337,15 @@ class TestEvaluatePermissionPrompt:
 
         with (
             patch(
-                "preloop.services.permission_prompt._native_tool_approvals_disabled",
+                "preloop.services.permission_prompt.native_tool_approvals_disabled",
                 new=AsyncMock(return_value=True),
             ),
             patch(
-                "preloop.services.permission_prompt._resolve_workflow",
+                "preloop.services.permission_prompt.resolve_workflow",
                 new=AsyncMock(return_value=workflow),
             ),
             patch(
-                "preloop.services.permission_prompt._resolve_tool_config",
+                "preloop.services.permission_prompt.resolve_tool_config",
                 new=AsyncMock(return_value=config),
             ),
             patch("preloop.services.approval_service.ApprovalService") as service_cls,
