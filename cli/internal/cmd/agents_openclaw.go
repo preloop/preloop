@@ -231,10 +231,11 @@ func maybeRemoveStaleOpenClawPluginEntries(
 var openClawEnvPattern = regexp.MustCompile(`^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$`)
 var opencodeEnvPattern = regexp.MustCompile(`^\{env:([A-Za-z_][A-Za-z0-9_]*)\}$`)
 var opencodeBearerEnvPattern = regexp.MustCompile(`^[Bb]earer\s+\{env:([A-Za-z_][A-Za-z0-9_]*)\}$`)
+
 // managedGatewayLLMLogPattern matches OpenCode's model-usage log lines across
-// log-format generations: older builds tagged LLM calls with ``service=llm``,
-// while 1.18+ logs streaming requests as ``message=stream`` — both carry
-// ``providerID=<provider> modelID=<model>`` pairs.
+// log-format generations: older builds tagged LLM calls with “service=llm“,
+// while 1.18+ logs streaming requests as “message=stream“ — both carry
+// “providerID=<provider> modelID=<model>“ pairs.
 var managedGatewayLLMLogPattern = regexp.MustCompile(
 	`(?:service=llm|message=stream) providerID=([^\s]+) modelID=([^\s]+)`,
 )
@@ -302,6 +303,10 @@ type managedEnrollmentOptions struct {
 	// would-prompt tool calls to Preloop's mobile/watch approval flow. Off by
 	// default; enabled via `preloop agents onboard --approvals`.
 	Approvals bool
+	// PreferredModel is the operator-selected managed model alias from
+	// ``--model``. When set, the interactive model picker is skipped and this
+	// alias is used for gateway onboarding.
+	PreferredModel string
 	// AgentPrepared marks that the caller already ran
 	// prepareAgentForEnrollment on the agent (display name confirmed,
 	// runtime principal generated). executeManagedEnrollment must not run
@@ -398,7 +403,11 @@ type managedGatewayUpstream struct {
 	CredentialPayload map[string]interface{}
 	UsesAmbientAuth   bool
 	ManagedModelAlias string
-	Notes             []string
+	// AllowServerCredentialReuse lets an explicit operator model pick reuse a
+	// credential already stored on the matching account AI model, even for
+	// agent kinds that do not otherwise qualify for Claude-style OAuth reuse.
+	AllowServerCredentialReuse bool
+	Notes                      []string
 }
 
 func (u *managedGatewayUpstream) CanRouteThroughGateway() bool {
@@ -508,7 +517,9 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	// to MCP-only hides the choice from the operator. Non-interactive runs
 	// (--yes / --dry-run / PRELOOP_CONFIRM) keep the degrade behavior; the
 	// preview note explains how to resolve it.
-	gatewayHints := managedGatewayResolutionHints{}
+	gatewayHints := managedGatewayResolutionHints{
+		PreferredModelAlias: strings.TrimSpace(opts.PreferredModel),
+	}
 	if supportsManagedGateway(agent) &&
 		!opts.DryRun &&
 		!opts.AutoApprove &&
@@ -523,6 +534,25 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 			return promptErr
 		}
 		gatewayHints.PreferredProviderID = selectedProvider
+	}
+	if supportsManagedGateway(agent) {
+		inferredForPicker, pickerErr := resolveManagedGatewayUpstreamWithHints(agent, gatewayHints)
+		if pickerErr != nil {
+			return pickerErr
+		}
+		selectedAlias, selectedModel, selectErr := resolveManagedModelSelection(
+			client,
+			agent,
+			inferredForPicker,
+			opts,
+		)
+		if selectErr != nil {
+			return selectErr
+		}
+		if selectedAlias != "" {
+			gatewayHints.PreferredModelAlias = selectedAlias
+			gatewayHints.SelectedAIModel = selectedModel
+		}
 	}
 
 	plan, err := buildManagedMCPEnrollmentPlan(
@@ -541,6 +571,11 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		if upstreamErr != nil {
 			return upstreamErr
 		}
+		upstream = applySelectedModelToUpstream(
+			upstream,
+			gatewayHints.PreferredModelAlias,
+			gatewayHints.SelectedAIModel,
+		)
 		if upstream != nil {
 			plan.Notes = append(plan.Notes, upstream.Notes...)
 		}
@@ -710,6 +745,11 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		if upstreamErr != nil {
 			return upstreamErr
 		}
+		upstream = applySelectedModelToUpstream(
+			upstream,
+			gatewayHints.PreferredModelAlias,
+			gatewayHints.SelectedAIModel,
+		)
 		if upstream != nil {
 			plan.Notes = append(plan.Notes, upstream.Notes...)
 		}
@@ -952,13 +992,28 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	liveValidationGatewayVerified := false
 	liveValidationKeepsGatewayConfig := false
 	liveValidationRolledBack := false
+	var liveValidationDuration time.Duration
 	if requestedLiveValidation {
+		fmt.Fprint(output, "Sending test prompt through gateway...") //nolint:errcheck
+		started := time.Now()
 		liveOutcome, err := runManagedAgentLiveValidation(client, agent, validationResult)
+		liveValidationDuration = time.Since(started)
 		if liveOutcome != nil && len(liveOutcome.ValidationResult) > 0 {
 			validationResult = liveOutcome.ValidationResult
 		}
 		liveValidationGatewayVerified = liveValidationStatusGatewayVerified(validationResult)
 		liveValidationKeepsGatewayConfig = liveValidationStatusKeepsGatewayConfig(validationResult)
+		modelAlias := strings.TrimSpace(plan.ManagedModelAlias)
+		if alias, _ := validationResult["live_validation_model_alias"].(string); strings.TrimSpace(alias) != "" {
+			modelAlias = strings.TrimSpace(alias)
+		}
+		printLiveValidationRoundTripResult(
+			output,
+			liveOutcome,
+			err,
+			modelAlias,
+			liveValidationDuration,
+		)
 		if liveOutcome != nil && liveOutcome.Attempted {
 			// A probe the upstream provider refused (rate limit, billing) is
 			// inconclusive, not a failure: the static config checks passed and
@@ -1106,6 +1161,11 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	}
 	fmt.Printf("  Config updated: %s\n", agent.ConfigPath)
 	fmt.Printf("  Backup saved: %s\n", backupState.BackupPath)
+	printOnboardingFollowUpCommands(
+		output,
+		resolveAgentDisplayName(agent),
+		backupState.BackupPath,
+	)
 	if liveValidationErr != nil && liveValidationRolledBack {
 		// The gateway routing was reverted to the pre-onboarding provider, so
 		// ``preloop agents validate <agent> --live`` can never succeed anymore
@@ -1186,8 +1246,8 @@ func onboardingCompletionHeadline(
 // liveValidationRollbackError marks an enrollment whose live validation
 // failed hard enough that the managed model gateway configuration was rolled
 // back to the pre-onboarding provider. MCP onboarding remains applied, but
-// managed model routing is NOT active and ``preloop agents validate <agent>
-// --live`` can never succeed until the agent is re-onboarded. Single-agent
+// managed model routing is NOT active and “preloop agents validate <agent>
+// --live“ can never succeed until the agent is re-onboarded. Single-agent
 // invocations must exit non-zero on this error; batch flows record the agent
 // as failed in the summary.
 type liveValidationRollbackError struct {
@@ -1715,12 +1775,11 @@ func shouldPreferCurrentConfigForGatewayResolution(agent AgentConfig, current ma
 }
 
 // managedGatewayResolutionHints carries operator-supplied disambiguation for
-// upstream resolution. Today the only hint is a preferred provider ID for
-// agents whose local state is ambiguous (e.g. OpenCode with several auth
-// profiles and no configured or recently-used model); resolvers ignore hints
-// they do not need.
+// upstream resolution. Resolvers ignore hints they do not need.
 type managedGatewayResolutionHints struct {
 	PreferredProviderID string
+	PreferredModelAlias string
+	SelectedAIModel     *aiModelResponse
 }
 
 func resolveManagedGatewayUpstream(agent AgentConfig) (*managedGatewayUpstream, error) {
@@ -2344,12 +2403,18 @@ func upstreamEligibleForServerCredentialReuse(
 	agent AgentConfig,
 	upstream *managedGatewayUpstream,
 ) bool {
-	if upstream == nil || !isClaudeCodeAgent(agent) {
+	if upstream == nil {
 		return false
 	}
-	return strings.TrimSpace(upstream.ProviderName) != "" &&
-		strings.TrimSpace(upstream.ModelIdentifier) != "" &&
-		strings.TrimSpace(upstream.ManagedModelAlias) != ""
+	if strings.TrimSpace(upstream.ProviderName) == "" ||
+		strings.TrimSpace(upstream.ModelIdentifier) == "" ||
+		strings.TrimSpace(upstream.ManagedModelAlias) == "" {
+		return false
+	}
+	if upstream.AllowServerCredentialReuse {
+		return true
+	}
+	return isClaudeCodeAgent(agent)
 }
 
 // serverHasReusableGatewayCredential checks (best-effort, read-only) whether
