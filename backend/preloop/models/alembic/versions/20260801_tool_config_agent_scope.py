@@ -22,7 +22,7 @@ from sqlalchemy.dialects.postgresql import UUID
 
 # revision identifiers, used by Alembic.
 revision = "20260801_tool_config_agent_scope"
-down_revision = "20260731_usage_imported"
+down_revision = "20260801_api_usage_error_class"
 branch_labels = None
 depends_on = None
 # Alembic reads these module globals by name; keep a local reference so static
