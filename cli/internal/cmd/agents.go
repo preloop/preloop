@@ -1686,15 +1686,10 @@ func runAgentsList(cmd *cobra.Command, args []string) error {
 }
 
 func managedAgentLooksStale(agent managedAgentSummary, localConfig string) bool {
-	if strings.EqualFold(strings.TrimSpace(agent.LifecycleState), "decommissioned") {
-		return true
-	}
-	if localConfig != "-" {
-		return false
-	}
-	activity := strings.ToLower(strings.TrimSpace(agent.ActivityStatus))
-	onboarding := strings.ToLower(strings.TrimSpace(agent.OnboardingState))
-	return activity == "idle" || onboarding == "incomplete" || onboarding == ""
+	// Only archived rows are treated as stale. Missing local config (or idle
+	// activity) is normal when the agent lives on another machine.
+	_ = localConfig
+	return strings.EqualFold(strings.TrimSpace(agent.LifecycleState), "decommissioned")
 }
 
 func listManagedAgents(client *api.Client) ([]managedAgentSummary, error) {
@@ -4639,6 +4634,22 @@ func getManagedAgentForDiscovered(client *api.Client, agent AgentConfig) (*manag
 	return nil, fmt.Errorf("managed agent not found after bootstrap for %s", agent.Name)
 }
 
+func resolveManagedAgentAfterBootstrap(
+	client *api.Client,
+	agent AgentConfig,
+	known *managedAgentSummary,
+) (*managedAgentSummary, error) {
+	if known != nil && strings.TrimSpace(known.ID) != "" {
+		detail, err := getManagedAgentDetail(client, known.ID)
+		if err != nil {
+			return nil, err
+		}
+		summary := detail.Agent
+		return &summary, nil
+	}
+	return getManagedAgentForDiscovered(client, agent)
+}
+
 func findManagedAgentForDiscovered(items []managedAgentSummary, agent AgentConfig) *managedAgentSummary {
 	sourceTypes := managedAgentLookupSourceTypes(agent)
 	candidateIDs := runtimePrincipalIDCandidates(agent)
@@ -4662,9 +4673,9 @@ func ensureArchivedManagedAgentReenrolled(
 	autoApprove bool,
 	input io.Reader,
 	output io.Writer,
-) error {
+) (*managedAgentSummary, error) {
 	if client == nil {
-		return nil
+		return nil, nil
 	}
 	if input == nil {
 		input = os.Stdin
@@ -4675,14 +4686,14 @@ func ensureArchivedManagedAgentReenrolled(
 
 	var response managedAgentListResponse
 	if err := client.Get("/api/v1/agents?limit=100", &response); err != nil {
-		return fmt.Errorf("failed to list managed agents: %w", err)
+		return nil, fmt.Errorf("failed to list managed agents: %w", err)
 	}
 	matched := findManagedAgentForDiscovered(response.Items, agent)
 	if matched == nil {
-		return nil
+		return nil, nil
 	}
 	if !strings.EqualFold(strings.TrimSpace(matched.LifecycleState), "decommissioned") {
-		return nil
+		return matched, nil
 	}
 
 	reuse := autoApprove || nonInteractiveAutoConfirm()
@@ -4696,12 +4707,12 @@ func ensureArchivedManagedAgentReenrolled(
 			),
 		)
 		if err != nil {
-			return fmt.Errorf("failed to read reenroll confirmation: %w", err)
+			return nil, fmt.Errorf("failed to read reenroll confirmation: %w", err)
 		}
 		reuse = confirmed
 	}
 	if !reuse {
-		return fmt.Errorf(
+		return nil, fmt.Errorf(
 			"declined reusing archived enrollment %s (%s). Run 'preloop agents remove %s' first if you want a fresh identity",
 			matched.DisplayName,
 			matched.ID,
@@ -4714,7 +4725,7 @@ func ensureArchivedManagedAgentReenrolled(
 	}
 	var updated managedAgentSummary
 	if err := client.Patch("/api/v1/agents/"+matched.ID, request, &updated); err != nil {
-		return fmt.Errorf("failed to reenroll archived managed agent %q: %w", matched.ID, err)
+		return nil, fmt.Errorf("failed to reenroll archived managed agent %q: %w", matched.ID, err)
 	}
 	fmt.Fprintf( //nolint:errcheck
 		output,
@@ -4722,7 +4733,19 @@ func ensureArchivedManagedAgentReenrolled(
 		matched.DisplayName,
 		matched.ID,
 	)
-	return nil
+	if strings.TrimSpace(updated.ID) == "" {
+		updated.ID = matched.ID
+	}
+	if strings.TrimSpace(updated.DisplayName) == "" {
+		updated.DisplayName = matched.DisplayName
+	}
+	if strings.TrimSpace(updated.SessionSourceID) == "" {
+		updated.SessionSourceID = matched.SessionSourceID
+	}
+	if strings.TrimSpace(updated.SessionSourceType) == "" {
+		updated.SessionSourceType = matched.SessionSourceType
+	}
+	return &updated, nil
 }
 
 func managedAgentLookupSourceTypes(agent AgentConfig) []string {

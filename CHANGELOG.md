@@ -9,12 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`preloop agents remove`**: permanently delete a managed-agent registry
+  entry. Refuses when the agent has usage history unless `--force` is passed.
 - **Passkey (WebAuthn) sign-in and registration**: register passkeys in user
   settings and sign in from the login page with discoverable credentials (no
   username needed). Feature-flagged via `PASSKEYS_ENABLED` (default `true`);
   relying party and origin overridable with `WEBAUTHN_RP_ID` and
   `WEBAUTHN_ORIGIN`. Passkey logins are audit-logged and trigger the same
   inactivity notifications as password logins.
+
+### Changed
+
+- **`preloop agents offboard` archives instead of deleting**: offboard now
+  decommissions the managed-agent row (PATCH `lifecycle_action=decommission`)
+  so usage history and audit trail remain. Re-onboarding reactivates an
+  archived match; use `preloop agents remove` for permanent deletion.
 
 ### Fixed
 
