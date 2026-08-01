@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Idle prompt-cache expiry detection**: session context analysis now flags
+  content-stable request pairs whose inter-request gap exceeds the provider
+  cache TTL and whose ApiUsage rows show a `cache_read` collapse with a
+  `cache_creation` spike. Optimize surfaces a measured write-vs-read premium
+  (``reduce-idle-cache-expiry`` suggestion + aggregate line); Replay annotates
+  the expiry turn. USD figures are catalog-priced or omitted — never invented
+  from session averages.
+
 - **Passkey (WebAuthn) sign-in and registration**: register passkeys in user
   settings and sign in from the login page with discoverable credentials (no
   username needed). Feature-flagged via `PASSKEYS_ENABLED` (default `true`);

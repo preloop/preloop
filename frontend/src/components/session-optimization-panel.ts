@@ -16,6 +16,7 @@ import type {
   RuntimeSessionOptimizationAppliedAction,
   RuntimeSessionOptimizationResponse,
   RuntimeSessionReplayResponse,
+  SessionCacheProfile,
   SessionContextProfileSegment,
 } from '../types';
 import type {
@@ -210,6 +211,24 @@ export class SessionOptimizationPanel extends LitElement {
       font-size: var(--sl-font-size-small);
       margin-top: var(--sl-spacing-2x-small);
       line-height: 1.45;
+    }
+
+    .idle-expiry-summary {
+      margin: 0 0 var(--sl-spacing-medium);
+      padding: var(--sl-spacing-small) var(--sl-spacing-medium);
+      border-left: 3px solid var(--sl-color-warning-600);
+      background: color-mix(
+        in srgb,
+        var(--sl-color-warning-600) 12%,
+        transparent
+      );
+      font-size: var(--sl-font-size-small);
+      color: var(--sl-color-neutral-700);
+      line-height: 1.45;
+    }
+
+    .idle-expiry-summary strong {
+      color: var(--sl-color-neutral-900);
     }
 
     .actions {
@@ -644,6 +663,8 @@ export class SessionOptimizationPanel extends LitElement {
     let mode = 'evidence';
     if (suggestion.id === 'stabilize-prefix') {
       mode = 'cache-breaking';
+    } else if (suggestion.id === 'reduce-idle-cache-expiry') {
+      mode = 'cache-idle-expiry';
     } else if (
       suggestion.id.includes('failed') ||
       suggestion.id.includes('error')
@@ -1110,6 +1131,7 @@ export class SessionOptimizationPanel extends LitElement {
           ${formatNumber(profile.total_completion_tokens)} completion tokens
         </span>
       </div>
+      ${this.renderIdleExpirySummary()}
       ${
         segments.length
           ? segments.map((segment: SessionContextProfileSegment) => {
@@ -1262,6 +1284,38 @@ export class SessionOptimizationPanel extends LitElement {
       }
     }
     return html`<div class="transparency">${parts.join(' · ')}</div>`;
+  }
+
+  /**
+   * Measured idle-TTL cache expiry roll-up from the context profile.
+   * Copy stays per-session and tied to ApiUsage-backed detector output.
+   */
+  private renderIdleExpirySummary() {
+    const cacheProfile: SessionCacheProfile | null | undefined =
+      this.optimization?.context_profile?.cache_profile;
+    if (!cacheProfile) return nothing;
+    const events = Array.isArray(cacheProfile.idle_expiry_events)
+      ? cacheProfile.idle_expiry_events
+      : [];
+    if (!events.length) return nothing;
+    const expiryCost = Number(
+      cacheProfile.measured_idle_expiry_extra_cost_usd ?? 0
+    );
+    const sessionCost = Number(
+      this.optimization?.analyzed_scope_estimated_cost ??
+        this.session?.estimated_cost ??
+        0
+    );
+    const costLabel =
+      expiryCost > 0 ? formatCost(expiryCost) : 'an unpriced write premium';
+    const sessionLabel =
+      sessionCost > 0 ? ` of this session's ${formatCost(sessionCost)}` : '';
+    return html`
+      <div class="idle-expiry-summary" data-testid="idle-expiry-summary">
+        Cache expiries cost <strong>${costLabel}</strong>${sessionLabel}
+        (${events.length} expir${events.length === 1 ? 'y' : 'ies'}, measured).
+      </div>
+    `;
   }
 
   // Aggregate before/after savings across all suggestions — the demo's
@@ -1460,6 +1514,7 @@ export class SessionOptimizationPanel extends LitElement {
           </sl-tab>
           <sl-tab-panel name="suggestions">
             <div class="panel">
+              ${this.renderIdleExpirySummary()}
               ${this.renderSavingsSummary(suggestions)}
               ${suggestions.map((suggestion) =>
                 this.renderSuggestion(suggestion)
