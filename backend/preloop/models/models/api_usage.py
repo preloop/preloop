@@ -6,7 +6,7 @@ from datetime import datetime
 # Use TYPE_CHECKING to avoid circular imports
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, func
+from sqlalchemy import CheckConstraint, ForeignKey, Index, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Boolean, DateTime, Float, Integer, String
@@ -106,9 +106,9 @@ class ApiUsage(Base):
     estimated_cost: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     # ISO-4217 code of estimated_cost; NULL on legacy rows means USD.
     currency: Mapped[Optional[str]] = mapped_column(String(3), nullable=True)
-    # override | model_config | catalog | subscription | unpriced
+    # override | model_config | catalog | subscription | unpriced | imported
     cost_source: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
-    # provider | estimated | partial
+    # provider | estimated | partial | imported
     usage_source: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     is_retry: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     # Stable upstream-failure taxonomy (network, upstream_overloaded, …).
@@ -150,12 +150,13 @@ class ApiUsage(Base):
     __table_args__ = (
         CheckConstraint(
             "cost_source IS NULL OR cost_source IN "
-            "('override', 'model_config', 'catalog', 'subscription', 'unpriced')",
+            "('override', 'model_config', 'catalog', 'subscription', 'unpriced', "
+            "'imported')",
             name="ck_api_usage_cost_source",
         ),
         CheckConstraint(
             "usage_source IS NULL OR usage_source IN "
-            "('provider', 'estimated', 'partial')",
+            "('provider', 'estimated', 'partial', 'imported')",
             name="ck_api_usage_usage_source",
         ),
         Index(
@@ -172,6 +173,18 @@ class ApiUsage(Base):
             "runtime_principal_id",
             "timestamp",
             postgresql_ops={"timestamp": "DESC"},
+        ),
+        # Imported-usage dedupe is enforced at the DB level: concurrent
+        # imports of the same event race past the application-level
+        # existence check under READ COMMITTED, so uniqueness of the
+        # fingerprint per account is the source of truth. NULL fingerprints
+        # are distinct, so fingerprint-less rows never conflict.
+        Index(
+            "ix_api_usage_imported_fingerprint_uniq",
+            "account_id",
+            text("(meta_data->>'import_fingerprint')"),
+            unique=True,
+            postgresql_where=text("action_type = 'imported_usage'"),
         ),
     )
 

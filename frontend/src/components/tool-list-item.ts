@@ -110,6 +110,14 @@ export class ToolListItem extends LitElement {
       flex-shrink: 0;
     }
 
+    .schema-tokens {
+      color: var(--sl-color-neutral-500);
+      font-size: var(--sl-font-size-x-small);
+      white-space: nowrap;
+      flex-shrink: 0;
+      font-variant-numeric: tabular-nums;
+    }
+
     .rule-summary {
       display: flex;
       align-items: center;
@@ -423,6 +431,19 @@ export class ToolListItem extends LitElement {
           <span class="tool-name">${this.tool.name}</span>
 
           <div class="tool-badges">
+            ${
+              typeof this.tool.schema_tokens_estimate === 'number' &&
+              this.tool.schema_tokens_estimate > 0
+                ? html`<sl-tooltip
+                    content="Estimated schema tokens added to every agent request that advertises this tool (includes justification parameters when configured)"
+                  >
+                    <span class="schema-tokens"
+                      >~${this.tool.schema_tokens_estimate.toLocaleString()}
+                      tokens/request</span
+                    >
+                  </sl-tooltip>`
+                : ''
+            }
             ${
               this.usageStat &&
               (this.usageStat.invocation_count > 0 ||
