@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/base64"
 	"io"
 	"os"
@@ -469,6 +470,11 @@ func TestInstallAgentControlRuntimePluginFallsBackToPipWhenHermesRejectsIdentifi
 		t.Fatalf("failed to write fake Hermes installer: %v", err)
 	}
 	// Fake python3 next to the hermes executable records the pip invocation.
+	// The interpreter next to hermes only counts as Hermes' environment when
+	// the parent directory is a real virtualenv, so mark it with pyvenv.cfg.
+	if err := os.WriteFile(filepath.Join(dir, "pyvenv.cfg"), []byte("home = /usr\n"), 0644); err != nil {
+		t.Fatalf("failed to write pyvenv.cfg: %v", err)
+	}
 	pipArgsFile := filepath.Join(dir, "pip-args.txt")
 	if err := os.WriteFile(
 		filepath.Join(binDir, "python3"),
@@ -512,6 +518,11 @@ func TestInstallAgentControlRuntimePluginFallsBackToPipWhenHermesRejectsIdentifi
 }
 
 func TestClassifyRuntimePluginInstallFailureHermesInvalidIdentifier(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	testenv.SetHome(t, home)
+	t.Setenv("PATH", filepath.Join(dir, "empty-path"))
+
 	status, remediation := classifyRuntimePluginInstallFailure(
 		"hermes",
 		"Agent Control plugin install failed: Error: Invalid plugin identifier: 'preloop-hermes-plugin'. Use a Git URL or owner/repo shorthand",
@@ -519,8 +530,262 @@ func TestClassifyRuntimePluginInstallFailureHermesInvalidIdentifier(t *testing.T
 	if status != "runtime_marketplace_rejected_identifier" {
 		t.Fatalf("unexpected status: %q", status)
 	}
-	if !strings.Contains(remediation, "pip install preloop-hermes-plugin") {
-		t.Fatalf("expected pip remediation, got %q", remediation)
+	// The remediation must be copy-pasteable with the full venv pip path —
+	// never a bare `pip install`, which hits the system interpreter and fails
+	// PEP 668 on stock Debian.
+	expectedPip := filepath.Join(home, ".hermes", "hermes-agent", "venv", "bin", "pip")
+	if !strings.Contains(remediation, expectedPip+" install --upgrade preloop-hermes-plugin") {
+		t.Fatalf("expected venv pip remediation with full path %q, got %q", expectedPip, remediation)
+	}
+	if !strings.Contains(remediation, "hermes plugins enable preloop --allow-tool-override") {
+		t.Fatalf("expected plugin enable step in remediation, got %q", remediation)
+	}
+}
+
+func TestHermesInstallDirFromVersionOutput(t *testing.T) {
+	output := "Hermes Agent 1.2.3\n  Install directory: /usr/local/lib/hermes-agent\nPython 3.11.2\n"
+	if got := hermesInstallDirFromVersionOutput(output); got != "/usr/local/lib/hermes-agent" {
+		t.Fatalf("expected install dir from version banner, got %q", got)
+	}
+	if got := hermesInstallDirFromVersionOutput("Hermes Agent 1.2.3\n"); got != "" {
+		t.Fatalf("expected empty install dir when banner lacks the line, got %q", got)
+	}
+	if got := hermesInstallDirFromVersionOutput(""); got != "" {
+		t.Fatalf("expected empty install dir for empty output, got %q", got)
+	}
+}
+
+func TestResolveHermesPipPythonDiscoversVenvFromVersionOutput(t *testing.T) {
+	skipNoShebangOnWindows(t, "Hermes venv discovery from `hermes --version` output")
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	testenv.SetHome(t, home)
+
+	// Simulate a stock Debian layout: hermes on PATH reports its install
+	// directory, and the venv python lives under <install-dir>/venv/bin.
+	installDir := filepath.Join(dir, "usr", "local", "lib", "hermes-agent")
+	venvBin := filepath.Join(installDir, "venv", "bin")
+	if err := os.MkdirAll(venvBin, 0755); err != nil {
+		t.Fatalf("failed to create venv bin dir: %v", err)
+	}
+	venvPython := filepath.Join(venvBin, "python3")
+	if err := os.WriteFile(venvPython, []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatalf("failed to write fake venv python: %v", err)
+	}
+
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("failed to create bin dir: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(binDir, "hermes"),
+		[]byte("#!/bin/sh\necho \"Hermes Agent 1.2.3\"\necho \"Install directory: "+installDir+"\"\n"),
+		0755,
+	); err != nil {
+		t.Fatalf("failed to write fake hermes: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+
+	resolved, err := resolveHermesPipPython()
+	if err != nil {
+		t.Fatalf("unexpected python resolution error: %v", err)
+	}
+	if resolved != venvPython {
+		t.Fatalf("expected venv python %q from version banner, got %q", venvPython, resolved)
+	}
+}
+
+func TestResolveHermesPipPythonNeverFallsBackToSystemPython(t *testing.T) {
+	skipNoShebangOnWindows(t, "Hermes pip interpreter refusing system python")
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	testenv.SetHome(t, home)
+
+	// A system python3 is on PATH, but no Hermes venv exists anywhere. The
+	// resolver must fail with a copy-pasteable venv pip hint instead of
+	// returning the system interpreter (PEP 668 would reject the install).
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("failed to create bin dir: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(binDir, "python3"), []byte("#!/bin/sh\n"), 0755,
+	); err != nil {
+		t.Fatalf("failed to write fake system python: %v", err)
+	}
+	installDir := filepath.Join(dir, "usr", "local", "lib", "hermes-agent")
+	if err := os.WriteFile(
+		filepath.Join(binDir, "hermes"),
+		[]byte("#!/bin/sh\necho \"Install directory: "+installDir+"\"\n"),
+		0755,
+	); err != nil {
+		t.Fatalf("failed to write fake hermes: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+
+	_, err := resolveHermesPipPython()
+	if err == nil {
+		t.Fatalf("expected resolution to fail rather than use the system python")
+	}
+	expectedPip := filepath.Join(installDir, "venv", "bin", "pip")
+	if !strings.Contains(err.Error(), expectedPip+" install --upgrade preloop-hermes-plugin") {
+		t.Fatalf("expected error to carry full venv pip path %q, got %q", expectedPip, err.Error())
+	}
+}
+
+func TestRunAgentsInstallPluginHermesDryRunPrintsVenvPipCommand(t *testing.T) {
+	skipManagedLauncherOnWindows(t, "Hermes install-plugin dry-run venv pip command")
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	testenv.SetHome(t, home)
+	t.Setenv("PATH", filepath.Join(dir, "empty-path"))
+	t.Setenv("PRELOOP_RUNTIME_PLUGINS_DIR", filepath.Join(dir, "runtime-plugins"))
+
+	cmd := agentsInstallPluginCmd
+	if err := cmd.Flags().Set("dry-run", "true"); err != nil {
+		t.Fatalf("failed to set dry-run flag: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Flags().Set("dry-run", "false")
+		cmd.SetOut(nil)
+	})
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+
+	if err := runAgentsInstallPlugin(cmd, []string{"hermes"}); err != nil {
+		t.Fatalf("dry run failed: %v", err)
+	}
+	printed := strings.TrimSpace(buf.String())
+	// The dry-run must print the actual working command: Hermes'
+	// `plugins install` rejects PyPI names, so the command is a venv pip
+	// install plus the plugin enable.
+	expectedPip := filepath.Join(home, ".hermes", "hermes-agent", "venv", "bin", "pip")
+	expected := expectedPip + " install --upgrade preloop-hermes-plugin && hermes plugins enable preloop --allow-tool-override"
+	if printed != expected {
+		t.Fatalf("unexpected dry-run command:\n  got:  %q\n  want: %q", printed, expected)
+	}
+	if strings.Contains(printed, "hermes plugins install") {
+		t.Fatalf("dry-run must not print the broken marketplace command, got %q", printed)
+	}
+}
+
+func TestVerifyAgentControlRuntimePluginDetectsHermesEntryPointInstall(t *testing.T) {
+	skipNoShebangOnWindows(t, "Hermes entry-point plugin detection via `hermes plugins list`")
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	testenv.SetHome(t, home)
+
+	// No `preloop-hermes-plugin` console script anywhere: the plugin was
+	// installed via `venv/bin/pip install preloop-hermes-plugin` and is only
+	// visible through Hermes' own plugin registry.
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("failed to create bin dir: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(binDir, "hermes"),
+		[]byte("#!/bin/sh\nif [ \"$1\" = plugins ] && [ \"$2\" = list ]; then\n"+
+			"  echo \"preloop    enabled    Preloop Agent Control\"\n  exit 0\nfi\n"+
+			"echo \"Hermes Agent 1.2.3\"\n"),
+		0755,
+	); err != nil {
+		t.Fatalf("failed to write fake hermes: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+
+	result := verifyAgentControlRuntimePlugin(AgentConfig{
+		Name:       hermesAgentName,
+		ConfigPath: filepath.Join(home, ".hermes", "config.yaml"),
+	})
+	if result["control_plugin_installed"] != true {
+		t.Fatalf("expected entry-point plugin to be detected as installed, got %#v", result)
+	}
+	if result["control_plugin_verified"] != true {
+		t.Fatalf("expected enabled entry-point plugin to verify, got %#v", result)
+	}
+	if result["control_plugin_verification"] != "hermes_entry_point_plugin_enabled" {
+		t.Fatalf("unexpected verification detail: %#v", result)
+	}
+}
+
+func TestVerifyAgentControlRuntimePluginReportsDisabledHermesEntryPointInstall(t *testing.T) {
+	skipNoShebangOnWindows(t, "Hermes disabled entry-point plugin detection")
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	testenv.SetHome(t, home)
+
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("failed to create bin dir: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(binDir, "hermes"),
+		[]byte("#!/bin/sh\nif [ \"$1\" = plugins ] && [ \"$2\" = list ]; then\n"+
+			"  echo \"preloop    disabled    Preloop Agent Control\"\n  exit 0\nfi\n"+
+			"echo \"Hermes Agent 1.2.3\"\n"),
+		0755,
+	); err != nil {
+		t.Fatalf("failed to write fake hermes: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+
+	result := verifyAgentControlRuntimePlugin(AgentConfig{
+		Name:       hermesAgentName,
+		ConfigPath: filepath.Join(home, ".hermes", "config.yaml"),
+	})
+	if result["control_plugin_installed"] != true {
+		t.Fatalf("expected disabled entry-point plugin to still count as installed, got %#v", result)
+	}
+	if result["control_plugin_verified"] != false {
+		t.Fatalf("expected disabled plugin to fail verification, got %#v", result)
+	}
+	remediation, _ := result["control_plugin_install_remediation"].(string)
+	if !strings.Contains(remediation, "hermes plugins enable preloop --allow-tool-override") {
+		t.Fatalf("expected enable remediation for disabled plugin, got %#v", result)
+	}
+}
+
+func TestVerifyAgentControlRuntimePluginFindsHermesVenvConsoleScript(t *testing.T) {
+	skipNoShebangOnWindows(t, "Hermes venv console-script verification")
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	testenv.SetHome(t, home)
+
+	// The plugin's console script lives only inside Hermes' venv bin
+	// (reported via `hermes --version`), not on PATH.
+	installDir := filepath.Join(dir, "opt", "hermes-agent")
+	venvBin := filepath.Join(installDir, "venv", "bin")
+	if err := os.MkdirAll(venvBin, 0755); err != nil {
+		t.Fatalf("failed to create venv bin dir: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(venvBin, "preloop-hermes-plugin"),
+		[]byte("#!/bin/sh\n[ \"$1\" = verify ] && [ \"$2\" = --config ]\n"),
+		0755,
+	); err != nil {
+		t.Fatalf("failed to write fake venv verifier: %v", err)
+	}
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("failed to create bin dir: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(binDir, "hermes"),
+		[]byte("#!/bin/sh\necho \"Install directory: "+installDir+"\"\n"),
+		0755,
+	); err != nil {
+		t.Fatalf("failed to write fake hermes: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+
+	result := verifyAgentControlRuntimePlugin(AgentConfig{
+		Name:       hermesAgentName,
+		ConfigPath: filepath.Join(home, ".hermes", "config.yaml"),
+	})
+	if result["control_plugin_installed"] != true ||
+		result["control_plugin_verified"] != true ||
+		result["control_plugin_verification"] != "verified" {
+		t.Fatalf("expected venv console script to verify, got %#v", result)
 	}
 }
 

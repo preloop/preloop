@@ -4359,7 +4359,10 @@ func classifyRuntimePluginInstallFailure(installer string, message string) (stri
 	if normalizedInstaller == "hermes" &&
 		strings.Contains(normalizedMessage, "invalid plugin identifier") {
 		return "runtime_marketplace_rejected_identifier",
-			"Hermes' `plugins install` only accepts Git URLs or owner/repo shorthands; the Preloop plugin is distributed on PyPI. Install it with `pip install preloop-hermes-plugin` using Hermes' Python environment, then restart Hermes."
+			fmt.Sprintf(
+				"Hermes' `plugins install` only accepts Git URLs or owner/repo shorthands; the Preloop plugin is distributed on PyPI and must be installed into Hermes' virtualenv (never the system Python, which rejects installs on PEP 668 systems). Run `%s`, then restart Hermes (`hermes gateway restart`).",
+				hermesManualPluginInstallCommand("preloop-hermes-plugin"),
+			)
 	}
 	if normalizedInstaller == "openclaw" &&
 		strings.Contains(normalizedMessage, "control_ws_url") &&
@@ -4451,7 +4454,23 @@ func verifyAgentControlRuntimePlugin(agent AgentConfig) map[string]interface{} {
 		return result
 	}
 	path, err := resolveRuntimeExecutable(command)
+	if err != nil && runtimeSessionSourceTypeForAgent(agent.Name) == hermesSourceType {
+		// pip installs into Hermes' virtualenv put the plugin's console script
+		// in <install-dir>/venv/bin, which is usually not on PATH. Check the
+		// venv before concluding the plugin is missing.
+		if venvPath, ok := findHermesVenvExecutable(command); ok {
+			path, err = venvPath, nil
+		}
+	}
 	if err != nil {
+		if runtimeSessionSourceTypeForAgent(agent.Name) == hermesSourceType {
+			// Entry-point installs register the plugin with Hermes itself even
+			// when no console script is discoverable; `hermes plugins list` is
+			// the authoritative signal in that case.
+			if entryPoint := verifyHermesEntryPointPlugin(); entryPoint != nil {
+				return mergeStringMaps(result, entryPoint)
+			}
+		}
 		return mergeStringMaps(result, managedAgentControlSidecarVerification(agent))
 	}
 	result["control_plugin_installed"] = true

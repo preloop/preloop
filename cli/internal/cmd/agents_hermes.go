@@ -732,49 +732,160 @@ func extractHermesCredentialPoolAuthBlob(
 	return nil
 }
 
+// hermesInstallDirVersionPrefix is the label Hermes prints in its
+// `hermes --version` banner ahead of the installation root, e.g.
+//
+//	Hermes Agent 1.2.3
+//	Install directory: /usr/local/lib/hermes-agent
+//
+// The virtualenv Hermes runs from (and loads `hermes_agent.plugins` entry
+// points from) lives at `<install-dir>/venv`, so this line is the most
+// reliable discovery signal for the interpreter pip installs must target.
+const hermesInstallDirVersionPrefix = "Install directory:"
+
+// hermesInstallDirFromVersionOutput extracts the install directory from
+// `hermes --version` output. Returns "" when the banner does not include one.
+func hermesInstallDirFromVersionOutput(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, hermesInstallDirVersionPrefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, hermesInstallDirVersionPrefix))
+		}
+	}
+	return ""
+}
+
+// hermesInstallDirFromVersionCommand runs `hermes --version` and parses the
+// reported install directory. Returns "" when hermes cannot be resolved or the
+// banner carries no install directory. CombinedOutput is used deliberately:
+// some Hermes builds print the banner on stderr, and even a failing invocation
+// may still emit the line we need.
+func hermesInstallDirFromVersionCommand() string {
+	hermesPath, err := resolveRuntimeExecutable("hermes")
+	if err != nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	output, _ := exec.CommandContext(ctx, hermesPath, "--version").CombinedOutput()
+	return hermesInstallDirFromVersionOutput(string(output))
+}
+
+// hermesVenvBinDirCandidates returns directories that may hold Hermes'
+// virtualenv executables (python, pip, plugin console scripts), most specific
+// first:
+//
+//  1. `<install-dir>/venv/bin` where install-dir comes from `hermes --version`
+//     (matches the running gateway process, whose cmdline is
+//     `<install-dir>/venv/bin/python -m hermes_cli.main gateway run`).
+//  2. The directory containing the hermes executable itself, but only when it
+//     actually is a virtualenv bin directory (pipx-style installs put hermes
+//     directly inside the venv bin). The `pyvenv.cfg` gate stops us from
+//     mistaking `/usr/bin` for a venv when hermes and the system python3
+//     happen to share a bin directory.
+//  3. The default `~/.hermes/hermes-agent/venv/bin` location.
+func hermesVenvBinDirCandidates() []string {
+	dirs := []string{}
+	if installDir := hermesInstallDirFromVersionCommand(); installDir != "" {
+		dirs = append(dirs, filepath.Join(installDir, "venv", "bin"))
+	}
+	if hermesPath, err := resolveRuntimeExecutable("hermes"); err == nil {
+		hermesBinDir := filepath.Dir(hermesPath)
+		if _, statErr := os.Stat(filepath.Join(filepath.Dir(hermesBinDir), "pyvenv.cfg")); statErr == nil {
+			dirs = append(dirs, hermesBinDir)
+		}
+	}
+	if homeDir, err := os.UserHomeDir(); err == nil {
+		dirs = append(dirs, filepath.Join(homeDir, ".hermes", "hermes-agent", "venv", "bin"))
+	}
+	return dirs
+}
+
+// findHermesVenvExecutable looks for the named executable inside Hermes'
+// virtualenv bin directories. Console scripts installed by pip (for example
+// `preloop-hermes-plugin`) land there rather than on PATH, so validation must
+// check these locations before concluding the plugin is missing.
+func findHermesVenvExecutable(command string) (string, bool) {
+	for _, dir := range hermesVenvBinDirCandidates() {
+		candidate := filepath.Join(dir, command)
+		if isExecutableRegularFile(candidate) {
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
+// isExecutableRegularFile reports whether path is an executable regular file.
+func isExecutableRegularFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir() && info.Mode().Perm()&0111 != 0
+}
+
 // hermesPipPythonCandidates returns Python interpreters that live inside
 // Hermes' own environment, most specific first. Hermes loads plugins from its
 // Python environment via the `hermes_agent.plugins` entry point, so pip
 // installs must target that interpreter rather than an arbitrary system one.
 func hermesPipPythonCandidates() []string {
 	candidates := []string{}
-	if hermesPath, err := resolveRuntimeExecutable("hermes"); err == nil {
-		binDir := filepath.Dir(hermesPath)
+	for _, dir := range hermesVenvBinDirCandidates() {
 		candidates = append(
 			candidates,
-			filepath.Join(binDir, "python3"),
-			filepath.Join(binDir, "python"),
-		)
-	}
-	if homeDir, err := os.UserHomeDir(); err == nil {
-		venvBin := filepath.Join(homeDir, ".hermes", "hermes-agent", "venv", "bin")
-		candidates = append(
-			candidates,
-			filepath.Join(venvBin, "python3"),
-			filepath.Join(venvBin, "python"),
+			filepath.Join(dir, "python3"),
+			filepath.Join(dir, "python"),
 		)
 	}
 	return candidates
 }
 
 // resolveHermesPipPython picks the interpreter used for pip-installing the
-// Preloop Hermes plugin: a python bundled with the Hermes install when
-// available, otherwise python3/python from PATH.
+// Preloop Hermes plugin. Only interpreters inside Hermes' own environment are
+// considered: installing into the system Python both fails PEP 668
+// (externally-managed-environment) on stock Debian and would not be visible to
+// Hermes' plugin loader anyway, so there is deliberately no PATH fallback.
 func resolveHermesPipPython() (string, error) {
 	for _, candidate := range hermesPipPythonCandidates() {
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() &&
-			info.Mode().Perm()&0111 != 0 {
+		if isExecutableRegularFile(candidate) {
 			return candidate, nil
 		}
 	}
-	for _, name := range []string{"python3", "python"} {
-		if path, err := exec.LookPath(name); err == nil {
-			return path, nil
+	return "", fmt.Errorf(
+		"could not locate Hermes' virtualenv Python interpreter (checked the `Install directory:` "+
+			"reported by `hermes --version`, the directory containing the hermes executable, and "+
+			"~/.hermes/hermes-agent/venv/bin). Hermes loads plugins from its own virtualenv, and the "+
+			"system Python rejects installs on PEP 668 (externally-managed-environment) systems, so "+
+			"no system interpreter is used. Install the plugin manually with: %s",
+		hermesManualPluginInstallCommand("preloop-hermes-plugin"),
+	)
+}
+
+// hermesVenvPipFallbackPath returns the best-known path to Hermes' venv pip
+// binary for use in copy-pasteable remediation commands. It never degrades to
+// a bare `pip`: when the venv cannot be located it returns the path where the
+// venv pip is expected to live so the user runs the right interpreter.
+func hermesVenvPipFallbackPath() string {
+	for _, candidate := range hermesPipPythonCandidates() {
+		if isExecutableRegularFile(candidate) {
+			return filepath.Join(filepath.Dir(candidate), "pip")
 		}
 	}
-	return "", fmt.Errorf(
-		"no Python interpreter found for installing the Hermes Preloop plugin " +
-			"(looked next to the hermes executable, in ~/.hermes/hermes-agent/venv/bin, and on PATH)",
+	if installDir := hermesInstallDirFromVersionCommand(); installDir != "" {
+		return filepath.Join(installDir, "venv", "bin", "pip")
+	}
+	if homeDir, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(homeDir, ".hermes", "hermes-agent", "venv", "bin", "pip")
+	}
+	return "<hermes-install-dir>/venv/bin/pip"
+}
+
+// hermesManualPluginInstallCommand renders the manual (and `--dry-run`)
+// install command for the Preloop Hermes plugin. `hermes plugins install`
+// only accepts Git URLs / owner-repo shorthands, so the working command is a
+// pip install into Hermes' virtualenv followed by a plugin enable.
+func hermesManualPluginInstallCommand(installTarget string) string {
+	return fmt.Sprintf(
+		"%s install --upgrade %s && hermes plugins enable preloop --allow-tool-override",
+		hermesVenvPipFallbackPath(),
+		installTarget,
 	)
 }
 
@@ -784,7 +895,9 @@ func resolveHermesPipPython() (string, error) {
 // channel is PyPI (`preloop-hermes-plugin`) plus the `hermes_agent.plugins`
 // entry point (see runtime-plugins/PUBLISHING.md). installTarget is either
 // the PyPI package name or a local plugin source directory; pip accepts both.
-// Returns (true, "") on success, otherwise (false, failure message).
+// After a successful install the plugin is enabled best-effort so Hermes
+// actually loads it. Returns (true, "") on success, otherwise
+// (false, failure message).
 func installHermesPluginViaPip(installTarget string, writer io.Writer) (bool, string) {
 	pythonPath, err := resolveHermesPipPython()
 	if err != nil {
@@ -810,7 +923,93 @@ func installHermesPluginViaPip(installTarget string, writer io.Writer) (bool, st
 		}
 		return false, message
 	}
+	enableHermesPreloopPlugin(writer)
 	return true, ""
+}
+
+// enableHermesPreloopPlugin best-effort enables the entry-point-installed
+// Preloop plugin so Hermes loads it. Newer Hermes builds require
+// `--allow-tool-override` because the plugin overrides tool dispatch; older
+// builds reject the flag, so we retry without it. Failures are non-fatal —
+// verification and the printed remediation cover the manual path.
+func enableHermesPreloopPlugin(writer io.Writer) bool {
+	hermesPath, err := resolveRuntimeExecutable("hermes")
+	if err != nil {
+		return false
+	}
+	for _, args := range [][]string{
+		{"plugins", "enable", "preloop", "--allow-tool-override"},
+		{"plugins", "enable", "preloop"},
+	} {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		_, runErr := exec.CommandContext(ctx, hermesPath, args...).CombinedOutput()
+		cancel()
+		if runErr == nil {
+			if writer != nil {
+				fmt.Fprintln(writer, "  Enabled the Preloop plugin in Hermes.") //nolint:errcheck
+			}
+			return true
+		}
+	}
+	if writer != nil {
+		fmt.Fprintln(
+			writer,
+			"  Warning: could not enable the Preloop plugin automatically. "+
+				"Run `hermes plugins enable preloop --allow-tool-override` manually, then restart Hermes.",
+		) //nolint:errcheck
+	}
+	return false
+}
+
+// hermesPluginsListPreloopStatus inspects `hermes plugins list` for the
+// Preloop plugin. Entry-point installs (pip into Hermes' venv) register the
+// plugin with Hermes itself even when no console script is discoverable, so
+// this is the authoritative fallback signal for "plugin installed". Returns
+// (installed, enabled).
+func hermesPluginsListPreloopStatus() (bool, bool) {
+	hermesPath, err := resolveRuntimeExecutable("hermes")
+	if err != nil {
+		return false, false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, hermesPath, "plugins", "list").CombinedOutput()
+	if err != nil {
+		return false, false
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		lower := strings.ToLower(line)
+		if !strings.Contains(lower, "preloop") {
+			continue
+		}
+		if strings.Contains(lower, "disabled") {
+			return true, false
+		}
+		return true, true
+	}
+	return false, false
+}
+
+// verifyHermesEntryPointPlugin recognises a Preloop plugin installed through
+// the `hermes_agent.plugins` entry point (pip install into Hermes' venv) when
+// no console script is discoverable. Returns nil when Hermes does not report
+// the plugin at all so callers can fall through to the managed sidecar check.
+func verifyHermesEntryPointPlugin() map[string]interface{} {
+	installed, enabled := hermesPluginsListPreloopStatus()
+	if !installed {
+		return nil
+	}
+	result := map[string]interface{}{
+		"control_plugin_installed": true,
+		"control_plugin_verified":  enabled,
+	}
+	if enabled {
+		result["control_plugin_verification"] = "hermes_entry_point_plugin_enabled"
+	} else {
+		result["control_plugin_verification"] = "hermes_entry_point_plugin_disabled"
+		result["control_plugin_install_remediation"] = "Run `hermes plugins enable preloop --allow-tool-override`, then restart Hermes (`hermes gateway restart`)."
+	}
+	return result
 }
 
 // restartHermesGatewayAfterReconfig reloads the Hermes messaging gateway so MCP
