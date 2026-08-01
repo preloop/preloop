@@ -19,6 +19,7 @@ from preloop.api.common import get_account_for_user
 from preloop.models.models.user import User
 from preloop.models.crud import (
     crud_approval_workflow,
+    crud_managed_agent,
     crud_mcp_server,
     crud_mcp_tool,
     crud_tool_configuration,
@@ -512,7 +513,11 @@ def list_all_tools(
         db, account_id=str(account.id)
     )
 
-    # Create a lookup map: (tool_name, source, mcp_server_id) -> config
+    # Create a lookup map: (tool_name, source, mcp_server_id) -> config.
+    # Only account-wide rows (managed_agent_id is null) drive the page-level
+    # is_enabled/config reporting; agent-scoped rows are collected separately
+    # so the UI can show which agents have their own enablement without
+    # misreporting the account-wide state.
     config_map = {
         (
             tc.tool_name,
@@ -520,7 +525,18 @@ def list_all_tools(
             str(tc.mcp_server_id) if tc.mcp_server_id else None,
         ): tc
         for tc in tool_configs
+        if tc.managed_agent_id is None
     }
+    agent_scoped_enables: Dict[tuple, list] = {}
+    for tc in tool_configs:
+        if tc.managed_agent_id is None or not tc.is_enabled:
+            continue
+        key = (
+            tc.tool_name,
+            tc.tool_source,
+            str(tc.mcp_server_id) if tc.mcp_server_id else None,
+        )
+        agent_scoped_enables.setdefault(key, []).append(str(tc.managed_agent_id))
 
     # Get all access rules for this account
     access_rules = crud_tool_access_rule.get_multi_by_account(
@@ -559,7 +575,8 @@ def list_all_tools(
 
     # Add builtin tools
     for builtin_tool in BUILTIN_TOOLS:
-        config = config_map.get((builtin_tool["name"], "builtin", None))
+        builtin_key = (builtin_tool["name"], "builtin", None)
+        config = config_map.get(builtin_key)
         config_id = str(config.id) if config else None
 
         requires_tracker = builtin_tool.get("requires_tracker", False)
@@ -601,6 +618,7 @@ def list_all_tools(
                 else False,
                 "access_rules": rules_by_config.get(config_id, []) if config_id else [],
                 "justification_mode": config.justification_mode if config else None,
+                "enabled_for_agents": agent_scoped_enables.get(builtin_key, []),
             }
         )
 
@@ -611,7 +629,8 @@ def list_all_tools(
         mcp_tools = crud_mcp_tool.get_by_server(db, server_id=server.id)
 
         for mcp_tool in mcp_tools:
-            config = config_map.get((mcp_tool.name, "mcp", str(server.id)))
+            mcp_key = (mcp_tool.name, "mcp", str(server.id))
+            config = config_map.get(mcp_key)
             config_id = str(config.id) if config else None
             tools.append(
                 {
@@ -637,6 +656,7 @@ def list_all_tools(
                     if config_id
                     else [],
                     "justification_mode": config.justification_mode if config else None,
+                    "enabled_for_agents": agent_scoped_enables.get(mcp_key, []),
                 }
             )
 
@@ -669,10 +689,27 @@ async def create_tool_configuration(
     Raises:
         HTTPException: If configuration already exists or creation fails
     """
-    # Check if configuration already exists
+    # An agent-scoped configuration must reference an agent of this account.
+    if config_data.managed_agent_id:
+        agent = crud_managed_agent.get_for_account(
+            db,
+            account_id=str(account.id),
+            agent_id=str(config_data.managed_agent_id),
+        )
+        if not agent:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Managed agent not found or access denied",
+            )
+
+    # Check if configuration already exists (per scope: an account-wide row
+    # and per-agent rows for the same tool are distinct configurations)
     # Get all configs and filter in Python since we need multi-field matching
     all_configs = crud_tool_configuration.get_multi_by_account(
         db, account_id=str(account.id), limit=1000
+    )
+    requested_agent_id = (
+        str(config_data.managed_agent_id) if config_data.managed_agent_id else None
     )
     existing_config = next(
         (
@@ -681,6 +718,8 @@ async def create_tool_configuration(
             if c.tool_name == config_data.tool_name
             and c.tool_source == config_data.tool_source
             and c.mcp_server_id == config_data.mcp_server_id
+            and (str(c.managed_agent_id) if c.managed_agent_id else None)
+            == requested_agent_id
         ),
         None,
     )
@@ -717,12 +756,20 @@ async def create_tool_configuration(
             f"Tool configuration for {config_data.tool_name} already exists, fetching existing config"
         )
 
-        # Fetch the existing configuration
-        existing_config = crud_tool_configuration.get_by_tool_name_and_source(
-            db,
-            account_id=str(account.id),
-            tool_name=config_data.tool_name,
-            tool_source=config_data.tool_source,
+        # Fetch the existing configuration for the same scope
+        race_configs = crud_tool_configuration.get_multi_by_account(
+            db, account_id=str(account.id), limit=1000
+        )
+        existing_config = next(
+            (
+                c
+                for c in race_configs
+                if c.tool_name == config_data.tool_name
+                and c.tool_source == config_data.tool_source
+                and (str(c.managed_agent_id) if c.managed_agent_id else None)
+                == requested_agent_id
+            ),
+            None,
         )
 
         if existing_config:

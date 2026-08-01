@@ -16035,6 +16035,13 @@ components:
         account_id:
           type: string
           title: Account Id
+        managed_agent_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Managed Agent Id
+          description: Optional managed-agent scope. Null = account-wide (default);
+            set = the configuration applies only to that agent
       type: object
       required:
       - tool_name
@@ -16102,6 +16109,11 @@ components:
           - type: string
           - type: 'null'
           title: Account Id
+        managed_agent_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Managed Agent Id
         created_at:
           type: string
           format: date-time

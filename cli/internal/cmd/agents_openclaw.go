@@ -904,6 +904,15 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		if err := installApprovalHooks(agent, baseURL, credentialResp.Token, output); err != nil {
 			return err
 		}
+		if permissionSourceForAgent(agent) == permissionSourceClaudeCode {
+			// Headless (claude -p) governance: enable the default-disabled
+			// permission_prompt builtin for exactly this agent so the rest
+			// of the account's MCP clients keep paying zero context for it.
+			if err := enablePermissionPromptBuiltin(client, managedAgent.ID, output); err != nil {
+				// Non-fatal: hook-based approvals above already applied.
+				fmt.Fprintf(output, "  Warning: %v\n", err) //nolint:errcheck
+			}
+		}
 	}
 	pluginInstallResult := installAgentControlRuntimePlugin(agent, output)
 	gatewayRestartResult := restartHermesGatewayAfterReconfig(agent, output)

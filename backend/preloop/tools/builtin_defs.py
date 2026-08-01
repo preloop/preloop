@@ -66,6 +66,10 @@ PERMISSION_PROMPT_TOOL: Dict[str, Any] = {
         "mcp__preloop__permission_prompt); not for direct agent use."
     ),
     "source": "builtin",
+    # Default-off: only headless Claude Code runs that pass
+    # --permission-prompt-tool need this tool, so accounts should not pay
+    # its tools/list context tax (issue #128) unless they opt in.
+    "default_enabled": False,
     "requires_tracker": False,
     "required_tracker_types": [],
     "schema": {

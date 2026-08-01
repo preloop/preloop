@@ -32,6 +32,11 @@ class ToolConfiguration(Base):
         tool_name: Name of the tool.
         tool_source: Source type ('builtin', 'mcp', 'http').
         mcp_server_id: Reference to MCP server (if tool_source='mcp').
+        managed_agent_id: Optional agent scope. Null means the row applies
+            account-wide (the historical behavior). When set, the row applies
+            only to that managed agent: it can enable a default-disabled
+            builtin for one agent without exposing it to the rest of the
+            account, and it is invisible to every other caller.
         is_enabled: Whether the tool is enabled for this account.
         requires_approval: Whether the tool requires pre-execution approval ("preloop").
         approval_workflow_id: Reference to approval workflow (if requires_approval=True).
@@ -65,6 +70,18 @@ class ToolConfiguration(Base):
         UUID(as_uuid=True),
         nullable=True,
         comment="Reference to HTTP endpoint (future: if tool_source='http')",
+    )
+
+    # Optional agent scope: null = account-wide row (historical behavior).
+    managed_agent_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("managed_agent.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+        comment=(
+            "Optional managed-agent scope; null = account-wide, set = the "
+            "configuration applies only to that agent"
+        ),
     )
 
     # Configuration
@@ -128,13 +145,15 @@ class ToolConfiguration(Base):
         cascade="all, delete-orphan",
     )
 
-    # Unique constraint: one configuration per tool+source per account
+    # Unique constraint: one configuration per tool+source per account and
+    # per scope (account-wide vs a specific managed agent).
     __table_args__ = (
         UniqueConstraint(
             "account_id",
             "tool_name",
             "tool_source",
             "mcp_server_id",
+            "managed_agent_id",
             name="uq_account_tool_source",
         ),
     )
