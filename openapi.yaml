@@ -7855,6 +7855,54 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/security-screen/score:
+    post:
+      tags:
+      - Security Screen
+      summary: Score screened content (QM security-screen proxy contract)
+      description: "Score one screened content chunk with the deterministic rule engine.\n\
+        \nArgs:\n    payload: Screened chunk (text, hook, opaque metadata).\n    auth_context:\
+        \ Authenticated request context.\n\nReturns:\n    The verdict in QM's expected\
+        \ shape; ``primary_outcome`` is omitted\n    for benign content."
+      operationId: score_screened_content_api_v1_security_screen_score_post
+      parameters:
+      - name: x-api-key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SecurityScreenRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityScreenResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
   /api/v1/agents/{agent_id}/control/commands:
     post:
       tags:
@@ -16209,6 +16257,68 @@ components:
       - item
       - similarity
       title: SearchResultItem
+    SecurityScreenRequest:
+      properties:
+        text:
+          type: string
+          maxLength: 64000
+          title: Text
+          description: Untrusted content to score
+        hook:
+          type: string
+          maxLength: 100
+          title: Hook
+          description: 'Screening hook: user_input or tool_response'
+          default: user_input
+        metadata:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Metadata
+          description: Opaque caller metadata (chunk coordinates, surface)
+      type: object
+      required:
+      - text
+      title: SecurityScreenRequest
+      description: "One screened content chunk POSTed by a QM deployment.\n\nAttributes:\n\
+        \    text: Untrusted content to score. QM sends overlapping chunks of at\n\
+        \        most 1,600 characters; the cap here is a defensive bound only.\n\
+        \    hook: Screening hook, ``user_input`` or ``tool_response``. Unknown\n\
+        \        values are accepted for forward compatibility.\n    metadata: Optional\
+        \ caller metadata (surface, origin, and chunk\n        coordinates under the\
+        \ ``qm`` and provider-label namespaces).\n        Treated as opaque."
+    SecurityScreenResponse:
+      properties:
+        score:
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          title: Score
+          description: Score in [0, 1]
+        threshold:
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          title: Threshold
+          description: Strictness threshold in [0, 1]
+        primary_outcome:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Primary Outcome
+          description: Lowercase label of the dominant rule category
+      type: object
+      required:
+      - score
+      - threshold
+      title: SecurityScreenResponse
+      description: "Screening verdict in the shape QM's proxy contract expects.\n\n\
+        Attributes:\n    score: Finite score in [0, 1]; the chunk resolves to Strict\
+        \ on the\n        caller side when the score is at or above the threshold.\n\
+        \    threshold: Finite threshold in [0, 1] this deployment screens at.\n \
+        \   primary_outcome: Optional lowercase label naming the dominant rule\n \
+        \       category; omitted for benign content."
     SpeechToTextResponse:
       properties:
         text:

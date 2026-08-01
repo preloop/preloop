@@ -47,6 +47,7 @@ from preloop.api.endpoints import (
     public_approval,
     roles,
     search as search_router,
+    security_screen,
     session_optimization,
     tools,
     trackers,
@@ -1029,6 +1030,14 @@ def create_app() -> FastAPI:
             prefix="/api/v1",
             tags=["Policies"],
             dependencies=[Depends(get_current_active_user)],
+        )
+
+        # Security-screen scoring endpoint (QM external proxy contract).
+        # Auth is handled in-endpoint: callers send an API key in x-api-key.
+        app.include_router(
+            security_screen.router,
+            prefix="/api/v1",
+            tags=["Security Screen"],
         )
 
         # WebSocket router
