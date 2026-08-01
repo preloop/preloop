@@ -72,7 +72,6 @@ def test_estimate_matches_gateway_serialization() -> None:
                 "name": "tool",
                 "parameters": schema,
             },
-            default=str,
             sort_keys=True,
         )
     )
@@ -84,4 +83,38 @@ def test_estimate_matches_gateway_serialization() -> None:
             justification_mode=None,
         )
         == expected
+    )
+
+
+def test_estimate_fails_closed_for_non_serializable_schema() -> None:
+    """Non-JSON schemas must not be coerced via default=str into a bogus count."""
+
+    class NotJson:
+        pass
+
+    schema = {
+        "type": "object",
+        "properties": {"bad": {"const": NotJson()}},
+    }
+    # default=str would produce a positive (wrong) estimate; we return 0.
+    bogus = estimate_tokens(
+        json.dumps(
+            {
+                "description": "desc",
+                "name": "tool",
+                "parameters": schema,
+            },
+            default=str,
+            sort_keys=True,
+        )
+    )
+    assert bogus > 0
+    assert (
+        estimate_tool_schema_tokens(
+            name="tool",
+            description="desc",
+            schema=schema,  # type: ignore[arg-type]
+            justification_mode=None,
+        )
+        == 0
     )

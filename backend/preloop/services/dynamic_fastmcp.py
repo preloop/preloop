@@ -94,6 +94,14 @@ _bypass_approval_var: ContextVar[bool] = ContextVar(
     "_bypass_approval_var", default=False
 )
 
+# The approver's comment from the already-approved request being re-executed.
+# Set by get_approval_status() alongside _bypass_approval_var so tools that
+# consume the comment as their result (ask_user: the comment IS the human's
+# answer) do not lose it when require_approval() short-circuits during replay.
+_approved_comment_var: ContextVar[Optional[str]] = ContextVar(
+    "_approved_comment_var", default=None
+)
+
 # Context variable to ensure internal proxied tool names are only called via proxy translation
 _is_proxy_translation_var: ContextVar[bool] = ContextVar(
     "_is_proxy_translation_var", default=False

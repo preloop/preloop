@@ -393,14 +393,44 @@ def test_chat_completions_endpoint_returns_openai_error_envelope_for_upstream_fa
         )
 
     assert response.status_code == 502
-    assert response.json() == {
-        "error": {
-            "message": "Gateway upstream error: upstream exploded",
-            "type": "api_error",
-            "param": None,
-            "code": None,
-        }
-    }
+    body = response.json()
+    assert body["error"]["message"] == "Gateway upstream error: upstream exploded"
+    assert body["error"]["type"] == "api_error"
+    assert response.headers.get("X-Preloop-Error-Class") == "upstream_error"
+
+
+class _APIConnectionError(Exception):
+    """Name-matched stand-in for litellm.exceptions.APIConnectionError."""
+
+
+def test_chat_completions_connection_refused_returns_503(
+    app, client, db_session, test_user
+):
+    """#116: upstream connection refused must not surface as a generic 500."""
+    _create_gateway_model(db_session, test_user)
+    app.dependency_overrides[get_model_gateway_auth_context] = lambda: (
+        ModelGatewayAuthContext(token="runtime-token", user=test_user)
+    )
+
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        side_effect=_APIConnectionError(
+            "Connection error. [Errno 111] Connection refused"
+        ),
+    ):
+        response = client.post(
+            "/openai/v1/chat/completions",
+            headers={"Authorization": "Bearer ignored"},
+            json={
+                "model": "openai/gpt-5",
+                "messages": [{"role": "user", "content": "Hello"}],
+            },
+        )
+
+    assert response.status_code == 503
+    body = response.json()
+    assert "Upstream model provider unavailable" in body["error"]["message"]
+    assert response.headers.get("X-Preloop-Error-Class") == "network"
 
 
 def test_chat_completions_endpoint_streams_sse(app, client, db_session, test_user):
@@ -715,23 +745,22 @@ def test_chat_completions_stream_midstream_failure_emits_sse_error_event(
     assert response.status_code == 200
     # The delta consumed before the failure is relayed...
     assert "Hel" in response.text
-    # ...and the failure is surfaced as an explicit SSE error event.
+    # ...and the failure is surfaced as an explicit SSE error event (#109/#117).
     error_events = [
         json.loads(line[len("data: ") :])
         for line in response.text.splitlines()
         if line.startswith("data: ") and '"error"' in line
     ]
     assert error_events, f"expected an SSE error event, got: {response.text!r}"
-    assert "upstream connection reset" in error_events[-1]["error"]["message"]
-    assert error_events[-1]["error"]["type"] == "api_error"
-    # No [DONE] marker: the stream did not complete successfully.
-    assert "data: [DONE]" not in response.text
+    assert error_events[-1]["error"]["type"] == "upstream_disconnect"
+    # Terminal [DONE] lets clients distinguish truncation from hang (#117).
+    assert "data: [DONE]" in response.text
 
 
 def test_responses_stream_midstream_failure_emits_sse_error_event(
     app, client, db_session, test_user
 ):
-    """Responses-API streams must also surface mid-stream failures (issue #109)."""
+    """Responses-API streams must also surface mid-stream failures (#109/#117)."""
     _create_gateway_model(db_session, test_user)
     app.dependency_overrides[get_model_gateway_auth_context] = lambda: (
         ModelGatewayAuthContext(token="runtime-token", user=test_user)
@@ -766,5 +795,6 @@ def test_responses_stream_midstream_failure_emits_sse_error_event(
         if line.startswith("data: ") and '"type": "error"' in line
     ]
     assert error_events, f"expected an SSE error event, got: {response.text!r}"
+    assert error_events[-1].get("code") == "upstream_disconnect"
     assert "upstream connection reset" in error_events[-1]["message"]
-    assert "data: [DONE]" not in response.text
+    assert "data: [DONE]" in response.text

@@ -90,6 +90,34 @@ def _build_usage(**overrides) -> ApiUsage:
     return usage
 
 
+def test_build_event_prefers_api_usage_cache_columns_over_stale_meta():
+    """Activity payload cache tokens must come from ApiUsage columns first."""
+    emitter = ModelGatewayEventEmitter(MagicMock())
+    usage = _build_usage(
+        cache_read_tokens=1200,
+        cache_creation_tokens=3400,
+        meta_data={
+            "endpoint_kind": "responses",
+            "usage_details": {
+                "cache_read_input_tokens": 1,
+                "cache_creation_input_tokens": 2,
+                "prompt_tokens_details": {"cached_tokens": 1},
+            },
+            "budget": {"soft_limit_exceeded": False},
+            "error_detail": None,
+        },
+    )
+    with patch.object(settings, "model_gateway_capture_content", False):
+        event = emitter._build_event(
+            usage=usage,
+            request_payload={"messages": [{"role": "user", "content": "hi"}]},
+            response_payload={"output_text": "ok"},
+        )
+    payload = event["payload"]
+    assert payload["cache_read_input_tokens"] == 1200
+    assert payload["cache_creation_input_tokens"] == 3400
+
+
 def test_build_event_includes_budget_runtime_principal_and_redacted_payloads():
     """Captured payload previews should keep structure while redacting secrets."""
     emitter = ModelGatewayEventEmitter(MagicMock())
