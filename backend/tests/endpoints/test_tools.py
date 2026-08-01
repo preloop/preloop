@@ -205,6 +205,7 @@ class TestListAllTools:
         config.tool_name = "get_issue"
         config.tool_source = "builtin"
         config.mcp_server_id = None
+        config.managed_agent_id = None
         config.is_enabled = True
         config.approval_workflow_id = None
         config.justification_mode = "required"
