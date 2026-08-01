@@ -111,6 +111,9 @@ class ApiUsage(Base):
     # provider | estimated | partial | imported
     usage_source: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     is_retry: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    # Stable upstream-failure taxonomy (network, upstream_overloaded, …).
+    # NULL on successes and non-upstream failures (validation, budget denials).
+    error_class: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     runtime_principal_type: Mapped[Optional[str]] = mapped_column(
         String(64), nullable=True
     )
