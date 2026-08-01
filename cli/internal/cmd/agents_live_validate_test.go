@@ -640,10 +640,13 @@ func TestPrintDeferredLiveValidationLine_StatusVariants(t *testing.T) {
 				Outcome: &managedLiveValidationOutcome{
 					Attempted: true,
 					Passed:    true,
+					ValidationResult: map[string]interface{}{
+						"live_validation_model_alias": "openai/gpt-5.4",
+					},
 				},
 				Duration: 250 * time.Millisecond,
 			},
-			contains: []string{"OpenClaw", "passed", "250ms"},
+			contains: []string{"OpenClaw", "round-trip OK", "openai/gpt-5.4", "latency="},
 		},
 		{
 			name: "failed_with_error",
@@ -659,7 +662,7 @@ func TestPrintDeferredLiveValidationLine_StatusVariants(t *testing.T) {
 			},
 			contains: []string{
 				"Codex CLI",
-				"failed",
+				"round-trip FAILED",
 				"HTTP 400 boom",
 				"preloop agents validate \"Codex CLI\" --live",
 			},
