@@ -1057,4 +1057,55 @@ describe('SessionReplayPanel', () => {
     // Focus did not move: the keystroke belonged to the control.
     expect(element.shadowRoot?.activeElement).to.equal(turns[0]);
   });
+
+  it('annotates turns with measured idle cache expiry from optimize profile', async () => {
+    const events: FlowGatewayEvent[] = [
+      previewEvent('e1', '2026-06-07T12:00:00Z', [
+        { role: 'user', text: 'TURN_ONE' },
+      ]),
+      previewEvent('e2', '2026-06-07T12:11:00Z', [
+        { role: 'user', text: 'TURN_TWO' },
+      ]),
+    ];
+    const element = await fixture<SessionReplayPanel>(html`
+      <session-replay-panel
+        replayMode="chat"
+        .session=${SESSION}
+        .events=${events}
+        .optimizationResult=${{
+          generated_by: 'local',
+          suggestions: [],
+          context_profile: {
+            session_id: 'session-1',
+            analyzed_event_count: 2,
+            total_prompt_tokens: 1000,
+            total_completion_tokens: 100,
+            cache_profile: {
+              idle_expiry_events: [
+                {
+                  event_id: 'e2',
+                  previous_event_id: 'e1',
+                  idle_seconds: 660,
+                  rewritten_tokens: 8000,
+                  measured_extra_cost_usd: 0.0276,
+                },
+              ],
+            },
+          },
+        }}
+      ></session-replay-panel>
+    `);
+    await element.updateComplete;
+    const notes = Array.from(
+      element.shadowRoot?.querySelectorAll(
+        '[data-testid="idle-cache-expiry"]'
+      ) || []
+    );
+    expect(notes.length).to.equal(1);
+    const text = (notes[0].textContent || '').replace(/\s+/g, ' ');
+    expect(text).to.include('idle 11m');
+    expect(text).to.include('cache expired');
+    expect(text).to.include('extra');
+    expect(text).to.include('8,000');
+  });
 });
