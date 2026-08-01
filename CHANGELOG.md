@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Claude Code Agent Control sidecar prototype** (`@preloop-ai/claude-plugin`,
+  `runtime-plugins/claude-preloop`): steer sidecar-owned Claude Code sessions
+  (send_message, resume, interrupt) over the `preloop.agent_control.v1`
+  WebSocket via the Claude Agent SDK, and observe interactive TUI sessions
+  (presence/telemetry from `~/.claude/projects/**.jsonl`). Tool approvals
+  stay on the existing PreToolUse hook path. Config lives in
+  `~/.claude/preloop-control.json` (#131).
 - **Native scheduled (cron) flow triggers**: flows can now run on a schedule
   without an external cron caller hitting the webhook endpoint. Create or
   update a flow with `trigger_event_source: "schedule"` and
