@@ -35,6 +35,7 @@ from preloop.services.replay_harness import (
     ReplayRunTokens,
     measure_replay_savings,
 )
+from preloop.services.builtin_tool_optimizer import tool_name_in_removed
 from preloop.services.savings_measurement import (
     InputTokenSavings,
     compute_input_token_savings,
@@ -533,7 +534,12 @@ def select_target_request(
             continue
         tools = request.get("tools") or request.get("functions") or []
         names = {_tool_name(t) for t in tools if isinstance(t, dict)}
-        has_removed = 1 if (names & removed_tool_names) else 0
+        # Accept bare/prefixed Preloop builtin aliases (#146).
+        has_removed = (
+            1
+            if any(tool_name_in_removed(name, removed_tool_names) for name in names)
+            else 0
+        )
         try:
             size = len(json.dumps(request, default=str))
         except (TypeError, ValueError):

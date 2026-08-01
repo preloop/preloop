@@ -1,9 +1,11 @@
 """Tests for deterministic runtime-session context analysis."""
 
 import json
+from datetime import UTC, datetime, timedelta
 
 from preloop.services.context_analysis import (
     CacheBreakingEvent,
+    CacheIdleExpiryEvent,
     CacheProfile,
     GatewayCallEvent,
     OversizedOutputField,
@@ -22,6 +24,7 @@ from preloop.services.context_analysis import (
     build_profile_from_events,
     compute_profile_savings,
     estimate_tokens,
+    provider_cache_idle_ttl_seconds,
 )
 
 SYSTEM_PROMPT = "You are a helpful coding agent. " * 20
@@ -57,23 +60,49 @@ def _event(
     is_retry: bool = False,
     fingerprint: str | None = None,
     estimated_cost: float = 0.0,
+    timestamp: datetime | None = None,
+    provider_name: str | None = None,
+    cache_read_tokens: int | None = None,
+    cache_creation_tokens: int | None = None,
+    api_usage_id: str | None = None,
+    cache_write_price_per_1k: float | None = None,
+    cache_read_price_per_1k: float | None = None,
+    model_alias: str | None = None,
 ) -> GatewayCallEvent:
     request: dict = {"messages": messages}
     if tools is not None:
         request["tools"] = tools
+    payload: dict = {
+        "request": request,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+        "outcome": outcome,
+        "status_code": status_code,
+        "is_retry": is_retry,
+        "request_fingerprint": fingerprint,
+        "estimated_cost": estimated_cost,
+    }
+    if provider_name is not None:
+        payload["provider_name"] = provider_name
+    if model_alias is not None:
+        payload["model_alias"] = model_alias
+    if api_usage_id is not None:
+        payload["api_usage_id"] = api_usage_id
+    if cache_read_tokens is not None:
+        payload["cache_read_input_tokens"] = cache_read_tokens
+    if cache_creation_tokens is not None:
+        payload["cache_creation_input_tokens"] = cache_creation_tokens
     return GatewayCallEvent(
         event_id=event_id,
-        payload={
-            "request": request,
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": prompt_tokens + completion_tokens,
-            "outcome": outcome,
-            "status_code": status_code,
-            "is_retry": is_retry,
-            "request_fingerprint": fingerprint,
-            "estimated_cost": estimated_cost,
-        },
+        payload=payload,
+        timestamp=timestamp,
+        api_usage_id=api_usage_id,
+        cache_read_tokens=cache_read_tokens,
+        cache_creation_tokens=cache_creation_tokens,
+        provider_name=provider_name,
+        cache_write_price_per_1k=cache_write_price_per_1k,
+        cache_read_price_per_1k=cache_read_price_per_1k,
     )
 
 
@@ -205,6 +234,183 @@ class TestCacheProfile:
         profile = analyze_cache_profile([_event("e1", messages=_conversation("q"))])
         assert profile.avg_repeated_prefix_tokens == 0
         assert profile.cache_breaking_events == []
+        assert profile.idle_expiry_events == []
+
+
+class TestIdleCacheExpiry:
+    """Idle-TTL expiry detection (content-stable + gap + usage collapse)."""
+
+    def test_anthropic_ttl_is_five_minutes(self) -> None:
+        assert provider_cache_idle_ttl_seconds("anthropic") == 300
+        assert provider_cache_idle_ttl_seconds("openai") == 600
+
+    def test_provider_ttl_uses_aliases_and_longest_compound_match(self) -> None:
+        assert provider_cache_idle_ttl_seconds("anthropic_bedrock") == 300
+        assert provider_cache_idle_ttl_seconds("azure_openai") == 600
+        assert provider_cache_idle_ttl_seconds("openai_westus") == 600
+        assert provider_cache_idle_ttl_seconds("west_openai") == 600
+        # Substring containment alone must not match.
+        assert provider_cache_idle_ttl_seconds("foopenai") == 300
+        assert provider_cache_idle_ttl_seconds("deepseekish") == 300
+
+    def test_idle_gap_with_cache_collapse_is_detected(self) -> None:
+        t0 = datetime(2026, 7, 31, 12, 0, tzinfo=UTC)
+        base = _conversation("Question one")
+        extended = [*base, {"role": "assistant", "content": "Answer one"}]
+        extended.append({"role": "user", "content": "Question two"})
+        events = [
+            _event(
+                "e1",
+                messages=base,
+                tools=TOOL_DEFINITIONS,
+                timestamp=t0,
+                provider_name="anthropic",
+                model_alias="anthropic/claude-sonnet-4",
+                cache_read_tokens=8_000,
+                cache_creation_tokens=0,
+                api_usage_id="usage-1",
+                cache_write_price_per_1k=0.00375,
+                cache_read_price_per_1k=0.0003,
+            ),
+            _event(
+                "e2",
+                messages=extended,
+                tools=TOOL_DEFINITIONS,
+                timestamp=t0 + timedelta(minutes=11),
+                provider_name="anthropic",
+                model_alias="anthropic/claude-sonnet-4",
+                cache_read_tokens=0,
+                cache_creation_tokens=8_000,
+                api_usage_id="usage-2",
+                cache_write_price_per_1k=0.00375,
+                cache_read_price_per_1k=0.0003,
+            ),
+        ]
+        profile = analyze_cache_profile(events)
+        assert profile.prefix_stability == "stable"
+        assert profile.cache_breaking_events == []
+        assert len(profile.idle_expiry_events) == 1
+        event = profile.idle_expiry_events[0]
+        assert event.event_id == "e2"
+        assert event.previous_event_id == "e1"
+        assert event.api_usage_id == "usage-2"
+        assert event.idle_seconds == 660.0
+        assert event.provider_ttl_seconds == 300
+        assert event.rewritten_tokens == 8_000
+        # (0.00375 - 0.0003) * 8 = 0.0276
+        assert event.measured_extra_cost_usd == 0.0276
+        assert profile.measured_idle_expiry_tokens == 8_000
+        assert profile.measured_idle_expiry_extra_cost_usd == 0.0276
+
+    def test_short_gap_under_ttl_is_not_idle_expiry(self) -> None:
+        t0 = datetime(2026, 7, 31, 12, 0, tzinfo=UTC)
+        base = _conversation("Question one")
+        extended = [*base, {"role": "assistant", "content": "Answer one"}]
+        extended.append({"role": "user", "content": "Question two"})
+        events = [
+            _event(
+                "e1",
+                messages=base,
+                tools=TOOL_DEFINITIONS,
+                timestamp=t0,
+                provider_name="anthropic",
+                cache_read_tokens=8_000,
+                cache_creation_tokens=0,
+            ),
+            _event(
+                "e2",
+                messages=extended,
+                tools=TOOL_DEFINITIONS,
+                timestamp=t0 + timedelta(minutes=2),
+                provider_name="anthropic",
+                cache_read_tokens=0,
+                cache_creation_tokens=8_000,
+            ),
+        ]
+        profile = analyze_cache_profile(events)
+        assert profile.idle_expiry_events == []
+
+    def test_content_break_is_not_classified_as_idle_expiry(self) -> None:
+        t0 = datetime(2026, 7, 31, 12, 0, tzinfo=UTC)
+        first = _conversation("Question one")
+        second = [
+            {"role": "system", "content": "Completely different system prompt"},
+            *first[1:],
+        ]
+        events = [
+            _event(
+                "e1",
+                messages=first,
+                timestamp=t0,
+                provider_name="anthropic",
+                cache_read_tokens=8_000,
+            ),
+            _event(
+                "e2",
+                messages=second,
+                timestamp=t0 + timedelta(minutes=20),
+                provider_name="anthropic",
+                cache_read_tokens=0,
+                cache_creation_tokens=8_000,
+            ),
+        ]
+        profile = analyze_cache_profile(events)
+        assert profile.idle_expiry_events == []
+        assert len(profile.cache_breaking_events) == 1
+
+    def test_warm_cache_after_long_gap_is_not_expiry(self) -> None:
+        """Long gap alone is insufficient when cache_read stays high."""
+        t0 = datetime(2026, 7, 31, 12, 0, tzinfo=UTC)
+        base = _conversation("Question one")
+        extended = [*base, {"role": "assistant", "content": "Answer one"}]
+        extended.append({"role": "user", "content": "Question two"})
+        events = [
+            _event(
+                "e1",
+                messages=base,
+                tools=TOOL_DEFINITIONS,
+                timestamp=t0,
+                provider_name="anthropic",
+                cache_read_tokens=8_000,
+            ),
+            _event(
+                "e2",
+                messages=extended,
+                tools=TOOL_DEFINITIONS,
+                timestamp=t0 + timedelta(minutes=20),
+                provider_name="anthropic",
+                cache_read_tokens=8_500,
+                cache_creation_tokens=200,
+            ),
+        ]
+        profile = analyze_cache_profile(events)
+        assert profile.idle_expiry_events == []
+
+    def test_idle_expiry_tokens_roll_into_profile_savings(self) -> None:
+        profile = SessionContextProfile(
+            session_id="s1",
+            analyzed_event_count=2,
+            total_prompt_tokens=20_000,
+            total_completion_tokens=0,
+            cache_profile=CacheProfile(
+                idle_expiry_events=[
+                    CacheIdleExpiryEvent(
+                        event_id="e2",
+                        previous_event_id="e1",
+                        api_usage_id="usage-2",
+                        idle_seconds=700,
+                        provider_ttl_seconds=300,
+                        rewritten_tokens=4_000,
+                        measured_extra_cost_usd=0.01,
+                    )
+                ],
+                measured_idle_expiry_tokens=4_000,
+                measured_idle_expiry_extra_cost_usd=0.01,
+            ),
+        )
+        breakdown = compute_profile_savings(profile)
+        assert breakdown.idle_expiry_tokens == 4_000
+        assert breakdown.total_tokens == 4_000
 
 
 class TestRetryProfile:
@@ -401,11 +607,122 @@ class TestDuplicateLogTokens:
 
 
 class TestBuildFromDatabase:
+    def test_idle_expiry_uses_api_usage_ledger_rows(
+        self, db_session, test_user
+    ) -> None:
+        """Surfaced idle waste must be traceable to real ApiUsage rows."""
+        from preloop.services.context_analysis import (
+            build_session_context_profile,
+        )
+        from preloop.models.crud import (
+            crud_account,
+            crud_api_usage,
+            crud_runtime_session,
+            crud_runtime_session_activity,
+        )
+
+        now = datetime.now(UTC)
+        runtime_session = crud_runtime_session.upsert_by_source(
+            db_session,
+            account_id=test_user.account_id,
+            session_source_type="claude_code",
+            session_source_id="idle-expiry",
+            session_reference="idle-expiry",
+            runtime_principal_type="claude_code",
+            runtime_principal_id="idle-expiry",
+            runtime_principal_name="Claude Workspace",
+            started_at=now,
+            last_activity_at=now,
+        )
+        db_session.commit()
+
+        base = _conversation("first question")
+        extended = [*base, {"role": "assistant", "content": "Answer one"}]
+        extended.append({"role": "user", "content": "second question"})
+
+        usage_warm = crud_api_usage.log_gateway_request(
+            db_session,
+            endpoint="/anthropic/v1/messages",
+            method="POST",
+            status_code=200,
+            duration=0.1,
+            user_id=str(test_user.id),
+            account_id=str(test_user.account_id),
+            runtime_session_id=str(runtime_session.id),
+            model_alias="anthropic/claude-3-5-sonnet-20241022",
+            provider_name="anthropic",
+            prompt_tokens=9000,
+            completion_tokens=100,
+            total_tokens=9100,
+            cache_read_tokens=8000,
+            cache_creation_tokens=0,
+            estimated_cost=0.05,
+        )
+        usage_cold = crud_api_usage.log_gateway_request(
+            db_session,
+            endpoint="/anthropic/v1/messages",
+            method="POST",
+            status_code=200,
+            duration=0.1,
+            user_id=str(test_user.id),
+            account_id=str(test_user.account_id),
+            runtime_session_id=str(runtime_session.id),
+            model_alias="anthropic/claude-3-5-sonnet-20241022",
+            provider_name="anthropic",
+            prompt_tokens=10000,
+            completion_tokens=120,
+            total_tokens=10120,
+            cache_read_tokens=0,
+            cache_creation_tokens=8000,
+            estimated_cost=0.12,
+        )
+        # log_gateway_request stamps timestamp=now; backdate for a TTL gap.
+        usage_warm.timestamp = now - timedelta(minutes=12)
+        usage_cold.timestamp = now
+        db_session.commit()
+
+        for usage, messages, offset_minutes in (
+            (usage_warm, base, -12),
+            (usage_cold, extended, 0),
+        ):
+            crud_runtime_session_activity.log_model_gateway_call(
+                db_session,
+                account_id=test_user.account_id,
+                runtime_session_id=runtime_session.id,
+                status="success",
+                metadata={
+                    "request": {"messages": messages, "tools": TOOL_DEFINITIONS},
+                    "prompt_tokens": usage.prompt_tokens,
+                    "completion_tokens": usage.completion_tokens,
+                    "total_tokens": usage.total_tokens,
+                    "outcome": "success",
+                    "status_code": 200,
+                    "api_usage_id": str(usage.id),
+                    "provider_name": "anthropic",
+                    "model_alias": usage.model_alias,
+                },
+                timestamp=now + timedelta(minutes=offset_minutes),
+            )
+        db_session.commit()
+
+        account = crud_account.get(db_session, id=test_user.account_id)
+        assert account is not None
+        profile = build_session_context_profile(
+            db_session,
+            account=account,
+            runtime_session_id=str(runtime_session.id),
+        )
+        assert profile.cache_profile is not None
+        assert len(profile.cache_profile.idle_expiry_events) == 1
+        idle = profile.cache_profile.idle_expiry_events[0]
+        assert idle.api_usage_id == str(usage_cold.id)
+        assert idle.rewritten_tokens == 8000
+        assert idle.measured_extra_cost_usd is not None
+        assert idle.measured_extra_cost_usd > 0
+
     def test_build_session_context_profile_reads_stored_payloads(
         self, db_session, test_user
     ) -> None:
-        from datetime import UTC, datetime, timedelta
-
         from preloop.services.context_analysis import (
             build_session_context_profile,
         )

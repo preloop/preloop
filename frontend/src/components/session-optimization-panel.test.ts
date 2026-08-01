@@ -228,4 +228,59 @@ describe('SessionOptimizationPanel — Verify savings', () => {
     const el = await renderPanel([openEventsSuggestion]);
     expect(verifyButton(el)).to.not.exist;
   });
+
+  it('surfaces measured idle cache expiry cost on the optimize tab', async () => {
+    const idleSuggestion = {
+      id: 'reduce-idle-cache-expiry',
+      title: 'Avoid idle prompt-cache expiry',
+      description: 'Cache expired after a pause.',
+      expectedSavingsTokens: 8000,
+      expectedSavingsUsd: 0.0276,
+      confidence: 'high' as const,
+      actionLabel: 'Inspect idle cache expiries',
+      evidence: ['1 idle cache expiry'],
+      evidenceEventIds: ['e2'],
+    };
+    const el = (await fixture(
+      html`<session-optimization-panel
+        .session=${session}
+        .suggestions=${[idleSuggestion]}
+        .optimization=${{
+          generated_by: 'local',
+          suggestions: [],
+          potential_savings_tokens: 8000,
+          potential_savings_usd: 0.0276,
+          analyzed_scope_estimated_cost: 1.25,
+          context_profile: {
+            session_id: 'sess-1',
+            analyzed_event_count: 2,
+            total_prompt_tokens: 10000,
+            total_completion_tokens: 200,
+            cache_profile: {
+              idle_expiry_events: [
+                {
+                  event_id: 'e2',
+                  previous_event_id: 'e1',
+                  idle_seconds: 660,
+                  rewritten_tokens: 8000,
+                  measured_extra_cost_usd: 0.0276,
+                },
+              ],
+              measured_idle_expiry_extra_cost_usd: 0.0276,
+            },
+          },
+        }}
+      ></session-optimization-panel>`
+    )) as SessionOptimizationPanel;
+    await el.updateComplete;
+    const summary = el.shadowRoot?.querySelector(
+      '[data-testid="idle-expiry-summary"]'
+    );
+    expect(summary, 'idle expiry summary should render').to.exist;
+    const text = (summary?.textContent || '').replace(/\s+/g, ' ');
+    expect(text).to.include('Cache expiries cost');
+    expect(text).to.include("this session's");
+    expect(text).to.include('1 expir');
+    expect(text).to.match(/\$0\.02|\$0\.03|0\.0276/);
+  });
 });

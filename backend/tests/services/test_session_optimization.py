@@ -2040,3 +2040,51 @@ class TestSavingsRollupInvariant:
             scope_tokens=0,
         )
         assert response.potential_savings_tokens == 5_000
+
+    def test_idle_expiry_suggestion_uses_measured_cost(self) -> None:
+        """Idle-expiry suggestion surfaces ApiUsage-backed write premium."""
+        from preloop.services.context_analysis import (
+            CacheIdleExpiryEvent,
+            CacheProfile,
+        )
+
+        summary = self._summary(total_tokens=20_000, cost=1.5)
+        summary.failed_requests = 0
+        profile = SessionContextProfile(
+            session_id="s1",
+            analyzed_event_count=2,
+            total_prompt_tokens=18_000,
+            total_completion_tokens=2_000,
+            cache_profile=CacheProfile(
+                idle_expiry_events=[
+                    CacheIdleExpiryEvent(
+                        event_id="e2",
+                        previous_event_id="e1",
+                        api_usage_id="usage-2",
+                        idle_seconds=700,
+                        provider_ttl_seconds=300,
+                        rewritten_tokens=8_000,
+                        measured_extra_cost_usd=0.0276,
+                    )
+                ],
+                measured_idle_expiry_tokens=8_000,
+                measured_idle_expiry_extra_cost_usd=0.0276,
+            ),
+        )
+        service = SessionOptimizationService(MagicMock())
+        suggestions = service._local_optimization_suggestions(summary, profile)
+        idle = next(s for s in suggestions if s.id == "reduce-idle-cache-expiry")
+        assert idle.expected_savings_tokens == 8_000
+        assert idle.expected_savings_usd == 0.0276
+        assert idle.evidence_event_ids == ["e2"]
+        assert any("measured extra cost" in item for item in idle.evidence)
+
+    def test_local_suggestions_tolerate_missing_token_usage(self) -> None:
+        """``summary.token_usage`` may be None on sparse explorer rows."""
+        summary = MagicMock()
+        summary.token_usage = None
+        summary.estimated_cost = 0.0
+        summary.failed_requests = 0
+        service = SessionOptimizationService(MagicMock())
+        suggestions = service._local_optimization_suggestions(summary, profile=None)
+        assert isinstance(suggestions, list)
