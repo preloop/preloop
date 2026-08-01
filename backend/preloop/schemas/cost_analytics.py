@@ -213,6 +213,31 @@ class PriceCatalogInfo(BaseModel):
     model_count: Optional[int] = None
 
 
+class ImportedUsageByModel(BaseModel):
+    """Imported (observed) usage aggregate grouped by source model."""
+
+    model_alias: Optional[str] = None
+    source: Optional[str] = None
+    request_count: int = 0
+    total_tokens: int = 0
+    imported_cost: float = 0.0
+    last_event_at: Optional[datetime] = None
+
+
+class ImportedUsageSummary(BaseModel):
+    """Spend ingested from outside the gateway (``usage_source='imported'``).
+
+    Kept as a separate block — never merged into ``estimated_cost`` or the
+    budget figures — so gateway-metered and imported spend cannot be
+    silently mixed.
+    """
+
+    event_count: int = 0
+    total_tokens: int = 0
+    imported_cost: float = 0.0
+    usage_by_model: List[ImportedUsageByModel] = Field(default_factory=list)
+
+
 class CostAnalyticsSummaryResponse(BaseModel):
     """Open-source cost overview response."""
 
@@ -232,6 +257,7 @@ class CostAnalyticsSummaryResponse(BaseModel):
     usage_by_flow: List[GatewayUsageByFlow] = Field(default_factory=list)
     usage_by_session: List[GatewayUsageBySession] = Field(default_factory=list)
     usage_by_tool: List[GatewayUsageByTool] = Field(default_factory=list)
+    imported_usage: Optional[ImportedUsageSummary] = None
 
 
 class RepriceRequest(BaseModel):
