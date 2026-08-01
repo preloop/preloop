@@ -49,6 +49,30 @@ def exclude_replay_usage_condition():
 class CRUDApiUsage(CRUDBase[ApiUsage]):
     """CRUD operations for API usage tracking."""
 
+    def get_by_ids(
+        self,
+        db: Session,
+        *,
+        ids: Sequence[Union[uuid.UUID, str]],
+        account_id: Optional[Union[uuid.UUID, str]] = None,
+    ) -> List[ApiUsage]:
+        """Fetch ApiUsage rows by id, optionally scoped to an account.
+
+        Args:
+            db: Database session.
+            ids: ApiUsage primary keys to load.
+            account_id: When set, restrict to this account's rows.
+
+        Returns:
+            Matching rows (order not guaranteed).
+        """
+        if not ids:
+            return []
+        query = db.query(self.model).filter(self.model.id.in_(list(ids)))
+        if account_id is not None:
+            query = query.filter(self.model.account_id == account_id)
+        return query.all()
+
     def log_request(
         self,
         db: Session,

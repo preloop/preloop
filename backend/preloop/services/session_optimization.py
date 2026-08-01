@@ -992,6 +992,47 @@ class SessionOptimizationService:
                     evidence_event_ids=[event.event_id for event in breaking],
                 )
             )
+        if cache_profile and cache_profile.idle_expiry_events:
+            idle_events = cache_profile.idle_expiry_events
+            idle_tokens = cache_profile.measured_idle_expiry_tokens
+            # Write-vs-read differential from catalog prices x ApiUsage
+            # cache_creation_tokens. Never invent a USD figure from session
+            # average cost when catalog prices are missing.
+            idle_cost = round(cache_profile.measured_idle_expiry_extra_cost_usd, 6)
+            priced_events = sum(
+                1 for event in idle_events if event.measured_extra_cost_usd is not None
+            )
+            suggestions.append(
+                RuntimeSessionOptimizationSuggestion(
+                    id="reduce-idle-cache-expiry",
+                    title="Avoid idle prompt-cache expiry",
+                    description=(
+                        "This session paused long enough for the provider "
+                        "prompt cache to expire, then re-paid cache WRITE on "
+                        "an unchanged prefix. Keep the session warmer than "
+                        "the provider TTL, or use a longer cache TTL where "
+                        "the provider supports it."
+                    ),
+                    expected_savings_tokens=idle_tokens,
+                    expected_savings_usd=idle_cost,
+                    confidence="high",
+                    action_label="Inspect idle cache expiries",
+                    evidence=[
+                        (
+                            f"{len(idle_events)} idle cache "
+                            f"expir{'y' if len(idle_events) == 1 else 'ies'}"
+                        ),
+                        f"{idle_tokens} tokens re-written after TTL lapse",
+                        (
+                            f"measured extra cost ${idle_cost:.4f} "
+                            f"({priced_events}/{len(idle_events)} expiries priced)"
+                            if priced_events
+                            else "extra cost unavailable (no catalog cache prices)"
+                        ),
+                    ],
+                    evidence_event_ids=[event.event_id for event in idle_events],
+                )
+            )
         if summary.failed_requests or (retry_profile and retry_profile.failed_requests):
             wasted_tokens = retry_profile.wasted_tokens if retry_profile else 0
             wasted_cost = retry_profile.wasted_cost_estimate if retry_profile else 0.0
