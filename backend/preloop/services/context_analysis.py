@@ -230,6 +230,10 @@ class ToolSchemaOverheadProfile(BaseModel):
     advertised_tools: int = 0
     invoked_tools: int = 0
     unused_tool_names: list[str] = Field(default_factory=list)
+    # Per-advertised-name resend-inclusive token totals for unused tools.
+    # Used to carve disable-builtin-tools savings out of scope-tools without
+    # double-counting (#146).
+    unused_tool_tokens: dict[str, int] = Field(default_factory=dict)
     schema_tokens_estimate: int = 0
     unused_schema_tokens_estimate: int = 0
     resend_count: int = 0
@@ -277,9 +281,13 @@ def compute_profile_savings(
 
     Dedupe rules, in order:
 
-    * Unused tool-schema tokens are taken verbatim. ``analyze_tool_schema_overhead``
-      already accumulates each advertised schema once per resend, so multiplying
-      by ``resend_count`` again would be quadratic in the number of requests.
+    * Unused tool-schema tokens are taken verbatim from the profile. Suggestion
+      tiering (#146) may split those tokens across ``disable-builtin-tools`` and
+      ``scope-tools`` for display, but this roll-up still uses the single
+      profile figure so the headline total is unchanged by the split.
+      ``analyze_tool_schema_overhead`` already accumulates each advertised
+      schema once per resend, so multiplying by ``resend_count`` again would be
+      quadratic in the number of requests.
     * Tool-output waste takes ``max(compressible, largest oversized field)``:
       both measure the same tool-result bytes.
     * Cache-prefix waste overlaps the two above (the repeated prefix contains
@@ -1435,11 +1443,13 @@ def analyze_tool_schema_overhead(
         if isinstance(tool_name, str) and tool_name:
             invoked.add(tool_name)
     unused = sorted(set(advertised) - invoked)
-    unused_tokens = sum(advertised[name] for name in unused)
+    unused_tool_tokens = {name: advertised[name] for name in unused}
+    unused_tokens = sum(unused_tool_tokens.values())
     return ToolSchemaOverheadProfile(
         advertised_tools=len(advertised),
         invoked_tools=len(set(advertised) & invoked),
         unused_tool_names=unused,
+        unused_tool_tokens=unused_tool_tokens,
         schema_tokens_estimate=schema_tokens_total,
         unused_schema_tokens_estimate=unused_tokens,
         resend_count=resend_count,
