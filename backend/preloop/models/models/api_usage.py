@@ -106,9 +106,9 @@ class ApiUsage(Base):
     estimated_cost: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     # ISO-4217 code of estimated_cost; NULL on legacy rows means USD.
     currency: Mapped[Optional[str]] = mapped_column(String(3), nullable=True)
-    # override | model_config | catalog | subscription | unpriced
+    # override | model_config | catalog | subscription | unpriced | imported
     cost_source: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
-    # provider | estimated | partial
+    # provider | estimated | partial | imported
     usage_source: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     is_retry: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     runtime_principal_type: Mapped[Optional[str]] = mapped_column(
@@ -147,12 +147,13 @@ class ApiUsage(Base):
     __table_args__ = (
         CheckConstraint(
             "cost_source IS NULL OR cost_source IN "
-            "('override', 'model_config', 'catalog', 'subscription', 'unpriced')",
+            "('override', 'model_config', 'catalog', 'subscription', 'unpriced', "
+            "'imported')",
             name="ck_api_usage_cost_source",
         ),
         CheckConstraint(
             "usage_source IS NULL OR usage_source IN "
-            "('provider', 'estimated', 'partial')",
+            "('provider', 'estimated', 'partial', 'imported')",
             name="ck_api_usage_usage_source",
         ),
         Index(

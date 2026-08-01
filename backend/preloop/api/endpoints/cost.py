@@ -9,12 +9,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from preloop.api.auth.jwt import get_current_active_user
-from preloop.models.crud import crud_account
+from preloop.models.crud import crud_account, crud_api_usage
 from preloop.models.db.session import get_db_session
 from preloop.models.models.user import User
 from preloop.schemas.cost_analytics import (
     CostAnalyticsSummaryResponse,
     CostHealthResponse,
+    ImportedUsageByModel,
+    ImportedUsageSummary,
     PriceCatalogInfo,
 )
 from preloop.services.gateway_accounting_check import run_accounting_checks
@@ -68,6 +70,34 @@ def get_cost_summary(
         include_breakdown=True,
         exclude_retries=exclude_retries,
     )
+    # Imported (observed) spend is reported as a SEPARATE block, using the
+    # summary's normalized window: it is never added into estimated_cost or
+    # the budget figures (issue #123 — imported and gateway-metered spend
+    # must not silently mix).
+    imported_totals = crud_api_usage.get_imported_usage_summary(
+        db,
+        account_id=str(account.id),
+        start_date=summary.period_start,
+        end_date=summary.period_end,
+        runtime_principal_id=runtime_principal_id,
+    )
+    imported_usage = None
+    if imported_totals["event_count"]:
+        imported_usage = ImportedUsageSummary(
+            event_count=imported_totals["event_count"],
+            total_tokens=imported_totals["total_tokens"],
+            imported_cost=imported_totals["imported_cost"],
+            usage_by_model=[
+                ImportedUsageByModel(**row)
+                for row in crud_api_usage.get_imported_usage_by_model(
+                    db,
+                    account_id=str(account.id),
+                    start_date=summary.period_start,
+                    end_date=summary.period_end,
+                    runtime_principal_id=runtime_principal_id,
+                )
+            ],
+        )
     return CostAnalyticsSummaryResponse(
         period_start=summary.period_start,
         period_end=summary.period_end,
@@ -85,6 +115,7 @@ def get_cost_summary(
         usage_by_flow=summary.usage_by_flow,
         usage_by_session=summary.usage_by_session,
         usage_by_tool=summary.usage_by_tool,
+        imported_usage=imported_usage,
     )
 
 
