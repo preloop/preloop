@@ -41,6 +41,9 @@ DEFAULT_AGENT_KIND = "cursor"
 #: Hard cap on CSV size accepted by the import endpoint (10 MiB).
 MAX_CSV_BYTES = 10 * 1024 * 1024
 
+#: Hard cap on data rows per CSV import; larger exports must be split.
+MAX_CSV_ROWS = 10_000
+
 
 class UsageImportError(ValueError):
     """Raised when an ingest request cannot be attributed or parsed."""
@@ -158,10 +161,20 @@ def ingest_events(
     Returns:
         Tuple of (imported_count, skipped_duplicate_count). The write is
         committed once at the end so a batch is all-or-nothing.
+
+    Raises:
+        UsageImportError: When the agent has no ``session_source_id`` — the
+            fingerprint is scoped by it, so a missing value would silently
+            merge the dedupe scopes of unrelated agents.
     """
     imported = 0
     skipped = 0
     principal_id = agent.session_source_id
+    if not principal_id:
+        raise UsageImportError(
+            f"Managed agent {agent.id} has no session_source_id; imported "
+            "events cannot be fingerprinted for deduplication"
+        )
     for event in events:
         timestamp = event.timestamp
         if timestamp.tzinfo is not None:
@@ -320,6 +333,7 @@ def parse_cursor_usage_csv(
     *,
     column_map: Optional[Dict[str, str]] = None,
     max_skipped_reasons: int = 20,
+    max_rows: int = MAX_CSV_ROWS,
 ) -> CsvParseResult:
     """Parse a Cursor dashboard Usage CSV export into normalized events.
 
@@ -332,13 +346,17 @@ def parse_cursor_usage_csv(
             CSV header names, for export shapes the built-in matcher does
             not recognize.
         max_skipped_reasons: Cap on per-row skip reasons returned.
+        max_rows: Hard cap on data rows; parsing aborts beyond it so one
+            request cannot fan out into an unbounded number of events.
 
     Returns:
         CsvParseResult with normalized events and per-row skip accounting.
 
     Raises:
         UsageImportError: When the CSV has no parseable header (required
-            columns ``Date`` and ``Model`` not found).
+            columns ``Date`` and ``Model`` not found), or when it carries
+            more than ``max_rows`` data rows (split the export and import
+            in batches).
     """
     for key in column_map or {}:
         if key not in _CURSOR_LOGICAL_FIELDS:
@@ -388,6 +406,11 @@ def parse_cursor_usage_csv(
     for line_number, row in enumerate(reader, start=2):
         if not row or all(not value.strip() for value in row):
             continue
+        if result.parsed_rows >= max_rows:
+            raise UsageImportError(
+                f"CSV has more than {max_rows} data rows; split the export "
+                "and import it in batches"
+            )
         result.parsed_rows += 1
 
         timestamp = _parse_date(cell(row, "date"))

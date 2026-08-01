@@ -40,6 +40,16 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/usage", tags=["Usage Import"])
 
+#: Chunk size for reading CSV uploads without buffering the whole body.
+_CSV_READ_CHUNK_BYTES = 1024 * 1024
+
+
+def _csv_too_large() -> HTTPException:
+    return HTTPException(
+        status_code=413,
+        detail=f"CSV exceeds the {MAX_CSV_BYTES // (1024 * 1024)} MiB limit",
+    )
+
 
 @router.post("/import", response_model=UsageImportResponse)
 @require_permission("import_usage")
@@ -62,17 +72,16 @@ def import_usage_events(
             account_id=str(current_user.account_id),
             agent_id=str(payload.agent_id) if payload.agent_id else None,
         )
+        imported, skipped = ingest_events(
+            db,
+            account_id=str(current_user.account_id),
+            user_id=str(current_user.id),
+            agent=agent,
+            events=payload.events,
+            source=payload.source,
+        )
     except UsageImportError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    imported, skipped = ingest_events(
-        db,
-        account_id=str(current_user.account_id),
-        user_id=str(current_user.id),
-        agent=agent,
-        events=payload.events,
-        source=payload.source,
-    )
     logger.info(
         "Imported %d usage events (%d duplicates skipped) for agent %s "
         "(source=%s, account=%s)",
@@ -138,13 +147,23 @@ async def import_usage_csv(
                 detail="column_map must be a JSON object of string to string",
             )
 
-    content = await file.read()
-    if len(content) > MAX_CSV_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=f"CSV exceeds the {MAX_CSV_BYTES // (1024 * 1024)} MiB limit",
-        )
+    # First line of defense: Starlette populates UploadFile.size from the
+    # multipart parsing, so an oversized upload is rejected without reading
+    # the body at all. The chunked read below is the backstop for uploads
+    # that arrive without a usable size, bounding memory to the cap.
+    if file.size is not None and file.size > MAX_CSV_BYTES:
+        raise _csv_too_large()
 
+    chunks: list[bytes] = []
+    received = 0
+    while chunk := await file.read(_CSV_READ_CHUNK_BYTES):
+        received += len(chunk)
+        if received > MAX_CSV_BYTES:
+            raise _csv_too_large()
+        chunks.append(chunk)
+    content = b"".join(chunks)
+
+    normalized_source = source.strip().lower() or "cursor"
     try:
         agent = resolve_target_agent(
             db,
@@ -152,18 +171,16 @@ async def import_usage_csv(
             agent_id=str(agent_id) if agent_id else None,
         )
         parse_result = parse_cursor_usage_csv(content, column_map=parsed_column_map)
+        imported, skipped = ingest_events(
+            db,
+            account_id=str(current_user.account_id),
+            user_id=str(current_user.id),
+            agent=agent,
+            events=parse_result.events,
+            source=normalized_source,
+        )
     except UsageImportError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    normalized_source = source.strip().lower() or "cursor"
-    imported, skipped = ingest_events(
-        db,
-        account_id=str(current_user.account_id),
-        user_id=str(current_user.id),
-        agent=agent,
-        events=parse_result.events,
-        source=normalized_source,
-    )
     logger.info(
         "CSV import: %d rows parsed, %d imported, %d duplicates, %d skipped "
         "rows for agent %s (account=%s)",

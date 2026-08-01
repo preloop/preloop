@@ -254,6 +254,46 @@ class TestImportCsv:
         assert response.status_code == 422
         assert "not valid JSON" in response.json()["detail"]
 
+    def test_csv_exceeding_size_limit_returns_413(
+        self, client, db_session, test_user, monkeypatch
+    ):
+        """An oversized upload is rejected without ingesting anything."""
+        import preloop.api.endpoints.usage_import as usage_import_endpoint
+
+        _make_cursor_agent(db_session, test_user.account_id)
+        db_session.commit()
+        monkeypatch.setattr(usage_import_endpoint, "MAX_CSV_BYTES", 64)
+
+        oversized = "Date,Model,Total Tokens,Cost\n" + (
+            "2026-07-28,composer,10,$0.01\n" * 20
+        )
+        response = self._upload(client, oversized)
+
+        assert response.status_code == 413
+        assert "exceeds" in response.json()["detail"]
+
+    def test_csv_exceeding_row_limit_returns_422(
+        self, client, db_session, test_user, monkeypatch
+    ):
+        """A CSV with more data rows than the cap is rejected with guidance."""
+        import preloop.services.usage_import as usage_import_service
+
+        _make_cursor_agent(db_session, test_user.account_id)
+        db_session.commit()
+        monkeypatch.setitem(
+            usage_import_service.parse_cursor_usage_csv.__kwdefaults__,
+            "max_rows",
+            2,
+        )
+
+        csv_text = "Date,Model,Total Tokens,Cost\n" + (
+            "2026-07-28,composer,10,$0.01\n" * 3
+        )
+        response = self._upload(client, csv_text)
+
+        assert response.status_code == 422
+        assert "data rows" in response.json()["detail"]
+
 
 class TestCostSummaryIntegration:
     """Imported spend in GET /api/v1/cost/summary."""

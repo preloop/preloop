@@ -7,14 +7,17 @@ No database required.
 """
 
 from datetime import datetime, timezone
+from unittest.mock import MagicMock
 
 import pytest
 from pydantic import ValidationError
 
+from preloop.models.models.managed_agent import ManagedAgent
 from preloop.schemas.usage_import import UsageImportEvent
 from preloop.services.usage_import import (
     UsageImportError,
     event_fingerprint,
+    ingest_events,
     parse_cursor_usage_csv,
 )
 
@@ -179,6 +182,33 @@ class TestParseCursorUsageCsv:
         with pytest.raises(UsageImportError, match="Unknown column_map field"):
             parse_cursor_usage_csv(CANONICAL_CSV, column_map={"nope": "Date"})
 
+    def test_row_limit_enforced(self):
+        """Parsing aborts once the data-row cap is exceeded."""
+        content = (
+            "Date,Model,Total Tokens,Cost\n"
+            "2026-07-28,m1,10,$0.01\n"
+            "2026-07-28,m2,10,$0.01\n"
+            "2026-07-28,m3,10,$0.01\n"
+        ).encode("utf-8")
+
+        with pytest.raises(UsageImportError, match="more than 2 data rows"):
+            parse_cursor_usage_csv(content, max_rows=2)
+
+    def test_row_limit_ignores_blank_rows(self):
+        """Blank filler lines do not count toward the row cap."""
+        content = (
+            "Date,Model,Total Tokens,Cost\n"
+            "\n"
+            "2026-07-28,m1,10,$0.01\n"
+            "\n"
+            "2026-07-28,m2,10,$0.01\n"
+        ).encode("utf-8")
+
+        result = parse_cursor_usage_csv(content, max_rows=2)
+
+        assert result.parsed_rows == 2
+        assert len(result.events) == 2
+
 
 class TestEventFingerprint:
     """The dedupe fingerprint contract."""
@@ -235,3 +265,39 @@ class TestUsageImportEventSchema:
         """Money without token counts is an acceptable measurement."""
         event = _event(total_tokens=None, cost_usd=0.5)
         assert event.resolved_cost_usd() == pytest.approx(0.5)
+
+    def test_cache_only_event_is_valid(self):
+        """Cache token counts alone are a valid measurement."""
+        read_only = _event(total_tokens=None, cache_read_tokens=4500)
+        assert read_only.cache_read_tokens == 4500
+
+        write_only = _event(total_tokens=None, cache_creation_tokens=1200)
+        assert write_only.cache_creation_tokens == 1200
+
+
+class TestIngestEventsGuards:
+    """Pre-write invariants enforced by ingest_events."""
+
+    def test_agent_without_principal_id_is_rejected(self):
+        """An agent lacking session_source_id cannot scope fingerprints.
+
+        The dedupe fingerprint is scoped by the agent's principal id; a
+        missing value would silently merge the dedupe scopes of unrelated
+        agents. The guard fires before any database access.
+        """
+        agent = ManagedAgent(
+            agent_kind="cursor",
+            session_source_type="cursor",
+            session_source_id="",
+            display_name="Broken Agent",
+        )
+
+        with pytest.raises(UsageImportError, match="session_source_id"):
+            ingest_events(
+                MagicMock(),
+                account_id="acct-1",
+                user_id="user-1",
+                agent=agent,
+                events=[_event()],
+                source="cursor",
+            )

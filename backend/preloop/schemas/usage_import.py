@@ -58,6 +58,8 @@ class UsageImportEvent(BaseModel):
                 self.prompt_tokens,
                 self.completion_tokens,
                 self.total_tokens,
+                self.cache_read_tokens,
+                self.cache_creation_tokens,
             )
         )
         has_cost = self.charged_cents is not None or self.cost_usd is not None
