@@ -1,6 +1,7 @@
 """Unit tests for upstream rate-limit header parsing and classification (#136)."""
 
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 from preloop.services.rate_limit_telemetry import (
     classify_rate_limit_subtype,
@@ -173,3 +174,41 @@ class TestClassifyRateLimitSubtype:
             expected = "heuristic"
         _, source = classify_rate_limit_subtype(429, "slow down")
         assert source == expected
+
+    def test_delegates_to_taxonomy_when_module_present(self, monkeypatch):
+        """A working #141 classifier is used and labeled as the source."""
+        fake = ModuleType("preloop.services.upstream_errors")
+        fake.ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED = "upstream_quota_exhausted"
+        fake.classify_recorded_error = (
+            lambda status_code, detail: "upstream_quota_exhausted"
+        )
+        monkeypatch.setitem(sys.modules, "preloop.services.upstream_errors", fake)
+
+        assert classify_rate_limit_subtype(429, "anything") == (
+            "quota_exhausted",
+            "taxonomy",
+        )
+
+    def test_taxonomy_runtime_failure_falls_back_to_heuristic(self, monkeypatch):
+        """A buggy #141 classifier must not propagate out of telemetry.
+
+        Runtime failures (not just ImportError) fall back to the local
+        heuristic, labeled as such.
+        """
+
+        def _boom(status_code, detail):
+            raise TypeError("unexpected input shape")
+
+        fake = ModuleType("preloop.services.upstream_errors")
+        fake.ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED = "upstream_quota_exhausted"
+        fake.classify_recorded_error = _boom
+        monkeypatch.setitem(sys.modules, "preloop.services.upstream_errors", fake)
+
+        assert classify_rate_limit_subtype(429, "exceeded your current quota") == (
+            "quota_exhausted",
+            "heuristic",
+        )
+        assert classify_rate_limit_subtype(429, "slow down") == (
+            "transient",
+            "heuristic",
+        )

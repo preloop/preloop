@@ -27,11 +27,14 @@ heuristic labeled as such (``subtype_source: heuristic``).
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Dict, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 # Subtype values stored in meta_data["rate_limit"]["subtype"].
 RATE_LIMIT_SUBTYPE_TRANSIENT = "transient"
@@ -319,6 +322,9 @@ def classify_rate_limit_subtype(
     """
     if status_code != 429:
         return None, None
+    # Telemetry classification must never break request recording: any
+    # failure importing or running the shared taxonomy (#141) falls back to
+    # the local heuristic.
     try:
         # Optional dependency: lands with PR #141. The ignore covers both the
         # not-yet-merged state (module absent) and the merged state.
@@ -326,12 +332,19 @@ def classify_rate_limit_subtype(
             ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED,
             classify_recorded_error,
         )
+
+        error_class = classify_recorded_error(status_code, error_detail)
+        if error_class == ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED:
+            return RATE_LIMIT_SUBTYPE_QUOTA_EXHAUSTED, "taxonomy"
+        return RATE_LIMIT_SUBTYPE_TRANSIENT, "taxonomy"
     except ImportError:
-        text = (error_detail or "").lower()
-        if any(marker in text for marker in _FALLBACK_QUOTA_MARKERS):
-            return RATE_LIMIT_SUBTYPE_QUOTA_EXHAUSTED, "heuristic"
-        return RATE_LIMIT_SUBTYPE_TRANSIENT, "heuristic"
-    error_class = classify_recorded_error(status_code, error_detail)
-    if error_class == ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED:
-        return RATE_LIMIT_SUBTYPE_QUOTA_EXHAUSTED, "taxonomy"
-    return RATE_LIMIT_SUBTYPE_TRANSIENT, "taxonomy"
+        pass
+    except Exception:  # noqa: BLE001 - defensive: taxonomy bug must not crash
+        logger.debug(
+            "classify_recorded_error raised; falling back to heuristic",
+            exc_info=True,
+        )
+    text = (error_detail or "").lower()
+    if any(marker in text for marker in _FALLBACK_QUOTA_MARKERS):
+        return RATE_LIMIT_SUBTYPE_QUOTA_EXHAUSTED, "heuristic"
+    return RATE_LIMIT_SUBTYPE_TRANSIENT, "heuristic"
