@@ -8,7 +8,8 @@ from uuid import uuid4
 from preloop.models import models
 from preloop.models.crud import crud_managed_agent
 from preloop.models.models.budget import BudgetPeriod, BudgetPolicy, BudgetSpendActivity
-from preloop.services.usage_fingerprint import event_fingerprint
+from preloop.schemas.usage_import import UsageImportEvent
+from preloop.services.usage_import import event_fingerprint
 
 
 def _make_agent(
@@ -274,9 +275,7 @@ def test_merge_deletes_duplicate_imported_fingerprint_collisions(
         "import_source": "cursor_csv",
         "source_session_id": "sess-shared",
     }
-    survivor_fp = event_fingerprint(
-        source="cursor_csv",
-        agent_principal_id="codex-surv-import",
+    shared_event = UsageImportEvent(
         timestamp=ts,
         model="composer-1",
         prompt_tokens=1,
@@ -284,21 +283,18 @@ def test_merge_deletes_duplicate_imported_fingerprint_collisions(
         total_tokens=3,
         cache_read_tokens=0,
         cache_creation_tokens=0,
-        cost=0.1,
+        cost_usd=0.1,
         session_id="sess-shared",
     )
+    survivor_fp = event_fingerprint(
+        shared_event,
+        source="cursor_csv",
+        agent_principal_id="codex-surv-import",
+    )
     dup_fp = event_fingerprint(
+        shared_event,
         source="cursor_csv",
         agent_principal_id="codex-dup-import",
-        timestamp=ts,
-        model="composer-1",
-        prompt_tokens=1,
-        completion_tokens=2,
-        total_tokens=3,
-        cache_read_tokens=0,
-        cache_creation_tokens=0,
-        cost=0.1,
-        session_id="sess-shared",
     )
     survivor_row = models.ApiUsage(
         id=uuid4(),
@@ -312,6 +308,8 @@ def test_merge_deletes_duplicate_imported_fingerprint_collisions(
         prompt_tokens=1,
         completion_tokens=2,
         total_tokens=3,
+        cache_read_tokens=0,
+        cache_creation_tokens=0,
         estimated_cost=0.1,
         runtime_principal_type="codex",
         runtime_principal_id="codex-surv-import",
@@ -330,6 +328,8 @@ def test_merge_deletes_duplicate_imported_fingerprint_collisions(
         prompt_tokens=1,
         completion_tokens=2,
         total_tokens=3,
+        cache_read_tokens=0,
+        cache_creation_tokens=0,
         estimated_cost=0.1,
         runtime_principal_type="codex",
         runtime_principal_id="codex-dup-import",

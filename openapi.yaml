@@ -6090,6 +6090,86 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/usage/import:
+    post:
+      tags:
+      - Usage Import
+      - Usage Import
+      summary: Import Usage Events
+      description: 'Ingest a batch of normalized usage events into the cost ledger.
+
+
+        Events are attributed to the given managed agent (default: the account''s
+
+        managed Cursor agent from onboarding) and recorded with
+
+        ``usage_source=''imported''``. Re-sending the same events is idempotent —
+
+        duplicates are counted in ``skipped_duplicates``, never double-billed.'
+      operationId: import_usage_events_api_v1_usage_import_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UsageImportRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageImportResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
+  /api/v1/usage/import/csv:
+    post:
+      tags:
+      - Usage Import
+      - Usage Import
+      summary: Import Usage Csv
+      description: 'Import a Cursor dashboard Usage CSV export into the cost ledger.
+
+
+        Parses the export (Date / Kind / Model / Max Mode / Input (w/ Cache
+
+        Write) / Input (w/o Cache Write) / Cache Read / Output Tokens / Total
+
+        Tokens / Cost), normalizes each row, and ingests it through the same
+
+        pipeline as ``POST /usage/import``. Rows whose Cost is "Included" are
+
+        stored with tokens but no charged amount. Re-importing the same file is
+
+        idempotent.'
+      operationId: import_usage_csv_api_v1_usage_import_csv_post
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_import_usage_csv_api_v1_usage_import_csv_post'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageImportCsvResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
   /api/v1/billing/cost/runtime-sessions/example/optimization:
     get:
       tags:
@@ -10274,6 +10354,36 @@ components:
       required:
       - file
       title: Body_diff_policy_api_v1_policies_diff_post
+    Body_import_usage_csv_api_v1_usage_import_csv_post:
+      properties:
+        file:
+          type: string
+          contentMediaType: application/octet-stream
+          title: File
+          description: Cursor dashboard Usage CSV export
+        agent_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Agent Id
+        source:
+          type: string
+          title: Source
+          default: cursor
+        column_map:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Column Map
+          description: Optional JSON object mapping logical fields (date, model, cost,
+            kind, max_mode, input_with_cache_write, input_without_cache_write, cache_read,
+            output_tokens, total_tokens) to your export's exact column headers, for
+            CSV shapes the built-in matcher does not recognize.
+      type: object
+      required:
+      - file
+      title: Body_import_usage_csv_api_v1_usage_import_csv_post
     Body_login_form_api_v1_auth_token_post:
       properties:
         grant_type:
@@ -10592,6 +10702,10 @@ components:
             $ref: '#/components/schemas/GatewayUsageByTool'
           type: array
           title: Usage By Tool
+        imported_usage:
+          anyOf:
+          - $ref: '#/components/schemas/ImportedUsageSummary'
+          - type: 'null'
       type: object
       required:
       - period_start
@@ -12275,6 +12389,68 @@ components:
           title: Detail
       type: object
       title: HTTPValidationError
+    ImportedUsageByModel:
+      properties:
+        model_alias:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Alias
+        source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source
+        request_count:
+          type: integer
+          title: Request Count
+          default: 0
+        total_tokens:
+          type: integer
+          title: Total Tokens
+          default: 0
+        imported_cost:
+          type: number
+          title: Imported Cost
+          default: 0.0
+        last_event_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Event At
+      type: object
+      title: ImportedUsageByModel
+      description: Imported (observed) usage aggregate grouped by source model.
+    ImportedUsageSummary:
+      properties:
+        event_count:
+          type: integer
+          title: Event Count
+          default: 0
+        total_tokens:
+          type: integer
+          title: Total Tokens
+          default: 0
+        imported_cost:
+          type: number
+          title: Imported Cost
+          default: 0.0
+        usage_by_model:
+          items:
+            $ref: '#/components/schemas/ImportedUsageByModel'
+          type: array
+          title: Usage By Model
+      type: object
+      title: ImportedUsageSummary
+      description: 'Spend ingested from outside the gateway (``usage_source=''imported''``).
+
+
+        Kept as a separate block — never merged into ``estimated_cost`` or the
+
+        budget figures — so gateway-metered and imported spend cannot be
+
+        silently mixed.'
     IssueCreate:
       properties:
         title:
@@ -16791,6 +16967,190 @@ components:
       - tag
       title: UpdateTagRequest
       description: Request to update a version's tag.
+    UsageImportCsvResponse:
+      properties:
+        imported:
+          type: integer
+          title: Imported
+          default: 0
+        skipped_duplicates:
+          type: integer
+          title: Skipped Duplicates
+          default: 0
+        agent_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Agent Id
+        agent_display_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Display Name
+        source:
+          type: string
+          title: Source
+          default: cursor
+        parsed_rows:
+          type: integer
+          title: Parsed Rows
+          default: 0
+        skipped_rows:
+          type: integer
+          title: Skipped Rows
+          default: 0
+        skipped_row_reasons:
+          items:
+            type: string
+          type: array
+          title: Skipped Row Reasons
+      type: object
+      title: UsageImportCsvResponse
+      description: Result of a CSV import, including rows the parser could not use.
+    UsageImportEvent:
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          title: Timestamp
+        model:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Model
+        prompt_tokens:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Prompt Tokens
+        completion_tokens:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Completion Tokens
+        total_tokens:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Total Tokens
+        cache_read_tokens:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Cache Read Tokens
+        cache_creation_tokens:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Cache Creation Tokens
+        charged_cents:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: 'null'
+          title: Charged Cents
+          description: Amount charged by the source vendor, in cents (USD).
+        cost_usd:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: 'null'
+          title: Cost Usd
+          description: Amount charged in USD. Mutually exclusive with charged_cents.
+        session_id:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Session Id
+        kind:
+          anyOf:
+          - type: string
+            maxLength: 100
+          - type: 'null'
+          title: Kind
+          description: Source billing category (e.g. 'Usage-based', 'Included').
+        max_mode:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Max Mode
+        meta:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Meta
+      type: object
+      required:
+      - timestamp
+      - model
+      title: UsageImportEvent
+      description: One normalized usage event observed outside the model gateway.
+    UsageImportRequest:
+      properties:
+        events:
+          items:
+            $ref: '#/components/schemas/UsageImportEvent'
+          type: array
+          maxItems: 5000
+          minItems: 1
+          title: Events
+        agent_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Agent Id
+          description: Managed agent to attribute the events to. When omitted, the
+            account's managed Cursor agent (from `preloop agents onboard cursor`)
+            is used if exactly resolvable.
+        source:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Source
+          description: Origin label stored on each row (e.g. 'cursor').
+          default: cursor
+      type: object
+      required:
+      - events
+      title: UsageImportRequest
+      description: Batch of normalized usage events to ingest.
+    UsageImportResponse:
+      properties:
+        imported:
+          type: integer
+          title: Imported
+          default: 0
+        skipped_duplicates:
+          type: integer
+          title: Skipped Duplicates
+          default: 0
+        agent_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Agent Id
+        agent_display_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Display Name
+        source:
+          type: string
+          title: Source
+          default: cursor
+      type: object
+      title: UsageImportResponse
+      description: Result of an ingest request.
     ValidationError:
       properties:
         loc:

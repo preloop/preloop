@@ -112,7 +112,7 @@ func TestEnsureManagedAgentIdentityReadyRekeysV1(t *testing.T) {
 	defer server.Close()
 
 	client := api.NewClientWithToken(server.URL, "tok")
-	updated, err := ensureManagedAgentIdentityReady(
+	updated, matched, err := ensureManagedAgentIdentityReady(
 		client,
 		agent,
 		true,
@@ -122,6 +122,9 @@ func TestEnsureManagedAgentIdentityReadyRekeysV1(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("ensureManagedAgentIdentityReady: %v", err)
+	}
+	if matched == nil || matched.ID != "legacy-1" {
+		t.Fatalf("expected matched legacy-1, got %#v", matched)
 	}
 	if updated.RuntimePrincipalID != v2 {
 		t.Fatalf("expected rekeyed id %q, got %q", v2, updated.RuntimePrincipalID)

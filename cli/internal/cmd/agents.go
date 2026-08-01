@@ -1712,15 +1712,10 @@ func runAgentsList(cmd *cobra.Command, args []string) error {
 }
 
 func managedAgentLooksStale(agent managedAgentSummary, localConfig string) bool {
-	if strings.EqualFold(strings.TrimSpace(agent.LifecycleState), "decommissioned") {
-		return true
-	}
-	if localConfig != "-" {
-		return false
-	}
-	activity := strings.ToLower(strings.TrimSpace(agent.ActivityStatus))
-	onboarding := strings.ToLower(strings.TrimSpace(agent.OnboardingState))
-	return activity == "idle" || onboarding == "incomplete" || onboarding == ""
+	// Only archived rows are treated as stale. Missing local config (or idle
+	// activity) is normal when the agent lives on another machine.
+	_ = localConfig
+	return strings.EqualFold(strings.TrimSpace(agent.LifecycleState), "decommissioned")
 }
 
 func listManagedAgents(client *api.Client) ([]managedAgentSummary, error) {
@@ -4720,6 +4715,22 @@ func getManagedAgentForDiscovered(client *api.Client, agent AgentConfig) (*manag
 	return nil, fmt.Errorf("managed agent not found after bootstrap for %s", agent.Name)
 }
 
+func resolveManagedAgentAfterBootstrap(
+	client *api.Client,
+	agent AgentConfig,
+	known *managedAgentSummary,
+) (*managedAgentSummary, error) {
+	if known != nil && strings.TrimSpace(known.ID) != "" {
+		detail, err := getManagedAgentDetail(client, known.ID)
+		if err != nil {
+			return nil, err
+		}
+		summary := detail.Agent
+		return &summary, nil
+	}
+	return getManagedAgentForDiscovered(client, agent)
+}
+
 func findManagedAgentForDiscovered(items []managedAgentSummary, agent AgentConfig) *managedAgentSummary {
 	sourceTypes := managedAgentLookupSourceTypes(agent)
 	candidateIDs := runtimePrincipalIDCandidates(agent)
@@ -4816,9 +4827,9 @@ func ensureManagedAgentIdentityReady(
 	noReuse bool,
 	input io.Reader,
 	output io.Writer,
-) (AgentConfig, error) {
+) (AgentConfig, *managedAgentSummary, error) {
 	if client == nil {
-		return agent, nil
+		return agent, nil, nil
 	}
 	if input == nil {
 		input = os.Stdin
@@ -4829,7 +4840,7 @@ func ensureManagedAgentIdentityReady(
 
 	var response managedAgentListResponse
 	if err := client.Get("/api/v1/agents?limit=100", &response); err != nil {
-		return agent, fmt.Errorf("failed to list managed agents: %w", err)
+		return agent, nil, fmt.Errorf("failed to list managed agents: %w", err)
 	}
 
 	v2ID := stableRuntimePrincipalIDForAgent(agent, identitySaltForAgent(agent))
@@ -4890,33 +4901,41 @@ func ensureManagedAgentIdentityReady(
 				),
 			)
 			if err != nil {
-				return agent, err
+				return agent, nil, err
 			}
 			reuse = confirmed
 		}
 		if !reuse || noReuse {
 			salt, err := generateIdentitySalt()
 			if err != nil {
-				return agent, err
+				return agent, nil, err
 			}
 			if err := persistIdentitySalt(agent, salt); err != nil {
-				return agent, err
+				return agent, nil, err
 			}
 			agent.RuntimePrincipalID = stableRuntimePrincipalIDForAgent(agent, salt)
 			fmt.Fprintf(output, "Minted a salted identity for this install.\n") //nolint:errcheck
-			return agent, nil
+			return agent, nil, nil
 		}
 	}
 
 	if matched == nil {
 		agent.RuntimePrincipalID = v2ID
-		return agent, nil
+		return agent, nil, nil
 	}
 
 	if strings.EqualFold(strings.TrimSpace(matched.LifecycleState), "decommissioned") {
-		if err := ensureArchivedManagedAgentReenrolled(client, agent, autoApprove, input, output); err != nil {
-			return agent, err
+		reenrolled, err := reenrollArchivedManagedAgent(
+			client,
+			matched,
+			autoApprove,
+			input,
+			output,
+		)
+		if err != nil {
+			return agent, nil, err
 		}
+		matched = reenrolled
 	}
 
 	if matchKind == "v2" {
@@ -4925,7 +4944,7 @@ func ensureManagedAgentIdentityReady(
 		if strings.TrimSpace(agent.DisplayName) == "" {
 			agent.DisplayName = matched.DisplayName
 		}
-		return agent, nil
+		return agent, matched, nil
 	}
 
 	// v1/legacy/fallback: re-key to v2 before continuing.
@@ -4942,32 +4961,33 @@ func ensureManagedAgentIdentityReady(
 			),
 		)
 		if err != nil {
-			return agent, err
+			return agent, nil, err
 		}
 		reuse = confirmed
 	}
 	if !reuse {
-		return agent, fmt.Errorf(
+		return agent, nil, fmt.Errorf(
 			"declined re-attaching enrollment %s (%s)",
 			matched.DisplayName,
 			matched.ID,
 		)
 	}
 	if err := rekeyManagedAgentRecord(client, matched.ID, v2ID, principalIdentityForAgent(agent)); err != nil {
-		return agent, err
+		return agent, nil, err
 	}
 	agent.RuntimePrincipalID = v2ID
 	_ = pinLocalRuntimePrincipalID(agent, v2ID)
 	if strings.TrimSpace(agent.DisplayName) == "" {
 		agent.DisplayName = matched.DisplayName
 	}
+	matched.SessionSourceID = v2ID
 	fmt.Fprintf( //nolint:errcheck
 		output,
 		"Re-keyed managed agent %s to stable identity %s.\n",
 		matched.ID,
 		v2ID,
 	)
-	return agent, nil
+	return agent, matched, nil
 }
 
 func runAgentsMerge(cmd *cobra.Command, args []string) error {
@@ -5046,9 +5066,9 @@ func ensureArchivedManagedAgentReenrolled(
 	autoApprove bool,
 	input io.Reader,
 	output io.Writer,
-) error {
+) (*managedAgentSummary, error) {
 	if client == nil {
-		return nil
+		return nil, nil
 	}
 	if input == nil {
 		input = os.Stdin
@@ -5059,14 +5079,33 @@ func ensureArchivedManagedAgentReenrolled(
 
 	var response managedAgentListResponse
 	if err := client.Get("/api/v1/agents?limit=100", &response); err != nil {
-		return fmt.Errorf("failed to list managed agents: %w", err)
+		return nil, fmt.Errorf("failed to list managed agents: %w", err)
 	}
 	matched := findManagedAgentForDiscovered(response.Items, agent)
 	if matched == nil {
-		return nil
+		return nil, nil
 	}
 	if !strings.EqualFold(strings.TrimSpace(matched.LifecycleState), "decommissioned") {
-		return nil
+		return matched, nil
+	}
+	return reenrollArchivedManagedAgent(client, matched, autoApprove, input, output)
+}
+
+func reenrollArchivedManagedAgent(
+	client *api.Client,
+	matched *managedAgentSummary,
+	autoApprove bool,
+	input io.Reader,
+	output io.Writer,
+) (*managedAgentSummary, error) {
+	if matched == nil {
+		return nil, nil
+	}
+	if input == nil {
+		input = os.Stdin
+	}
+	if output == nil {
+		output = os.Stdout
 	}
 
 	reuse := autoApprove || nonInteractiveAutoConfirm()
@@ -5080,12 +5119,12 @@ func ensureArchivedManagedAgentReenrolled(
 			),
 		)
 		if err != nil {
-			return fmt.Errorf("failed to read reenroll confirmation: %w", err)
+			return nil, fmt.Errorf("failed to read reenroll confirmation: %w", err)
 		}
 		reuse = confirmed
 	}
 	if !reuse {
-		return fmt.Errorf(
+		return nil, fmt.Errorf(
 			"declined reusing archived enrollment %s (%s). Run 'preloop agents remove %s' first if you want a fresh identity",
 			matched.DisplayName,
 			matched.ID,
@@ -5098,7 +5137,7 @@ func ensureArchivedManagedAgentReenrolled(
 	}
 	var updated managedAgentSummary
 	if err := client.Patch("/api/v1/agents/"+matched.ID, request, &updated); err != nil {
-		return fmt.Errorf("failed to reenroll archived managed agent %q: %w", matched.ID, err)
+		return nil, fmt.Errorf("failed to reenroll archived managed agent %q: %w", matched.ID, err)
 	}
 	fmt.Fprintf( //nolint:errcheck
 		output,
@@ -5106,7 +5145,22 @@ func ensureArchivedManagedAgentReenrolled(
 		matched.DisplayName,
 		matched.ID,
 	)
-	return nil
+	if strings.TrimSpace(updated.ID) == "" {
+		updated.ID = matched.ID
+	}
+	if strings.TrimSpace(updated.DisplayName) == "" {
+		updated.DisplayName = matched.DisplayName
+	}
+	if strings.TrimSpace(updated.SessionSourceID) == "" {
+		updated.SessionSourceID = matched.SessionSourceID
+	}
+	if strings.TrimSpace(updated.SessionSourceType) == "" {
+		updated.SessionSourceType = matched.SessionSourceType
+	}
+	if strings.TrimSpace(updated.LifecycleState) == "" {
+		updated.LifecycleState = "active"
+	}
+	return &updated, nil
 }
 
 func managedAgentLookupSourceTypes(agent AgentConfig) []string {

@@ -1,15 +1,14 @@
 """Add enrollment hostname and identity derivation to managed_agent.
 
 Revision ID: 20260801_agent_identity_v2
-Revises: 20260730_webauthn_credentials
+Revises: 20260731_usage_imported
 Create Date: 2026-08-01
 
 Additive nullable columns used by CLI v2 principal-id derivation. No backfill;
 values arrive on the next CLI contact per install.
 
-NOTE: Several open PRs also revise from ``20260730_webauthn_credentials``
-(PRs #132, #137, #141, #147). This migration may need re-parenting at merge
-time if another of those lands first. Coordinate with those PRs before merging.
+Re-parented onto ``20260731_usage_imported`` after #137/#140 merged (file
+``20260731_usage_source_imported.py``).
 """
 
 from __future__ import annotations
@@ -19,7 +18,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "20260801_agent_identity_v2"
-down_revision = "20260730_webauthn_credentials"
+down_revision = "20260731_usage_imported"
 branch_labels = None
 depends_on = None
 

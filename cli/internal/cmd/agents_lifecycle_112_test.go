@@ -251,14 +251,18 @@ func TestEnsureArchivedManagedAgentReenrolled(t *testing.T) {
 
 		client := api.NewClientWithToken(server.URL, "tok")
 		var out bytes.Buffer
-		if err := ensureArchivedManagedAgentReenrolled(
+		matched, err := ensureArchivedManagedAgentReenrolled(
 			client,
 			agent,
 			true,
 			strings.NewReader(""),
 			&out,
-		); err != nil {
+		)
+		if err != nil {
 			t.Fatalf("ensureArchivedManagedAgentReenrolled: %v", err)
+		}
+		if matched == nil || matched.ID != "arch-1" {
+			t.Fatalf("expected reenrolled agent arch-1, got %#v", matched)
 		}
 		if len(methods) < 2 || methods[1] != "PATCH /api/v1/agents/arch-1" {
 			t.Fatalf("expected reenroll PATCH, got %v", methods)
@@ -287,13 +291,16 @@ func TestEnsureArchivedManagedAgentReenrolled(t *testing.T) {
 		defer server.Close()
 
 		client := api.NewClientWithToken(server.URL, "tok")
-		err := ensureArchivedManagedAgentReenrolled(
+		matched, err := ensureArchivedManagedAgentReenrolled(
 			client,
 			agent,
 			false,
 			strings.NewReader("n\n"),
 			io.Discard,
 		)
+		if matched != nil {
+			t.Fatalf("decline must not return matched agent, got %#v", matched)
+		}
 		if err == nil {
 			t.Fatal("expected decline error")
 		}
@@ -408,8 +415,11 @@ func TestManagedAgentLooksStaleAndListHint(t *testing.T) {
 	if !managedAgentLooksStale(managedAgentSummary{LifecycleState: "decommissioned"}, "/tmp/x") {
 		t.Fatal("decommissioned should be stale")
 	}
-	if !managedAgentLooksStale(managedAgentSummary{ActivityStatus: "idle"}, "-") {
-		t.Fatal("idle without local config should be stale")
+	if managedAgentLooksStale(managedAgentSummary{
+		LifecycleState: "active",
+		ActivityStatus: "idle",
+	}, "-") {
+		t.Fatal("idle active agent without local config must not be stale (other machine)")
 	}
 	if managedAgentLooksStale(managedAgentSummary{
 		LifecycleState:  "active",
