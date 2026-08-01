@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **ask_user in-session delivery** (#130): pending `ask_user` /
+  `request_approval` responses now include token-free deep links to the
+  specific question (`approval_console_url`, `approval_mobile_link` /
+  `preloop://approve/<id>`), and when the asking session's runtime has an
+  active Agent Control connection (hermes-preloop / openclaw-preloop), the
+  question is also delivered as an audited in-session prompt through the
+  existing `send_message` channel. Answers still flow only through the
+  governed approval surfaces; first answer wins and late answers get an
+  already-resolved response.
 - **Review newly unlocked tracker tools after connecting a tracker**:
   `POST /trackers` returns additive `unlocked_tool_names` (server-side
   before/after diff of tracker-gated builtins that are effectively enabled).
@@ -32,6 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inactivity notifications as password logins.
 
 ### Fixed
+
+- **ask_user approve→execute handoff**: replaying an approved `ask_user`
+  through `get_approval_status` now returns the approver's comment (the
+  human's answer) as the tool result instead of losing it; async-workflow
+  pending payloads pass through to the agent instead of being misreported
+  as "No answer provided".
 
 - **Sessions no longer expire aggressively**: refresh failures caused by
   transient errors (5xx, network) no longer clear tokens and force re-login;
