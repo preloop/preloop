@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from preloop.api.auth.jwt import get_current_active_user
-from preloop.models.crud import crud_account, crud_api_usage
+from preloop.api.common import get_account_or_404
+from preloop.models.crud import crud_api_usage
 from preloop.models.db.session import get_db_session
 from preloop.models.models.user import User
 from preloop.schemas.cost_analytics import (
@@ -37,13 +38,6 @@ def _price_catalog_info() -> Optional[PriceCatalogInfo]:
         return None
 
 
-def _get_account_or_404(db: Session, current_user: User) -> Any:
-    account = crud_account.get(db=db, id=current_user.account_id)
-    if account is None:
-        raise HTTPException(status_code=404, detail="Account not found")
-    return account
-
-
 @router.get("/summary", response_model=CostAnalyticsSummaryResponse)
 @require_permission("view_cost")
 def get_cost_summary(
@@ -61,7 +55,7 @@ def get_cost_summary(
     current_user: User = Depends(get_current_active_user),
 ) -> CostAnalyticsSummaryResponse:
     """Return the OSS cost overview using gateway usage and pricing metadata."""
-    account = _get_account_or_404(db, current_user)
+    account = get_account_or_404(db, current_user)
     summary = ModelGatewayUsageService(db).get_account_summary(
         account=account,
         start_date=start_date,
@@ -138,6 +132,6 @@ def get_cost_health(
     events are being written — so silent accounting breakage cannot go
     unnoticed.
     """
-    account = _get_account_or_404(db, current_user)
+    account = get_account_or_404(db, current_user)
     result = run_accounting_checks(db, account_id=str(account.id), window_hours=hours)
     return CostHealthResponse(**result)

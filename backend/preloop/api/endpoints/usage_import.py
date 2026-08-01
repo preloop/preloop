@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from preloop.api.auth.jwt import get_current_active_user
-from preloop.models.crud import crud_account
+from preloop.api.common import get_account_or_404
 from preloop.models.db.session import get_db_session
 from preloop.models.models.user import User
 from preloop.schemas.usage_import import (
@@ -41,11 +41,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/usage", tags=["Usage Import"])
 
 
-def _require_account(db: Session, current_user: User) -> None:
-    if crud_account.get(db=db, id=current_user.account_id) is None:
-        raise HTTPException(status_code=404, detail="Account not found")
-
-
 @router.post("/import", response_model=UsageImportResponse)
 @require_permission("import_usage")
 def import_usage_events(
@@ -60,7 +55,7 @@ def import_usage_events(
     ``usage_source='imported'``. Re-sending the same events is idempotent —
     duplicates are counted in ``skipped_duplicates``, never double-billed.
     """
-    _require_account(db, current_user)
+    get_account_or_404(db, current_user)
     try:
         agent = resolve_target_agent(
             db,
@@ -124,7 +119,7 @@ async def import_usage_csv(
     stored with tokens but no charged amount. Re-importing the same file is
     idempotent.
     """
-    _require_account(db, current_user)
+    get_account_or_404(db, current_user)
 
     parsed_column_map = None
     if column_map:

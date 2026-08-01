@@ -118,14 +118,3 @@ class UsageImportCsvResponse(UsageImportResponse):
     parsed_rows: int = 0
     skipped_rows: int = 0
     skipped_row_reasons: List[str] = Field(default_factory=list)
-
-
-class ImportedUsageByModel(BaseModel):
-    """Imported-usage aggregate grouped by model."""
-
-    model_alias: Optional[str] = None
-    source: Optional[str] = None
-    request_count: int = 0
-    total_tokens: int = 0
-    imported_cost: float = 0.0
-    last_event_at: Optional[datetime] = None
