@@ -1,7 +1,7 @@
 """Add stagger_email to notification_preferences.
 
 Revision ID: 20260801_stagger_email
-Revises: 20260730_webauthn_credentials
+Revises: 20260731_usage_imported
 Create Date: 2026-08-01
 
 Per-user toggle for staggered approval email (push first, email only if
@@ -13,7 +13,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "20260801_stagger_email"
-down_revision = "20260730_webauthn_credentials"
+down_revision = "20260731_usage_imported"
 branch_labels = None
 depends_on = None
 # Alembic reads these module globals by name; keep a local reference so static
