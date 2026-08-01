@@ -6,7 +6,7 @@ from datetime import datetime
 # Use TYPE_CHECKING to avoid circular imports
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, func
+from sqlalchemy import CheckConstraint, ForeignKey, Index, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Boolean, DateTime, Float, Integer, String
@@ -111,6 +111,12 @@ class ApiUsage(Base):
     # provider | estimated | partial
     usage_source: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     is_retry: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    # Provider-advised Retry-After (milliseconds) observed on a rate-limited
+    # upstream response; the full observed header snapshot is in
+    # meta_data["rate_limit"] (#136). NULL when the provider sent no hint.
+    rate_limit_retry_after_ms: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
     runtime_principal_type: Mapped[Optional[str]] = mapped_column(
         String(64), nullable=True
     )
@@ -169,6 +175,12 @@ class ApiUsage(Base):
             "runtime_principal_id",
             "timestamp",
             postgresql_ops={"timestamp": "DESC"},
+        ),
+        Index(
+            "ix_api_usage_rate_limited",
+            "account_id",
+            "timestamp",
+            postgresql_where=text("status_code = 429"),
         ),
     )
 

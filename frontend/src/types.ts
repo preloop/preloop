@@ -794,6 +794,65 @@ export interface AccountGatewayUsageSummaryResponse {
   usage_by_tool?: GatewayUsageByTool[];
 }
 
+export interface RateLimitTotals {
+  rate_limited_requests: number;
+  // Sum of provider-advised Retry-After values observed on 429 responses:
+  // a lower bound on wall-clock stall, read from real provider headers.
+  blocked_ms: number;
+  last_rate_limited_at: string | null;
+  quota_exhausted_count: number;
+  transient_count: number;
+}
+
+export interface RateLimitByModel {
+  model_alias: string | null;
+  provider_name: string | null;
+  rate_limited_requests: number;
+  blocked_ms: number;
+  last_rate_limited_at: string | null;
+}
+
+export interface RateLimitBySession {
+  runtime_session_id: string | null;
+  runtime_principal_name: string | null;
+  rate_limited_requests: number;
+  blocked_ms: number;
+  last_rate_limited_at: string | null;
+}
+
+export interface RateLimitSnapshotData {
+  retry_after_ms?: number;
+  requests_limit?: number;
+  requests_remaining?: number;
+  requests_reset_at?: string;
+  requests_reset_after_ms?: number;
+  tokens_limit?: number;
+  tokens_remaining?: number;
+  tokens_reset_at?: string;
+  tokens_reset_after_ms?: number;
+  subtype?: string;
+  subtype_source?: string;
+  headers?: Record<string, string>;
+}
+
+export interface RateLimitSnapshotItem {
+  provider_name: string | null;
+  model_alias: string | null;
+  observed_at: string;
+  status_code: number;
+  upstream_credential_type: string | null;
+  rate_limit: RateLimitSnapshotData;
+}
+
+export interface AccountRateLimitReportResponse {
+  period_start: string;
+  period_end: string;
+  totals: RateLimitTotals;
+  by_model: RateLimitByModel[];
+  by_session: RateLimitBySession[];
+  latest_snapshots: RateLimitSnapshotItem[];
+}
+
 export interface PriceCatalogInfo {
   source_url?: string | null;
   fetched_at?: string | null;

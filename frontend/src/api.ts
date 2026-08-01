@@ -54,6 +54,7 @@ import type {
   ToolOutputFilterListResponse,
   ToolOutputFilterCreateRequest,
   AccountGatewayUsageSummaryResponse,
+  AccountRateLimitReportResponse,
   FlowGatewayUsageSummaryResponse,
   AIModelGatewayUsageSummaryResponse,
   ApiKeyGatewayUsageSummaryResponse,
@@ -648,6 +649,18 @@ export async function getAccountGatewayUsageSummary(
   );
   if (!response.ok) {
     throw new Error('Failed to fetch account gateway usage summary');
+  }
+  return response.json();
+}
+
+export async function getAccountRateLimitReport(
+  params: GatewayUsageSummaryParams = {}
+): Promise<AccountRateLimitReportResponse> {
+  const response = await fetchWithAuth(
+    `/api/v1/account/gateway-usage/rate-limits${buildGatewayUsageQuery(params)}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch rate limit report');
   }
   return response.json();
 }

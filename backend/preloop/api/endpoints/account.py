@@ -33,6 +33,7 @@ from preloop.schemas.gateway_usage import (
     AccountManagedAgentListResponse,
     AccountGatewayUsageSearchResponse,
     AccountGatewayUsageSummaryResponse,
+    AccountRateLimitReportResponse,
     AccountRuntimeSessionDetailResponse,
     AccountRuntimeSessionListResponse,
     GatewayTokenUsage,
@@ -1075,6 +1076,33 @@ def search_account_gateway_usage(
         session_source_type=session_source_type,
         limit=limit,
         offset=offset,
+    )
+
+
+@router.get(
+    "/account/gateway-usage/rate-limits",
+    response_model=AccountRateLimitReportResponse,
+)
+@require_permission("view_cost")
+def get_account_rate_limit_report(
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+    start_date: Optional[datetime] = Query(None),
+    end_date: Optional[datetime] = Query(None),
+    runtime_principal_id: Optional[str] = Query(None),
+) -> AccountRateLimitReportResponse:
+    """Get observed rate-limit telemetry and subscription headroom (#136).
+
+    All figures are echoes of real upstream provider responses: 429 counts,
+    provider-advised blocked time, and the latest observed rate-limit header
+    snapshots per provider/model, each with its observation timestamp.
+    """
+    return ModelGatewayUsageService(db).get_account_rate_limit_report(
+        account=account,
+        start_date=start_date,
+        end_date=end_date,
+        runtime_principal_id=runtime_principal_id,
     )
 
 

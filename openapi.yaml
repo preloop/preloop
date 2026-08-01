@@ -1014,6 +1014,62 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/account/gateway-usage/rate-limits:
+    get:
+      tags:
+      - Account
+      summary: Get Account Rate Limit Report
+      description: 'Get observed rate-limit telemetry and subscription headroom (#136).
+
+
+        All figures are echoes of real upstream provider responses: 429 counts,
+
+        provider-advised blocked time, and the latest observed rate-limit header
+
+        snapshots per provider/model, each with its observation timestamp.'
+      operationId: get_account_rate_limit_report_api_v1_account_gateway_usage_rate_limits_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Start Date
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: End Date
+      - name: runtime_principal_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Runtime Principal Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountRateLimitReportResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/agents:
     get:
       tags:
@@ -8601,6 +8657,40 @@ components:
       type: object
       title: AccountManagedAgentListResponse
       description: Account-scoped managed-agent registry response.
+    AccountRateLimitReportResponse:
+      properties:
+        period_start:
+          type: string
+          format: date-time
+          title: Period Start
+        period_end:
+          type: string
+          format: date-time
+          title: Period End
+        totals:
+          $ref: '#/components/schemas/RateLimitTotals'
+        by_model:
+          items:
+            $ref: '#/components/schemas/RateLimitByModel'
+          type: array
+          title: By Model
+        by_session:
+          items:
+            $ref: '#/components/schemas/RateLimitBySession'
+          type: array
+          title: By Session
+        latest_snapshots:
+          items:
+            $ref: '#/components/schemas/RateLimitSnapshotItem'
+          type: array
+          title: Latest Snapshots
+      type: object
+      required:
+      - period_start
+      - period_end
+      - totals
+      title: AccountRateLimitReportResponse
+      description: Account-scoped rate-limit telemetry and observed headroom report.
     AccountRuntimeSessionDetailResponse:
       properties:
         period_start:
@@ -14420,6 +14510,145 @@ components:
       - expires_in_seconds
       title: QRCodeResponse
       description: Schema for QR code registration response.
+    RateLimitByModel:
+      properties:
+        model_alias:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Alias
+        provider_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Name
+        rate_limited_requests:
+          type: integer
+          title: Rate Limited Requests
+          default: 0
+        blocked_ms:
+          type: integer
+          title: Blocked Ms
+          default: 0
+        last_rate_limited_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Rate Limited At
+      type: object
+      title: RateLimitByModel
+      description: 429 telemetry grouped by model.
+    RateLimitBySession:
+      properties:
+        runtime_session_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Runtime Session Id
+        runtime_principal_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Runtime Principal Name
+        rate_limited_requests:
+          type: integer
+          title: Rate Limited Requests
+          default: 0
+        blocked_ms:
+          type: integer
+          title: Blocked Ms
+          default: 0
+        last_rate_limited_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Rate Limited At
+      type: object
+      title: RateLimitBySession
+      description: 429 telemetry grouped by runtime session (agent run).
+    RateLimitSnapshotItem:
+      properties:
+        provider_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Name
+        model_alias:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Alias
+        observed_at:
+          type: string
+          format: date-time
+          title: Observed At
+        status_code:
+          type: integer
+          title: Status Code
+        upstream_credential_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Upstream Credential Type
+        rate_limit:
+          additionalProperties: true
+          type: object
+          title: Rate Limit
+      type: object
+      required:
+      - observed_at
+      - status_code
+      title: RateLimitSnapshotItem
+      description: 'Latest observed rate-limit headers for one provider/model pair.
+
+
+        ``rate_limit`` echoes the snapshot persisted from a real upstream
+
+        response (normalized fields plus the verbatim ``headers`` map);
+
+        ``observed_at`` timestamps that observation so consumers can label
+
+        staleness. Nothing here is inferred.'
+    RateLimitTotals:
+      properties:
+        rate_limited_requests:
+          type: integer
+          title: Rate Limited Requests
+          default: 0
+        blocked_ms:
+          type: integer
+          title: Blocked Ms
+          default: 0
+        last_rate_limited_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Rate Limited At
+        quota_exhausted_count:
+          type: integer
+          title: Quota Exhausted Count
+          default: 0
+        transient_count:
+          type: integer
+          title: Transient Count
+          default: 0
+      type: object
+      title: RateLimitTotals
+      description: 'Aggregate 429 telemetry for the report window.
+
+
+        ``blocked_ms`` sums the provider-advised ``Retry-After`` values observed
+
+        on 429 responses: a lower bound on real wall-clock stall, taken directly
+
+        from provider responses (never estimated). Subtype counts come from the
+
+        per-row classification recorded at capture time; rows recorded before
+
+        this feature carry no subtype and appear in neither count.'
     RefreshRequest:
       properties:
         refresh_token:

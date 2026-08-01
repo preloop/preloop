@@ -710,6 +710,71 @@ class AccountRuntimeSessionDetailResponse(BaseModel):
     usage_by_model: List[GatewayUsageByModel] = Field(default_factory=list)
 
 
+class RateLimitTotals(BaseModel):
+    """Aggregate 429 telemetry for the report window.
+
+    ``blocked_ms`` sums the provider-advised ``Retry-After`` values observed
+    on 429 responses: a lower bound on real wall-clock stall, taken directly
+    from provider responses (never estimated). Subtype counts come from the
+    per-row classification recorded at capture time; rows recorded before
+    this feature carry no subtype and appear in neither count.
+    """
+
+    rate_limited_requests: int = 0
+    blocked_ms: int = 0
+    last_rate_limited_at: Optional[datetime] = None
+    quota_exhausted_count: int = 0
+    transient_count: int = 0
+
+
+class RateLimitByModel(BaseModel):
+    """429 telemetry grouped by model."""
+
+    model_alias: Optional[str] = None
+    provider_name: Optional[str] = None
+    rate_limited_requests: int = 0
+    blocked_ms: int = 0
+    last_rate_limited_at: Optional[datetime] = None
+
+
+class RateLimitBySession(BaseModel):
+    """429 telemetry grouped by runtime session (agent run)."""
+
+    runtime_session_id: Optional[str] = None
+    runtime_principal_name: Optional[str] = None
+    rate_limited_requests: int = 0
+    blocked_ms: int = 0
+    last_rate_limited_at: Optional[datetime] = None
+
+
+class RateLimitSnapshotItem(BaseModel):
+    """Latest observed rate-limit headers for one provider/model pair.
+
+    ``rate_limit`` echoes the snapshot persisted from a real upstream
+    response (normalized fields plus the verbatim ``headers`` map);
+    ``observed_at`` timestamps that observation so consumers can label
+    staleness. Nothing here is inferred.
+    """
+
+    provider_name: Optional[str] = None
+    model_alias: Optional[str] = None
+    observed_at: datetime
+    status_code: int
+    upstream_credential_type: Optional[str] = None
+    rate_limit: Dict[str, Any] = Field(default_factory=dict)
+
+
+class AccountRateLimitReportResponse(BaseModel):
+    """Account-scoped rate-limit telemetry and observed headroom report."""
+
+    period_start: datetime
+    period_end: datetime
+    totals: RateLimitTotals
+    by_model: List[RateLimitByModel] = Field(default_factory=list)
+    by_session: List[RateLimitBySession] = Field(default_factory=list)
+    latest_snapshots: List[RateLimitSnapshotItem] = Field(default_factory=list)
+
+
 class AccountGatewayUsageSummaryResponse(BaseModel):
     """Account-scoped gateway usage summary."""
 
