@@ -182,6 +182,7 @@ describe('ToolsView (approvals + conditions)', () => {
       approval_workflow_id: null,
       has_approval_condition: false,
       config_id: null,
+      schema_tokens_estimate: 1200,
     };
     const unavailableTool = {
       ...availableTool,
@@ -189,6 +190,7 @@ describe('ToolsView (approvals + conditions)', () => {
       description: 'Needs a tracker',
       is_supported: false,
       unsupported_reason: 'Requires a connected tracker',
+      schema_tokens_estimate: 800,
     };
 
     fetchStub.callsFake(async (input: RequestInfo | URL) => {
@@ -224,6 +226,14 @@ describe('ToolsView (approvals + conditions)', () => {
     const note = el.shadowRoot?.querySelector('.unavailable-note');
     expect(note).to.exist;
     expect(note?.textContent).to.contain('Requires a connected tracker');
+
+    const contextTax = el.shadowRoot?.querySelector('.context-tax');
+    expect(contextTax).to.exist;
+    // Only enabled+supported tools contribute (1200), not unavailable (800).
+    expect(contextTax?.textContent?.replace(/\s+/g, ' ')).to.contain(
+      '~1,200 tokens'
+    );
+    expect(contextTax?.textContent).to.contain('to every agent request');
   });
 
   it('renders the native tool approvals account-default card with override links', async () => {

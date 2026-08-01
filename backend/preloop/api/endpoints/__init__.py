@@ -25,6 +25,7 @@ __all__ = [
     "search",
     "tools",
     "trackers",
+    "usage_import",
     "version",
     "webhooks",
     "flows",

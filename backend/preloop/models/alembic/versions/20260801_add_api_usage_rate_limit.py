@@ -1,7 +1,7 @@
 """Add rate-limit telemetry column and index to api_usage.
 
 Revision ID: 20260801_api_usage_rate_limit
-Revises: 20260730_webauthn_credentials
+Revises: 20260731_usage_imported
 Create Date: 2026-08-01
 
 Adds ``api_usage.rate_limit_retry_after_ms`` (nullable): the provider-advised
@@ -12,9 +12,9 @@ scans. The full observed header snapshot lives in
 
 Also adds a partial index over 429 rows for the rate-limit report queries.
 
-NOTE: parented on ``20260730_webauthn_credentials`` (main's head at branch
-time). Open PRs #137 and #141 add migrations off the same head; whichever
-lands last must re-parent.
+NOTE: re-parented onto ``20260731_usage_imported`` after PR #137 merged.
+Open PR #141 adds a migration off the same original head; whichever of the
+two remaining lands last must re-parent.
 """
 
 import sqlalchemy as sa
@@ -22,7 +22,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "20260801_api_usage_rate_limit"
-down_revision = "20260730_webauthn_credentials"
+down_revision = "20260731_usage_imported"
 branch_labels = None
 depends_on = None
 # Alembic reads these module globals by name; keep a local reference so static
