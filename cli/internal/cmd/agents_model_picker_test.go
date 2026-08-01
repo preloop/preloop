@@ -39,13 +39,17 @@ func TestListGatewayModelChoicesIncludesInferredAndAccount(t *testing.T) {
 	defer server.Close()
 
 	client := api.NewClientWithToken(server.URL, "token")
+	var out bytes.Buffer
 	choices := listGatewayModelChoices(client, &managedGatewayUpstream{
 		ManagedModelAlias: "openai/gpt-5.6-sol",
 		CredentialType:    "oauth_openai_codex",
 		APIKey:            "sk-test",
-	})
+	}, &out)
 	if len(choices) != 2 {
 		t.Fatalf("expected 2 choices, got %#v", choices)
+	}
+	if strings.Contains(out.String(), "could not list account AI models") {
+		t.Fatalf("unexpected API failure notice on success: %q", out.String())
 	}
 	if !choices[0].Inferred || choices[0].Alias != "openai/gpt-5.6-sol" {
 		t.Fatalf("expected inferred first, got %#v", choices[0])
@@ -182,5 +186,28 @@ func TestInstallRuntimeModelFlagPassthrough(t *testing.T) {
 	flag = agentsEnrollCmd.Flags().Lookup("model")
 	if flag == nil {
 		t.Fatal("expected --model flag on onboard")
+	}
+}
+
+func TestListGatewayModelChoicesWarnsOnAPIFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	client := api.NewClientWithToken(server.URL, "token")
+	var out bytes.Buffer
+	choices := listGatewayModelChoices(client, &managedGatewayUpstream{
+		ManagedModelAlias: "openai/gpt-5.6-sol",
+		APIKey:            "sk-test",
+	}, &out)
+	if len(choices) != 1 || !choices[0].Inferred {
+		t.Fatalf("expected inferred-only fallback, got %#v", choices)
+	}
+	if !strings.Contains(out.String(), "could not list account AI models") {
+		t.Fatalf("expected API failure notice, got %q", out.String())
+	}
+	if !strings.Contains(out.String(), "showing local inference only") {
+		t.Fatalf("expected soft-fail wording, got %q", out.String())
 	}
 }

@@ -76,6 +76,11 @@ func TestFormatDeferredLiveValidationRoundTrip(t *testing.T) {
 
 func TestRunAgentsInstallRuntimeDryRunIncludesModel(t *testing.T) {
 	cmd := agentsInstallRuntimeCmd
+	t.Cleanup(func() {
+		_ = cmd.Flags().Set("model", "")
+		_ = cmd.Flags().Set("dry-run", "false")
+		_ = cmd.Flags().Set("yes", "false")
+	})
 	if err := cmd.Flags().Set("dry-run", "true"); err != nil {
 		t.Fatalf("set dry-run: %v", err)
 	}
@@ -89,6 +94,13 @@ func TestRunAgentsInstallRuntimeDryRunIncludesModel(t *testing.T) {
 	if err := runAgentsInstallRuntime(cmd, []string{"hermes"}); err != nil {
 		t.Fatalf("dry run with --model failed: %v", err)
 	}
-	_ = cmd.Flags().Set("model", "")
-	_ = cmd.Flags().Set("dry-run", "false")
+}
+
+func TestPrintLiveValidationRoundTripResultNilOutcomeAndErr(t *testing.T) {
+	var out bytes.Buffer
+	printLiveValidationRoundTripResult(&out, nil, nil, "openai/gpt-5.6-sol", 0)
+	rendered := out.String()
+	if strings.Contains(rendered, "FAILED") || strings.Contains(rendered, "OK") {
+		t.Fatalf("nil/nil should finish the line quietly, got %q", rendered)
+	}
 }

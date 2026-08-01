@@ -71,6 +71,12 @@ func printLiveValidationRoundTripResult(
 		) //nolint:errcheck
 		return
 	}
+	if outcome == nil && err == nil {
+		// Finish the inline "Sending test prompt..." line without inventing a
+		// failure when a future caller passes neither outcome nor error.
+		fmt.Fprintln(w, "") //nolint:errcheck
+		return
+	}
 	detail := "live validation failed"
 	if err != nil {
 		detail = firstErrorLine(err)
@@ -124,11 +130,18 @@ func formatDeferredLiveValidationRoundTrip(result deferredLiveValidationResult) 
 	return formatCLIError(line)
 }
 
+// Terminal color escapes for operator-facing CLI errors. Kept local so the
+// agents package does not depend on a third-party color library for one site.
+const (
+	ansiRed   = "\033[31m"
+	ansiReset = "\033[0m"
+)
+
 func formatCLIError(message string) string {
 	if !stdoutIsTerminal() {
 		return message
 	}
-	return "\033[31m" + message + "\033[0m"
+	return ansiRed + message + ansiReset
 }
 
 func stdoutIsTerminal() bool {

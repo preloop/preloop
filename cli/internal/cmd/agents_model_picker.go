@@ -35,7 +35,7 @@ func resolveManagedModelSelection(
 	if output == nil {
 		output = io.Discard
 	}
-	choices := listGatewayModelChoices(client, inferred)
+	choices := listGatewayModelChoices(client, inferred, output)
 	preferred := strings.TrimSpace(opts.PreferredModel)
 	if preferred != "" {
 		choice := findGatewayModelChoice(choices, preferred)
@@ -97,9 +97,13 @@ func shouldPromptForManagedModel(opts managedEnrollmentOptions) bool {
 func listGatewayModelChoices(
 	client *api.Client,
 	inferred *managedGatewayUpstream,
+	output io.Writer,
 ) []gatewayModelChoice {
 	choices := make([]gatewayModelChoice, 0)
 	seen := map[string]bool{}
+	if output == nil {
+		output = io.Discard
+	}
 
 	if inferred != nil {
 		alias := strings.TrimSpace(inferred.ManagedModelAlias)
@@ -127,6 +131,13 @@ func listGatewayModelChoices(
 	}
 	var models []aiModelResponse
 	if err := client.Get("/api/v1/ai-models", &models); err != nil {
+		// Fail soft to inferred/local choices, but tell the operator the
+		// account catalog was unavailable so the picker may be incomplete.
+		fmt.Fprintf(
+			output,
+			"Note: could not list account AI models (%v); showing local inference only.\n",
+			err,
+		) //nolint:errcheck
 		return choices
 	}
 	for i := range models {
