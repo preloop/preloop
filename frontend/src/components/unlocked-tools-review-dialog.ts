@@ -256,6 +256,8 @@ export class UnlockedToolsReviewDialog extends LitElement {
             tool_source: 'builtin',
             mcp_server_id: tool.source_id,
             is_enabled: false,
+            // Placeholder: POST /tool-configurations overrides account_id from
+            // the authenticated session (same pattern as tools-view toggles).
             account_id: '',
           });
         }

@@ -100,7 +100,6 @@ async def register_tracker(
     # Parse request body manually
     try:
         data = await request.json()
-        print("Raw request data:", data)
 
         # Extract fields from the raw data
         name = data.get("name")
