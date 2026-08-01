@@ -75,6 +75,17 @@ class NotificationPreferences(Base):
         comment="Whether mobile push notifications are enabled",
     )
 
+    stagger_email: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default="true",
+        comment=(
+            "When True and push is enabled, delay approval email until the "
+            "request is still pending after the stagger window"
+        ),
+    )
+
     # Timestamps
     created_at: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True),

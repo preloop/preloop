@@ -220,6 +220,165 @@ def _log_approval_tool_executed_async(
 # Thread pool for running sync database operations
 _sync_db_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 
+# Push first; email dual-channel users only if still pending after this delay.
+APPROVAL_EMAIL_STAGGER_SECONDS = 60
+
+# Retain strong references to delayed-email tasks so they are not GC'd mid-sleep.
+_delayed_email_tasks: Set["asyncio.Task[Any]"] = set()
+
+
+def _retain_delayed_email_task(task: "asyncio.Task[Any]") -> None:
+    """Keep a strong reference to a delayed-email task until it completes."""
+    _delayed_email_tasks.add(task)
+
+    def _discard(done: "asyncio.Task[Any]") -> None:
+        _delayed_email_tasks.discard(done)
+
+    task.add_done_callback(_discard)
+
+
+async def _send_delayed_approval_email(
+    *,
+    request_id: uuid.UUID,
+    user_ids: List[uuid.UUID],
+    delay_seconds: int,
+    base_url: str,
+    correlation_id: Optional[str],
+    account_id: str,
+    tool_name: Optional[str],
+) -> None:
+    """Send staggered approval emails after a delay if still pending.
+
+    Opens a fresh DB session at fire time so status reflects commits from
+    other sessions. Never raises into the event loop.
+
+    Args:
+        request_id: Approval request to re-check.
+        user_ids: Dual-channel users waiting for delayed email.
+        delay_seconds: Seconds to wait before the status re-check.
+        base_url: Application base URL for approval links.
+        correlation_id: Optional audit correlation id.
+        account_id: Account id for audit logging.
+        tool_name: Tool name for audit logging.
+    """
+    try:
+        await asyncio.sleep(delay_seconds)
+
+        from preloop.models.db.session import get_async_db_session
+
+        async with get_async_db_session() as db:
+            current_request = await get_approval_request_async(db, request_id)
+            if (
+                not current_request
+                or current_request.status in ApprovalService._TERMINAL_STATUSES
+                or current_request.status != "pending"
+            ):
+                reason = (
+                    f"status_{current_request.status}"
+                    if current_request
+                    else "not_found"
+                )
+                logger.info(
+                    "Skipping delayed email for approval %s: %s",
+                    request_id,
+                    reason,
+                )
+                _log_approval_notification_async(
+                    account_id=account_id,
+                    approval_id=request_id,
+                    channel="email",
+                    status="skipped",
+                    tool_name=tool_name,
+                    recipient_user_ids=list(user_ids),
+                    skipped_count=len(user_ids),
+                    error="resolved_before_email",
+                    correlation_id=correlation_id,
+                )
+                return
+
+            if (
+                current_request.expires_at
+                and datetime.utcnow() > current_request.expires_at
+            ):
+                logger.info(
+                    "Skipping delayed email for approval %s: expired",
+                    request_id,
+                )
+                _log_approval_notification_async(
+                    account_id=account_id,
+                    approval_id=request_id,
+                    channel="email",
+                    status="skipped",
+                    tool_name=tool_name,
+                    recipient_user_ids=list(user_ids),
+                    skipped_count=len(user_ids),
+                    error="resolved_before_email",
+                    correlation_id=correlation_id,
+                )
+                return
+
+            service = ApprovalService(db, base_url)
+            workflow = current_request.approval_workflow
+            if workflow is None:
+                logger.warning(
+                    "Delayed email for %s missing workflow; skipping send",
+                    request_id,
+                )
+                _log_approval_notification_async(
+                    account_id=account_id,
+                    approval_id=request_id,
+                    channel="email",
+                    status="skipped",
+                    tool_name=tool_name,
+                    recipient_user_ids=list(user_ids),
+                    skipped_count=len(user_ids),
+                    error="missing_workflow",
+                    correlation_id=correlation_id,
+                )
+                return
+
+            result = await service._send_email_notification(
+                current_request, workflow, user_ids=user_ids
+            )
+            sent_raw = result.get("sent")
+            failed_raw = result.get("failed")
+            sent_count = sent_raw if isinstance(sent_raw, int) else 0
+            failed_count = failed_raw if isinstance(failed_raw, int) else 0
+            if sent_count > 0 and failed_count == 0:
+                status = "sent"
+            elif sent_count > 0:
+                status = "partial"
+            elif result.get("success") is False:
+                status = "failed"
+            else:
+                status = "sent"
+            _log_approval_notification_async(
+                account_id=account_id,
+                approval_id=request_id,
+                channel="email",
+                status=status,
+                tool_name=tool_name or current_request.tool_name,
+                recipient_user_ids=list(user_ids),
+                sent_count=sent_count,
+                failed_count=failed_count,
+                error=str(result.get("error")) if result.get("error") else None,
+                correlation_id=correlation_id,
+            )
+            logger.info(
+                "Delayed email for approval %s: %s",
+                request_id,
+                result,
+            )
+    except asyncio.CancelledError:
+        logger.info("Delayed email task cancelled for approval %s", request_id)
+    except Exception as exc:
+        logger.error(
+            "Failed delayed email for approval %s: %s",
+            request_id,
+            exc,
+            exc_info=True,
+        )
+
 
 async def _send_android_push_transport(
     *,
@@ -1730,13 +1889,16 @@ class ApprovalService:
     ) -> Dict[str, Any]:
         """Send notifications for an approval request based on user preferences.
 
-        Notification channels are determined by each user's notification preferences,
-        not by the workflow. Each approver will be notified via their preferred channels:
-        - Email if they have enable_email=True
-        - Push notification if they have enable_mobile_push=True and registered devices
+        Notification channels are determined by each user's notification
+        preferences, not by the workflow. Push goes out immediately. Email
+        for dual-channel users with ``stagger_email`` enabled is delayed
+        until the request is still pending after
+        ``APPROVAL_EMAIL_STAGGER_SECONDS``. Email-only users and users with
+        stagger off still get email immediately. If push is unavailable,
+        email falls back to immediate for every email-enabled approver.
 
-        For webhook-based policies (slack, mattermost, webhook), those are sent
-        as configured in the workflow since they're not per-user.
+        For webhook-based policies (slack, mattermost, webhook), those are
+        sent as configured in the workflow since they are not per-user.
 
         Args:
             approval_request: The approval request to notify about
@@ -1745,7 +1907,7 @@ class ApprovalService:
         Returns:
             Dict with results per notification channel
         """
-        results = {}
+        results: Dict[str, Any] = {}
 
         # Guard against duplicate notifications - check if request is too old to be new
         # If request was created more than 30 seconds ago, skip notifications
@@ -1808,25 +1970,9 @@ class ApprovalService:
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug(f"Failed to resolve approver list for audit: {exc}")
 
-        # Send email notifications to users who have email enabled
-        try:
-            email_result = await self._send_email_notification(
-                approval_request, approval_workflow
-            )
-            results["email"] = email_result
-        except Exception as e:
-            logger.error(f"Failed to send email notifications: {str(e)}")
-            results["email"] = {"success": False, "error": str(e)}
+        partition = await self._partition_approvers_for_stagger(approver_user_ids)
 
-        self._audit_notification_result(
-            approval_request=approval_request,
-            channel="email",
-            channel_result=results["email"],
-            recipient_user_ids=approver_user_ids,
-            correlation_id=correlation_id,
-        )
-
-        # Send push notifications to users who have push enabled
+        # Push first so watch/mobile get the head start.
         try:
             push_result = await self._send_push_notification(
                 approval_request, approval_workflow
@@ -1840,9 +1986,80 @@ class ApprovalService:
             approval_request=approval_request,
             channel="mobile_push",
             channel_result=results["mobile_push"],
-            recipient_user_ids=approver_user_ids,
+            recipient_user_ids=partition["push_capable"] or approver_user_ids,
             correlation_id=correlation_id,
         )
+
+        push_unavailable = results["mobile_push"].get("success") is False or bool(
+            results["mobile_push"].get("no_devices")
+        )
+
+        if push_unavailable:
+            # Never degrade delivery when push cannot work.
+            immediate_email_ids = list(partition["all_email"])
+            delayed_email_ids: List[uuid.UUID] = []
+        else:
+            immediate_email_ids = list(partition["email_only"]) + list(
+                partition["both_immediate"]
+            )
+            delayed_email_ids = list(partition["both_stagger"])
+
+        # Immediate email: recipients from the partition, or a no-op/legacy
+        # call when nothing is staggered (empty workflow / push-only).
+        send_immediate_email = bool(immediate_email_ids) or not delayed_email_ids
+        if send_immediate_email:
+            if immediate_email_ids:
+                email_user_ids: Optional[List[uuid.UUID]] = immediate_email_ids
+            elif approver_user_ids:
+                # Approvers exist but none are due immediate email (e.g. push-only).
+                email_user_ids = []
+            else:
+                # Preserve legacy "no approvers configured" reporting.
+                email_user_ids = None
+            try:
+                email_result = await self._send_email_notification(
+                    approval_request,
+                    approval_workflow,
+                    user_ids=email_user_ids,
+                )
+                results["email"] = email_result
+            except Exception as e:
+                logger.error(f"Failed to send email notifications: {str(e)}")
+                results["email"] = {"success": False, "error": str(e)}
+
+            self._audit_notification_result(
+                approval_request=approval_request,
+                channel="email",
+                channel_result=results["email"],
+                recipient_user_ids=immediate_email_ids or approver_user_ids,
+                correlation_id=correlation_id,
+            )
+
+        if delayed_email_ids:
+            delay_seconds = APPROVAL_EMAIL_STAGGER_SECONDS
+            task = asyncio.create_task(
+                _send_delayed_approval_email(
+                    request_id=approval_request.id,
+                    user_ids=delayed_email_ids,
+                    delay_seconds=delay_seconds,
+                    base_url=self.base_url,
+                    correlation_id=correlation_id,
+                    account_id=str(approval_request.account_id),
+                    tool_name=approval_request.tool_name,
+                )
+            )
+            _retain_delayed_email_task(task)
+            results["email_delayed"] = {
+                "scheduled": len(delayed_email_ids),
+                "delay_seconds": delay_seconds,
+            }
+            self._audit_notification_result(
+                approval_request=approval_request,
+                channel="email",
+                channel_result=results["email_delayed"],
+                recipient_user_ids=delayed_email_ids,
+                correlation_id=correlation_id,
+            )
 
         # Handle webhook-based notifications (these are workflow-level, not per-user)
         # Derive notification channels from approval_type (the model field)
@@ -1870,6 +2087,75 @@ class ApprovalService:
 
         return results
 
+    async def _partition_approvers_for_stagger(
+        self, approver_user_ids: List[uuid.UUID]
+    ) -> Dict[str, List[uuid.UUID]]:
+        """Partition approvers by email/push eligibility and stagger preference.
+
+        Args:
+            approver_user_ids: Approver user IDs to classify.
+
+        Returns:
+            Dict with keys ``push_capable``, ``email_only``, ``both_stagger``,
+            ``both_immediate``, and ``all_email``.
+        """
+
+        def _partition() -> Dict[str, List[uuid.UUID]]:
+            from preloop.models.crud import notification_preferences
+            from preloop.models.db.session import get_db_session
+
+            push_capable: List[uuid.UUID] = []
+            email_only: List[uuid.UUID] = []
+            both_stagger: List[uuid.UUID] = []
+            both_immediate: List[uuid.UUID] = []
+            all_email: List[uuid.UUID] = []
+
+            sync_db = next(get_db_session())
+            try:
+                for user_id in approver_user_ids:
+                    prefs = notification_preferences.get_by_user(sync_db, user_id)
+                    if not prefs:
+                        continue
+
+                    has_email = bool(prefs.enable_email)
+                    has_tokens = bool(prefs.get_device_tokens())
+                    has_push = bool(prefs.enable_mobile_push and has_tokens)
+                    stagger_on = bool(getattr(prefs, "stagger_email", True))
+
+                    if has_push:
+                        push_capable.append(user_id)
+                    if has_email:
+                        all_email.append(user_id)
+                        if has_push:
+                            if stagger_on:
+                                both_stagger.append(user_id)
+                            else:
+                                both_immediate.append(user_id)
+                        else:
+                            email_only.append(user_id)
+            finally:
+                sync_db.close()
+
+            logger.info(
+                "Partitioned %s approvers: %s push-capable, %s email-only, "
+                "%s both-stagger, %s both-immediate",
+                len(approver_user_ids),
+                len(push_capable),
+                len(email_only),
+                len(both_stagger),
+                len(both_immediate),
+            )
+            return {
+                "push_capable": push_capable,
+                "email_only": email_only,
+                "both_stagger": both_stagger,
+                "both_immediate": both_immediate,
+                "all_email": all_email,
+            }
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(_sync_db_executor, _partition)
+
     def _audit_notification_result(
         self,
         approval_request: ApprovalRequest,
@@ -1881,8 +2167,8 @@ class ApprovalService:
         """Persist a single channel fan-out result to the audit log.
 
         Translates the heterogeneous per-channel result dicts into a normalised
-        ``status`` (sent / partial / failed / skipped / no_devices) and forwards
-        the structured counts to ``_log_approval_notification_async``.
+        ``status`` (sent / partial / failed / skipped / no_devices / scheduled)
+        and forwards the structured counts to ``_log_approval_notification_async``.
         """
         try:
             sent = channel_result.get("sent")
@@ -1890,8 +2176,11 @@ class ApprovalService:
             skipped = channel_result.get("skipped")
             error = channel_result.get("error")
             success = channel_result.get("success")
+            scheduled = channel_result.get("scheduled")
 
-            if channel_result.get("no_devices"):
+            if scheduled is not None:
+                status = "scheduled"
+            elif channel_result.get("no_devices"):
                 status = "no_devices"
             elif success is False and (sent or 0) == 0:
                 status = "failed"
@@ -1918,6 +2207,11 @@ class ApprovalService:
                 skipped_count=skipped if isinstance(skipped, int) else None,
                 error=str(error) if error else None,
                 correlation_id=correlation_id,
+                extra_details=(
+                    {"delay_seconds": channel_result.get("delay_seconds")}
+                    if scheduled is not None
+                    else None
+                ),
             )
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug(f"Failed to persist notification audit for {channel}: {exc}")
@@ -1959,12 +2253,15 @@ class ApprovalService:
         self,
         approval_request: ApprovalRequest,
         approval_workflow: ApprovalWorkflow,
+        user_ids: Optional[List[uuid.UUID]] = None,
     ) -> Dict[str, Any]:
         """Send email notification for approval request.
 
         Args:
             approval_request: The approval request
             approval_workflow: The approval workflow
+            user_ids: Optional explicit recipient set. When None, all
+                workflow approvers are considered.
 
         Returns:
             Dict with send result
@@ -1973,14 +2270,20 @@ class ApprovalService:
         from preloop.models.models.user import User
         from sqlalchemy import select
 
-        # Get all approver user IDs (including team members)
-        approver_user_ids = await self._get_all_approver_user_ids(approval_workflow)
-
-        if not approver_user_ids:
-            logger.warning(
-                f"No approvers configured for approval workflow {approval_workflow.id}"
-            )
-            return {"success": False, "error": "No approvers configured"}
+        # Get all approver user IDs (including team members) unless a subset
+        # was provided by the stagger partitioner.
+        if user_ids is not None:
+            approver_user_ids = list(user_ids)
+            if not approver_user_ids:
+                return {"success": True, "sent": 0, "failed": 0, "skipped": 0}
+        else:
+            approver_user_ids = await self._get_all_approver_user_ids(approval_workflow)
+            if not approver_user_ids:
+                logger.warning(
+                    f"No approvers configured for approval workflow "
+                    f"{approval_workflow.id}"
+                )
+                return {"success": False, "error": "No approvers configured"}
 
         # Send email to each approver who has email notifications enabled
         from preloop.models.crud import notification_preferences

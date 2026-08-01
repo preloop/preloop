@@ -13633,6 +13633,12 @@ components:
           title: Enable Mobile Push
           description: Whether mobile push notifications are enabled
           default: false
+        stagger_email:
+          type: boolean
+          title: Stagger Email
+          description: When True and push is enabled, delay approval email until the
+            request is still pending after one minute
+          default: true
         id:
           type: string
           format: uuid
@@ -13685,6 +13691,13 @@ components:
           - type: 'null'
           title: Enable Mobile Push
           description: Enable mobile push notifications
+        stagger_email:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Stagger Email
+          description: Delay approval email when push is also enabled and the request
+            is still pending
       type: object
       title: NotificationPreferencesUpdate
       description: Schema for updating notification preferences.

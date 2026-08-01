@@ -19,6 +19,7 @@ interface NotificationPreferences {
   preferred_channel: string;
   enable_email: boolean;
   enable_mobile_push: boolean;
+  stagger_email?: boolean;
   mobile_device_tokens?: Array<{
     platform: string;
     token: string;
@@ -689,6 +690,39 @@ export class NotificationPreferencesView extends AuthedElement {
     }
   }
 
+  private async handleToggleStaggerEmail(e: any) {
+    if (!this.preferences) return;
+
+    try {
+      this.isSaving = true;
+      const data = await this.fetchData('/api/v1/notification-preferences/me', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          stagger_email: e.target.checked,
+        }),
+      });
+
+      if (!data) {
+        throw new Error('Failed to update quiet-alerts preference');
+      }
+
+      this.preferences = data;
+      this.successMessage = 'Preference updated successfully';
+      setTimeout(() => (this.successMessage = ''), 3000);
+    } catch (error: any) {
+      this.errorMessage = error.message || 'Failed to update preference';
+    } finally {
+      this.isSaving = false;
+    }
+  }
+
+  private get showStaggerToggle(): boolean {
+    return Boolean(
+      this.preferences?.enable_email && this.preferences?.enable_mobile_push
+    );
+  }
+
   private async handleShowQRCode() {
     try {
       const data = await this.fetchData(
@@ -831,6 +865,31 @@ export class NotificationPreferencesView extends AuthedElement {
               ?disabled=${this.isSaving}
             ></sl-switch>
           </div>
+
+          ${
+            this.showStaggerToggle
+              ? html`
+                  <div
+                    class="preference-row"
+                    style="margin-top: var(--sl-spacing-small);"
+                    data-testid="stagger-email-toggle"
+                  >
+                    <div class="preference-label">
+                      <div class="preference-title">Quiet duplicate alerts</div>
+                      <div class="preference-description">
+                        When push is enabled, email me only if an approval is
+                        still waiting after a minute.
+                      </div>
+                    </div>
+                    <sl-switch
+                      ?checked=${this.preferences?.stagger_email !== false}
+                      @sl-change=${this.handleToggleStaggerEmail}
+                      ?disabled=${this.isSaving}
+                    ></sl-switch>
+                  </div>
+                `
+              : ''
+          }
         </sl-card>
 
         <sl-card>

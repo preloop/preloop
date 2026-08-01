@@ -126,6 +126,7 @@ async def update_my_notification_preferences(
         preferred_channel=prefs_in.preferred_channel,
         enable_email=prefs_in.enable_email,
         enable_mobile_push=prefs_in.enable_mobile_push,
+        stagger_email=prefs_in.stagger_email,
     )
 
     db.commit()
