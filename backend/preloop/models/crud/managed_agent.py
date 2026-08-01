@@ -295,6 +295,39 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             .first()
         )
 
+    def list_by_kind(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        agent_kind: str,
+        active_only: bool = True,
+    ) -> list[ManagedAgent]:
+        """Return the account's managed agents of one kind, newest first.
+
+        Used by usage ingest to resolve the default attribution target when
+        the caller does not name an agent explicitly. By default only
+        ``lifecycle_state == "active"`` rows are returned so archived
+        duplicates do not trip ambiguity errors.
+
+        Args:
+            db: Database session.
+            account_id: Account that owns the agents.
+            agent_kind: Normalized agent kind (for example ``"cursor"``).
+            active_only: When True (default), exclude suspended and
+                decommissioned rows.
+
+        Returns:
+            Matching managed agents ordered by ``created_at`` descending.
+        """
+        query = db.query(self.model).filter(
+            self.model.account_id == account_id,
+            self.model.agent_kind == agent_kind,
+        )
+        if active_only:
+            query = query.filter(self.model.lifecycle_state == "active")
+        return query.order_by(self.model.created_at.desc()).all()
+
     def get_for_account(
         self, db: Session, *, account_id: str, agent_id: str
     ) -> Optional[ManagedAgent]:

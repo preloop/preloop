@@ -354,9 +354,16 @@ var agentsRestoreCmd = &cobra.Command{
 
 var agentsOffboardCmd = &cobra.Command{
 	Use:   "offboard [agent]",
-	Short: "Restore local config and remove managed enrollment",
+	Short: "Restore local config and archive managed enrollment",
 	Args:  cobra.MaximumNArgs(1),
 	RunE:  runAgentsOffboard,
+}
+
+var agentsRemoveCmd = &cobra.Command{
+	Use:   "remove <agent-id-or-name>",
+	Short: "Permanently delete a managed agent record",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runAgentsRemove,
 }
 
 const (
@@ -571,6 +578,8 @@ type managedAgentSummary struct {
 	ManagedMCPServers      []string                          `json:"managed_mcp_servers"`
 	MCPProxyConfigured     bool                              `json:"mcp_proxy_configured,omitempty"`
 	ModelGatewayConfigured bool                              `json:"model_gateway_configured,omitempty"`
+	TotalRequests          int                               `json:"total_requests,omitempty"`
+	EstimatedCost          float64                           `json:"estimated_cost,omitempty"`
 }
 
 type managedAgentListResponse struct {
@@ -720,6 +729,7 @@ func init() {
 	agentsCmd.AddCommand(agentsInstallPluginCmd)
 	agentsCmd.AddCommand(agentsRestoreCmd)
 	agentsCmd.AddCommand(agentsOffboardCmd)
+	agentsCmd.AddCommand(agentsRemoveCmd)
 	agentsCmd.AddCommand(agentsStarterPolicyCmd)
 
 	agentsDiscoverCmd.Flags().Bool("add", false, "deprecated: use 'preloop agents onboard <agent>' instead")
@@ -749,6 +759,8 @@ func init() {
 	agentsOffboardCmd.Flags().Bool("all", false, "offboard all enrolled agents")
 	agentsOffboardCmd.Flags().String("remove-model", offboardCleanupAsk, "whether to remove an eligible AI model from Preloop as part of offboarding: ask, yes, or no")
 	agentsOffboardCmd.Flags().String("remove-mcp-servers", offboardCleanupAsk, "whether to remove eligible MCP servers from Preloop as part of offboarding: ask, yes, or no")
+	agentsRemoveCmd.Flags().BoolP("yes", "y", false, "skip the permanent-delete confirmation prompt")
+	agentsRemoveCmd.Flags().Bool("force", false, "allow deleting an agent that has recorded usage history")
 	agentsStarterPolicyCmd.Flags().StringP("output", "o", "", "write generated policy YAML to a file")
 	agentsStarterPolicyCmd.Flags().Bool("apply", false, "apply the generated policy immediately")
 	agentsStarterPolicyCmd.Flags().Bool("dry-run", false, "when used with --apply, validate without applying changes")
@@ -1624,10 +1636,14 @@ func runAgentsList(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Managed agents (%d):\n\n", len(agents))
 	fmt.Fprintln(tw, "NAME\tSOURCE\tLIFECYCLE\tACTIVITY\tONBOARDING\tMODEL\tLOCAL CONFIG") //nolint:errcheck
 	fmt.Fprintln(tw, "----\t------\t---------\t--------\t----------\t-----\t------------") //nolint:errcheck
+	staleEntries := false
 	for _, agent := range agents {
 		localConfig := "-"
 		if localAgent, ok := localAgentsByPrincipal[agent.SessionSourceID]; ok {
 			localConfig = localAgent.ConfigPath
+		}
+		if managedAgentLooksStale(agent, localConfig) {
+			staleEntries = true
 		}
 		source := agent.SessionSourceType
 		if strings.TrimSpace(agent.SessionSourceID) != "" {
@@ -1662,7 +1678,23 @@ func runAgentsList(cmd *cobra.Command, args []string) error {
 		}
 	}
 	_ = tw.Flush()
+	if staleEntries {
+		fmt.Println()
+		fmt.Println("Some entries look stale. Archive happens automatically on offboard; delete permanently with 'preloop agents remove <id>'.")
+	}
 	return nil
+}
+
+func managedAgentLooksStale(agent managedAgentSummary, localConfig string) bool {
+	if strings.EqualFold(strings.TrimSpace(agent.LifecycleState), "decommissioned") {
+		return true
+	}
+	if localConfig != "-" {
+		return false
+	}
+	activity := strings.ToLower(strings.TrimSpace(agent.ActivityStatus))
+	onboarding := strings.ToLower(strings.TrimSpace(agent.OnboardingState))
+	return activity == "idle" || onboarding == "incomplete" || onboarding == ""
 }
 
 func listManagedAgents(client *api.Client) ([]managedAgentSummary, error) {
@@ -2146,7 +2178,17 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 	}
 
 	var detail *managedAgentDetailResponse
-	detail, _ = getManagedAgentDetailForDiscovered(client, agent)
+	detail, detailErr := getManagedAgentDetailForDiscovered(client, agent)
+	if detailErr != nil {
+		tried := strings.Join(runtimePrincipalIDCandidates(agent), ", ")
+		if tried == "" {
+			tried = "(none)"
+		}
+		fmt.Printf(
+			"Warning: Could not match a managed record for this install (tried: %s). If a stale entry remains, run 'preloop agents list' and 'preloop agents remove <id>'.\n",
+			tried,
+		)
+	}
 
 	if state == nil && detail == nil {
 		return fmt.Errorf("agent %q is not onboarded (no local state or remote managed agent found)", agent.Name)
@@ -2199,7 +2241,7 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 	}
 
 	if detail != nil {
-		if err := deleteManagedAgentRecord(client, detail.Agent.ID); err != nil {
+		if err := archiveManagedAgentRecord(client, detail.Agent.ID); err != nil {
 			return err
 		}
 	}
@@ -2230,7 +2272,11 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 		}
 	}
 	if detail != nil {
-		fmt.Printf("  Removed managed agent: %s\n", detail.Agent.ID)
+		fmt.Printf(
+			"  Archived managed agent: %s (decommissioned; run 'preloop agents remove %s' to delete it permanently)\n",
+			detail.Agent.ID,
+			detail.Agent.ID,
+		)
 		candidates, err := collectOffboardCleanupCandidates(client, detail.Agent)
 		if err != nil {
 			return err
@@ -2280,12 +2326,117 @@ func restoreAgentFromBackup(agent AgentConfig, state *localEnrollmentState) (tim
 	return now, nil
 }
 
+func archiveManagedAgentRecord(client *api.Client, agentID string) error {
+	request := map[string]interface{}{
+		"lifecycle_action": "decommission",
+		"reason":           "offboarded via preloop CLI",
+	}
+	var response managedAgentSummary
+	if err := client.Patch("/api/v1/agents/"+agentID, request, &response); err != nil {
+		return fmt.Errorf("failed to archive managed agent %q: %w", agentID, err)
+	}
+	return nil
+}
+
 func deleteManagedAgentRecord(client *api.Client, agentID string) error {
 	var response map[string]interface{}
 	if err := client.Delete("/api/v1/agents/"+agentID, &response); err != nil {
 		return fmt.Errorf("failed to remove managed agent %q: %w", agentID, err)
 	}
 	return nil
+}
+
+func runAgentsRemove(cmd *cobra.Command, args []string) error {
+	autoApprove := isAutoApprove(cmd)
+	force, _ := cmd.Flags().GetBool("force")
+	client, err := api.NewClient(FlagToken, FlagURL)
+	if err != nil {
+		return fmt.Errorf("failed to create API client: %w", err)
+	}
+	if !client.IsAuthenticated() {
+		return fmt.Errorf("not authenticated - run 'preloop login' first")
+	}
+
+	agents, err := listManagedAgents(client)
+	if err != nil {
+		return err
+	}
+	matched, err := resolveManagedAgentReference(agents, args[0])
+	if err != nil {
+		return err
+	}
+
+	if managedAgentHasUsageHistory(matched) && !force {
+		return fmt.Errorf(
+			"This agent has recorded usage. Removing it orphans that history in per-agent views. Re-run with --force, or keep it archived.",
+		)
+	}
+
+	if !autoApprove {
+		confirmed, confirmErr := confirmAction(
+			os.Stdin,
+			os.Stdout,
+			fmt.Sprintf(
+				"Permanently delete managed agent %q (%s)? This cannot be undone. (y/N): ",
+				matched.DisplayName,
+				matched.ID,
+			),
+		)
+		if confirmErr != nil {
+			return fmt.Errorf("failed to read confirmation: %w", confirmErr)
+		}
+		if !confirmed {
+			fmt.Println("Aborted without deleting the managed agent.")
+			return nil
+		}
+	}
+
+	if err := deleteManagedAgentRecord(client, matched.ID); err != nil {
+		return err
+	}
+	fmt.Printf("✓ Removed managed agent: %s (%s)\n", matched.DisplayName, matched.ID)
+	return nil
+}
+
+func managedAgentHasUsageHistory(agent managedAgentSummary) bool {
+	return agent.TotalRequests > 0 || agent.EstimatedCost != 0
+}
+
+func resolveManagedAgentReference(agents []managedAgentSummary, value string) (managedAgentSummary, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return managedAgentSummary{}, fmt.Errorf("managed agent %q not found", value)
+	}
+
+	for _, agent := range agents {
+		if strings.EqualFold(agent.ID, trimmed) {
+			return agent, nil
+		}
+	}
+	var nameMatches []managedAgentSummary
+	for _, agent := range agents {
+		if strings.EqualFold(strings.TrimSpace(agent.DisplayName), trimmed) {
+			nameMatches = append(nameMatches, agent)
+		}
+	}
+	if len(nameMatches) == 1 {
+		return nameMatches[0], nil
+	}
+	if len(nameMatches) > 1 {
+		return managedAgentSummary{}, fmt.Errorf(
+			"managed agent %q is ambiguous; use the agent id instead",
+			value,
+		)
+	}
+	for _, agent := range agents {
+		if strings.EqualFold(strings.TrimSpace(agent.SessionSourceID), trimmed) {
+			return agent, nil
+		}
+	}
+	return managedAgentSummary{}, fmt.Errorf(
+		"managed agent %q not found. Run 'preloop agents list' to see available ids",
+		value,
+	)
 }
 
 func removeLocalEnrollmentState(agent AgentConfig) error {
@@ -4482,19 +4633,96 @@ func getManagedAgentForDiscovered(client *api.Client, agent AgentConfig) (*manag
 	if err := client.Get("/api/v1/agents?limit=100", &response); err != nil {
 		return nil, fmt.Errorf("failed to list managed agents: %w", err)
 	}
+	if matched := findManagedAgentForDiscovered(response.Items, agent); matched != nil {
+		return matched, nil
+	}
+	return nil, fmt.Errorf("managed agent not found after bootstrap for %s", agent.Name)
+}
+
+func findManagedAgentForDiscovered(items []managedAgentSummary, agent AgentConfig) *managedAgentSummary {
 	sourceTypes := managedAgentLookupSourceTypes(agent)
 	candidateIDs := runtimePrincipalIDCandidates(agent)
-	for _, item := range response.Items {
+	for i := range items {
+		item := items[i]
 		if !containsString(sourceTypes, item.SessionSourceType) {
 			continue
 		}
 		for _, sourceID := range candidateIDs {
 			if item.SessionSourceID == sourceID {
-				return &item, nil
+				return &item
 			}
 		}
 	}
-	return nil, fmt.Errorf("managed agent not found after bootstrap for %s", agent.Name)
+	return nil
+}
+
+func ensureArchivedManagedAgentReenrolled(
+	client *api.Client,
+	agent AgentConfig,
+	autoApprove bool,
+	input io.Reader,
+	output io.Writer,
+) error {
+	if client == nil {
+		return nil
+	}
+	if input == nil {
+		input = os.Stdin
+	}
+	if output == nil {
+		output = os.Stdout
+	}
+
+	var response managedAgentListResponse
+	if err := client.Get("/api/v1/agents?limit=100", &response); err != nil {
+		return fmt.Errorf("failed to list managed agents: %w", err)
+	}
+	matched := findManagedAgentForDiscovered(response.Items, agent)
+	if matched == nil {
+		return nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(matched.LifecycleState), "decommissioned") {
+		return nil
+	}
+
+	reuse := autoApprove || nonInteractiveAutoConfirm()
+	if !reuse {
+		confirmed, err := confirmActionDefaultYes(
+			bufio.NewReader(input),
+			output,
+			fmt.Sprintf(
+				"An archived enrollment for this install already exists as '%s'. Reuse it? [Y/n]: ",
+				matched.DisplayName,
+			),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to read reenroll confirmation: %w", err)
+		}
+		reuse = confirmed
+	}
+	if !reuse {
+		return fmt.Errorf(
+			"declined reusing archived enrollment %s (%s). Run 'preloop agents remove %s' first if you want a fresh identity",
+			matched.DisplayName,
+			matched.ID,
+			matched.ID,
+		)
+	}
+
+	request := map[string]interface{}{
+		"lifecycle_action": "reenroll",
+	}
+	var updated managedAgentSummary
+	if err := client.Patch("/api/v1/agents/"+matched.ID, request, &updated); err != nil {
+		return fmt.Errorf("failed to reenroll archived managed agent %q: %w", matched.ID, err)
+	}
+	fmt.Fprintf( //nolint:errcheck
+		output,
+		"Reactivated archived enrollment %s (%s).\n",
+		matched.DisplayName,
+		matched.ID,
+	)
+	return nil
 }
 
 func managedAgentLookupSourceTypes(agent AgentConfig) []string {

@@ -673,6 +673,15 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 
 	allowedServers := append([]string{}, serverSync.Added...)
 	allowedServers = append(allowedServers, serverSync.Reused...)
+	if err := ensureArchivedManagedAgentReenrolled(
+		client,
+		agent,
+		opts.AutoApprove,
+		input,
+		output,
+	); err != nil {
+		return err
+	}
 	runtimeSession, err := issueRuntimeSessionToken(client, syncAgent, allowedServers)
 	if err != nil {
 		return fmt.Errorf("failed to bootstrap managed agent identity: %w", err)
