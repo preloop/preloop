@@ -3,6 +3,7 @@ import { customElement, state, query } from 'lit/decorators.js';
 import { Router } from '@vaadin/router';
 import '../../components/tracker-list.ts';
 import '../../components/add-tracker-modal.ts';
+import '../../components/unlocked-tools-review-dialog.ts';
 import type { Tracker } from '../../components/tracker-item.ts';
 import type { TrackerList } from '../../components/tracker-list.ts';
 import consoleStyles from '../../styles/console-styles.css?inline';
@@ -23,6 +24,16 @@ export class TrackersView extends LitElement {
 
   @state()
   private githubError: string | null = null;
+
+  /** Stashed until the add-tracker modal fully closes (incl. warnings flow). */
+  @state()
+  private pendingUnlockedToolNames: string[] | null = null;
+
+  @state()
+  private showUnlockReview = false;
+
+  @state()
+  private unlockReviewToolNames: string[] = [];
 
   @query('tracker-list')
   private trackerListElement: TrackerList | undefined;
@@ -90,42 +101,75 @@ export class TrackersView extends LitElement {
     this.editingTracker = null;
   }
 
-  private _closeAddTrackerForm() {
-    this.isAddingTracker = false;
-    this.editingTracker = null;
+  private _stashUnlockedTools(detail: {
+    tracker?: { unlocked_tool_names?: string[] };
+  }) {
+    const names = detail?.tracker?.unlocked_tool_names;
+    if (Array.isArray(names) && names.length > 0) {
+      this.pendingUnlockedToolNames = names;
+    }
+  }
 
+  private _openUnlockReviewIfPending() {
+    if (!this.pendingUnlockedToolNames?.length || this.showUnlockReview) {
+      return;
+    }
+    this.unlockReviewToolNames = [...this.pendingUnlockedToolNames];
+    this.pendingUnlockedToolNames = null;
+    this.showUnlockReview = true;
+  }
+
+  private _clearPendingUnlockReview() {
+    this.pendingUnlockedToolNames = null;
+  }
+
+  private _closeUnlockReview() {
+    this.showUnlockReview = false;
+    this.unlockReviewToolNames = [];
+  }
+
+  private _maybeRedirectAfterTrackerModal(): boolean {
     const redirectBack = sessionStorage.getItem('github_oauth_redirect_back');
     if (redirectBack) {
       sessionStorage.removeItem('github_oauth_redirect_back');
+      this._clearPendingUnlockReview();
       Router.go(redirectBack);
-      return;
+      return true;
     }
 
     const fromWelcome = sessionStorage.getItem('github_oauth_from_welcome');
     if (fromWelcome) {
       sessionStorage.removeItem('github_oauth_from_welcome');
+      this._clearPendingUnlockReview();
       Router.go('/console');
+      return true;
     }
+    return false;
+  }
+
+  private _closeAddTrackerForm() {
+    this.isAddingTracker = false;
+    this.editingTracker = null;
+
+    if (this._maybeRedirectAfterTrackerModal()) {
+      return;
+    }
+    // Warnings flow: add modal stays open until Done; open review after close.
+    this._openUnlockReviewIfPending();
   }
 
   private async _handleTrackerAdded(event: CustomEvent) {
+    this._stashUnlockedTools(event.detail ?? {});
+
     // Don't close modal if there are warnings to display
     if (!event.detail?.hasWarnings) {
       this.isAddingTracker = false;
 
-      const redirectBack = sessionStorage.getItem('github_oauth_redirect_back');
-      if (redirectBack) {
-        sessionStorage.removeItem('github_oauth_redirect_back');
-        Router.go(redirectBack);
+      if (this._maybeRedirectAfterTrackerModal()) {
+        await this.trackerListElement?.fetchTrackers();
         return;
       }
-
-      const fromWelcome = sessionStorage.getItem('github_oauth_from_welcome');
-      if (fromWelcome) {
-        sessionStorage.removeItem('github_oauth_from_welcome');
-        Router.go('/console');
-        return;
-      }
+      this._openUnlockReviewIfPending();
     }
     await this.trackerListElement?.fetchTrackers();
   }
@@ -198,6 +242,11 @@ export class TrackersView extends LitElement {
                 ></add-tracker-modal>`
               : ''
           }
+          <unlocked-tools-review-dialog
+            .open=${this.showUnlockReview}
+            .toolNames=${this.unlockReviewToolNames}
+            @close=${this._closeUnlockReview}
+          ></unlocked-tools-review-dialog>
           <tracker-list
             @tracker-edit=${this._handleTrackerEdit}
             @tracker-add-request=${this._openAddTrackerForm}
