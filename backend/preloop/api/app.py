@@ -617,7 +617,11 @@ def create_app() -> FastAPI:
             request.url.path,
             exc.message,
         )
-        return JSONResponse(status_code=exc.status_code, content=exc.to_payload())
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=exc.to_payload(),
+            headers=exc.response_headers(),
+        )
 
     @app.exception_handler(Exception)
     async def global_exception_handler(
