@@ -307,15 +307,15 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
 
         Used by usage ingest to resolve the default attribution target when
         the caller does not name an agent explicitly. By default only
-        ``lifecycle_state == "active"`` rows are returned so archived
+        rows with ``lifecycle_state == "active"`` are returned so archived
         duplicates do not trip ambiguity errors.
 
         Args:
             db: Database session.
             account_id: Account that owns the agents.
             agent_kind: Normalized agent kind (for example ``"cursor"``).
-            active_only: When True (default), exclude suspended and
-                decommissioned rows.
+            active_only: When True (default), keep only
+                ``lifecycle_state == "active"`` rows.
 
         Returns:
             Matching managed agents ordered by ``created_at`` descending.

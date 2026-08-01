@@ -214,4 +214,16 @@ describe('ToolListItem – justification settings', () => {
 
     expect((el as any)._showJustificationDialog).to.be.false;
   });
+
+  it('shows per-tool schema token estimate', async () => {
+    stubApi();
+    const el = await createItem({ schema_tokens_estimate: 245 } as any);
+    await el.updateComplete;
+
+    const badge = el.shadowRoot?.querySelector('.schema-tokens');
+    expect(badge).to.exist;
+    expect(badge!.textContent?.replace(/\s+/g, ' ').trim()).to.equal(
+      '~245 tokens/request'
+    );
+  });
 });
