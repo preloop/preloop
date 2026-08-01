@@ -737,6 +737,7 @@ func init() {
 	agentsEnrollCmd.Flags().Bool("skip-live-validate", false, "do not run a live validation prompt after onboarding (overrides --live-validate)")
 	agentsEnrollCmd.Flags().StringSlice("tags", []string{}, "add key-value tags to the enrolled agent (e.g., --tags ext=true,env=prod)")
 	agentsEnrollCmd.Flags().Bool("approvals", false, "install a native tool-permission hook that routes would-prompt tool calls to Preloop mobile/watch approvals (Claude Code, Codex CLI, Cursor)")
+	agentsEnrollCmd.Flags().String("model", "", "managed model alias to use for gateway routing (skips the interactive model picker)")
 	agentsListCmd.Flags().Bool("json", false, "output managed agents as JSON")
 	agentsStatusCmd.Flags().Bool("json", false, "output managed status as JSON")
 	agentsValidateCmd.Flags().Bool("live", false, "run a supported live validation prompt in addition to config validation")
@@ -1199,6 +1200,7 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 	tagsInput, _ := cmd.Flags().GetStringSlice("tags")
 	runAll, _ := cmd.Flags().GetBool("all")
 	approvals, _ := cmd.Flags().GetBool("approvals")
+	preferredModel, _ := cmd.Flags().GetString("model")
 
 	tags := make(map[string]string)
 	for _, kv := range tagsInput {
@@ -1221,6 +1223,7 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 		LiveValidate:     liveValidate,
 		SkipLiveValidate: skipLiveValidate,
 		Approvals:        approvals,
+		PreferredModel:   strings.TrimSpace(preferredModel),
 		Tags:             tags,
 		SkipConfirmation: false,
 		Input:            os.Stdin,
@@ -2011,6 +2014,13 @@ func runAgentsRestore(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("✓ Restored %s config from %s\n", resolveAgentDisplayName(agent), state.BackupPath)
+	printMutatingCommandUndo(
+		os.Stdout,
+		fmt.Sprintf(
+			"preloop agents onboard %s",
+			shellQuoteAgentName(resolveAgentDisplayName(agent)),
+		),
+	)
 	return nil
 }
 
@@ -2202,6 +2212,13 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 
 	fmt.Printf("✓ Offboarded %s\n", resolveAgentDisplayName(agent))
 	fmt.Printf("  Restored config: %s\n", agent.ConfigPath)
+	printMutatingCommandUndo(
+		os.Stdout,
+		fmt.Sprintf(
+			"preloop agents onboard %s",
+			shellQuoteAgentName(resolveAgentDisplayName(agent)),
+		),
+	)
 	if isClaudeCodeAgent(agent) || isCodexCLIAgent(agent) {
 		// Subscription refresh tokens rotate server-side while onboarded, so
 		// write the live Preloop-held bundle back to the local credential
