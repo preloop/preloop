@@ -50,6 +50,7 @@ from preloop.api.endpoints import (
     session_optimization,
     tools,
     trackers,
+    usage_import,
     version,
     embedding as embedding_router,
     webhooks,
@@ -617,7 +618,11 @@ def create_app() -> FastAPI:
             request.url.path,
             exc.message,
         )
-        return JSONResponse(status_code=exc.status_code, content=exc.to_payload())
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=exc.to_payload(),
+            headers=exc.response_headers(),
+        )
 
     @app.exception_handler(Exception)
     async def global_exception_handler(
@@ -966,6 +971,12 @@ def create_app() -> FastAPI:
             cost.router,
             prefix="/api/v1",
             tags=["Cost Analytics"],
+            dependencies=[Depends(get_current_active_user)],
+        )
+        app.include_router(
+            usage_import.router,
+            prefix="/api/v1",
+            tags=["Usage Import"],
             dependencies=[Depends(get_current_active_user)],
         )
         app.include_router(

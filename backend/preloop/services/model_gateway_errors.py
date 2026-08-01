@@ -55,7 +55,14 @@ def _default_error_type(provider: GatewayProvider, status_code: int) -> str:
 
 @dataclass
 class ModelGatewayAPIError(Exception):
-    """Model gateway exception rendered in the target client format."""
+    """Model gateway exception rendered in the target client format.
+
+    ``error_class`` / ``retry_after_seconds`` / ``terminal`` carry the shared
+    upstream-error classification (see ``preloop.services.upstream_errors``)
+    so callers can record the failure category (#118) and the HTTP layer can
+    emit ``Retry-After`` / terminal-retry hints (#114, #116). They do not
+    change the provider-native response body shape.
+    """
 
     provider: GatewayProvider
     status_code: int
@@ -63,6 +70,9 @@ class ModelGatewayAPIError(Exception):
     error_type: Optional[str] = None
     param: Optional[str] = None
     code: Optional[str] = None
+    error_class: Optional[str] = None
+    retry_after_seconds: Optional[int] = None
+    terminal: bool = False
 
     def __post_init__(self) -> None:
         super().__init__(self.message)
@@ -96,3 +106,14 @@ class ModelGatewayAPIError(Exception):
             "code": self.code,
         }
         return {"error": error_payload}
+
+    def response_headers(self) -> dict[str, str]:
+        """HTTP headers carrying retry/terminal hints for gateway clients."""
+        headers: dict[str, str] = {}
+        if self.retry_after_seconds is not None:
+            headers["Retry-After"] = str(self.retry_after_seconds)
+        if self.error_class:
+            headers["X-Preloop-Error-Class"] = self.error_class
+        if self.terminal:
+            headers["X-Preloop-Retry-Terminal"] = "true"
+        return headers

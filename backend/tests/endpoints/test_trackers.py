@@ -178,6 +178,17 @@ async def test_register_tracker_success(
     assert response.status_code == 201
     response_json = response.json()
     assert "id" in response_json
+    # Additive field: first Jira unlocks any-tracker default-enabled builtins.
+    assert "unlocked_tool_names" in response_json
+    assert set(response_json["unlocked_tool_names"]) == {
+        "get_issue",
+        "create_issue",
+        "update_issue",
+        "search",
+        "add_comment",
+    }
+    assert "estimate_compliance" not in response_json["unlocked_tool_names"]
+    assert "improve_compliance" not in response_json["unlocked_tool_names"]
 
     mock_publish_task.assert_called_once()
     mock_send_email.assert_called_once()
@@ -260,3 +271,196 @@ def test_unique_tracker_name_appends_suffix(db_session, test_user):
     )
 
     assert unique_name == "GitHub - preloop-agent (2)"
+
+
+ANY_TRACKER_UNLOCKED = {
+    "get_issue",
+    "create_issue",
+    "update_issue",
+    "search",
+    "add_comment",
+}
+GITHUB_GITLAB_UNLOCKED = {
+    "update_comment",
+    "get_pull_request",
+    "update_pull_request",
+    "create_pull_request",
+}
+
+
+@pytest.mark.asyncio
+@patch("preloop.api.endpoints.trackers.create_tracker_client")
+@patch("preloop.api.endpoints.trackers.event_bus_service.publish_task")
+@patch("preloop.api.endpoints.trackers.send_tracker_registered_email")
+async def test_register_github_tracker_unlocks_pr_tools(
+    mock_send_email,
+    mock_publish_task,
+    mock_create_tracker_client,
+    client: TestClient,
+    db_session,
+    test_user,
+):
+    """First GitHub tracker unlocks any-tracker + github/gitlab tools."""
+    mock_tracker_client = AsyncMock()
+    mock_tracker_client.test_connection.return_value.connected = True
+    mock_tracker_client.validate_token_permissions = AsyncMock(
+        return_value={"valid": True, "warnings": [], "errors": []}
+    )
+    mock_create_tracker_client.return_value = mock_tracker_client
+
+    response = client.post(
+        "/api/v1/trackers",
+        json={
+            "name": "GitHub Tracker",
+            "type": "github",
+            "url": "https://github.com",
+            "api_key": "ghp_test",
+            "config": {},
+        },
+    )
+    assert response.status_code == 201
+    unlocked = set(response.json()["unlocked_tool_names"])
+    assert unlocked == ANY_TRACKER_UNLOCKED | GITHUB_GITLAB_UNLOCKED
+
+
+@pytest.mark.asyncio
+@patch("preloop.api.endpoints.trackers.create_tracker_client")
+@patch("preloop.api.endpoints.trackers.event_bus_service.publish_task")
+@patch("preloop.api.endpoints.trackers.send_tracker_registered_email")
+async def test_register_jira_when_github_exists_unlocks_nothing(
+    mock_send_email,
+    mock_publish_task,
+    mock_create_tracker_client,
+    client: TestClient,
+    db_session,
+    test_user,
+):
+    """Adding Jira when GitHub already exists unlocks no additional tools."""
+    existing = Tracker(
+        name="Existing GitHub",
+        tracker_type="github",
+        url="https://github.com",
+        account_id=test_user.account_id,
+        api_key="ghp_existing",
+    )
+    db_session.add(existing)
+    db_session.commit()
+
+    mock_tracker_client = AsyncMock()
+    mock_tracker_client.test_connection.return_value.connected = True
+    mock_create_tracker_client.return_value = mock_tracker_client
+
+    response = client.post(
+        "/api/v1/trackers",
+        json={
+            "name": "Jira After GitHub",
+            "type": "jira",
+            "url": "https://test.jira.com",
+            "api_key": "jira_key",
+            "config": {"username": "testuser"},
+        },
+    )
+    assert response.status_code == 201
+    assert response.json()["unlocked_tool_names"] == []
+
+
+@pytest.mark.asyncio
+@patch("preloop.api.endpoints.trackers.create_tracker_client")
+@patch("preloop.api.endpoints.trackers.event_bus_service.publish_task")
+@patch("preloop.api.endpoints.trackers.send_tracker_registered_email")
+async def test_register_github_when_jira_exists_unlocks_pr_tools(
+    mock_send_email,
+    mock_publish_task,
+    mock_create_tracker_client,
+    client: TestClient,
+    db_session,
+    test_user,
+):
+    """Adding GitHub when only Jira exists unlocks github/gitlab-gated tools."""
+    existing = Tracker(
+        name="Existing Jira",
+        tracker_type="jira",
+        url="https://test.jira.com",
+        account_id=test_user.account_id,
+        api_key="jira_existing",
+    )
+    db_session.add(existing)
+    db_session.commit()
+
+    mock_tracker_client = AsyncMock()
+    mock_tracker_client.test_connection.return_value.connected = True
+    mock_tracker_client.validate_token_permissions = AsyncMock(
+        return_value={"valid": True, "warnings": [], "errors": []}
+    )
+    mock_create_tracker_client.return_value = mock_tracker_client
+
+    response = client.post(
+        "/api/v1/trackers",
+        json={
+            "name": "GitHub After Jira",
+            "type": "github",
+            "url": "https://github.com",
+            "api_key": "ghp_test",
+            "config": {},
+        },
+    )
+    assert response.status_code == 201
+    assert set(response.json()["unlocked_tool_names"]) == GITHUB_GITLAB_UNLOCKED
+
+
+@pytest.mark.asyncio
+@patch("preloop.api.endpoints.trackers.create_tracker_client")
+@patch("preloop.api.endpoints.trackers.event_bus_service.publish_task")
+@patch("preloop.api.endpoints.trackers.send_tracker_registered_email")
+async def test_register_tracker_excludes_explicitly_disabled_tool(
+    mock_send_email,
+    mock_publish_task,
+    mock_create_tracker_client,
+    client: TestClient,
+    db_session,
+    test_user,
+):
+    """Tools with ToolConfiguration.is_enabled=False are not listed as unlocked."""
+    from preloop.models.models.tool_configuration import ToolConfiguration
+
+    db_session.add(
+        ToolConfiguration(
+            tool_name="add_comment",
+            tool_source="builtin",
+            account_id=test_user.account_id,
+            is_enabled=False,
+        )
+    )
+    db_session.commit()
+
+    mock_tracker_client = AsyncMock()
+    mock_tracker_client.test_connection.return_value.connected = True
+    mock_create_tracker_client.return_value = mock_tracker_client
+
+    response = client.post(
+        "/api/v1/trackers",
+        json={
+            "name": "Jira With Disabled Tool",
+            "type": "jira",
+            "url": "https://test.jira.com",
+            "api_key": "jira_key",
+            "config": {"username": "testuser"},
+        },
+    )
+    assert response.status_code == 201
+    unlocked = response.json()["unlocked_tool_names"]
+    assert "add_comment" not in unlocked
+    assert set(unlocked) == ANY_TRACKER_UNLOCKED - {"add_comment"}
+
+
+def test_tracker_create_response_unlocked_field_is_additive():
+    """Existing clients that ignore unlocked_tool_names remain valid."""
+    from preloop.api.endpoints.trackers import TrackerCreateResponse
+
+    minimal = TrackerCreateResponse(id="abc")
+    assert minimal.unlocked_tool_names == []
+    assert minimal.model_dump()["id"] == "abc"
+    with_field = TrackerCreateResponse(
+        id="abc", warnings=["w"], unlocked_tool_names=["get_issue"]
+    )
+    assert with_field.unlocked_tool_names == ["get_issue"]

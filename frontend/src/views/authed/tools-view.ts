@@ -246,6 +246,19 @@ export class ToolsView extends LitElement {
         font-size: var(--sl-font-size-small);
       }
 
+      .context-tax {
+        margin-top: var(--sl-spacing-small);
+        color: var(--sl-color-neutral-700);
+        font-size: var(--sl-font-size-small);
+        line-height: 1.4;
+        max-width: 28rem;
+      }
+
+      .context-tax strong {
+        font-variant-numeric: tabular-nums;
+        color: var(--sl-color-neutral-900);
+      }
+
       .summary-table td {
         padding: 0;
         vertical-align: middle;
@@ -883,6 +896,11 @@ export class ToolsView extends LitElement {
         ) || t.approval_workflow_id
     );
     const noApproval = all.length - requireApproval.length;
+    // Sum schemas that are actually advertised (enabled + supported).
+    const contextTaxTokens = enabled.reduce((sum, tool) => {
+      const tokens = tool.schema_tokens_estimate;
+      return sum + (typeof tokens === 'number' && tokens > 0 ? tokens : 0);
+    }, 0);
 
     return {
       total: all.length,
@@ -896,6 +914,7 @@ export class ToolsView extends LitElement {
       withoutRules,
       requireApproval: requireApproval.length,
       noApproval,
+      contextTaxTokens,
       unavailableReasons: [
         ...new Set(
           unavailable
@@ -1862,6 +1881,17 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
               ${statCell('No approval', stats.noApproval, 'no_approval')}
             </tr>
           </table>
+          ${
+            stats.contextTaxTokens > 0
+              ? html`<div class="context-tax">
+                  Enabled tools add
+                  <strong
+                    >~${stats.contextTaxTokens.toLocaleString()} tokens</strong
+                  >
+                  to every agent request
+                </div>`
+              : ''
+          }
           ${
             stats.unavailable > 0
               ? html`<div class="unavailable-note">

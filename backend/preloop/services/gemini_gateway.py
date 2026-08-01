@@ -1,4 +1,8 @@
-"""Gemini-compatible ingress built on top of the OpenAI gateway service."""
+"""Gemini-compatible ingress built on top of the OpenAI gateway service.
+
+Upstream provider failures are classified by the shared helper in
+``preloop.services.upstream_errors`` via ``OpenAIGatewayService`` (#118).
+"""
 
 from __future__ import annotations
 

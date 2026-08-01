@@ -18,6 +18,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   existing `send_message` channel. Answers still flow only through the
   governed approval surfaces; first answer wins and late answers get an
   already-resolved response.
+- **Review newly unlocked tracker tools after connecting a tracker**:
+  `POST /trackers` returns additive `unlocked_tool_names` (server-side
+  before/after diff of tracker-gated builtins that are effectively enabled).
+  The Trackers page opens an opt-out review dialog listing each unlocked
+  tool with its `~N tokens/request` cost and the keep-enabled context-tax
+  delta; deselected tools are persisted as builtin `ToolConfiguration`
+  rows with `is_enabled: false`.
+- **Idle prompt-cache expiry detection**: session context analysis now flags
+  content-stable request pairs whose inter-request gap exceeds the provider
+  cache TTL and whose ApiUsage rows show a `cache_read` collapse with a
+  `cache_creation` spike. Optimize surfaces a measured write-vs-read premium
+  (``reduce-idle-cache-expiry`` suggestion + aggregate line); Replay annotates
+  the expiry turn. USD figures are catalog-priced or omitted — never invented
+  from session averages.
 
 - **Passkey (WebAuthn) sign-in and registration**: register passkeys in user
   settings and sign in from the login page with discoverable credentials (no
