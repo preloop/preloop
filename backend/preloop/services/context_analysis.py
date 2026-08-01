@@ -12,13 +12,17 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from preloop.models.crud import crud_runtime_session_activity
+from preloop.models.crud import crud_api_usage, crud_runtime_session_activity
 from preloop.models.models.account import Account
+from preloop.models.models.api_usage import ApiUsage
 
 # Re-exported from core so the gateway and billing plugin share a single
 # token-estimation implementation (DRY). ``estimate_tokens`` stays importable
@@ -46,6 +50,68 @@ _OVERSIZED_FIELD_MIN_CHARS = 500
 _OVERSIZED_FIELD_SOURCE_OUTPUTS = 3
 _MAX_OVERSIZED_FIELD_NAMES = 8
 
+# Provider prompt-cache idle TTLs used for idle-expiry detection.
+# Sources (STEP 0, 2026-08-01):
+# - Anthropic: 5-minute default ephemeral TTL, refresh-on-hit
+#   https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+# - OpenAI: typical in-memory eviction after 5-10 minutes idle (pre-GPT-5.6);
+#   GPT-5.6+ guarantees at least 30m. Use 10m as the conservative default and
+#   require a measured cache_read collapse + cache_creation spike to confirm.
+#   https://platform.openai.com/docs/guides/prompt-caching
+# - Gemini: explicit cache default TTL 1 hour; implicit retention is opaque.
+#   https://ai.google.dev/gemini-api/docs/caching
+# - DeepSeek: disk KV cache persists for hours; use 2h.
+DEFAULT_CACHE_IDLE_TTL_SECONDS = 300
+PROVIDER_CACHE_IDLE_TTL_SECONDS: dict[str, int] = {
+    "anthropic": 300,
+    "claude": 300,
+    "openai": 600,
+    "azure": 600,
+    "azure_openai": 600,
+    "google": 3600,
+    "gemini": 3600,
+    "vertex_ai": 3600,
+    "deepseek": 7200,
+}
+# Explicit alternate spellings only. Avoid substring fuzzy matching so a
+# short key like ``azure`` cannot steal a longer compound provider id.
+PROVIDER_CACHE_IDLE_TTL_ALIASES: dict[str, str] = {
+    "anthropic_bedrock": "anthropic",
+    "bedrock_anthropic": "anthropic",
+    "aws_bedrock_anthropic": "anthropic",
+    "amazon_bedrock_anthropic": "anthropic",
+    "openai_azure": "azure_openai",
+    "azureopenai": "azure_openai",
+    "google_ai": "google",
+    "google_genai": "google",
+    "vertex": "vertex_ai",
+    "vertexai": "vertex_ai",
+}
+
+# Write/read multipliers vs base input when the catalog lacks explicit cache
+# prices. Anthropic documents 1.25x write / 0.1x read for the 5m TTL.
+PROVIDER_CACHE_WRITE_MULTIPLIER: dict[str, float] = {
+    "anthropic": 1.25,
+    "claude": 1.25,
+}
+PROVIDER_CACHE_READ_MULTIPLIER: dict[str, float] = {
+    "anthropic": 0.1,
+    "claude": 0.1,
+    "openai": 0.1,
+    "azure": 0.1,
+    "azure_openai": 0.1,
+    "google": 0.1,
+    "gemini": 0.1,
+    "vertex_ai": 0.1,
+    "deepseek": 0.1,
+}
+
+# Current cache_read must fall below this fraction of the previous request's
+# cache_read to count as a "collapse" after an idle gap.
+_CACHE_READ_COLLAPSE_RATIO = 0.25
+# Ignore tiny cache_creation spikes that cannot be meaningful waste.
+_MIN_IDLE_EXPIRY_CREATION_TOKENS = 100
+
 
 @dataclass(frozen=True)
 class GatewayCallEvent:
@@ -53,6 +119,15 @@ class GatewayCallEvent:
 
     event_id: str
     payload: dict[str, Any]
+    timestamp: Optional[datetime] = None
+    # Authoritative cache accounting from ApiUsage when available. Payload
+    # fallbacks are used only when these are unset (synthetic unit tests).
+    api_usage_id: Optional[str] = None
+    cache_read_tokens: Optional[int] = None
+    cache_creation_tokens: Optional[int] = None
+    provider_name: Optional[str] = None
+    cache_write_price_per_1k: Optional[float] = None
+    cache_read_price_per_1k: Optional[float] = None
 
 
 class ContextSegment(BaseModel):
@@ -73,6 +148,27 @@ class CacheBreakingEvent(BaseModel):
     reason_hint: str
 
 
+class CacheIdleExpiryEvent(BaseModel):
+    """One request that re-paid cache WRITE after an idle TTL lapse.
+
+    Detected when consecutive requests share a stable content prefix, the
+    inter-request gap exceeds the provider TTL, and the later request shows a
+    measured cache_read collapse with a cache_creation spike. Token counts and
+    ``api_usage_id`` are taken from real ApiUsage rows when available.
+    """
+
+    event_id: str
+    previous_event_id: str
+    api_usage_id: Optional[str] = None
+    idle_seconds: float
+    provider_ttl_seconds: int
+    provider_name: Optional[str] = None
+    rewritten_tokens: int = 0
+    previous_cache_read_tokens: int = 0
+    current_cache_read_tokens: int = 0
+    measured_extra_cost_usd: Optional[float] = None
+
+
 class CacheProfile(BaseModel):
     """Repeated-prefix / provider-cache alignment signals."""
 
@@ -81,6 +177,9 @@ class CacheProfile(BaseModel):
     prefix_stability: str = "stable"
     cache_breaking_events: list[CacheBreakingEvent] = Field(default_factory=list)
     measured_cache_read_tokens: int = 0
+    idle_expiry_events: list[CacheIdleExpiryEvent] = Field(default_factory=list)
+    measured_idle_expiry_tokens: int = 0
+    measured_idle_expiry_extra_cost_usd: float = 0.0
 
 
 class RetryProfile(BaseModel):
@@ -131,6 +230,10 @@ class ToolSchemaOverheadProfile(BaseModel):
     advertised_tools: int = 0
     invoked_tools: int = 0
     unused_tool_names: list[str] = Field(default_factory=list)
+    # Per-advertised-name resend-inclusive token totals for unused tools.
+    # Used to carve disable-builtin-tools savings out of scope-tools without
+    # double-counting (#146).
+    unused_tool_tokens: dict[str, int] = Field(default_factory=dict)
     schema_tokens_estimate: int = 0
     unused_schema_tokens_estimate: int = 0
     resend_count: int = 0
@@ -165,6 +268,7 @@ class ProfileSavingsBreakdown(BaseModel):
     tool_output_tokens: int = 0
     cache_prefix_tokens: int = 0
     retry_waste_tokens: int = 0
+    idle_expiry_tokens: int = 0
     total_tokens: int = 0
     scope_tokens: int = 0
     clamped: bool = False
@@ -177,9 +281,13 @@ def compute_profile_savings(
 
     Dedupe rules, in order:
 
-    * Unused tool-schema tokens are taken verbatim. ``analyze_tool_schema_overhead``
-      already accumulates each advertised schema once per resend, so multiplying
-      by ``resend_count`` again would be quadratic in the number of requests.
+    * Unused tool-schema tokens are taken verbatim from the profile. Suggestion
+      tiering (#146) may split those tokens across ``disable-builtin-tools`` and
+      ``scope-tools`` for display, but this roll-up still uses the single
+      profile figure so the headline total is unchanged by the split.
+      ``analyze_tool_schema_overhead`` already accumulates each advertised
+      schema once per resend, so multiplying by ``resend_count`` again would be
+      quadratic in the number of requests.
     * Tool-output waste takes ``max(compressible, largest oversized field)``:
       both measure the same tool-result bytes.
     * Cache-prefix waste overlaps the two above (the repeated prefix contains
@@ -187,6 +295,8 @@ def compute_profile_savings(
       prefix estimate and the schema + tool-output sum, never their sum.
     * Retry waste is additive: those tokens were spent on requests that were
       discarded, so they are disjoint from the surviving context.
+    * Idle-expiry tokens are additive: content-stable prefixes that were
+      re-written after a TTL lapse (measured ``cache_creation_tokens``).
 
     The total is finally clamped to the analyzed scope, since no optimization
     can recover more tokens than were analyzed.
@@ -237,8 +347,12 @@ def compute_profile_savings(
     if profile.retry_profile is not None:
         retry_waste_tokens = max(profile.retry_profile.wasted_tokens, 0)
 
+    idle_expiry_tokens = 0
+    if profile.cache_profile is not None:
+        idle_expiry_tokens = max(profile.cache_profile.measured_idle_expiry_tokens, 0)
+
     in_context_tokens = max(schema_tokens + tool_output_tokens, cache_prefix_tokens)
-    raw_total = in_context_tokens + retry_waste_tokens
+    raw_total = in_context_tokens + retry_waste_tokens + idle_expiry_tokens
 
     scope_tokens = max(
         int(profile.total_prompt_tokens) + int(profile.total_completion_tokens), 0
@@ -254,6 +368,7 @@ def compute_profile_savings(
         tool_output_tokens=tool_output_tokens,
         cache_prefix_tokens=cache_prefix_tokens,
         retry_waste_tokens=retry_waste_tokens,
+        idle_expiry_tokens=idle_expiry_tokens,
         total_tokens=total,
         scope_tokens=scope_tokens,
         clamped=clamped,
@@ -295,10 +410,11 @@ def _extract_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
     if isinstance(messages, list) and messages:
         return [message for message in messages if isinstance(message, dict)]
     preview = payload.get("conversation_preview")
-    preview_messages = (
-        preview.get("messages")
-        if isinstance(preview, dict) and isinstance(preview.get("messages"), list)
-        else []
+    preview_messages_raw = (
+        preview.get("messages") if isinstance(preview, dict) else None
+    )
+    preview_messages: list[Any] = (
+        preview_messages_raw if isinstance(preview_messages_raw, list) else []
     )
     fallback: list[dict[str, Any]] = []
     for message in preview_messages:
@@ -498,15 +614,45 @@ def _diverged_reason(
     return "prefix_extended"
 
 
-def _payload_cache_read_tokens(payload: dict[str, Any]) -> int:
-    usage = payload.get("usage")
+def _payload_cache_token_field(
+    payload: dict[str, Any],
+    *,
+    top_level_keys: tuple[str, ...],
+    details_keys: tuple[str, ...],
+) -> int:
+    """Read the first present integer from known cache-token payload shapes.
+
+    Checks, in order: nested ``usage``, top-level keys, nested
+    ``usage_details``, and ``prompt_tokens_details`` under each.
+
+    Args:
+        payload: Stored gateway-call metadata.
+        top_level_keys: Provider top-level field names (e.g. Anthropic).
+        details_keys: Nested ``prompt_tokens_details`` field names (e.g. OpenAI).
+
+    Returns:
+        First parseable non-``None`` integer, else ``0``.
+    """
     candidates: list[Any] = []
-    if isinstance(usage, dict):
-        candidates.append(usage.get("cache_read_input_tokens"))
-        details = usage.get("prompt_tokens_details")
+
+    def _extend_from_usage_block(block: Any) -> None:
+        if not isinstance(block, dict):
+            return
+        for key in top_level_keys:
+            candidates.append(block.get(key))
+        details = block.get("prompt_tokens_details")
         if isinstance(details, dict):
-            candidates.append(details.get("cached_tokens"))
-    candidates.append(payload.get("cache_read_input_tokens"))
+            for key in details_keys:
+                candidates.append(details.get(key))
+
+    _extend_from_usage_block(payload.get("usage"))
+    for key in top_level_keys:
+        candidates.append(payload.get(key))
+    _extend_from_usage_block(payload.get("usage_details"))
+    details = payload.get("prompt_tokens_details")
+    if isinstance(details, dict):
+        for key in details_keys:
+            candidates.append(details.get(key))
     for candidate in candidates:
         try:
             if candidate is not None:
@@ -516,21 +662,234 @@ def _payload_cache_read_tokens(payload: dict[str, Any]) -> int:
     return 0
 
 
+def _payload_cache_read_tokens(payload: dict[str, Any]) -> int:
+    """Extract cache-read tokens from a stored gateway payload."""
+    return _payload_cache_token_field(
+        payload,
+        top_level_keys=("cache_read_input_tokens",),
+        details_keys=("cached_tokens",),
+    )
+
+
+def _payload_cache_creation_tokens(payload: dict[str, Any]) -> int:
+    """Extract cache-creation (write) tokens from a stored gateway payload."""
+    return _payload_cache_token_field(
+        payload,
+        top_level_keys=("cache_creation_input_tokens",),
+        details_keys=("cache_creation_tokens",),
+    )
+
+
+def _event_cache_read_tokens(event: GatewayCallEvent) -> int:
+    if event.cache_read_tokens is not None:
+        return max(int(event.cache_read_tokens), 0)
+    return _payload_cache_read_tokens(event.payload)
+
+
+def _event_cache_creation_tokens(event: GatewayCallEvent) -> int:
+    if event.cache_creation_tokens is not None:
+        return max(int(event.cache_creation_tokens), 0)
+    return _payload_cache_creation_tokens(event.payload)
+
+
+def _normalize_provider_name(provider: Optional[str]) -> str:
+    if not provider:
+        return ""
+    return str(provider).strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def provider_cache_idle_ttl_seconds(provider_name: Optional[str]) -> int:
+    """Return the idle TTL used for idle-expiry detection for a provider.
+
+    Resolution order: exact table key, explicit alias map, then longest-first
+    prefix/suffix compound match (``anthropic_bedrock``, ``foo_openai``).
+    Substring containment is intentionally not used.
+
+    Args:
+        provider_name: Provider identifier from ApiUsage / event payload.
+
+    Returns:
+        TTL in seconds. Defaults conservatively to Anthropic's 5-minute TTL.
+    """
+    normalized = _normalize_provider_name(provider_name)
+    if not normalized:
+        return DEFAULT_CACHE_IDLE_TTL_SECONDS
+    if normalized in PROVIDER_CACHE_IDLE_TTL_SECONDS:
+        return PROVIDER_CACHE_IDLE_TTL_SECONDS[normalized]
+    alias = PROVIDER_CACHE_IDLE_TTL_ALIASES.get(normalized)
+    if alias is not None:
+        return PROVIDER_CACHE_IDLE_TTL_SECONDS.get(
+            alias, DEFAULT_CACHE_IDLE_TTL_SECONDS
+        )
+    for key in sorted(PROVIDER_CACHE_IDLE_TTL_SECONDS, key=len, reverse=True):
+        if normalized.startswith(f"{key}_") or normalized.endswith(f"_{key}"):
+            return PROVIDER_CACHE_IDLE_TTL_SECONDS[key]
+    return DEFAULT_CACHE_IDLE_TTL_SECONDS
+
+
+def _event_provider_name(event: GatewayCallEvent) -> Optional[str]:
+    if event.provider_name:
+        return event.provider_name
+    payload = event.payload
+    for key in ("provider_name", "gateway_provider"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _event_timestamp(event: GatewayCallEvent) -> Optional[datetime]:
+    if event.timestamp is not None:
+        ts = event.timestamp
+        if ts.tzinfo is None:
+            return ts.replace(tzinfo=timezone.utc)
+        return ts
+    raw = event.payload.get("timestamp")
+    if isinstance(raw, datetime):
+        return raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed
+    return None
+
+
+@lru_cache(maxsize=1)
+def _vendored_model_price_map() -> dict[str, Any]:
+    path = Path(__file__).resolve().parent / "data" / "model_prices.json"
+    try:
+        loaded: Any = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _prices_from_catalog_entry(
+    entry: dict[str, Any], *, provider_name: Optional[str]
+) -> tuple[Optional[float], Optional[float]]:
+    """Convert one catalog price row into write/read USD per 1k tokens."""
+    write_per_token = entry.get("cache_creation_input_token_cost")
+    read_per_token = entry.get("cache_read_input_token_cost")
+    input_per_token = entry.get("input_cost_per_token")
+    write_per_1k: Optional[float] = None
+    read_per_1k: Optional[float] = None
+    if write_per_token is not None:
+        write_per_1k = float(write_per_token) * 1000.0
+    if read_per_token is not None:
+        read_per_1k = float(read_per_token) * 1000.0
+    if (write_per_1k is None or read_per_1k is None) and input_per_token is not None:
+        input_per_1k = float(input_per_token) * 1000.0
+        provider = _normalize_provider_name(provider_name)
+        if write_per_1k is None:
+            write_mult = PROVIDER_CACHE_WRITE_MULTIPLIER.get(provider, 1.0)
+            write_per_1k = input_per_1k * write_mult
+        if read_per_1k is None:
+            read_mult = PROVIDER_CACHE_READ_MULTIPLIER.get(provider, 0.1)
+            read_per_1k = input_per_1k * read_mult
+    return write_per_1k, read_per_1k
+
+
+def resolve_cache_prices_per_1k(
+    *,
+    model_alias: Optional[str],
+    provider_name: Optional[str],
+) -> tuple[Optional[float], Optional[float]]:
+    """Resolve cache write/read USD prices per 1k tokens from the catalog.
+
+    Args:
+        model_alias: Gateway model alias (e.g. ``anthropic/claude-sonnet-4``).
+        provider_name: Provider name used for multiplier fallbacks.
+
+    Returns:
+        ``(write_price_per_1k, read_price_per_1k)``. Either may be ``None``
+        when the catalog has no usable entry.
+    """
+    price_map = _vendored_model_price_map()
+    candidates: list[str] = []
+    bare_model = ""
+    if isinstance(model_alias, str) and model_alias.strip():
+        alias = model_alias.strip()
+        candidates.append(alias)
+        if "/" in alias:
+            bare_model = alias.split("/", 1)[1]
+            candidates.append(bare_model)
+            candidates.append(alias.replace("/", "."))
+        else:
+            bare_model = alias
+        candidates.append(alias.replace("/", "."))
+        provider = _normalize_provider_name(provider_name)
+        if provider and bare_model:
+            candidates.append(f"{provider}.{bare_model}")
+    for candidate in candidates:
+        entry = price_map.get(candidate)
+        if not isinstance(entry, dict):
+            continue
+        write_per_1k, read_per_1k = _prices_from_catalog_entry(
+            entry, provider_name=provider_name
+        )
+        if write_per_1k is not None or read_per_1k is not None:
+            return write_per_1k, read_per_1k
+
+    # Catalog keys often carry Bedrock-style suffixes
+    # (``anthropic.claude-...-v2:0``). Fall back to the first entry whose key
+    # contains the bare model id and has cache prices.
+    if bare_model and len(bare_model) >= 8:
+        for key, entry in price_map.items():
+            if not isinstance(entry, dict) or bare_model not in key:
+                continue
+            write_per_1k, read_per_1k = _prices_from_catalog_entry(
+                entry, provider_name=provider_name
+            )
+            if write_per_1k is not None and read_per_1k is not None:
+                return write_per_1k, read_per_1k
+
+    # No catalog hit: cannot invent an absolute input price.
+    return None, None
+
+
+def _measured_idle_expiry_extra_cost_usd(
+    *,
+    rewritten_tokens: int,
+    write_price_per_1k: Optional[float],
+    read_price_per_1k: Optional[float],
+) -> Optional[float]:
+    """Extra USD paid for re-writing tokens vs reading them from cache."""
+    if rewritten_tokens <= 0:
+        return 0.0
+    if write_price_per_1k is None or read_price_per_1k is None:
+        return None
+    differential = float(write_price_per_1k) - float(read_price_per_1k)
+    if differential <= 0:
+        return 0.0
+    return round((rewritten_tokens / 1000.0) * differential, 6)
+
+
 def analyze_cache_profile(events: list[GatewayCallEvent]) -> CacheProfile:
-    """Measure how much request prefix is re-sent verbatim across calls.
+    """Measure prefix stability and idle TTL cache-expiry waste.
+
+    Content-breaking detection compares consecutive request prefixes and tool
+    signatures. Idle-expiry detection additionally requires timestamps, a gap
+    exceeding the provider TTL, a stable prefix, and a measured cache_read
+    collapse with cache_creation spike on the later request.
 
     Args:
         events: Gateway call events ordered oldest-first.
 
     Returns:
-        Cache alignment profile including cache-breaking events.
+        Cache alignment profile including cache-breaking and idle-expiry events.
     """
     if len(events) < 2:
         return CacheProfile()
     repeated_tokens: list[int] = []
     prefix_shares: list[float] = []
     breaking: list[CacheBreakingEvent] = []
+    idle_expiry: list[CacheIdleExpiryEvent] = []
     measured_cache_read = 0
+    previous_event: Optional[GatewayCallEvent] = None
     previous_messages: Optional[list[dict[str, Any]]] = None
     previous_tools: Optional[str] = None
     for event in events:
@@ -539,8 +898,8 @@ def analyze_cache_profile(events: list[GatewayCallEvent]) -> CacheProfile:
         tools_signature = json.dumps(
             _extract_tool_definitions(payload), sort_keys=True, default=str
         )
-        measured_cache_read += _payload_cache_read_tokens(payload)
-        if previous_messages is not None:
+        measured_cache_read += _event_cache_read_tokens(event)
+        if previous_messages is not None and previous_event is not None:
             shared = 0
             for prev_message, message in zip(previous_messages, messages, strict=False):
                 if _normalize_message(prev_message) == _normalize_message(message):
@@ -576,18 +935,113 @@ def analyze_cache_profile(events: list[GatewayCallEvent]) -> CacheProfile:
                         ),
                     )
                 )
+            else:
+                idle_event = _detect_idle_expiry(
+                    previous=previous_event,
+                    current=event,
+                    shared_prefix_messages=shared,
+                )
+                if idle_event is not None:
+                    idle_expiry.append(idle_event)
+        previous_event = event
         previous_messages = messages
         previous_tools = tools_signature
     avg_repeated = (
         round(sum(repeated_tokens) / len(repeated_tokens)) if repeated_tokens else 0
     )
     avg_share = sum(prefix_shares) / len(prefix_shares) if prefix_shares else 0.0
+    idle_tokens = sum(event.rewritten_tokens for event in idle_expiry)
+    idle_cost = sum(event.measured_extra_cost_usd or 0.0 for event in idle_expiry)
     return CacheProfile(
         avg_repeated_prefix_tokens=avg_repeated,
         repeated_prefix_share=round(avg_share, 4),
         prefix_stability="stable" if not breaking else "unstable",
         cache_breaking_events=breaking,
         measured_cache_read_tokens=measured_cache_read,
+        idle_expiry_events=idle_expiry,
+        measured_idle_expiry_tokens=idle_tokens,
+        measured_idle_expiry_extra_cost_usd=round(idle_cost, 6),
+    )
+
+
+def _detect_idle_expiry(
+    *,
+    previous: GatewayCallEvent,
+    current: GatewayCallEvent,
+    shared_prefix_messages: int,
+) -> Optional[CacheIdleExpiryEvent]:
+    """Flag idle TTL expiry when usage shows a cache rewrite after a long gap.
+
+    Args:
+        previous: Prior gateway call.
+        current: Current gateway call.
+        shared_prefix_messages: Count of leading messages shared with previous.
+
+    Returns:
+        An idle-expiry event when the gap, stable prefix, and usage collapse
+        criteria are all met; otherwise ``None``.
+    """
+    if shared_prefix_messages <= 0:
+        return None
+    prev_ts = _event_timestamp(previous)
+    curr_ts = _event_timestamp(current)
+    if prev_ts is None or curr_ts is None:
+        return None
+    idle_seconds = (curr_ts - prev_ts).total_seconds()
+    if idle_seconds <= 0:
+        return None
+    provider = _event_provider_name(current) or _event_provider_name(previous)
+    ttl = provider_cache_idle_ttl_seconds(provider)
+    if idle_seconds <= ttl:
+        return None
+
+    prev_read = _event_cache_read_tokens(previous)
+    curr_read = _event_cache_read_tokens(current)
+    curr_creation = _event_cache_creation_tokens(current)
+    if curr_creation < _MIN_IDLE_EXPIRY_CREATION_TOKENS:
+        return None
+    # Require evidence the prior turn was warm, then cold-rewrote.
+    if prev_read < _MIN_IDLE_EXPIRY_CREATION_TOKENS:
+        return None
+    if curr_read > prev_read * _CACHE_READ_COLLAPSE_RATIO:
+        return None
+
+    write_price = current.cache_write_price_per_1k
+    read_price = current.cache_read_price_per_1k
+    if write_price is None or read_price is None:
+        resolved_write, resolved_read = resolve_cache_prices_per_1k(
+            model_alias=(
+                str(current.payload.get("model_alias") or "")
+                or str(previous.payload.get("model_alias") or "")
+                or None
+            ),
+            provider_name=provider,
+        )
+        write_price = write_price if write_price is not None else resolved_write
+        read_price = read_price if read_price is not None else resolved_read
+
+    extra_cost = _measured_idle_expiry_extra_cost_usd(
+        rewritten_tokens=curr_creation,
+        write_price_per_1k=write_price,
+        read_price_per_1k=read_price,
+    )
+    api_usage_id = current.api_usage_id
+    if api_usage_id is None:
+        raw_id = current.payload.get("api_usage_id")
+        if isinstance(raw_id, str) and raw_id.strip():
+            api_usage_id = raw_id.strip()
+
+    return CacheIdleExpiryEvent(
+        event_id=current.event_id,
+        previous_event_id=previous.event_id,
+        api_usage_id=api_usage_id,
+        idle_seconds=round(idle_seconds, 3),
+        provider_ttl_seconds=ttl,
+        provider_name=provider,
+        rewritten_tokens=curr_creation,
+        previous_cache_read_tokens=prev_read,
+        current_cache_read_tokens=curr_read,
+        measured_extra_cost_usd=extra_cost,
     )
 
 
@@ -978,22 +1432,24 @@ def analyze_tool_schema_overhead(
                 if not isinstance(call, dict):
                     continue
                 function = call.get("function")
-                name = (
+                raw_name = (
                     function.get("name")
                     if isinstance(function, dict)
                     else call.get("name")
                 )
-                if name:
-                    invoked.add(str(name))
+                if isinstance(raw_name, str) and raw_name:
+                    invoked.add(raw_name)
         tool_name = payload.get("tool_name")
         if isinstance(tool_name, str) and tool_name:
             invoked.add(tool_name)
     unused = sorted(set(advertised) - invoked)
-    unused_tokens = sum(advertised[name] for name in unused)
+    unused_tool_tokens = {name: advertised[name] for name in unused}
+    unused_tokens = sum(unused_tool_tokens.values())
     return ToolSchemaOverheadProfile(
         advertised_tools=len(advertised),
         invoked_tools=len(set(advertised) & invoked),
         unused_tool_names=unused,
+        unused_tool_tokens=unused_tool_tokens,
         schema_tokens_estimate=schema_tokens_total,
         unused_schema_tokens_estimate=unused_tokens,
         resend_count=resend_count,
@@ -1039,6 +1495,10 @@ def load_session_gateway_events(
 ) -> list[GatewayCallEvent]:
     """Load stored gateway calls for a session as in-memory events.
 
+    Enriches each event with authoritative ``ApiUsage`` cache token counts and
+    catalog cache prices when ``metadata.api_usage_id`` is present, so idle
+    expiry waste can be traced to ledger rows.
+
     Args:
         db: Database session.
         account: Owning account.
@@ -1058,11 +1518,79 @@ def load_session_gateway_events(
         )
     )
     allowed = set(event_ids or [])
-    return [
-        GatewayCallEvent(event_id=str(row.id), payload=row.metadata_)
+    selected = [
+        row
         for row in reversed(rows)
         if isinstance(row.metadata_, dict) and (not allowed or str(row.id) in allowed)
     ]
+
+    usage_ids: list[str] = []
+    for row in selected:
+        raw_id = row.metadata_.get("api_usage_id")
+        if isinstance(raw_id, str) and raw_id.strip():
+            usage_ids.append(raw_id.strip())
+    usage_by_id: dict[str, ApiUsage] = {}
+    if usage_ids:
+        for usage_row in crud_api_usage.get_by_ids(
+            db, ids=usage_ids, account_id=account.id
+        ):
+            usage_by_id[str(usage_row.id)] = usage_row
+
+    events: list[GatewayCallEvent] = []
+    for row in selected:
+        payload = row.metadata_
+        raw_usage_id = payload.get("api_usage_id")
+        api_usage_id = (
+            raw_usage_id.strip()
+            if isinstance(raw_usage_id, str) and raw_usage_id.strip()
+            else None
+        )
+        usage: Optional[ApiUsage] = (
+            usage_by_id.get(api_usage_id) if api_usage_id else None
+        )
+        provider_name: Optional[str] = None
+        cache_read_tokens: Optional[int] = None
+        cache_creation_tokens: Optional[int] = None
+        write_price: Optional[float] = None
+        read_price: Optional[float] = None
+        raw_model_alias = payload.get("model_alias")
+        model_alias: Optional[str] = (
+            raw_model_alias if isinstance(raw_model_alias, str) else None
+        )
+        if usage is not None:
+            provider_name = usage.provider_name
+            if usage.cache_read_tokens is not None:
+                cache_read_tokens = int(usage.cache_read_tokens)
+            if usage.cache_creation_tokens is not None:
+                cache_creation_tokens = int(usage.cache_creation_tokens)
+            if usage.model_alias:
+                model_alias = usage.model_alias
+            write_price, read_price = resolve_cache_prices_per_1k(
+                model_alias=model_alias,
+                provider_name=provider_name,
+            )
+        else:
+            raw_provider = payload.get("provider_name")
+            if isinstance(raw_provider, str):
+                provider_name = raw_provider
+            write_price, read_price = resolve_cache_prices_per_1k(
+                model_alias=model_alias,
+                provider_name=provider_name,
+            )
+        events.append(
+            GatewayCallEvent(
+                event_id=str(row.id),
+                payload=payload,
+                timestamp=row.timestamp,
+                api_usage_id=api_usage_id,
+                cache_read_tokens=cache_read_tokens,
+                cache_creation_tokens=cache_creation_tokens,
+                provider_name=provider_name,
+                cache_write_price_per_1k=write_price,
+                cache_read_price_per_1k=read_price,
+            )
+        )
+    return events
 
 
 def build_session_context_profile(

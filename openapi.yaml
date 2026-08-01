@@ -16658,6 +16658,11 @@ components:
             type: array
           - type: 'null'
           title: Warnings
+        unlocked_tool_names:
+          items:
+            type: string
+          type: array
+          title: Unlocked Tool Names
       type: object
       required:
       - id

@@ -29,6 +29,7 @@ from typing import Any
 # this measurement matches the gateway's attribution byte-for-byte. Both symbols
 # are also re-exported from ``context_analysis`` for the billing plugin, but the
 # core module is their canonical home.
+from preloop.services.builtin_tool_optimizer import tool_name_in_removed
 from preloop.services.context_optimization import (
     estimate_tokens,
     tool_definition_name,
@@ -323,10 +324,14 @@ def _apply_tool_removal(
     tools = payload.get("tools")
     if not isinstance(tools, list):
         return
+    # Match bare builtin names against Preloop-prefixed advertisements and
+    # vice versa so replay candidates from disable-builtin-tools verify (#146).
     payload["tools"] = [
         definition
         for definition in tools
-        if tool_definition_name(definition) not in removed_tool_names
+        if not tool_name_in_removed(
+            tool_definition_name(definition), removed_tool_names
+        )
     ]
 
 

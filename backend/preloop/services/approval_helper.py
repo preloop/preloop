@@ -7,12 +7,92 @@ with real-time progress updates via FastMCP Context.
 import asyncio
 import logging
 import os
-from typing import Optional, Tuple
+from typing import NamedTuple, Optional, Tuple
 
 from fastmcp import Context
 from preloop.models import models
 
 logger = logging.getLogger(__name__)
+
+#: Builtin tools whose approval request is a *question to the human* rather
+#: than a gate on a side-effecting tool. These get in-session delivery via
+#: Agent Control (issue #130) in addition to the remote approval channels.
+_QUESTION_TOOLS = frozenset({"ask_user", "request_approval"})
+
+
+class _InBandSessionContext(NamedTuple):
+    """Session identity used to route in-band question delivery."""
+
+    runtime_session_id: Optional[str]
+    managed_agent_id: Optional[str]
+    user_id: Optional[str]
+
+
+def _session_context_for_in_band() -> _InBandSessionContext:
+    """Best-effort lookup of the asking session's identity.
+
+    Reads the MCP request's user context when available. Returns all-``None``
+    for non-MCP callers (flows, tests) — in-band delivery simply degrades to
+    the remote channels.
+    """
+    empty = _InBandSessionContext(None, None, None)
+    try:
+        from preloop.services.dynamic_fastmcp_http import get_current_user_context
+
+        user_context = get_current_user_context()
+    except Exception:  # pragma: no cover - context lookup is optional
+        return empty
+    if not user_context:
+        return empty
+    return _InBandSessionContext(
+        runtime_session_id=getattr(user_context, "runtime_session_id", None),
+        managed_agent_id=getattr(user_context, "managed_agent_id", None),
+        user_id=getattr(user_context, "user_id", None),
+    )
+
+
+async def _deliver_question_in_band(
+    *,
+    tool_name: str,
+    arguments: dict,
+    account_id: str,
+    approval_request: "models.ApprovalRequest",
+    base_url: str,
+) -> bool:
+    """Best-effort in-session delivery of a pending question (issue #130).
+
+    Never raises and never blocks the approval flow; remote channels have
+    already been notified when this runs.
+    """
+    try:
+        from preloop.services.ask_user_inband import (
+            approval_console_url,
+            approval_mobile_deep_link,
+            deliver_question_to_session,
+        )
+
+        session_ctx = _session_context_for_in_band()
+        if not session_ctx.runtime_session_id and not session_ctx.managed_agent_id:
+            return False
+        return await deliver_question_to_session(
+            account_id=str(account_id),
+            approval_request_id=approval_request.id,
+            tool_name=tool_name,
+            arguments=arguments,
+            console_url=approval_console_url(base_url, approval_request.id),
+            mobile_link=approval_mobile_deep_link(approval_request.id),
+            runtime_session_id=session_ctx.runtime_session_id,
+            managed_agent_id=session_ctx.managed_agent_id,
+            user_id=session_ctx.user_id,
+            expires_at=getattr(approval_request, "expires_at", None),
+        )
+    except Exception:
+        logger.warning(
+            "In-band question delivery failed for approval %s",
+            getattr(approval_request, "id", None),
+            exc_info=True,
+        )
+        return False
 
 
 async def require_approval(
@@ -54,10 +134,19 @@ async def require_approval(
     try:
         # Check if approval should be bypassed (e.g. during async re-execution
         # of an already-approved tool call).
-        from preloop.services.dynamic_fastmcp import _bypass_approval_var
+        from preloop.services.dynamic_fastmcp import (
+            _approved_comment_var,
+            _bypass_approval_var,
+        )
 
         if _bypass_approval_var.get(False):
             logger.info(f"Bypassing approval for '{tool_name}' (async re-execution)")
+            if return_comment_on_approve:
+                # ask_user consumes the approver comment as the human's
+                # answer; during replay the original decision's comment is
+                # carried in _approved_comment_var (set by
+                # get_approval_status) so the answer is not lost.
+                return (True, _approved_comment_var.get(None) or "")
             return (True, "")
 
         from preloop.models.db.session import get_async_db_session
@@ -312,6 +401,36 @@ async def require_approval(
                         )
                     await event_db.commit()
 
+                # In-session (in-band) delivery for question-style approvals:
+                # if the asking session's runtime has a live Agent Control
+                # connection, surface the question as an audited turn in that
+                # session so the human does not have to switch devices. Best
+                # effort; the remote channels above remain authoritative and
+                # first-answer-wins is enforced on the approval record.
+                delivered_in_band = False
+                if tool_name in _QUESTION_TOOLS:
+                    delivered_in_band = await _deliver_question_in_band(
+                        tool_name=tool_name,
+                        arguments=arguments,
+                        account_id=account_id,
+                        approval_request=approval_request,
+                        base_url=base_url,
+                    )
+                    if delivered_in_band:
+                        async with get_async_db_session() as event_db:
+                            event_db.add(
+                                ApprovalEventModel(
+                                    approval_request_id=approval_request.id,
+                                    account_id=account_id,
+                                    event_type="notification_sent",
+                                    detail=(
+                                        "Question delivered in-session via "
+                                        "agent control channel"
+                                    ),
+                                )
+                            )
+                            await event_db.commit()
+
                 # Check if async approval mode is enabled
                 if getattr(workflow, "async_approval_enabled", False):
                     import json
@@ -345,6 +464,19 @@ async def require_approval(
                     poll_interval = min(15, (workflow.timeout_seconds or 300) // 20)
                     poll_interval = max(5, poll_interval)  # At least 5 seconds
 
+                    from preloop.services.ask_user_inband import (
+                        approval_console_url,
+                        approval_mobile_deep_link,
+                    )
+
+                    # Token-free deep links to THIS question (issue #130).
+                    # Safe to show to the agent: acting on them requires an
+                    # authenticated console/mobile session, so they cannot be
+                    # used to self-approve (unlike the tokenized approval_url,
+                    # which stays notification-only — see NOTE below).
+                    console_url = approval_console_url(base_url, approval_request.id)
+                    mobile_link = approval_mobile_deep_link(approval_request.id)
+
                     async_response = {
                         "status": "pending_approval",
                         "request_id": str(approval_request.id),
@@ -352,19 +484,25 @@ async def require_approval(
                             f"This tool call triggered approval workflow '{workflow.name}'. "
                             f"Approval request has been sent to {', '.join(approver_display) if approver_display else 'configured approvers'} "
                             f"via {channels_display}. "
+                            f"If the user is present, show them this link to answer directly: "
+                            f"{console_url} (mobile: {mobile_link}). "
                             f"Poll the approval status by calling get_approval_status(request_id='{approval_request.id}') "
                             f"every {poll_interval} seconds for up to {workflow.timeout_seconds or 300} seconds. "
                             f"When the status is 'approved', the response will include the tool execution result. "
                             f"When the status is 'declined' or 'expired', stop polling and inform the user."
                         ),
+                        "approval_console_url": console_url,
+                        "approval_mobile_link": mobile_link,
                         "poll_interval_seconds": poll_interval,
                         "timeout_seconds": workflow.timeout_seconds or 300,
                         "channels": notification_channels,
-                        # NOTE: approval_url intentionally excluded from
-                        # agent-visible response. The URL contains a bearer
-                        # token; exposing it would let the agent self-approve.
-                        # The link is delivered only via trusted notification
-                        # channels (email, Slack, mobile push, web UI).
+                        # NOTE: the tokenized approval_url stays intentionally
+                        # excluded from the agent-visible response. That URL
+                        # contains a bearer token; exposing it would let the
+                        # agent self-approve. It is delivered only via trusted
+                        # notification channels (email, Slack, mobile push,
+                        # web UI). The console/mobile links above carry no
+                        # token and require an authenticated human session.
                     }
                     if approver_display:
                         async_response["approvers"] = approver_display
@@ -377,8 +515,19 @@ async def require_approval(
                         logger.debug(
                             f"Context: has report_progress={hasattr(ctx, 'report_progress')}"
                         )
-                        # Report progress at 0% with status message
-                        status_message = f"Approval request sent via {channels_display}"
+                        # Report progress at 0% with status message. Include
+                        # the token-free console deep link so an interactive
+                        # user watching the stream can answer without
+                        # switching devices (issue #130).
+                        from preloop.services.ask_user_inband import (
+                            approval_console_url,
+                        )
+
+                        status_message = (
+                            f"Approval request sent via {channels_display} — "
+                            f"answer at "
+                            f"{approval_console_url(base_url, approval_request.id)}"
+                        )
                         # Check if progressToken is available (do not log - sensitive)
                         progress_token = None
                         try:

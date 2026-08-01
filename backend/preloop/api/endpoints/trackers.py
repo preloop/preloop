@@ -4,7 +4,7 @@ import logging
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
-from pydantic import UUID4, BaseModel, ConfigDict
+from pydantic import UUID4, BaseModel, ConfigDict, Field
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -34,8 +34,14 @@ from preloop.models.crud import (
     crud_account,
     crud_tracker,
     crud_tracker_scope_rule,
+    crud_tool_configuration,
 )
 
+from preloop.services.dynamic_mcp_server import get_tracker_types, has_tracker
+from preloop.services.tracker_tool_unlock import (
+    enabled_map_from_configs,
+    unlocked_tool_names_after_tracker,
+)
 from preloop.utils.audit import log_config_change
 from preloop.utils.permissions import require_permission
 
@@ -61,6 +67,7 @@ class TrackerCreateResponse(BaseModel):
 
     id: str
     warnings: Optional[List[str]] = None
+    unlocked_tool_names: List[str] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -93,7 +100,6 @@ async def register_tracker(
     # Parse request body manually
     try:
         data = await request.json()
-        print("Raw request data:", data)
 
         # Extract fields from the raw data
         name = data.get("name")
@@ -319,6 +325,15 @@ async def register_tracker(
             f"type={tracker_type.value}, account_id={account.id}"
         )
 
+        # Capture tracker gate state before insert so we can report newly
+        # unlocked builtins (context-tax review prompt on the frontend).
+        had_tracker = has_tracker(account, db)
+        types_before = get_tracker_types(account, db)
+        tool_configs = crud_tool_configuration.get_multi_by_account(
+            db, account_id=str(account.id)
+        )
+        enabled_by_name = enabled_map_from_configs(tool_configs)
+
         # Validate scope rules before creating the tracker
         if scope_rules_data:
             is_valid, error_message = crud_tracker_scope_rule.validate_scope_rules(
@@ -391,11 +406,19 @@ async def register_tracker(
         # Send NATS event
         await event_bus_service.publish_task("poll_tracker", str(new_tracker.id))
 
-        # Build response with warnings if any
-        response = {"id": str(new_tracker.id)}
-        if permission_warnings:
-            response["warnings"] = permission_warnings
-        return response
+        types_after = get_tracker_types(account, db)
+        unlocked = unlocked_tool_names_after_tracker(
+            had_tracker=had_tracker,
+            types_before=types_before,
+            types_after=types_after,
+            enabled_by_name=enabled_by_name,
+        )
+
+        return TrackerCreateResponse(
+            id=str(new_tracker.id),
+            warnings=permission_warnings or None,
+            unlocked_tool_names=unlocked,
+        )
 
     except IntegrityError as e:
         db.rollback()

@@ -1,13 +1,13 @@
 """Add enrollment hostname and identity derivation to managed_agent.
 
 Revision ID: 20260801_agent_identity_v2
-Revises: 20260731_usage_imported
+Revises: 20260801_api_usage_error_class
 Create Date: 2026-08-01
 
 Additive nullable columns used by CLI v2 principal-id derivation. No backfill;
 values arrive on the next CLI contact per install.
 
-Re-parented onto ``20260731_usage_imported`` after #137/#140 merged (file
+Re-parented onto ``20260801_api_usage_error_class`` after #137/#140 merged (file
 ``20260731_usage_source_imported.py``).
 """
 
@@ -18,7 +18,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "20260801_agent_identity_v2"
-down_revision = "20260731_usage_imported"
+down_revision = "20260801_api_usage_error_class"
 branch_labels = None
 depends_on = None
 
