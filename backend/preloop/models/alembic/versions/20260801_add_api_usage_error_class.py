@@ -1,7 +1,7 @@
 """Add error_class column to api_usage for upstream failure taxonomy.
 
 Revision ID: 20260801_api_usage_error_class
-Revises: 20260730_webauthn_credentials
+Revises: 20260731_usage_imported
 Create Date: 2026-08-01
 
 Nullable string column so gateway usage rows can distinguish provider-side
@@ -17,7 +17,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "20260801_api_usage_error_class"
-down_revision: Union[str, None] = "20260730_webauthn_credentials"
+down_revision: Union[str, None] = "20260731_usage_imported"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 # Alembic reads these module globals by name; keep a local reference so static
