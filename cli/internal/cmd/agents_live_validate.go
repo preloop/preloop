@@ -246,7 +246,7 @@ func runGatewayLiveValidation(
 			&gatewayResponse,
 		)
 	}
-	probeAttempts, requestErr := postGatewayProbeWithThrottleRetry(postProbe)
+	probeAttempts, requestErr := postGatewayProbeWithRetry(postProbe)
 
 	apiKeyID := mostLikelyManagedAPIKeyID(detail.Credentials)
 	var searchHit *gatewayUsageSearchItem
@@ -269,6 +269,8 @@ func runGatewayLiveValidation(
 		liveValidationStatus = "throttled"
 	} else if isUpstreamBillingValidationError(requestErr) {
 		liveValidationStatus = "upstream_unavailable"
+	} else if isUpstreamTransientValidationError(requestErr) {
+		liveValidationStatus = "upstream_transient"
 	}
 	result := mergeStringMaps(validationResult, map[string]interface{}{
 		"live_validation_attempted":      true,
@@ -287,6 +289,8 @@ func runGatewayLiveValidation(
 		result["live_validation_failure_reason"] = "upstream_rate_limited"
 	case "upstream_unavailable":
 		result["live_validation_failure_reason"] = "upstream_billing"
+	case "upstream_transient":
+		result["live_validation_failure_reason"] = "upstream_transient"
 	}
 	// Intentionally omit api key ids from the result map so they cannot
 	// flow into validation status logging (go/clear-text-logging).
@@ -369,6 +373,40 @@ func isUpstreamBillingValidationError(err error) bool {
 		strings.Contains(message, "credit balance is too low")
 }
 
+// isUpstreamTransientValidationError reports whether the probe failed with a
+// transient upstream server error (HTTP 5xx: bad gateway, service
+// unavailable, gateway timeout, ...). These say nothing definitive about the
+// onboarding wiring — the provider may simply be having a moment — so the
+// probe is retried with a short backoff before any failure is declared, and
+// an exhausted retry budget keeps the gateway configuration in place so
+// “preloop agents validate <agent> --live“ remains re-runnable.
+func isUpstreamTransientValidationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Billing/quota refusals have their own classification (and must never
+	// be retried — more probes cannot refill a wallet).
+	if isUpstreamBillingValidationError(err) {
+		return false
+	}
+	// Prefer the typed HTTP status from the API client.
+	var apiErr *api.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode >= 500 && apiErr.StatusCode <= 599
+	}
+	// Fallback for wrapped/non-client errors that only expose a message.
+	message := strings.ToLower(err.Error())
+	return transientUpstreamStatusPattern.MatchString(message) ||
+		strings.Contains(message, "bad gateway") ||
+		strings.Contains(message, "service unavailable") ||
+		strings.Contains(message, "gateway timeout") ||
+		strings.Contains(message, "overloaded_error")
+}
+
+// transientUpstreamStatusPattern matches the “status 5xx“ fragment the API
+// client embeds in error strings, for wrapped errors that lost their type.
+var transientUpstreamStatusPattern = regexp.MustCompile(`status 5\d\d`)
+
 // liveValidationThrottleBackoffSchedule returns the waits between probe
 // retries when the upstream provider rate-limits the live-validation
 // request. Two short retries cover the common transient case (a burst of
@@ -382,27 +420,49 @@ func liveValidationThrottleBackoffSchedule() []time.Duration {
 	}
 }
 
+// liveValidationTransientBackoffSchedule returns the waits between probe
+// retries when the upstream provider answers with a transient 5xx. Two
+// short exponential retries (3 attempts total) cover a blip in the
+// provider's availability without stalling onboarding for long. Returns a
+// fresh slice so callers cannot mutate shared package state.
+func liveValidationTransientBackoffSchedule() []time.Duration {
+	return []time.Duration{
+		1 * time.Second,
+		2 * time.Second,
+	}
+}
+
 // liveValidationSleep is time.Sleep, injectable so tests can run instantly.
 // Not safe for concurrent reassignment: tests that override it must not use
 // t.Parallel alongside other live-validation tests in this package.
 var liveValidationSleep = time.Sleep
 
-// postGatewayProbeWithThrottleRetry runs the gateway probe, retrying only on
-// upstream rate-limit errors with the backoff schedule above. It returns the
-// number of attempts made and the final error (nil on success). Non-throttle
-// errors never retry: they indicate a config/auth problem a retry cannot fix.
-func postGatewayProbeWithThrottleRetry(post func() error) (int, error) {
+// postGatewayProbeWithRetry runs the gateway probe, retrying on upstream
+// rate-limit errors and on transient upstream 5xx errors, each with its own
+// backoff schedule above. It returns the number of attempts made and the
+// final error (nil on success). Other errors never retry: they indicate a
+// config/auth problem a retry cannot fix.
+func postGatewayProbeWithRetry(post func() error) (int, error) {
 	attempts := 1
 	err := post()
-	for _, backoff := range liveValidationThrottleBackoffSchedule() {
-		if err == nil || !isUpstreamRateLimitedValidationError(err) {
+	throttleBackoffs := liveValidationThrottleBackoffSchedule()
+	transientBackoffs := liveValidationTransientBackoffSchedule()
+	for {
+		var backoff time.Duration
+		switch {
+		case err == nil:
+			return attempts, nil
+		case isUpstreamRateLimitedValidationError(err) && len(throttleBackoffs) > 0:
+			backoff, throttleBackoffs = throttleBackoffs[0], throttleBackoffs[1:]
+		case isUpstreamTransientValidationError(err) && len(transientBackoffs) > 0:
+			backoff, transientBackoffs = transientBackoffs[0], transientBackoffs[1:]
+		default:
 			return attempts, err
 		}
 		liveValidationSleep(backoff)
 		attempts++
 		err = post()
 	}
-	return attempts, err
 }
 
 // liveValidationStatusThrottled reports whether a validation result recorded
@@ -433,6 +493,25 @@ func liveValidationStatusGatewayVerified(validationResult map[string]interface{}
 	return status == "throttled" || status == "upstream_unavailable"
 }
 
+// liveValidationStatusKeepsGatewayConfig reports whether a failed or
+// inconclusive live validation must keep the managed gateway configuration
+// in place. This covers everything gateway-verified (throttled / billing)
+// plus transient upstream 5xx failures: rolling the routing back over a
+// temporary provider outage would leave the enrollment in a state where
+// “preloop agents validate <agent> --live“ can never succeed again
+// (“managed model gateway provider is not configured“), forcing a full
+// re-onboard for what is likely a passing check five minutes later.
+func liveValidationStatusKeepsGatewayConfig(validationResult map[string]interface{}) bool {
+	if liveValidationStatusGatewayVerified(validationResult) {
+		return true
+	}
+	if validationResult == nil {
+		return false
+	}
+	status, _ := validationResult["live_validation_status"].(string)
+	return status == "upstream_transient"
+}
+
 // liveValidationUpstreamNote explains an upstream-side refusal to the operator,
 // or returns "" when the outcome was not one.
 func liveValidationUpstreamNote(validationResult map[string]interface{}) string {
@@ -445,12 +524,32 @@ func liveValidationUpstreamNote(validationResult map[string]interface{}) string 
 		return "the upstream provider rate-limited the live validation probe"
 	case "upstream_unavailable":
 		return "the upstream provider rejected the live validation probe (billing or quota)"
+	case "upstream_transient":
+		return "the upstream provider returned a transient server error (5xx) during the live validation probe"
 	}
 	return ""
 }
 
 func liveValidationOutcomeGatewayVerified(outcome *managedLiveValidationOutcome) bool {
 	return outcome != nil && liveValidationStatusGatewayVerified(outcome.ValidationResult)
+}
+
+func liveValidationOutcomeKeepsGatewayConfig(outcome *managedLiveValidationOutcome) bool {
+	return outcome != nil && liveValidationStatusKeepsGatewayConfig(outcome.ValidationResult)
+}
+
+// liveValidationGatewayRolledBack reports whether the managed gateway
+// configuration was reverted to the pre-onboarding provider after a live
+// validation failure. Once this is set, “preloop agents validate <agent>
+// --live“ can no longer succeed (the gateway provider is gone from the
+// config), so every user-facing hint must point at re-running
+// “preloop agents onboard <agent>“ instead.
+func liveValidationGatewayRolledBack(validationResult map[string]interface{}) bool {
+	if validationResult == nil {
+		return false
+	}
+	rolledBack, _ := validationResult["live_validation_gateway_rolled_back"].(bool)
+	return rolledBack
 }
 
 func liveValidationOutcomeThrottled(outcome *managedLiveValidationOutcome) bool {
@@ -1245,7 +1344,17 @@ func recoverDeferredGatewayValidationFailure(
 	if result.Err == nil {
 		return
 	}
-	if note := liveValidationUpstreamNote(result.Outcome.ValidationResult); note != "" {
+func recoverDeferredGatewayValidationFailure(
+	output interface{ Write(p []byte) (int, error) },
+	result deferredLiveValidationResult,
+) {
+	if result.Err == nil || result.Outcome == nil {
+		return
+	}
+		note := liveValidationUpstreamNote(result.Outcome.ValidationResult)
+		if note == "" {
+			note = "the live validation probe failed"
+		}
 		fmt.Fprintf(
 			output,
 			"      Note: %s; keeping the Preloop gateway configuration in place. Re-verify with: preloop agents validate %s --live\n",
@@ -1290,6 +1399,11 @@ func recoverDeferredGatewayValidationFailure(
 	if result.Outcome != nil && result.Outcome.ValidationResult != nil {
 		clearManagedGatewayValidationFlags(result.Outcome.ValidationResult)
 	}
+	fmt.Fprintf(
+		output,
+		"      Model routing was reverted to the previous provider. Fix the failure above and re-run: preloop agents onboard %s\n",
+		shellQuoteAgentName(resolveAgentDisplayName(result.Agent)),
+	) //nolint:errcheck
 }
 
 func clearManagedGatewayValidationFlags(validationResult map[string]interface{}) {
@@ -1299,6 +1413,10 @@ func clearManagedGatewayValidationFlags(validationResult map[string]interface{})
 	validationResult["gateway_model_configured"] = false
 	validationResult["model_provider_rewritten"] = false
 	validationResult["gateway_model_alias"] = ""
+	// Record the rollback so summary/hint rendering knows that
+	// ``validate --live`` can no longer succeed and points the user at
+	// re-running ``preloop agents onboard`` instead.
+	validationResult["live_validation_gateway_rolled_back"] = true
 }
 
 // persistDeferredLiveValidationResult records “result.Outcome“ against the
@@ -1341,7 +1459,7 @@ func deferredLiveValidationPersistStatus(outcome *managedLiveValidationOutcome) 
 	if outcome == nil || !outcome.Attempted || outcome.Passed {
 		return "validated"
 	}
-	if liveValidationOutcomeGatewayVerified(outcome) {
+	if liveValidationOutcomeKeepsGatewayConfig(outcome) {
 		return "validation_inconclusive"
 	}
 	return "validation_failed"
@@ -1408,6 +1526,8 @@ func printDeferredLiveValidationLine(
 			label = "throttled"
 		case "upstream_unavailable":
 			label = "inconclusive (upstream provider refused)"
+		case "upstream_transient":
+			label = "failed (transient upstream error after retries)"
 		}
 		fmt.Fprintf(
 			output,
@@ -1417,11 +1537,21 @@ func printDeferredLiveValidationLine(
 			result.Duration.Milliseconds(),
 			result.Err,
 		)
-		fmt.Fprintf(
-			output,
-			"      Run: preloop agents validate %s --live\n",
-			shellQuoteAgentName(name),
-		)
+		if liveValidationGatewayRolledBack(result.Outcome.ValidationResult) {
+			// The gateway config was reverted: ``validate --live`` can no
+			// longer succeed, so the only useful recovery is a re-onboard.
+			fmt.Fprintf(
+				output,
+				"      Run: preloop agents onboard %s\n",
+				shellQuoteAgentName(name),
+			)
+		} else {
+			fmt.Fprintf(
+				output,
+				"      Run: preloop agents validate %s --live\n",
+				shellQuoteAgentName(name),
+			)
+		}
 		return
 	}
 	fmt.Fprintf(
@@ -1469,9 +1599,10 @@ func liveValidationSummaryReason(result deferredLiveValidationResult) string {
 	if result.Outcome == nil || !result.Outcome.Attempted || result.Outcome.Passed {
 		return ""
 	}
+	quotedName := shellQuoteAgentName(resolveAgentDisplayName(result.Agent))
 	revalidate := fmt.Sprintf(
 		"re-verify with: preloop agents validate %s --live",
-		shellQuoteAgentName(resolveAgentDisplayName(result.Agent)),
+		quotedName,
 	)
 	status, _ := result.Outcome.ValidationResult["live_validation_status"].(string)
 	switch status {
@@ -1479,6 +1610,8 @@ func liveValidationSummaryReason(result deferredLiveValidationResult) string {
 		return "live validation throttled — model traffic unverified; " + revalidate
 	case "upstream_unavailable":
 		return "live validation inconclusive (upstream billing/quota); " + revalidate
+	case "upstream_transient":
+		return "live validation failed (transient upstream 5xx after retries) — model traffic unverified; " + revalidate
 	}
 	detail := ""
 	if result.Err != nil {
@@ -1486,6 +1619,12 @@ func liveValidationSummaryReason(result deferredLiveValidationResult) string {
 	} else if message, _ := result.Outcome.ValidationResult["live_validation_error"].(string); message != "" {
 		message, _, _ = strings.Cut(message, "\n")
 		detail = ": " + strings.TrimSpace(message)
+	}
+	if liveValidationGatewayRolledBack(result.Outcome.ValidationResult) {
+		// The gateway routing was reverted — pointing at ``validate --live``
+		// would send the user to a command that can never succeed.
+		return "live validation failed" + detail +
+			"; model routing reverted — re-run: preloop agents onboard " + quotedName
 	}
 	return "live validation failed" + detail + "; " + revalidate
 }
