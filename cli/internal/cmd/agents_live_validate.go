@@ -1344,7 +1344,13 @@ func recoverDeferredGatewayValidationFailure(
 	if result.Err == nil {
 		return
 	}
-	if liveValidationStatusKeepsGatewayConfig(result.Outcome.ValidationResult) {
+func recoverDeferredGatewayValidationFailure(
+	output interface{ Write(p []byte) (int, error) },
+	result deferredLiveValidationResult,
+) {
+	if result.Err == nil || result.Outcome == nil {
+		return
+	}
 		note := liveValidationUpstreamNote(result.Outcome.ValidationResult)
 		if note == "" {
 			note = "the live validation probe failed"
