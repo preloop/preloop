@@ -41,6 +41,7 @@ func init() {
 	agentsInstallRuntimeCmd.Flags().BoolP("force", "f", false, "alias for --yes")
 	agentsInstallRuntimeCmd.Flags().Bool("live-validate", true, "after onboarding, run a supported live validation prompt through the agent")
 	agentsInstallRuntimeCmd.Flags().Bool("skip-live-validate", false, "do not run a live validation prompt after onboarding")
+	agentsInstallRuntimeCmd.Flags().String("model", "", "managed model alias to use for gateway routing (skips the interactive model picker)")
 }
 
 type runtimeInstallSpec struct {
@@ -114,6 +115,8 @@ func runAgentsInstallRuntime(cmd *cobra.Command, args []string) error {
 	autoApprove := isAutoApprove(cmd)
 	liveValidate, _ := cmd.Flags().GetBool("live-validate")
 	skipLiveValidate, _ := cmd.Flags().GetBool("skip-live-validate")
+	preferredModel, _ := cmd.Flags().GetString("model")
+	preferredModel = strings.TrimSpace(preferredModel)
 
 	if dryRun {
 		fmt.Printf("Would install %s with: %s\n", spec.displayName, spec.installSummary)
@@ -121,6 +124,9 @@ func runAgentsInstallRuntime(cmd *cobra.Command, args []string) error {
 			fmt.Println("Would skip upstream runtime installation (--skip-install).")
 		}
 		fmt.Printf("Would onboard with: preloop agents onboard %s", spec.onboardAgentName)
+		if preferredModel != "" {
+			fmt.Printf(" --model %s", preferredModel)
+		}
 		if autoApprove {
 			fmt.Print(" -y")
 		}
@@ -171,6 +177,7 @@ func runAgentsInstallRuntime(cmd *cobra.Command, args []string) error {
 		SkipConfirmation: autoApprove,
 		LiveValidate:     liveValidate,
 		SkipLiveValidate: skipLiveValidate,
+		PreferredModel:   preferredModel,
 	}
 	// A skipped managed launcher (missing agent binary) is a partial success:
 	// the warning has been printed and the command exits 0.
