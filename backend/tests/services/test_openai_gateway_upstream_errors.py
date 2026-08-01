@@ -120,7 +120,9 @@ def test_stream_error_remaps_network_to_upstream_disconnect():
     )
     assert err.error_class == ERROR_CLASS_UPSTREAM_DISCONNECT
     assert err.error_type == "upstream_disconnect"
+    assert err.code == ERROR_CLASS_UPSTREAM_DISCONNECT
     assert err.status_code == 502
+    assert "peer closed connection" in err.message
 
 
 def test_stream_error_midstream_fallback_is_upstream_disconnect():
@@ -141,3 +143,27 @@ def test_openai_stream_error_event_payload_shape():
     )
     assert frame.startswith("data: ")
     assert "upstream_disconnect" in frame
+
+
+def test_midstream_sse_preserves_connection_reset_detail():
+    """CI regression: neighboring suites assert the original fault text survives.
+
+    Exception("upstream connection reset") is classified as network then remapped
+    to upstream_disconnect; the SSE body must keep the detail string.
+    """
+    service = _service()
+    exc = Exception("upstream connection reset")
+
+    openai_frame = service._openai_stream_error_event(exc)
+    assert "upstream_disconnect" in openai_frame
+    assert "upstream connection reset" in openai_frame
+
+    responses_frame = service._responses_stream_error_event(exc)
+    assert '"code": "upstream_disconnect"' in responses_frame or (
+        '"code":"upstream_disconnect"' in responses_frame
+    )
+    assert "upstream connection reset" in responses_frame
+
+    anthropic_frame = service._anthropic_stream_error_event(exc)
+    assert "upstream_disconnect" in anthropic_frame
+    assert "upstream connection reset" in anthropic_frame

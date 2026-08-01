@@ -255,6 +255,18 @@ def classify_upstream_error(exc: Exception) -> Optional[UpstreamErrorClass]:
     )
 
 
+# Detail markers that indicate a mid-stream drop rather than a pre-stream
+# transport failure. Used only by ``classify_recorded_error`` (no exception
+# object available there).
+_DISCONNECT_DETAIL_MARKERS = (
+    "disconnected mid-stream",
+    "midstream",
+    "mid-stream",
+    "incomplete chunked read",
+    "peer closed connection",
+)
+
+
 def classify_recorded_error(
     status_code: int, error_detail: Optional[str]
 ) -> Optional[str]:
@@ -263,6 +275,12 @@ def classify_recorded_error(
     Used by ``_record_gateway_request`` when no richer classification was
     attached to the exception (#118). Returns ``None`` for successes and for
     failures that are not upstream-related (validation, budget denials…).
+
+    Note: without the original exception, this helper cannot always tell
+    ``upstream_disconnect`` from a generic ``upstream_error``. Streaming
+    callers should pass ``error_class`` explicitly from ``_stream_error`` /
+    ``_normalize_upstream_error``; this fallback only inspects the detail
+    string for disconnect-shaped phrasing.
     """
     if status_code < 400:
         return None
@@ -276,6 +294,8 @@ def classify_recorded_error(
     if status_code == 401:
         return ERROR_CLASS_UPSTREAM_AUTH
     if status_code in (502, 503, 529):
+        if _contains(text, _DISCONNECT_DETAIL_MARKERS):
+            return ERROR_CLASS_UPSTREAM_DISCONNECT
         if _contains(text, _NETWORK_MARKERS):
             return ERROR_CLASS_NETWORK
         if status_code in (503, 529) or _contains(text, _OVERLOAD_MARKERS):

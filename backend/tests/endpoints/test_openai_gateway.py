@@ -795,8 +795,6 @@ def test_responses_stream_midstream_failure_emits_sse_error_event(
         if line.startswith("data: ") and '"type": "error"' in line
     ]
     assert error_events, f"expected an SSE error event, got: {response.text!r}"
-    assert (
-        "upstream_disconnect" in (error_events[-1].get("code") or "")
-        or "connection reset" in error_events[-1]["message"]
-    )
+    assert error_events[-1].get("code") == "upstream_disconnect"
+    assert "upstream connection reset" in error_events[-1]["message"]
     assert "data: [DONE]" in response.text

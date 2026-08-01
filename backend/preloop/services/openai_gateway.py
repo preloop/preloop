@@ -4097,13 +4097,27 @@ class OpenAIGatewayService:
             ERROR_CLASS_NETWORK,
             ERROR_CLASS_UPSTREAM_DISCONNECT,
         ):
+            # Keep the provider detail so SSE clients / tests can still see
+            # the underlying fault (e.g. "connection reset"), while forcing
+            # the disconnect taxonomy (#117).
+            detail = (
+                getattr(exc, "message", None)
+                if not isinstance(exc, ModelGatewayAPIError)
+                else None
+            ) or str(exc)
+            if error.error_class == ERROR_CLASS_UPSTREAM_DISCONNECT and (
+                "disconnected mid-stream" in (error.message or "").lower()
+            ):
+                message = error.message
+            else:
+                message = f"Upstream provider disconnected mid-stream: {detail}"
             return ModelGatewayAPIError(
                 provider=error.provider,
                 status_code=502,
-                message=error.message,
+                message=message,
                 error_type="upstream_disconnect",
                 param=error.param,
-                code=error.code or ERROR_CLASS_UPSTREAM_DISCONNECT,
+                code=ERROR_CLASS_UPSTREAM_DISCONNECT,
                 error_class=ERROR_CLASS_UPSTREAM_DISCONNECT,
                 retry_after_seconds=error.retry_after_seconds,
                 terminal=error.terminal,
@@ -4514,7 +4528,10 @@ class OpenAIGatewayService:
         if classified is not None:
             status_code = classified.status_code
             if classified.error_class == ERROR_CLASS_NETWORK:
-                message = "Upstream model provider unavailable. Please retry shortly."
+                message = (
+                    "Upstream model provider unavailable. Please retry shortly. "
+                    f"({raw_message})"
+                )
             elif classified.error_class == ERROR_CLASS_UPSTREAM_DISCONNECT:
                 message = f"Upstream provider disconnected mid-stream: {raw_message}"
             elif (

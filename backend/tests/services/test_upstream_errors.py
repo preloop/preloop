@@ -161,6 +161,11 @@ def test_opaque_failure_maps_to_upstream_error_502():
             ERROR_CLASS_UPSTREAM_OVERLOADED,
         ),
         (503, "connection refused", ERROR_CLASS_NETWORK),
+        (
+            502,
+            "Upstream provider disconnected mid-stream: peer closed connection",
+            ERROR_CLASS_UPSTREAM_DISCONNECT,
+        ),
         (502, "something else", ERROR_CLASS_UPSTREAM_ERROR),
         (401, "bad key", ERROR_CLASS_UPSTREAM_AUTH),
     ],
