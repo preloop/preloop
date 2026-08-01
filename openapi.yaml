@@ -1758,6 +1758,77 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/agents/{agent_id}/rekey:
+    post:
+      tags:
+      - Account
+      summary: Rekey Account Managed Agent
+      description: Rewrite one managed agent's durable principal id and dependent
+        rows.
+      operationId: rekey_account_managed_agent_api_v1_agents__agent_id__rekey_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Agent Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ManagedAgentRekeyRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagedAgentRekeyResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/agents/{survivor_id}/merge:
+    post:
+      tags:
+      - Account
+      summary: Merge Account Managed Agents
+      description: Merge a duplicate managed agent into a survivor (dry-run capable).
+      operationId: merge_account_managed_agents_api_v1_agents__survivor_id__merge_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: survivor_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Survivor Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ManagedAgentMergeRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagedAgentMergeResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/runtime-sessions:
     get:
       tags:
@@ -13048,6 +13119,87 @@ components:
       type: object
       title: ManagedAgentEnrollmentValidateRequest
       description: Request to update validation state for one enrollment.
+    ManagedAgentIdentityMutationCounts:
+      properties:
+        usage_moved:
+          type: integer
+          title: Usage Moved
+          default: 0
+        usage_deleted:
+          type: integer
+          title: Usage Deleted
+          default: 0
+        runtime_sessions_moved:
+          type: integer
+          title: Runtime Sessions Moved
+          default: 0
+        budget_spend_moved:
+          type: integer
+          title: Budget Spend Moved
+          default: 0
+        budget_spend_merged:
+          type: integer
+          title: Budget Spend Merged
+          default: 0
+        budget_policies_moved:
+          type: integer
+          title: Budget Policies Moved
+          default: 0
+        budget_policies_dropped:
+          type: integer
+          title: Budget Policies Dropped
+          default: 0
+        approvals_moved:
+          type: integer
+          title: Approvals Moved
+          default: 0
+        keys_deactivated:
+          type: integer
+          title: Keys Deactivated
+          default: 0
+        dropped_budget_policies:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Dropped Budget Policies
+      type: object
+      title: ManagedAgentIdentityMutationCounts
+      description: Row counts returned by rekey/merge dry-run and execute responses.
+    ManagedAgentMergeRequest:
+      properties:
+        duplicate_agent_id:
+          type: string
+          minLength: 1
+          title: Duplicate Agent Id
+        dry_run:
+          type: boolean
+          title: Dry Run
+          default: false
+      type: object
+      required:
+      - duplicate_agent_id
+      title: ManagedAgentMergeRequest
+      description: Request body for merging a duplicate managed agent into a survivor.
+    ManagedAgentMergeResponse:
+      properties:
+        survivor:
+          $ref: '#/components/schemas/ManagedAgentSummary'
+        duplicate:
+          $ref: '#/components/schemas/ManagedAgentSummary'
+        dry_run:
+          type: boolean
+          title: Dry Run
+        counts:
+          $ref: '#/components/schemas/ManagedAgentIdentityMutationCounts'
+      type: object
+      required:
+      - survivor
+      - duplicate
+      - dry_run
+      - counts
+      title: ManagedAgentMergeResponse
+      description: Response for a merge dry-run or execute.
     ManagedAgentModelBindingSummary:
       properties:
         id:
@@ -13174,6 +13326,35 @@ components:
         LangGraph agent) that has never connected through a runtime session, so a
 
         gateway credential can subsequently be minted for it.'
+    ManagedAgentRekeyRequest:
+      properties:
+        new_session_source_id:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: New Session Source Id
+        principal_identity:
+          anyOf:
+          - $ref: '#/components/schemas/PrincipalIdentityLite'
+          - type: 'null'
+      type: object
+      required:
+      - new_session_source_id
+      title: ManagedAgentRekeyRequest
+      description: Request body for rewriting a managed agent's durable principal
+        id.
+    ManagedAgentRekeyResponse:
+      properties:
+        agent:
+          $ref: '#/components/schemas/ManagedAgentSummary'
+        counts:
+          $ref: '#/components/schemas/ManagedAgentIdentityMutationCounts'
+      type: object
+      required:
+      - agent
+      - counts
+      title: ManagedAgentRekeyResponse
+      description: Response for a successful rekey.
     ManagedAgentServerActivitySummary:
       properties:
         server_name:
@@ -13247,6 +13428,16 @@ components:
           - type: string
           - type: 'null'
           title: Session Reference
+        enrollment_hostname:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Enrollment Hostname
+        identity_derivation:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Identity Derivation
         enrolled_via:
           type: string
           title: Enrolled Via
@@ -14215,6 +14406,64 @@ components:
       type: object
       title: PriceCatalogInfo
       description: Provenance of the vendored model-price catalog.
+    PrincipalIdentity:
+      properties:
+        hostname:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Hostname
+        config_path:
+          anyOf:
+          - type: string
+            maxLength: 1024
+          - type: 'null'
+          title: Config Path
+        source_type:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Source Type
+        derivation:
+          anyOf:
+          - type: string
+            maxLength: 16
+          - type: 'null'
+          title: Derivation
+      type: object
+      title: PrincipalIdentity
+      description: Optional CLI-supplied identity metadata for a runtime principal.
+    PrincipalIdentityLite:
+      properties:
+        hostname:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Hostname
+        config_path:
+          anyOf:
+          - type: string
+            maxLength: 1024
+          - type: 'null'
+          title: Config Path
+        source_type:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Source Type
+        derivation:
+          anyOf:
+          - type: string
+            maxLength: 16
+          - type: 'null'
+          title: Derivation
+      type: object
+      title: PrincipalIdentityLite
+      description: Identity metadata accepted on rekey/token flows.
     ProjectCreate:
       properties:
         name:
@@ -15453,6 +15702,10 @@ components:
             type: string
           type: array
           title: Allowed Mcp Servers
+        principal_identity:
+          anyOf:
+          - $ref: '#/components/schemas/PrincipalIdentity'
+          - type: 'null'
       type: object
       required:
       - session_source_type

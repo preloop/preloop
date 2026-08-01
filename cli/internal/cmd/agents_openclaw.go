@@ -673,6 +673,19 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 
 	allowedServers := append([]string{}, serverSync.Added...)
 	allowedServers = append(allowedServers, serverSync.Reused...)
+	prepared, err := ensureManagedAgentIdentityReady(
+		client,
+		agent,
+		opts.AutoApprove,
+		agentsNoReuseIdentity,
+		input,
+		output,
+	)
+	if err != nil {
+		return err
+	}
+	agent = prepared
+	syncAgent = prepareAgentForRemoteServerSync(agent, baseURL)
 	if err := ensureArchivedManagedAgentReenrolled(
 		client,
 		agent,
