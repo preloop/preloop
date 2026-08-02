@@ -140,7 +140,13 @@ def dedupe_stmt(account_id: str, fingerprint: str):
         )
         .order_by(models.ApprovalRequest.requested_at.desc())
         .limit(5)
-    )
+        .where(
+            models.ApprovalRequest.account_id == account_id,
+            models.ApprovalRequest.tool_args[FINGERPRINT_KEY].astext == fingerprint,
+            models.ApprovalRequest.status.in_(["pending", "approved", "declined"]),
+        )
+        .order_by(models.ApprovalRequest.requested_at.desc())
+        .limit(10)
 
 
 def _allow(tool_input: dict) -> Dict[str, Any]:
