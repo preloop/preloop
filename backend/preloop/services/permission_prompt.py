@@ -75,6 +75,10 @@ logger = logging.getLogger(__name__)
 #: below Claude Code's 30s MCP timeout with margin for transport overhead.
 DEFAULT_WAIT_SECONDS = 25.0
 
+#: Clamp bounds for PRELOOP_PERMISSION_PROMPT_WAIT_SECONDS.
+MIN_WAIT_SECONDS = 1.0
+MAX_WAIT_SECONDS = 600.0
+
 #: How often the bounded wait re-reads the approval row.
 POLL_INTERVAL_SECONDS = 1.0
 
@@ -111,10 +115,6 @@ def _wait_budget_seconds() -> float:
             DEFAULT_WAIT_SECONDS,
         )
         value = DEFAULT_WAIT_SECONDS
-MIN_WAIT_SECONDS = 1.0
-MAX_WAIT_SECONDS = 600.0
-
-# ... then:
     return max(MIN_WAIT_SECONDS, min(value, MAX_WAIT_SECONDS))
 
 
@@ -141,16 +141,11 @@ def dedupe_stmt(account_id: str, fingerprint: str):
         .where(
             models.ApprovalRequest.account_id == account_id,
             models.ApprovalRequest.tool_args[FINGERPRINT_KEY].astext == fingerprint,
-        )
-        .order_by(models.ApprovalRequest.requested_at.desc())
-        .limit(5)
-        .where(
-            models.ApprovalRequest.account_id == account_id,
-            models.ApprovalRequest.tool_args[FINGERPRINT_KEY].astext == fingerprint,
             models.ApprovalRequest.status.in_(["pending", "approved", "declined"]),
         )
         .order_by(models.ApprovalRequest.requested_at.desc())
         .limit(10)
+    )
 
 
 def _allow(tool_input: dict) -> Dict[str, Any]:

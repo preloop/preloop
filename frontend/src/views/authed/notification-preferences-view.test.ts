@@ -11,6 +11,7 @@ const PREFS = {
   preferred_channel: 'email',
   enable_email: true,
   enable_mobile_push: false,
+  stagger_email: true,
   mobile_device_tokens: [
     {
       platform: 'ios',
@@ -97,6 +98,59 @@ describe('NotificationPreferencesView', () => {
     expect(String(putCall!.args[0])).to.contain(
       '/api/v1/notification-preferences/me'
     );
+  });
+
+  it('hides the quiet-alerts toggle unless both channels are enabled', async () => {
+    fetchStub = stubPrefs(PREFS);
+    const el = (await fixture(
+      html`<notification-preferences-view></notification-preferences-view>`
+    )) as NotificationPreferencesView;
+    await tick();
+    await el.updateComplete;
+    expect(el.shadowRoot?.querySelector('[data-testid="stagger-email-toggle"]'))
+      .to.not.exist;
+  });
+
+  it('shows the quiet-alerts toggle when email and push are enabled', async () => {
+    fetchStub = stubPrefs({
+      ...PREFS,
+      enable_email: true,
+      enable_mobile_push: true,
+      stagger_email: true,
+    });
+    const el = (await fixture(
+      html`<notification-preferences-view></notification-preferences-view>`
+    )) as NotificationPreferencesView;
+    await tick();
+    await el.updateComplete;
+    expect(el.shadowRoot?.textContent).to.contain('Quiet duplicate alerts');
+    expect(el.shadowRoot?.querySelector('[data-testid="stagger-email-toggle"]'))
+      .to.exist;
+  });
+
+  it('persists a quiet-alerts toggle change via PUT', async () => {
+    fetchStub = stubPrefs({
+      ...PREFS,
+      enable_email: true,
+      enable_mobile_push: true,
+      stagger_email: true,
+    });
+    const el = (await fixture(
+      html`<notification-preferences-view></notification-preferences-view>`
+    )) as NotificationPreferencesView;
+    await tick();
+    await el.updateComplete;
+    await (el as any).handleToggleStaggerEmail({ target: { checked: false } });
+    await tick();
+    const putCall = fetchStub
+      .getCalls()
+      .find((c) => (c.args[1]?.method || 'GET') === 'PUT');
+    expect(putCall, 'a PUT request should be sent').to.exist;
+    expect(String(putCall!.args[0])).to.contain(
+      '/api/v1/notification-preferences/me'
+    );
+    const body = JSON.parse(String(putCall!.args[1]?.body || '{}'));
+    expect(body.stagger_email).to.equal(false);
   });
 
   describe('admin test send', () => {

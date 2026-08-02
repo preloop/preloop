@@ -2998,3 +2998,635 @@ class TestSendEscalationNotifications:
             assert result["success"] is True
             assert result["escalation_users"] == 1
             assert result["push_sent"] == 0
+
+
+class TestNotificationStagger:
+    """Staggered approval email: push first, email only if still pending."""
+
+    @pytest.fixture
+    def both_user_id(self):
+        return uuid.uuid4()
+
+    @pytest.fixture
+    def stagger_partition(self, both_user_id):
+        return {
+            "push_capable": [both_user_id],
+            "email_only": [],
+            "both_stagger": [both_user_id],
+            "both_immediate": [],
+            "all_email": [both_user_id],
+        }
+
+    async def test_both_channels_stagger_on_schedules_delayed_email(
+        self,
+        approval_service,
+        sample_approval_request,
+        sample_approval_workflow,
+        both_user_id,
+        stagger_partition,
+    ):
+        """Dual-channel + stagger: push immediate, email delayed."""
+        sample_approval_request.requested_at = datetime.utcnow()
+        sample_approval_workflow.approval_type = None
+        approval_service._get_all_approver_user_ids = AsyncMock(
+            return_value=[both_user_id]
+        )
+        approval_service._partition_approvers_for_stagger = AsyncMock(
+            return_value=stagger_partition
+        )
+        approval_service._send_email_notification = AsyncMock()
+        approval_service._send_push_notification = AsyncMock(
+            return_value={"success": True, "sent": 1, "failed": 0}
+        )
+
+        with patch(
+            "preloop.services.approval_service.asyncio.create_task"
+        ) as mock_create_task:
+
+            def _fake_create_task(coro):
+                coro.close()
+                return MagicMock()
+
+            mock_create_task.side_effect = _fake_create_task
+            result = await approval_service.send_notifications(
+                sample_approval_request, sample_approval_workflow
+            )
+
+        approval_service._send_push_notification.assert_called_once()
+        approval_service._send_email_notification.assert_not_called()
+        assert result["email_delayed"]["scheduled"] == 1
+        assert result["email_delayed"]["delay_seconds"] == 60
+        mock_create_task.assert_called_once()
+
+    async def test_email_only_sends_immediate_email(
+        self, approval_service, sample_approval_request, sample_approval_workflow
+    ):
+        """Email-only user: immediate email, no push recipients, no delay."""
+        user_id = uuid.uuid4()
+        sample_approval_request.requested_at = datetime.utcnow()
+        sample_approval_workflow.approval_type = None
+        approval_service._get_all_approver_user_ids = AsyncMock(return_value=[user_id])
+        approval_service._partition_approvers_for_stagger = AsyncMock(
+            return_value={
+                "push_capable": [],
+                "email_only": [user_id],
+                "both_stagger": [],
+                "both_immediate": [],
+                "all_email": [user_id],
+            }
+        )
+        approval_service._send_email_notification = AsyncMock(
+            return_value={"success": True, "sent": 1, "failed": 0, "skipped": 0}
+        )
+        # Push "succeeds" with no devices for email-only partitions; that is
+        # still push-unavailable and must keep email immediate.
+        approval_service._send_push_notification = AsyncMock(
+            return_value={"success": True, "sent": 0, "failed": 0, "no_devices": True}
+        )
+
+        with patch(
+            "preloop.services.approval_service.asyncio.create_task"
+        ) as mock_create_task:
+
+            def _fake_create_task(coro):
+                coro.close()
+                return MagicMock()
+
+            mock_create_task.side_effect = _fake_create_task
+            result = await approval_service.send_notifications(
+                sample_approval_request, sample_approval_workflow
+            )
+
+        approval_service._send_email_notification.assert_called_once()
+        kwargs = approval_service._send_email_notification.call_args
+        assert kwargs.kwargs.get("user_ids") == [user_id] or (
+            len(kwargs.args) >= 3 and kwargs.args[2] == [user_id]
+        )
+        assert "email_delayed" not in result
+        mock_create_task.assert_not_called()
+
+    async def test_push_only_never_emails(
+        self, approval_service, sample_approval_request, sample_approval_workflow
+    ):
+        """Push-only user: push only, no delayed email task."""
+        user_id = uuid.uuid4()
+        sample_approval_request.requested_at = datetime.utcnow()
+        sample_approval_workflow.approval_type = None
+        approval_service._get_all_approver_user_ids = AsyncMock(return_value=[user_id])
+        approval_service._partition_approvers_for_stagger = AsyncMock(
+            return_value={
+                "push_capable": [user_id],
+                "email_only": [],
+                "both_stagger": [],
+                "both_immediate": [],
+                "all_email": [],
+            }
+        )
+        approval_service._send_email_notification = AsyncMock(
+            return_value={"success": True, "sent": 0, "failed": 0, "skipped": 0}
+        )
+        approval_service._send_push_notification = AsyncMock(
+            return_value={"success": True, "sent": 1, "failed": 0}
+        )
+
+        with patch(
+            "preloop.services.approval_service.asyncio.create_task"
+        ) as mock_create_task:
+
+            def _fake_create_task(coro):
+                coro.close()
+                return MagicMock()
+
+            mock_create_task.side_effect = _fake_create_task
+            result = await approval_service.send_notifications(
+                sample_approval_request, sample_approval_workflow
+            )
+
+        assert "email_delayed" not in result
+        mock_create_task.assert_not_called()
+        email_call = approval_service._send_email_notification.call_args
+        assert email_call.kwargs.get("user_ids") == []
+
+    async def test_delayed_email_fires_when_still_pending(
+        self, sample_approval_request, sample_approval_workflow
+    ):
+        """Delayed task emails when status is still pending."""
+        from preloop.services import approval_service as approval_module
+
+        user_id = uuid.uuid4()
+        sample_approval_request.status = "pending"
+        sample_approval_request.expires_at = datetime.utcnow() + timedelta(minutes=5)
+        sample_approval_request.approval_workflow = sample_approval_workflow
+
+        with (
+            patch(
+                "preloop.services.approval_service.asyncio.sleep",
+                new_callable=AsyncMock,
+            ),
+            patch("preloop.models.db.session.get_async_db_session") as mock_get_session,
+            patch(
+                "preloop.services.approval_service.get_approval_request_async",
+                new_callable=AsyncMock,
+                return_value=sample_approval_request,
+            ),
+            patch.object(
+                approval_module.ApprovalService,
+                "_send_email_notification",
+                new_callable=AsyncMock,
+                return_value={"success": True, "sent": 1, "failed": 0, "skipped": 0},
+            ) as mock_email,
+            patch(
+                "preloop.services.approval_service._log_approval_notification_async"
+            ) as mock_audit,
+        ):
+            session = AsyncMock()
+            mock_get_session.return_value.__aenter__ = AsyncMock(return_value=session)
+            mock_get_session.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            await approval_module._send_delayed_approval_email(
+                request_id=sample_approval_request.id,
+                user_ids=[user_id],
+                delay_seconds=0,
+                base_url="https://app.test.com",
+                correlation_id=None,
+                account_id=str(sample_approval_request.account_id),
+                tool_name=sample_approval_request.tool_name,
+            )
+
+            mock_email.assert_called_once()
+            assert any(
+                c.kwargs.get("status") == "sent" for c in mock_audit.call_args_list
+            )
+
+    @pytest.mark.parametrize(
+        "terminal", ["approved", "declined", "cancelled", "expired"]
+    )
+    async def test_delayed_email_suppressed_for_terminal_status(
+        self, sample_approval_request, terminal
+    ):
+        """Delayed email is skipped for each terminal status."""
+        from preloop.services import approval_service as approval_module
+
+        sample_approval_request.status = terminal
+        with (
+            patch(
+                "preloop.services.approval_service.asyncio.sleep",
+                new_callable=AsyncMock,
+            ),
+            patch("preloop.models.db.session.get_async_db_session") as mock_get_session,
+            patch(
+                "preloop.services.approval_service.get_approval_request_async",
+                new_callable=AsyncMock,
+                return_value=sample_approval_request,
+            ),
+            patch.object(
+                approval_module.ApprovalService,
+                "_send_email_notification",
+                new_callable=AsyncMock,
+            ) as mock_email,
+            patch(
+                "preloop.services.approval_service._log_approval_notification_async"
+            ) as mock_audit,
+        ):
+            session = AsyncMock()
+            mock_get_session.return_value.__aenter__ = AsyncMock(return_value=session)
+            mock_get_session.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            await approval_module._send_delayed_approval_email(
+                request_id=sample_approval_request.id,
+                user_ids=[uuid.uuid4()],
+                delay_seconds=0,
+                base_url="https://app.test.com",
+                correlation_id=None,
+                account_id=str(sample_approval_request.account_id),
+                tool_name=sample_approval_request.tool_name,
+            )
+
+            mock_email.assert_not_called()
+            assert mock_audit.call_args.kwargs["status"] == "skipped"
+            assert mock_audit.call_args.kwargs["error"] == "resolved_before_email"
+
+    async def test_delayed_email_suppressed_when_expires_at_passed(
+        self, sample_approval_request
+    ):
+        """Expired-but-still-pending requests do not get delayed email."""
+        from preloop.services import approval_service as approval_module
+
+        sample_approval_request.status = "pending"
+        sample_approval_request.expires_at = datetime.utcnow() - timedelta(seconds=1)
+        with (
+            patch(
+                "preloop.services.approval_service.asyncio.sleep",
+                new_callable=AsyncMock,
+            ),
+            patch("preloop.models.db.session.get_async_db_session") as mock_get_session,
+            patch(
+                "preloop.services.approval_service.get_approval_request_async",
+                new_callable=AsyncMock,
+                return_value=sample_approval_request,
+            ),
+            patch.object(
+                approval_module.ApprovalService,
+                "_send_email_notification",
+                new_callable=AsyncMock,
+            ) as mock_email,
+            patch(
+                "preloop.services.approval_service._log_approval_notification_async"
+            ) as mock_audit,
+        ):
+            session = AsyncMock()
+            mock_get_session.return_value.__aenter__ = AsyncMock(return_value=session)
+            mock_get_session.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            await approval_module._send_delayed_approval_email(
+                request_id=sample_approval_request.id,
+                user_ids=[uuid.uuid4()],
+                delay_seconds=0,
+                base_url="https://app.test.com",
+                correlation_id=None,
+                account_id=str(sample_approval_request.account_id),
+                tool_name=sample_approval_request.tool_name,
+            )
+
+            mock_email.assert_not_called()
+            assert mock_audit.call_args.kwargs["error"] == "resolved_before_email"
+
+    async def test_stagger_toggle_off_sends_both_immediately(
+        self, approval_service, sample_approval_request, sample_approval_workflow
+    ):
+        """Stagger off: both channels immediate (today's behavior)."""
+        user_id = uuid.uuid4()
+        sample_approval_request.requested_at = datetime.utcnow()
+        sample_approval_workflow.approval_type = None
+        approval_service._get_all_approver_user_ids = AsyncMock(return_value=[user_id])
+        approval_service._partition_approvers_for_stagger = AsyncMock(
+            return_value={
+                "push_capable": [user_id],
+                "email_only": [],
+                "both_stagger": [],
+                "both_immediate": [user_id],
+                "all_email": [user_id],
+            }
+        )
+        approval_service._send_email_notification = AsyncMock(
+            return_value={"success": True, "sent": 1, "failed": 0, "skipped": 0}
+        )
+        approval_service._send_push_notification = AsyncMock(
+            return_value={"success": True, "sent": 1, "failed": 0}
+        )
+
+        with patch(
+            "preloop.services.approval_service.asyncio.create_task"
+        ) as mock_create_task:
+
+            def _fake_create_task(coro):
+                coro.close()
+                return MagicMock()
+
+            mock_create_task.side_effect = _fake_create_task
+            result = await approval_service.send_notifications(
+                sample_approval_request, sample_approval_workflow
+            )
+
+        approval_service._send_email_notification.assert_called_once()
+        approval_service._send_push_notification.assert_called_once()
+        assert "email_delayed" not in result
+        mock_create_task.assert_not_called()
+
+    async def test_push_not_configured_emails_immediately(
+        self,
+        approval_service,
+        sample_approval_request,
+        sample_approval_workflow,
+        both_user_id,
+        stagger_partition,
+    ):
+        """Push not configured: email immediate despite stagger on."""
+        sample_approval_request.requested_at = datetime.utcnow()
+        sample_approval_workflow.approval_type = None
+        approval_service._get_all_approver_user_ids = AsyncMock(
+            return_value=[both_user_id]
+        )
+        approval_service._partition_approvers_for_stagger = AsyncMock(
+            return_value=stagger_partition
+        )
+        approval_service._send_email_notification = AsyncMock(
+            return_value={"success": True, "sent": 1, "failed": 0, "skipped": 0}
+        )
+        approval_service._send_push_notification = AsyncMock(
+            return_value={
+                "success": False,
+                "error": "Push notifications not configured",
+            }
+        )
+
+        with patch(
+            "preloop.services.approval_service.asyncio.create_task"
+        ) as mock_create_task:
+
+            def _fake_create_task(coro):
+                coro.close()
+                return MagicMock()
+
+            mock_create_task.side_effect = _fake_create_task
+            result = await approval_service.send_notifications(
+                sample_approval_request, sample_approval_workflow
+            )
+
+        approval_service._send_email_notification.assert_called_once()
+        assert "email_delayed" not in result
+        mock_create_task.assert_not_called()
+
+    async def test_push_raises_emails_immediately(
+        self,
+        approval_service,
+        sample_approval_request,
+        sample_approval_workflow,
+        both_user_id,
+        stagger_partition,
+    ):
+        """Push raise: email immediate fallback."""
+        sample_approval_request.requested_at = datetime.utcnow()
+        sample_approval_workflow.approval_type = None
+        approval_service._get_all_approver_user_ids = AsyncMock(
+            return_value=[both_user_id]
+        )
+        approval_service._partition_approvers_for_stagger = AsyncMock(
+            return_value=stagger_partition
+        )
+        approval_service._send_email_notification = AsyncMock(
+            return_value={"success": True, "sent": 1, "failed": 0, "skipped": 0}
+        )
+        approval_service._send_push_notification = AsyncMock(
+            side_effect=RuntimeError("APNs blew up")
+        )
+
+        with patch(
+            "preloop.services.approval_service.asyncio.create_task"
+        ) as mock_create_task:
+
+            def _fake_create_task(coro):
+                coro.close()
+                return MagicMock()
+
+            mock_create_task.side_effect = _fake_create_task
+            result = await approval_service.send_notifications(
+                sample_approval_request, sample_approval_workflow
+            )
+
+        assert result["mobile_push"]["success"] is False
+        approval_service._send_email_notification.assert_called_once()
+        assert "email_delayed" not in result
+        mock_create_task.assert_not_called()
+
+    async def test_push_no_devices_emails_immediately(
+        self,
+        approval_service,
+        sample_approval_request,
+        sample_approval_workflow,
+        both_user_id,
+        stagger_partition,
+    ):
+        """no_devices push result: email immediate fallback."""
+        sample_approval_request.requested_at = datetime.utcnow()
+        sample_approval_workflow.approval_type = None
+        approval_service._get_all_approver_user_ids = AsyncMock(
+            return_value=[both_user_id]
+        )
+        approval_service._partition_approvers_for_stagger = AsyncMock(
+            return_value=stagger_partition
+        )
+        approval_service._send_email_notification = AsyncMock(
+            return_value={"success": True, "sent": 1, "failed": 0, "skipped": 0}
+        )
+        approval_service._send_push_notification = AsyncMock(
+            return_value={"success": True, "sent": 0, "failed": 0, "no_devices": True}
+        )
+
+        with patch(
+            "preloop.services.approval_service.asyncio.create_task"
+        ) as mock_create_task:
+
+            def _fake_create_task(coro):
+                coro.close()
+                return MagicMock()
+
+            mock_create_task.side_effect = _fake_create_task
+            result = await approval_service.send_notifications(
+                sample_approval_request, sample_approval_workflow
+            )
+
+        approval_service._send_email_notification.assert_called_once()
+        assert "email_delayed" not in result
+        mock_create_task.assert_not_called()
+
+    async def test_mute_suppresses_delayed_task(
+        self, approval_service, sample_approval_request, sample_approval_workflow
+    ):
+        """Mute bypass skips everything including delayed email scheduling."""
+        from preloop.models.models.approval_bypass import ApprovalBypassMode
+
+        sample_approval_request.requested_at = datetime.utcnow()
+        sample_approval_request.managed_agent_id = None
+        mute = MagicMock()
+        mute.id = uuid.uuid4()
+        mute.mode = ApprovalBypassMode.MUTE_NOTIFICATIONS
+        mute.expires_at = datetime.utcnow() + timedelta(hours=1)
+        approval_service._resolve_bypass = AsyncMock(return_value=mute)
+        approval_service._send_email_notification = AsyncMock()
+        approval_service._send_push_notification = AsyncMock()
+        approval_service._partition_approvers_for_stagger = AsyncMock()
+
+        with patch(
+            "preloop.services.approval_service.asyncio.create_task"
+        ) as mock_create_task:
+
+            def _fake_create_task(coro):
+                coro.close()
+                return MagicMock()
+
+            mock_create_task.side_effect = _fake_create_task
+            result = await approval_service.send_notifications(
+                sample_approval_request, sample_approval_workflow
+            )
+
+        assert result["reason"] == "notifications_muted"
+        approval_service._send_email_notification.assert_not_called()
+        approval_service._send_push_notification.assert_not_called()
+        approval_service._partition_approvers_for_stagger.assert_not_called()
+        mock_create_task.assert_not_called()
+
+    async def test_escalation_sends_email_and_push_immediately(
+        self, approval_service, sample_approval_request, sample_approval_workflow
+    ):
+        """Escalation path is unchanged: both channels immediate."""
+        user_id = uuid.uuid4()
+        sample_approval_workflow.escalation_user_ids = [user_id]
+        sample_approval_workflow.escalation_team_ids = None
+        approval_service._record_event = AsyncMock()
+
+        mock_loop = MagicMock()
+        mock_loop.run_in_executor = AsyncMock(
+            return_value=({user_id}, [(user_id, "a" * 64)], [])
+        )
+
+        with (
+            patch(
+                "preloop.services.approval_service.asyncio.get_event_loop",
+                return_value=mock_loop,
+            ),
+            patch("preloop.services.push_notifications.get_apns_service") as mock_apns,
+            patch(
+                "preloop.services.push_notifications.is_fcm_configured",
+                return_value=False,
+            ),
+            patch(
+                "preloop.services.push_proxy.is_push_proxy_configured",
+                return_value=False,
+            ),
+            patch(
+                "preloop.services.push_notifications.NotificationPayloadBuilder"
+                ".new_approval_request",
+                return_value={
+                    "aps": {"alert": {"title": "t", "body": "b"}},
+                    "data": {},
+                },
+            ),
+        ):
+            apns = AsyncMock()
+            apns.send_notification = AsyncMock(return_value=(True, 200, None))
+            mock_apns.return_value = apns
+
+            result = await approval_service._send_escalation_notifications(
+                sample_approval_request, sample_approval_workflow
+            )
+
+        # Escalation emails are sent inside the executor helper; push is immediate.
+        assert result.get("push_sent", 0) >= 0
+        assert "email_delayed" not in result
+
+    async def test_delayed_task_uses_fresh_session(self, sample_approval_request):
+        """Resolve via a different session after schedule; delayed email skips."""
+        from preloop.services import approval_service as approval_module
+
+        sample_approval_request.status = "approved"
+        with (
+            patch(
+                "preloop.services.approval_service.asyncio.sleep",
+                new_callable=AsyncMock,
+            ),
+            patch("preloop.models.db.session.get_async_db_session") as mock_get_session,
+            patch(
+                "preloop.services.approval_service.get_approval_request_async",
+                new_callable=AsyncMock,
+                return_value=sample_approval_request,
+            ) as mock_get,
+            patch.object(
+                approval_module.ApprovalService,
+                "_send_email_notification",
+                new_callable=AsyncMock,
+            ) as mock_email,
+            patch("preloop.services.approval_service._log_approval_notification_async"),
+        ):
+            session = AsyncMock()
+            mock_get_session.return_value.__aenter__ = AsyncMock(return_value=session)
+            mock_get_session.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            await approval_module._send_delayed_approval_email(
+                request_id=sample_approval_request.id,
+                user_ids=[uuid.uuid4()],
+                delay_seconds=0,
+                base_url="https://app.test.com",
+                correlation_id=None,
+                account_id=str(sample_approval_request.account_id),
+                tool_name=sample_approval_request.tool_name,
+            )
+
+            mock_get.assert_called_once()
+            assert mock_get.call_args.args[0] is session
+            mock_email.assert_not_called()
+
+    async def test_audit_scheduled_at_t0_and_sent_or_skipped_at_fire(
+        self,
+        approval_service,
+        sample_approval_request,
+        sample_approval_workflow,
+        both_user_id,
+        stagger_partition,
+    ):
+        """Email channel audited as scheduled at T0; fire path audits sent/skipped."""
+        sample_approval_request.requested_at = datetime.utcnow()
+        sample_approval_workflow.approval_type = None
+        approval_service._get_all_approver_user_ids = AsyncMock(
+            return_value=[both_user_id]
+        )
+        approval_service._partition_approvers_for_stagger = AsyncMock(
+            return_value=stagger_partition
+        )
+        approval_service._send_push_notification = AsyncMock(
+            return_value={"success": True, "sent": 1, "failed": 0}
+        )
+        approval_service._send_email_notification = AsyncMock()
+
+        with (
+            patch(
+                "preloop.services.approval_service.asyncio.create_task"
+            ) as mock_create_task,
+            patch(
+                "preloop.services.approval_service._log_approval_notification_async"
+            ) as mock_audit,
+        ):
+
+            def _fake_create_task(coro):
+                coro.close()
+                return MagicMock()
+
+            mock_create_task.side_effect = _fake_create_task
+            await approval_service.send_notifications(
+                sample_approval_request, sample_approval_workflow
+            )
+
+        email_audits = [
+            c for c in mock_audit.call_args_list if c.kwargs.get("channel") == "email"
+        ]
+        assert any(c.kwargs.get("status") == "scheduled" for c in email_audits)
