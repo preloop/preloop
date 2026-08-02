@@ -111,7 +111,11 @@ def _wait_budget_seconds() -> float:
             DEFAULT_WAIT_SECONDS,
         )
         value = DEFAULT_WAIT_SECONDS
-    return max(1.0, min(value, 600.0))
+MIN_WAIT_SECONDS = 1.0
+MAX_WAIT_SECONDS = 600.0
+
+# ... then:
+    return max(MIN_WAIT_SECONDS, min(value, MAX_WAIT_SECONDS))
 
 
 def permission_prompt_fingerprint(tool_name: str, tool_input: Optional[dict]) -> str:
