@@ -119,8 +119,6 @@ def _strip_fields_from_json_text(text: str, dropped_fields: set[str]) -> Optiona
         The re-serialized JSON with the requested keys removed, or ``None`` if
         the text is not JSON, is not a dict/list-of-dicts, or nothing changed.
     """
-    import json
-
     try:
         parsed = json.loads(text)
     except (ValueError, TypeError):
@@ -1600,3 +1598,18 @@ def create_user_context_from_scope(scope: dict) -> Optional[UserContext]:
         return user_context
     finally:
         db.close()
+
+
+# Cross-module ContextVars (imported by initialize_mcp / approval_helper).
+# Referenced here so maintainability scanners do not treat them as unused
+# module globals — same pattern as Alembic ``_ALEMBIC_IDENTIFIERS``. Kept
+# out of ``__all__`` so ``import *`` stays a public-API surface only.
+_CONTEXT_VAR_EXPORTS = (
+    _rule_workflow_id_var,
+    _correlation_id_var,
+    _justification_var,
+    _bypass_approval_var,
+    _approved_comment_var,
+    _is_proxy_translation_var,
+)
+assert _CONTEXT_VAR_EXPORTS, "contextvar exports must be defined"

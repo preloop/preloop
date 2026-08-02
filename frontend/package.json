@@ -11,11 +11,12 @@
     "fast-xml-builder": "^1.1.7",
     "picomatch": "^4.0.4",
     "lodash-es": "^4.18.1",
-    "basic-ftp": "^5.2.2",
+    "basic-ftp": "5.3.1",
     "uuid": ">=14.0.0",
     "ip-address": "^10.1.1",
     "esbuild": "^0.28.1",
-    "postcss": "^8.5.18"
+    "postcss": "^8.5.18",
+    "yaml": "2.8.3"
   },
   "scripts": {
     "start": "npm run dev",

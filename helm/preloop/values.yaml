@@ -245,6 +245,11 @@ environment:
   # Access token lifetime. 1440 (24h) matches the documented session design:
   # 24h access token + 7 day rotating refresh token capped at 30 days.
   jwtExpireMinutes: 1440
+  # Refresh-token lifetime in days (REFRESH_TOKEN_EXPIRE_DAYS). Rotating
+  # refresh tokens keep sessions alive until maxSessionDays is reached.
+  refreshTokenExpireDays: 7
+  # Absolute session cap in days from the original login (MAX_SESSION_DAYS).
+  maxSessionDays: 30
 
 # Configuration for external APIs
 config:

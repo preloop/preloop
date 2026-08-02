@@ -886,9 +886,10 @@ async def refresh_token(
     except HTTPException:
         raise
     except Exception as e:
+        logger.error("Unexpected error refreshing token: %s", e, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid refresh token: {str(e)}",
+            detail="Invalid refresh token",
             headers={"WWW-Authenticate": "Bearer"},
         )
 

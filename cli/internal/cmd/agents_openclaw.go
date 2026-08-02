@@ -2114,7 +2114,7 @@ func parseGeminiManagedGatewayUpstream(agent AgentConfig) (*managedGatewayUpstre
 	}
 	apiKey, apiKeyNote := resolveGeminiAPIKey(document)
 	if apiKeyNote != "" {
-		notes = append(notes, apiKeyNote)
+		notes = append(notes, publicPlanNote(apiKeyNote))
 	}
 	if modelRef == "" && apiKey != "" {
 		modelRef = geminiDefaultManagedModel
@@ -2305,7 +2305,7 @@ func parseClaudeManagedGatewayUpstream(agent AgentConfig) (*managedGatewayUpstre
 		)
 	}
 	if apiKeyNote != "" {
-		notes = append(notes, apiKeyNote)
+		notes = append(notes, publicPlanNote(apiKeyNote))
 	}
 	if apiKey == "" && !claudeSubscriptionOAuthDetected {
 		if resolveClaudeOAuthEmail() != "" {

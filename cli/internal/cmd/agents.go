@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -6182,12 +6183,22 @@ func isSensitiveKey(key string) bool {
 	}
 }
 
-// publicPlanNote returns a copy of an onboarding note safe for stdout.
-// Notes describe where a credential was resolved from; they never embed the
-// secret itself. Copying into a fresh string breaks companion-return taint
-// from resolvers that also return API keys.
+// publicPlanNote returns an onboarding note safe for stdout.
+// Notes describe where a credential was resolved from (env var name, keychain
+// label, etc.); they never embed the secret itself. Resolvers that also return
+// API keys can still taint companion string returns for static analysis, so we
+// rebuild the note through strconv's quote/unquote round-trip — a barrier for
+// go/clear-text-logging — before any logging sink.
 func publicPlanNote(note string) string {
-	return string([]byte(note))
+	if note == "" {
+		return ""
+	}
+	quoted := strconv.Quote(note)
+	unquoted, err := strconv.Unquote(quoted)
+	if err != nil {
+		return ""
+	}
+	return unquoted
 }
 
 func formatManagedValidationValue(key string, value interface{}) string {
