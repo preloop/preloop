@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`preloop agents remove`**: permanently delete a managed-agent registry
   entry. Refuses when the agent has usage history unless `--force` is passed.
+- **Stable v2 managed-agent identity**: CLI derives
+  `session_source_id` from host + source type + config path (display name
+  decoupled), with `--no-reuse` for salted escape. New
+  `enrollment_hostname` / `identity_derivation` columns.
+- **`POST /api/v1/agents/{id}/rekey`** and **`POST /api/v1/agents/{id}/merge`**:
+  rewrite or consolidate durable principal ids (usage, sessions, budgets,
+  approvals) with dry-run support; CLI `preloop agents merge`.
 - **ask_user in-session delivery** (#130): pending `ask_user` /
   `request_approval` responses now include token-free deep links to the
   specific question (`approval_console_url`, `approval_mobile_link` /

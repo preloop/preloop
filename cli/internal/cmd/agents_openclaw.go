@@ -673,22 +673,25 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 
 	allowedServers := append([]string{}, serverSync.Added...)
 	allowedServers = append(allowedServers, serverSync.Reused...)
-	existingManaged, err := ensureArchivedManagedAgentReenrolled(
+	prepared, existingManaged, err := ensureManagedAgentIdentityReady(
 		client,
 		agent,
 		opts.AutoApprove,
+		agentsNoReuseIdentity,
 		input,
 		output,
 	)
 	if err != nil {
 		return err
 	}
+	agent = prepared
+	syncAgent = prepareAgentForRemoteServerSync(agent, baseURL)
 	runtimeSession, err := issueRuntimeSessionToken(client, syncAgent, allowedServers)
 	if err != nil {
 		return fmt.Errorf("failed to bootstrap managed agent identity: %w", err)
 	}
 
-	// Prefer GET-by-id when reenroll/list already resolved the agent so
+	// Prefer GET-by-id when identity prep already resolved the agent so
 	// onboard does not issue a second full /api/v1/agents list.
 	managedAgent, err := resolveManagedAgentAfterBootstrap(client, agent, existingManaged)
 	if err != nil {
