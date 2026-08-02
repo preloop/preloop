@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Security-screen scoring endpoint** (#155):
+  `POST /api/v1/security-screen/score` implements QM's external
+  security-screen proxy contract. Accepts `{text, hook, metadata}` with the
+  operator token in `x-api-key` and returns
+  `{score, threshold, primary_outcome}` from a deterministic rule-based
+  scorer (prompt-injection markers, destructive commands, destructive SQL,
+  secret-exfiltration patterns). Threshold configurable via
+  `PRELOOP_SECURITY_SCREEN_THRESHOLD` (default 0.7). Screened text is never
+  logged or persisted; no schema changes.
 - **`preloop agents remove`**: permanently delete a managed-agent registry
   entry. Refuses when the agent has usage history unless `--force` is passed.
 - **Stable v2 managed-agent identity**: CLI derives
