@@ -154,6 +154,7 @@ Define fine-grained access controls for any AI tool or operation. Tools support 
 - **Async approval mode** lets the agent poll for status instead of blocking network hooks.
 - **Agent questions** — beyond allow/deny, agents can call the built-in `ask_user` tool to ask the operator a question with multiple-choice options and/or a free-text reply, and get the answer back. Rendered as option buttons + an answer field in the mobile and watch apps.
 - **Per-tool justification** — require (or optionally request) the agent to explain *why* a tool is being called.
+- **Claude Code headless approvals** — `preloop agents onboard "Claude Code" --approvals` enables the built-in `permission_prompt` tool scoped to the onboarded agent (the tool is default-off account-wide so other MCP clients pay no tools/list context for it; it can also be enabled manually on the Tools page). Run `claude -p --permission-prompt-tool mcp__preloop__permission_prompt` to route native tool permissions through Preloop; `PRELOOP_PERMISSION_PROMPT_WAIT_SECONDS` (default 25) tunes how long each call waits for a decision before returning a retryable pending response.
 - **Full Audit Trail** — every action is logged with full context: what was attempted, the matched policy, execution duration, and who approved it.
 
 <div align="center">

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/preloop/preloop/cli/internal/api"
 	"github.com/preloop/preloop/cli/internal/testenv"
 )
 
@@ -1039,5 +1040,82 @@ func TestMatchCursorTerminalAllowlist(t *testing.T) {
 	}
 	if matchCursorTerminalAllowlist(allow, "rm -rf /") {
 		t.Fatal("did not expect rm to match")
+	}
+}
+
+func TestEnablePermissionPromptBuiltin(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/tool-configurations" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "cfg-1"})
+	}))
+	defer server.Close()
+
+	client := api.NewClientWithToken(server.URL, "test-token")
+	var out strings.Builder
+	if err := enablePermissionPromptBuiltin(client, "agent-123", &out); err != nil {
+		t.Fatalf("enablePermissionPromptBuiltin: %v", err)
+	}
+
+	if captured["tool_name"] != "permission_prompt" {
+		t.Fatalf("expected permission_prompt tool_name, got %v", captured["tool_name"])
+	}
+	if captured["tool_source"] != "builtin" {
+		t.Fatalf("expected builtin tool_source, got %v", captured["tool_source"])
+	}
+	if captured["managed_agent_id"] != "agent-123" {
+		t.Fatalf("expected agent-scoped enable, got %v", captured["managed_agent_id"])
+	}
+	if captured["is_enabled"] != true {
+		t.Fatalf("expected is_enabled true, got %v", captured["is_enabled"])
+	}
+	if !strings.Contains(out.String(), "--permission-prompt-tool mcp__preloop__permission_prompt") {
+		t.Fatalf("expected exact flag instruction in output, got:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "scoped to this agent") {
+		t.Fatalf("expected scope note in output, got:\n%s", out.String())
+	}
+}
+
+func TestEnablePermissionPromptBuiltinToleratesExistingRow(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"detail": "Configuration for tool 'permission_prompt' already exists",
+		})
+	}))
+	defer server.Close()
+
+	client := api.NewClientWithToken(server.URL, "test-token")
+	var out strings.Builder
+	if err := enablePermissionPromptBuiltin(client, "agent-123", &out); err != nil {
+		t.Fatalf("expected already-exists to be tolerated, got %v", err)
+	}
+	if !strings.Contains(out.String(), "already configured") {
+		t.Fatalf("expected already-configured note, got:\n%s", out.String())
+	}
+}
+
+func TestEnablePermissionPromptBuiltinPropagatesServerErrors(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	client := api.NewClientWithToken(server.URL, "test-token")
+	if err := enablePermissionPromptBuiltin(client, "agent-123", nil); err == nil {
+		t.Fatal("expected server error to propagate")
 	}
 }

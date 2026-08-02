@@ -8,10 +8,11 @@ Phase 1B: Added support for proxied tools from external MCP servers.
 
 import asyncio
 import copy
+import json
 import logging
 import uuid
 from contextvars import ContextVar
-from typing import Callable, Dict, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from fastmcp import FastMCP
 from fastmcp.tools import Tool
@@ -28,6 +29,39 @@ from preloop.api.endpoints.tools import BUILTIN_TOOLS
 from preloop.services.subject_governance import is_tool_enabled_for_subject
 
 logger = logging.getLogger(__name__)
+
+
+def _configs_visible_to_caller(
+    configs: Iterable[Any], caller_managed_agent_id: Optional[str]
+) -> List[Any]:
+    """Order ToolConfiguration rows by scope for the calling agent.
+
+    A row with ``managed_agent_id`` set applies only to that managed agent:
+    rows scoped to a *different* agent are dropped entirely (they must not
+    leak enablement, disablement, or justification requirements to other
+    callers), and rows scoped to the calling agent are returned *after* the
+    account-wide rows so that dict-style ``{tool_name: ...}`` builds let the
+    agent-scoped value win.
+
+    Args:
+        configs: ToolConfiguration rows for the account.
+        caller_managed_agent_id: The calling agent's id (from the API key's
+            context), or None for callers without an agent identity.
+
+    Returns:
+        The visible rows, account-wide first, caller-scoped last.
+    """
+    caller = str(caller_managed_agent_id) if caller_managed_agent_id else None
+    account_rows: List[Any] = []
+    agent_rows: List[Any] = []
+    for tc in configs:
+        row_agent = getattr(tc, "managed_agent_id", None)
+        if row_agent is None:
+            account_rows.append(tc)
+        elif caller is not None and str(row_agent) == caller:
+            agent_rows.append(tc)
+    return account_rows + agent_rows
+
 
 # Context variable to pass policy evaluation results from _call_tool() to
 # individual tool wrappers (which call require_approval()).
@@ -341,14 +375,20 @@ class DynamicFastMCP(FastMCP):
                     configs = crud_tool_configuration.get_multi_by_account(
                         db, account_id=str(user_context.account_id), limit=1000
                     )
+                    # Scope-aware: agent-scoped rows apply only to the calling
+                    # agent and override the account-wide row; rows scoped to
+                    # other agents are invisible here.
+                    visible = _configs_visible_to_caller(
+                        configs, getattr(user_context, "managed_agent_id", None)
+                    )
                     modes = {
                         tc.tool_name: tc.justification_mode
-                        for tc in configs
+                        for tc in visible
                         if tc.justification_mode in ("optional", "required")
                     }
                     enabled = {
                         tc.tool_name: tc.is_enabled
-                        for tc in configs
+                        for tc in visible
                         if tc.tool_source == "builtin"
                     }
                     acc = crud_account.get(db, id=user_context.account_id)
@@ -925,9 +965,17 @@ async def {internal_name}({params_str}) -> str:
                             account_id=str(user_context.account_id),
                             limit=1000,
                         )
+                        # Scope-aware (mirrors list_tools): agent-scoped rows
+                        # apply only to the calling agent and override the
+                        # account-wide row; rows scoped to other agents are
+                        # invisible.
+                        visible = _configs_visible_to_caller(
+                            configs,
+                            getattr(user_context, "managed_agent_id", None),
+                        )
                         requires_just = False
                         builtin_enabled = None
-                        for tc in configs:
+                        for tc in visible:
                             if tc.tool_name != name:
                                 continue
                             if tc.justification_mode == "required":
@@ -964,15 +1012,32 @@ async def {internal_name}({params_str}) -> str:
                     )
                     if is_disabled:
                         logger.warning(f"Blocked call to disabled builtin tool: {name}")
+                        denied_text = (
+                            f"Access denied: Tool '{name}' is disabled "
+                            "for this account. Enable it on the Tools "
+                            "page to use it."
+                        )
+                        if name == "permission_prompt":
+                            # Claude Code parses this tool's response as its
+                            # permission behavior schema; a plain string would
+                            # surface as a confusing parse failure instead of
+                            # a clean deny.
+                            denied_text = json.dumps(
+                                {
+                                    "behavior": "deny",
+                                    "message": (
+                                        "The Preloop permission_prompt tool is "
+                                        "disabled for this account. Enable it on "
+                                        "the Tools page in the Preloop console, "
+                                        "then retry."
+                                    ),
+                                }
+                            )
                         return ToolResult(
                             content=[
                                 TextContent(
                                     type="text",
-                                    text=(
-                                        f"Access denied: Tool '{name}' is disabled "
-                                        "for this account. Enable it on the Tools "
-                                        "page to use it."
-                                    ),
+                                    text=denied_text,
                                 )
                             ]
                         )

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -263,6 +264,45 @@ func installApprovalHooks(agent AgentConfig, baseURL, token string, out io.Write
 		if source == permissionSourceCursor {
 			fmt.Fprintln(out, "  Note: Cursor reliably enforces only DENY from a hook; an allow may be overridden by Cursor's in-app allowlist.") //nolint:errcheck
 		}
+	}
+	return nil
+}
+
+// enablePermissionPromptBuiltin flips the permission_prompt builtin on for
+// exactly the agent being onboarded. The tool is default-disabled
+// account-wide because it is only useful to headless Claude Code runs and
+// would otherwise cost every MCP client of the account tools/list context
+// (issue #128), so approvals onboarding creates an agent-scoped
+// ToolConfiguration row instead of an account-wide one.
+//
+// A 400 from the create endpoint means a row for this exact scope already
+// exists (idempotent re-onboarding); an explicit operator disable is
+// deliberately not overridden.
+func enablePermissionPromptBuiltin(client *api.Client, managedAgentID string, out io.Writer) error {
+	if client == nil || strings.TrimSpace(managedAgentID) == "" {
+		return nil
+	}
+	payload := map[string]interface{}{
+		"tool_name":        "permission_prompt",
+		"tool_source":      "builtin",
+		"account_id":       "", // derived server-side from the authenticated session
+		"is_enabled":       true,
+		"managed_agent_id": managedAgentID,
+	}
+	var response map[string]interface{}
+	err := client.Post("/api/v1/tool-configurations", payload, &response)
+	alreadyConfigured := err != nil && api.IsStatus(err, http.StatusBadRequest)
+	if err != nil && !alreadyConfigured {
+		return fmt.Errorf("failed to enable the permission_prompt builtin: %w", err)
+	}
+	if out != nil {
+		if alreadyConfigured {
+			fmt.Fprintln(out, "  Headless approvals: permission_prompt builtin already configured for this agent") //nolint:errcheck
+		} else {
+			fmt.Fprintln(out, "  Headless approvals: enabled the permission_prompt builtin (scoped to this agent only)") //nolint:errcheck
+		}
+		fmt.Fprintln(out, "  For headless (claude -p) runs, route permission prompts through Preloop with:")      //nolint:errcheck
+		fmt.Fprintln(out, "    claude -p --permission-prompt-tool mcp__preloop__permission_prompt \"your task\"") //nolint:errcheck
 	}
 	return nil
 }

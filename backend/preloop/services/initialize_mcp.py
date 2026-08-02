@@ -18,7 +18,7 @@ from preloop.services.dynamic_fastmcp import (
     _justification_var,
     create_dynamic_mcp_server,
 )
-from preloop.tools.builtin_defs import ASK_USER_TOOL
+from preloop.tools.builtin_defs import ASK_USER_TOOL, PERMISSION_PROMPT_TOOL
 
 logger = logging.getLogger(__name__)
 
@@ -558,6 +558,81 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
             return f"User answered: {answer}"
         # Answered with no text (e.g. a bare approve on an options-only question).
         return "User acknowledged the question but provided no answer text."
+
+    # Register Tool 7c: permission_prompt (Claude Code --permission-prompt-tool
+    # contract; shared metadata: tools.builtin_defs.PERMISSION_PROMPT_TOOL).
+    # Unlike request_approval this MUST return Claude's behavior schema as a
+    # JSON string: {"behavior": "allow", "updatedInput": {...}} or
+    # {"behavior": "deny", "message": "..."}. Decision logic (including the
+    # 30s-MCP-wait vs long-approval-timeout bridge) lives in
+    # preloop.services.permission_prompt.
+    @mcp.tool(description=PERMISSION_PROMPT_TOOL["description"])
+    async def permission_prompt(
+        tool_name: str,
+        input: dict,  # noqa: A002 - name fixed by Claude Code's contract
+        tool_use_id: str | None = None,
+        ctx: Optional[Context] = None,
+    ) -> str:
+        """Decide a Claude Code permission prompt via Preloop approvals."""
+        import json
+        import os
+        from uuid import UUID as _UUID
+
+        from preloop.services.dynamic_fastmcp_http import get_current_user_context
+        from preloop.services.permission_prompt import evaluate_permission_prompt
+
+        def _dump(behavior: dict) -> str:
+            return json.dumps(behavior)
+
+        user_context = get_current_user_context()
+        if not user_context:
+            # Fail closed: without identity we cannot route an approval.
+            return _dump(
+                {
+                    "behavior": "deny",
+                    "message": "Preloop could not authenticate this session; "
+                    "tool call denied (fail closed).",
+                }
+            )
+
+        def _as_uuid(value) -> _UUID | None:
+            try:
+                return _UUID(str(value)) if value else None
+            except (ValueError, TypeError):
+                return None
+
+        try:
+            behavior = await evaluate_permission_prompt(
+                base_url=os.getenv("PRELOOP_URL", "http://localhost:8000"),
+                account_id=user_context.account_id,
+                user_id=_as_uuid(user_context.user_id),
+                managed_agent_id=_as_uuid(
+                    getattr(user_context, "managed_agent_id", None)
+                ),
+                runtime_session_id=_as_uuid(
+                    getattr(user_context, "runtime_session_id", None)
+                ),
+                managed_agent_name=getattr(
+                    user_context, "runtime_principal_name", None
+                ),
+                source="claude_code",
+                tool_name=tool_name,
+                tool_input=input,
+                tool_use_id=tool_use_id,
+            )
+        except Exception as exc:  # SECURITY: fail closed, mirroring
+            # approval_helper — a gated call must never run un-approved
+            # because the approval check itself errored.
+            logger.error(
+                f"permission_prompt failed for tool {tool_name}: {exc}",
+                exc_info=True,
+            )
+            behavior = {
+                "behavior": "deny",
+                "message": "Preloop approval check failed; tool call denied "
+                "as a safety measure. Retry the tool call.",
+            }
+        return _dump(behavior)
 
     # Register Tool 8: add_comment
     @mcp.tool()

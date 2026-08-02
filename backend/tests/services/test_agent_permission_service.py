@@ -12,7 +12,7 @@ from preloop.models import models
 from preloop.services.agent_permission_service import (
     AGENT_TOOL_APPROVALS_WORKFLOW_NAME,
     _managed_agent_approval_workflow_pin,
-    _resolve_workflow,
+    resolve_workflow,
     request_agent_permission,
 )
 from preloop.services.approval_workflow_service import DEFAULT_APPROVAL_TYPE
@@ -32,7 +32,7 @@ async def test_resolve_workflow_creates_standard_agent_tool_workflow() -> None:
     empty_result.scalars.return_value.first.return_value = None
     db.execute = AsyncMock(return_value=empty_result)
 
-    workflow = await _resolve_workflow(db, account_id, approver_id)
+    workflow = await resolve_workflow(db, account_id, approver_id)
 
     assert workflow.name == AGENT_TOOL_APPROVALS_WORKFLOW_NAME
     assert workflow.approval_type == DEFAULT_APPROVAL_TYPE
@@ -73,7 +73,7 @@ async def test_resolve_workflow_recovers_from_duplicate_name_race() -> None:
         ]
     )
 
-    workflow = await _resolve_workflow(db, account_id, uuid.uuid4())
+    workflow = await resolve_workflow(db, account_id, uuid.uuid4())
 
     assert workflow is existing
     db.rollback.assert_awaited_once()
@@ -107,7 +107,7 @@ async def test_resolve_workflow_prefers_agent_configured_workflow() -> None:
     db = AsyncMock()
     db.execute = AsyncMock(return_value=account_and_workflow)
 
-    workflow = await _resolve_workflow(
+    workflow = await resolve_workflow(
         db, account_id, uuid.uuid4(), managed_agent_id=managed_agent_id
     )
 
@@ -147,7 +147,7 @@ async def test_resolve_workflow_falls_back_when_agent_pin_missing() -> None:
     db = AsyncMock()
     db.execute = AsyncMock(side_effect=[account_and_missing, default_result])
 
-    workflow = await _resolve_workflow(
+    workflow = await resolve_workflow(
         db, account_id, uuid.uuid4(), managed_agent_id=managed_agent_id
     )
 
