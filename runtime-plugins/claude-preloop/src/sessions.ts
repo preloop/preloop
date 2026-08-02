@@ -182,7 +182,8 @@ class OwnedSession {
           );
         }
       }, timeoutMs);
-      (waiter.timer as { unref?: () => void }).unref?.();
+      // Deliberately NOT unref'd: an in-flight turn is real pending work and
+      // the timeout must fire even if nothing else keeps the loop alive.
       this.turnWaiters.push(waiter);
     });
     this.input.push({
