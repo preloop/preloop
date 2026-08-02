@@ -192,6 +192,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         runtime_principal_id: Optional[str] = None,
         runtime_principal_name: Optional[str] = None,
         managed_agent_id: Optional[str] = None,
+        rate_limit_retry_after_ms: Optional[int] = None,
         meta_data: Optional[Dict[str, Any]] = None,
     ) -> ApiUsage:
         """Log a model gateway request with usage and attribution fields."""
@@ -227,6 +228,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             runtime_principal_type=runtime_principal_type,
             runtime_principal_id=runtime_principal_id,
             runtime_principal_name=runtime_principal_name,
+            rate_limit_retry_after_ms=rate_limit_retry_after_ms,
             meta_data=meta_data,
             timestamp=datetime.now(timezone.utc),
         )
@@ -813,6 +815,193 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             "unpriced_requests": int(row.unpriced_requests or 0),
             "unpriced_tokens": int(row.unpriced_tokens or 0),
         }
+
+    def get_rate_limit_summary(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        start_date: datetime,
+        end_date: datetime,
+        runtime_principal_id: Optional[str] = None,
+        breakdown_limit: int = 25,
+    ) -> Dict[str, Any]:
+        """Aggregate upstream 429 telemetry for an account window (#136).
+
+        "Blocked" time is the sum of provider-advised ``Retry-After`` values
+        observed on 429 responses (``rate_limit_retry_after_ms``): a lower
+        bound on real wall-clock stall, never an estimate. Subtype counts
+        come from ``meta_data["rate_limit"]["subtype"]`` recorded at capture
+        time.
+
+        Args:
+            db: Database session.
+            account_id: Account whose gateway traffic is aggregated.
+            start_date: Inclusive lower bound on usage timestamp.
+            end_date: Exclusive upper bound on usage timestamp.
+            runtime_principal_id: Restrict to a single runtime principal.
+            breakdown_limit: Max rows per breakdown, ordered by 429 count.
+
+        Returns:
+            Dict with ``totals`` (429 count, blocked ms, last-hit timestamp,
+            subtype counts) plus ``by_model`` and ``by_session`` breakdowns.
+        """
+        base_filters = [
+            ApiUsage.action_type == "model_gateway",
+            ApiUsage.account_id == account_id,
+            ApiUsage.status_code == 429,
+            exclude_replay_usage_condition(),
+            ApiUsage.timestamp >= start_date,
+            ApiUsage.timestamp < end_date,
+        ]
+        if runtime_principal_id:
+            base_filters.append(ApiUsage.runtime_principal_id == runtime_principal_id)
+
+        subtype_expr = ApiUsage.meta_data["rate_limit"]["subtype"].astext
+        totals_row = (
+            db.query(
+                func.count(ApiUsage.id).label("rate_limited_requests"),
+                func.coalesce(func.sum(ApiUsage.rate_limit_retry_after_ms), 0).label(
+                    "blocked_ms"
+                ),
+                func.max(ApiUsage.timestamp).label("last_rate_limited_at"),
+                func.coalesce(
+                    func.sum(case((subtype_expr == "quota_exhausted", 1), else_=0)),
+                    0,
+                ).label("quota_exhausted_count"),
+                func.coalesce(
+                    func.sum(case((subtype_expr == "transient", 1), else_=0)), 0
+                ).label("transient_count"),
+            )
+            .filter(*base_filters)
+            .one()
+        )
+
+        by_model_rows = (
+            db.query(
+                ApiUsage.model_alias,
+                ApiUsage.provider_name,
+                func.count(ApiUsage.id).label("rate_limited_requests"),
+                func.coalesce(func.sum(ApiUsage.rate_limit_retry_after_ms), 0).label(
+                    "blocked_ms"
+                ),
+                func.max(ApiUsage.timestamp).label("last_rate_limited_at"),
+            )
+            .filter(*base_filters)
+            .group_by(ApiUsage.model_alias, ApiUsage.provider_name)
+            .order_by(func.count(ApiUsage.id).desc())
+            .limit(breakdown_limit)
+            .all()
+        )
+
+        by_session_rows = (
+            db.query(
+                ApiUsage.runtime_session_id,
+                func.max(ApiUsage.runtime_principal_name).label(
+                    "runtime_principal_name"
+                ),
+                func.count(ApiUsage.id).label("rate_limited_requests"),
+                func.coalesce(func.sum(ApiUsage.rate_limit_retry_after_ms), 0).label(
+                    "blocked_ms"
+                ),
+                func.max(ApiUsage.timestamp).label("last_rate_limited_at"),
+            )
+            .filter(*base_filters)
+            .group_by(ApiUsage.runtime_session_id)
+            .order_by(func.count(ApiUsage.id).desc())
+            .limit(breakdown_limit)
+            .all()
+        )
+
+        return {
+            "totals": {
+                "rate_limited_requests": int(totals_row.rate_limited_requests or 0),
+                "blocked_ms": int(totals_row.blocked_ms or 0),
+                "last_rate_limited_at": totals_row.last_rate_limited_at,
+                "quota_exhausted_count": int(totals_row.quota_exhausted_count or 0),
+                "transient_count": int(totals_row.transient_count or 0),
+            },
+            "by_model": [
+                {
+                    "model_alias": row.model_alias,
+                    "provider_name": row.provider_name,
+                    "rate_limited_requests": int(row.rate_limited_requests or 0),
+                    "blocked_ms": int(row.blocked_ms or 0),
+                    "last_rate_limited_at": row.last_rate_limited_at,
+                }
+                for row in by_model_rows
+            ],
+            "by_session": [
+                {
+                    "runtime_session_id": (
+                        str(row.runtime_session_id) if row.runtime_session_id else None
+                    ),
+                    "runtime_principal_name": row.runtime_principal_name,
+                    "rate_limited_requests": int(row.rate_limited_requests or 0),
+                    "blocked_ms": int(row.blocked_ms or 0),
+                    "last_rate_limited_at": row.last_rate_limited_at,
+                }
+                for row in by_session_rows
+            ],
+        }
+
+    def get_latest_rate_limit_snapshots(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """Latest observed rate-limit header snapshot per provider/model.
+
+        Returns the most recent usage row carrying a
+        ``meta_data["rate_limit"]`` snapshot for each (provider, model alias)
+        pair: the headroom signal as last observed from real provider
+        responses, with its observation timestamp so callers can label
+        staleness honestly.
+
+        Args:
+            db: Database session.
+            account_id: Account whose snapshots are returned.
+            limit: Maximum number of (provider, model) groups.
+
+        Returns:
+            One dict per group with the snapshot, observation timestamp,
+            status code, and upstream credential type.
+        """
+        rows = (
+            db.query(ApiUsage)
+            .filter(
+                ApiUsage.action_type == "model_gateway",
+                ApiUsage.account_id == account_id,
+                # JSON null (the common "no snapshot" case) must not match,
+                # so test the value rather than key presence.
+                ApiUsage.meta_data["rate_limit"].astext.isnot(None),
+                exclude_replay_usage_condition(),
+            )
+            .distinct(ApiUsage.provider_name, ApiUsage.model_alias)
+            .order_by(
+                ApiUsage.provider_name,
+                ApiUsage.model_alias,
+                ApiUsage.timestamp.desc(),
+            )
+            .limit(limit)
+            .all()
+        )
+        snapshots: List[Dict[str, Any]] = []
+        for row in rows:
+            meta = row.meta_data or {}
+            snapshots.append(
+                {
+                    "provider_name": row.provider_name,
+                    "model_alias": row.model_alias,
+                    "observed_at": row.timestamp,
+                    "status_code": row.status_code,
+                    "upstream_credential_type": meta.get("upstream_credential_type"),
+                    "rate_limit": meta.get("rate_limit") or {},
+                }
+            )
+        return snapshots
 
     def get_gateway_usage_by_model(
         self,
