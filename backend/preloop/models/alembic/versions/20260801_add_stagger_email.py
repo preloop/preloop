@@ -1,11 +1,17 @@
-"""Add stagger_email to notification_preferences.
+"""Add stagger_email and merge alembic heads from parallel main merges.
 
 Revision ID: 20260801_stagger_email
-Revises: 20260801_api_usage_error_class
+Revises: 20260801_api_usage_rate_limit, 20260801_agent_identity_v2,
+    20260801_tool_config_agent_scope
 Create Date: 2026-08-01
 
 Per-user toggle for staggered approval email (push first, email only if
 still pending after 60s). Default True so existing rows opt in.
+
+Also an Alembic merge revision: joins the three sibling heads that landed
+on main without re-parent rotation (#132/#150/#151/#152) so
+``alembic upgrade head`` has a single head again. Do not re-parent those
+merged revisions — environments may already have applied them as siblings.
 """
 
 import sqlalchemy as sa
@@ -13,7 +19,11 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "20260801_stagger_email"
-down_revision = "20260801_api_usage_error_class"
+down_revision = (
+    "20260801_api_usage_rate_limit",
+    "20260801_agent_identity_v2",
+    "20260801_tool_config_agent_scope",
+)
 branch_labels = None
 depends_on = None
 # Alembic reads these module globals by name; keep a local reference so static
