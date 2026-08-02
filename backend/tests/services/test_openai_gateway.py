@@ -2230,10 +2230,14 @@ def test_stream_message_passthrough_sends_sanitized_body():
     upstream_response = MagicMock()
     upstream_response.iter_text.return_value = iter(
         [
-            'data: {"type":"message_start","message":{"id":"msg_1",'
-            '"usage":{"input_tokens":1}}}\n\n',
-            'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},'
-            '"usage":{"output_tokens":1}}\n\n',
+            (
+                'data: {"type":"message_start","message":{"id":"msg_1",'
+                '"usage":{"input_tokens":1}}}\n\n'
+            ),
+            (
+                'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},'
+                '"usage":{"output_tokens":1}}\n\n'
+            ),
         ]
     )
     upstream_client = MagicMock()

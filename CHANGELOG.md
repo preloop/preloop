@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Code Quality / Scorecard hygiene**: clear GitHub Code Quality maintainability
+  warnings (implicit string concat in gateway tests; unused-export false
+  positives), pin GitHub Actions and Docker base images by digest, bump CLI
+  Go toolchain to 1.26.5 and `golang.org/x/{text,crypto,sys}` for Scorecard
+  vulnerability findings, override frontend `basic-ftp`/`yaml` advisories,
+  harden refresh-token error responses, and document/wire
+  `REFRESH_TOKEN_EXPIRE_DAYS` / `MAX_SESSION_DAYS` in Helm.
+
 ### Added
 
 - **Security-screen scoring endpoint** (#155):

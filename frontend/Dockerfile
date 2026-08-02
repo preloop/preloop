@@ -2,7 +2,7 @@
 # Multi-stage build: Build app, then serve with nginx
 
 # Stage 1: Build the application
-FROM node:22-alpine AS builder
+FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS builder
 
 WORKDIR /app
 
@@ -14,7 +14,7 @@ COPY . .
 RUN npm run build
 
 # Stage 2: Serve with nginx
-FROM nginx:alpine
+FROM nginx:alpine@sha256:54f2a904c251d5a34adf545a72d32515a15e08418dae0266e23be2e18c66fefa
 
 # Copy nginx configuration
 COPY docker/nginx.conf /etc/nginx/nginx.conf

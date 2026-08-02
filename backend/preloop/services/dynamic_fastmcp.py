@@ -119,8 +119,6 @@ def _strip_fields_from_json_text(text: str, dropped_fields: set[str]) -> Optiona
         The re-serialized JSON with the requested keys removed, or ``None`` if
         the text is not JSON, is not a dict/list-of-dicts, or nothing changed.
     """
-    import json
-
     try:
         parsed = json.loads(text)
     except (ValueError, TypeError):
@@ -1600,3 +1598,22 @@ def create_user_context_from_scope(scope: dict) -> Optional[UserContext]:
         return user_context
     finally:
         db.close()
+
+
+# Public surface (including cross-module ContextVars). Declared so maintainability
+# scanners treat Alembic-style / ContextVar exports as intentional API, not dead
+# globals. Explicit imports remain unaffected.
+__all__ = [
+    "DynamicFastMCP",
+    "UserContext",
+    "apply_output_filters",
+    "create_dynamic_mcp_server",
+    "create_user_context_from_scope",
+    "_approved_comment_var",
+    "_bypass_approval_var",
+    "_configs_visible_to_caller",
+    "_correlation_id_var",
+    "_is_proxy_translation_var",
+    "_justification_var",
+    "_rule_workflow_id_var",
+]

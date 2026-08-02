@@ -97,6 +97,14 @@ spec:
               value: {{ .Values.environment.jwtAlgorithm | quote }}
             - name: ACCESS_TOKEN_EXPIRE_MINUTES
               value: {{ .Values.environment.jwtExpireMinutes | quote }}
+            {{- if hasKey .Values.environment "refreshTokenExpireDays" }}
+            - name: REFRESH_TOKEN_EXPIRE_DAYS
+              value: {{ .Values.environment.refreshTokenExpireDays | quote }}
+            {{- end }}
+            {{- if hasKey .Values.environment "maxSessionDays" }}
+            - name: MAX_SESSION_DAYS
+              value: {{ .Values.environment.maxSessionDays | quote }}
+            {{- end }}
             - name: LOG_LEVEL
               value: "INFO"
             - name: LOG_FORMAT
