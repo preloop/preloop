@@ -54,6 +54,12 @@ class ManagedAgent(Base):
     session_source_type: Mapped[str] = mapped_column(String(64), nullable=False)
     session_source_id: Mapped[str] = mapped_column(String(255), nullable=False)
     session_reference: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    enrollment_hostname: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True
+    )
+    identity_derivation: Mapped[Optional[str]] = mapped_column(
+        String(16), nullable=True
+    )
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
     enrolled_via: Mapped[str] = mapped_column(
         String(64), nullable=False, default="runtime_session_token"

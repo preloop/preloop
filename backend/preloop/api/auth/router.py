@@ -1108,6 +1108,7 @@ async def create_runtime_session_token(
         started_at=now,
         reopen_if_ended=True,
     )
+    identity = session_data.principal_identity
     managed_agent = crud_managed_agent.upsert_from_runtime_session(
         db,
         account_id=current_user.account_id,
@@ -1119,6 +1120,8 @@ async def create_runtime_session_token(
         managed_mcp_servers=allowed_mcp_servers,
         last_seen_at=now,
         owner_user_id=current_user.id,
+        enrollment_hostname=identity.hostname if identity else None,
+        identity_derivation=identity.derivation if identity else None,
     )
     db.commit()
     db.refresh(runtime_session)

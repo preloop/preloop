@@ -84,7 +84,7 @@ def _account_defaults_governance_field(field: str):
     )
 
 
-async def _native_tool_approvals_disabled(
+async def native_tool_approvals_disabled(
     db: Any, account_id: str, managed_agent_id: uuid.UUID
 ) -> bool:
     """Return True when native tool approvals are switched off for this agent.
@@ -189,7 +189,7 @@ async def _resolve_agent_configured_workflow(
     return workflow
 
 
-async def _resolve_workflow(
+async def resolve_workflow(
     db: Any,
     account_id: str,
     approver_user_id: Optional[uuid.UUID],
@@ -283,7 +283,7 @@ async def _resolve_workflow(
     return workflow
 
 
-async def _resolve_tool_config(
+async def resolve_tool_config(
     db: Any, account_id: str, tool_name: str, workflow_id: uuid.UUID
 ) -> Any:
     """Get or create a ToolConfiguration row for this native tool."""
@@ -379,7 +379,7 @@ async def request_agent_permission(
 
     async with get_async_db_session() as db:
         approvals_off = managed_agent_id is not None and (
-            await _native_tool_approvals_disabled(db, account_id, managed_agent_id)
+            await native_tool_approvals_disabled(db, account_id, managed_agent_id)
         )
         if approvals_off:
             logger.info(
@@ -391,11 +391,11 @@ async def request_agent_permission(
             )
 
         try:
-            workflow = await _resolve_workflow(
+            workflow = await resolve_workflow(
                 db, account_id, user_id, managed_agent_id=managed_agent_id
             )
             timeout_seconds = workflow.timeout_seconds or 300
-            config = await _resolve_tool_config(db, account_id, tool_name, workflow.id)
+            config = await resolve_tool_config(db, account_id, tool_name, workflow.id)
 
             service = ApprovalService(db, base_url)
             approval = await service.create_and_notify(

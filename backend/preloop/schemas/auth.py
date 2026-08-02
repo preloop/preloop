@@ -169,6 +169,15 @@ class ApiKeySummary(BaseModel):
     recent_tool_calls: int = 0
 
 
+class PrincipalIdentity(BaseModel):
+    """Optional CLI-supplied identity metadata for a runtime principal."""
+
+    hostname: Optional[str] = Field(None, max_length=255)
+    config_path: Optional[str] = Field(None, max_length=1024)
+    source_type: Optional[str] = Field(None, max_length=64)
+    derivation: Optional[str] = Field(None, max_length=16)
+
+
 class RuntimeSessionTokenCreate(BaseModel):
     """Request model for minting a runtime-scoped session token."""
 
@@ -181,6 +190,7 @@ class RuntimeSessionTokenCreate(BaseModel):
     scopes: List[str] = Field(default_factory=lambda: ["mcp:read", "mcp:write"])
     allowed_mcp_tools: List[Any] = Field(default_factory=list)
     allowed_mcp_servers: List[str] = Field(default_factory=list)
+    principal_identity: Optional[PrincipalIdentity] = None
 
 
 class RuntimeSessionTokenResponse(BaseModel):

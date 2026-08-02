@@ -15,11 +15,14 @@ import '../../components/view-header.ts';
 import {
   getAccountGatewayUsageSearch,
   getAccountGatewayUsageSummary,
+  getAccountRateLimitReport,
   type GatewayUsageSummaryParams,
 } from '../../api';
 import type {
   AccountGatewayUsageSearchResponse,
   AccountGatewayUsageSummaryResponse,
+  AccountRateLimitReportResponse,
+  RateLimitSnapshotItem,
   GatewayBudgetSummary,
   GatewayTokenUsage,
   GatewayUsageSearchResultItem,
@@ -39,6 +42,9 @@ export class ApiUsageView extends LitElement {
 
   @state()
   private searchResults: AccountGatewayUsageSearchResponse | null = null;
+
+  @state()
+  private rateLimitReport: AccountRateLimitReportResponse | null = null;
 
   @state()
   private loading = true;
@@ -453,7 +459,7 @@ export class ApiUsageView extends LitElement {
       }
 
       const searchQuery = this.searchQuery.trim();
-      const [summary, searchResults] = await Promise.all([
+      const [summary, searchResults, rateLimitReport] = await Promise.all([
         getAccountGatewayUsageSummary({
           ...params,
           // This view renders model/flow/session/day breakdowns.
@@ -464,9 +470,16 @@ export class ApiUsageView extends LitElement {
           query: searchQuery || undefined,
           limit: 10,
         }),
+        // Rate-limit telemetry is supplementary; a failure here must not
+        // blank the whole usage view.
+        getAccountRateLimitReport(params).catch((error: unknown) => {
+          console.error('Failed to load rate limit report:', error);
+          return null;
+        }),
       ]);
       this.summary = summary;
       this.searchResults = searchResults;
+      this.rateLimitReport = rateLimitReport;
     } catch (error) {
       console.error('Failed to load account gateway usage summary:', error);
       this.error =
@@ -475,6 +488,7 @@ export class ApiUsageView extends LitElement {
           : 'Failed to load gateway usage summary';
       this.summary = null;
       this.searchResults = null;
+      this.rateLimitReport = null;
     } finally {
       this.loading = false;
     }
@@ -766,6 +780,154 @@ export class ApiUsageView extends LitElement {
                   </div>
                 `
           }
+        </div>
+      </sl-card>
+    `;
+  }
+
+  private formatBlockedDuration(blockedMs: number): string {
+    if (blockedMs <= 0) {
+      return '0s';
+    }
+    const totalSeconds = Math.round(blockedMs / 1000);
+    if (totalSeconds < 60) {
+      return `${totalSeconds}s`;
+    }
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+  }
+
+  private describeSnapshotHeadroom(snapshot: RateLimitSnapshotItem): string {
+    const data = snapshot.rate_limit;
+    const parts: string[] = [];
+    if (typeof data.requests_remaining === 'number') {
+      const limit =
+        typeof data.requests_limit === 'number'
+          ? ` / ${this.formatNumber(data.requests_limit)}`
+          : '';
+      parts.push(
+        `${this.formatNumber(data.requests_remaining)}${limit} requests left`
+      );
+    }
+    if (typeof data.tokens_remaining === 'number') {
+      const limit =
+        typeof data.tokens_limit === 'number'
+          ? ` / ${this.formatNumber(data.tokens_limit)}`
+          : '';
+      parts.push(
+        `${this.formatNumber(data.tokens_remaining)}${limit} tokens left`
+      );
+    }
+    if (parts.length === 0) {
+      const headerCount = Object.keys(data.headers ?? {}).length;
+      parts.push(
+        `${headerCount} rate-limit header${headerCount === 1 ? '' : 's'} captured`
+      );
+    }
+    return parts.join(' · ');
+  }
+
+  private renderRateLimitCard(report: AccountRateLimitReportResponse) {
+    const totals = report.totals;
+    const snapshots = report.latest_snapshots;
+    const hasHits = totals.rate_limited_requests > 0;
+
+    return html`
+      <sl-card class="breakdown-card">
+        <div slot="header" class="section-header">
+          <div class="section-title">
+            <sl-icon name="speedometer2"></sl-icon>
+            <span>Rate Limits & Headroom</span>
+          </div>
+          ${
+            hasHits
+              ? html`<sl-badge variant="warning">
+                  ${this.formatNumber(totals.rate_limited_requests)}
+                  hit${totals.rate_limited_requests === 1 ? '' : 's'}
+                </sl-badge>`
+              : html`<sl-badge variant="success">No 429s</sl-badge>`
+          }
+        </div>
+
+        <div class="budget-summary">
+          <div class="budget-meta">
+            <div class="budget-meta-item">
+              <div class="budget-meta-label">Rate-Limited Requests</div>
+              <div class="budget-meta-value">
+                ${this.formatNumber(totals.rate_limited_requests)}
+              </div>
+            </div>
+            <div class="budget-meta-item">
+              <div class="budget-meta-label">Time Blocked</div>
+              <div class="budget-meta-value">
+                ${this.formatBlockedDuration(totals.blocked_ms)}
+              </div>
+            </div>
+            <div class="budget-meta-item">
+              <div class="budget-meta-label">Last Hit</div>
+              <div class="budget-meta-value">
+                ${
+                  totals.last_rate_limited_at
+                    ? this.formatDateTimeLabel(totals.last_rate_limited_at)
+                    : 'Never'
+                }
+              </div>
+            </div>
+          </div>
+
+          ${
+            hasHits
+              ? html`
+                  <div class="section-subtitle">
+                    ${this.formatNumber(totals.quota_exhausted_count)} quota
+                    exhausted · ${this.formatNumber(totals.transient_count)}
+                    transient overload
+                  </div>
+                `
+              : ''
+          }
+          ${
+            snapshots.length > 0
+              ? html`
+                  <div class="breakdown-list">
+                    ${snapshots.map(
+                      (snapshot) => html`
+                        <div class="breakdown-row">
+                          <div class="breakdown-primary">
+                            <div class="breakdown-name">
+                              ${snapshot.model_alias || 'Unknown model'}
+                            </div>
+                            <div class="breakdown-secondary">
+                              ${snapshot.provider_name || 'Unknown provider'}
+                              ${
+                                snapshot.upstream_credential_type === 'oauth'
+                                  ? html`· subscription`
+                                  : ''
+                              }
+                            </div>
+                          </div>
+                          <div class="breakdown-secondary">
+                            ${this.describeSnapshotHeadroom(snapshot)}
+                            <br />
+                            observed
+                            ${this.formatDateTimeLabel(snapshot.observed_at)}
+                          </div>
+                        </div>
+                      `
+                    )}
+                  </div>
+                `
+              : html`
+                  <div class="section-subtitle">
+                    No rate-limit headers observed from providers yet.
+                  </div>
+                `
+          }
+          <div class="section-subtitle">
+            All figures are read directly from provider response headers. Time
+            blocked sums provider Retry-After hints on 429s.
+          </div>
         </div>
       </sl-card>
     `;
@@ -1288,6 +1450,11 @@ export class ApiUsageView extends LitElement {
 
                         <div class="stack">
                           ${this.renderBudgetCard(this.summary)}
+                          ${
+                            this.rateLimitReport
+                              ? this.renderRateLimitCard(this.rateLimitReport)
+                              : ''
+                          }
 
                           <sl-card class="breakdown-card">
                             <div slot="header" class="section-header">

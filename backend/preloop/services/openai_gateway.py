@@ -75,6 +75,13 @@ from preloop.services.upstream_errors import (
     classify_upstream_error,
 )
 from preloop.services.model_price_catalog import schedule_price_lookup
+from preloop.services.rate_limit_telemetry import (
+    RateLimitSnapshot,
+    classify_rate_limit_subtype,
+    headers_from_exception,
+    headers_from_litellm_response,
+    parse_rate_limit_headers,
+)
 from preloop.services.model_pricing import (
     _iter_litellm_model_candidates,
     estimate_ai_model_usage_cost_detailed,
@@ -264,6 +271,12 @@ class OpenAIGatewayService:
         # never a false dollar claim. Set at both credential-resolution
         # choke points; reset there per request to avoid stale carryover.
         self._last_upstream_credential_type: Optional[str] = None
+        # Rate-limit headers observed on the LAST upstream response (success
+        # or failure) for this request, parsed into a snapshot at the point
+        # where the raw response/exception is still in hand and consumed
+        # (then cleared) by _record_gateway_request. Only ever holds values
+        # parsed from a real provider response (#136).
+        self._last_rate_limit_snapshot: Optional[RateLimitSnapshot] = None
         # Per-request memo of the authorized model-id set for this principal.
         # Computed once from the account inventory on first use so listing,
         # alias resolution, and default selection all consume the same set.
@@ -2616,8 +2629,10 @@ class OpenAIGatewayService:
         )
         try:
             with urllib_request.urlopen(req, timeout=600) as response:
+                self._capture_rate_limit_headers(getattr(response, "headers", None))
                 return self._aggregate_codex_sse_stream(response)
         except urllib_error.HTTPError as exc:
+            self._capture_rate_limit_headers(getattr(exc, "headers", None))
             detail = exc.read().decode("utf-8", "ignore")
             raise ModelGatewayAPIError(
                 provider="openai",
@@ -3647,6 +3662,9 @@ class OpenAIGatewayService:
                 status_code=502,
                 message=f"Gateway upstream error: {exc}",
             ) from exc
+        # Anthropic sends ratelimit headers on successes too; that success
+        # signal is the subscription headroom observation (#136).
+        self._capture_rate_limit_headers(response.headers)
         if response.status_code >= 400:
             raise self._anthropic_passthrough_upstream_error(
                 response.status_code, response.text
@@ -3693,6 +3711,7 @@ class OpenAIGatewayService:
                 status_code=502,
                 message=f"Gateway upstream error: {exc}",
             ) from exc
+        self._capture_rate_limit_headers(response.headers)
         if response.status_code >= 400:
             try:
                 body_text = response.read().decode("utf-8", errors="replace")
@@ -4044,9 +4063,15 @@ class OpenAIGatewayService:
         )
 
         try:
-            return self.upstream_backend.completion(**kwargs)
+            response = self.upstream_backend.completion(**kwargs)
         except Exception as exc:
+            self._capture_rate_limit_headers(headers_from_exception(exc))
             raise self._normalize_upstream_error(provider, exc) from exc
+        if not stream:
+            # LiteLLM relays provider headers in _hidden_params; best effort,
+            # absent headers simply record no snapshot.
+            self._capture_rate_limit_headers(headers_from_litellm_response(response))
+        return response
 
     def _prefetch_upstream_stream(
         self, upstream_stream: Any, *, provider: GatewayProvider
@@ -4077,6 +4102,7 @@ class OpenAIGatewayService:
         except ModelGatewayAPIError:
             raise
         except Exception as exc:
+            self._capture_rate_limit_headers(headers_from_exception(exc))
             raise self._normalize_upstream_error(provider, exc) from exc
         return chain([first_chunk], iterator)
 
@@ -4092,6 +4118,7 @@ class OpenAIGatewayService:
         if isinstance(exc, ModelGatewayAPIError):
             error = exc
         else:
+            self._capture_rate_limit_headers(headers_from_exception(exc))
             error = self._normalize_upstream_error(provider, exc)
         if error.error_class in (
             ERROR_CLASS_NETWORK,
@@ -4504,6 +4531,26 @@ class OpenAIGatewayService:
                 message="messages must be a non-empty list",
             )
         return messages
+
+    def _capture_rate_limit_headers(self, headers: Any) -> None:
+        """Stash the rate-limit snapshot parsed from upstream headers.
+
+        Called at every point where a raw upstream response (or exception
+        carrying one) is in hand. Overwrites any earlier snapshot for this
+        request so the usage row carries the freshest observation; no-op when
+        the headers carry no rate-limit signal. Never raises: telemetry must
+        not break request handling.
+
+        Args:
+            headers: Any headers-like object, or None.
+        """
+        try:
+            snapshot = parse_rate_limit_headers(headers)
+        except Exception:  # noqa: BLE001 - telemetry is strictly best-effort
+            logger.debug("Failed to parse rate-limit headers", exc_info=True)
+            return
+        if snapshot is not None and snapshot.has_signal():
+            self._last_rate_limit_snapshot = snapshot
 
     @staticmethod
     def _normalize_upstream_error(
@@ -5257,6 +5304,25 @@ class OpenAIGatewayService:
         )
         estimated_cost = cost_estimate.cost
         cost_source = cost_estimate.source
+        # Consume (and clear) the rate-limit snapshot captured while the raw
+        # upstream response was in hand; clearing prevents a stale observation
+        # from leaking onto a later request served by this instance (#136).
+        rate_limit_snapshot = self._last_rate_limit_snapshot
+        self._last_rate_limit_snapshot = None
+        rate_limit_meta: Optional[Dict[str, Any]] = (
+            rate_limit_snapshot.to_meta() if rate_limit_snapshot else None
+        )
+        rate_limit_retry_after_ms = (
+            rate_limit_snapshot.retry_after_ms if rate_limit_snapshot else None
+        )
+        if status_code == 429:
+            subtype, subtype_source = classify_rate_limit_subtype(
+                status_code, error_detail
+            )
+            if subtype is not None:
+                rate_limit_meta = dict(rate_limit_meta or {})
+                rate_limit_meta["subtype"] = subtype
+                rate_limit_meta["subtype_source"] = subtype_source
         api_equivalent_cost: Optional[float] = None
         if self._last_upstream_credential_type == "oauth" and not pricing_override:
             # Subscription-covered upstream (Claude Code Max / ChatGPT OAuth):
@@ -5309,6 +5375,7 @@ class OpenAIGatewayService:
             runtime_principal_type=runtime_principal.get("type"),
             runtime_principal_id=runtime_principal.get("id"),
             runtime_principal_name=runtime_principal.get("name"),
+            rate_limit_retry_after_ms=rate_limit_retry_after_ms,
             meta_data={
                 "endpoint_kind": endpoint_kind,
                 "requested_model": requested_model,
@@ -5336,6 +5403,7 @@ class OpenAIGatewayService:
                 ),
                 "tools_meta": self._last_tools_meta,
                 "upstream_credential_type": self._last_upstream_credential_type,
+                "rate_limit": rate_limit_meta,
                 "purpose": ((request_payload or {}).get("metadata") or {}).get(
                     "purpose"
                 ),

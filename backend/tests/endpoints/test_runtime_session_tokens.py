@@ -448,6 +448,72 @@ def test_runtime_session_token_issuance_rejects_non_active_agents(
     )
 
 
+def test_runtime_session_token_issuance_succeeds_after_reenroll(
+    client, db_session, test_user
+):
+    """PATCH reenroll must unblock token issuance for an archived agent."""
+    initial_response = client.post(
+        "/api/v1/auth/runtime-sessions/token",
+        json={
+            "session_source_type": "claude_code",
+            "session_source_id": "workspace-reenroll",
+            "runtime_principal_name": "Reenroll Workspace",
+        },
+    )
+    assert initial_response.status_code == 201
+
+    managed_agent = crud_managed_agent.get_by_source(
+        db_session,
+        account_id=str(test_user.account_id),
+        session_source_type="claude_code",
+        session_source_id="workspace-reenroll",
+    )
+    assert managed_agent is not None
+    agent_id = str(managed_agent.id)
+
+    decommission_response = client.patch(
+        f"/api/v1/agents/{agent_id}",
+        json={
+            "lifecycle_action": "decommission",
+            "reason": "offboarded via preloop CLI",
+        },
+    )
+    assert decommission_response.status_code == 200
+    assert decommission_response.json()["lifecycle_state"] == "decommissioned"
+
+    blocked_response = client.post(
+        "/api/v1/auth/runtime-sessions/token",
+        json={
+            "session_source_type": "claude_code",
+            "session_source_id": "workspace-reenroll",
+            "runtime_principal_name": "Reenroll Workspace",
+        },
+    )
+    assert blocked_response.status_code == 403
+
+    reenroll_response = client.patch(
+        f"/api/v1/agents/{agent_id}",
+        json={"lifecycle_action": "reenroll"},
+    )
+    assert reenroll_response.status_code == 200
+    assert reenroll_response.json()["lifecycle_state"] == "active"
+
+    token_response = client.post(
+        "/api/v1/auth/runtime-sessions/token",
+        json={
+            "session_source_type": "claude_code",
+            "session_source_id": "workspace-reenroll",
+            "runtime_principal_name": "Reenroll Workspace",
+        },
+    )
+    assert token_response.status_code == 201
+    assert token_response.json()["token"]
+
+    db_session.refresh(managed_agent)
+    assert managed_agent.lifecycle_state == "active"
+    assert str(managed_agent.id) == agent_id
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("lifecycle_action", ["suspend", "decommission"])
 async def test_existing_runtime_session_token_is_revoked_for_non_active_agents(

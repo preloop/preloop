@@ -111,6 +111,12 @@ class ApiUsage(Base):
     # provider | estimated | partial | imported
     usage_source: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     is_retry: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    # Provider-advised Retry-After (milliseconds) observed on a rate-limited
+    # upstream response; the full observed header snapshot is in
+    # meta_data["rate_limit"] (#136). NULL when the provider sent no hint.
+    rate_limit_retry_after_ms: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
     # Stable upstream-failure taxonomy (network, upstream_overloaded, …).
     # NULL on successes and non-upstream failures (validation, budget denials).
     error_class: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
@@ -173,6 +179,12 @@ class ApiUsage(Base):
             "runtime_principal_id",
             "timestamp",
             postgresql_ops={"timestamp": "DESC"},
+        ),
+        Index(
+            "ix_api_usage_rate_limited",
+            "account_id",
+            "timestamp",
+            postgresql_where=text("status_code = 429"),
         ),
         # Imported-usage dedupe is enforced at the DB level: concurrent
         # imports of the same event race past the application-level

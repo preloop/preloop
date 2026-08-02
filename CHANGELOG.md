@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`preloop agents remove`**: permanently delete a managed-agent registry
+  entry. Refuses when the agent has usage history unless `--force` is passed.
+- **Stable v2 managed-agent identity**: CLI derives
+  `session_source_id` from host + source type + config path (display name
+  decoupled), with `--no-reuse` for salted escape. New
+  `enrollment_hostname` / `identity_derivation` columns.
+- **`POST /api/v1/agents/{id}/rekey`** and **`POST /api/v1/agents/{id}/merge`**:
+  rewrite or consolidate durable principal ids (usage, sessions, budgets,
+  approvals) with dry-run support; CLI `preloop agents merge`.
 - **ask_user in-session delivery** (#130): pending `ask_user` /
   `request_approval` responses now include token-free deep links to the
   specific question (`approval_console_url`, `approval_mobile_link` /
@@ -32,13 +41,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (``reduce-idle-cache-expiry`` suggestion + aggregate line); Replay annotates
   the expiry turn. USD figures are catalog-priced or omitted — never invented
   from session averages.
-
 - **Passkey (WebAuthn) sign-in and registration**: register passkeys in user
   settings and sign in from the login page with discoverable credentials (no
   username needed). Feature-flagged via `PASSKEYS_ENABLED` (default `true`);
   relying party and origin overridable with `WEBAUTHN_RP_ID` and
   `WEBAUTHN_ORIGIN`. Passkey logins are audit-logged and trigger the same
   inactivity notifications as password logins.
+
+### Changed
+
+- **`preloop agents offboard` archives instead of deleting**: offboard now
+  decommissions the managed-agent row (PATCH `lifecycle_action=decommission`)
+  so usage history and audit trail remain. Re-onboarding reactivates an
+  archived match; use `preloop agents remove` for permanent deletion.
 
 ### Fixed
 

@@ -92,6 +92,7 @@ EXPECTED_TOOLS = {
     "estimate_compliance",
     "improve_compliance",
     "request_approval",
+    "permission_prompt",
     "add_comment",
     "update_comment",
     "get_pull_request",

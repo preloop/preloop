@@ -1014,6 +1014,62 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/account/gateway-usage/rate-limits:
+    get:
+      tags:
+      - Account
+      summary: Get Account Rate Limit Report
+      description: 'Get observed rate-limit telemetry and subscription headroom (#136).
+
+
+        All figures are echoes of real upstream provider responses: 429 counts,
+
+        provider-advised blocked time, and the latest observed rate-limit header
+
+        snapshots per provider/model, each with its observation timestamp.'
+      operationId: get_account_rate_limit_report_api_v1_account_gateway_usage_rate_limits_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Start Date
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: End Date
+      - name: runtime_principal_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Runtime Principal Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountRateLimitReportResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/agents:
     get:
       tags:
@@ -1752,6 +1808,77 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ManagedAgentEnrollmentSummary'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/agents/{agent_id}/rekey:
+    post:
+      tags:
+      - Account
+      summary: Rekey Account Managed Agent
+      description: Rewrite one managed agent's durable principal id and dependent
+        rows.
+      operationId: rekey_account_managed_agent_api_v1_agents__agent_id__rekey_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Agent Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ManagedAgentRekeyRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagedAgentRekeyResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/agents/{survivor_id}/merge:
+    post:
+      tags:
+      - Account
+      summary: Merge Account Managed Agents
+      description: Merge a duplicate managed agent into a survivor (dry-run capable).
+      operationId: merge_account_managed_agents_api_v1_agents__survivor_id__merge_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: survivor_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Survivor Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ManagedAgentMergeRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagedAgentMergeResponse'
         '422':
           description: Validation Error
           content:
@@ -8681,6 +8808,40 @@ components:
       type: object
       title: AccountManagedAgentListResponse
       description: Account-scoped managed-agent registry response.
+    AccountRateLimitReportResponse:
+      properties:
+        period_start:
+          type: string
+          format: date-time
+          title: Period Start
+        period_end:
+          type: string
+          format: date-time
+          title: Period End
+        totals:
+          $ref: '#/components/schemas/RateLimitTotals'
+        by_model:
+          items:
+            $ref: '#/components/schemas/RateLimitByModel'
+          type: array
+          title: By Model
+        by_session:
+          items:
+            $ref: '#/components/schemas/RateLimitBySession'
+          type: array
+          title: By Session
+        latest_snapshots:
+          items:
+            $ref: '#/components/schemas/RateLimitSnapshotItem'
+          type: array
+          title: Latest Snapshots
+      type: object
+      required:
+      - period_start
+      - period_end
+      - totals
+      title: AccountRateLimitReportResponse
+      description: Account-scoped rate-limit telemetry and observed headroom report.
     AccountRuntimeSessionDetailResponse:
       properties:
         period_start:
@@ -13224,6 +13385,87 @@ components:
       type: object
       title: ManagedAgentEnrollmentValidateRequest
       description: Request to update validation state for one enrollment.
+    ManagedAgentIdentityMutationCounts:
+      properties:
+        usage_moved:
+          type: integer
+          title: Usage Moved
+          default: 0
+        usage_deleted:
+          type: integer
+          title: Usage Deleted
+          default: 0
+        runtime_sessions_moved:
+          type: integer
+          title: Runtime Sessions Moved
+          default: 0
+        budget_spend_moved:
+          type: integer
+          title: Budget Spend Moved
+          default: 0
+        budget_spend_merged:
+          type: integer
+          title: Budget Spend Merged
+          default: 0
+        budget_policies_moved:
+          type: integer
+          title: Budget Policies Moved
+          default: 0
+        budget_policies_dropped:
+          type: integer
+          title: Budget Policies Dropped
+          default: 0
+        approvals_moved:
+          type: integer
+          title: Approvals Moved
+          default: 0
+        keys_deactivated:
+          type: integer
+          title: Keys Deactivated
+          default: 0
+        dropped_budget_policies:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Dropped Budget Policies
+      type: object
+      title: ManagedAgentIdentityMutationCounts
+      description: Row counts returned by rekey/merge dry-run and execute responses.
+    ManagedAgentMergeRequest:
+      properties:
+        duplicate_agent_id:
+          type: string
+          minLength: 1
+          title: Duplicate Agent Id
+        dry_run:
+          type: boolean
+          title: Dry Run
+          default: false
+      type: object
+      required:
+      - duplicate_agent_id
+      title: ManagedAgentMergeRequest
+      description: Request body for merging a duplicate managed agent into a survivor.
+    ManagedAgentMergeResponse:
+      properties:
+        survivor:
+          $ref: '#/components/schemas/ManagedAgentSummary'
+        duplicate:
+          $ref: '#/components/schemas/ManagedAgentSummary'
+        dry_run:
+          type: boolean
+          title: Dry Run
+        counts:
+          $ref: '#/components/schemas/ManagedAgentIdentityMutationCounts'
+      type: object
+      required:
+      - survivor
+      - duplicate
+      - dry_run
+      - counts
+      title: ManagedAgentMergeResponse
+      description: Response for a merge dry-run or execute.
     ManagedAgentModelBindingSummary:
       properties:
         id:
@@ -13350,6 +13592,35 @@ components:
         LangGraph agent) that has never connected through a runtime session, so a
 
         gateway credential can subsequently be minted for it.'
+    ManagedAgentRekeyRequest:
+      properties:
+        new_session_source_id:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: New Session Source Id
+        principal_identity:
+          anyOf:
+          - $ref: '#/components/schemas/PrincipalIdentityLite'
+          - type: 'null'
+      type: object
+      required:
+      - new_session_source_id
+      title: ManagedAgentRekeyRequest
+      description: Request body for rewriting a managed agent's durable principal
+        id.
+    ManagedAgentRekeyResponse:
+      properties:
+        agent:
+          $ref: '#/components/schemas/ManagedAgentSummary'
+        counts:
+          $ref: '#/components/schemas/ManagedAgentIdentityMutationCounts'
+      type: object
+      required:
+      - agent
+      - counts
+      title: ManagedAgentRekeyResponse
+      description: Response for a successful rekey.
     ManagedAgentServerActivitySummary:
       properties:
         server_name:
@@ -13423,6 +13694,16 @@ components:
           - type: string
           - type: 'null'
           title: Session Reference
+        enrollment_hostname:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Enrollment Hostname
+        identity_derivation:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Identity Derivation
         enrolled_via:
           type: string
           title: Enrolled Via
@@ -14404,6 +14685,64 @@ components:
       type: object
       title: PriceCatalogInfo
       description: Provenance of the vendored model-price catalog.
+    PrincipalIdentity:
+      properties:
+        hostname:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Hostname
+        config_path:
+          anyOf:
+          - type: string
+            maxLength: 1024
+          - type: 'null'
+          title: Config Path
+        source_type:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Source Type
+        derivation:
+          anyOf:
+          - type: string
+            maxLength: 16
+          - type: 'null'
+          title: Derivation
+      type: object
+      title: PrincipalIdentity
+      description: Optional CLI-supplied identity metadata for a runtime principal.
+    PrincipalIdentityLite:
+      properties:
+        hostname:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Hostname
+        config_path:
+          anyOf:
+          - type: string
+            maxLength: 1024
+          - type: 'null'
+          title: Config Path
+        source_type:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Source Type
+        derivation:
+          anyOf:
+          - type: string
+            maxLength: 16
+          - type: 'null'
+          title: Derivation
+      type: object
+      title: PrincipalIdentityLite
+      description: Identity metadata accepted on rekey/token flows.
     ProjectCreate:
       properties:
         name:
@@ -14609,6 +14948,145 @@ components:
       - expires_in_seconds
       title: QRCodeResponse
       description: Schema for QR code registration response.
+    RateLimitByModel:
+      properties:
+        model_alias:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Alias
+        provider_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Name
+        rate_limited_requests:
+          type: integer
+          title: Rate Limited Requests
+          default: 0
+        blocked_ms:
+          type: integer
+          title: Blocked Ms
+          default: 0
+        last_rate_limited_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Rate Limited At
+      type: object
+      title: RateLimitByModel
+      description: 429 telemetry grouped by model.
+    RateLimitBySession:
+      properties:
+        runtime_session_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Runtime Session Id
+        runtime_principal_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Runtime Principal Name
+        rate_limited_requests:
+          type: integer
+          title: Rate Limited Requests
+          default: 0
+        blocked_ms:
+          type: integer
+          title: Blocked Ms
+          default: 0
+        last_rate_limited_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Rate Limited At
+      type: object
+      title: RateLimitBySession
+      description: 429 telemetry grouped by runtime session (agent run).
+    RateLimitSnapshotItem:
+      properties:
+        provider_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Name
+        model_alias:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Alias
+        observed_at:
+          type: string
+          format: date-time
+          title: Observed At
+        status_code:
+          type: integer
+          title: Status Code
+        upstream_credential_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Upstream Credential Type
+        rate_limit:
+          additionalProperties: true
+          type: object
+          title: Rate Limit
+      type: object
+      required:
+      - observed_at
+      - status_code
+      title: RateLimitSnapshotItem
+      description: 'Latest observed rate-limit headers for one provider/model pair.
+
+
+        ``rate_limit`` echoes the snapshot persisted from a real upstream
+
+        response (normalized fields plus the verbatim ``headers`` map);
+
+        ``observed_at`` timestamps that observation so consumers can label
+
+        staleness. Nothing here is inferred.'
+    RateLimitTotals:
+      properties:
+        rate_limited_requests:
+          type: integer
+          title: Rate Limited Requests
+          default: 0
+        blocked_ms:
+          type: integer
+          title: Blocked Ms
+          default: 0
+        last_rate_limited_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Rate Limited At
+        quota_exhausted_count:
+          type: integer
+          title: Quota Exhausted Count
+          default: 0
+        transient_count:
+          type: integer
+          title: Transient Count
+          default: 0
+      type: object
+      title: RateLimitTotals
+      description: 'Aggregate 429 telemetry for the report window.
+
+
+        ``blocked_ms`` sums the provider-advised ``Retry-After`` values observed
+
+        on 429 responses: a lower bound on real wall-clock stall, taken directly
+
+        from provider responses (never estimated). Subtype counts come from the
+
+        per-row classification recorded at capture time; rows recorded before
+
+        this feature carry no subtype and appear in neither count.'
     RefreshRequest:
       properties:
         refresh_token:
@@ -15642,6 +16120,10 @@ components:
             type: string
           type: array
           title: Allowed Mcp Servers
+        principal_identity:
+          anyOf:
+          - $ref: '#/components/schemas/PrincipalIdentity'
+          - type: 'null'
       type: object
       required:
       - session_source_type
@@ -16224,6 +16706,13 @@ components:
         account_id:
           type: string
           title: Account Id
+        managed_agent_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Managed Agent Id
+          description: Optional managed-agent scope. Null = account-wide (default);
+            set = the configuration applies only to that agent
       type: object
       required:
       - tool_name
@@ -16291,6 +16780,11 @@ components:
           - type: string
           - type: 'null'
           title: Account Id
+        managed_agent_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Managed Agent Id
         created_at:
           type: string
           format: date-time

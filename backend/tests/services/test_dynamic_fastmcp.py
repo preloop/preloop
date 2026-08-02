@@ -368,6 +368,7 @@ class TestListTools:
         disabled_config.tool_source = "builtin"
         disabled_config.is_enabled = False
         disabled_config.justification_mode = None
+        disabled_config.managed_agent_id = None
 
         with patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db:
             mock_db = MagicMock()
@@ -454,6 +455,7 @@ class TestListTools:
         enable_config.tool_source = "builtin"
         enable_config.is_enabled = True
         enable_config.justification_mode = None
+        enable_config.managed_agent_id = None
 
         with patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db:
             mock_db = MagicMock()
@@ -482,6 +484,119 @@ class TestListTools:
         assert "estimate_compliance" in names
         assert "improve_compliance" not in names
 
+    async def _list_tools_with_configs(self, dynamic_mcp, user_context, configs):
+        """Run list_tools with the given ToolConfiguration rows mocked in."""
+        default_tools = [
+            Tool(name="permission_prompt", description="PP", parameters={}),
+            Tool(name="get_issue", description="Get issue", parameters={}),
+        ]
+
+        with patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db:
+            mock_db = MagicMock()
+            mock_get_db.side_effect = lambda: iter([mock_db])
+
+            with (
+                patch(
+                    "preloop.services.mcp_tool_discovery._get_proxied_tools_sync",
+                    return_value=[],
+                ),
+                patch(
+                    "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+                    return_value=configs,
+                ),
+                patch(
+                    "preloop.models.crud.crud_account.get",
+                    return_value=MagicMock(meta_data={}),
+                ),
+                patch.object(
+                    FastMCP, "list_tools", new=AsyncMock(return_value=default_tools)
+                ),
+            ):
+                return await dynamic_mcp.list_tools()
+
+    @staticmethod
+    def _agent_scoped_enable(tool_name, agent_id, is_enabled=True):
+        config = MagicMock()
+        config.tool_name = tool_name
+        config.tool_source = "builtin"
+        config.is_enabled = is_enabled
+        config.justification_mode = None
+        config.managed_agent_id = agent_id
+        return config
+
+    async def test_list_tools_agent_scoped_enable_visible_to_that_agent(
+        self, dynamic_mcp, user_context
+    ):
+        """An agent-scoped enable exposes a default-disabled tool to that agent."""
+        user_context.tracker_types = ["github"]
+        user_context.managed_agent_id = "agent-1"
+        dynamic_mcp._user_context_provider = lambda: user_context
+
+        result = await self._list_tools_with_configs(
+            dynamic_mcp,
+            user_context,
+            [self._agent_scoped_enable("permission_prompt", "agent-1")],
+        )
+
+        names = {t.name for t in result}
+        assert "permission_prompt" in names
+
+    async def test_list_tools_agent_scoped_enable_hidden_from_other_agents(
+        self, dynamic_mcp, user_context
+    ):
+        """Other agents of the account must not see (or pay context for) the
+        tool enabled for one agent."""
+        user_context.tracker_types = ["github"]
+        user_context.managed_agent_id = "agent-2"
+        dynamic_mcp._user_context_provider = lambda: user_context
+
+        result = await self._list_tools_with_configs(
+            dynamic_mcp,
+            user_context,
+            [self._agent_scoped_enable("permission_prompt", "agent-1")],
+        )
+
+        names = {t.name for t in result}
+        assert "permission_prompt" not in names
+
+    async def test_list_tools_agent_scoped_enable_hidden_without_agent_identity(
+        self, dynamic_mcp, user_context
+    ):
+        """Callers with no managed-agent identity fall back to the account
+        default: default-disabled tools stay hidden."""
+        user_context.tracker_types = ["github"]
+        user_context.managed_agent_id = None
+        dynamic_mcp._user_context_provider = lambda: user_context
+
+        result = await self._list_tools_with_configs(
+            dynamic_mcp,
+            user_context,
+            [self._agent_scoped_enable("permission_prompt", "agent-1")],
+        )
+
+        names = {t.name for t in result}
+        assert "permission_prompt" not in names
+
+    async def test_list_tools_agent_scoped_disable_overrides_account_enable(
+        self, dynamic_mcp, user_context
+    ):
+        """An agent-scoped row wins over the account-wide row for that agent."""
+        user_context.tracker_types = ["github"]
+        user_context.managed_agent_id = "agent-1"
+        dynamic_mcp._user_context_provider = lambda: user_context
+
+        account_enable = self._agent_scoped_enable("get_issue", None, is_enabled=True)
+        agent_disable = self._agent_scoped_enable(
+            "get_issue", "agent-1", is_enabled=False
+        )
+
+        result = await self._list_tools_with_configs(
+            dynamic_mcp, user_context, [account_enable, agent_disable]
+        )
+
+        names = {t.name for t in result}
+        assert "get_issue" not in names
+
     async def test_list_tools_flow_execution_bypasses_enable_filter(self, dynamic_mcp):
         """Flow executions with an explicit allow-list see their tools even if
         the account disabled them (presets opt in explicitly)."""
@@ -509,6 +624,7 @@ class TestListTools:
         disabled_config.tool_source = "builtin"
         disabled_config.is_enabled = False
         disabled_config.justification_mode = None
+        disabled_config.managed_agent_id = None
 
         with patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db:
             mock_db = MagicMock()
@@ -675,6 +791,7 @@ class TestMCPCallTool:
         disabled_config.tool_source = "builtin"
         disabled_config.is_enabled = False
         disabled_config.justification_mode = None
+        disabled_config.managed_agent_id = None
 
         with (
             patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db,
@@ -729,6 +846,148 @@ class TestMCPCallTool:
         mock_super.assert_not_called()
         assert isinstance(result, ToolResult)
         assert "disabled" in result.content[0].text.lower()
+
+    async def test_call_disabled_permission_prompt_returns_behavior_schema(
+        self, dynamic_mcp, user_context
+    ):
+        """A disabled permission_prompt must deny in Claude's behavior schema.
+
+        Claude Code parses this tool's text response as the permission
+        behavior schema; a plain access-denied string would surface as a
+        parse failure instead of a clean deny.
+        """
+        import json as _json
+
+        from fastmcp.tools.tool import ToolResult
+
+        dynamic_mcp._user_context_provider = lambda: user_context
+
+        with (
+            patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db,
+            patch(
+                "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+                return_value=[],
+            ),
+            patch.object(
+                dynamic_mcp.__class__.__bases__[0],
+                "call_tool",
+                new=AsyncMock(),
+                create=True,
+            ) as mock_super,
+        ):
+            mock_db = MagicMock()
+            mock_get_db.side_effect = lambda: iter([mock_db])
+
+            result = await dynamic_mcp.call_tool(
+                "permission_prompt",
+                {"tool_name": "Bash", "input": {"command": "ls"}},
+            )
+
+        mock_super.assert_not_called()
+        assert isinstance(result, ToolResult)
+        behavior = _json.loads(result.content[0].text)
+        assert behavior["behavior"] == "deny"
+        assert "Tools page" in behavior["message"]
+
+    async def test_call_permission_prompt_agent_scoped_enable_allows_caller(
+        self, dynamic_mcp, user_context
+    ):
+        """An agent-scoped enable permits the call for exactly that agent."""
+        from fastmcp.tools.tool import ToolResult
+
+        user_context.managed_agent_id = "agent-1"
+        dynamic_mcp._user_context_provider = lambda: user_context
+
+        agent_config = MagicMock()
+        agent_config.tool_name = "permission_prompt"
+        agent_config.tool_source = "builtin"
+        agent_config.is_enabled = True
+        agent_config.justification_mode = None
+        agent_config.managed_agent_id = "agent-1"
+
+        available_tools = [
+            Tool(name="permission_prompt", description="PP", parameters={})
+        ]
+
+        mock_result = ToolResult(
+            content=[types.TextContent(type="text", text="Result")]
+        )
+        with (
+            patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db,
+            patch(
+                "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+                return_value=[agent_config],
+            ),
+            patch.object(dynamic_mcp, "list_tools", return_value=available_tools),
+            patch(
+                "preloop.services.policy_evaluator.evaluate_policy_async",
+                new=AsyncMock(return_value=("allow", None, None)),
+            ),
+            patch.object(
+                dynamic_mcp.__class__.__bases__[0],
+                "call_tool",
+                new=AsyncMock(return_value=mock_result),
+                create=True,
+            ) as mock_super,
+        ):
+            mock_db = MagicMock()
+            mock_get_db.side_effect = lambda: iter([mock_db])
+
+            result = await dynamic_mcp.call_tool(
+                "permission_prompt",
+                {"tool_name": "Bash", "input": {"command": "ls"}},
+            )
+
+        mock_super.assert_called_once()
+        assert isinstance(result, ToolResult)
+        assert result.content[0].text == "Result"
+
+    async def test_call_permission_prompt_scoped_to_other_agent_denied(
+        self, dynamic_mcp, user_context
+    ):
+        """A row scoped to another agent must not permit this caller: the
+        default-disabled state applies and the deny keeps Claude's behavior
+        schema."""
+        import json as _json
+
+        from fastmcp.tools.tool import ToolResult
+
+        user_context.managed_agent_id = "agent-2"
+        dynamic_mcp._user_context_provider = lambda: user_context
+
+        agent_config = MagicMock()
+        agent_config.tool_name = "permission_prompt"
+        agent_config.tool_source = "builtin"
+        agent_config.is_enabled = True
+        agent_config.justification_mode = None
+        agent_config.managed_agent_id = "agent-1"
+
+        with (
+            patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db,
+            patch(
+                "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+                return_value=[agent_config],
+            ),
+            patch.object(
+                dynamic_mcp.__class__.__bases__[0],
+                "call_tool",
+                new=AsyncMock(),
+                create=True,
+            ) as mock_super,
+        ):
+            mock_db = MagicMock()
+            mock_get_db.side_effect = lambda: iter([mock_db])
+
+            result = await dynamic_mcp.call_tool(
+                "permission_prompt",
+                {"tool_name": "Bash", "input": {"command": "ls"}},
+            )
+
+        mock_super.assert_not_called()
+        assert isinstance(result, ToolResult)
+        behavior = _json.loads(result.content[0].text)
+        assert behavior["behavior"] == "deny"
+        assert "Tools page" in behavior["message"]
 
     async def test_call_tool_require_approval_without_workflow_blocks(
         self, dynamic_mcp, user_context

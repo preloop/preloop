@@ -15,6 +15,11 @@ from preloop.schemas.ai_model import AIModelGatewayUsageSummaryResponse
 from preloop.schemas.gateway_usage import (
     AccountGatewayUsageSearchResponse,
     AccountGatewayUsageSummaryResponse,
+    AccountRateLimitReportResponse,
+    RateLimitByModel,
+    RateLimitBySession,
+    RateLimitSnapshotItem,
+    RateLimitTotals,
     FlowGatewayUsageSummaryResponse,
     GatewayBudgetSummary,
     GatewayTokenUsage,
@@ -375,6 +380,54 @@ class ModelGatewayUsageService:
             limit=limit,
             offset=offset,
             items=[self._search_row_to_schema(item) for item in results["items"]],
+        )
+
+    def get_account_rate_limit_report(
+        self,
+        *,
+        account: Account,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        runtime_principal_id: Optional[str] = None,
+    ) -> AccountRateLimitReportResponse:
+        """Build the account rate-limit telemetry and headroom report (#136).
+
+        Aggregates observed upstream 429s (count, provider-advised blocked
+        time, subtype split, per-model and per-session breakdowns) over the
+        window, plus the most recent rate-limit header snapshot per
+        provider/model as observed on real upstream responses. Snapshots are
+        not window-filtered: the latest observation is the headroom signal
+        regardless of when it happened, and it carries its own timestamp.
+
+        Args:
+            account: The account whose gateway traffic is reported.
+            start_date: Inclusive window start; defaults to 30 days back.
+            end_date: Exclusive window end; defaults to now.
+            runtime_principal_id: Restrict the 429 aggregation to one
+                principal (snapshots stay account-wide).
+
+        Returns:
+            The report response.
+        """
+        start_date, end_date = self._normalize_period(start_date, end_date)
+        summary = crud_api_usage.get_rate_limit_summary(
+            self.db,
+            account_id=str(account.id),
+            start_date=start_date,
+            end_date=end_date,
+            runtime_principal_id=runtime_principal_id,
+        )
+        snapshots = crud_api_usage.get_latest_rate_limit_snapshots(
+            self.db,
+            account_id=str(account.id),
+        )
+        return AccountRateLimitReportResponse(
+            period_start=start_date,
+            period_end=end_date,
+            totals=RateLimitTotals(**summary["totals"]),
+            by_model=[RateLimitByModel(**row) for row in summary["by_model"]],
+            by_session=[RateLimitBySession(**row) for row in summary["by_session"]],
+            latest_snapshots=[RateLimitSnapshotItem(**row) for row in snapshots],
         )
 
     @staticmethod

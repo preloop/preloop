@@ -296,23 +296,37 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         )
 
     def list_by_kind(
-        self, db: Session, *, account_id: str, agent_kind: str
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        agent_kind: str,
+        active_only: bool = True,
     ) -> list[ManagedAgent]:
         """Return the account's managed agents of one kind, newest first.
 
-        Used by the usage ingest API to resolve the default attribution
-        target (the managed Cursor agent from onboarding) when the caller
-        does not name an agent explicitly.
+        Used by usage ingest to resolve the default attribution target when
+        the caller does not name an agent explicitly. By default only
+        rows with ``lifecycle_state == "active"`` are returned so archived
+        duplicates do not trip ambiguity errors.
+
+        Args:
+            db: Database session.
+            account_id: Account that owns the agents.
+            agent_kind: Normalized agent kind (for example ``"cursor"``).
+            active_only: When True (default), keep only
+                ``lifecycle_state == "active"`` rows.
+
+        Returns:
+            Matching managed agents ordered by ``created_at`` descending.
         """
-        return (
-            db.query(self.model)
-            .filter(
-                self.model.account_id == account_id,
-                self.model.agent_kind == agent_kind,
-            )
-            .order_by(self.model.created_at.desc())
-            .all()
+        query = db.query(self.model).filter(
+            self.model.account_id == account_id,
+            self.model.agent_kind == agent_kind,
         )
+        if active_only:
+            query = query.filter(self.model.lifecycle_state == "active")
+        return query.order_by(self.model.created_at.desc()).all()
 
     def get_for_account(
         self, db: Session, *, account_id: str, agent_id: str
@@ -444,6 +458,8 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         enrolled_via: str = "runtime_session_token",
         last_seen_at: Optional[datetime] = None,
         owner_user_id: Any = None,
+        enrollment_hostname: Optional[str] = None,
+        identity_derivation: Optional[str] = None,
     ) -> ManagedAgent:
         """Create or update one registry entry from a runtime-session token flow.
 
@@ -469,6 +485,8 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
                 session_source_type=session_source_type,
                 session_source_id=session_source_id,
                 session_reference=session_reference,
+                enrollment_hostname=enrollment_hostname,
+                identity_derivation=identity_derivation,
                 display_name=display_name,
                 enrolled_via=enrolled_via,
                 managed_mcp_servers=normalized_servers,
@@ -484,11 +502,17 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
 
         db_obj.runtime_session_id = runtime_session_id
         db_obj.agent_kind = normalize_managed_agent_kind(session_source_type)
-        db_obj.display_name = display_name
+        # Preserve operator renames on reuse; only fill an empty display name.
+        if not (db_obj.display_name or "").strip():
+            db_obj.display_name = display_name
         db_obj.enrolled_via = enrolled_via
         db_obj.last_seen_at = observed_at
         if session_reference is not None:
             db_obj.session_reference = session_reference
+        if enrollment_hostname is not None:
+            db_obj.enrollment_hostname = enrollment_hostname
+        if identity_derivation is not None:
+            db_obj.identity_derivation = identity_derivation
         if owner_user_id is not None and db_obj.owner_user_id is None:
             db_obj.owner_user_id = owner_user_id
         db_obj.managed_mcp_servers = normalized_servers
@@ -640,6 +664,8 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
                 self.model.session_source_type,
                 self.model.session_source_id,
                 self.model.session_reference,
+                self.model.enrollment_hostname,
+                self.model.identity_derivation,
                 self.model.enrolled_via,
                 self.model.managed_mcp_servers,
                 self.model.lifecycle_state,
@@ -669,6 +695,8 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
                 self.model.session_source_type,
                 self.model.session_source_id,
                 self.model.session_reference,
+                self.model.enrollment_hostname,
+                self.model.identity_derivation,
                 self.model.enrolled_via,
                 self.model.managed_mcp_servers,
                 self.model.lifecycle_state,
@@ -745,6 +773,8 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
                 self.model.session_source_type,
                 self.model.session_source_id,
                 self.model.session_reference,
+                self.model.enrollment_hostname,
+                self.model.identity_derivation,
                 self.model.enrolled_via,
                 self.model.managed_mcp_servers,
                 self.model.lifecycle_state,
@@ -774,6 +804,8 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
                 self.model.session_source_type,
                 self.model.session_source_id,
                 self.model.session_reference,
+                self.model.enrollment_hostname,
+                self.model.identity_derivation,
                 self.model.enrolled_via,
                 self.model.managed_mcp_servers,
                 self.model.lifecycle_state,
@@ -951,6 +983,8 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             "session_source_type": row.session_source_type,
             "session_source_id": row.session_source_id,
             "session_reference": row.session_reference,
+            "enrollment_hostname": getattr(row, "enrollment_hostname", None),
+            "identity_derivation": getattr(row, "identity_derivation", None),
             "enrolled_via": row.enrolled_via,
             "managed_mcp_servers": row.managed_mcp_servers or [],
             "lifecycle_state": row.lifecycle_state,

@@ -309,8 +309,14 @@ func TestRuntimePrincipalIDForAgent_IsStable(t *testing.T) {
 	if got1 != got2 {
 		t.Fatalf("expected stable source id, got %q and %q", got1, got2)
 	}
-	if !strings.HasPrefix(got1, "repo-assistant-") {
-		t.Fatalf("expected slugged prefix, got %q", got1)
+	// v2 prefixes with the source type slug, not the display name.
+	if !strings.HasPrefix(got1, "claude-code-") {
+		t.Fatalf("expected v2 source-type prefix, got %q", got1)
+	}
+	renamed := agent
+	renamed.DisplayName = "Totally Different"
+	if runtimePrincipalIDForAgent(renamed) != got1 {
+		t.Fatal("display name must not change the v2 principal id")
 	}
 }
 
@@ -372,8 +378,14 @@ func TestIssueRuntimeSessionToken(t *testing.T) {
 	if capturedBody.RuntimePrincipalID == "" {
 		t.Fatal("expected runtime principal id to be set")
 	}
+	if !strings.HasPrefix(capturedBody.RuntimePrincipalID, "claude-code-") {
+		t.Fatalf("expected v2 source-type principal id, got %q", capturedBody.RuntimePrincipalID)
+	}
 	if !strings.HasPrefix(capturedBody.SessionSourceID, capturedBody.RuntimePrincipalID+"-") {
 		t.Fatalf("expected session source id %q to use principal id prefix %q", capturedBody.SessionSourceID, capturedBody.RuntimePrincipalID)
+	}
+	if capturedBody.PrincipalIdentity == nil || capturedBody.PrincipalIdentity.Derivation != "v2" {
+		t.Fatalf("expected principal_identity derivation=v2, got %#v", capturedBody.PrincipalIdentity)
 	}
 	if len(capturedBody.AllowedMCPServers) != 2 || capturedBody.AllowedMCPServers[0] != "github" || capturedBody.AllowedMCPServers[1] != "jira" {
 		t.Fatalf("unexpected allowed servers: %+v", capturedBody.AllowedMCPServers)
@@ -1901,8 +1913,16 @@ func TestPrepareAgentForEnrollment_AllowsEditingAgentName(t *testing.T) {
 	if agent.DisplayName != "Octavia" {
 		t.Fatalf("expected edited display name, got %#v", agent)
 	}
-	if !strings.HasPrefix(agent.RuntimePrincipalID, "octavia-") {
-		t.Fatalf("expected name-based principal id, got %q", agent.RuntimePrincipalID)
+	// Display name is decoupled from identity under v2.
+	wantID := stableRuntimePrincipalIDForAgent(
+		AgentConfig{Name: "OpenClaw", ConfigPath: "/tmp/openclaw.json"},
+		"",
+	)
+	if agent.RuntimePrincipalID != wantID {
+		t.Fatalf("expected v2 principal id %q, got %q", wantID, agent.RuntimePrincipalID)
+	}
+	if !strings.HasPrefix(agent.RuntimePrincipalID, "openclaw-") {
+		t.Fatalf("expected source-type v2 prefix, got %q", agent.RuntimePrincipalID)
 	}
 }
 

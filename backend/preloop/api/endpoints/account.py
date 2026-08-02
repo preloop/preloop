@@ -33,6 +33,7 @@ from preloop.schemas.gateway_usage import (
     AccountManagedAgentListResponse,
     AccountGatewayUsageSearchResponse,
     AccountGatewayUsageSummaryResponse,
+    AccountRateLimitReportResponse,
     AccountRuntimeSessionDetailResponse,
     AccountRuntimeSessionListResponse,
     GatewayTokenUsage,
@@ -46,7 +47,12 @@ from preloop.schemas.gateway_usage import (
     ManagedAgentModelBindingSummary,
     ManagedAgentModelBindingSyncRequest,
     ManagedAgentEnrollmentValidateRequest,
+    ManagedAgentIdentityMutationCounts,
+    ManagedAgentMergeRequest,
+    ManagedAgentMergeResponse,
     ManagedAgentRegisterRequest,
+    ManagedAgentRekeyRequest,
+    ManagedAgentRekeyResponse,
     ManagedAgentServerActivitySummary,
     ManagedAgentSummary,
     ManagedAgentToolActivitySummary,
@@ -77,6 +83,12 @@ from preloop.services.account_realtime import (
 )
 from preloop.services.account_governance_cache import (
     invalidate_account_governance_cache,
+)
+from preloop.services.managed_agent_identity import (
+    ManagedAgentIdentityError,
+    PrincipalIdentity,
+    merge_managed_agents,
+    rekey_managed_agent,
 )
 from preloop.services.model_gateway_usage import ModelGatewayUsageService
 from preloop.services.runtime_session_explorer import RuntimeSessionExplorerService
@@ -1075,6 +1087,33 @@ def search_account_gateway_usage(
         session_source_type=session_source_type,
         limit=limit,
         offset=offset,
+    )
+
+
+@router.get(
+    "/account/gateway-usage/rate-limits",
+    response_model=AccountRateLimitReportResponse,
+)
+@require_permission("view_cost")
+def get_account_rate_limit_report(
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+    start_date: Optional[datetime] = Query(None),
+    end_date: Optional[datetime] = Query(None),
+    runtime_principal_id: Optional[str] = Query(None),
+) -> AccountRateLimitReportResponse:
+    """Get observed rate-limit telemetry and subscription headroom (#136).
+
+    All figures are echoes of real upstream provider responses: 429 counts,
+    provider-advised blocked time, and the latest observed rate-limit header
+    snapshots per provider/model, each with its observation timestamp.
+    """
+    return ModelGatewayUsageService(db).get_account_rate_limit_report(
+        account=account,
+        start_date=start_date,
+        end_date=end_date,
+        runtime_principal_id=runtime_principal_id,
     )
 
 
@@ -2119,6 +2158,144 @@ async def delete_account_managed_agent(
         )
     )
     return {"message": "Managed agent removed"}
+
+
+@router.post(
+    "/agents/{agent_id}/rekey",
+    response_model=ManagedAgentRekeyResponse,
+)
+@require_permission("manage_agents")
+async def rekey_account_managed_agent(
+    agent_id: str,
+    body: ManagedAgentRekeyRequest,
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+):
+    """Rewrite one managed agent's durable principal id and dependent rows."""
+    identity = None
+    if body.principal_identity is not None:
+        identity = PrincipalIdentity(
+            hostname=body.principal_identity.hostname,
+            config_path=body.principal_identity.config_path,
+            source_type=body.principal_identity.source_type,
+            derivation=body.principal_identity.derivation,
+        )
+    try:
+        agent, counts = rekey_managed_agent(
+            db,
+            account_id=account.id,
+            agent_id=agent_id,
+            new_session_source_id=body.new_session_source_id,
+            identity=identity,
+            user_id=current_user.id,
+            commit=True,
+        )
+    except ManagedAgentIdentityError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+    summary = crud_managed_agent.get_summary_for_account(
+        db, account_id=str(account.id), agent_id=str(agent.id)
+    )
+    if summary is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Managed agent not found"
+        )
+    emit_account_event(
+        build_account_event(
+            account_id=str(account.id),
+            topic=ACCOUNT_TOPIC_MANAGED_AGENTS,
+            event_type="managed_agent_rekeyed",
+            payload={
+                "agent_id": str(agent.id),
+                "session_source_id": agent.session_source_id,
+            },
+        )
+    )
+    return ManagedAgentRekeyResponse(
+        agent=ManagedAgentSummary(**summary),
+        counts=ManagedAgentIdentityMutationCounts(
+            usage_moved=counts.usage_moved,
+            usage_deleted=counts.usage_deleted,
+            runtime_sessions_moved=counts.runtime_sessions_moved,
+            budget_spend_moved=counts.budget_spend_moved,
+            budget_spend_merged=counts.budget_spend_merged,
+            budget_policies_moved=counts.budget_policies_moved,
+            budget_policies_dropped=counts.budget_policies_dropped,
+            approvals_moved=counts.approvals_moved,
+            keys_deactivated=counts.keys_deactivated,
+            dropped_budget_policies=counts.dropped_budget_policies,
+        ),
+    )
+
+
+@router.post(
+    "/agents/{survivor_id}/merge",
+    response_model=ManagedAgentMergeResponse,
+)
+@require_permission("manage_agents")
+async def merge_account_managed_agents(
+    survivor_id: str,
+    body: ManagedAgentMergeRequest,
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+):
+    """Merge a duplicate managed agent into a survivor (dry-run capable)."""
+    try:
+        survivor, duplicate, counts = merge_managed_agents(
+            db,
+            account_id=account.id,
+            survivor_id=survivor_id,
+            duplicate_id=body.duplicate_agent_id,
+            dry_run=body.dry_run,
+            user_id=current_user.id,
+        )
+        if not body.dry_run:
+            db.commit()
+    except ManagedAgentIdentityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+    survivor_summary = crud_managed_agent.get_summary_for_account(
+        db, account_id=str(account.id), agent_id=str(survivor.id)
+    )
+    duplicate_summary = crud_managed_agent.get_summary_for_account(
+        db, account_id=str(account.id), agent_id=str(duplicate.id)
+    )
+    if survivor_summary is None or duplicate_summary is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Managed agent not found"
+        )
+    if not body.dry_run:
+        emit_account_event(
+            build_account_event(
+                account_id=str(account.id),
+                topic=ACCOUNT_TOPIC_MANAGED_AGENTS,
+                event_type="managed_agent_merged",
+                payload={
+                    "survivor_id": str(survivor.id),
+                    "duplicate_id": str(duplicate.id),
+                },
+            )
+        )
+    return ManagedAgentMergeResponse(
+        survivor=ManagedAgentSummary(**survivor_summary),
+        duplicate=ManagedAgentSummary(**duplicate_summary),
+        dry_run=body.dry_run,
+        counts=ManagedAgentIdentityMutationCounts(
+            usage_moved=counts.usage_moved,
+            usage_deleted=counts.usage_deleted,
+            runtime_sessions_moved=counts.runtime_sessions_moved,
+            budget_spend_moved=counts.budget_spend_moved,
+            budget_spend_merged=counts.budget_spend_merged,
+            budget_policies_moved=counts.budget_policies_moved,
+            budget_policies_dropped=counts.budget_policies_dropped,
+            approvals_moved=counts.approvals_moved,
+            keys_deactivated=counts.keys_deactivated,
+            dropped_budget_policies=counts.dropped_budget_policies,
+        ),
+    )
 
 
 @router.get("/runtime-sessions", response_model=AccountRuntimeSessionListResponse)

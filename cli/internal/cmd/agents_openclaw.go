@@ -673,12 +673,27 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 
 	allowedServers := append([]string{}, serverSync.Added...)
 	allowedServers = append(allowedServers, serverSync.Reused...)
+	prepared, existingManaged, err := ensureManagedAgentIdentityReady(
+		client,
+		agent,
+		opts.AutoApprove,
+		agentsNoReuseIdentity,
+		input,
+		output,
+	)
+	if err != nil {
+		return err
+	}
+	agent = prepared
+	syncAgent = prepareAgentForRemoteServerSync(agent, baseURL)
 	runtimeSession, err := issueRuntimeSessionToken(client, syncAgent, allowedServers)
 	if err != nil {
 		return fmt.Errorf("failed to bootstrap managed agent identity: %w", err)
 	}
 
-	managedAgent, err := getManagedAgentForDiscovered(client, agent)
+	// Prefer GET-by-id when identity prep already resolved the agent so
+	// onboard does not issue a second full /api/v1/agents list.
+	managedAgent, err := resolveManagedAgentAfterBootstrap(client, agent, existingManaged)
 	if err != nil {
 		return err
 	}
@@ -903,6 +918,15 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	if opts.Approvals && isApprovalHookSupportedAgent(agent) {
 		if err := installApprovalHooks(agent, baseURL, credentialResp.Token, output); err != nil {
 			return err
+		}
+		if permissionSourceForAgent(agent) == permissionSourceClaudeCode {
+			// Headless (claude -p) governance: enable the default-disabled
+			// permission_prompt builtin for exactly this agent so the rest
+			// of the account's MCP clients keep paying zero context for it.
+			if err := enablePermissionPromptBuiltin(client, managedAgent.ID, output); err != nil {
+				// Non-fatal: hook-based approvals above already applied.
+				fmt.Fprintf(output, "  Warning: %v\n", err) //nolint:errcheck
+			}
 		}
 	}
 	pluginInstallResult := installAgentControlRuntimePlugin(agent, output)

@@ -259,6 +259,8 @@ class ManagedAgentSummary(BaseModel):
     session_source_type: str
     session_source_id: str
     session_reference: Optional[str] = None
+    enrollment_hostname: Optional[str] = None
+    identity_derivation: Optional[str] = None
     enrolled_via: str
     managed_mcp_servers: List[str] = Field(default_factory=list)
     lifecycle_state: str = "active"
@@ -480,6 +482,60 @@ class ManagedAgentUpdateRequest(BaseModel):
     )
     reason: Optional[str] = None
     tags: Optional[dict[str, str]] = None
+
+
+class PrincipalIdentityLite(BaseModel):
+    """Identity metadata accepted on rekey/token flows."""
+
+    hostname: Optional[str] = Field(None, max_length=255)
+    config_path: Optional[str] = Field(None, max_length=1024)
+    source_type: Optional[str] = Field(None, max_length=64)
+    derivation: Optional[str] = Field(None, max_length=16)
+
+
+class ManagedAgentRekeyRequest(BaseModel):
+    """Request body for rewriting a managed agent's durable principal id."""
+
+    new_session_source_id: str = Field(..., min_length=1, max_length=255)
+    principal_identity: Optional[PrincipalIdentityLite] = None
+
+
+class ManagedAgentMergeRequest(BaseModel):
+    """Request body for merging a duplicate managed agent into a survivor."""
+
+    duplicate_agent_id: str = Field(..., min_length=1)
+    dry_run: bool = False
+
+
+class ManagedAgentIdentityMutationCounts(BaseModel):
+    """Row counts returned by rekey/merge dry-run and execute responses."""
+
+    usage_moved: int = 0
+    usage_deleted: int = 0
+    runtime_sessions_moved: int = 0
+    budget_spend_moved: int = 0
+    budget_spend_merged: int = 0
+    budget_policies_moved: int = 0
+    budget_policies_dropped: int = 0
+    approvals_moved: int = 0
+    keys_deactivated: int = 0
+    dropped_budget_policies: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class ManagedAgentRekeyResponse(BaseModel):
+    """Response for a successful rekey."""
+
+    agent: ManagedAgentSummary
+    counts: ManagedAgentIdentityMutationCounts
+
+
+class ManagedAgentMergeResponse(BaseModel):
+    """Response for a merge dry-run or execute."""
+
+    survivor: ManagedAgentSummary
+    duplicate: ManagedAgentSummary
+    dry_run: bool
+    counts: ManagedAgentIdentityMutationCounts
 
 
 class RuntimeSessionUpdateRequest(BaseModel):
@@ -708,6 +764,71 @@ class AccountRuntimeSessionDetailResponse(BaseModel):
     period_end: Optional[datetime] = None
     session: RuntimeSessionSummary
     usage_by_model: List[GatewayUsageByModel] = Field(default_factory=list)
+
+
+class RateLimitTotals(BaseModel):
+    """Aggregate 429 telemetry for the report window.
+
+    ``blocked_ms`` sums the provider-advised ``Retry-After`` values observed
+    on 429 responses: a lower bound on real wall-clock stall, taken directly
+    from provider responses (never estimated). Subtype counts come from the
+    per-row classification recorded at capture time; rows recorded before
+    this feature carry no subtype and appear in neither count.
+    """
+
+    rate_limited_requests: int = 0
+    blocked_ms: int = 0
+    last_rate_limited_at: Optional[datetime] = None
+    quota_exhausted_count: int = 0
+    transient_count: int = 0
+
+
+class RateLimitByModel(BaseModel):
+    """429 telemetry grouped by model."""
+
+    model_alias: Optional[str] = None
+    provider_name: Optional[str] = None
+    rate_limited_requests: int = 0
+    blocked_ms: int = 0
+    last_rate_limited_at: Optional[datetime] = None
+
+
+class RateLimitBySession(BaseModel):
+    """429 telemetry grouped by runtime session (agent run)."""
+
+    runtime_session_id: Optional[str] = None
+    runtime_principal_name: Optional[str] = None
+    rate_limited_requests: int = 0
+    blocked_ms: int = 0
+    last_rate_limited_at: Optional[datetime] = None
+
+
+class RateLimitSnapshotItem(BaseModel):
+    """Latest observed rate-limit headers for one provider/model pair.
+
+    ``rate_limit`` echoes the snapshot persisted from a real upstream
+    response (normalized fields plus the verbatim ``headers`` map);
+    ``observed_at`` timestamps that observation so consumers can label
+    staleness. Nothing here is inferred.
+    """
+
+    provider_name: Optional[str] = None
+    model_alias: Optional[str] = None
+    observed_at: datetime
+    status_code: int
+    upstream_credential_type: Optional[str] = None
+    rate_limit: Dict[str, Any] = Field(default_factory=dict)
+
+
+class AccountRateLimitReportResponse(BaseModel):
+    """Account-scoped rate-limit telemetry and observed headroom report."""
+
+    period_start: datetime
+    period_end: datetime
+    totals: RateLimitTotals
+    by_model: List[RateLimitByModel] = Field(default_factory=list)
+    by_session: List[RateLimitBySession] = Field(default_factory=list)
+    latest_snapshots: List[RateLimitSnapshotItem] = Field(default_factory=list)
 
 
 class AccountGatewayUsageSummaryResponse(BaseModel):
