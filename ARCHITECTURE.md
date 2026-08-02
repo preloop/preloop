@@ -191,6 +191,13 @@ Enterprise feature-flagged subviews (via `plugins/billing/`):
 *   **Enforcement Points:** The same subject context is propagated through MCP tool listing, policy evaluation, and model gateway budget checks so one runtime token sees only the intended tools and models.
 *   **Primary Use Case:** Managed agent owners can grant a broad account-level tool catalog while restricting one enrolled desktop/CLI runtime to a tighter set of tools and models.
 
+### Security Screen Scoring (QM Proxy Contract)
+*   **Purpose:** Let external agent platforms delegate content security screening to Preloop through a documented HTTP contract, starting with QM's `securityScreen: { backend: "proxy" }` deployment option.
+*   **Endpoint:** `POST /api/v1/security-screen/score` (`api/endpoints/security_screen.py`) accepts `{text, hook, metadata}` with the caller's token in `x-api-key` (Bearer fallback) and returns `{score, threshold, primary_outcome}`; `primary_outcome` is omitted for benign content. Auth reuses the model gateway's `authenticate_bearer_token`, so a standard Preloop API key is the routed credential.
+*   **Scoring:** `services/security_screen.py` is a pure, deterministic rule engine: compiled case-insensitive regex categories (`prompt_injection`, `destructive_command`, `destructive_sql`, `secret_exfiltration`) with max-match-wins scoring. No I/O, no model calls, no persistence on the scoring path; the threshold comes from `PRELOOP_SECURITY_SCREEN_THRESHOLD` (default 0.7, clamped).
+*   **Privacy:** Screened text is never logged or stored. Flagged chunks log score, outcome, matched rule names, and caller chunk coordinates only.
+*   **Rollout Semantics:** Shadow vs enforce and fail-closed error handling live on the caller's side (per QM's contract); Preloop only scores.
+
 ### Runtime Session Identity
 *   **Purpose:** Provide a shared identity layer for browsing, auditing, and searching managed runtime sessions across both flows and onboarded external agents.
 *   **Current Implementation:** A new additive `RuntimeSession` layer now uses flows as the first session source, bridged through `runtime_session_id`, `flow_execution_id`, runtime-principal metadata, and optional `agent_session_reference`.

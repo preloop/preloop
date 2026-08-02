@@ -196,6 +196,9 @@ Preloop safely routes model traffic on behalf of managed runtimes instead of han
 - **Usage accounting** persisted as a canonical `ApiUsage` ledger — token usage, estimated cost, runtime-principal attribution, and provider-neutral conversation previews.
 - **Secret custody** — provider API keys stay with Preloop; runtimes receive short-lived gateway tokens instead of raw credentials.
 
+### Security Screen Scoring (QM proxy contract)
+`POST /api/v1/security-screen/score` implements the external security-screen proxy contract of [QM](https://github.com/yc-software/qm) ([contract](https://github.com/yc-software/qm/blob/main/docs/deploy-directory.md)): a QM deployment configured with `securityScreen: { backend: "proxy", endpoint: ... }` sends every screened content chunk (`{text, hook, metadata}`, token in `x-api-key`) and receives `{score, threshold, primary_outcome}` back. Scoring is deterministic and rule-based (prompt-injection markers, destructive commands, destructive SQL, secret-exfiltration patterns); screened text is never logged or persisted. The threshold is configurable via `PRELOOP_SECURITY_SCREEN_THRESHOLD` (default 0.7). Any client implementing the same request shape can use the endpoint — it is not QM-specific.
+
 ### Cost Analytics & Budgets
 Preloop makes model spend explainable, not just counted. The Console has a dedicated **Cost** area with subviews that help operators answer:
 

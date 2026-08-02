@@ -102,6 +102,10 @@ PENDING_MARKER = "PRELOOP_APPROVAL_PENDING"
 
 _TERMINAL_STATUSES = ("approved", "declined", "cancelled", "expired")
 
+#: Clamp bounds for the configurable in-call wait.
+MIN_WAIT_SECONDS = 1.0
+MAX_WAIT_SECONDS = 600.0
+
 
 def _wait_budget_seconds() -> float:
     """Resolve the bounded wait from env, clamped to a sane range."""
