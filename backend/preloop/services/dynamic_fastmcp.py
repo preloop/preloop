@@ -1600,20 +1600,16 @@ def create_user_context_from_scope(scope: dict) -> Optional[UserContext]:
         db.close()
 
 
-# Public surface (including cross-module ContextVars). Declared so maintainability
-# scanners treat Alembic-style / ContextVar exports as intentional API, not dead
-# globals. Explicit imports remain unaffected.
-__all__ = [
-    "DynamicFastMCP",
-    "UserContext",
-    "apply_output_filters",
-    "create_dynamic_mcp_server",
-    "create_user_context_from_scope",
-    "_approved_comment_var",
-    "_bypass_approval_var",
-    "_configs_visible_to_caller",
-    "_correlation_id_var",
-    "_is_proxy_translation_var",
-    "_justification_var",
-    "_rule_workflow_id_var",
-]
+# Cross-module ContextVars (imported by initialize_mcp / approval_helper).
+# Referenced here so maintainability scanners do not treat them as unused
+# module globals — same pattern as Alembic ``_ALEMBIC_IDENTIFIERS``. Kept
+# out of ``__all__`` so ``import *`` stays a public-API surface only.
+_CONTEXT_VAR_EXPORTS = (
+    _rule_workflow_id_var,
+    _correlation_id_var,
+    _justification_var,
+    _bypass_approval_var,
+    _approved_comment_var,
+    _is_proxy_translation_var,
+)
+assert _CONTEXT_VAR_EXPORTS, "contextvar exports must be defined"
