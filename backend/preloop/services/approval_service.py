@@ -224,15 +224,36 @@ _sync_db_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 APPROVAL_EMAIL_STAGGER_SECONDS = 60
 
 # Retain strong references to delayed-email tasks so they are not GC'd mid-sleep.
+# Cap prevents unbounded growth if completions stall under load.
+_MAX_DELAYED_EMAIL_TASKS = 500
 _delayed_email_tasks: Set["asyncio.Task[Any]"] = set()
 
 
 def _retain_delayed_email_task(task: "asyncio.Task[Any]") -> None:
-    """Keep a strong reference to a delayed-email task until it completes."""
+    """Keep a strong reference to a delayed-email task until it completes.
+
+    Evicts done tasks first. If the set is still at capacity, cancels the
+    oldest retained task so a stuck completion callback cannot grow forever.
+    """
+    done = {t for t in _delayed_email_tasks if t.done()}
+    if done:
+        _delayed_email_tasks.difference_update(done)
+
+    if len(_delayed_email_tasks) >= _MAX_DELAYED_EMAIL_TASKS:
+        # Prefer cancelling an unfinished task over dropping the new one:
+        # the new schedule is the live approval; oldest may be orphaned.
+        oldest = next(iter(_delayed_email_tasks))
+        logger.warning(
+            "Delayed-email task set at cap (%s); cancelling oldest task",
+            _MAX_DELAYED_EMAIL_TASKS,
+        )
+        oldest.cancel()
+        _delayed_email_tasks.discard(oldest)
+
     _delayed_email_tasks.add(task)
 
-    def _discard(done: "asyncio.Task[Any]") -> None:
-        _delayed_email_tasks.discard(done)
+    def _discard(finished: "asyncio.Task[Any]") -> None:
+        _delayed_email_tasks.discard(finished)
 
     task.add_done_callback(_discard)
 
@@ -268,11 +289,10 @@ async def _send_delayed_approval_email(
 
         async with get_async_db_session() as db:
             current_request = await get_approval_request_async(db, request_id)
-            if (
-                not current_request
-                or current_request.status in ApprovalService._TERMINAL_STATUSES
-                or current_request.status != "pending"
-            ):
+            # Only "pending" should receive delayed email; any other status
+            # (terminal or unexpected) skips. Checking terminal separately
+            # was redundant with the pending equality check.
+            if not current_request or current_request.status != "pending":
                 reason = (
                     f"status_{current_request.status}"
                     if current_request

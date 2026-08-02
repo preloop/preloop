@@ -95,6 +95,7 @@ export class NotificationPreferencesView extends AuthedElement {
 
   private qrExpiryInterval: any = null;
   private unsubscribe?: () => void;
+  private unsubscribeStateChange?: () => void;
 
   static styles = css`
     :host {
@@ -402,9 +403,11 @@ export class NotificationPreferencesView extends AuthedElement {
       );
 
       // Track connection state changes
-      unifiedWebSocketManager.onStateChange((state) => {
-        console.debug('[NotificationPrefs] WebSocket state:', state);
-      });
+      this.unsubscribeStateChange = unifiedWebSocketManager.onStateChange(
+        (state) => {
+          console.debug('[NotificationPrefs] WebSocket state:', state);
+        }
+      );
 
       console.debug('[NotificationPrefs] Subscription setup complete');
     } catch (error) {
@@ -420,6 +423,7 @@ export class NotificationPreferencesView extends AuthedElement {
 
     // Disconnect from WebSocket
     this.unsubscribe?.();
+    this.unsubscribeStateChange?.();
   }
 
   /** Test sends are admin-only for now; hide the controls for everyone else. */
@@ -609,7 +613,12 @@ export class NotificationPreferencesView extends AuthedElement {
     }
   }
 
-  private async handleChannelChange(e: any) {
+  /** Persist a single preference field via PUT /notification-preferences/me. */
+  private async updatePreference(
+    field: string,
+    value: string | boolean,
+    label: string
+  ) {
     if (!this.preferences) return;
 
     try {
@@ -617,13 +626,11 @@ export class NotificationPreferencesView extends AuthedElement {
       const data = await this.fetchData('/api/v1/notification-preferences/me', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          preferred_channel: e.target.value,
-        }),
+        body: JSON.stringify({ [field]: value }),
       });
 
       if (!data) {
-        throw new Error('Failed to update channel preference');
+        throw new Error(`Failed to update ${label}`);
       }
 
       this.preferences = data;
@@ -634,87 +641,38 @@ export class NotificationPreferencesView extends AuthedElement {
     } finally {
       this.isSaving = false;
     }
+  }
+
+  private async handleChannelChange(e: any) {
+    await this.updatePreference(
+      'preferred_channel',
+      e.target.value,
+      'channel preference'
+    );
   }
 
   private async handleToggleEmail(e: any) {
-    if (!this.preferences) return;
-
-    try {
-      this.isSaving = true;
-      const data = await this.fetchData('/api/v1/notification-preferences/me', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          enable_email: e.target.checked,
-        }),
-      });
-
-      if (!data) {
-        throw new Error('Failed to update email preference');
-      }
-
-      this.preferences = data;
-      this.successMessage = 'Preference updated successfully';
-      setTimeout(() => (this.successMessage = ''), 3000);
-    } catch (error: any) {
-      this.errorMessage = error.message || 'Failed to update preference';
-    } finally {
-      this.isSaving = false;
-    }
+    await this.updatePreference(
+      'enable_email',
+      e.target.checked,
+      'email preference'
+    );
   }
 
   private async handleToggleMobilePush(e: any) {
-    if (!this.preferences) return;
-
-    try {
-      this.isSaving = true;
-      const data = await this.fetchData('/api/v1/notification-preferences/me', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          enable_mobile_push: e.target.checked,
-        }),
-      });
-
-      if (!data) {
-        throw new Error('Failed to update mobile push preference');
-      }
-
-      this.preferences = data;
-      this.successMessage = 'Preference updated successfully';
-      setTimeout(() => (this.successMessage = ''), 3000);
-    } catch (error: any) {
-      this.errorMessage = error.message || 'Failed to update preference';
-    } finally {
-      this.isSaving = false;
-    }
+    await this.updatePreference(
+      'enable_mobile_push',
+      e.target.checked,
+      'mobile push preference'
+    );
   }
 
   private async handleToggleStaggerEmail(e: any) {
-    if (!this.preferences) return;
-
-    try {
-      this.isSaving = true;
-      const data = await this.fetchData('/api/v1/notification-preferences/me', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          stagger_email: e.target.checked,
-        }),
-      });
-
-      if (!data) {
-        throw new Error('Failed to update quiet-alerts preference');
-      }
-
-      this.preferences = data;
-      this.successMessage = 'Preference updated successfully';
-      setTimeout(() => (this.successMessage = ''), 3000);
-    } catch (error: any) {
-      this.errorMessage = error.message || 'Failed to update preference';
-    } finally {
-      this.isSaving = false;
-    }
+    await this.updatePreference(
+      'stagger_email',
+      e.target.checked,
+      'quiet-alerts preference'
+    );
   }
 
   private get showStaggerToggle(): boolean {
