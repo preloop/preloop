@@ -21,7 +21,13 @@ export type ActivityListener = (activity: SessionActivity) => void;
 const DEFAULT_POLL_MS = 5_000;
 /** Ignore transcripts idle for longer than this on the initial scan. */
 const INITIAL_IDLE_CUTOFF_MS = 15 * 60 * 1000;
-/** Read at most this many trailing bytes when summarizing a transcript. */
+/**
+ * Read at most this many trailing bytes when summarizing a transcript.
+ * The fixed-offset read can split a multi-byte UTF-8 character (or a JSON
+ * line) at the window boundary; the backwards line walk below tolerates the
+ * resulting parse failure and settles on the newest complete record, at
+ * worst skipping a partial record at the very start of the window.
+ */
 const TAIL_BYTES = 64 * 1024;
 
 export class TranscriptObserver {

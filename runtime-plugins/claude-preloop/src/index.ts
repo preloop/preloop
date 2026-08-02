@@ -19,7 +19,6 @@ import {
   ControlConfig,
   PROTOCOL,
   RUNTIME,
-  defaultConfigPath,
   defaultTranscriptDir,
   loadConfig,
   verifyConfig,
@@ -121,6 +120,7 @@ export class PreloopClaudeSidecar {
     this.observer?.stop();
     this.observer = undefined;
     this.sessions?.stop();
+    this.sessions = undefined;
     this.socket?.close();
     this.socket = undefined;
   }
@@ -133,6 +133,11 @@ export class PreloopClaudeSidecar {
     const wsUrl = new URL(config.control_ws_url!);
     // Node's global WebSocket has no header option, so the durable bearer
     // token is passed as a query param. The backend accepts this form.
+    // KNOWN LIMITATION: although wss encrypts the URL in transit, query
+    // params can surface in server access logs and intermediate proxy logs.
+    // Moving to the `ws` npm package (custom headers via the HTTP upgrade)
+    // would keep the token out of the URL at the cost of a runtime
+    // dependency; revisit before production hardening.
     wsUrl.searchParams.set("token", config.bearer_token!);
 
     let socket: WebSocket;

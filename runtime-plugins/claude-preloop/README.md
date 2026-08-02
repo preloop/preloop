@@ -43,6 +43,10 @@ Control WebSocket and drives Claude Code through the
   the sidecar once idle.
 - `interrupt` on an observed TUI session fails with a clear error rather
   than sending signals to a terminal someone is typing into.
+- Node's global `WebSocket` cannot set custom headers, so the bearer token
+  is sent as a `token` query parameter on the wss URL. Encrypted in
+  transit, but it can appear in server/proxy access logs; production
+  hardening should move to header-based auth (e.g. the `ws` package).
 
 ## Configuration
 
@@ -64,7 +68,8 @@ The sidecar reads `~/.claude/preloop-control.json` (its own file;
 ```
 
 Optional keys: `permission_mode`, `transcript_dir`, `observer_enabled`,
-`observer_poll_ms`.
+`observer_poll_ms`, `turn_timeout_ms` (per-turn reply timeout, default 5
+minutes; a hung turn is rejected so the sidecar keeps serving commands).
 
 ## Usage
 

@@ -86,7 +86,13 @@ class AsyncQueue<T> implements AsyncIterable<T> {
 type TurnWaiter = {
   resolve: (replyText: string) => void;
   reject: (error: Error) => void;
+  settled: boolean;
+  timer?: ReturnType<typeof setTimeout>;
 };
+
+/** Upper bound on a single remote turn; prevents one hung session from
+ * blocking the sidecar forever. Overridable via `turn_timeout_ms`. */
+export const DEFAULT_TURN_TIMEOUT_MS = 5 * 60 * 1000;
 
 /** One SDK-owned Claude Code session (started or resumed by the sidecar). */
 class OwnedSession {
@@ -123,15 +129,34 @@ class OwnedSession {
           const reply =
             message.result ?? this.turnText.join("\n").trim();
           this.turnText = [];
-          this.turnWaiters.shift()?.resolve(reply ?? "");
+          this.settleNextWaiter(reply ?? "");
         }
       }
     } finally {
       this.ended = true;
       const error = new Error("Claude Code session ended");
       for (const waiter of this.turnWaiters.splice(0)) {
-        waiter.reject(error);
+        if (!waiter.settled) {
+          waiter.settled = true;
+          clearTimeout(waiter.timer);
+          waiter.reject(error);
+        }
       }
+    }
+  }
+
+  /** Resolve the oldest unsettled waiter, dropping timed-out ones in order
+   * so replies stay aligned with their originating turns. */
+  private settleNextWaiter(reply: string): void {
+    while (this.turnWaiters.length > 0) {
+      const waiter = this.turnWaiters.shift()!;
+      if (waiter.settled) {
+        continue;
+      }
+      waiter.settled = true;
+      clearTimeout(waiter.timer);
+      waiter.resolve(reply);
+      return;
     }
   }
 
@@ -140,12 +165,25 @@ class OwnedSession {
   }
 
   /** Queue an operator turn and resolve with the assistant's reply text. */
-  send(text: string): Promise<string> {
+  send(text: string, timeoutMs: number = DEFAULT_TURN_TIMEOUT_MS): Promise<string> {
     if (this.ended) {
       return Promise.reject(new Error("Claude Code session ended"));
     }
     const reply = new Promise<string>((resolve, reject) => {
-      this.turnWaiters.push({ resolve, reject });
+      const waiter: TurnWaiter = { resolve, reject, settled: false };
+      waiter.timer = setTimeout(() => {
+        if (!waiter.settled) {
+          waiter.settled = true;
+          reject(
+            new Error(
+              `Claude Code turn timed out after ${timeoutMs}ms; ` +
+                "the session may still be running",
+            ),
+          );
+        }
+      }, timeoutMs);
+      (waiter.timer as { unref?: () => void }).unref?.();
+      this.turnWaiters.push(waiter);
     });
     this.input.push({
       type: "user",
@@ -245,7 +283,10 @@ export class SessionManager {
       // Resume the persisted session when targeted, else a fresh session.
       session = await this.open(target);
     }
-    return session.send(params.text);
+    return session.send(
+      params.text,
+      this.config.turn_timeout_ms ?? DEFAULT_TURN_TIMEOUT_MS,
+    );
   }
 
   /** Interrupt an owned session. Observed TUI sessions are not interruptible. */

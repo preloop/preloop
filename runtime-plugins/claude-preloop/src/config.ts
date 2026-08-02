@@ -28,6 +28,8 @@ export type ControlConfig = {
   observer_enabled?: boolean;
   /** Observer poll cadence in milliseconds. Defaults to 5000. */
   observer_poll_ms?: number;
+  /** Per-turn reply timeout in milliseconds. Defaults to 5 minutes. */
+  turn_timeout_ms?: number;
 };
 
 export const PROTOCOL = "preloop.agent_control.v1";

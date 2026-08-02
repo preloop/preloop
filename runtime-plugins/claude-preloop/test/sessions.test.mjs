@@ -107,6 +107,30 @@ test("interrupt targets the owned session", async () => {
   manager.stop();
 });
 
+test("a hung turn rejects after turn_timeout_ms instead of blocking forever", async () => {
+  // Factory that consumes input but never yields a result message.
+  const hangingFactory = async ({ prompt }) => ({
+    async interrupt() {},
+    async *[Symbol.asyncIterator]() {
+      yield { type: "system", subtype: "init", session_id: "hung-1" };
+      for await (const _userMessage of prompt) {
+        // Swallow the turn; no assistant/result messages ever come back.
+      }
+    },
+  });
+  const manager = new SessionManager(
+    { ...baseConfig, turn_timeout_ms: 50 },
+    hangingFactory,
+  );
+  await assert.rejects(
+    () => manager.sendMessage({ text: "never answered" }),
+    /timed out after 50ms/,
+  );
+  // The sidecar can still take new commands afterwards.
+  assert.equal(manager.ownedSessionIds().length, 1);
+  manager.stop();
+});
+
 test("interrupt with no owned sessions reports the honest limitation", async () => {
   const { manager } = makeManager();
   await assert.rejects(
