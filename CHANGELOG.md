@@ -7,36 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **Code Quality / Scorecard hygiene**: clear GitHub Code Quality maintainability
-  warnings (implicit string concat in gateway tests; unused-export false
-  positives), pin GitHub Actions and Docker base images by digest, bump CLI
-  Go toolchain to 1.26.5 and `golang.org/x/{text,crypto,sys}` for Scorecard
-  vulnerability findings, override frontend `basic-ftp`/`yaml` advisories,
-  harden refresh-token error responses, and document/wire
-  `REFRESH_TOKEN_EXPIRE_DAYS` / `MAX_SESSION_DAYS` in Helm.
+Highlights: **Cursor usage import** brings bundled-model spend into Cost
+analytics, **rate-limit intelligence** turns upstream 429s into a headroom
+report, and **agent identity v2** gives managed agents a stable durable id
+across renames and re-onboarding.
 
 ### Added
 
-- **Security-screen scoring endpoint** (#155):
-  `POST /api/v1/security-screen/score` implements QM's external
-  security-screen proxy contract. Accepts `{text, hook, metadata}` with the
-  operator token in `x-api-key` and returns
-  `{score, threshold, primary_outcome}` from a deterministic rule-based
-  scorer (prompt-injection markers, destructive commands, destructive SQL,
-  secret-exfiltration patterns). Threshold configurable via
-  `PRELOOP_SECURITY_SCREEN_THRESHOLD` (default 0.7). Screened text is never
-  logged or persisted; no schema changes.
-- **`preloop agents remove`**: permanently delete a managed-agent registry
-  entry. Refuses when the agent has usage history unless `--force` is passed.
-- **Stable v2 managed-agent identity**: CLI derives
-  `session_source_id` from host + source type + config path (display name
-  decoupled), with `--no-reuse` for salted escape. New
-  `enrollment_hostname` / `identity_derivation` columns.
+- **Cursor bundled-model usage import** (#123): Cursor's Composer/Auto models
+  never traverse the model gateway, so their spend was invisible. Two new
+  endpoints ingest it: `POST /api/v1/usage/import` for normalized events and
+  `POST /api/v1/usage/import/csv` for the Cursor dashboard Usage CSV export
+  (case-insensitive, order-independent headers, with an optional `column_map`
+  for other export shapes). Imported events are attributed to a managed agent
+  and land in the cost ledger as `action_type='imported_usage'` rows labeled
+  `usage_source='imported'` / `cost_source='imported'`. Imports are idempotent:
+  every event carries a dedupe fingerprint backed by a unique database index,
+  so re-importing the same CSV reports `skipped_duplicates` instead of
+  double-counting. Imported spend surfaces as a separate `imported_usage`
+  block in `GET /api/v1/cost/summary` and never mixes into gateway
+  `estimated_cost`, budgets, or spend caps.
+- **Rate-limit intelligence and subscription headroom** (#136): the gateway now
+  captures upstream 429s and provider rate-limit headers (`Retry-After`,
+  `anthropic-ratelimit-*`, `x-ratelimit-*`) as real observations, normalizes
+  them into rate-limit snapshots, and persists them on the usage row.
+  `GET /api/v1/account/gateway-usage/rate-limits` reports rate-limited request
+  counts, blocked time, quota-exhausted vs transient breakdown, and per-model
+  and per-session detail. Undocumented provider headers are preserved verbatim
+  rather than presented as normalized facts.
+- **Stable v2 managed-agent identity**: the CLI derives `session_source_id`
+  from host + source type + config path, so an agent keeps one durable
+  identity when its display name changes or it is re-onboarded. Use
+  `--no-reuse` for a salted escape hatch. Adds `enrollment_hostname` and
+  `identity_derivation` columns.
 - **`POST /api/v1/agents/{id}/rekey`** and **`POST /api/v1/agents/{id}/merge`**:
-  rewrite or consolidate durable principal ids (usage, sessions, budgets,
-  approvals) with dry-run support; CLI `preloop agents merge`.
+  rewrite or consolidate durable principal ids across usage, sessions,
+  budgets, and approvals, with dry-run support. Exposed as
+  `preloop agents merge`.
+- **`permission_prompt` builtin for Claude Code approvals** (#132): implements
+  Claude Code's `--permission-prompt-tool` contract, resolving native tool
+  permissions through Preloop policies and approvals.
+  `PRELOOP_PERMISSION_PROMPT_WAIT_SECONDS` (default 25) tunes the in-call wait
+  before a retryable pending deny. Default-off, so accounts that do not opt in
+  pay no context tax. Ships with a general per-agent tool-config scope
+  (`ToolConfiguration.managed_agent_id`); null preserves account-wide
+  semantics.
+- **Per-tool context cost on the Tools page** (#128): every tool shows
+  `~N tokens/request` computed from the schema as actually served (including
+  injected justification parameters), plus a summary line totalling what
+  enabled tools add to every agent request.
+- **Optimizer recommends disabling unused builtins** (#146): a deterministic
+  `disable-builtin-tools` suggestion for Preloop builtins unused in the session
+  with zero account-wide invocations over 30 days, with a one-click apply.
+  Savings are not double-counted against `scope-tools`, and agent-provided
+  tools are never touched.
 - **ask_user in-session delivery** (#130): pending `ask_user` /
   `request_approval` responses now include token-free deep links to the
   specific question (`approval_console_url`, `approval_mobile_link` /
@@ -58,7 +82,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cache TTL and whose ApiUsage rows show a `cache_read` collapse with a
   `cache_creation` spike. Optimize surfaces a measured write-vs-read premium
   (``reduce-idle-cache-expiry`` suggestion + aggregate line); Replay annotates
-  the expiry turn. USD figures are catalog-priced or omitted — never invented
+  the expiry turn. USD figures are catalog-priced or omitted, never invented
   from session averages.
 - **Passkey (WebAuthn) sign-in and registration**: register passkeys in user
   settings and sign in from the login page with discoverable credentials (no
@@ -66,6 +90,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   relying party and origin overridable with `WEBAUTHN_RP_ID` and
   `WEBAUTHN_ORIGIN`. Passkey logins are audit-logged and trigger the same
   inactivity notifications as password logins.
+- **Approval email staggered behind push** (#119): for users with both channels
+  enabled, push goes out immediately and email waits 60 seconds, sending only
+  if the approval is still pending. Email-only users are unaffected, and any
+  push failure falls back to immediate email so delivery never degrades.
+  Per-user `stagger_email` toggle (default on) in notification preferences.
+- **Security-screen scoring endpoint** (#155):
+  `POST /api/v1/security-screen/score` implements QM's external
+  security-screen proxy contract. Accepts `{text, hook, metadata}` with the
+  operator token in `x-api-key` and returns
+  `{score, threshold, primary_outcome}` from a deterministic rule-based
+  scorer (prompt-injection markers, destructive commands, destructive SQL,
+  secret-exfiltration patterns). Threshold configurable via
+  `PRELOOP_SECURITY_SCREEN_THRESHOLD` (default 0.7). Screened text is never
+  logged or persisted; no schema changes.
+- **`preloop agents remove`**: permanently delete a managed-agent registry
+  entry. Refuses when the agent has usage history unless `--force` is passed.
+- **CLI install-runtime UX** (#113): an interactive managed-model picker before
+  `agents onboard` / `install-runtime` (with `--model` for non-interactive
+  use), an explicit gateway round-trip check at the end of install
+  (`round-trip OK, model=..., latency=...s`) with an actionable failure
+  message, and printed reconfigure/undo hints after mutating agents commands.
 
 ### Changed
 
@@ -76,16 +121,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Gateway upstream provider errors are classified** (#116, #117, #118): a
+  shared `classify_upstream_error` taxonomy (`network`,
+  `upstream_overloaded`, `upstream_rate_limited`, `upstream_quota_exhausted`,
+  `upstream_auth`, `upstream_disconnect`, `upstream_error`,
+  `client_cancelled`) covers streaming and non-streaming paths. Connection
+  refused and transport failures now return a clear **503** instead of an
+  opaque 500, mid-stream provider disconnects emit an SSE
+  `upstream_disconnect` event followed by `[DONE]`, and quota-exhausted 429s
+  are marked terminal with `Retry-After` / `X-Preloop-Retry-Terminal` so
+  runtimes fail fast. The failure class is persisted on the usage row
+  (`ApiUsage.error_class`) so cost and session views can separate
+  provider-side failures.
 - **ask_user approve→execute handoff**: replaying an approved `ask_user`
   through `get_approval_status` now returns the approver's comment (the
   human's answer) as the tool result instead of losing it; async-workflow
   pending payloads pass through to the agent instead of being misreported
   as "No answer provided".
-
 - **Sessions no longer expire aggressively**: refresh failures caused by
   transient errors (5xx, network) no longer clear tokens and force re-login;
   only definitive 401/403 does. OAuth logins now store refresh tokens.
   Active sessions slide up to a 30-day cap.
+- **CLI build repair** (#144): restore `recoverDeferredGatewayValidationFailure`
+  in `cli/internal/cmd`, which a bad merge left uncompilable and which broke
+  the Windows CLI test job on every open PR.
+- **Code Quality / Scorecard hygiene**: clear GitHub Code Quality
+  maintainability warnings (implicit string concat in gateway tests;
+  unused-export false positives), pin GitHub Actions and Docker base images by
+  digest, bump the CLI Go toolchain to 1.26.5 and
+  `golang.org/x/{text,crypto,sys}` for Scorecard vulnerability findings,
+  override frontend `basic-ftp`/`yaml` advisories, harden refresh-token error
+  responses, and document/wire `REFRESH_TOKEN_EXPIRE_DAYS` / `MAX_SESSION_DAYS`
+  in Helm.
+- **Single Alembic head restored** (#162, #163): parallel feature merges left
+  the migration graph with multiple heads, breaking `alembic upgrade head` on
+  self-hosted upgrades. The heads are collapsed into one mergepoint
+  (`20260801_stagger_email`) with a regression guard.
+- **Hermes plugin verify crash** #165: AgentControlConfig in preloop 0.13.x
+  does not expose a runtime attribute. The Hermes plugin reads config.runtime,
+  but that field is only present in the raw YAML config block, not the parsed
+  dataclass.
 
 ## [0.13.1] - 2026-07-28
 
