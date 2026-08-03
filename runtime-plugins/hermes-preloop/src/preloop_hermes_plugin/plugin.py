@@ -442,8 +442,10 @@ class HermesPreloopPlugin:
     def verify(self) -> None:
         """Validate local plugin load and config shape."""
         config = self.load_config()
-        if config.runtime != self.runtime_name:
-            raise ValueError(f"Expected Hermes runtime config, got {config.runtime!r}")
+        block = self._read_control_block()
+        runtime = block.get("runtime")
+        if runtime != self.runtime_name:
+            raise ValueError(f"Expected Hermes runtime config, got {runtime!r}")
         if not config.control_ws_url:
             raise ValueError("preloop.control.control_ws_url is required")
         if not config.bearer_token:
