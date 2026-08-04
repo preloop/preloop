@@ -3,6 +3,7 @@ package cmd
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"path/filepath"
 	"testing"
 )
 
@@ -48,14 +49,17 @@ func TestSourceTypeUnchangedForRekeyedProducts(t *testing.T) {
 // TestPrincipalIDStableAcrossKindChange proves the v2 identity of an existing
 // Cursor install is byte-identical before and after this change.
 func TestPrincipalIDStableAcrossKindChange(t *testing.T) {
-	agent := AgentConfig{Name: "Cursor", ConfigPath: "/home/u/.cursor/mcp.json"}
+	const configPath = "/home/u/.cursor/mcp.json"
+	agent := AgentConfig{Name: "Cursor", ConfigPath: configPath}
 
 	// Recompute the pre-fix derivation independently rather than hardcoding a
 	// digest: the id embeds the local hostname, so a literal golden value
-	// would only hold on the machine that captured it.
+	// would only hold on the machine that captured it. The path must go
+	// through filepath.Clean for the same reason the production derivation
+	// does, since it rewrites separators on Windows.
 	host, _ := enrollmentHostnameLabel()
 	nul := string([]byte{0})
-	sum := sha256.Sum256([]byte("v2" + nul + host + nul + "desktop_agent" + nul + "/home/u/.cursor/mcp.json"))
+	sum := sha256.Sum256([]byte("v2" + nul + host + nul + "desktop_agent" + nul + filepath.Clean(configPath)))
 	want := "desktop-agent-" + hex.EncodeToString(sum[:6])
 
 	if got := stableRuntimePrincipalIDForAgent(agent, ""); got != want {
