@@ -119,6 +119,17 @@ preloop tools exec <tool-name> --args-file ./input.json
 
 `preloop tools` talks directly to the MCP endpoint, so the visible and executable tools are automatically filtered by the current token's policy. Agent tokens only see the tools they are allowed to use.
 
+### Usage Import
+
+```bash
+preloop usage import cursor-usage.csv                # Cursor dashboard Usage export
+preloop usage import events.json                     # Normalized usage events
+preloop usage import cursor-usage.csv --agent-id <id>
+preloop usage import export.csv --column-map '{"cost":"Cost to You"}'
+```
+
+Imports spend the model gateway never saw, such as Cursor's bundled models. Records are labeled as imported, so they are reported separately from gateway-metered spend and never count against gateway budgets. Re-importing the same file is safe: duplicates are detected and reported as skipped. Without `--agent-id`, the account's onboarded Cursor agent is used, so run `preloop agents onboard cursor` first or pass the id explicitly.
+
 ### Approvals
 
 ```bash
