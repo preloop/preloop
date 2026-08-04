@@ -26,7 +26,12 @@ across renames and re-onboarding.
   so re-importing the same CSV reports `skipped_duplicates` instead of
   double-counting. Imported spend surfaces as a separate `imported_usage`
   block in `GET /api/v1/cost/summary` and never mixes into gateway
-  `estimated_cost`, budgets, or spend caps.
+  `estimated_cost`, budgets, or spend caps. Cost analytics renders this as an
+  "Imported usage" section showing imported events, tokens, and cost, plus a
+  per-model table with the source and the last event time. The section carries a
+  "Not gateway metered" badge and stays out of the spend metrics, budgets, and
+  breakdowns, which continue to describe gateway-metered traffic only. It is
+  hidden when the selected window holds no imported usage.
 - **Rate-limit intelligence and subscription headroom** (#136): the gateway now
   captures upstream 429s and provider rate-limit headers (`Retry-After`,
   `anthropic-ratelimit-*`, `x-ratelimit-*`) as real observations, normalizes
