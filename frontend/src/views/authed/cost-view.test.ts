@@ -8,6 +8,9 @@ import { invalidateApiCaches } from '../../api';
 
 describe('CostView', () => {
   let fetchStub: sinon.SinonStub;
+  // Per-test copy of the payload so a test can add fields (e.g. the imported
+  // usage block) without leaking into the others.
+  let summaryPayload: Record<string, unknown>;
 
   const summary = {
     period_start: '2026-03-01T00:00:00Z',
@@ -73,12 +76,13 @@ describe('CostView', () => {
   beforeEach(() => {
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
+    summaryPayload = { ...summary };
     fetchStub = sinon.stub(window, 'fetch');
     fetchStub.callsFake(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
 
       if (url.includes('/api/v1/cost/summary')) {
-        return new Response(JSON.stringify(summary), {
+        return new Response(JSON.stringify(summaryPayload), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
@@ -140,6 +144,117 @@ describe('CostView', () => {
       '[role="status"][aria-busy="true"]'
     );
     expect(loading).to.exist;
+  });
+
+  describe('imported usage section', () => {
+    const importedUsage = {
+      event_count: 4,
+      total_tokens: 9680,
+      imported_cost: 2.09,
+      usage_by_model: [
+        {
+          model_alias: 'claude-4.5-sonnet',
+          source: 'cursor',
+          request_count: 2,
+          total_tokens: 7090,
+          imported_cost: 1.67,
+          last_event_at: '2026-07-31T10:05:00Z',
+        },
+        {
+          model_alias: 'composer',
+          source: 'cursor',
+          request_count: 2,
+          total_tokens: 2590,
+          imported_cost: 0.42,
+          last_event_at: '2026-07-31T10:00:00Z',
+        },
+      ],
+    };
+
+    async function loadView(imported?: unknown): Promise<CostView> {
+      if (imported !== undefined) {
+        summaryPayload = { ...summary, imported_usage: imported };
+      }
+      const element = (await fixture(
+        html`<cost-view></cost-view>`
+      )) as CostView;
+      await waitUntil(
+        () => (element as unknown as { loading: boolean }).loading === false
+      );
+      await element.updateComplete;
+      return element;
+    }
+
+    it('renders totals and a per-model table when imported usage exists', async () => {
+      const element = await loadView(importedUsage);
+
+      const totals = element.shadowRoot?.querySelector(
+        '[aria-label="Imported usage totals"]'
+      );
+      expect(totals).to.exist;
+      expect(totals?.textContent).to.contain('4');
+      expect(totals?.textContent).to.contain('9,680');
+      expect(totals?.textContent).to.contain('$2.09');
+
+      const table = element.shadowRoot?.querySelector(
+        'table[aria-label="Imported usage by model"]'
+      );
+      expect(table).to.exist;
+      expect(table?.querySelector('th[scope="col"]')).to.exist;
+      expect(table?.querySelectorAll('tbody tr').length).to.equal(2);
+
+      const body = table?.querySelector('tbody')?.textContent ?? '';
+      expect(body).to.contain('claude-4.5-sonnet');
+      expect(body).to.contain('cursor');
+      expect(body).to.contain('$1.67');
+    });
+
+    it('labels the section so imported spend reads as separate from gateway spend', async () => {
+      const element = await loadView(importedUsage);
+
+      const text = element.shadowRoot?.textContent ?? '';
+      expect(text).to.contain('Imported usage');
+      expect(text).to.contain('Not gateway metered');
+    });
+
+    it('keeps imported cost out of the gateway spend metric', async () => {
+      const element = await loadView(importedUsage);
+
+      const metrics = element.shadowRoot?.querySelector(
+        '[aria-label="Cost summary metrics"]'
+      );
+      // Gateway spend stays at the summary's estimated_cost (8.50); the
+      // imported 2.09 must not be added to it.
+      expect(metrics?.textContent).to.contain('$8.50');
+      expect(metrics?.textContent).to.not.contain('$10.59');
+    });
+
+    it('hides the section when there is no imported usage', async () => {
+      const element = await loadView({
+        event_count: 0,
+        total_tokens: 0,
+        imported_cost: 0,
+        usage_by_model: [],
+      });
+
+      expect(
+        element.shadowRoot?.querySelector(
+          '[aria-label="Imported usage totals"]'
+        )
+      ).to.not.exist;
+      expect(element.shadowRoot?.textContent).to.not.contain('Imported usage');
+    });
+
+    it('hides the section when the response omits the imported block', async () => {
+      const element = await loadView();
+
+      expect(
+        element.shadowRoot?.querySelector(
+          '[aria-label="Imported usage totals"]'
+        )
+      ).to.not.exist;
+      expect(element.shadowRoot?.textContent).to.not.contain('Imported usage');
+    });
   });
 
   it('renders the page title and description in the view header', async () => {

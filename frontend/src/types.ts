@@ -916,7 +916,29 @@ export type ModelPriceOverrideCreate = Omit<
 
 export type ModelPriceOverrideUpdate = Partial<ModelPriceOverrideCreate>;
 
-export interface CostAnalyticsSummaryResponse extends AccountGatewayUsageSummaryResponse {}
+// Usage ingested from outside the gateway (e.g. a Cursor CSV/JSON export).
+// Reported as its own block so imported spend is never mixed into
+// `estimated_cost` or any budget figure (issue #123).
+export interface ImportedUsageByModel {
+  model_alias: string | null;
+  source: string | null;
+  request_count: number;
+  total_tokens: number;
+  imported_cost: number;
+  last_event_at: string | null;
+}
+
+export interface ImportedUsageSummary {
+  event_count: number;
+  total_tokens: number;
+  imported_cost: number;
+  usage_by_model: ImportedUsageByModel[];
+}
+
+export interface CostAnalyticsSummaryResponse extends AccountGatewayUsageSummaryResponse {
+  // Absent (null) when the window contains no imported usage.
+  imported_usage?: ImportedUsageSummary | null;
+}
 
 export interface ProviderBillingConnection {
   id: string;

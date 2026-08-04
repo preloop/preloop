@@ -25,6 +25,7 @@ import type {
   CostReconciliationRow,
   GatewayUsageBySession,
   GatewayUsageByTool,
+  ImportedUsageByModel,
   ModelPriceOverride,
   ModelPriceOverrideCreate,
   ProviderBillingConnection,
@@ -179,6 +180,7 @@ export class CostView extends AuthedElement {
   };
   @state() private sessionSort: SortState = { key: 'cost', dir: 'desc' };
   @state() private userSort: SortState = { key: 'cost', dir: 'desc' };
+  @state() private importedSort: SortState = { key: 'cost', dir: 'desc' };
 
   private get modelPriceOverridesEnabled(): boolean {
     return this.featureFlags.model_price_overrides === true;
@@ -374,6 +376,32 @@ export class CostView extends AuthedElement {
 
       .analytics-card::part(body) {
         padding: var(--sl-spacing-large);
+      }
+
+      .imported-usage-note {
+        margin-bottom: var(--sl-spacing-medium);
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
+        line-height: 1.5;
+      }
+
+      .imported-usage-totals {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-large);
+        margin-bottom: var(--sl-spacing-medium);
+      }
+
+      .imported-usage-total-label {
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
+      }
+
+      .imported-usage-total-value {
+        margin-top: var(--sl-spacing-2x-small);
+        font-size: 1.25rem;
+        font-weight: 700;
+        color: var(--sl-color-neutral-950);
       }
 
       .analytics-table-wrap {
@@ -1238,6 +1266,144 @@ export class CostView extends AuthedElement {
       groups.set(owner, existing);
     }
     return [...groups.values()];
+  }
+
+  // Imported usage (issue #123): spend ingested from a provider's own export
+  // (e.g. Cursor) rather than metered by the gateway. It is rendered as its
+  // own section and never folded into the spend metrics, budgets, or the
+  // per-agent/session/tool tabs above, which all describe gateway traffic.
+  // Hidden entirely when the window holds no imported events.
+  private renderImportedUsage() {
+    const imported = this.summary?.imported_usage;
+    if (!imported || !imported.event_count) return nothing;
+    const columns: SortColumn<ImportedUsageByModel>[] = [
+      {
+        key: 'model',
+        label: 'Model',
+        numeric: false,
+        value: (r) => r.model_alias || 'Unknown',
+      },
+      {
+        key: 'source',
+        label: 'Source',
+        numeric: false,
+        value: (r) => r.source || 'Unknown',
+      },
+      {
+        key: 'requests',
+        label: 'Events',
+        numeric: true,
+        value: (r) => r.request_count,
+      },
+      {
+        key: 'tokens',
+        label: 'Tokens',
+        numeric: true,
+        value: (r) => r.total_tokens,
+      },
+      {
+        key: 'cost',
+        label: 'Imported cost',
+        numeric: true,
+        value: (r) => r.imported_cost,
+      },
+      {
+        key: 'last_event',
+        label: 'Last event',
+        numeric: true,
+        value: (r) =>
+          r.last_event_at ? new Date(r.last_event_at).getTime() : 0,
+      },
+    ];
+    const rows = this.sortRows(
+      imported.usage_by_model || [],
+      columns,
+      this.importedSort
+    );
+    return html`
+      <sl-card class="analytics-card">
+        ${this.renderSectionHeader(
+          'box-arrow-in-down',
+          'Imported usage',
+          html`<sl-badge variant="neutral" pill>Not gateway metered</sl-badge>`
+        )}
+        <div class="imported-usage-note">
+          Usage imported from a provider's own export. It is reported separately
+          and is not counted in the spend metrics, budgets, or breakdowns above,
+          which cover gateway-metered traffic only.
+        </div>
+        <div
+          class="imported-usage-totals"
+          role="region"
+          aria-label="Imported usage totals"
+        >
+          <div>
+            <div class="imported-usage-total-label">Imported events</div>
+            <div class="imported-usage-total-value">
+              ${this.formatNumber(imported.event_count)}
+            </div>
+          </div>
+          <div>
+            <div class="imported-usage-total-label">Imported tokens</div>
+            <div class="imported-usage-total-value">
+              ${this.formatNumber(imported.total_tokens)}
+            </div>
+          </div>
+          <div>
+            <div class="imported-usage-total-label">Imported cost</div>
+            <div class="imported-usage-total-value">
+              ${this.formatCurrency(imported.imported_cost)}
+            </div>
+          </div>
+        </div>
+        ${
+          rows.length
+            ? html`<div class="analytics-table-wrap">
+                <table
+                  class="styled-table"
+                  aria-label="Imported usage by model"
+                >
+                  <thead>
+                    <tr>
+                      ${columns.map((column) =>
+                        this.renderSortableHeader(
+                          column,
+                          this.importedSort,
+                          (key) =>
+                            (this.importedSort = this.toggleSort(
+                              this.importedSort,
+                              key
+                            ))
+                        )
+                      )}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${rows.map(
+                      (row) => html`
+                        <tr>
+                          <td>${row.model_alias || 'Unknown'}</td>
+                          <td>${row.source || 'Unknown'}</td>
+                          <td>${this.formatNumber(row.request_count)}</td>
+                          <td>${this.formatNumber(row.total_tokens)}</td>
+                          <td>${this.formatCurrency(row.imported_cost)}</td>
+                          <td>
+                            ${
+                              row.last_event_at
+                                ? new Date(row.last_event_at).toLocaleString()
+                                : '-'
+                            }
+                          </td>
+                        </tr>
+                      `
+                    )}
+                  </tbody>
+                </table>
+              </div>`
+            : html`<div class="empty">No per-model imported usage yet.</div>`
+        }
+      </sl-card>
+    `;
   }
 
   private renderBreakdown() {
@@ -2221,7 +2387,9 @@ export class CostView extends AuthedElement {
                 ${this.renderMetrics()} ${this.renderCatalogInfo()}
                 ${this.renderUnpricedNotice()}
                 <div class="column-layout dashboard extra-wide">
-                  <div class="main-column">${this.renderBreakdown()}</div>
+                  <div class="main-column">
+                    ${this.renderBreakdown()} ${this.renderImportedUsage()}
+                  </div>
                   <div class="side-column">${this.renderControls()}</div>
                 </div>
               `
