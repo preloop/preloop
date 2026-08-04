@@ -27,6 +27,16 @@ export function renderAgentIcon(
       return renderIcon('', '/images/logos/opencode.svg');
     case 'hermes':
       return renderIcon('', '/images/logos/hermes.svg');
+    case 'cursor':
+      return renderIcon('', '/images/logos/cursor.svg');
+    case 'windsurf':
+      return renderIcon('', '/images/logos/Windsurf-black-symbol.svg');
+    case 'vscode':
+      return renderIcon('', '/images/logos/vscode.svg');
+    case 'antigravity':
+      return renderIcon('rocket');
+    case 'devin':
+      return renderIcon('robot');
     case 'desktop_agent':
       return renderIcon('pc-display');
     case 'custom':

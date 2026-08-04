@@ -121,6 +121,20 @@ across renames and re-onboarding.
 
 ### Fixed
 
+- **Managed agents report their real product kind** (#123): Cursor, Windsurf,
+  VS Code, Antigravity, and Devin agents all recorded `agent_kind` as
+  `desktop_agent` (or `custom` when created via `POST /api/v1/agents`), because
+  the kind was derived from the connection's `session_source_type`. As a
+  result they showed as generic agents in the console, and the default
+  attribution target for `POST /api/v1/usage/import` could never be resolved
+  (a bare import returned HTTP 422 for every account). `agent_kind` is now
+  decoupled from `session_source_type`: `POST /api/v1/agents` accepts an
+  optional `agent_kind`, and the CLI reports the product it is onboarding when
+  minting a runtime-session token. `session_source_type` is deliberately
+  unchanged, since it is part of the durable v2 principal-id fingerprint:
+  existing enrollments keep their identity, spend history, and credentials,
+  and are refined in place rather than re-keyed. An older CLI that does not
+  send `agent_kind` can no longer reset a known kind back to the generic one.
 - **Gateway upstream provider errors are classified** (#116, #117, #118): a
   shared `classify_upstream_error` taxonomy (`network`,
   `upstream_overloaded`, `upstream_rate_limited`, `upstream_quota_exhausted`,

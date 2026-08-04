@@ -1738,6 +1738,16 @@ export class AgentsView extends LitElement {
         return 'OpenCode';
       case 'hermes':
         return 'Hermes';
+      case 'cursor':
+        return 'Cursor';
+      case 'windsurf':
+        return 'Windsurf';
+      case 'vscode':
+        return 'VS Code';
+      case 'antigravity':
+        return 'Antigravity';
+      case 'devin':
+        return 'Devin';
       case 'desktop_agent':
         return 'Desktop Agent';
       case 'custom':

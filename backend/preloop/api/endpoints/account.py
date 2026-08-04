@@ -1561,6 +1561,11 @@ async def create_account_managed_agent(
     ``active`` so the operator can immediately mint a gateway credential for it
     via ``POST /agents/{agent_id}/credentials``.
 
+    Pass ``agent_kind`` (for example ``cursor``) to record which product the
+    agent is; it defaults to ``custom``. The kind is what usage import resolves
+    a default attribution target by, so an API-created Cursor agent can now be
+    the implicit target of ``POST /usage/import``.
+
     Duplicate ``display_name`` values are allowed within an account: each custom
     agent is keyed by a unique generated ``session_source_id``, so two agents
     sharing a display name remain distinct registry entries. Operators may
@@ -1581,6 +1586,7 @@ async def create_account_managed_agent(
         display_name=payload.display_name,
         description=payload.description,
         owner_user_id=current_user.id,
+        agent_kind=payload.agent_kind,
         commit=True,
     )
     summary = crud_managed_agent.get_summary_for_account(
@@ -1604,6 +1610,7 @@ async def create_account_managed_agent(
                 "agent_id": str(agent.id),
                 "display_name": agent.display_name,
                 "session_source_type": agent.session_source_type,
+                "agent_kind": agent.agent_kind,
                 "registered_by_user_id": str(current_user.id),
             },
         )

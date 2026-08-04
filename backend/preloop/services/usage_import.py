@@ -96,8 +96,10 @@ def resolve_target_agent(
     if not candidates:
         raise UsageImportError(
             f"No managed '{default_agent_kind}' agent found. Onboard one with "
-            f"`preloop agents onboard {default_agent_kind}` or pass agent_id "
-            "explicitly."
+            f"`preloop agents onboard {default_agent_kind.title()}`, register "
+            f"one with `POST /api/v1/agents` "
+            f'(`{{"display_name": "...", "agent_kind": "{default_agent_kind}"}}`), '
+            "or pass agent_id explicitly."
         )
     if len(candidates) > 1:
         ids = ", ".join(str(agent.id) for agent in candidates[:5])

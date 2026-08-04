@@ -24,14 +24,22 @@ SAMPLE_CSV = (
 
 
 def _make_cursor_agent(db, account_id, *, source_id="cursor-ws-1", name="Cursor"):
-    """Register a managed Cursor agent like `preloop agents onboard cursor`."""
+    """Register a managed Cursor agent like `preloop agents onboard Cursor`.
+
+    Cursor connects over the generic MCP-config transport, so its
+    ``session_source_type`` is ``desktop_agent``; ``agent_kind`` is what marks
+    it as Cursor. Keeping those distinct here matters: the fixture previously
+    used a ``cursor`` source type that no code path can actually produce, which
+    is why these tests passed while real imports returned 422 (#123).
+    """
     return crud_managed_agent.upsert_from_runtime_session(
         db,
         account_id=account_id,
         runtime_session_id=None,
-        session_source_type="cursor",
+        session_source_type="desktop_agent",
         session_source_id=source_id,
         display_name=name,
+        agent_kind="cursor",
     )
 
 

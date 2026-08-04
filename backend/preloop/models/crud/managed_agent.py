@@ -19,8 +19,31 @@ MANAGED_AGENT_ACTIVE_WINDOW = timedelta(minutes=10)
 MANAGED_AGENT_RECENT_WINDOW = timedelta(hours=24)
 
 
-def normalize_managed_agent_kind(session_source_type: Optional[str]) -> str:
-    """Normalize one durable agent kind from a runtime source type."""
+def normalize_managed_agent_kind(
+    session_source_type: Optional[str], *, agent_kind: Optional[str] = None
+) -> str:
+    """Normalize one durable agent kind for a managed agent.
+
+    ``agent_kind`` records *which product* the agent is (``cursor``), while
+    ``session_source_type`` records *how it connects* (``desktop_agent``). For
+    most agents the two coincide, but several products (Cursor, Windsurf, VS
+    Code, Antigravity, Devin) share the generic ``desktop_agent`` transport, so
+    an explicit kind wins when supplied.
+
+    The two are deliberately decoupled: the source type is part of the v2
+    principal-id fingerprint, so changing it for existing agents would
+    invalidate their identity. See ``#123``.
+
+    Args:
+        session_source_type: Transport-level source type for the agent.
+        agent_kind: Optional explicit product kind supplied by the caller.
+
+    Returns:
+        The normalized durable agent kind.
+    """
+    explicit = str(agent_kind or "").strip().lower().replace(" ", "_")
+    if explicit:
+        return explicit
     normalized = str(session_source_type or "").strip().lower().replace(" ", "_")
     return normalized or "external_agent"
 
@@ -460,6 +483,7 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         owner_user_id: Any = None,
         enrollment_hostname: Optional[str] = None,
         identity_derivation: Optional[str] = None,
+        agent_kind: Optional[str] = None,
     ) -> ManagedAgent:
         """Create or update one registry entry from a runtime-session token flow.
 
@@ -467,6 +491,13 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         update only when the agent has no owner yet, so a manually assigned owner
         is never overwritten. This owner drives per-user cost attribution and
         per-user budgets.
+
+        ``agent_kind`` lets a newer CLI declare the product it is enrolling
+        (``cursor``) while keeping the transport ``session_source_type``
+        (``desktop_agent``) that the v2 principal id is derived from, so the
+        agent's identity is preserved. On update the stored kind is only
+        refined, never reset to the generic transport value, so an older CLI
+        re-enrolling an agent cannot regress a known product kind.
         """
         db_obj = self.get_by_source(
             db,
@@ -481,7 +512,9 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             db_obj = ManagedAgent(
                 account_id=account_id,
                 runtime_session_id=runtime_session_id,
-                agent_kind=normalize_managed_agent_kind(session_source_type),
+                agent_kind=normalize_managed_agent_kind(
+                    session_source_type, agent_kind=agent_kind
+                ),
                 session_source_type=session_source_type,
                 session_source_id=session_source_id,
                 session_reference=session_reference,
@@ -501,7 +534,16 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             return db_obj
 
         db_obj.runtime_session_id = runtime_session_id
-        db_obj.agent_kind = normalize_managed_agent_kind(session_source_type)
+        # Refine the kind, never regress it. An older CLI (or a client that
+        # cannot tell Cursor from Windsurf) sends no agent_kind, which would
+        # otherwise reset a known product kind back to "desktop_agent" every
+        # time that agent re-enrolled.
+        refined_kind = normalize_managed_agent_kind(
+            session_source_type, agent_kind=agent_kind
+        )
+        transport_kind = normalize_managed_agent_kind(session_source_type)
+        if agent_kind or (db_obj.agent_kind or "") in ("", transport_kind):
+            db_obj.agent_kind = refined_kind
         # Preserve operator renames on reuse; only fill an empty display name.
         if not (db_obj.display_name or "").strip():
             db_obj.display_name = display_name
@@ -528,6 +570,7 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         display_name: str,
         description: Optional[str] = None,
         owner_user_id: Any = None,
+        agent_kind: Optional[str] = None,
         commit: bool = True,
     ) -> ManagedAgent:
         """Register a custom managed agent the discovery CLI cannot find.
@@ -539,11 +582,19 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         discover`` keys off, so a later discovery run will not be deduped
         against this row.
 
+        ``agent_kind`` records which product the agent is (``cursor``) so
+        API-created agents are no longer indistinguishable from genuinely
+        bespoke ones. The ``custom`` ``session_source_type`` is kept regardless:
+        it drives the generated-id/dedupe contract above and is part of the v2
+        principal-id fingerprint, so it must not vary with the declared kind.
+
         Args:
             db: Active database session.
             account_id: Owning account identifier.
             display_name: Operator-facing name for the agent.
             description: Optional free-form description; stored under ``tags``.
+            owner_user_id: User credited as the agent owner.
+            agent_kind: Optional product kind; defaults to ``custom``.
             commit: Whether to commit the transaction.
 
         Returns:
@@ -558,7 +609,7 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         db_obj = ManagedAgent(
             account_id=account_id,
             runtime_session_id=None,
-            agent_kind=normalize_managed_agent_kind("custom"),
+            agent_kind=normalize_managed_agent_kind("custom", agent_kind=agent_kind),
             session_source_type="custom",
             session_source_id=session_source_id,
             session_reference=None,
