@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -23,6 +24,23 @@ const (
 	// idempotent, so a partially applied split can simply be re-run.
 	usageImportMaxEventsPerRequest = 5000
 )
+
+// usageImportColumnMapFields mirrors _CURSOR_LOGICAL_FIELDS in
+// backend/preloop/services/usage_import.py. The server rejects an unknown
+// field outright rather than ignoring it, so a typo is worth catching here
+// where the message can list the alternatives.
+var usageImportColumnMapFields = []string{
+	"date",
+	"kind",
+	"model",
+	"max_mode",
+	"input_with_cache_write",
+	"input_without_cache_write",
+	"cache_read",
+	"output_tokens",
+	"total_tokens",
+	"cost",
+}
 
 // usageImportResult is the response shape shared by both import endpoints.
 // The CSV endpoint adds the parsed/skipped row counters; they stay zero for
@@ -159,8 +177,26 @@ func validateUsageImportOptions(opts usageImportOptions) (bool, error) {
 			filepath.Base(opts.filePath),
 		)
 	}
-	if !json.Valid([]byte(opts.columnMap)) {
-		return false, fmt.Errorf("--column-map is not valid JSON")
+	// Checking the shape, not just the syntax: `null`, `42` and `[1,2,3]`
+	// are all valid JSON but not valid column maps, and the point of
+	// validating here is to catch exactly that before a round trip.
+	var parsed map[string]string
+	if err := json.Unmarshal([]byte(opts.columnMap), &parsed); err != nil {
+		return false, fmt.Errorf(
+			"--column-map must be a JSON object mapping field names to CSV "+
+				"headers, for example '{\"cost\":\"Cost to You\"}': %w", err,
+		)
+	}
+	if len(parsed) == 0 {
+		return false, fmt.Errorf("--column-map is empty; omit the flag instead")
+	}
+	for field := range parsed {
+		if !slices.Contains(usageImportColumnMapFields, field) {
+			return false, fmt.Errorf(
+				"--column-map has unknown field %q; valid fields are: %s",
+				field, strings.Join(usageImportColumnMapFields, ", "),
+			)
+		}
 	}
 	return true, nil
 }
@@ -284,6 +320,10 @@ func parseUsageEventsFile(content []byte) ([]json.RawMessage, error) {
 }
 
 func writeUsageImportSummary(writer io.Writer, filePath string, result *usageImportResult) error {
+	if result == nil {
+		return fmt.Errorf("no import result to report")
+	}
+
 	agent := result.AgentDisplayName
 	if agent == "" {
 		agent = "unknown agent"

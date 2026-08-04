@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -430,7 +431,39 @@ func TestValidateUsageImportOptions(t *testing.T) {
 		{
 			name:      "malformed column map is rejected",
 			opts:      usageImportOptions{filePath: "cursor-usage.csv", columnMap: "{not json"},
-			errSubstr: "not valid JSON",
+			errSubstr: "must be a JSON object",
+		},
+		// json.Valid accepts all three of these, so syntax-only validation
+		// would have let them through to a server-side 422.
+		{
+			name:      "null column map is rejected",
+			opts:      usageImportOptions{filePath: "cursor-usage.csv", columnMap: "null"},
+			errSubstr: "empty",
+		},
+		{
+			name:      "scalar column map is rejected",
+			opts:      usageImportOptions{filePath: "cursor-usage.csv", columnMap: "42"},
+			errSubstr: "must be a JSON object",
+		},
+		{
+			name:      "array column map is rejected",
+			opts:      usageImportOptions{filePath: "cursor-usage.csv", columnMap: "[1,2,3]"},
+			errSubstr: "must be a JSON object",
+		},
+		{
+			name:      "non-string values are rejected",
+			opts:      usageImportOptions{filePath: "cursor-usage.csv", columnMap: `{"cost":7}`},
+			errSubstr: "must be a JSON object",
+		},
+		{
+			name:      "empty object column map is rejected",
+			opts:      usageImportOptions{filePath: "cursor-usage.csv", columnMap: "{}"},
+			errSubstr: "empty",
+		},
+		{
+			name:      "unknown field is rejected with the valid list",
+			opts:      usageImportOptions{filePath: "cursor-usage.csv", columnMap: `{"price":"Cost"}`},
+			errSubstr: `unknown field "price"`,
 		},
 		{
 			name:      "unsupported extension is rejected",
@@ -455,6 +488,29 @@ func TestValidateUsageImportOptions(t *testing.T) {
 				t.Fatalf("expected isCSV=%t, got %t", tc.expectCSV, isCSV)
 			}
 		})
+	}
+}
+
+// Every field the CLI accepts must be one the server also accepts;
+// otherwise the local check would reject a legitimate map, or wave through
+// one the server then rejects.
+func TestValidateUsageImportOptionsAcceptsEveryDocumentedField(t *testing.T) {
+	for _, field := range usageImportColumnMapFields {
+		t.Run(field, func(t *testing.T) {
+			columnMap := fmt.Sprintf(`{%q:"Some Header"}`, field)
+			if _, err := validateUsageImportOptions(usageImportOptions{
+				filePath: "cursor-usage.csv", columnMap: columnMap,
+			}); err != nil {
+				t.Fatalf("field %q should be accepted: %v", field, err)
+			}
+		})
+	}
+}
+
+func TestWriteUsageImportSummaryHandlesNilResult(t *testing.T) {
+	var output bytes.Buffer
+	if err := writeUsageImportSummary(&output, "events.json", nil); err == nil {
+		t.Fatal("expected an error rather than a panic")
 	}
 }
 
