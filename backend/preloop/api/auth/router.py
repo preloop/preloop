@@ -1,7 +1,6 @@
 """Authentication router for the API."""
 
 import logging
-import re
 import secrets
 import string
 from datetime import datetime, timedelta, UTC
@@ -56,6 +55,11 @@ from preloop.schemas.subject_governance import (
     SubjectGovernanceResponse,
 )
 from preloop.utils import get_client_ip
+from preloop.utils.agent_kind import (
+    AGENT_KIND_SHAPE_ERROR,
+    is_valid_agent_kind,
+    normalize_agent_kind,
+)
 from preloop.utils.email import send_password_reset_email
 from preloop.utils.tokens import (
     TokenError,
@@ -112,8 +116,6 @@ RUNTIME_SESSION_SOURCE_TYPES = {
     "custom",
 }
 RUNTIME_SESSION_ALLOWED_SCOPES = ("mcp:read", "mcp:write")
-#: Durable agent kinds are echoed into comma-separated filter query strings.
-_AGENT_KIND_PATTERN = re.compile(r"[a-z0-9_]+")
 API_KEY_ACTIVE_WINDOW = timedelta(minutes=10)
 API_KEY_RECENT_WINDOW = timedelta(hours=24)
 
@@ -138,13 +140,13 @@ def _normalize_runtime_session_agent_kind(agent_kind: Optional[str]) -> Optional
     """
     if agent_kind is None:
         return None
-    normalized = agent_kind.strip().lower().replace(" ", "_").replace("-", "_")
+    normalized = normalize_agent_kind(agent_kind)
     if not normalized:
         return None
-    if not _AGENT_KIND_PATTERN.fullmatch(normalized):
+    if not is_valid_agent_kind(normalized):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=("agent_kind must contain only letters, digits, and underscores"),
+            detail=AGENT_KIND_SHAPE_ERROR,
         )
     return normalized
 

@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-#: Agent kinds are used verbatim in filter query strings (which are
-#: comma-separated), so keep them to a conservative identifier shape.
-_AGENT_KIND_PATTERN = re.compile(r"[a-z0-9_]+")
+from preloop.utils.agent_kind import (
+    AGENT_KIND_SHAPE_ERROR,
+    is_valid_agent_kind,
+    normalize_agent_kind,
+)
 
 
 class GatewayTokenUsage(BaseModel):
@@ -393,13 +394,11 @@ class ManagedAgentRegisterRequest(BaseModel):
         """Lowercase and underscore the kind so lookups stay case-insensitive."""
         if value is None:
             return None
-        normalized = value.strip().lower().replace(" ", "_").replace("-", "_")
+        normalized = normalize_agent_kind(value)
         if not normalized:
             raise ValueError("agent_kind must not be blank")
-        if not _AGENT_KIND_PATTERN.fullmatch(normalized):
-            raise ValueError(
-                "agent_kind must contain only letters, digits, and underscores"
-            )
+        if not is_valid_agent_kind(normalized):
+            raise ValueError(AGENT_KIND_SHAPE_ERROR)
         return normalized
 
 

@@ -1,41 +1,11 @@
 import { html, type TemplateResult } from 'lit';
 import type { ManagedAgentSummary } from '../types';
+import { getAgentKindPresentation } from './agent-kinds';
 
 export function getAgentSourceLabel(
   sourceType: string | null | undefined
 ): string {
-  switch (sourceType) {
-    case 'claude_code':
-      return 'Claude Code';
-    case 'claude_desktop':
-      return 'Claude Desktop';
-    case 'codex':
-      return 'Codex';
-    case 'openclaw':
-      return 'OpenClaw';
-    case 'gemini_cli':
-      return 'Gemini CLI';
-    case 'opencode':
-      return 'OpenCode';
-    case 'hermes':
-      return 'Hermes';
-    case 'cursor':
-      return 'Cursor';
-    case 'windsurf':
-      return 'Windsurf';
-    case 'vscode':
-      return 'VS Code';
-    case 'antigravity':
-      return 'Antigravity';
-    case 'devin':
-      return 'Devin';
-    case 'desktop_agent':
-      return 'Desktop Agent';
-    case 'custom':
-      return 'Custom Agent';
-    default:
-      return sourceType || 'Unknown';
-  }
+  return getAgentKindPresentation(sourceType)?.label || sourceType || 'Unknown';
 }
 
 export function getAgentLifecycleVariant(agent: ManagedAgentSummary): string {

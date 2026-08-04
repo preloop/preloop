@@ -10,8 +10,12 @@ and what would silently re-key existing enrollments if "fixed" naively.
 from datetime import UTC, datetime, timedelta
 
 from preloop.models.crud import crud_managed_agent
-from preloop.models.crud.managed_agent import normalize_managed_agent_kind
+from preloop.models.crud.managed_agent import (
+    normalize_managed_agent_kind,
+    should_refine_agent_kind,
+)
 from preloop.services.usage_import import resolve_target_agent
+from preloop.utils.agent_kind import is_valid_agent_kind, normalize_agent_kind
 
 AGENTS_URL = "/api/v1/agents"
 TOKEN_URL = "/api/v1/auth/runtime-sessions/token"
@@ -235,6 +239,56 @@ class TestNormalizeManagedAgentKind:
 
     def test_empty_source_type_defaults_to_external_agent(self):
         assert normalize_managed_agent_kind(None) == "external_agent"
+
+    def test_separators_and_case_are_insignificant(self):
+        """A kind must normalize the same wherever it enters the system.
+
+        Default-agent resolution compares kinds for equality, so if the
+        token endpoint folded "Gemini-CLI" differently from the CRUD layer
+        the agent would be stored under a kind no lookup could find.
+        """
+        for raw in ("Gemini CLI", "gemini-cli", "  GEMINI_CLI  "):
+            assert normalize_agent_kind(raw) == "gemini_cli"
+            assert normalize_managed_agent_kind("custom", agent_kind=raw) == (
+                "gemini_cli"
+            )
+
+    def test_rejects_shapes_that_would_break_filter_query_strings(self):
+        """Kinds are echoed into comma-separated filters, so stay identifiers."""
+        assert is_valid_agent_kind("cursor")
+        # Spaces and hyphens are folded into underscores, not rejected.
+        assert is_valid_agent_kind(normalize_agent_kind("vs code"))
+        for bad in ("a,b", "a/b", "a.b", "a:b", ""):
+            assert not is_valid_agent_kind(normalize_agent_kind(bad))
+
+
+class TestShouldRefineAgentKind:
+    """Refine the kind, never regress it."""
+
+    def test_explicit_kind_always_wins(self):
+        assert should_refine_agent_kind(
+            "cursor", session_source_type="desktop_agent", agent_kind="windsurf"
+        )
+
+    def test_older_client_cannot_regress_a_known_kind(self):
+        """The core guard: a CLI that predates #123 sends no kind.
+
+        Without this, every re-enrollment from an old CLI would reset a
+        known "cursor" back to the generic transport value.
+        """
+        assert not should_refine_agent_kind(
+            "cursor", session_source_type="desktop_agent", agent_kind=None
+        )
+
+    def test_generic_stored_kind_may_be_filled_in(self):
+        assert should_refine_agent_kind(
+            "desktop_agent", session_source_type="desktop_agent", agent_kind=None
+        )
+
+    def test_empty_stored_kind_may_be_filled_in(self):
+        assert should_refine_agent_kind(
+            None, session_source_type="desktop_agent", agent_kind=None
+        )
 
 
 class TestResolveTargetAgentPrefersKind:

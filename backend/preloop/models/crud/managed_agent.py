@@ -9,6 +9,8 @@ from typing import Any, Optional
 from sqlalchemy import and_, case, func, or_, tuple_
 from sqlalchemy.orm import Session
 
+from preloop.utils.agent_kind import normalize_agent_kind
+
 from ..models.api_usage import ApiUsage
 from ..models.managed_agent import ManagedAgent
 from ..models.runtime_session import RuntimeSession
@@ -41,11 +43,39 @@ def normalize_managed_agent_kind(
     Returns:
         The normalized durable agent kind.
     """
-    explicit = str(agent_kind or "").strip().lower().replace(" ", "_")
+    explicit = normalize_agent_kind(agent_kind)
     if explicit:
         return explicit
-    normalized = str(session_source_type or "").strip().lower().replace(" ", "_")
-    return normalized or "external_agent"
+    return normalize_agent_kind(session_source_type) or "external_agent"
+
+
+def should_refine_agent_kind(
+    stored_kind: Optional[str],
+    *,
+    session_source_type: Optional[str],
+    agent_kind: Optional[str],
+) -> bool:
+    """Decide whether a re-enrollment may overwrite the stored agent kind.
+
+    Refine the kind, never regress it. A client that supplies an explicit
+    kind always wins: it knows which product it is. A client that supplies
+    none (an older CLI, or one that cannot tell Cursor from Windsurf) may
+    only fill in a kind that is still empty or still the generic transport
+    value, because otherwise every re-enrollment from that client would
+    reset a known ``cursor`` back to ``desktop_agent``.
+
+    Args:
+        stored_kind: Kind currently recorded on the agent row.
+        session_source_type: Transport-level source type for this enrollment.
+        agent_kind: Explicit product kind supplied by the client, if any.
+
+    Returns:
+        True when the caller should write the refined kind.
+    """
+    if agent_kind:
+        return True
+    transport_kind = normalize_managed_agent_kind(session_source_type)
+    return (stored_kind or "") in ("", transport_kind)
 
 
 def _utc_now() -> datetime:
@@ -534,16 +564,14 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             return db_obj
 
         db_obj.runtime_session_id = runtime_session_id
-        # Refine the kind, never regress it. An older CLI (or a client that
-        # cannot tell Cursor from Windsurf) sends no agent_kind, which would
-        # otherwise reset a known product kind back to "desktop_agent" every
-        # time that agent re-enrolled.
-        refined_kind = normalize_managed_agent_kind(
-            session_source_type, agent_kind=agent_kind
-        )
-        transport_kind = normalize_managed_agent_kind(session_source_type)
-        if agent_kind or (db_obj.agent_kind or "") in ("", transport_kind):
-            db_obj.agent_kind = refined_kind
+        if should_refine_agent_kind(
+            db_obj.agent_kind,
+            session_source_type=session_source_type,
+            agent_kind=agent_kind,
+        ):
+            db_obj.agent_kind = normalize_managed_agent_kind(
+                session_source_type, agent_kind=agent_kind
+            )
         # Preserve operator renames on reuse; only fill an empty display name.
         if not (db_obj.display_name or "").strip():
             db_obj.display_name = display_name
