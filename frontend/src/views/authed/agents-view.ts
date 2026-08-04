@@ -48,6 +48,7 @@ import { reducedMotionStyles } from '../../styles/reduced-motion';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import { getAgentControlState } from '../../utils/agent-control';
 import { renderAgentIcon } from '../../utils/agent-icons';
+import { getAgentSourceLabel } from '../../utils/agent-display';
 
 const AVAILABLE_AGENT_KINDS = [
   { value: 'openclaw', label: 'OpenClaw' },
@@ -1723,28 +1724,7 @@ export class AgentsView extends LitElement {
   }
 
   private getSourceLabel(sourceType: string | null | undefined): string {
-    switch (sourceType) {
-      case 'claude_code':
-        return 'Claude Code';
-      case 'claude_desktop':
-        return 'Claude Desktop';
-      case 'codex':
-        return 'Codex';
-      case 'openclaw':
-        return 'OpenClaw';
-      case 'gemini_cli':
-        return 'Gemini CLI';
-      case 'opencode':
-        return 'OpenCode';
-      case 'hermes':
-        return 'Hermes';
-      case 'desktop_agent':
-        return 'Desktop Agent';
-      case 'custom':
-        return 'Custom Agent';
-      default:
-        return sourceType || 'Unknown';
-    }
+    return getAgentSourceLabel(sourceType);
   }
 
   private formatMoney(amount: number | null | undefined): string {

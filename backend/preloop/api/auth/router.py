@@ -55,6 +55,11 @@ from preloop.schemas.subject_governance import (
     SubjectGovernanceResponse,
 )
 from preloop.utils import get_client_ip
+from preloop.utils.agent_kind import (
+    AGENT_KIND_SHAPE_ERROR,
+    is_valid_agent_kind,
+    normalize_agent_kind,
+)
 from preloop.utils.email import send_password_reset_email
 from preloop.utils.tokens import (
     TokenError,
@@ -113,6 +118,37 @@ RUNTIME_SESSION_SOURCE_TYPES = {
 RUNTIME_SESSION_ALLOWED_SCOPES = ("mcp:read", "mcp:write")
 API_KEY_ACTIVE_WINDOW = timedelta(minutes=10)
 API_KEY_RECENT_WINDOW = timedelta(hours=24)
+
+
+def _normalize_runtime_session_agent_kind(agent_kind: Optional[str]) -> Optional[str]:
+    """Normalize a client-supplied durable agent kind.
+
+    Unlike ``session_source_type`` this is descriptive metadata rather than
+    part of the principal fingerprint, so it is not restricted to a fixed
+    allowlist: a newer CLI may know product kinds this server does not. It is
+    still shape-checked, because kinds are echoed into comma-separated filter
+    query strings.
+
+    Args:
+        agent_kind: Raw kind supplied by the client, if any.
+
+    Returns:
+        The normalized kind, or None when the client did not supply one.
+
+    Raises:
+        HTTPException: When the supplied kind is not a bare identifier.
+    """
+    if agent_kind is None:
+        return None
+    normalized = normalize_agent_kind(agent_kind)
+    if not normalized:
+        return None
+    if not is_valid_agent_kind(normalized):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=AGENT_KIND_SHAPE_ERROR,
+        )
+    return normalized
 
 
 def _normalize_runtime_session_scopes(requested_scopes: List[str]) -> List[str]:
@@ -1053,6 +1089,9 @@ async def create_runtime_session_token(
             ),
         )
 
+    normalized_agent_kind = _normalize_runtime_session_agent_kind(
+        session_data.agent_kind
+    )
     scopes = _normalize_runtime_session_scopes(session_data.scopes)
     allowed_mcp_servers, allowed_mcp_tools = _resolve_runtime_session_tool_restrictions(
         db,
@@ -1123,6 +1162,7 @@ async def create_runtime_session_token(
         owner_user_id=current_user.id,
         enrollment_hostname=identity.hostname if identity else None,
         identity_derivation=identity.derivation if identity else None,
+        agent_kind=normalized_agent_kind,
     )
     db.commit()
     db.refresh(runtime_session)

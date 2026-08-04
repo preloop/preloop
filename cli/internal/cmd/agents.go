@@ -409,6 +409,7 @@ type runtimeSessionTokenRequest struct {
 	SessionReference     string                    `json:"session_reference,omitempty"`
 	RuntimePrincipalID   string                    `json:"runtime_principal_id,omitempty"`
 	RuntimePrincipalName string                    `json:"runtime_principal_name,omitempty"`
+	AgentKind            string                    `json:"agent_kind,omitempty"`
 	ExpiresInMinutes     int                       `json:"expires_in_minutes,omitempty"`
 	Scopes               []string                  `json:"scopes,omitempty"`
 	AllowedMCPServers    []string                  `json:"allowed_mcp_servers,omitempty"`
@@ -2764,6 +2765,7 @@ func issueRuntimeSessionToken(client *api.Client, agent AgentConfig, allowedServ
 		SessionReference:     filepath.Clean(agent.ConfigPath),
 		RuntimePrincipalID:   runtimePrincipalIDForAgent(agent),
 		RuntimePrincipalName: runtimePrincipalNameForAgent(agent),
+		AgentKind:            managedAgentKindForAgent(agent.Name),
 		ExpiresInMinutes:     120,
 		Scopes:               []string{"mcp:read", "mcp:write"},
 		AllowedMCPServers:    serverNames,
@@ -2922,6 +2924,14 @@ func normalizeDiscoveredAgent(agent AgentConfig) AgentConfig {
 	return agent
 }
 
+// runtimeSessionSourceTypeForAgent maps an agent to the *transport* it
+// connects over. This value is part of the durable v2 principal-id
+// fingerprint (see stableRuntimePrincipalIDForAgent) and is validated
+// server-side against a fixed allowlist, so it must stay stable for a given
+// agent forever: changing it would re-key every existing enrollment and 400
+// against older servers. Products that share the generic MCP-config transport
+// (Cursor, Windsurf, VS Code, ...) are told apart by
+// managedAgentKindForAgent instead. See #123.
 func runtimeSessionSourceTypeForAgent(agentName string) string {
 	switch strings.ToLower(strings.TrimSpace(agentName)) {
 	case "claude code":
@@ -2940,6 +2950,29 @@ func runtimeSessionSourceTypeForAgent(agentName string) string {
 		return hermesSourceType
 	default:
 		return "desktop_agent"
+	}
+}
+
+// managedAgentKindForAgent maps an agent to the durable *product* kind stored
+// as ManagedAgent.agent_kind server-side. Unlike the source type above, this
+// is descriptive only: it is not part of any fingerprint, so it is safe to
+// refine for agents that already exist. Agents whose product is identical to
+// their transport reuse the source type; the ones that previously collapsed
+// into the generic "desktop_agent" bucket get their real kind here.
+func managedAgentKindForAgent(agentName string) string {
+	switch strings.ToLower(strings.TrimSpace(agentName)) {
+	case "cursor":
+		return "cursor"
+	case "windsurf":
+		return "windsurf"
+	case "vscode / copilot":
+		return "vscode"
+	case strings.ToLower(antigravityAgentName):
+		return "antigravity"
+	case strings.ToLower(devinAgentName):
+		return "devin"
+	default:
+		return runtimeSessionSourceTypeForAgent(agentName)
 	}
 }
 

@@ -5,7 +5,13 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from preloop.utils.agent_kind import (
+    AGENT_KIND_SHAPE_ERROR,
+    is_valid_agent_kind,
+    normalize_agent_kind,
+)
 
 
 class GatewayTokenUsage(BaseModel):
@@ -371,6 +377,29 @@ class ManagedAgentRegisterRequest(BaseModel):
 
     display_name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
+    agent_kind: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        description=(
+            "Product kind for the agent, for example 'cursor' or 'windsurf'. "
+            "Defaults to 'custom' when omitted. This records what the agent "
+            "is; it does not change how it connects."
+        ),
+    )
+
+    @field_validator("agent_kind")
+    @classmethod
+    def _normalize_agent_kind(cls, value: Optional[str]) -> Optional[str]:
+        """Lowercase and underscore the kind so lookups stay case-insensitive."""
+        if value is None:
+            return None
+        normalized = normalize_agent_kind(value)
+        if not normalized:
+            raise ValueError("agent_kind must not be blank")
+        if not is_valid_agent_kind(normalized):
+            raise ValueError(AGENT_KIND_SHAPE_ERROR)
+        return normalized
 
 
 class ManagedAgentCredentialCreateRequest(BaseModel):

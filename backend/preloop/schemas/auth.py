@@ -186,6 +186,10 @@ class RuntimeSessionTokenCreate(BaseModel):
     session_reference: Optional[str] = Field(None, max_length=255)
     runtime_principal_id: Optional[str] = Field(None, max_length=255)
     runtime_principal_name: Optional[str] = Field(None, max_length=255)
+    #: Durable product kind (``cursor``). Distinct from ``session_source_type``,
+    #: which is the transport and is part of the v2 principal fingerprint.
+    #: Older CLIs omit this; the server then keeps the stored kind. See #123.
+    agent_kind: Optional[str] = Field(None, max_length=64)
     expires_in_minutes: int = Field(default=120, ge=1, le=1440)
     scopes: List[str] = Field(default_factory=lambda: ["mcp:read", "mcp:write"])
     allowed_mcp_tools: List[Any] = Field(default_factory=list)

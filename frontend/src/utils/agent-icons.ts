@@ -1,37 +1,17 @@
 import { html, type TemplateResult } from 'lit';
+import { getAgentKindPresentation } from './agent-kinds';
 
 export function renderAgentIcon(
   sourceType: string | null | undefined,
   style: string = ''
 ): TemplateResult {
-  const renderIcon = (name: string, src?: string) => {
-    return src
-      ? html`<sl-icon src="${src}" style="${style}"></sl-icon>`
-      : html`<sl-icon name="${name}" style="${style}"></sl-icon>`;
-  };
-
-  switch (sourceType?.toLowerCase()) {
-    case 'claude_code':
-      return renderIcon('', '/images/logos/claude.svg');
-    case 'claude_desktop':
-      return renderIcon('display');
-    case 'openclaw':
-      return renderIcon('', '/images/logos/openclaw.svg');
-    case 'codex':
-      return renderIcon('', '/images/logos/codex.svg?v=2');
-    case 'gemini_cli':
-    case 'gemini-cli':
-    case 'geminicli':
-      return renderIcon('', '/images/logos/gemini-cli.svg');
-    case 'opencode':
-      return renderIcon('', '/images/logos/opencode.svg');
-    case 'hermes':
-      return renderIcon('', '/images/logos/hermes.svg');
-    case 'desktop_agent':
-      return renderIcon('pc-display');
-    case 'custom':
-      return renderIcon('robot');
-    default:
-      return renderIcon('robot');
+  const presentation = getAgentKindPresentation(sourceType);
+  const logo = presentation?.logo;
+  if (logo) {
+    return html`<sl-icon src="${logo}" style="${style}"></sl-icon>`;
   }
+  return html`<sl-icon
+    name="${presentation?.icon || 'robot'}"
+    style="${style}"
+  ></sl-icon>`;
 }

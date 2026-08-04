@@ -1168,15 +1168,19 @@ paths:
         \nCreates a durable ManagedAgent row under the reserved ``custom`` source\n\
         type with a generated ``session_source_id`` and ``lifecycle_state`` of\n``active``\
         \ so the operator can immediately mint a gateway credential for it\nvia ``POST\
-        \ /agents/{agent_id}/credentials``.\n\nDuplicate ``display_name`` values are\
-        \ allowed within an account: each custom\nagent is keyed by a unique generated\
-        \ ``session_source_id``, so two agents\nsharing a display name remain distinct\
-        \ registry entries. Operators may\nlegitimately run several copies of the\
-        \ same agent, so we do not reject this.\n\nArgs:\n    payload: Display name\
-        \ and optional description for the new agent.\n    account: Resolved account\
-        \ for the authenticated user.\n    current_user: Authenticated active user\
-        \ performing the registration.\n    db: Database session.\n\nReturns:\n  \
-        \  The managed-agent summary for the newly registered agent."
+        \ /agents/{agent_id}/credentials``.\n\nPass ``agent_kind`` (for example ``cursor``)\
+        \ to record which product the\nagent is; it defaults to ``custom``. The kind\
+        \ is what usage import resolves\na default attribution target by, so an API-created\
+        \ Cursor agent can now be\nthe implicit target of ``POST /usage/import``.\n\
+        \nDuplicate ``display_name`` values are allowed within an account: each custom\n\
+        agent is keyed by a unique generated ``session_source_id``, so two agents\n\
+        sharing a display name remain distinct registry entries. Operators may\nlegitimately\
+        \ run several copies of the same agent, so we do not reject this.\n\nArgs:\n\
+        \    payload: Display name and optional description for the new agent.\n \
+        \   account: Resolved account for the authenticated user.\n    current_user:\
+        \ Authenticated active user performing the registration.\n    db: Database\
+        \ session.\n\nReturns:\n    The managed-agent summary for the newly registered\
+        \ agent."
       operationId: create_account_managed_agent_api_v1_agents_post
       security:
       - bearerAuth: []
@@ -13628,6 +13632,16 @@ components:
           - type: string
           - type: 'null'
           title: Description
+        agent_kind:
+          anyOf:
+          - type: string
+            maxLength: 64
+            minLength: 1
+          - type: 'null'
+          title: Agent Kind
+          description: Product kind for the agent, for example 'cursor' or 'windsurf'.
+            Defaults to 'custom' when omitted. This records what the agent is; it
+            does not change how it connects.
       type: object
       required:
       - display_name
@@ -16148,6 +16162,12 @@ components:
             maxLength: 255
           - type: 'null'
           title: Runtime Principal Name
+        agent_kind:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Agent Kind
         expires_in_minutes:
           type: integer
           maximum: 1440.0
