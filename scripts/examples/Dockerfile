@@ -2,9 +2,11 @@ FROM python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd
 
 WORKDIR /app
 
-# Install dependencies
+# Install dependencies, hash-pinned (regenerate requirements.txt with the uv
+# command recorded at the top of that file).
 # Note: fastapi needs to be explicitly installed even though fastmcp depends on it
-RUN pip install --no-cache-dir fastmcp fastapi uvicorn
+COPY requirements.txt .
+RUN pip install --no-cache-dir --require-hashes -r requirements.txt
 
 # Copy the example MCP server
 COPY example_mcp_server.py .

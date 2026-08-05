@@ -1,0 +1,3 @@
+# Regenerate with: uv pip compile --universal --generate-hashes --python-version 3.11 build.in -o build.txt
+build
+twine

@@ -17,9 +17,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy requirements file first to leverage Docker cache
 COPY pyproject.toml .
 COPY VERSION .
+COPY requirements/docker-build.txt requirements/docker-build.txt
 
-# Install build dependencies and Python packages in separate layers for better caching
-RUN pip install -U --no-cache-dir build setuptools pip wheel ipdb
+# Install build dependencies and Python packages in separate layers for better caching.
+# Hash-pinned via requirements/docker-build.txt (regenerate with the uv command
+# recorded at the top of that file).
+RUN pip install --no-cache-dir --require-hashes -r requirements/docker-build.txt
 
 
 # Copy application code (this changes most frequently, so put it last)

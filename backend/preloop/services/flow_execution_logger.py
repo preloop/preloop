@@ -97,7 +97,10 @@ class FlowExecutionLogger:
             "status": status,
         }
         self.actions_taken.append(action_entry)
-        logger.debug(f"Agent action logged: {action_type} - {description}")
+        # Log only the action type and status: the description is derived from
+        # agent output and must not be duplicated into service logs
+        # (py/clear-text-logging-sensitive-data, alert 181).
+        logger.debug(f"Agent action logged: {action_type} (status={status})")
 
     def log_milestone(
         self, milestone_name: str, details: Optional[Dict[str, Any]] = None
@@ -257,7 +260,9 @@ class FlowExecutionLogger:
                 )
                 return
         except Exception as e:
-            logger.debug(f"Could not parse MCP call from line: {line[:100]} - {e}")
+            # Do not echo the line itself: it is agent output and belongs only
+            # in the scrubbed execution log, not in service logs (alert 182).
+            logger.debug(f"Could not parse MCP call from line (len={len(line)}): {e}")
 
     def _looks_like_mcp_identifier(self, server_name: str, tool_name: str) -> bool:
         """Return True when the parsed server/tool pair looks like a real MCP call."""
@@ -283,7 +288,10 @@ class FlowExecutionLogger:
                     details={"file_path": file_path},
                 )
         except Exception as e:
-            logger.debug(f"Could not parse file creation from line: {line[:100]} - {e}")
+            # Do not echo the line itself (alert 183), see _try_extract_mcp_call.
+            logger.debug(
+                f"Could not parse file creation from line (len={len(line)}): {e}"
+            )
 
     def _try_extract_command_execution(self, line: str):
         """Try to extract command execution information from a log line."""
@@ -298,5 +306,5 @@ class FlowExecutionLogger:
                 )
         except Exception as e:
             logger.debug(
-                f"Could not parse command execution from line: {line[:100]} - {e}"
+                f"Could not parse command execution from line (len={len(line)}): {e}"
             )

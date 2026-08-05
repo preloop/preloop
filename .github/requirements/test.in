@@ -1,0 +1,6 @@
+# Regenerate with: uv pip compile --universal --generate-hashes --python-version 3.11 test.in -o test.txt
+pip
+pytest
+pytest-cov
+pytest-asyncio
+loguru

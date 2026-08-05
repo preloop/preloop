@@ -48,7 +48,7 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          pip install -U pip pre-commit ruff
+          pip install --require-hashes -r .github/requirements/lint.txt
           pip install -e ".[dev]"
 
       - name: Install frontend dependencies
@@ -101,7 +101,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -U pip pytest pytest-cov pytest-asyncio loguru
+          pip install --require-hashes -r .github/requirements/test.txt
           pip install -e ".[dev]"
 
       - name: Initialize database
@@ -198,7 +198,7 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          pip install -U pip pytest pytest-asyncio
+          pip install --require-hashes -r .github/requirements/runtime-test.txt
           pip install -e .
 
       - name: Run runtime-plugin pytest
