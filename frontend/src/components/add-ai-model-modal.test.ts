@@ -262,3 +262,178 @@ describe('AddAIModelModal model discovery', () => {
     expect(String(discoveryCalls()[0].args[0])).to.not.contain('sk-ant-secret');
   });
 });
+
+/**
+ * OpenRouter as a first-class provider. The backend has supported it since
+ * #176; the picker just never offered it, so users had to know to pick
+ * "OpenAI-compatible" and type the base URL by hand.
+ */
+describe('AddAIModelModal OpenRouter provider', () => {
+  let element: AddAIModelModal;
+  let sandbox: SinonSandbox;
+  let fetchStub: SinonStub;
+
+  const discoveryCalls = () =>
+    fetchStub
+      .getCalls()
+      .filter((call) => String(call.args[0]).includes('available-models'));
+
+  beforeEach(async () => {
+    localStorage.setItem('accessToken', 'test-access-token');
+    localStorage.setItem('refreshToken', 'test-refresh-token');
+    sandbox = sinon.createSandbox();
+    fetchStub = sandbox.stub(window, 'fetch');
+    fetchStub.callsFake(async (url: any) => {
+      if (String(url).includes('available-models')) {
+        return new Response(
+          JSON.stringify(['openrouter/auto-beta', 'z-ai/glm-4.6'])
+        );
+      }
+      return new Response(JSON.stringify([]));
+    });
+    element = await fixture(html`<add-ai-model-modal></add-ai-model-modal>`);
+  });
+
+  afterEach(() => {
+    sandbox.restore();
+    localStorage.clear();
+  });
+
+  it('offers OpenRouter as an LLM provider', () => {
+    const values = (element as any)._availableProviders.map(
+      (p: { value: string }) => p.value
+    );
+    expect(values).to.contain('openrouter');
+  });
+
+  it('does not offer OpenRouter for stt or tts', async () => {
+    (element as any)._currentModel = { model_kind: 'stt' };
+    const values = (element as any)._availableProviders.map(
+      (p: { value: string }) => p.value
+    );
+    expect(values).to.not.contain('openrouter');
+  });
+
+  it('prefills the OpenRouter base URL when the provider is chosen', async () => {
+    await (element as any)._handleProviderChange({
+      target: { value: 'openrouter' },
+    } as unknown as Event);
+
+    expect((element as any)._currentModel.api_endpoint).to.equal(
+      'https://openrouter.ai/api/v1'
+    );
+  });
+
+  it('fetches models without the user typing an endpoint', async () => {
+    await (element as any)._handleProviderChange({
+      target: { value: 'openrouter' },
+    } as unknown as Event);
+    (element as any)._currentModel.api_key = 'sk-or-v1-secret-value';
+
+    await (element as any)._fetchModelsForCurrentProvider();
+
+    expect((element as any)._modelsFetchError).to.equal(null);
+    expect((element as any)._modelSuggestions).to.deep.equal([
+      'openrouter/auto-beta',
+      'z-ai/glm-4.6',
+    ]);
+    // The provider travels in the URL, the endpoint in the body.
+    expect(String(discoveryCalls()[0].args[0])).to.contain(
+      '/providers/openrouter/available-models'
+    );
+    const body = JSON.parse(String(discoveryCalls()[0].args[1].body));
+    expect(body.api_endpoint).to.equal('https://openrouter.ai/api/v1');
+  });
+
+  it('falls back to the default endpoint if the field was cleared', async () => {
+    (element as any)._currentModel = {
+      provider_name: 'openrouter',
+      api_endpoint: '   ',
+      api_key: 'sk-or-v1-secret-value',
+    };
+
+    await (element as any)._fetchModelsForCurrentProvider();
+
+    expect((element as any)._modelsFetchError).to.equal(null);
+    const body = JSON.parse(String(discoveryCalls()[0].args[1].body));
+    expect(body.api_endpoint).to.equal('https://openrouter.ai/api/v1');
+  });
+
+  it('keeps the Other... escape hatch for Auto Router ids', async () => {
+    (element as any)._modelSuggestions = ['z-ai/glm-4.6'];
+    (element as any)._handleModelNameChange({
+      target: { value: 'other' },
+    } as unknown as Event);
+    expect((element as any)._isOtherModel).to.be.true;
+
+    (element as any)._handleCustomModelInput({
+      target: { value: 'openrouter/auto-beta' },
+    } as unknown as Event);
+
+    expect((element as any)._currentModel.model_identifier).to.equal(
+      'openrouter/auto-beta'
+    );
+  });
+
+  it('renders an existing openrouter model in edit mode', async () => {
+    const model = {
+      id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      name: 'OpenRouter Auto',
+      provider_name: 'openrouter',
+      model_identifier: 'openrouter/auto-beta',
+      api_endpoint: 'https://openrouter.ai/api/v1',
+      model_kind: 'llm',
+      has_api_key: true,
+    };
+    const el: AddAIModelModal = await fixture(
+      html`<add-ai-model-modal
+        .model=${model as any}
+        ?open=${true}
+      ></add-ai-model-modal>`
+    );
+    await el.updateComplete;
+
+    const providerSelect = el.shadowRoot?.querySelector(
+      'sl-select[label="Provider"]'
+    ) as any;
+    expect(providerSelect?.value).to.equal('openrouter');
+    const urlInput = Array.from(
+      el.shadowRoot?.querySelectorAll('sl-input') ?? []
+    ).find((i) => i.getAttribute('label') === 'API URL') as any;
+    expect(urlInput?.value).to.equal('https://openrouter.ai/api/v1');
+    // Editing must not wipe the stored id just because it is not in the
+    // (unfetched) suggestion list.
+    expect((el as any)._currentModel.model_identifier).to.equal(
+      'openrouter/auto-beta'
+    );
+  });
+
+  it('renders a full OpenRouter-sized catalog without dropping entries', async () => {
+    const many = Array.from({ length: 338 }, (_, i) => `vendor/model-${i}`);
+    fetchStub.callsFake(async (url: any) => {
+      if (String(url).includes('available-models')) {
+        return new Response(JSON.stringify(many));
+      }
+      return new Response(JSON.stringify([]));
+    });
+    // Open first: opening repopulates the form and would clear these fields.
+    element.open = true;
+    await element.updateComplete;
+    (element as any)._currentModel = {
+      provider_name: 'openrouter',
+      api_endpoint: 'https://openrouter.ai/api/v1',
+      api_key: 'sk-or-v1-secret-value',
+    };
+
+    await (element as any)._fetchModelsForCurrentProvider();
+    await element.updateComplete;
+
+    expect((element as any)._modelSuggestions).to.have.lengthOf(338);
+    const modelSelect = element.shadowRoot?.querySelector(
+      'sl-select[label="Model Name / ID"]'
+    );
+    const options = modelSelect?.querySelectorAll('sl-option') ?? [];
+    // Every model plus the "Other..." entry.
+    expect(options.length).to.equal(339);
+  });
+});

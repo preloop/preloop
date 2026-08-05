@@ -436,70 +436,97 @@ async def _get_google_models(api_key: Optional[str] = None) -> List[str]:
     return known_models
 
 
+async def _get_catalog_provider_models(
+    *,
+    provider_label: str,
+    base_url: str,
+    known_models: List[str],
+    api_key: Optional[str] = None,
+) -> List[str]:
+    """List models for a provider that ships an OpenAI-compatible ``/models``.
+
+    Without a key there is nothing to query, so the bundled catalog is
+    returned. With a key we return what the provider actually serves: these
+    catalogs go stale the moment the vendor ships a model (DeepSeek v4 was
+    hidden from the picker for exactly this reason) while litellm already
+    prices the new ids.
+
+    An authentication failure still raises, since the user needs to know the
+    key is bad. Any other failure (network, SDK, unexpected payload) falls
+    back to the bundled catalog rather than showing an empty picker.
+    """
+    if not api_key:
+        return known_models
+
+    from openai import AsyncOpenAI, AuthenticationError
+
+    try:
+        client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            max_retries=1,
+            timeout=15.0,
+        )
+        response = await client.models.list()
+    except AuthenticationError as e:
+        logger.warning("%s authentication failed: %s", provider_label, type(e).__name__)
+        raise ValueError(
+            f"Invalid {provider_label} API key. Please check your API key and "
+            "try again."
+        ) from e
+    except Exception as e:
+        logger.warning(
+            "Failed to list %s models, using bundled catalog: %s",
+            provider_label,
+            type(e).__name__,
+        )
+        return known_models
+
+    live_models = _extract_model_ids(response)
+    if not live_models:
+        # A valid key that lists nothing is more likely a proxy quirk than an
+        # empty account; an empty picker is the worse outcome either way.
+        logger.info("%s returned no models, using bundled catalog", provider_label)
+        return known_models
+
+    logger.info("Listed %d %s models", len(live_models), provider_label)
+    return live_models
+
+
+# Fallback catalog used when no Qwen key is available to list the live set.
+QWEN_KNOWN_MODELS = [
+    "qwen-plus",
+    "qwen-turbo",
+    "qwen-max",
+    "qwq-32b-preview",
+]
+
+# Fallback catalog used when no DeepSeek key is available to list the live set.
+# Keep in step with the deepseek entries in services/data/model_prices.json:
+# a model missing here is invisible in the picker even though it can be priced.
+DEEPSEEK_KNOWN_MODELS = [
+    "deepseek-chat",
+    "deepseek-reasoner",
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
+]
+
+
 async def _get_qwen_models(api_key: Optional[str] = None) -> List[str]:
-    """Return list of known Qwen models and validate API key if provided."""
-
-    # List of known Qwen models (as of January 2025)
-    known_models = [
-        "qwen-plus",
-        "qwen-turbo",
-        "qwen-max",
-        "qwq-32b-preview",
-    ]
-
-    # Qwen uses OpenAI-compatible API
-    if api_key:
-        try:
-            from openai import AsyncOpenAI, AuthenticationError
-
-            client = AsyncOpenAI(
-                api_key=api_key,
-                base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-            )
-
-            # Try to list models to validate the key
-            await client.models.list()
-
-            logger.info("Qwen API key validated successfully")
-        except AuthenticationError as e:
-            logger.warning(f"Qwen authentication failed: {e}")
-            raise ValueError(
-                "Invalid Qwen API key. Please check your API key and try again."
-            )
-        except Exception as e:
-            logger.error(f"Unexpected error validating Qwen key: {e}")
-
-    return known_models
+    """Return Qwen models, live from the API when a key is supplied."""
+    return await _get_catalog_provider_models(
+        provider_label="Qwen",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        known_models=QWEN_KNOWN_MODELS,
+        api_key=api_key,
+    )
 
 
 async def _get_deepseek_models(api_key: Optional[str] = None) -> List[str]:
-    """Return list of known DeepSeek models and validate API key if provided."""
-
-    # List of known DeepSeek models (as of January 2025)
-    known_models = [
-        "deepseek-chat",
-        "deepseek-reasoner",
-    ]
-
-    # DeepSeek uses OpenAI-compatible API
-    if api_key:
-        try:
-            from openai import AsyncOpenAI, AuthenticationError
-
-            client = AsyncOpenAI(
-                api_key=api_key, base_url="https://api.deepseek.com/v1"
-            )
-
-            # Try to list models to validate the key
-            await client.models.list()
-
-            logger.info("DeepSeek API key validated successfully")
-        except AuthenticationError as e:
-            logger.warning(f"DeepSeek authentication failed: {e}")
-            raise ValueError(
-                "Invalid DeepSeek API key. Please check your API key and try again."
-            )
-        except Exception as e:
-            logger.error(f"Unexpected error validating DeepSeek key: {e}")
-
-    return known_models
+    """Return DeepSeek models, live from the API when a key is supplied."""
+    return await _get_catalog_provider_models(
+        provider_label="DeepSeek",
+        base_url="https://api.deepseek.com/v1",
+        known_models=DEEPSEEK_KNOWN_MODELS,
+        api_key=api_key,
+    )

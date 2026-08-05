@@ -116,6 +116,15 @@ across renames and re-onboarding.
   use), an explicit gateway round-trip check at the end of install
   (`round-trip OK, model=..., latency=...s`) with an actionable failure
   message, and printed reconfigure/undo hints after mutating agents commands.
+- **OpenRouter as a first-class provider in the add-model dialog**: the backend
+  has routed OpenRouter since the gateway fix, but the console never listed it,
+  so adding an OpenRouter model meant choosing "OpenAI-compatible" and knowing
+  the base URL by heart. OpenRouter is now its own entry in the provider list
+  with `https://openrouter.ai/api/v1` prefilled, so "Fetch Available Models"
+  works without typing an endpoint. The model list comes from OpenRouter's own
+  `GET /models` (300+ entries render in full), and the "Other..." escape hatch
+  still accepts custom identifiers such as the Auto Router
+  (`openrouter/auto-beta`).
 
 ### Changed
 
@@ -125,6 +134,17 @@ across renames and re-onboarding.
   archived match; use `preloop agents remove` for permanent deletion.
 
 ### Fixed
+
+- **DeepSeek and Qwen model pickers show the models the provider actually
+  serves**: both providers were queried with a valid API key and the response
+  was thrown away, the key being validated and nothing more, so the picker only
+  ever offered a catalog hardcoded in early 2025. Newer models such as
+  `deepseek-v4-flash` and `deepseek-v4-pro` were invisible in the console even
+  though the bundled price table already prices them. The live list is now
+  returned (sorted and de-duplicated) whenever a key is supplied. An invalid
+  key still surfaces as an authentication error; a network or listing failure
+  falls back to the bundled catalog instead of emptying the picker. The
+  keyless fallback catalog now includes the DeepSeek v4 models.
 
 - **Commit statuses post to the repository that triggered the flow** (#175): a
   flow watching several projects always posted its GitHub check to

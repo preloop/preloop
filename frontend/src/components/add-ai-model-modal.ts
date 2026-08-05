@@ -35,6 +35,7 @@ const PROVIDER_OPTIONS: ProviderOption[] = [
   { value: 'google', label: 'Google', serviceKinds: ['llm', 'stt'] },
   { value: 'qwen', label: 'Qwen', serviceKinds: ['llm'] },
   { value: 'deepseek', label: 'DeepSeek', serviceKinds: ['llm'] },
+  { value: 'openrouter', label: 'OpenRouter', serviceKinds: ['llm'] },
   {
     value: 'openai-compatible',
     label: 'OpenAI-compatible',
@@ -44,11 +45,30 @@ const PROVIDER_OPTIONS: ProviderOption[] = [
 ];
 
 /**
- * Providers with no fixed model catalog: their models are listed from the
- * user-supplied endpoint's own OpenAI-compatible GET /models, so an endpoint
- * has to be entered before fetching can work.
+ * Base URLs we already know, prefilled when the provider is chosen. Empty
+ * string means "the user has to supply it". OpenRouter has a fixed base URL,
+ * so it is prefilled here and also defaulted server-side
+ * (ai_model_provider.DEFAULT_PROVIDER_ENDPOINTS); the form still needs a value
+ * because api_endpoint is a required field on submit.
  */
-const ENDPOINT_LISTED_PROVIDERS = ['openai-compatible', 'custom'];
+const PROVIDER_DEFAULT_ENDPOINTS: Record<string, string> = {
+  openai: 'https://api.openai.com/v1',
+  anthropic: 'https://api.anthropic.com/v1',
+  google: 'https://generativelanguage.googleapis.com/v1beta',
+  qwen: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+  deepseek: 'https://api.deepseek.com/v1',
+  openrouter: 'https://openrouter.ai/api/v1',
+  'openai-compatible': '',
+  custom: '',
+};
+
+/**
+ * Providers with no fixed model catalog: their models are listed from the
+ * endpoint's own OpenAI-compatible GET /models. Fetching needs an endpoint, so
+ * one must be present before we can ask; for providers with a known default
+ * (OpenRouter) that is already satisfied without the user typing anything.
+ */
+const ENDPOINT_LISTED_PROVIDERS = ['openai-compatible', 'custom', 'openrouter'];
 
 /**
  * Reusable AI model add/edit dialog.
@@ -247,20 +267,10 @@ export class AddAIModelModal extends LitElement {
   private async _handleProviderChange(e: Event) {
     const provider = (e.target as SlSelect).value as string;
 
-    const defaultUrls: Record<string, string> = {
-      openai: 'https://api.openai.com/v1',
-      anthropic: 'https://api.anthropic.com/v1',
-      google: 'https://generativelanguage.googleapis.com/v1beta',
-      qwen: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-      deepseek: 'https://api.deepseek.com/v1',
-      'openai-compatible': '',
-      custom: '',
-    };
-
     this._currentModel = {
       ...this._currentModel,
       provider_name: provider,
-      api_endpoint: defaultUrls[provider] || '',
+      api_endpoint: PROVIDER_DEFAULT_ENDPOINTS[provider] || '',
       model_identifier: '',
     };
 
@@ -286,6 +296,8 @@ export class AddAIModelModal extends LitElement {
         return 'https://dashscope.console.aliyun.com/apiKey';
       case 'deepseek':
         return 'https://platform.deepseek.com/api_keys';
+      case 'openrouter':
+        return 'https://openrouter.ai/keys';
       case 'openai-compatible':
       case 'custom':
         return 'https://platform.openai.com/api-keys';
@@ -341,7 +353,12 @@ export class AddAIModelModal extends LitElement {
     }
 
     const provider = this._currentModel.provider_name;
-    const apiEndpoint = this._currentModel.api_endpoint?.trim();
+    // A provider with a known base URL can be listed even if the field was
+    // cleared: the default stands in, matching the server-side default.
+    const apiEndpoint =
+      this._currentModel.api_endpoint?.trim() ||
+      PROVIDER_DEFAULT_ENDPOINTS[provider] ||
+      '';
     // These providers have no fixed catalog: the list comes from the
     // endpoint's own /models, so without an endpoint there is nothing to ask.
     if (ENDPOINT_LISTED_PROVIDERS.includes(provider) && !apiEndpoint) {
