@@ -90,6 +90,7 @@ from preloop.services.managed_agent_identity import (
     merge_managed_agents,
     rekey_managed_agent,
 )
+from preloop.services.model_credentials import resolve_model_call_credentials
 from preloop.services.model_gateway_usage import ModelGatewayUsageService
 from preloop.services.runtime_session_explorer import RuntimeSessionExplorerService
 from preloop.services.subject_governance import (
@@ -1251,6 +1252,7 @@ async def extract_agent_name(
     from preloop.services.litellm_routing import to_litellm_model
 
     litellm_model = to_litellm_model(default_model)
+    creds_kwargs = resolve_model_call_credentials(default_model, db=db)
 
     kwargs = {
         "model": litellm_model,
@@ -1263,11 +1265,8 @@ async def extract_agent_name(
         ],
         "temperature": 0.0,
         "max_tokens": 100,
+        **creds_kwargs,
     }
-    if default_model.api_key:
-        kwargs["api_key"] = default_model.api_key
-    if default_model.api_endpoint:
-        kwargs["api_base"] = default_model.api_endpoint
 
     def _call():
         response = litellm.completion(**kwargs)

@@ -12,11 +12,15 @@ from sqlalchemy.orm import Session
 from preloop.models.crud.ai_model import ai_model as crud_ai_model
 from preloop.models.models.ai_model import AIModel
 from preloop.services.litellm_routing import to_litellm_model
+from preloop.services.model_credentials import call_with_default_model_fallback
 from preloop.utils.redaction import redact_dict
 
 logger = logging.getLogger(__name__)
 
 SUMMARY_TIMEOUT_SECONDS = 5.0
+# Per-attempt budget so the primary and the fallback each get a share of the
+# overall SUMMARY_TIMEOUT_SECONDS deadline.
+SUMMARY_ATTEMPT_TIMEOUT_SECONDS = SUMMARY_TIMEOUT_SECONDS / 2
 SUMMARY_MAX_TOKENS = 150
 SUMMARY_MAX_CHARS = 400
 
@@ -61,8 +65,9 @@ def _compact_args(tool_args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _call_summary_model(
-    *,
     model: AIModel,
+    creds_kwargs: dict[str, Any],
+    *,
     tool_name: str,
     tool_args: dict[str, Any],
     agent_reasoning: Optional[str],
@@ -100,11 +105,8 @@ def _call_summary_model(
         ],
         "temperature": 0.1,
         "max_tokens": SUMMARY_MAX_TOKENS,
+        **creds_kwargs,
     }
-    if model.api_key:
-        kwargs["api_key"] = model.api_key
-    if model.api_endpoint:
-        kwargs["api_base"] = model.api_endpoint
 
     response = litellm.completion(**kwargs)
     text = (response.choices[0].message.content or "").strip()
@@ -154,15 +156,28 @@ async def generate_approval_summary(
         return None
 
     redacted_args = redact_dict(dict(args))
+
+    def _call(model_to_use: AIModel, creds: dict[str, Any]) -> str:
+        return _call_summary_model(
+            model_to_use,
+            creds,
+            tool_name=tool_name,
+            tool_args=redacted_args,
+            agent_reasoning=agent_reasoning,
+            managed_agent_name=managed_agent_name,
+        )
+
     try:
         summary = await asyncio.wait_for(
-            asyncio.to_thread(
-                _call_summary_model,
-                model=model,
-                tool_name=tool_name,
-                tool_args=redacted_args,
-                agent_reasoning=agent_reasoning,
-                managed_agent_name=managed_agent_name,
+            call_with_default_model_fallback(
+                db=db,
+                account_id=account_id,
+                primary_model=model,
+                caller=_call,
+                operation_name="approval_summary",
+                # Give each attempt half the budget so a slow or hanging primary
+                # still leaves room for the fallback inside the overall deadline.
+                attempt_timeout=SUMMARY_ATTEMPT_TIMEOUT_SECONDS,
             ),
             timeout=SUMMARY_TIMEOUT_SECONDS,
         )

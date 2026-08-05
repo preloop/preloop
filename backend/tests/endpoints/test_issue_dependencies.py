@@ -9,7 +9,7 @@ from preloop.api.endpoints.issue_dependencies import (
     DependencyResponse,
 )
 from preloop.models.models import Issue, AIModel, Project, Account
-from preloop.services.secret_service import ResolvedSecret
+from preloop.services.secret_service import ResolvedModelCredentials
 
 
 @pytest.fixture
@@ -112,7 +112,11 @@ def test_detect_issue_dependencies_success(
 def test_detect_issue_dependencies_uses_secret_service_credentials(
     mock_issues: list[MagicMock], mocker: MockerFixture
 ):
-    """Dependency detection should resolve credentials through SecretService."""
+    """Dependency detection resolves credentials through the shared helper.
+
+    Also asserts the model's custom endpoint is forwarded as base_url, which the
+    direct resolve_ai_model_api_key() call this replaced silently dropped.
+    """
     issue_ids = [issue.id for issue in mock_issues]
     request = DependencyRequest(issue_ids=issue_ids)
     mock_user = MagicMock(spec=Account)
@@ -132,6 +136,7 @@ def test_detect_issue_dependencies_uses_secret_service_credentials(
     mock_ai_model.model_identifier = "gpt-5.4"
     mock_ai_model.api_key = "legacy-plaintext-key"
     mock_ai_model.credentials_secret = None
+    mock_ai_model.api_endpoint = "https://custom.example.com/v1"
     mock_crud_ai_model.get_default_active_model.return_value = mock_ai_model
 
     mock_crud_issue_set = mocker.patch(
@@ -140,12 +145,15 @@ def test_detect_issue_dependencies_uses_secret_service_credentials(
     mock_crud_issue_set.get_supersets_by_issues.return_value = []
 
     mock_secret_service = MagicMock()
-    mock_secret_service.resolve_ai_model_api_key.return_value = ResolvedSecret(
-        value="resolved-external-key",
-        backend_type="openbao_kv_v2",
+    mock_secret_service.resolve_ai_model_credentials.return_value = (
+        ResolvedModelCredentials(
+            credential_type="api_key",
+            backend_type="openbao_kv_v2",
+            value="resolved-external-key",
+        )
     )
     mocker.patch(
-        "preloop.api.endpoints.issue_dependencies.get_secret_service",
+        "preloop.services.model_credentials.get_secret_service",
         return_value=mock_secret_service,
     )
 
@@ -172,5 +180,8 @@ def test_detect_issue_dependencies_uses_secret_service_credentials(
     )
 
     assert isinstance(result, DependencyResponse)
-    mock_secret_service.resolve_ai_model_api_key.assert_called_once_with(mock_ai_model)
-    mock_openai_client.assert_called_once_with(api_key="resolved-external-key")
+    mock_secret_service.resolve_ai_model_credentials.assert_called_once()
+    mock_openai_client.assert_called_once_with(
+        api_key="resolved-external-key",
+        base_url="https://custom.example.com/v1",
+    )
