@@ -180,6 +180,36 @@ across renames and re-onboarding.
   does not expose a runtime attribute. The Hermes plugin reads config.runtime,
   but that field is only present in the raw YAML config block, not the parsed
   dataclass.
+- **OpenRouter models routed to the wrong vendor** (#172): a model id
+  containing a slash was treated as `provider/model` before the stored
+  provider and endpoint were consulted, so an "OpenAI-compatible" model on
+  `https://openrouter.ai/api/v1` with the id
+  `deepseek/deepseek-v4-flash-0731` was sent to api.deepseek.com with the
+  vendor prefix stripped, producing upstream `502 Invalid URL` errors. The
+  Auto Router (`openrouter/auto-beta`) failed for the same reason. The stored
+  `provider_name` and `api_endpoint` now take precedence over the prefix
+  heuristic: concrete OpenRouter ids, the `openrouter/`-prefixed workaround
+  form, and the Auto Router all route to OpenRouter with the model id intact.
+  Users who added the `openrouter/` prefix by hand are not broken by the fix.
+- **Model picker was empty for OpenRouter** (#171):
+  `available-models` returned `[]` for every openai-compatible provider,
+  because only the built-in providers had a discovery path. The configured
+  endpoint's OpenAI-compatible `GET /models` is now queried, so OpenRouter,
+  vLLM, LM Studio, and similar endpoints populate the picker. The request
+  takes an `api_endpoint`, which the picker sends from the form.
+
+### Security
+
+- **Provider API keys no longer travel in the URL**: the
+  `/api/v1/ai-models/providers/{provider}/available-models` endpoint accepted
+  `api_key` as a query parameter, so live provider keys were written to
+  server access logs in plaintext. The key now travels in the POST body (or
+  the `X-Provider-Api-Key` header on the deprecated GET form) and the query
+  parameter has been removed rather than deprecated. These endpoints also now
+  require authentication, and the endpoint they fetch is validated so it
+  cannot be aimed at loopback or link-local addresses. **Operators should
+  rotate any provider key entered through the model picker before this
+  release**, and check access logs for `api_key=`.
 
 ## [0.13.1] - 2026-07-28
 

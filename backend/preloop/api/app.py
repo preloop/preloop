@@ -986,13 +986,6 @@ def create_app() -> FastAPI:
             tags=["Session Optimization"],
             dependencies=[Depends(get_current_active_user)],
         )
-        # Public AI models endpoints (no auth required)
-        app.include_router(
-            ai_models.public_router,
-            prefix="/api/v1",
-            tags=["AI Models"],
-        )
-
     # AI Model Gateway routers
     if is_gateway_role:
         app.include_router(

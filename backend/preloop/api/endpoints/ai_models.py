@@ -3,7 +3,15 @@ import uuid
 from datetime import datetime
 from typing import List, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Response
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    status,
+    Query,
+    Response,
+)
 from sqlalchemy.orm import Session
 
 from preloop.api.auth.jwt import get_current_active_user
@@ -14,6 +22,7 @@ from preloop.schemas.ai_model import (
     AIModelGatewayUsageSummaryResponse,
     AIModelRead,
     AIModelUpdate,
+    AvailableModelsRequest,
 )
 from preloop.services.secret_service import (
     PRINCIPAL_BOUND_OAUTH_CREDENTIAL_TYPES,
@@ -36,7 +45,6 @@ from preloop.services.ai_model_provider import get_available_models_for_provider
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-public_router = APIRouter()  # Router for endpoints that don't require authentication
 
 
 def _get_account_ai_model(
@@ -347,16 +355,55 @@ def export_ai_model_credentials(
     )
 
 
-@public_router.get(
+@router.post(
     "/ai-models/providers/{provider}/available-models",
     response_model=List[str],
     summary="Get Available Models for Provider",
     tags=["AI Models"],
 )
+async def list_provider_available_models(
+    provider: str,
+    request_in: Optional[AvailableModelsRequest] = None,
+) -> List[str]:
+    """
+    Fetch available models from the specified AI provider.
+
+    For OpenAI, this fetches the latest available models from their API. For
+    Anthropic and Google this returns a curated list of known models. For
+    openai-compatible / custom / openrouter providers, the configured
+    ``api_endpoint`` is queried for its OpenAI-compatible model list.
+
+    The provider API key travels in the request BODY, never the query string:
+    as a query parameter it was written to access logs in plaintext.
+    """
+    return await _fetch_provider_models(
+        provider=provider,
+        api_key=request_in.api_key if request_in else None,
+        model_kind=request_in.model_kind if request_in else "llm",
+        api_endpoint=request_in.api_endpoint if request_in else None,
+    )
+
+
+@router.get(
+    "/ai-models/providers/{provider}/available-models",
+    response_model=List[str],
+    summary="Get Available Models for Provider (deprecated)",
+    tags=["AI Models"],
+    deprecated=True,
+)
 async def get_provider_available_models(
     provider: str,
-    api_key: Optional[str] = Query(
-        None, description="Optional API key for fetching models"
+    x_provider_api_key: Optional[str] = Header(
+        None,
+        alias="X-Provider-Api-Key",
+        description="Provider API key. Headers are not written to access logs.",
+    ),
+    api_endpoint: Optional[str] = Query(
+        None,
+        description=(
+            "Base URL of an OpenAI-compatible endpoint, required for the "
+            "openai-compatible and custom providers."
+        ),
     ),
     model_kind: Literal["llm", "stt", "tts"] = Query(
         "llm",
@@ -365,27 +412,45 @@ async def get_provider_available_models(
     ),
 ) -> List[str]:
     """
-    Fetch available models from the specified AI provider.
+    Deprecated GET form, kept for clients that have not moved to POST yet.
 
-    For OpenAI, this will fetch the latest available models from their API.
-    For Anthropic and Google, this returns a curated list of known models.
-
-    Note: This endpoint does not require authentication as it's just fetching
-    publicly available model names. The api_key parameter is optional for
-    fetching live data from OpenAI.
+    The api_key query parameter this endpoint used to accept has been REMOVED,
+    not merely deprecated: it wrote live provider keys into access logs in
+    plaintext. Pass the key in the X-Provider-Api-Key header, or use the POST
+    form. A key sent as a query parameter is ignored.
     """
+    return await _fetch_provider_models(
+        provider=provider,
+        api_key=x_provider_api_key,
+        model_kind=model_kind,
+        api_endpoint=api_endpoint,
+    )
+
+
+async def _fetch_provider_models(
+    *,
+    provider: str,
+    api_key: Optional[str],
+    model_kind: Literal["llm", "stt", "tts"],
+    api_endpoint: Optional[str],
+) -> List[str]:
+    """Shared body of the GET and POST available-models endpoints."""
     try:
-        models = await get_available_models_for_provider(provider, api_key, model_kind)
-        return models
+        return await get_available_models_for_provider(
+            provider, api_key, model_kind, api_endpoint
+        )
     except ValueError as e:
-        # ValueError is raised for authentication errors
-        logger.warning(f"Authentication failed for provider {provider}: {e}")
+        # ValueError is raised for authentication and validation errors. The
+        # message is provider text, never the key.
+        logger.warning("Cannot list models for provider %s: %s", provider, e)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=str(e),
         )
     except Exception as e:
-        logger.error(f"Failed to fetch models for provider {provider}: {e}")
+        logger.error(
+            "Failed to fetch models for provider %s: %s", provider, type(e).__name__
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch available models: {str(e)}",

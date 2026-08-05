@@ -1,11 +1,29 @@
 """Service for fetching available models from AI providers."""
 
+import ipaddress
 import logging
 from typing import List, Literal, Optional
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
 ModelKind = Literal["llm", "stt", "tts"]
+
+# Provider names that mean "an OpenAI-compatible endpoint the user configured".
+# These have no fixed catalog: the model list has to come from the endpoint's
+# own GET /models (issue #171).
+OPENAI_COMPATIBLE_PROVIDERS = {"openai-compatible", "custom", "openrouter"}
+
+# Default endpoints for providers whose base URL we know, used when the caller
+# did not supply one.
+DEFAULT_PROVIDER_ENDPOINTS = {
+    "openrouter": "https://openrouter.ai/api/v1",
+}
+
+# Upper bound on models returned from an arbitrary endpoint. OpenRouter alone
+# lists 300+ and the picker is a dropdown, so an unbounded list is a UI and
+# payload hazard rather than a feature.
+MAX_DISCOVERED_MODELS = 1000
 
 OPENAI_STT_MODELS = [
     "gpt-4o-transcribe",
@@ -38,15 +56,22 @@ SUPPORTED_AUDIO_PROVIDER_KINDS: dict[str, set[ModelKind]] = {
 
 
 async def get_available_models_for_provider(
-    provider: str, api_key: Optional[str] = None, model_kind: ModelKind = "llm"
+    provider: str,
+    api_key: Optional[str] = None,
+    model_kind: ModelKind = "llm",
+    api_endpoint: Optional[str] = None,
 ) -> List[str]:
     """
     Fetch available models from the specified AI provider.
 
     Args:
-        provider: The provider name (openai, anthropic, google, qwen, deepseek)
+        provider: The provider name (openai, anthropic, google, qwen, deepseek,
+            openai-compatible, custom, openrouter)
         api_key: Optional API key for authentication
         model_kind: Service kind to fetch (llm, stt, or tts)
+        api_endpoint: Base URL of an OpenAI-compatible endpoint. Required for
+            the openai-compatible/custom providers, which have no fixed
+            catalog; defaulted for providers in DEFAULT_PROVIDER_ENDPOINTS.
 
     Returns:
         List of model identifiers/names
@@ -75,9 +100,123 @@ async def get_available_models_for_provider(
         return await _get_qwen_models(api_key)
     elif provider == "deepseek":
         return await _get_deepseek_models(api_key)
+    elif provider in OPENAI_COMPATIBLE_PROVIDERS:
+        endpoint = (api_endpoint or "").strip() or DEFAULT_PROVIDER_ENDPOINTS.get(
+            provider
+        )
+        if not endpoint:
+            # Nothing to query. Previously every openai-compatible provider
+            # landed here and silently returned [] (issue #171).
+            logger.info(
+                "No api_endpoint supplied for provider %s; cannot list models",
+                provider,
+            )
+            return []
+        return await _get_openai_compatible_models(endpoint, api_key)
     else:
-        # For custom providers, return empty list
+        # Unknown provider with no endpoint convention to follow.
         return []
+
+
+def validate_discovery_endpoint(api_endpoint: str) -> str:
+    """Validate a user-supplied model-discovery endpoint, or raise ValueError.
+
+    This endpoint makes the server fetch a URL chosen by the caller, so it is
+    an SSRF sink. Restrict it to http(s) on a non-literal-private host. DNS
+    names that resolve to private space are not caught here (that needs a
+    resolving/pinning transport); this blocks the trivial direct attempts at
+    link-local metadata and loopback services.
+    """
+    raw = (api_endpoint or "").strip()
+    if not raw:
+        raise ValueError("api_endpoint is required for this provider")
+
+    parts = urlsplit(raw)
+    if parts.scheme not in {"http", "https"}:
+        raise ValueError("api_endpoint must be an http(s) URL")
+    host = (parts.hostname or "").strip()
+    if not host:
+        raise ValueError("api_endpoint must include a host")
+
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        # A DNS name. Block the obvious loopback aliases; anything else is
+        # allowed, matching how api_endpoint is treated elsewhere.
+        if host.lower() in {"localhost", "localhost.localdomain"}:
+            raise ValueError("api_endpoint must not point at a private address")
+        return raw
+
+    if (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    ):
+        raise ValueError("api_endpoint must not point at a private address")
+    return raw
+
+
+async def _get_openai_compatible_models(
+    api_endpoint: str, api_key: Optional[str] = None
+) -> List[str]:
+    """List models from an OpenAI-compatible endpoint's ``GET /models``.
+
+    Works for OpenRouter, vLLM, LM Studio, Together, Groq and anything else
+    that implements the OpenAI list-models shape ``{"data": [{"id": ...}]}``.
+    Some servers (OpenRouter included) return a bare list, which is accepted
+    too.
+    """
+    from openai import AsyncOpenAI, AuthenticationError
+
+    base_url = validate_discovery_endpoint(api_endpoint).rstrip("/")
+    try:
+        client = AsyncOpenAI(
+            api_key=api_key or "placeholder",
+            base_url=base_url,
+            max_retries=1,
+            timeout=15.0,
+        )
+        response = await client.models.list()
+    except AuthenticationError as e:
+        # Do not log the key or the full request URL: a key passed as a query
+        # param would otherwise land in logs (see the api_key handling in the
+        # endpoint layer).
+        logger.warning("Authentication failed listing models from %s", base_url)
+        raise ValueError(
+            "Invalid API key for this endpoint. Please check your API key and "
+            "try again."
+        ) from e
+    except Exception as e:
+        logger.warning("Failed to list models from %s: %s", base_url, type(e).__name__)
+        return []
+
+    return _extract_model_ids(response)
+
+
+def _extract_model_ids(response: object) -> List[str]:
+    """Pull model ids out of an OpenAI-compatible list-models response."""
+    entries = getattr(response, "data", None)
+    if entries is None and isinstance(response, dict):
+        entries = response.get("data")
+    if entries is None and isinstance(response, list):
+        entries = response
+    if not entries:
+        return []
+
+    model_ids: List[str] = []
+    for entry in entries:
+        model_id = getattr(entry, "id", None)
+        if model_id is None and isinstance(entry, dict):
+            model_id = entry.get("id")
+        if isinstance(model_id, str) and model_id.strip():
+            model_ids.append(model_id.strip())
+
+    # Stable, de-duplicated, alphabetical: the picker is a flat dropdown and
+    # upstream ordering is neither stable nor meaningful.
+    return sorted(set(model_ids))[:MAX_DISCOVERED_MODELS]
 
 
 def _get_stt_models(provider: str) -> List[str]:

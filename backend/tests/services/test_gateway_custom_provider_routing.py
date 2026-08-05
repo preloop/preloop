@@ -86,6 +86,155 @@ def test_unknown_headed_identifier_still_gets_prefixed():
     )
 
 
+# --- issue #172: OpenRouter behind provider "openai-compatible" -------------
+#
+# Alex Lennon configured provider "openai-compatible" + endpoint
+# https://openrouter.ai/api/v1 and got 93 upstream 502s: the vendor prefix in
+# the model id ("deepseek/...") was read as a routing instruction, so litellm
+# loaded its native DeepSeek adapter, stripped the prefix, and rewrote the
+# api_base to api.deepseek.com. The stored provider/endpoint must win.
+
+OPENROUTER = "https://openrouter.ai/api/v1"
+
+
+def test_openrouter_endpoint_beats_vendor_prefix_in_model_id():
+    # The exact configuration from issue #172. Must NOT resolve to deepseek.
+    routed = OpenAIGatewayService._to_litellm_model(
+        _model("openai-compatible", "deepseek/deepseek-v4-flash-0731", OPENROUTER)
+    )
+    assert routed == "openrouter/deepseek/deepseek-v4-flash-0731"
+    assert not routed.startswith("deepseek/")
+
+
+def test_openrouter_auto_router_keeps_its_first_party_namespace():
+    # "openrouter/auto-beta" is an upstream model id in OpenRouter's own
+    # namespace, not a prefixed model. litellm strips one "openrouter/" before
+    # calling upstream, so the routed string needs both.
+    assert (
+        OpenAIGatewayService._to_litellm_model(
+            _model("openai-compatible", "openrouter/auto-beta", OPENROUTER)
+        )
+        == "openrouter/openrouter/auto-beta"
+    )
+
+
+def test_openrouter_prefixed_identifier_is_not_double_prefixed():
+    # The manual workaround (prefixing the id with "openrouter/") stays valid,
+    # so users who applied it are not broken by this fix.
+    assert (
+        OpenAIGatewayService._to_litellm_model(
+            _model(
+                "openai-compatible",
+                "openrouter/deepseek/deepseek-v4-flash-0731",
+                OPENROUTER,
+            )
+        )
+        == "openrouter/deepseek/deepseek-v4-flash-0731"
+    )
+
+
+def test_openrouter_provider_name_routes_without_endpoint():
+    assert (
+        OpenAIGatewayService._to_litellm_model(
+            _model("openrouter", "deepseek/deepseek-v4-flash-0731")
+        )
+        == "openrouter/deepseek/deepseek-v4-flash-0731"
+    )
+
+
+def test_openrouter_matched_on_host_not_substring():
+    # A host that merely mentions openrouter.ai in its path or query must not
+    # be routed to OpenRouter.
+    assert (
+        OpenAIGatewayService._to_litellm_model(
+            _model(
+                "openai-compatible",
+                "deepseek/deepseek-v4-flash-0731",
+                "https://proxy.example.com/openrouter.ai/api/v1",
+            )
+        )
+        == "openai/deepseek/deepseek-v4-flash-0731"
+    )
+
+
+def test_openai_compatible_endpoint_beats_vendor_prefix():
+    # Same precedence rule for any other OpenAI-compatible gateway: the id is
+    # forwarded verbatim and api_base (passed by callers) is honored.
+    assert (
+        OpenAIGatewayService._to_litellm_model(
+            _model(
+                "openai-compatible",
+                "deepseek/deepseek-chat",
+                "https://gateway.example.com/v1",
+            )
+        )
+        == "openai/deepseek/deepseek-chat"
+    )
+
+
+def test_custom_provider_with_endpoint_forwards_identifier_verbatim():
+    assert (
+        OpenAIGatewayService._to_litellm_model(
+            _model("custom", "qwen/qwen3-coder", "https://gateway.example.com/v1")
+        )
+        == "openai/qwen/qwen3-coder"
+    )
+
+
+def test_openai_compatible_without_endpoint_keeps_prefix_inference():
+    # No endpoint means nothing to honor, so the old heuristic still applies.
+    assert (
+        OpenAIGatewayService._to_litellm_model(
+            _model("openai-compatible", "deepseek/deepseek-chat")
+        )
+        == "deepseek/deepseek-chat"
+    )
+
+
+def test_native_deepseek_provider_is_unaffected():
+    # Regression guard: a genuine DeepSeek model must still route to DeepSeek.
+    assert (
+        OpenAIGatewayService._to_litellm_model(
+            _model("deepseek", "deepseek-chat", "https://api.deepseek.com/v1")
+        )
+        == "deepseek/deepseek-chat"
+    )
+
+
+@pytest.mark.parametrize(
+    "identifier, expected_upstream_id",
+    [
+        # (a) concrete OpenRouter id, (b) the prefixed workaround form,
+        # (c) the Auto Router. All three must reach OpenRouter with the id
+        # OpenRouter itself expects.
+        ("deepseek/deepseek-v4-flash-0731", "deepseek/deepseek-v4-flash-0731"),
+        (
+            "openrouter/deepseek/deepseek-v4-flash-0731",
+            "deepseek/deepseek-v4-flash-0731",
+        ),
+        ("openrouter/auto-beta", "openrouter/auto-beta"),
+    ],
+)
+def test_litellm_resolves_openrouter_models_without_mangling(
+    identifier, expected_upstream_id
+):
+    """What litellm does with our string, not just what our string looks like.
+
+    The pre-fix bug was only visible one layer down: litellm resolved provider
+    "deepseek" and sent a truncated model id. Assert on litellm's own
+    resolution so a future prefix-map change cannot silently reintroduce it.
+    """
+    import litellm
+
+    routed = OpenAIGatewayService._to_litellm_model(
+        _model("openai-compatible", identifier, OPENROUTER)
+    )
+    model_sent, provider = litellm.get_llm_provider(routed)[:2]
+
+    assert provider == "openrouter"
+    assert model_sent == expected_upstream_id
+
+
 @pytest.mark.asyncio
 async def test_extract_agent_name_uses_shared_routing(mocker):
     # Regression: this endpoint lazily imported the removed _PROVIDER_PREFIX

@@ -500,3 +500,191 @@ class TestGetDeepSeekModels:
             result = await _get_deepseek_models("test_key")
             # Should return known models even on network error
             assert "deepseek-chat" in result
+
+
+class TestOpenAICompatibleModels:
+    """Listing models from a user-configured OpenAI-compatible endpoint.
+
+    Issue #171: provider "openai-compatible" pointed at OpenRouter returned []
+    from the model picker, even though the same key against OpenRouter's own
+    GET /models returns hundreds of models. The generic adapter had no
+    discovery path at all and fell through to "return []".
+    """
+
+    @staticmethod
+    def _models_response(*model_ids):
+        response = MagicMock()
+        response.data = []
+        for model_id in model_ids:
+            entry = MagicMock()
+            entry.id = model_id
+            response.data.append(entry)
+        return response
+
+    @pytest.mark.asyncio
+    async def test_openai_compatible_lists_models_from_endpoint(self):
+        response = self._models_response(
+            "deepseek/deepseek-v4-flash-0731", "openrouter/auto-beta"
+        )
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(return_value=response)
+            mock_client.return_value = mock_instance
+
+            result = await get_available_models_for_provider(
+                "openai-compatible",
+                "test_key",
+                api_endpoint="https://openrouter.ai/api/v1",
+            )
+
+        assert result == ["deepseek/deepseek-v4-flash-0731", "openrouter/auto-beta"]
+        # The endpoint the user configured is the one queried.
+        assert (
+            mock_client.call_args.kwargs["base_url"] == "https://openrouter.ai/api/v1"
+        )
+
+    @pytest.mark.asyncio
+    async def test_openrouter_provider_defaults_its_endpoint(self):
+        response = self._models_response("openrouter/auto-beta")
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(return_value=response)
+            mock_client.return_value = mock_instance
+
+            result = await get_available_models_for_provider("openrouter", "test_key")
+
+        assert result == ["openrouter/auto-beta"]
+        assert (
+            mock_client.call_args.kwargs["base_url"] == "https://openrouter.ai/api/v1"
+        )
+
+    @pytest.mark.asyncio
+    async def test_custom_provider_lists_models_from_endpoint(self):
+        response = self._models_response("k3", "k3-turbo")
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(return_value=response)
+            mock_client.return_value = mock_instance
+
+            result = await get_available_models_for_provider(
+                "custom", "test_key", api_endpoint="https://api.kimi.example/v1"
+            )
+
+        assert result == ["k3", "k3-turbo"]
+
+    @pytest.mark.asyncio
+    async def test_results_are_deduplicated_and_sorted(self):
+        response = self._models_response("b-model", "a-model", "b-model", "  ", None)
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(return_value=response)
+            mock_client.return_value = mock_instance
+
+            result = await get_available_models_for_provider(
+                "openai-compatible",
+                "test_key",
+                api_endpoint="https://gateway.example.com/v1",
+            )
+
+        assert result == ["a-model", "b-model"]
+
+    @pytest.mark.asyncio
+    async def test_openai_compatible_without_endpoint_returns_empty(self):
+        # Nothing to query, but this must not raise: the picker just shows no
+        # suggestions until an endpoint is entered.
+        result = await get_available_models_for_provider("openai-compatible", "key")
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_auth_error_surfaces_as_value_error(self):
+        from openai import AuthenticationError
+
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(
+                side_effect=AuthenticationError(
+                    message="Invalid API key", response=MagicMock(), body=None
+                )
+            )
+            mock_client.return_value = mock_instance
+
+            with pytest.raises(ValueError, match="Invalid API key for this endpoint"):
+                await get_available_models_for_provider(
+                    "openai-compatible",
+                    "bad_key",
+                    api_endpoint="https://openrouter.ai/api/v1",
+                )
+
+    @pytest.mark.asyncio
+    async def test_network_error_returns_empty_rather_than_500(self):
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(side_effect=Exception("boom"))
+            mock_client.return_value = mock_instance
+
+            result = await get_available_models_for_provider(
+                "openai-compatible",
+                "test_key",
+                api_endpoint="https://gateway.example.com/v1",
+            )
+
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_bare_list_response_shape_is_accepted(self):
+        # Some OpenAI-compatible servers return a bare list, not {"data": [...]}.
+        entry = MagicMock()
+        entry.id = "some-model"
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(return_value=[entry])
+            mock_client.return_value = mock_instance
+
+            result = await get_available_models_for_provider(
+                "openai-compatible",
+                "test_key",
+                api_endpoint="https://gateway.example.com/v1",
+            )
+
+        assert result == ["some-model"]
+
+
+class TestDiscoveryEndpointValidation:
+    """SSRF guard on the user-supplied discovery endpoint.
+
+    This endpoint makes the server fetch a URL the caller chose, so the
+    obvious internal targets have to be refused.
+    """
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "http://127.0.0.1:8000/v1",
+            "http://localhost/v1",
+            "http://169.254.169.254/latest/meta-data",
+            "http://10.0.0.5/v1",
+            "http://192.168.1.10/v1",
+            "http://[::1]/v1",
+            "file:///etc/passwd",
+            "gopher://example.com/v1",
+            "",
+        ],
+    )
+    def test_rejected_endpoints(self, endpoint):
+        from preloop.services.ai_model_provider import validate_discovery_endpoint
+
+        with pytest.raises(ValueError):
+            validate_discovery_endpoint(endpoint)
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "https://openrouter.ai/api/v1",
+            "https://gateway.example.com/v1",
+            "http://api.example.com:8080/v1",
+        ],
+    )
+    def test_allowed_endpoints(self, endpoint):
+        from preloop.services.ai_model_provider import validate_discovery_endpoint
+
+        assert validate_discovery_endpoint(endpoint) == endpoint

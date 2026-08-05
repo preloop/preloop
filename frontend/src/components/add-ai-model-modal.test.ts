@@ -173,3 +173,92 @@ describe('AddAIModelModal multi-model per key', () => {
     expect((element as any)._formError).to.contain('claude-sonnet-4-5');
   });
 });
+
+/**
+ * Issue #171 (empty model list for OpenRouter) and the key-in-URL leak found
+ * alongside it. The picker sends the endpoint so openai-compatible providers
+ * can be listed at all, and the key must never reach the query string.
+ */
+describe('AddAIModelModal model discovery', () => {
+  let element: AddAIModelModal;
+  let sandbox: SinonSandbox;
+  let fetchStub: SinonStub;
+
+  const discoveryCalls = () =>
+    fetchStub
+      .getCalls()
+      .filter((call) => String(call.args[0]).includes('available-models'));
+
+  beforeEach(async () => {
+    localStorage.setItem('accessToken', 'test-access-token');
+    localStorage.setItem('refreshToken', 'test-refresh-token');
+    sandbox = sinon.createSandbox();
+    fetchStub = sandbox.stub(window, 'fetch');
+    fetchStub.callsFake(async (url: any) => {
+      if (String(url).includes('available-models')) {
+        return new Response(
+          JSON.stringify([
+            'deepseek/deepseek-v4-flash-0731',
+            'openrouter/auto-beta',
+          ])
+        );
+      }
+      return new Response(JSON.stringify([]));
+    });
+    element = await fixture(html`<add-ai-model-modal></add-ai-model-modal>`);
+  });
+
+  afterEach(() => {
+    sandbox.restore();
+    localStorage.clear();
+  });
+
+  it('lists OpenRouter models for an openai-compatible endpoint', async () => {
+    (element as any)._currentModel = {
+      provider_name: 'openai-compatible',
+      api_endpoint: 'https://openrouter.ai/api/v1',
+      api_key: 'sk-or-v1-secret-value',
+    };
+
+    await (element as any)._fetchModelsForCurrentProvider();
+
+    expect((element as any)._modelSuggestions).to.deep.equal([
+      'deepseek/deepseek-v4-flash-0731',
+      'openrouter/auto-beta',
+    ]);
+    expect((element as any)._modelsFetchError).to.equal(null);
+
+    const [url, init] = discoveryCalls()[0].args;
+    const body = JSON.parse(String(init.body));
+    expect(init.method).to.equal('POST');
+    expect(body.api_endpoint).to.equal('https://openrouter.ai/api/v1');
+    expect(body.api_key).to.equal('sk-or-v1-secret-value');
+    // The leak that put live keys in access logs.
+    expect(String(url)).to.not.contain('api_key');
+    expect(String(url)).to.not.contain('sk-or-v1-secret-value');
+  });
+
+  it('asks for an endpoint before fetching openai-compatible models', async () => {
+    (element as any)._currentModel = {
+      provider_name: 'openai-compatible',
+      api_key: 'sk-or-v1-secret-value',
+    };
+
+    await (element as any)._fetchModelsForCurrentProvider();
+
+    expect((element as any)._modelsFetchError).to.contain('API endpoint');
+    expect(discoveryCalls()).to.have.lengthOf(0);
+  });
+
+  it('still fetches catalog providers without an endpoint', async () => {
+    (element as any)._currentModel = {
+      provider_name: 'anthropic',
+      api_key: 'sk-ant-secret',
+    };
+
+    await (element as any)._fetchModelsForCurrentProvider();
+
+    expect(discoveryCalls()).to.have.lengthOf(1);
+    expect(String(discoveryCalls()[0].args[0])).to.not.contain('sk-ant-secret');
+  });
+});
