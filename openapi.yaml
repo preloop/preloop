@@ -5993,16 +5993,18 @@ paths:
       - AI Models
       - AI Models
       summary: Get Available Models for Provider
-      description: 'Fetch available models from the specified AI provider.
+      description: 'Fetch available models from the specified AI provider, with provenance.
 
 
-        For OpenAI, this fetches the latest available models from their API. For
+        Every provider attempts a live listing when a key (and endpoint where
 
-        Anthropic and Google this returns a curated list of known models. For
+        applicable) is present; the response reports ``source`` ("live" or
 
-        openai-compatible / custom / openrouter providers, the configured
+        "fallback") and a short safe ``error`` reason when a live attempt failed.
 
-        ``api_endpoint`` is queried for its OpenAI-compatible model list.
+        The reason comes from a fixed vocabulary and never contains raw provider
+
+        error text, endpoint URLs, or key material.
 
 
         The provider API key travels in the request BODY, never the query string:
@@ -6032,11 +6034,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  type: string
-                title: Response List Provider Available Models Api V1 Ai Models Providers  Provider  Available
-                  Models Post
+                $ref: '#/components/schemas/AvailableModelsResponse'
         '422':
           description: Validation Error
           content:
@@ -6050,6 +6048,15 @@ paths:
       summary: Get Available Models for Provider (deprecated)
       description: 'Deprecated GET form, kept for clients that have not moved to POST
         yet.
+
+
+        Returns a BARE LIST of model ids, unlike the POST form, which reports
+
+        provenance as ``{models, source, error}``. The bare-list shape is kept
+
+        here on purpose so unknown external callers of the deprecated route do
+
+        not break; new clients should use POST and read the provenance.
 
 
         The api_key query parameter this endpoint used to accept has been REMOVED,
@@ -10587,6 +10594,48 @@ components:
         purpose: as a query parameter it was written to access logs in plaintext
 
         and leaked live provider keys.'
+    AvailableModelsResponse:
+      properties:
+        models:
+          items:
+            type: string
+          type: array
+          title: Models
+          description: Model identifiers to offer in the picker
+        source:
+          type: string
+          enum:
+          - live
+          - fallback
+          title: Source
+          description: '''live'' when the provider''s listing endpoint answered; ''fallback''
+            when a bundled catalog (or empty list) was returned instead'
+          default: fallback
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error
+          description: Short safe reason for a fallback after a failed live attempt
+            (fixed vocabulary, never raw provider error text). None for a clean result.
+      type: object
+      title: AvailableModelsResponse
+      description: 'A provider''s model catalog plus the provenance of the listing.
+
+
+        ``source`` reports whether the ids came from the provider''s live listing
+
+        endpoint ("live") or from Preloop''s bundled fallback catalog
+
+        ("fallback"). ``error`` is a short machine-readable reason drawn from a
+
+        fixed vocabulary (e.g. "timeout", "network", "empty_response",
+
+        "unsupported", "missing_endpoint", "sdk_missing", "unknown") when a live
+
+        attempt failed; it never carries raw exception text, which can embed
+
+        endpoint URLs or key material.'
     Body_diff_policy_api_v1_policies_diff_post:
       properties:
         file:

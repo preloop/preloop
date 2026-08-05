@@ -167,3 +167,98 @@ def test_midstream_sse_preserves_connection_reset_detail():
     anthropic_frame = service._anthropic_stream_error_event(exc)
     assert "upstream_disconnect" in anthropic_frame
     assert "upstream connection reset" in anthropic_frame
+
+
+# ---------------------------------------------------------------------------
+# Surfacing the upstream provider's real error message (scrubbed).
+# ---------------------------------------------------------------------------
+
+_OPENROUTER_BLOB = (
+    "litellm.NotFoundError: litellm.NotFoundError: OpenrouterException - "
+    '{"error":{"message":'
+    '"No allowed providers are available for the selected model.",'
+    '"code":404,"metadata":{"requested_providers":["alibaba"],'
+    '"available_providers":["openai","deepinfra","together","fireworks",'
+    '"novita","hyperbolic","nebius","parasail","baseten","cerebras",'
+    '"groq","sambanova","lepton","avian","kluster","targon","inferencenet",'
+    '"mancer","featherless","chutes"]}},"user_id":"user_x"}'
+)
+
+
+def _openrouter_not_found_error() -> Exception:
+    import litellm
+
+    return litellm.NotFoundError(
+        message=_OPENROUTER_BLOB,
+        model="openrouter/qwen/qwen3.8-max",
+        llm_provider="openrouter",
+    )
+
+
+def test_normalize_openrouter_not_found_surfaces_provider_message():
+    """Founder case: the OpenRouter sentence must reach the user, not a blob."""
+    err = OpenAIGatewayService._normalize_upstream_error(
+        "openai", _openrouter_not_found_error()
+    )
+    assert err.status_code == 404
+    assert "No allowed providers" in err.message
+    # No litellm wrapping, no metadata dump, no internal identifiers.
+    assert "litellm.NotFoundError" not in err.message
+    assert "OpenrouterException" not in err.message
+    assert "available_providers" not in err.message
+    assert "user_x" not in err.message
+    assert "https://" not in err.message
+    payload = err.to_payload()
+    assert "No allowed providers" in payload["error"]["message"]
+
+
+def test_normalize_openrouter_not_found_provider_detail_is_short_hint():
+    err = OpenAIGatewayService._normalize_upstream_error(
+        "openai", _openrouter_not_found_error()
+    )
+    payload = err.to_payload()
+    detail = payload["error"].get("provider_detail")
+    assert detail is not None
+    assert "openrouter" in detail
+    assert "requested_providers: alibaba" in detail
+    # A hint, not a metadata dump.
+    assert "available_providers" not in detail
+    assert len(detail) <= 200
+
+
+def test_normalize_upstream_error_scrubs_secrets_from_message():
+    """Upstream messages can echo keys and credentialed URLs; scrub them."""
+    import litellm
+
+    blob = (
+        "litellm.NotFoundError: OpenrouterException - request to "
+        "https://user:supersecrettoken123@openrouter.ai/api/v1/chat failed "
+        "with api key sk-abcdefghijklmnopqrstuvwxyz123456"
+    )
+    err = OpenAIGatewayService._normalize_upstream_error(
+        "openai",
+        litellm.NotFoundError(
+            message=blob, model="openrouter/x", llm_provider="openrouter"
+        ),
+    )
+    assert "supersecrettoken123" not in err.message
+    assert "sk-abcdefghijklmnopqrstuvwxyz123456" not in err.message
+    assert "[REDACTED]" in err.message
+
+
+def test_normalize_upstream_error_caps_message_length():
+    long_message = "litellm.APIError: BoomException - " + ("x" * 5000)
+    err = OpenAIGatewayService._normalize_upstream_error(
+        "openai",
+        _FakeHTTPError(long_message, status_code=404),
+    )
+    assert len(err.message) <= 500
+
+
+def test_normalize_plain_message_unchanged():
+    """Messages with no litellm wrapping pass through as before."""
+    err = OpenAIGatewayService._normalize_upstream_error(
+        "openai", _FakeHTTPError("model not found", status_code=404)
+    )
+    assert err.message == "model not found"
+    assert err.to_payload()["error"].get("provider_detail") is None

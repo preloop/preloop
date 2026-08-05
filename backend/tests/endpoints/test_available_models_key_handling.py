@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock
 
 from preloop.api.endpoints import ai_models
 from preloop.schemas.ai_model import AvailableModelsRequest
+from preloop.services.ai_model_provider import ModelDiscoveryResult
 
 ENDPOINT_PATH = "/ai-models/providers/{provider}/available-models"
 SPEC_PATH = "/api/v1" + ENDPOINT_PATH
@@ -87,7 +88,9 @@ async def test_get_route_reads_the_key_from_the_header(mocker):
     fetch = mocker.patch.object(
         ai_models,
         "get_available_models_for_provider",
-        new=AsyncMock(return_value=["a-model"]),
+        new=AsyncMock(
+            return_value=ModelDiscoveryResult(models=["a-model"], source="live")
+        ),
     )
 
     result = await ai_models.get_provider_available_models(
@@ -97,6 +100,7 @@ async def test_get_route_reads_the_key_from_the_header(mocker):
         model_kind="llm",
     )
 
+    # The deprecated GET form keeps the bare-list shape for old clients.
     assert result == ["a-model"]
     fetch.assert_awaited_once_with(
         "openai-compatible",
@@ -111,7 +115,11 @@ async def test_post_route_reads_the_key_from_the_body(mocker):
     fetch = mocker.patch.object(
         ai_models,
         "get_available_models_for_provider",
-        new=AsyncMock(return_value=["openrouter/auto-beta"]),
+        new=AsyncMock(
+            return_value=ModelDiscoveryResult(
+                models=["openrouter/auto-beta"], source="live"
+            )
+        ),
     )
 
     result = await ai_models.list_provider_available_models(
@@ -122,7 +130,9 @@ async def test_post_route_reads_the_key_from_the_body(mocker):
         ),
     )
 
-    assert result == ["openrouter/auto-beta"]
+    assert result.models == ["openrouter/auto-beta"]
+    assert result.source == "live"
+    assert result.error is None
     fetch.assert_awaited_once_with(
         "openai-compatible",
         "sk-or-v1-secret-value",
@@ -136,12 +146,47 @@ async def test_post_route_works_without_a_body(mocker):
     fetch = mocker.patch.object(
         ai_models,
         "get_available_models_for_provider",
-        new=AsyncMock(return_value=["gpt-5.4"]),
+        new=AsyncMock(
+            return_value=ModelDiscoveryResult(models=["gpt-5.4"], source="fallback")
+        ),
     )
 
     result = await ai_models.list_provider_available_models(
         provider="openai", request_in=None
     )
 
-    assert result == ["gpt-5.4"]
+    assert result.models == ["gpt-5.4"]
+    assert result.source == "fallback"
     fetch.assert_awaited_once_with("openai", None, "llm", None)
+
+
+@pytest.mark.asyncio
+async def test_post_response_never_carries_key_or_endpoint_material(mocker):
+    """Provenance errors are a fixed vocabulary, never raw exception text.
+
+    Raw provider errors can embed the queried URL and, for query-string
+    keys, the key itself (2026-08-04 incident). The response body must not
+    contain either even when the live fetch failed.
+    """
+    mocker.patch.object(
+        ai_models,
+        "get_available_models_for_provider",
+        new=AsyncMock(
+            return_value=ModelDiscoveryResult(
+                models=["fallback-model"], source="fallback", error="network"
+            )
+        ),
+    )
+
+    result = await ai_models.list_provider_available_models(
+        provider="openai-compatible",
+        request_in=AvailableModelsRequest(
+            api_key="sk-or-v1-secret-value",
+            api_endpoint="https://secret-gateway.internal.example/v1",
+        ),
+    )
+
+    dumped = result.model_dump_json()
+    assert "sk-or-v1-secret-value" not in dumped
+    assert "secret-gateway.internal.example" not in dumped
+    assert result.error == "network"

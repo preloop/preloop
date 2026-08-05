@@ -278,6 +278,38 @@ class AvailableModelsRequest(BaseModel):
         return "***" if value else value
 
 
+class AvailableModelsResponse(BaseModel):
+    """A provider's model catalog plus the provenance of the listing.
+
+    ``source`` reports whether the ids came from the provider's live listing
+    endpoint ("live") or from Preloop's bundled fallback catalog
+    ("fallback"). ``error`` is a short machine-readable reason drawn from a
+    fixed vocabulary (e.g. "timeout", "network", "empty_response",
+    "unsupported", "missing_endpoint", "sdk_missing", "unknown") when a live
+    attempt failed; it never carries raw exception text, which can embed
+    endpoint URLs or key material.
+    """
+
+    models: List[str] = Field(
+        default_factory=list, description="Model identifiers to offer in the picker"
+    )
+    source: Literal["live", "fallback"] = Field(
+        "fallback",
+        description=(
+            "'live' when the provider's listing endpoint answered; 'fallback' "
+            "when a bundled catalog (or empty list) was returned instead"
+        ),
+    )
+    error: Optional[str] = Field(
+        None,
+        description=(
+            "Short safe reason for a fallback after a failed live attempt "
+            "(fixed vocabulary, never raw provider error text). None for a "
+            "clean result."
+        ),
+    )
+
+
 class AIModelGatewayUsageSummaryResponse(BaseModel):
     """Gateway usage summary for one durable AI model."""
 

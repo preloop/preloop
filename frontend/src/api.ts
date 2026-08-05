@@ -143,6 +143,26 @@ export function extractErrorMessage(
   errorData: any,
   defaultMessage: string
 ): string {
+  // OpenAI-error-shaped bodies from the gateway:
+  // { "error": { "message": ..., "type": ..., "code": ..., "provider_detail"?: ... } }
+  // The message is already scrubbed server-side; prefer it so upstream provider
+  // failures (e.g. "No allowed providers are available...") reach the user
+  // instead of a generic fallback.
+  const gatewayError = errorData?.error;
+  if (gatewayError && typeof gatewayError === 'object') {
+    if (
+      typeof gatewayError.message === 'string' &&
+      gatewayError.message.trim()
+    ) {
+      return gatewayError.message;
+    }
+    if (
+      typeof gatewayError.provider_detail === 'string' &&
+      gatewayError.provider_detail.trim()
+    ) {
+      return gatewayError.provider_detail;
+    }
+  }
   if (errorData && errorData.detail) {
     if (Array.isArray(errorData.detail)) {
       return errorData.detail
@@ -2284,6 +2304,35 @@ export async function deleteAIModel(modelId: string) {
 }
 
 /**
+ * How a provider model list was obtained. "live" means the provider's own
+ * catalog answered; "fallback" means a static known-models list stood in and
+ * `error` carries a short safe reason code (never raw provider text).
+ */
+/**
+ * Short, safe reasons the server reports for a fallback model list.
+ *
+ * This vocabulary mirrors the server's fixed set (see
+ * `preloop.services.ai_model_provider`). Raw exception text is deliberately
+ * never sent, because it can embed endpoint URLs or key material. An
+ * authentication failure is NOT in this list: bad keys raise a 401 instead of
+ * returning a fallback list.
+ */
+export type AvailableModelsFallbackReason =
+  | 'timeout'
+  | 'network'
+  | 'empty_response'
+  | 'unsupported'
+  | 'missing_endpoint'
+  | 'sdk_missing'
+  | 'unknown';
+
+export interface AvailableModelsResult {
+  models: string[];
+  source: 'live' | 'fallback';
+  error?: AvailableModelsFallbackReason;
+}
+
+/**
  * List the models a provider offers, for the model picker.
  *
  * The API key goes in the POST body, never the query string: as a query
@@ -2292,13 +2341,16 @@ export async function deleteAIModel(modelId: string) {
  * `apiEndpoint` is required for the openai-compatible and custom providers,
  * which have no fixed catalog and are listed from the endpoint's own
  * OpenAI-compatible GET /models.
+ *
+ * Tolerates the old bare string[] response (pre-provenance servers) by
+ * mapping it to { models, source: 'live' }.
  */
 export async function getAvailableModelsForProvider(
   provider: string,
   apiKey?: string,
   modelKind: 'llm' | 'stt' | 'tts' = 'llm',
   apiEndpoint?: string
-): Promise<string[]> {
+): Promise<AvailableModelsResult> {
   const url = `/api/v1/ai-models/providers/${provider}/available-models`;
   const response = await fetchWithAuth(url, {
     method: 'POST',
@@ -2315,7 +2367,15 @@ export async function getAvailableModelsForProvider(
       extractErrorMessage(errorData, 'Failed to fetch available models')
     );
   }
-  return response.json();
+  const data = await response.json();
+  if (Array.isArray(data)) {
+    return { models: data as string[], source: 'live' };
+  }
+  return {
+    models: Array.isArray(data?.models) ? (data.models as string[]) : [],
+    source: data?.source === 'fallback' ? 'fallback' : 'live',
+    ...(data?.error ? { error: data.error } : {}),
+  };
 }
 
 export async function getAIModelGatewayUsageSummary(

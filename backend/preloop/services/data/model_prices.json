@@ -7913,6 +7913,42 @@
   "mode": "chat",
   "output_cost_per_token": 2.5e-06
  },
+ "moonshot/kimi-k2.6": {
+  "cache_read_input_token_cost": 1.6e-07,
+  "input_cost_per_token": 9.5e-07,
+  "input_cost_per_token_cache_hit": 1.6e-07,
+  "litellm_provider": "moonshot",
+  "max_input_tokens": 262144,
+  "mode": "chat",
+  "output_cost_per_token": 4e-06
+ },
+ "moonshot/kimi-k2.7-code": {
+  "cache_read_input_token_cost": 1.9e-07,
+  "input_cost_per_token": 9.5e-07,
+  "input_cost_per_token_cache_hit": 1.9e-07,
+  "litellm_provider": "moonshot",
+  "max_input_tokens": 262144,
+  "mode": "chat",
+  "output_cost_per_token": 4e-06
+ },
+ "moonshot/kimi-k2.7-code-highspeed": {
+  "cache_read_input_token_cost": 3.8e-07,
+  "input_cost_per_token": 1.9e-06,
+  "input_cost_per_token_cache_hit": 3.8e-07,
+  "litellm_provider": "moonshot",
+  "max_input_tokens": 262144,
+  "mode": "chat",
+  "output_cost_per_token": 8e-06
+ },
+ "moonshot/kimi-k3": {
+  "cache_read_input_token_cost": 3e-07,
+  "input_cost_per_token": 3e-06,
+  "input_cost_per_token_cache_hit": 3e-07,
+  "litellm_provider": "moonshot",
+  "max_input_tokens": 1048576,
+  "mode": "chat",
+  "output_cost_per_token": 1.5e-05
+ },
  "moonshotai.kimi-k2.5": {
   "input_cost_per_token": 6e-07,
   "litellm_provider": "bedrock_converse",

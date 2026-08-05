@@ -419,4 +419,52 @@ describe('AIModelDetailView', () => {
       'Welcome acknowledged.'
     );
   });
+
+  it('surfaces the upstream provider error from an OpenAI-shaped error body', async () => {
+    const element = (await fixture(
+      html`<ai-model-detail-view .modelId=${'model-1'}></ai-model-detail-view>`
+    )) as AIModelDetailView;
+
+    await waitUntil(
+      () => !(element as any).loading,
+      'AI model detail view did not finish loading',
+      { timeout: 5000 }
+    );
+    await element.updateComplete;
+
+    // Real staging failure: the gateway relays the scrubbed upstream message
+    // in an OpenAI-error-shaped body. The UI must show it, not the generic
+    // "Failed to run model request".
+    fetchStub
+      .withArgs(
+        sinon.match((value: any) =>
+          String(value).includes('/openai/v1/responses')
+        )
+      )
+      .callsFake(
+        async () =>
+          new Response(
+            JSON.stringify({
+              error: {
+                message:
+                  'litellm.NotFoundError: OpenrouterException - No allowed providers are available for the selected model.',
+                type: 'not_found_error',
+                code: '404',
+              },
+            }),
+            { status: 404, headers: { 'Content-Type': 'application/json' } }
+          )
+      );
+
+    localStorage.setItem('accessToken', 'test-access-token');
+    await (element as any).runValidationPrompt();
+    await element.updateComplete;
+
+    const message = (element as any).validationError as string;
+    expect(message).to.contain('No allowed providers');
+    // No endpoint URLs or key-shaped material may leak into the UI message.
+    expect(message).to.not.contain('http://');
+    expect(message).to.not.contain('https://');
+    expect(message).to.not.match(/sk-[A-Za-z0-9]/);
+  });
 });

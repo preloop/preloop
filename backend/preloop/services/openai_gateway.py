@@ -64,6 +64,7 @@ from preloop.services.model_gateway_events import ModelGatewayEventEmitter
 from preloop.services.model_gateway_errors import (
     GatewayProvider,
     ModelGatewayAPIError,
+    extract_upstream_error_detail,
 )
 from preloop.services.upstream_errors import (
     ERROR_CLASS_CLIENT_CANCELLED,
@@ -4127,11 +4128,14 @@ class OpenAIGatewayService:
             # Keep the provider detail so SSE clients / tests can still see
             # the underlying fault (e.g. "connection reset"), while forcing
             # the disconnect taxonomy (#117).
-            detail = (
+            raw_detail = (
                 getattr(exc, "message", None)
                 if not isinstance(exc, ModelGatewayAPIError)
                 else None
             ) or str(exc)
+            # Same scrub/lift as _normalize_upstream_error: never surface raw
+            # upstream blobs (which can echo URLs and keys) to SSE clients.
+            detail = extract_upstream_error_detail(str(raw_detail)).message
             if error.error_class == ERROR_CLASS_UPSTREAM_DISCONNECT and (
                 "disconnected mid-stream" in (error.message or "").lower()
             ):
@@ -4568,6 +4572,12 @@ class OpenAIGatewayService:
             or str(exc)
             or "Gateway upstream error"
         )
+        # Lift the upstream provider's own sentence out of litellm's wrapped
+        # blob (scrubbed and length-capped) so users see the actionable text,
+        # e.g. OpenRouter's "No allowed providers are available for the
+        # selected model." rather than a generic gateway failure.
+        upstream_detail = extract_upstream_error_detail(str(raw_message))
+        surfaced_message = upstream_detail.message
         error_type = getattr(exc, "type", None) or getattr(exc, "error_type", None)
         code = getattr(exc, "code", None)
         classified = classify_upstream_error(exc)
@@ -4577,10 +4587,12 @@ class OpenAIGatewayService:
             if classified.error_class == ERROR_CLASS_NETWORK:
                 message = (
                     "Upstream model provider unavailable. Please retry shortly. "
-                    f"({raw_message})"
+                    f"({surfaced_message})"
                 )
             elif classified.error_class == ERROR_CLASS_UPSTREAM_DISCONNECT:
-                message = f"Upstream provider disconnected mid-stream: {raw_message}"
+                message = (
+                    f"Upstream provider disconnected mid-stream: {surfaced_message}"
+                )
             elif (
                 status_code >= 500
                 and not getattr(exc, "status_code", None)
@@ -4590,9 +4602,9 @@ class OpenAIGatewayService:
                     ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED,
                 )
             ):
-                message = f"Gateway upstream error: {raw_message}"
+                message = f"Gateway upstream error: {surfaced_message}"
             else:
-                message = str(raw_message)
+                message = surfaced_message
 
             if classified.error_class == ERROR_CLASS_UPSTREAM_DISCONNECT:
                 error_type = error_type or "upstream_disconnect"
@@ -4616,7 +4628,7 @@ class OpenAIGatewayService:
                 status_code = 502
             if status_code < 400 or status_code > 599:
                 status_code = 502
-            message = str(raw_message)
+            message = surfaced_message
             if status_code >= 500 and not getattr(exc, "status_code", None):
                 message = f"Gateway upstream error: {message}"
 
@@ -4649,6 +4661,7 @@ class OpenAIGatewayService:
                 classified.retry_after_seconds if classified is not None else None
             ),
             terminal=classified.terminal if classified is not None else False,
+            provider_detail=upstream_detail.provider_detail,
         )
 
     @staticmethod

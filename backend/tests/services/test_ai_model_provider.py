@@ -6,12 +6,24 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from preloop.services.ai_model_provider import (
     get_available_models_for_provider,
+    ANTHROPIC_FALLBACK_MODELS,
     DEEPSEEK_KNOWN_MODELS,
+    GOOGLE_FALLBACK_MODELS,
+    MISTRAL_KNOWN_MODELS,
+    MOONSHOT_KNOWN_MODELS,
+    OPENAI_FALLBACK_MODELS,
+    QWEN_KNOWN_MODELS,
+    ZAI_KNOWN_MODELS,
+    FALLBACK_ERROR_REASONS,
+    ModelDiscoveryResult,
     _get_openai_models,
     _get_anthropic_models,
     _get_google_models,
     _get_qwen_models,
     _get_deepseek_models,
+    _get_moonshot_models,
+    _get_zai_models,
+    _get_mistral_models,
 )
 
 
@@ -26,6 +38,23 @@ def _models_response(*model_ids):
     return response
 
 
+class TestDiscoveryResultShape:
+    """The provenance contract: {models, source, error} with a safe error."""
+
+    def test_error_must_come_from_the_fixed_vocabulary(self):
+        with pytest.raises(ValueError):
+            ModelDiscoveryResult(models=[], source="fallback", error="boom: sk-123")
+
+    def test_clean_fallback_has_no_error(self):
+        result = ModelDiscoveryResult(models=["m"], source="fallback")
+        assert result.error is None
+
+    def test_vocabulary_is_short_and_url_free(self):
+        for reason in FALLBACK_ERROR_REASONS:
+            assert "://" not in reason
+            assert len(reason) <= 32
+
+
 class TestGetAvailableModelsForProvider:
     """Test get_available_models_for_provider function."""
 
@@ -33,18 +62,27 @@ class TestGetAvailableModelsForProvider:
     async def test_get_openai_models(self):
         """Test routing to OpenAI provider."""
         with patch("preloop.services.ai_model_provider._get_openai_models") as mock_get:
-            mock_get.return_value = ["gpt-5.4", "gpt-5.4-mini"]
+            mock_get.return_value = ModelDiscoveryResult(
+                models=["gpt-5.4", "gpt-5.4-mini"], source="live"
+            )
             result = await get_available_models_for_provider("openai", "test_key")
-            assert result == ["gpt-5.4", "gpt-5.4-mini"]
+            assert result.models == ["gpt-5.4", "gpt-5.4-mini"]
+            assert result.source == "live"
             mock_get.assert_called_once_with("test_key")
 
     @pytest.mark.asyncio
     async def test_get_openai_stt_models(self):
-        """Test OpenAI speech-to-text model catalog."""
+        """OpenAI speech-to-text catalog is curated, so provenance is fallback."""
         result = await get_available_models_for_provider(
             "openai", "test_key", model_kind="stt"
         )
-        assert result == ["gpt-4o-transcribe", "gpt-4o-mini-transcribe", "whisper-1"]
+        assert result.models == [
+            "gpt-4o-transcribe",
+            "gpt-4o-mini-transcribe",
+            "whisper-1",
+        ]
+        assert result.source == "fallback"
+        assert result.error is None
 
     @pytest.mark.asyncio
     async def test_get_openai_tts_models(self):
@@ -52,20 +90,27 @@ class TestGetAvailableModelsForProvider:
         result = await get_available_models_for_provider(
             "openai", "test_key", model_kind="tts"
         )
-        assert result == ["gpt-4o-mini-tts", "tts-1", "tts-1-hd"]
+        assert result.models == ["gpt-4o-mini-tts", "tts-1", "tts-1-hd"]
+        assert result.source == "fallback"
 
     @pytest.mark.asyncio
     async def test_audio_models_only_for_supported_providers(self):
         """Non-audio providers should not offer STT/TTS choices."""
-        assert await get_available_models_for_provider(
+        stt = await get_available_models_for_provider(
             "google", "test_key", model_kind="stt"
-        ) == ["latest_short", "latest_long", "command_and_search", "default"]
-        assert (
-            await get_available_models_for_provider(
-                "google", "test_key", model_kind="tts"
-            )
-            == []
         )
+        assert stt.models == [
+            "latest_short",
+            "latest_long",
+            "command_and_search",
+            "default",
+        ]
+        tts = await get_available_models_for_provider(
+            "google", "test_key", model_kind="tts"
+        )
+        assert tts.models == []
+        assert tts.source == "fallback"
+        assert tts.error == "unsupported"
 
     @pytest.mark.asyncio
     async def test_get_anthropic_models(self):
@@ -73,27 +118,33 @@ class TestGetAvailableModelsForProvider:
         with patch(
             "preloop.services.ai_model_provider._get_anthropic_models"
         ) as mock_get:
-            mock_get.return_value = ["claude-sonnet-4-5-20250929"]
+            mock_get.return_value = ModelDiscoveryResult(
+                models=["claude-sonnet-5"], source="live"
+            )
             result = await get_available_models_for_provider("anthropic", "test_key")
-            assert result == ["claude-sonnet-4-5-20250929"]
+            assert result.models == ["claude-sonnet-5"]
             mock_get.assert_called_once_with("test_key")
 
     @pytest.mark.asyncio
     async def test_get_google_models(self):
         """Test routing to Google provider."""
         with patch("preloop.services.ai_model_provider._get_google_models") as mock_get:
-            mock_get.return_value = ["gemini-2.5-pro"]
+            mock_get.return_value = ModelDiscoveryResult(
+                models=["gemini-2.5-pro"], source="live"
+            )
             result = await get_available_models_for_provider("google", "test_key")
-            assert result == ["gemini-2.5-pro"]
+            assert result.models == ["gemini-2.5-pro"]
             mock_get.assert_called_once_with("test_key")
 
     @pytest.mark.asyncio
     async def test_get_qwen_models(self):
         """Test routing to Qwen provider."""
         with patch("preloop.services.ai_model_provider._get_qwen_models") as mock_get:
-            mock_get.return_value = ["qwen-plus", "qwen-turbo"]
+            mock_get.return_value = ModelDiscoveryResult(
+                models=["qwen-plus", "qwen-turbo"], source="live"
+            )
             result = await get_available_models_for_provider("qwen", "test_key")
-            assert result == ["qwen-plus", "qwen-turbo"]
+            assert result.models == ["qwen-plus", "qwen-turbo"]
             mock_get.assert_called_once_with("test_key")
 
     @pytest.mark.asyncio
@@ -102,16 +153,50 @@ class TestGetAvailableModelsForProvider:
         with patch(
             "preloop.services.ai_model_provider._get_deepseek_models"
         ) as mock_get:
-            mock_get.return_value = ["deepseek-chat", "deepseek-reasoner"]
+            mock_get.return_value = ModelDiscoveryResult(
+                models=["deepseek-chat", "deepseek-reasoner"], source="live"
+            )
             result = await get_available_models_for_provider("deepseek", "test_key")
-            assert result == ["deepseek-chat", "deepseek-reasoner"]
+            assert result.models == ["deepseek-chat", "deepseek-reasoner"]
             mock_get.assert_called_once_with("test_key")
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "provider,helper",
+        [
+            ("moonshot", "_get_moonshot_models"),
+            ("zai", "_get_zai_models"),
+            ("mistral", "_get_mistral_models"),
+        ],
+    )
+    async def test_new_providers_are_dispatched(self, provider, helper):
+        """moonshot, zai and mistral route to their own helpers."""
+        with patch(f"preloop.services.ai_model_provider.{helper}") as mock_get:
+            mock_get.return_value = ModelDiscoveryResult(
+                models=["some-model"], source="live"
+            )
+            result = await get_available_models_for_provider(provider, "test_key")
+            assert result.models == ["some-model"]
+            mock_get.assert_called_once_with("test_key")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("provider", ["moonshot", "zai", "mistral"])
+    async def test_new_providers_are_llm_only(self, provider):
+        """The new providers offer no STT/TTS catalogs."""
+        for kind in ("stt", "tts"):
+            result = await get_available_models_for_provider(
+                provider, "test_key", model_kind=kind
+            )
+            assert result.models == []
+            assert result.error == "unsupported"
+
+    @pytest.mark.asyncio
     async def test_get_custom_provider_returns_empty(self):
-        """Test that custom/unknown providers return empty list."""
+        """Unknown providers return an empty fallback with a reason."""
         result = await get_available_models_for_provider("custom_provider")
-        assert result == []
+        assert result.models == []
+        assert result.source == "fallback"
+        assert result.error == "unsupported"
 
 
 class TestGetOpenAIModels:
@@ -119,18 +204,10 @@ class TestGetOpenAIModels:
 
     @pytest.mark.asyncio
     async def test_get_openai_models_success(self):
-        """Test successful retrieval of OpenAI models."""
-        mock_model_1 = MagicMock()
-        mock_model_1.id = "gpt-5.4"
-        mock_model_2 = MagicMock()
-        mock_model_2.id = "gpt-5.4-mini"
-        mock_model_3 = MagicMock()
-        mock_model_3.id = "gpt-5.4-codex"
-        mock_model_4 = MagicMock()
-        mock_model_4.id = "gpt-5.4-instruct"  # Should be filtered out
-
-        mock_response = MagicMock()
-        mock_response.data = [mock_model_1, mock_model_2, mock_model_3, mock_model_4]
+        """A live listing is returned uncapped with provenance live."""
+        mock_response = _models_response(
+            "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-codex", "gpt-5.4-instruct"
+        )
 
         with patch("openai.AsyncOpenAI") as mock_client:
             mock_instance = MagicMock()
@@ -139,30 +216,55 @@ class TestGetOpenAIModels:
 
             result = await _get_openai_models("test_key")
 
-            assert len(result) <= 10
-            assert "gpt-5.4" in result
-            assert "gpt-5.4-mini" in result
-            assert "gpt-5.4-codex" in result
-            assert "gpt-5.4-instruct" not in result  # Filtered out
+            assert result.source == "live"
+            assert "gpt-5.4" in result.models
+            assert "gpt-5.4-mini" in result.models
+            assert "gpt-5.4-codex" in result.models
+            assert "gpt-5.4-instruct" not in result.models  # Filtered out
+
+    @pytest.mark.asyncio
+    async def test_get_openai_models_no_longer_capped_at_ten(self):
+        """Regression: the old [:10] cap hid models below the first ten ids."""
+        ids = [f"gpt-5.4-variant-{i:02d}" for i in range(15)]
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(return_value=_models_response(*ids))
+            mock_client.return_value = mock_instance
+
+            result = await _get_openai_models("test_key")
+
+            assert len(result.models) == 15
+
+    @pytest.mark.asyncio
+    async def test_get_openai_models_includes_o_series(self):
+        """Regression: the old gpt-* allow-list hid o-series reasoning models."""
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(
+                return_value=_models_response("o3", "o4-mini", "gpt-5.4")
+            )
+            mock_client.return_value = mock_instance
+
+            result = await _get_openai_models("test_key")
+
+            assert "o3" in result.models
+            assert "o4-mini" in result.models
+            assert "gpt-5.4" in result.models
 
     @pytest.mark.asyncio
     async def test_get_openai_models_filters_non_chat_models(self):
         """Test that non-chat models are filtered."""
-        mock_models = []
-        for model_id in [
+        mock_response = _models_response(
             "gpt-5.4",
             "gpt-5.4-audio-preview",  # Should be filtered
             "gpt-5.4-codex",
             "text-similarity-ada-001",  # Should be filtered
             "text-search-ada-doc-001",  # Should be filtered
+            "text-embedding-3-large",  # Should be filtered
+            "whisper-1",  # Should be filtered
+            "dall-e-3",  # Should be filtered
             "gpt-5.4-mini",
-        ]:
-            mock_model = MagicMock()
-            mock_model.id = model_id
-            mock_models.append(mock_model)
-
-        mock_response = MagicMock()
-        mock_response.data = mock_models
+        )
 
         with patch("openai.AsyncOpenAI") as mock_client:
             mock_instance = MagicMock()
@@ -171,10 +273,13 @@ class TestGetOpenAIModels:
 
             result = await _get_openai_models("test_key")
 
-            assert "gpt-5.4" in result
-            assert "gpt-5.4-mini" in result
-            assert "gpt-5.4-codex" in result
-            assert "text-similarity-ada-001" not in result
+            assert "gpt-5.4" in result.models
+            assert "gpt-5.4-mini" in result.models
+            assert "gpt-5.4-codex" in result.models
+            assert "text-similarity-ada-001" not in result.models
+            assert "text-embedding-3-large" not in result.models
+            assert "whisper-1" not in result.models
+            assert "dall-e-3" not in result.models
 
     @pytest.mark.asyncio
     async def test_get_openai_models_authentication_error(self):
@@ -197,7 +302,7 @@ class TestGetOpenAIModels:
 
     @pytest.mark.asyncio
     async def test_get_openai_models_network_error_returns_fallback(self):
-        """Test that network errors return fallback list."""
+        """Network errors return the named fallback with provenance."""
         with patch("openai.AsyncOpenAI") as mock_client:
             mock_instance = MagicMock()
             mock_instance.models.list = AsyncMock(
@@ -207,60 +312,76 @@ class TestGetOpenAIModels:
 
             result = await _get_openai_models("test_key")
 
-            # Should return fallback list
-            assert "gpt-4.1" in result
-            assert "gpt-4.1-mini" in result
-            assert "gpt-4o" in result
+            assert result.models == OPENAI_FALLBACK_MODELS
+            assert result.source == "fallback"
+            assert result.error in FALLBACK_ERROR_REASONS
 
     @pytest.mark.asyncio
     async def test_get_openai_models_without_api_key(self):
         """Test retrieval without providing API key."""
-        mock_model = MagicMock()
-        mock_model.id = "gpt-5.4"
-        mock_response = MagicMock()
-        mock_response.data = [mock_model]
-
         with patch("openai.AsyncOpenAI") as mock_client:
             mock_instance = MagicMock()
-            mock_instance.models.list = AsyncMock(return_value=mock_response)
+            mock_instance.models.list = AsyncMock(
+                return_value=_models_response("gpt-5.4")
+            )
             mock_client.return_value = mock_instance
 
             result = await _get_openai_models(None)
 
             # Should call AsyncOpenAI without api_key parameter
             mock_client.assert_called_once_with()
-            assert "gpt-5.4" in result
+            assert "gpt-5.4" in result.models
 
 
 class TestGetAnthropicModels:
-    """Test _get_anthropic_models function."""
+    """Anthropic switched from a paid messages.create ping to models.list."""
 
     @pytest.mark.asyncio
     async def test_get_anthropic_models_without_key(self):
-        """Test getting Anthropic models without API key."""
+        """No key: the named fallback with clean fallback provenance."""
         result = await _get_anthropic_models(None)
-        assert "claude-sonnet-4-5-20250929" in result
-        assert "claude-haiku-4-5-20251001" in result
+        assert result.models == ANTHROPIC_FALLBACK_MODELS
+        assert result.source == "fallback"
+        assert result.error is None
 
     @pytest.mark.asyncio
-    async def test_get_anthropic_models_with_valid_key(self):
-        """Test validation with valid API key."""
+    async def test_valid_key_lists_models_live(self):
+        """A valid key returns the live listing, not the hardcoded catalog."""
+        page = _models_response("claude-sonnet-5", "claude-brand-new-model")
         with patch("anthropic.AsyncAnthropic") as mock_client:
             mock_instance = MagicMock()
-            mock_instance.messages.create = AsyncMock(return_value=MagicMock())
+            mock_instance.models.list = AsyncMock(return_value=page)
             mock_client.return_value = mock_instance
 
             result = await _get_anthropic_models("valid_key")
 
-            assert "claude-sonnet-4-5-20250929" in result
-            mock_instance.messages.create.assert_called_once()
+            assert result.source == "live"
+            assert result.models == ["claude-brand-new-model", "claude-sonnet-5"]
+            mock_instance.models.list.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_no_paid_validation_ping_is_made(self):
+        """The old messages.create validation ping cost money on every fetch."""
+        page = _models_response("claude-sonnet-5")
+        with patch("anthropic.AsyncAnthropic") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(return_value=page)
+            mock_instance.messages.create = AsyncMock(
+                side_effect=AssertionError("paid messages.create ping was called")
+            )
+            mock_client.return_value = mock_instance
+
+            result = await _get_anthropic_models("valid_key")
+
+            assert result.source == "live"
+            mock_instance.messages.create.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_get_anthropic_models_authentication_error(self):
-        """Test handling of authentication errors."""
+        """Auth failures on models.list still raise the same ValueError."""
         with patch("anthropic.AsyncAnthropic") as mock_client:
             mock_instance = MagicMock()
-            mock_instance.messages.create = AsyncMock(
+            mock_instance.models.list = AsyncMock(
                 side_effect=Exception("401 unauthorized")
             )
             mock_client.return_value = mock_instance
@@ -270,28 +391,63 @@ class TestGetAnthropicModels:
 
     @pytest.mark.asyncio
     async def test_get_anthropic_models_import_error(self):
-        """Test handling when Anthropic package not installed."""
-        with patch(
-            "anthropic.AsyncAnthropic",
-            side_effect=ImportError("No module named 'anthropic'"),
-        ):
-            result = await _get_anthropic_models("test_key")
-            # Should return known models even if package not installed
-            assert "claude-sonnet-4-5-20250929" in result
+        """Missing SDK: fallback catalog with an sdk_missing reason."""
+        anthropic_module = sys.modules.pop("anthropic", None)
+        try:
+            import builtins
+
+            original_import = builtins.__import__
+
+            def mock_import(name, *args, **kwargs):
+                if name == "anthropic":
+                    raise ImportError("No module named 'anthropic'")
+                return original_import(name, *args, **kwargs)
+
+            with patch("builtins.__import__", side_effect=mock_import):
+                result = await _get_anthropic_models("test_key")
+                assert result.models == ANTHROPIC_FALLBACK_MODELS
+                assert result.source == "fallback"
+                assert result.error == "sdk_missing"
+        finally:
+            if anthropic_module is not None:
+                sys.modules["anthropic"] = anthropic_module
 
     @pytest.mark.asyncio
     async def test_get_anthropic_models_network_error(self):
-        """Test handling of non-authentication errors."""
+        """Non-auth failures fall back with a reason instead of raising."""
         with patch("anthropic.AsyncAnthropic") as mock_client:
             mock_instance = MagicMock()
-            mock_instance.messages.create = AsyncMock(
+            mock_instance.models.list = AsyncMock(
                 side_effect=Exception("Network timeout")
             )
             mock_client.return_value = mock_instance
 
             result = await _get_anthropic_models("test_key")
-            # Should return known models even on network error
-            assert "claude-sonnet-4-5-20250929" in result
+            assert result.models == ANTHROPIC_FALLBACK_MODELS
+            assert result.source == "fallback"
+            assert result.error in FALLBACK_ERROR_REASONS
+
+    @pytest.mark.asyncio
+    async def test_empty_listing_falls_back(self):
+        """An empty page falls back rather than emptying the picker."""
+        with patch("anthropic.AsyncAnthropic") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(return_value=_models_response())
+            mock_client.return_value = mock_instance
+
+            result = await _get_anthropic_models("valid_key")
+            assert result.models == ANTHROPIC_FALLBACK_MODELS
+            assert result.error == "empty_response"
+
+    def test_fallback_ids_are_priced_in_the_bundled_table(self):
+        """Every fallback id must resolve in the vendored price snapshot."""
+        import json
+
+        from preloop.services.model_price_catalog import CATALOG_PATH
+
+        prices = json.loads(CATALOG_PATH.read_text())
+        for model_id in ANTHROPIC_FALLBACK_MODELS:
+            assert model_id in prices, f"{model_id} missing from model_prices.json"
 
 
 class TestGetGoogleModels:
@@ -299,21 +455,22 @@ class TestGetGoogleModels:
 
     @pytest.mark.asyncio
     async def test_get_google_models_without_key(self):
-        """Test getting Google models without API key."""
+        """No key: the named fallback with clean fallback provenance."""
         result = await _get_google_models(None)
-        assert "gemini-2.5-pro" in result
-        assert "gemini-2.5-flash" in result
+        assert result.models == GOOGLE_FALLBACK_MODELS
+        assert result.source == "fallback"
+        assert result.error is None
 
     @pytest.mark.asyncio
-    async def test_get_google_models_with_valid_key(self):
-        """Test validation with valid API key."""
-        # Mock both the google and google.generativeai modules
+    async def test_get_google_models_with_valid_key_lists_live(self):
+        """A valid key returns the live listing with provenance live."""
         mock_google = MagicMock()
         mock_genai = MagicMock()
-        mock_model = MagicMock()
-        mock_model.generate_content = MagicMock(return_value=MagicMock())
-        mock_genai.GenerativeModel.return_value = mock_model
-        mock_genai.GenerationConfig = MagicMock
+
+        live_entry = MagicMock()
+        live_entry.name = "models/gemini-3.0-pro"
+        live_entry.supported_generation_methods = ["generateContent"]
+        mock_genai.list_models = MagicMock(return_value=[live_entry])
         mock_google.generativeai = mock_genai
 
         with patch.dict(
@@ -323,21 +480,42 @@ class TestGetGoogleModels:
         ):
             result = await _get_google_models("valid_key")
 
-            assert "gemini-2.5-pro" in result
+            assert result.source == "live"
+            assert result.models == ["gemini-3.0-pro"]
             mock_genai.configure.assert_called_once_with(api_key="valid_key")
+            # No paid generate_content validation ping.
+            mock_genai.GenerativeModel.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_get_google_models_empty_listing_is_reported_fallback(self):
+        """A fetch that produces nothing is a REPORTED fallback, not a silent
+        return of known_models (the old behavior)."""
+        mock_google = MagicMock()
+        mock_genai = MagicMock()
+        mock_genai.list_models = MagicMock(return_value=[])
+        mock_google.generativeai = mock_genai
+
+        with patch.dict(
+            sys.modules,
+            {"google": mock_google, "google.generativeai": mock_genai},
+            clear=False,
+        ):
+            result = await _get_google_models("valid_key")
+
+            assert result.models == GOOGLE_FALLBACK_MODELS
+            assert result.source == "fallback"
+            assert result.error == "empty_response"
+            # And no paid generate_content ping was fired to "validate".
+            mock_genai.GenerativeModel.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_get_google_models_authentication_error(self):
-        """Test handling of authentication errors."""
-        # Mock both the google and google.generativeai modules
+        """Auth failures during listing raise the ValueError."""
         mock_google = MagicMock()
         mock_genai = MagicMock()
-        mock_model = MagicMock()
-        mock_model.generate_content = MagicMock(
+        mock_genai.list_models = MagicMock(
             side_effect=Exception("403 permission denied")
         )
-        mock_genai.GenerativeModel.return_value = mock_model
-        mock_genai.GenerationConfig = MagicMock
         mock_google.generativeai = mock_genai
 
         with patch.dict(
@@ -351,10 +529,8 @@ class TestGetGoogleModels:
     @pytest.mark.asyncio
     async def test_get_google_models_import_error(self):
         """Test handling when Google package not installed."""
-        # Ensure google.generativeai is not in sys.modules
         genai_module = sys.modules.pop("google.generativeai", None)
         try:
-            # Mock the import to raise ImportError
             import builtins
 
             original_import = builtins.__import__
@@ -366,28 +542,23 @@ class TestGetGoogleModels:
 
             with patch("builtins.__import__", side_effect=mock_import):
                 result = await _get_google_models("test_key")
-                # Should return known models even if package not installed
-                assert "gemini-2.5-pro" in result
+                assert result.models == GOOGLE_FALLBACK_MODELS
+                assert result.error == "sdk_missing"
         finally:
-            # Restore google.generativeai if it was there
             if genai_module is not None:
                 sys.modules["google.generativeai"] = genai_module
 
     @pytest.mark.asyncio
     async def test_get_google_models_network_error(self):
-        """Test handling of non-authentication errors."""
+        """Non-auth failures fall back with a reason."""
         mock_genai = MagicMock()
-        mock_model = MagicMock()
-        mock_model.generate_content = MagicMock(
-            side_effect=Exception("Connection reset")
-        )
-        mock_genai.GenerativeModel.return_value = mock_model
-        mock_genai.GenerationConfig = MagicMock
+        mock_genai.list_models = MagicMock(side_effect=Exception("Connection reset"))
 
         with patch.dict(sys.modules, {"google.generativeai": mock_genai}):
             result = await _get_google_models("test_key")
-            # Should return known models even on network error
-            assert "gemini-2.5-pro" in result
+            assert result.models == GOOGLE_FALLBACK_MODELS
+            assert result.source == "fallback"
+            assert result.error in FALLBACK_ERROR_REASONS
 
 
 class TestGetQwenModels:
@@ -397,9 +568,9 @@ class TestGetQwenModels:
     async def test_get_qwen_models_without_key(self):
         """Test getting Qwen models without API key."""
         result = await _get_qwen_models(None)
-        assert "qwen-plus" in result
-        assert "qwen-turbo" in result
-        assert "qwen-max" in result
+        assert result.models == QWEN_KNOWN_MODELS
+        assert result.source == "fallback"
+        assert result.error is None
 
     @pytest.mark.asyncio
     async def test_get_qwen_models_with_valid_key_returns_live_list(self):
@@ -413,9 +584,10 @@ class TestGetQwenModels:
 
             result = await _get_qwen_models("valid_key")
 
-            assert result == ["qwen3-max", "qwen3.5-plus"]
+            assert result.models == ["qwen3-max", "qwen3.5-plus"]
+            assert result.source == "live"
             # The stale bundled catalog must not leak into a live answer.
-            assert "qwq-32b-preview" not in result
+            assert "qwq-32b-preview" not in result.models
             mock_client.assert_called_once()
             # Verify it's using Qwen's base URL
             call_kwargs = mock_client.call_args[1]
@@ -434,7 +606,9 @@ class TestGetQwenModels:
 
             result = await _get_qwen_models("valid_key")
 
-            assert "qwen-plus" in result
+            assert "qwen-plus" in result.models
+            assert result.source == "fallback"
+            assert result.error == "empty_response"
 
     @pytest.mark.asyncio
     async def test_get_qwen_models_authentication_error(self):
@@ -467,7 +641,8 @@ class TestGetQwenModels:
 
             result = await _get_qwen_models("test_key")
             # Should return known models even on network error
-            assert "qwen-plus" in result
+            assert "qwen-plus" in result.models
+            assert result.source == "fallback"
 
 
 class TestGetDeepSeekModels:
@@ -477,15 +652,16 @@ class TestGetDeepSeekModels:
     async def test_get_deepseek_models_without_key(self):
         """Test getting DeepSeek models without API key."""
         result = await _get_deepseek_models(None)
-        assert "deepseek-chat" in result
-        assert "deepseek-reasoner" in result
+        assert "deepseek-chat" in result.models
+        assert "deepseek-reasoner" in result.models
+        assert result.source == "fallback"
 
     @pytest.mark.asyncio
     async def test_keyless_catalog_includes_v4_models(self):
         """The bundled catalog must not hide models litellm already prices."""
         result = await _get_deepseek_models(None)
-        assert "deepseek-v4-flash" in result
-        assert "deepseek-v4-pro" in result
+        assert "deepseek-v4-flash" in result.models
+        assert "deepseek-v4-pro" in result.models
 
     @pytest.mark.asyncio
     async def test_keyless_catalog_entries_are_priced(self):
@@ -520,7 +696,8 @@ class TestGetDeepSeekModels:
             result = await _get_deepseek_models("valid_key")
 
             # Sorted and de-duplicated.
-            assert result == ["deepseek-chat", "deepseek-v4-flash"]
+            assert result.models == ["deepseek-chat", "deepseek-v4-flash"]
+            assert result.source == "live"
             mock_client.assert_called_once()
             # Verify it's using DeepSeek's base URL
             call_kwargs = mock_client.call_args[1]
@@ -536,7 +713,8 @@ class TestGetDeepSeekModels:
 
             result = await _get_deepseek_models("valid_key")
 
-            assert "deepseek-chat" in result
+            assert "deepseek-chat" in result.models
+            assert result.source == "fallback"
 
     @pytest.mark.asyncio
     async def test_get_deepseek_models_authentication_error(self):
@@ -569,7 +747,186 @@ class TestGetDeepSeekModels:
 
             result = await _get_deepseek_models("test_key")
             # Should return known models even on network error
-            assert "deepseek-chat" in result
+            assert "deepseek-chat" in result.models
+
+
+class TestGetMoonshotModels:
+    """Moonshot (Kimi): live discovery plus a kimi-k3-first fallback."""
+
+    @pytest.mark.asyncio
+    async def test_without_key_returns_fallback_with_kimi_k3_first(self):
+        """kimi-k3 is the headline model and must lead the fallback list."""
+        result = await _get_moonshot_models(None)
+        assert result.models == MOONSHOT_KNOWN_MODELS
+        assert result.models[0] == "kimi-k3"
+        assert result.source == "fallback"
+        assert result.error is None
+
+    def test_fallback_excludes_sunset_and_deprecated_ids(self):
+        """No sunset moonshot-v1 series, no deprecated kimi-k2 previews."""
+        for model_id in MOONSHOT_KNOWN_MODELS:
+            assert not model_id.startswith("moonshot-v1")
+            assert "preview" not in model_id
+            assert "thinking" not in model_id
+            assert model_id != "kimi-latest"
+            assert model_id != "kimi-k2.5"  # sunset Aug 31
+
+    @pytest.mark.asyncio
+    async def test_with_valid_key_lists_live_from_moonshot_base_url(self):
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(
+                return_value=_models_response("kimi-k3", "kimi-k2.7-code")
+            )
+            mock_client.return_value = mock_instance
+
+            result = await _get_moonshot_models("valid_key")
+
+            assert result.source == "live"
+            assert result.models == ["kimi-k2.7-code", "kimi-k3"]
+            call_kwargs = mock_client.call_args[1]
+            assert call_kwargs["base_url"] == "https://api.moonshot.ai/v1"
+
+    @pytest.mark.asyncio
+    async def test_authentication_error(self):
+        from openai import AuthenticationError
+
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(
+                side_effect=AuthenticationError(
+                    message="Invalid API key", response=MagicMock(), body=None
+                )
+            )
+            mock_client.return_value = mock_instance
+
+            with pytest.raises(ValueError, match=r"Invalid Moonshot \(Kimi\) API key"):
+                await _get_moonshot_models("invalid_key")
+
+    @pytest.mark.asyncio
+    async def test_network_error_falls_back(self):
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(side_effect=Exception("boom"))
+            mock_client.return_value = mock_instance
+
+            result = await _get_moonshot_models("test_key")
+            assert result.models == MOONSHOT_KNOWN_MODELS
+            assert result.source == "fallback"
+            assert result.error in FALLBACK_ERROR_REASONS
+
+
+class TestGetZaiModels:
+    """Z.ai (GLM): live discovery plus a litellm-priced fallback."""
+
+    @pytest.mark.asyncio
+    async def test_without_key_returns_fallback(self):
+        result = await _get_zai_models(None)
+        assert result.models == ZAI_KNOWN_MODELS
+        assert "glm-5" in result.models
+        assert "glm-4.7" in result.models
+        assert result.source == "fallback"
+
+    @pytest.mark.asyncio
+    async def test_with_valid_key_lists_live_from_zai_base_url(self):
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(
+                return_value=_models_response("glm-5.2", "glm-5")
+            )
+            mock_client.return_value = mock_instance
+
+            result = await _get_zai_models("valid_key")
+
+            assert result.source == "live"
+            assert result.models == ["glm-5", "glm-5.2"]
+            call_kwargs = mock_client.call_args[1]
+            assert call_kwargs["base_url"] == "https://api.z.ai/api/paas/v4"
+
+    @pytest.mark.asyncio
+    async def test_authentication_error(self):
+        from openai import AuthenticationError
+
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(
+                side_effect=AuthenticationError(
+                    message="Invalid API key", response=MagicMock(), body=None
+                )
+            )
+            mock_client.return_value = mock_instance
+
+            with pytest.raises(ValueError, match=r"Invalid Z.ai \(GLM\) API key"):
+                await _get_zai_models("invalid_key")
+
+    @pytest.mark.asyncio
+    async def test_network_error_falls_back(self):
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(side_effect=Exception("boom"))
+            mock_client.return_value = mock_instance
+
+            result = await _get_zai_models("test_key")
+            assert result.models == ZAI_KNOWN_MODELS
+            assert result.source == "fallback"
+
+
+class TestGetMistralModels:
+    """Mistral: live discovery plus a chat-only fallback."""
+
+    @pytest.mark.asyncio
+    async def test_without_key_returns_fallback(self):
+        result = await _get_mistral_models(None)
+        assert result.models == MISTRAL_KNOWN_MODELS
+        assert result.source == "fallback"
+
+    def test_fallback_excludes_embeddings_and_ocr(self):
+        for model_id in MISTRAL_KNOWN_MODELS:
+            assert "embed" not in model_id
+            assert "ocr" not in model_id
+
+    @pytest.mark.asyncio
+    async def test_with_valid_key_lists_live_from_mistral_base_url(self):
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(
+                return_value=_models_response("mistral-large-3", "codestral-2508")
+            )
+            mock_client.return_value = mock_instance
+
+            result = await _get_mistral_models("valid_key")
+
+            assert result.source == "live"
+            assert result.models == ["codestral-2508", "mistral-large-3"]
+            call_kwargs = mock_client.call_args[1]
+            assert call_kwargs["base_url"] == "https://api.mistral.ai/v1"
+
+    @pytest.mark.asyncio
+    async def test_authentication_error(self):
+        from openai import AuthenticationError
+
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(
+                side_effect=AuthenticationError(
+                    message="Invalid API key", response=MagicMock(), body=None
+                )
+            )
+            mock_client.return_value = mock_instance
+
+            with pytest.raises(ValueError, match="Invalid Mistral API key"):
+                await _get_mistral_models("invalid_key")
+
+    @pytest.mark.asyncio
+    async def test_network_error_falls_back(self):
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(side_effect=Exception("boom"))
+            mock_client.return_value = mock_instance
+
+            result = await _get_mistral_models("test_key")
+            assert result.models == MISTRAL_KNOWN_MODELS
+            assert result.source == "fallback"
 
 
 class TestOpenAICompatibleModels:
@@ -607,7 +964,11 @@ class TestOpenAICompatibleModels:
                 api_endpoint="https://openrouter.ai/api/v1",
             )
 
-        assert result == ["deepseek/deepseek-v4-flash-0731", "openrouter/auto-beta"]
+        assert result.models == [
+            "deepseek/deepseek-v4-flash-0731",
+            "openrouter/auto-beta",
+        ]
+        assert result.source == "live"
         # The endpoint the user configured is the one queried.
         assert (
             mock_client.call_args.kwargs["base_url"] == "https://openrouter.ai/api/v1"
@@ -623,7 +984,8 @@ class TestOpenAICompatibleModels:
 
             result = await get_available_models_for_provider("openrouter", "test_key")
 
-        assert result == ["openrouter/auto-beta"]
+        assert result.models == ["openrouter/auto-beta"]
+        assert result.source == "live"
         assert (
             mock_client.call_args.kwargs["base_url"] == "https://openrouter.ai/api/v1"
         )
@@ -640,7 +1002,7 @@ class TestOpenAICompatibleModels:
                 "custom", "test_key", api_endpoint="https://api.kimi.example/v1"
             )
 
-        assert result == ["k3", "k3-turbo"]
+        assert result.models == ["k3", "k3-turbo"]
 
     @pytest.mark.asyncio
     async def test_results_are_deduplicated_and_sorted(self):
@@ -656,14 +1018,16 @@ class TestOpenAICompatibleModels:
                 api_endpoint="https://gateway.example.com/v1",
             )
 
-        assert result == ["a-model", "b-model"]
+        assert result.models == ["a-model", "b-model"]
 
     @pytest.mark.asyncio
     async def test_openai_compatible_without_endpoint_returns_empty(self):
         # Nothing to query, but this must not raise: the picker just shows no
         # suggestions until an endpoint is entered.
         result = await get_available_models_for_provider("openai-compatible", "key")
-        assert result == []
+        assert result.models == []
+        assert result.source == "fallback"
+        assert result.error == "missing_endpoint"
 
     @pytest.mark.asyncio
     async def test_auth_error_surfaces_as_value_error(self):
@@ -698,7 +1062,9 @@ class TestOpenAICompatibleModels:
                 api_endpoint="https://gateway.example.com/v1",
             )
 
-        assert result == []
+        assert result.models == []
+        assert result.source == "fallback"
+        assert result.error in FALLBACK_ERROR_REASONS
 
     @pytest.mark.asyncio
     async def test_bare_list_response_shape_is_accepted(self):
@@ -716,7 +1082,7 @@ class TestOpenAICompatibleModels:
                 api_endpoint="https://gateway.example.com/v1",
             )
 
-        assert result == ["some-model"]
+        assert result.models == ["some-model"]
 
 
 class TestDiscoveryEndpointValidation:

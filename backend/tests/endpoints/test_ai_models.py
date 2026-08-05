@@ -10,6 +10,7 @@ from preloop.schemas.ai_model import (
     AIModelCreate,
     AIModelRead,
     AIModelUpdate,
+    AvailableModelsResponse,
 )
 from preloop.models.models.account import Account
 
@@ -193,6 +194,28 @@ async def test_delete_ai_model(mock_account: Account, mocker: MockerFixture):
     # Assert
     mock_crud_ai_model.get.assert_called_once_with(db=mocker.ANY, id=model_id)
     mock_crud_ai_model.remove.assert_called_once_with(db=mocker.ANY, id=model_id)
+
+
+def test_available_models_post_route_declares_provenance_response_model():
+    """The POST discovery route publishes {models, source, error}."""
+    route = next(
+        r
+        for r in ai_models.router.routes
+        if r.path == "/ai-models/providers/{provider}/available-models"
+        and "POST" in r.methods
+    )
+    assert route.response_model is AvailableModelsResponse
+
+
+def test_available_models_response_defaults_and_shape():
+    response = AvailableModelsResponse(models=["kimi-k3"], source="live")
+    dumped = response.model_dump()
+    assert dumped == {"models": ["kimi-k3"], "source": "live", "error": None}
+
+
+def test_available_models_response_rejects_unknown_source():
+    with pytest.raises(ValidationError):
+        AvailableModelsResponse(models=[], source="hardcoded")
 
 
 def test_ai_model_schema_rejects_mixed_inline_and_external_credentials():

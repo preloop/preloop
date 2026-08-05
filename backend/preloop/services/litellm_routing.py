@@ -57,6 +57,12 @@ PROVIDER_PREFIX: Dict[str, str] = {
     "qwen": "openai",
     "deepseek": "deepseek",
     "mistral": "mistral",
+    # moonshot and zai match their litellm provider names, so they would
+    # also resolve through known_litellm_providers(); pinned here so routing
+    # and pricing-candidate generation do not depend on litellm's provider
+    # list contents across versions.
+    "moonshot": "moonshot",
+    "zai": "zai",
     "openrouter": "openrouter",
     "azure": "azure",
     "aws": "bedrock",
