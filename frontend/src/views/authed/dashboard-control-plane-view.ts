@@ -2702,7 +2702,9 @@ export class DashboardView extends AuthedElement {
                             >
                             ${
                               exec.error_message
-                                ? html`<span class="item-error"
+                                ? html`<span
+                                    class="item-error"
+                                    title=${exec.error_message}
                                     >${exec.error_message}</span
                                   >`
                                 : ''
@@ -2711,9 +2713,7 @@ export class DashboardView extends AuthedElement {
                               >${this.formatDate(exec.start_time)}</span
                             >
                           </div>
-                          <div
-                            style="display: flex; align-items: center; gap: var(--sl-spacing-small);"
-                          >
+                          <div class="item-actions">
                             <sl-tag
                               size="small"
                               variant="${this.getStatusColor(exec.status)}"
@@ -2727,8 +2727,11 @@ export class DashboardView extends AuthedElement {
                               View
                             </sl-button>
                             <sl-icon-button
+                              class="item-dismiss"
                               name="x-lg"
-                              label="Dismiss"
+                              label="Dismiss execution ${
+                                exec.flow_name || 'Unnamed Flow'
+                              }"
                               @click=${(e: Event) => {
                                 e.preventDefault();
                                 this.dismissExecution(exec.id);

@@ -548,6 +548,125 @@ describe('DashboardView', () => {
     expect(element.shadowRoot?.querySelector('.item-card.danger')).to.not.exist;
   });
 
+  describe('Recent Flow Executions dismiss control (#174)', () => {
+    // Alex's failing run: a git clone error long enough to overflow the row.
+    // The URL has no break opportunity, which is what actually broke the
+    // layout: it set the min-content width of the flex column.
+    const LONG_ERROR =
+      'Git clone failed! Could not clone repository ' +
+      'https://github.com/example_org/mender_mcu_firmware_integration_service_repository_mirror.git ' +
+      'into /workspace/src: authentication failed';
+
+    async function mountWithFailedExecution(width: string) {
+      flowExecutionsResponse = [
+        {
+          id: 'execution-failed',
+          flow_id: 'flow-1',
+          flow_name: 'Security Vulnerability Scanner',
+          status: 'FAILED',
+          start_time: '2026-08-04T14:37:00Z',
+          end_time: '2026-08-04T14:38:00Z',
+          error_message: LONG_ERROR,
+        },
+      ];
+
+      const element = await mountDashboard();
+      // Constrain to the main column width the card gets beside the sidebar.
+      element.style.display = 'block';
+      element.style.width = width;
+      await waitUntil(
+        () => !element['loading'],
+        'dashboard did not finish loading'
+      );
+      await element.updateComplete;
+      return element;
+    }
+
+    function dismissButtonOf(element: DashboardView) {
+      const row = element.shadowRoot?.querySelector(
+        '.item-card.failed-execution'
+      ) as HTMLElement | null;
+      const button = row?.querySelector(
+        'sl-icon-button.item-dismiss'
+      ) as HTMLElement | null;
+      return { row, button };
+    }
+
+    // The bug: a long error message pushed the action group past the row's
+    // right edge, so the dismiss control could not be clicked.
+    ['520px', '640px', '900px'].forEach((width) => {
+      it(`keeps the dismiss control inside the row at ${width}`, async () => {
+        const element = await mountWithFailedExecution(width);
+        const { row, button } = dismissButtonOf(element);
+
+        expect(row, 'failed execution row').to.exist;
+        expect(button, 'dismiss button').to.exist;
+
+        const rowBox = row!.getBoundingClientRect();
+        const buttonBox = button!.getBoundingClientRect();
+
+        expect(buttonBox.width, 'dismiss button has width').to.be.greaterThan(
+          0
+        );
+        expect(buttonBox.height, 'dismiss button has height').to.be.greaterThan(
+          0
+        );
+        // Allow a 1px rounding tolerance on the border-box edge.
+        expect(
+          buttonBox.right,
+          'dismiss button overflows the row on the right'
+        ).to.be.at.most(rowBox.right + 1);
+        expect(
+          buttonBox.left,
+          'dismiss button starts beyond the row'
+        ).to.be.at.least(rowBox.left - 1);
+      });
+    });
+
+    it('does not let the error text overflow the row horizontally', async () => {
+      const element = await mountWithFailedExecution('520px');
+      const row = element.shadowRoot?.querySelector(
+        '.item-card.failed-execution'
+      ) as HTMLElement;
+      const error = row.querySelector('.item-error') as HTMLElement;
+
+      expect(error).to.exist;
+      // scrollWidth exceeding clientWidth means content spills out of the box.
+      expect(
+        error.scrollWidth,
+        'error text is wider than its container'
+      ).to.be.at.most(error.clientWidth + 1);
+    });
+
+    it('dismisses the failed execution when the control is clicked', async () => {
+      const element = await mountWithFailedExecution('520px');
+      const { button } = dismissButtonOf(element);
+
+      (button as HTMLElement).click();
+      await element.updateComplete;
+
+      expect(
+        element.shadowRoot?.querySelector('.item-card.failed-execution'),
+        'row remains after dismiss'
+      ).to.not.exist;
+      expect(
+        JSON.parse(
+          localStorage.getItem('dashboard_dismissed_executions') || '[]'
+        )
+      ).to.include('execution-failed');
+    });
+
+    it('exposes an accessible name on the dismiss control', async () => {
+      const element = await mountWithFailedExecution('520px');
+      const { button } = dismissButtonOf(element);
+
+      expect(button?.getAttribute('label')).to.contain('Dismiss');
+      expect(button?.getAttribute('label')).to.contain(
+        'Security Vulnerability Scanner'
+      );
+    });
+  });
+
   it('hides exception cards when there is nothing actionable to show', async () => {
     gatewaySearchResponse = {
       ...gatewaySearchResponse,
