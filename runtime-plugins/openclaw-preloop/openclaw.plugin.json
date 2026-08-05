@@ -1,45 +1,89 @@
 {
   "id": "preloop-plugin",
-  "name": "@preloop-ai/openclaw-plugin",
-  "displayName": "Preloop",
+  "name": "Preloop",
   "description": "Expose OpenClaw to Preloop for discovery, status, Agent Control, voice-transcript delivery, and native tool-call approval on mobile/watch.",
-  "version": "0.2.0",
-  "runtime": "openclaw",
-  "license": "Apache-2.0",
-  "homepage": "https://preloop.ai",
-  "repository": "https://github.com/preloop/preloop/tree/main/runtime-plugins/openclaw-preloop",
-  "keywords": [
-    "preloop",
-    "agent-control",
-    "openclaw",
-    "voice",
-    "observability",
-    "tool-approval"
-  ],
-  "entrypoint": "dist/index.js",
-  "permissions": [
-    "read_config:plugins.entries.preloop-plugin.config",
-    "network:wss",
-    "network:https",
-    "agent:send_message",
-    "agent:session_status",
-    "agent:tool_approval"
-  ],
-  "capabilities": {
-    "tool_approval": true
-  },
-  "hooks": [
-    "before_tool_call"
-  ],
+  "version": "0.2.1",
   "configSchema": {
-    "path": "plugins.entries.preloop-plugin.config",
+    "type": "object",
+    "additionalProperties": true,
     "required": [
       "control_ws_url",
       "bearer_token",
       "runtime_principal_id"
-    ]
-  },
-  "verification": {
-    "command": "preloop-openclaw-plugin verify --config ~/.openclaw/openclaw.json"
+    ],
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "description": "Set to false to keep the plugin installed but inactive."
+      },
+      "protocol": {
+        "type": "string",
+        "description": "Agent Control protocol version, for example preloop.agent_control.v1."
+      },
+      "runtime": {
+        "type": "string",
+        "description": "Runtime identifier reported to Preloop. Defaults to openclaw."
+      },
+      "control_ws_url": {
+        "type": "string",
+        "description": "Preloop Agent Control WebSocket URL (wss://...)."
+      },
+      "bearer_token": {
+        "type": "string",
+        "description": "Runtime bearer token minted by the Preloop CLI or marketplace installer. Do not hand-author."
+      },
+      "runtime_principal_id": {
+        "type": "string",
+        "description": "Preloop runtime principal id for this OpenClaw instance."
+      },
+      "runtime_principal_name": {
+        "type": "string",
+        "description": "Optional human-readable name for this runtime principal."
+      },
+      "session_reference": {
+        "type": "string",
+        "description": "Optional session reference used to correlate an existing Preloop session."
+      },
+      "tool_approval_enabled": {
+        "type": "boolean",
+        "description": "Gate the native before_tool_call approval hook. Defaults to true."
+      },
+      "tool_approval_fail_open": {
+        "type": "boolean",
+        "description": "When the permission-check endpoint is unreachable, allow the tool to run instead of blocking. Defaults to false (fail closed)."
+      },
+      "permission_check_url": {
+        "type": "string",
+        "description": "Override for the permission-check endpoint. Derived from control_ws_url when omitted."
+      },
+      "adapter_package": {
+        "type": "string",
+        "description": "npm package name of the runtime adapter that owns this entry."
+      },
+      "session_source_type": {
+        "type": "string",
+        "description": "Preloop session source type for this runtime."
+      },
+      "managed_agent_id": {
+        "type": "string",
+        "description": "Preloop managed agent id, when provisioned by the CLI."
+      },
+      "credential_id": {
+        "type": "string",
+        "description": "Preloop credential id bound to this runtime."
+      },
+      "credential_name": {
+        "type": "string",
+        "description": "Human-readable name of the bound Preloop credential."
+      },
+      "runtime_session_id": {
+        "type": "string",
+        "description": "Preloop runtime session id issued at bootstrap."
+      },
+      "session_source_id": {
+        "type": "string",
+        "description": "Preloop session source id issued at bootstrap."
+      }
+    }
   }
 }

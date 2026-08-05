@@ -163,6 +163,21 @@ across renames and re-onboarding.
 
 ### Fixed
 
+- **OpenClaw plugin manifest migrated to the OpenClaw 2026.7.2-beta.7 schema**
+  (`@preloop-ai/openclaw-plugin` 0.2.1): the ClawHub listing showed a
+  `manifest-unknown-fields` warning because `openclaw.plugin.json` declared 11
+  top-level keys that are not part of OpenClaw's published `PluginManifest`
+  type. The manifest now carries only `id`, `name`, `description`, `version`
+  and a real JSON Schema `configSchema`; the packaging and runtime metadata
+  (`before_tool_call` hook, `tool_approval` capability, permission strings,
+  config path, and the `preloop-openclaw-plugin verify` command) moved into the
+  `openclaw` object in `package.json`, which is where OpenClaw and ClawHub read
+  package-level metadata. Plugin behaviour is unchanged: the hook is registered
+  in code and the config is read from the same
+  `plugins.entries.preloop-plugin.config` path as before. The package lockfile
+  was also regenerated (it still claimed 0.1.0 while the package said 0.2.0).
+  ClawHub validation against an OpenClaw 2026.7.2-beta.7 checkout now reports 0
+  errors and 0 warnings.
 - **Gateway no longer returns 502 when activity metadata contains binary
   content**: an agent that fetched a gzip or otherwise binary URL through the
   gateway could take down its own request. The response body was embedded into
