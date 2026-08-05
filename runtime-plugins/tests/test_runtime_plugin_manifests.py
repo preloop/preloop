@@ -34,6 +34,32 @@ def test_hermes_manifest_is_standalone() -> None:
 # outside the published PluginManifest type. Runtime/packaging metadata now
 # lives under package.json "openclaw" instead, and configSchema must be a
 # real JSON Schema object rather than a {path, required} descriptor.
+#
+# PROVENANCE of the list below. Do not hand-edit it; regenerate.
+#   source:  github.com/openclaw/openclaw, tag v2026.7.2-beta.7 (commit
+#            dabe1915), file src/plugins/manifest-types.ts, type PluginManifest
+#   extract: the inspector's own parser, so this cannot drift from how ClawHub
+#            reads the type:
+#     node -e 'import("@openclaw/plugin-inspector/src/openclaw-target.js")
+#       .then(m => console.log(m.parseTypeFields(
+#         require("fs").readFileSync(SRC, "utf8"), "PluginManifest").join("\n")))'
+#   count:   45 fields (asserted below, so a partial paste fails loudly)
+#
+# There are TWO upstream surfaces and they do not agree. Beware of comparing
+# against the wrong one:
+#   1. PluginManifest in the OpenClaw source tree (45 fields) - what the
+#      inspector uses when given a real checkout via `--openclaw <path>`.
+#   2. PluginManifestRecord in the packed npm tarball's .d.ts (66 fields at
+#      2026.7.1-2) - what the inspector falls back to for `npm:openclaw@...`.
+#      It is the loaded/registry-side record: it adds packaging and runtime
+#      bookkeeping (packageName, rootDir, origin, manifestPath, hooks...) that
+#      an author must never write, and it OMITS six fields that are legal in
+#      the source type (catalog, dashboard, mcpServers, providerCatalogEntry,
+#      requiresPlugins, uiHints).
+# Because either surface can be the one ClawHub runs, a field we ship must be
+# accepted by BOTH. test_openclaw_manifest_fields_accepted_by_both_surfaces
+# enforces that intersection against the committed inspector report.
+OPENCLAW_MANIFEST_SOURCE_TAG = "v2026.7.2-beta.7"
 OPENCLAW_MANIFEST_ALLOWED_TOP_LEVEL_FIELDS = {
     "activation",
     "autoEnableWhenConfiguredProviders",
@@ -99,6 +125,77 @@ def test_openclaw_manifest_uses_only_supported_top_level_fields() -> None:
         "bearer_token",
         "runtime_principal_id",
     }
+
+
+def test_openclaw_allowlist_has_the_pinned_field_count() -> None:
+    """Guard the allowlist against a truncated or padded hand-edit.
+
+    The count is the one number a regeneration must reproduce; if upstream
+    changes it, the tag in OPENCLAW_MANIFEST_SOURCE_TAG must move with it.
+    """
+    assert OPENCLAW_MANIFEST_SOURCE_TAG == "v2026.7.2-beta.7"
+    assert len(OPENCLAW_MANIFEST_ALLOWED_TOP_LEVEL_FIELDS) == 45, (
+        "allowlist no longer matches the 45 fields of PluginManifest at "
+        f"{OPENCLAW_MANIFEST_SOURCE_TAG}; regenerate it with the command in "
+        "the provenance comment rather than editing by hand"
+    )
+
+
+def _inspector_report() -> dict:
+    return json.loads(
+        (
+            ROOT / "openclaw-preloop" / "reports" / "plugin-inspector-report.json"
+        ).read_text()
+    )
+
+
+def test_openclaw_manifest_fields_accepted_by_both_surfaces() -> None:
+    """Every shipped manifest key must satisfy source type AND packed record.
+
+    This is the test that actually catches drift, because it checks the
+    manifest against a generated artifact rather than against a hand-kept
+    list. The committed plugin-inspector report carries the field list the
+    validator derived from the npm target (PluginManifestRecord); the
+    allowlist above carries the source-tree type. A key legal under only one
+    of them passes on one ClawHub configuration and warns on the other, which
+    is exactly the failure this suite exists to prevent.
+    """
+    manifest_keys = set(
+        json.loads((ROOT / "openclaw-preloop" / "openclaw.plugin.json").read_text())
+    )
+    target = _inspector_report()["targetOpenClaw"]
+
+    assert target["status"] == "ok", (
+        "the committed inspector report was generated without an OpenClaw "
+        "target, so manifest-unknown-fields never ran and the report proves "
+        "nothing; regenerate with `clawhub package validate . --openclaw <checkout>`"
+    )
+    report_fields = set(target["manifestFields"])
+    assert report_fields, "inspector report carries no manifestFields"
+
+    rejected_by_report = manifest_keys - report_fields
+    assert not rejected_by_report, (
+        "manifest keys absent from the inspector's field list "
+        f"({target['configuredPath']}): {sorted(rejected_by_report)}"
+    )
+    rejected_by_source_type = manifest_keys - OPENCLAW_MANIFEST_ALLOWED_TOP_LEVEL_FIELDS
+    assert not rejected_by_source_type, (
+        "manifest keys absent from PluginManifest at "
+        f"{OPENCLAW_MANIFEST_SOURCE_TAG}: {sorted(rejected_by_source_type)}"
+    )
+
+
+def test_openclaw_inspector_report_is_a_clean_run() -> None:
+    """A stale or warning-carrying report must not sit in the repo unnoticed.
+
+    0.2.0 shipped with a report whose target was "disabled": it recorded a
+    pass that had skipped the very check the hub later failed on.
+    """
+    report = _inspector_report()
+
+    assert report["status"] == "pass"
+    assert report["summary"]["breakageCount"] == 0
+    assert report["summary"]["warningCount"] == 0
 
 
 def test_openclaw_package_preserves_agent_control_semantics() -> None:
