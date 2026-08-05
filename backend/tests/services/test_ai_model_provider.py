@@ -1180,7 +1180,15 @@ class TestOpenAIAuthErrorDoesNotLeakSecrets:
     @pytest.mark.asyncio
     async def test_auth_error_message_with_key_never_reaches_log(self, caplog):
         """A synthetic AuthenticationError carrying a URL and API key must not
-        appear in the warning log; only the exception type name is logged."""
+        appear in the warning log; only the exception type name is logged.
+
+        The ``preloop`` logger is configured with ``propagate: False`` (see
+        preloop/logging.py), so records stop there and never reach the root
+        logger that ``caplog`` attaches to. Setting a level is not enough;
+        the capture handler is attached to the emitting logger directly.
+        Without that ``caplog.text`` is empty and the leak assertion below
+        would pass vacuously, which is worse than no test at all.
+        """
         from openai import AuthenticationError
 
         fake_key = "sk-live-TESTSECRET1234567890abcdef"
@@ -1211,9 +1219,21 @@ class TestOpenAIAuthErrorDoesNotLeakSecrets:
             mock_instance.models.list.side_effect = exc
             mock_cls.return_value = mock_instance
 
-            with caplog.at_level(logging.WARNING):
-                with pytest.raises(ValueError, match="Invalid OpenAI API key"):
-                    await _get_openai_models("some-key")
+            emitting_logger = logging.getLogger("preloop.services.ai_model_provider")
+            emitting_logger.addHandler(caplog.handler)
+            try:
+                with caplog.at_level(
+                    logging.WARNING, logger="preloop.services.ai_model_provider"
+                ):
+                    with pytest.raises(ValueError, match="Invalid OpenAI API key"):
+                        await _get_openai_models("some-key")
+            finally:
+                emitting_logger.removeHandler(caplog.handler)
+
+        # Guard against a vacuous pass: if capture silently broke, the
+        # "key not in log" assertion below would succeed against an empty
+        # string while proving nothing.
+        assert caplog.records, "log capture produced no records"
 
         # The key must not appear anywhere in the captured log output.
         full_log = caplog.text
