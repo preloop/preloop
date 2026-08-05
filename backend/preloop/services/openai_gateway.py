@@ -4636,6 +4636,9 @@ class OpenAIGatewayService:
             try:
                 from preloop.sync.tasks import notify_admins
 
+                from preloop.utils.secret_scrubbing import scrub_secrets
+
+                scrubbed_trace = (scrub_secrets(str(exc)) or "")[:400]
                 notify_admins(
                     subject=f"[Preloop Alert] AI Gateway HTTP {status_code} Error ({provider})",
                     message=(
@@ -4643,7 +4646,7 @@ class OpenAIGatewayService:
                         f"Provider: {provider}\nStatus: {status_code}\n"
                         f"Message: {message}\nType: {error_type}\nCode: {code}\n"
                         f"Class: {classified.error_class if classified else None}\n\n"
-                        f"Trace:\n{exc}"
+                        f"Trace:\n{scrubbed_trace}"
                     ),
                 )
             except Exception:

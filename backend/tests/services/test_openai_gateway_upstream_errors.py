@@ -262,3 +262,58 @@ def test_normalize_plain_message_unchanged():
     )
     assert err.message == "model not found"
     assert err.to_payload()["error"].get("provider_detail") is None
+
+
+class TestNotifyAdminsTraceScrubbing:
+    """Regression: the admin notification in _normalize_upstream_error must
+    scrub secrets from the exception trace and cap its length."""
+
+    def test_api_key_in_exception_is_scrubbed_in_notification(self):
+        """A synthetic 502 exception whose message contains an API key must
+        not survive into the notify_admins payload."""
+        from unittest.mock import patch as _patch
+
+        fake_key = "sk-live-SUPERSECRETKEY1234567890abcdef"
+        exc = _FakeHTTPError(
+            f"Connection to https://api.example.com?key={fake_key} failed: "
+            f"auth header Bearer {fake_key}",
+            status_code=502,
+        )
+
+        captured_calls: list = []
+
+        def _capture_notify(*, subject: str, message: str) -> None:
+            captured_calls.append({"subject": subject, "message": message})
+
+        with _patch("preloop.sync.tasks.notify_admins", side_effect=_capture_notify):
+            OpenAIGatewayService._normalize_upstream_error("openai", exc)
+
+        assert captured_calls, "notify_admins was never called for a 502 error"
+        body = captured_calls[0]["message"]
+        assert fake_key not in body, "Raw API key survived into admin notification body"
+        assert "[REDACTED]" in body
+
+    def test_long_trace_is_capped_at_400_chars(self):
+        """The trace portion of the admin notification must be at most 400 chars."""
+        from unittest.mock import patch as _patch
+
+        long_detail = "x" * 2000
+        exc = _FakeHTTPError(long_detail, status_code=500)
+
+        captured_calls: list = []
+
+        def _capture_notify(*, subject: str, message: str) -> None:
+            captured_calls.append({"subject": subject, "message": message})
+
+        with _patch("preloop.sync.tasks.notify_admins", side_effect=_capture_notify):
+            OpenAIGatewayService._normalize_upstream_error("openai", exc)
+
+        assert captured_calls, "notify_admins was never called for a 500 error"
+        body = captured_calls[0]["message"]
+        # The trace starts after "Trace:\n"; extract it.
+        trace_marker = "Trace:\n"
+        trace_start = body.index(trace_marker) + len(trace_marker)
+        trace_text = body[trace_start:]
+        assert len(trace_text) <= 400, (
+            f"Trace length {len(trace_text)} exceeds 400-char cap"
+        )

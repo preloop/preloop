@@ -218,7 +218,6 @@ export class AddAIModelModal extends LitElement {
     this._modelsFallbackReason = null;
   }
 
-  /** Merge gateway routing metadata; gateway.enabled only when upstream credentials exist. */
   /**
    * @param modelIdOverride Build the gateway alias for this model id instead of
    *   the primary one. Used when creating extra models that share one key —

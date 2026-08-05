@@ -410,7 +410,7 @@ async def _get_openai_models(api_key: Optional[str] = None) -> ModelDiscoveryRes
 
         return _live(chat_models)
     except AuthenticationError as e:
-        logger.warning(f"OpenAI authentication failed: {e}")
+        logger.warning("OpenAI authentication failed: %s", type(e).__name__)
         # Re-raise authentication errors so the user knows their API key is invalid
         raise ValueError(
             "Invalid OpenAI API key. Please check your API key and try again."

@@ -1,5 +1,6 @@
 """Tests for AI model provider service."""
 
+import logging
 import sys
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1166,3 +1167,58 @@ class TestDiscoveryEndpointValidation:
         from preloop.services.ai_model_provider import validate_discovery_endpoint
 
         assert validate_discovery_endpoint(endpoint) == endpoint
+
+
+class TestOpenAIAuthErrorDoesNotLeakSecrets:
+    """Regression: OpenAI AuthenticationError must not log key material.
+
+    The handler previously used ``f"OpenAI authentication failed: {e}"``,
+    which embedded the full SDK message (including the request URL and,
+    for query-string keys, the api key itself) into the log output.
+    """
+
+    @pytest.mark.asyncio
+    async def test_auth_error_message_with_key_never_reaches_log(self, caplog):
+        """A synthetic AuthenticationError carrying a URL and API key must not
+        appear in the warning log; only the exception type name is logged."""
+        from openai import AuthenticationError
+
+        fake_key = "sk-live-TESTSECRET1234567890abcdef"
+        fake_url = f"https://api.openai.com/v1/models?api_key={fake_key}"
+        body = {
+            "error": {
+                "message": f"Incorrect API key provided: {fake_key}. "
+                f"Request URL: {fake_url}",
+                "type": "invalid_request_error",
+                "code": "invalid_api_key",
+            }
+        }
+        import httpx
+
+        mock_response = httpx.Response(
+            status_code=401,
+            json=body,
+            request=httpx.Request("GET", fake_url),
+        )
+        exc = AuthenticationError(
+            message=body["error"]["message"],
+            response=mock_response,
+            body=body,
+        )
+
+        with patch("openai.AsyncOpenAI") as mock_cls:
+            mock_instance = AsyncMock()
+            mock_instance.models.list.side_effect = exc
+            mock_cls.return_value = mock_instance
+
+            with caplog.at_level(logging.WARNING):
+                with pytest.raises(ValueError, match="Invalid OpenAI API key"):
+                    await _get_openai_models("some-key")
+
+        # The key must not appear anywhere in the captured log output.
+        full_log = caplog.text
+        assert fake_key not in full_log, (
+            "API key leaked into log output via AuthenticationError message"
+        )
+        # The type name IS logged (consistency with every other provider).
+        assert "AuthenticationError" in full_log

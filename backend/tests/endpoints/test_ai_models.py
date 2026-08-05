@@ -285,3 +285,33 @@ def test_ai_model_schema_rejects_secret_reuse_with_new_credentials(extra):
     assert "credentials_secret_id cannot be combined with new credential material" in (
         str(error.value)
     )
+
+
+@pytest.mark.asyncio
+async def test_fetch_provider_models_500_does_not_leak_exception_text(
+    mocker: MockerFixture,
+):
+    """Regression: an unexpected exception in _fetch_provider_models must
+    return a fixed 500 message, never the raw exception text, which can
+    contain endpoint URLs or key material."""
+    from fastapi import HTTPException
+
+    secret_detail = "Connection to https://api.example.com?key=sk-SUPERSECRET failed"
+
+    mocker.patch(
+        "preloop.api.endpoints.ai_models.get_available_models_for_provider",
+        side_effect=RuntimeError(secret_detail),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await ai_models._fetch_provider_models(
+            provider="openai",
+            api_key="test-key",
+            model_kind="llm",
+            api_endpoint=None,
+        )
+
+    http_exc = exc_info.value
+    assert http_exc.status_code == 500
+    assert secret_detail not in http_exc.detail
+    assert "Check server logs for details" in http_exc.detail
