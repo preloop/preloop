@@ -892,7 +892,21 @@ def get_resolution_suggestion(
         description2=issue2.description,
     )
 
-    client = openai.OpenAI()
+    creds_kwargs = resolve_model_call_credentials(default_model, db=db)
+    api_key = creds_kwargs.get("api_key")
+    if not api_key:
+        logger.warning(
+            f"API key not found in credentials for model {default_model.model_identifier}. Trying OPENAI_API_KEY env var."
+        )
+        api_key = os.getenv("OPENAI_API_KEY")
+
+    if not api_key:
+        logger.error(
+            f"OpenAI API key not found for model {default_model.model_identifier} or environment variable."
+        )
+        raise HTTPException(status_code=500, detail="OpenAI API key not configured.")
+
+    client = openai.OpenAI(api_key=api_key, base_url=creds_kwargs.get("api_base"))
 
     try:
         llm_response = client.chat.completions.create(

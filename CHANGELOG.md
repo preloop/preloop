@@ -146,15 +146,24 @@ across renames and re-onboarding.
 
 ### Fixed
 
-- **Auxiliary model calls resolve credentials from the secret service**: seven
+- **Auxiliary model calls resolve credentials from the secret service**: nine
   internal sites (approval summaries, session/interaction titles, policy
   generation, agent name extraction, issue compliance/duplicates/dependencies)
   were reading the raw `api_key` column directly instead of resolving via the
   secret service, so accounts whose models use `credentials_secret_id` got
-  silent 401s. All seven sites now route through a shared credential resolver
+  silent 401s. All nine sites now route through a shared credential resolver
   that handles legacy plaintext keys, vault-backed secrets, OAuth, and ambient
   credentials identically to the main gateway path. The `os.getenv` fallback in
   issue compliance and duplicates endpoints is preserved.
+  - The compliance improvement suggestion and duplicate resolution suggestion
+    endpoints built their client with no credentials at all, so they used
+    whatever ambient `OPENAI_API_KEY` the process happened to have (and failed
+    outright when it had none) regardless of the account's configured model.
+    Both now resolve the account model's credentials and honor its custom
+    endpoint.
+  - Dependency detection now forwards the model's custom endpoint as
+    `base_url`; previously it resolved the key but dropped the endpoint,
+    sending traffic for custom-endpoint models to the default provider.
 
 - **DeepSeek and Qwen model pickers show the models the provider actually
   serves**: both providers were queried with a valid API key and the response

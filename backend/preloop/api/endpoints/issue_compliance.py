@@ -269,7 +269,15 @@ def get_compliance_improvement_suggestion(
         compliance_suggestion=compliance_result.suggestion,
     )
 
-    client = openai.OpenAI()
+    creds_kwargs = resolve_model_call_credentials(default_model, db=db)
+    api_key = creds_kwargs.get("api_key")
+    if not api_key:
+        api_key = os.getenv("OPENAI_API_KEY")
+
+    if not api_key:
+        raise HTTPException(status_code=500, detail="OpenAI API key not configured.")
+
+    client = openai.OpenAI(api_key=api_key, base_url=creds_kwargs.get("api_base"))
     try:
         llm_response = client.chat.completions.create(
             model=default_model.model_identifier,

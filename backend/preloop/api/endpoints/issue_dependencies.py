@@ -17,7 +17,6 @@ from preloop.models.crud import (
     crud_issue_relationship,
 )
 from preloop.services.model_credentials import resolve_model_call_credentials
-from preloop.services.secret_service import get_secret_service
 from preloop.models.db.session import get_db_session as get_db
 from preloop.models.models.issue import Issue
 from preloop.api.auth import get_current_active_user
@@ -166,10 +165,9 @@ def detect_issue_dependencies(
 
     # 5. Call the AI model
     try:
-        resolved_secret = get_secret_service().resolve_ai_model_api_key(ai_model)
-        client = openai.OpenAI(
-            api_key=resolved_secret.value if resolved_secret else openai.api_key
-        )
+        creds_kwargs = resolve_model_call_credentials(ai_model, db=db)
+        api_key = creds_kwargs.get("api_key") or openai.api_key
+        client = openai.OpenAI(api_key=api_key, base_url=creds_kwargs.get("api_base"))
 
         response = client.chat.completions.create(
             model=ai_model.model_identifier,
