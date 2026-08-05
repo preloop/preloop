@@ -42,14 +42,18 @@ _TOKEN_PATTERNS: List[Tuple[Pattern[str], str]] = [
 #   https://github_pat_xxx@host/p  ->  https://[REDACTED]@host/path
 # The userinfo grammar excludes "/" so this cannot run past the authority into
 # the path, and it requires a scheme so it does not fire on email addresses.
+# The scheme is capped at 64 chars: an unbounded scheme quantifier makes the
+# scan quadratic on long runs of scheme-legal characters (every start offset
+# rescans to the end of the run looking for "://"), which an agent-controlled
+# log line could exploit. No real URI scheme approaches 64 chars.
 _URL_USERINFO_WITH_PASSWORD = re.compile(
-    r"(?P<scheme>[A-Za-z][A-Za-z0-9+.\-]*://)"
+    r"(?P<scheme>[A-Za-z][A-Za-z0-9+.\-]{0,63}://)"
     r"(?P<user>[^\s:/@]{1,256}):"
     r"(?P<password>[^\s/@]{1,4096})"
     r"(?=@[^\s/@]+)"
 )
 _URL_USERINFO_TOKEN_ONLY = re.compile(
-    r"(?P<scheme>[A-Za-z][A-Za-z0-9+.\-]*://)"
+    r"(?P<scheme>[A-Za-z][A-Za-z0-9+.\-]{0,63}://)"
     r"(?P<user>[^\s:/@]{1,4096})"
     r"(?=@[^\s/@]+)"
 )

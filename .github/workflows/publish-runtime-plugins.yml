@@ -60,7 +60,7 @@ jobs:
 
       - name: Run runtime plugin tests
         run: |
-          pip install pytest
+          pip install --require-hashes -r .github/requirements/runtime-test.txt
           pytest runtime-plugins/tests -q
 
       - name: Check per-plugin manifest lockstep (and tag match)
@@ -119,7 +119,9 @@ jobs:
             echo "::error::secret CLAWHUB_TOKEN is not set on the 'release' environment — refusing to publish to npm, because npm and ClawHub must not diverge. Generate it once locally with 'clawhub login' then 'clawhub token', and add it as a repo secret."
             exit 1
           fi
-          npm i -g clawhub
+          # npm cannot hash-pin a global install; exact-version pin is the
+          # closest available control. Bump deliberately.
+          npm i -g clawhub@0.23.3
           clawhub login --token "$CLAWHUB_TOKEN" --no-input
           clawhub whoami --no-input
           clawhub package validate . --json --no-input
@@ -198,7 +200,7 @@ jobs:
       - name: Build
         working-directory: runtime-plugins/hermes-preloop
         run: |
-          pip install build twine
+          pip install --require-hashes -r "$GITHUB_WORKSPACE/.github/requirements/build.txt"
           python -m build
           twine check dist/*
 

@@ -493,3 +493,51 @@ class TestLogAgentOutputScrubbing:
         logger.log_agent_output(self.PAT)
 
         assert logger.get_agent_output_lines() == ["github_pat_[REDACTED]"]
+
+
+class TestServiceLogHygiene:
+    """Service (loguru/stdlib) logs are NOT scrubbed the way agent output is,
+    so agent-derived content must never be echoed into them
+    (py/clear-text-logging-sensitive-data, alerts 181-184). These tests pin
+    the debug messages to metadata only: action type, status, line length,
+    exception. Never the line or description content.
+    """
+
+    PAT = "github_pat_11ABCDEFG0aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789"
+
+    def test_log_agent_action_does_not_log_description(self, caplog):
+        import logging
+
+        logger = FlowExecutionLogger()
+        with caplog.at_level(
+            logging.DEBUG, logger="preloop.services.flow_execution_logger"
+        ):
+            logger.log_agent_action(
+                action_type="command_executed",
+                description=f"Executed: export TOKEN={self.PAT}",
+            )
+        assert self.PAT not in caplog.text
+        # The structured entry itself still carries the full description.
+        assert self.PAT in logger.actions_taken[0]["description"]
+
+    def test_parse_failure_paths_do_not_echo_the_line(self, caplog):
+        import logging
+        from unittest.mock import patch
+
+        logger = FlowExecutionLogger()
+        secret_line = f"Created file: /tmp/{self.PAT}.txt"
+        with caplog.at_level(
+            logging.DEBUG, logger="preloop.services.flow_execution_logger"
+        ):
+            with patch.object(
+                logger, "log_agent_action", side_effect=RuntimeError("boom")
+            ):
+                logger._try_extract_file_creation(secret_line)
+                logger._try_extract_command_execution(
+                    f"Executed command: curl -H 'Authorization: Bearer {self.PAT}'"
+                )
+            with patch.object(
+                logger, "log_mcp_tool_call", side_effect=RuntimeError("boom")
+            ):
+                logger._try_extract_mcp_call(f"Calling srv/tool {self.PAT}")
+        assert self.PAT not in caplog.text

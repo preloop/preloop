@@ -216,3 +216,29 @@ class TestScrubStructure:
     def test_deeply_nested(self) -> None:
         data = {"a": [{"b": {"c": [f"token {GITHUB_PAT}"]}}]}
         assert GITHUB_PAT not in str(scrub_structure(data))
+
+
+class TestReDoSResistance:
+    """The URL userinfo patterns are applied to every agent log line, so they
+    must stay near-linear on adversarial input (CodeQL py/polynomial-redos,
+    alerts 189/190). Before the scheme quantifier was bounded, a line of
+    80,000 'A' characters took over 5 seconds to scan; bounded, it takes
+    milliseconds.
+    """
+
+    def test_long_scheme_charset_run_is_fast(self) -> None:
+        import time
+
+        adversarial = "A" * 200_000
+        start = time.perf_counter()
+        assert scrub_secrets(adversarial) == adversarial
+        elapsed = time.perf_counter() - start
+        # Quadratic behavior at this length is tens of seconds; linear is
+        # well under a second even on slow CI machines.
+        assert elapsed < 2.0, f"scrub_secrets took {elapsed:.2f}s on 200k chars"
+
+    def test_url_credentials_still_scrubbed_after_bounding(self) -> None:
+        line = "https://user:tok_1234567890@github.com/acme/repo.git"
+        assert scrub_secrets(line) == (
+            f"https://user:{REDACTED}@github.com/acme/repo.git"
+        )

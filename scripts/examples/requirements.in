@@ -1,0 +1,4 @@
+# Regenerate with: uv pip compile --universal --generate-hashes --python-version 3.12 scripts/examples/requirements.in -o scripts/examples/requirements.txt
+fastmcp
+fastapi
+uvicorn
