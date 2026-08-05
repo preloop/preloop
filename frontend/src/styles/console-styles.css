@@ -203,10 +203,22 @@ sl-dialog.large::part(panel) {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: var(--sl-spacing-small);
     padding: var(--sl-spacing-small);
     background: var(--sl-color-neutral-50);
     border-radius: var(--sl-border-radius-medium);
     border-left: 3px solid var(--sl-color-neutral-300);
+}
+
+/* Action group (status tag, links, dismiss). Must never be compressed or
+   pushed out of the card by long text in .item-info, otherwise controls such
+   as the dismiss button become unreachable. */
+.item-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--sl-spacing-small);
+    flex: 0 0 auto;
+    margin-left: auto;
 }
 
 .item-card.warning {
@@ -224,10 +236,16 @@ sl-dialog.large::part(panel) {
     flex-direction: column;
     gap: var(--sl-spacing-2x-small);
     flex: 1;
+    /* A flex item's automatic minimum size is its min-content width. Without
+       this, an unbreakable string (e.g. a repo URL in a clone error) makes
+       this column wider than the card and shoves the action group out of
+       view. */
+    min-width: 0;
 }
 
 .item-name {
     font-weight: 600;
+    overflow-wrap: anywhere;
 }
 
 .item-secondary {
@@ -239,6 +257,13 @@ sl-dialog.large::part(panel) {
     font-size: var(--sl-font-size-small);
     color: var(--sl-color-danger-700);
     font-style: italic;
+    /* Break inside long URLs and paths rather than overflowing the row, and
+       cap the message at three lines so one error cannot dominate the card. */
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
 }
 
 /* Empty state */

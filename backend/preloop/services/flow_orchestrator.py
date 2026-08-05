@@ -124,6 +124,10 @@ class FlowExecutionOrchestrator:
         self._commit_sha: Optional[str] = None
         self._status_context: str = "preloop"
         self._is_recovered: bool = False  # Set to True during execution recovery
+        # Warning messages already surfaced on the execution timeline, so a
+        # repeated condition (e.g. status posted at pending and again at
+        # success) does not spam the same line.
+        self._emitted_warnings: set[str] = set()
         # Set when a sync worker owns this orchestrator (claim lease heartbeat).
         self._orchestrator_worker_id: Optional[str] = None
 
@@ -200,6 +204,119 @@ class FlowExecutionOrchestrator:
         logger.debug(f"No commit SHA found in payload. Keys: {list(payload.keys())}")
         return None
 
+    def _extract_trigger_repository_identifier(self) -> Optional[str]:
+        """Return the repository identifier carried by the trigger payload.
+
+        GitHub sends ``repository.full_name`` and GitLab sends
+        ``project.path_with_namespace``. Used to tell "the webhook named a repo
+        we could not map to a project" (a real misconfiguration) apart from
+        "this execution has no repository context at all" (manual runs).
+        """
+        payload = self.trigger_event_data.get("payload", {})
+        if not isinstance(payload, dict):
+            return None
+
+        repo = payload.get("repository")
+        if isinstance(repo, dict):
+            identifier = repo.get("full_name") or repo.get("name")
+            if identifier:
+                return str(identifier)
+
+        project = payload.get("project")
+        if isinstance(project, dict):
+            identifier = project.get("path_with_namespace") or project.get("name")
+            if identifier:
+                return str(identifier)
+
+        return None
+
+    async def _resolve_commit_status_project_id(self) -> Optional[str]:
+        """Resolve the project the commit status must be posted to.
+
+        The status has to land on the repository that actually triggered this
+        execution. Posting to ``flow.trigger_project_ids[0]`` means every repo
+        other than the first one a multi-repo flow watches gets a
+        ``422 No commit found for SHA`` instead of a check (issue #175).
+        """
+        resolved = self._resolve_trigger_project_id(
+            allow_first_project_fallback=False,
+        )
+        if resolved:
+            return resolved
+
+        repo_identifier = self._extract_trigger_repository_identifier()
+        if repo_identifier:
+            # The webhook told us which repo it came from and we could not map
+            # it to a project. Falling back to the first trigger project would
+            # post the status to the wrong repository, so refuse and say so.
+            await self._emit_execution_warning(
+                "Commit status skipped: could not match the triggering repository "
+                f"'{repo_identifier}' to a Preloop project. Add it as a project on "
+                "the tracker so checks can be posted to the right repository.",
+                details={
+                    "repository": repo_identifier,
+                    "flow_trigger_project_ids": [
+                        str(pid) for pid in (self.flow.trigger_project_ids or [])
+                    ]
+                    if self.flow
+                    else [],
+                },
+            )
+            return None
+
+        trigger_project_ids = (
+            [str(pid) for pid in self.flow.trigger_project_ids]
+            if self.flow and self.flow.trigger_project_ids
+            else []
+        )
+        if not trigger_project_ids:
+            return None
+
+        if len(trigger_project_ids) > 1:
+            # No repository context and several candidates: any choice is a
+            # guess, so make the guess visible instead of silently picking one.
+            await self._emit_execution_warning(
+                "Commit status target is ambiguous: the trigger event carries no "
+                f"repository, and this flow watches {len(trigger_project_ids)} "
+                "projects. Using the first one, which may be the wrong repository.",
+                details={"flow_trigger_project_ids": trigger_project_ids},
+            )
+
+        return trigger_project_ids[0]
+
+    async def _emit_execution_warning(
+        self,
+        message: str,
+        *,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Surface a non-fatal problem on the execution timeline, not just in logs.
+
+        Server-side ``logger.warning`` calls are invisible to the user whose
+        flow silently did half its job. This publishes an ``execution_warning``
+        entry, which is persisted with the execution logs and rendered in the
+        console.
+
+        Identical messages are emitted once per execution: commit status runs
+        two or three times per execution (pending, then success or failure),
+        and a misconfiguration would otherwise repeat verbatim each time.
+        """
+        if message in self._emitted_warnings:
+            logger.debug(f"Suppressing repeated execution warning: {message}")
+            return
+        self._emitted_warnings.add(message)
+
+        logger.warning(message)
+        payload: Dict[str, Any] = {"message": message, "level": "warning"}
+        if details:
+            payload["details"] = _make_json_serializable(details)
+        try:
+            await self._publish_update("execution_warning", payload)
+        except Exception as publish_error:
+            logger.warning(
+                f"Failed to publish execution warning: {publish_error}",
+            )
+
     async def _get_tracker_client_for_status(self):
         """Get a tracker client for updating commit status.
 
@@ -210,20 +327,19 @@ class FlowExecutionOrchestrator:
             return self._tracker_client
 
         try:
-            # Get project from trigger_project_ids on the flow
             if not self.flow:
                 logger.warning("[CommitStatus] No flow object available")
                 return None
 
-            # Get the first project ID from the array (if any)
-            trigger_project_id = None
-            if self.flow.trigger_project_ids and len(self.flow.trigger_project_ids) > 0:
-                trigger_project_id = self.flow.trigger_project_ids[0]
+            # Resolve the project from the repository that ACTUALLY triggered
+            # this execution, not from flow.trigger_project_ids[0].
+            trigger_project_id = await self._resolve_commit_status_project_id()
 
             if not trigger_project_id:
-                # This is expected for flows not tied to a specific project
+                # Expected for flows not tied to a specific project; the
+                # misconfigured cases already emitted a warning above.
                 logger.debug(
-                    "[CommitStatus] Flow has no trigger_project_ids - skipping status update"
+                    "[CommitStatus] No trigger project resolved - skipping status update"
                 )
                 return None
 
@@ -232,15 +348,16 @@ class FlowExecutionOrchestrator:
 
             project = crud_project.get(self.db, id=trigger_project_id)
             if not project:
-                logger.warning(
-                    f"[CommitStatus] Project not found for trigger_project_id: "
-                    f"{trigger_project_id}"
+                await self._emit_execution_warning(
+                    "Commit status skipped: the triggering project "
+                    f"{trigger_project_id} no longer exists.",
                 )
                 return None
 
             if not project.organization_id:
-                logger.warning(
-                    f"[CommitStatus] Project {project.id} has no organization_id"
+                await self._emit_execution_warning(
+                    f"Commit status skipped: project {project.name} is not linked "
+                    "to an organization, so the target repository is unknown.",
                 )
                 return None
 
@@ -279,6 +396,24 @@ class FlowExecutionOrchestrator:
                 exc_info=True,
             )
             return None
+
+    @staticmethod
+    def _describe_status_target(tracker_client: Any) -> str:
+        """Human-readable description of where a commit status is being posted."""
+        details = getattr(tracker_client, "connection_details", None)
+        if not isinstance(details, dict):
+            return "the triggering repository"
+
+        owner = details.get("owner")
+        repo = details.get("repo")
+        if owner and repo:
+            return f"{owner}/{repo}"
+
+        project_path = details.get("project_path") or details.get("project_id")
+        if project_path:
+            return str(project_path)
+
+        return "the triggering repository"
 
     async def _update_commit_status(
         self,
@@ -325,6 +460,7 @@ class FlowExecutionOrchestrator:
             )
             return
 
+        status_target = "the triggering repository"
         try:
             logger.info(
                 f"[CommitStatus] Getting tracker client. "
@@ -340,6 +476,8 @@ class FlowExecutionOrchestrator:
                     f"account_id: {self.flow.account_id if self.flow else None}"
                 )
                 return
+
+            status_target = self._describe_status_target(tracker_client)
 
             logger.info(
                 f"[CommitStatus] Got tracker client: {type(tracker_client).__name__}, "
@@ -396,10 +534,22 @@ class FlowExecutionOrchestrator:
             )
 
         except Exception as e:
-            # Don't fail the execution if status update fails
+            # Don't fail the execution if status update fails, but do not hide
+            # it either: a swallowed 422 used to leave the flow looking green
+            # while GitHub showed no check at all (issue #175).
             logger.error(
                 f"[CommitStatus] FAILED to update: {e}",
                 exc_info=True,
+            )
+            sha_label = self._commit_sha[:8] if self._commit_sha else "unknown"
+            await self._emit_execution_warning(
+                f"Commit status '{state}' could not be posted to {status_target} "
+                f"for commit {sha_label}: {_exception_message(e)}",
+                details={
+                    "state": state,
+                    "commit_sha": self._commit_sha,
+                    "target": status_target,
+                },
             )
 
     @staticmethod
@@ -1152,12 +1302,20 @@ class FlowExecutionOrchestrator:
             logger.debug(f"Error extracting PR branch: {e}")
             return None
 
-    def _resolve_trigger_project_id(self) -> Optional[str]:
+    def _resolve_trigger_project_id(
+        self, *, allow_first_project_fallback: bool = True
+    ) -> Optional[str]:
         """Resolve the project that triggered this execution.
 
         Prefer the repository from the webhook payload (e.g. the MR's project)
         over the first entry in flow.trigger_project_ids, which may be a
         different repo when the flow watches multiple projects.
+
+        Args:
+            allow_first_project_fallback: When False, return None instead of
+                falling back to ``flow.trigger_project_ids[0]``. Callers that
+                address a specific repository (commit statuses) need this,
+                because a wrong repo is worse than no repo.
         """
         project_id = self.trigger_event_data.get("project_id")
         if project_id:
@@ -1171,6 +1329,9 @@ class FlowExecutionOrchestrator:
         if resolved:
             logger.info(f"Resolved trigger project from event payload: {resolved}")
             return resolved
+
+        if not allow_first_project_fallback:
+            return None
 
         if self.flow.trigger_project_ids:
             fallback = str(self.flow.trigger_project_ids[0])

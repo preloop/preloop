@@ -126,6 +126,24 @@ across renames and re-onboarding.
 
 ### Fixed
 
+- **Commit statuses post to the repository that triggered the flow** (#175): a
+  flow watching several projects always posted its GitHub check to
+  `trigger_project_ids[0]`, so a push or pull request in any other watched
+  repository targeted the wrong repository and the provider rejected the call
+  with `422 No commit found for SHA`. The failure was swallowed, so the run
+  still looked healthy while no check ever appeared. The project is now
+  resolved from the repository that actually triggered the execution. When the
+  triggering repository cannot be matched to a Preloop project, Preloop refuses
+  to guess and skips the status instead of posting to an unrelated repository,
+  and every skip or provider failure is surfaced as a warning on the execution
+  timeline rather than only in the server log.
+- **Dashboard Recent Flow Executions dismiss control stays reachable** (#174):
+  a long error message, typically a git clone failure containing an unbreakable
+  repository URL, widened the text column past the card and pushed the dismiss
+  button outside it, so a failed run could not be cleared from the dashboard.
+  The text column can now shrink, long URLs and paths wrap, the message is
+  capped at three lines with the full text available on hover, and the status
+  tag, links, and dismiss button keep their size at every viewport width.
 - **Managed agents report their real product kind** (#123): Cursor, Windsurf,
   VS Code, Antigravity, and Devin agents all recorded `agent_kind` as
   `desktop_agent` (or `custom` when created via `POST /api/v1/agents`), because
