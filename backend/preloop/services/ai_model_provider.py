@@ -466,7 +466,6 @@ async def _get_anthropic_models(api_key: Optional[str] = None) -> ModelDiscovery
                 "unauthorized",
                 "authentication",
                 "invalid_api_key",
-                "api_key",
             ]
         ) or any(
             keyword in error_type
@@ -551,7 +550,6 @@ async def _get_google_models(api_key: Optional[str] = None) -> ModelDiscoveryRes
                 "unauthenticated",
                 "permission",
                 "invalid",
-                "api_key",
                 "api key",
             ]
         ) or any(

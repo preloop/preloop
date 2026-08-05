@@ -390,6 +390,27 @@ class TestGetAnthropicModels:
                 await _get_anthropic_models("invalid_key")
 
     @pytest.mark.asyncio
+    async def test_get_anthropic_models_url_with_api_key_param_is_not_auth(self):
+        """A URL carrying an api_key query param must not be read as an auth failure.
+
+        Regression: "api_key" was a substring keyword, so any connection error
+        whose text embedded such a URL was misreported as an invalid key.
+        """
+        with patch("anthropic.AsyncAnthropic") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(
+                side_effect=Exception(
+                    "Connection refused: https://proxy.internal/v1/models?api_key=redacted"
+                )
+            )
+            mock_client.return_value = mock_instance
+
+            result = await _get_anthropic_models("valid_key")
+
+        assert result.source == "fallback"
+        assert result.error == "unknown"
+
+    @pytest.mark.asyncio
     async def test_get_anthropic_models_import_error(self):
         """Missing SDK: fallback catalog with an sdk_missing reason."""
         anthropic_module = sys.modules.pop("anthropic", None)
@@ -525,6 +546,27 @@ class TestGetGoogleModels:
         ):
             with pytest.raises(ValueError, match="Invalid Google API key"):
                 await _get_google_models("invalid_key")
+
+    @pytest.mark.asyncio
+    async def test_get_google_models_url_with_api_key_param_is_not_auth(self):
+        """A URL carrying an api_key query param must not be read as an auth failure."""
+        mock_google = MagicMock()
+        mock_genai = MagicMock()
+        mock_genai.list_models = MagicMock(
+            side_effect=Exception(
+                "Connection refused: https://proxy.internal/v1beta/models?api_key=redacted"
+            )
+        )
+        mock_google.generativeai = mock_genai
+
+        with patch.dict(
+            sys.modules,
+            {"google": mock_google, "google.generativeai": mock_genai},
+            clear=False,
+        ):
+            result = await _get_google_models("valid_key")
+
+        assert result.source == "fallback"
 
     @pytest.mark.asyncio
     async def test_get_google_models_import_error(self):

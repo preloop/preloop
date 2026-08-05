@@ -78,11 +78,6 @@ const PROVIDER_DEFAULT_ENDPOINTS: Record<string, string> = {
 const ENDPOINT_LISTED_PROVIDERS = ['openai-compatible', 'custom', 'openrouter'];
 
 /**
- * Human wording for the short safe reason codes the server sends when a live
- * model listing fails and a static fallback list stands in. Codes only, never
- * raw provider text: upstream messages can carry endpoints or key fragments.
- */
-/**
  * Human wording for the server's fixed fallback-reason vocabulary.
  *
  * Keys must stay in step with `AvailableModelsFallbackReason` in api.ts, which
