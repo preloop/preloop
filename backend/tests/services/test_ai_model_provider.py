@@ -6,12 +6,24 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from preloop.services.ai_model_provider import (
     get_available_models_for_provider,
+    DEEPSEEK_KNOWN_MODELS,
     _get_openai_models,
     _get_anthropic_models,
     _get_google_models,
     _get_qwen_models,
     _get_deepseek_models,
 )
+
+
+def _models_response(*model_ids):
+    """Build an OpenAI-shaped ``models.list()`` response."""
+    response = MagicMock()
+    response.data = []
+    for model_id in model_ids:
+        entry = MagicMock()
+        entry.id = model_id
+        response.data.append(entry)
+    return response
 
 
 class TestGetAvailableModelsForProvider:
@@ -390,16 +402,20 @@ class TestGetQwenModels:
         assert "qwen-max" in result
 
     @pytest.mark.asyncio
-    async def test_get_qwen_models_with_valid_key(self):
-        """Test validation with valid API key."""
+    async def test_get_qwen_models_with_valid_key_returns_live_list(self):
+        """A valid key returns what Qwen actually serves, not the fallback."""
         with patch("openai.AsyncOpenAI") as mock_client:
             mock_instance = MagicMock()
-            mock_instance.models.list = AsyncMock(return_value=MagicMock())
+            mock_instance.models.list = AsyncMock(
+                return_value=_models_response("qwen3-max", "qwen3.5-plus")
+            )
             mock_client.return_value = mock_instance
 
             result = await _get_qwen_models("valid_key")
 
-            assert "qwen-plus" in result
+            assert result == ["qwen3-max", "qwen3.5-plus"]
+            # The stale bundled catalog must not leak into a live answer.
+            assert "qwq-32b-preview" not in result
             mock_client.assert_called_once()
             # Verify it's using Qwen's base URL
             call_kwargs = mock_client.call_args[1]
@@ -407,6 +423,18 @@ class TestGetQwenModels:
                 call_kwargs["base_url"]
                 == "https://dashscope.aliyuncs.com/compatible-mode/v1"
             )
+
+    @pytest.mark.asyncio
+    async def test_get_qwen_models_empty_live_list_falls_back(self):
+        """An empty listing is a proxy quirk, not a reason for an empty picker."""
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(return_value=_models_response())
+            mock_client.return_value = mock_instance
+
+            result = await _get_qwen_models("valid_key")
+
+            assert "qwen-plus" in result
 
     @pytest.mark.asyncio
     async def test_get_qwen_models_authentication_error(self):
@@ -453,20 +481,62 @@ class TestGetDeepSeekModels:
         assert "deepseek-reasoner" in result
 
     @pytest.mark.asyncio
-    async def test_get_deepseek_models_with_valid_key(self):
-        """Test validation with valid API key."""
+    async def test_keyless_catalog_includes_v4_models(self):
+        """The bundled catalog must not hide models litellm already prices."""
+        result = await _get_deepseek_models(None)
+        assert "deepseek-v4-flash" in result
+        assert "deepseek-v4-pro" in result
+
+    @pytest.mark.asyncio
+    async def test_keyless_catalog_entries_are_priced(self):
+        """Every fallback id should resolve in the bundled price table.
+
+        This is what keeps the hardcoded list honest as DeepSeek ships models.
+        """
+        import json
+
+        from preloop.services.model_price_catalog import CATALOG_PATH
+
+        prices = json.loads(CATALOG_PATH.read_text())
+        for model_id in DEEPSEEK_KNOWN_MODELS:
+            assert model_id in prices, f"{model_id} missing from model_prices.json"
+
+    @pytest.mark.asyncio
+    async def test_get_deepseek_models_with_valid_key_returns_live_list(self):
+        """A valid key returns the live catalog, which is the point of #171.
+
+        The old code called models.list() purely to validate the key and threw
+        the response away, so deepseek-v4-* stayed invisible in the console.
+        """
         with patch("openai.AsyncOpenAI") as mock_client:
             mock_instance = MagicMock()
-            mock_instance.models.list = AsyncMock(return_value=MagicMock())
+            mock_instance.models.list = AsyncMock(
+                return_value=_models_response(
+                    "deepseek-v4-flash", "deepseek-chat", "deepseek-v4-flash"
+                )
+            )
+            mock_client.return_value = mock_instance
+
+            result = await _get_deepseek_models("valid_key")
+
+            # Sorted and de-duplicated.
+            assert result == ["deepseek-chat", "deepseek-v4-flash"]
+            mock_client.assert_called_once()
+            # Verify it's using DeepSeek's base URL
+            call_kwargs = mock_client.call_args[1]
+            assert call_kwargs["base_url"] == "https://api.deepseek.com/v1"
+
+    @pytest.mark.asyncio
+    async def test_get_deepseek_models_empty_live_list_falls_back(self):
+        """An empty listing falls back rather than emptying the picker."""
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(return_value=_models_response())
             mock_client.return_value = mock_instance
 
             result = await _get_deepseek_models("valid_key")
 
             assert "deepseek-chat" in result
-            mock_client.assert_called_once()
-            # Verify it's using DeepSeek's base URL
-            call_kwargs = mock_client.call_args[1]
-            assert call_kwargs["base_url"] == "https://api.deepseek.com/v1"
 
     @pytest.mark.asyncio
     async def test_get_deepseek_models_authentication_error(self):
