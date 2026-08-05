@@ -20,6 +20,28 @@ logger = logging.getLogger(__name__)
 
 ModelKind = Literal["llm", "stt", "tts"]
 
+
+class ProviderAuthError(ValueError):
+    """The provider rejected the caller's API key.
+
+    Subclasses ValueError so existing callers that catch ValueError keep
+    working; the endpoint layer maps this to HTTP 401.
+    """
+
+
+class ProviderValidationError(ValueError):
+    """The request was invalid before any provider was contacted.
+
+    Covers bad model_kind values and rejected discovery endpoints (including
+    SSRF blocks). Subclasses ValueError so existing callers that catch
+    ValueError keep working; the endpoint layer maps this to HTTP 400.
+    """
+
+
+# Upper bound, in seconds, on any single live model-listing HTTP call so a
+# hung provider endpoint cannot stall the discovery request indefinitely.
+MODEL_DISCOVERY_TIMEOUT_SECONDS = 15.0
+
 # Provider names that mean "an OpenAI-compatible endpoint the user configured".
 # These have no fixed catalog: the model list has to come from the endpoint's
 # own GET /models (issue #171).
@@ -96,7 +118,7 @@ def _fallback(models: List[str], error: Optional[str] = None) -> ModelDiscoveryR
     return ModelDiscoveryResult(models=models, source="fallback", error=error)
 
 
-def _classify_fetch_error(exc: BaseException) -> str:
+def _classify_fetch_error(exc: Exception) -> str:
     """Map a live-fetch failure to a short safe reason.
 
     Classification is by exception TYPE NAME only: the message is never
@@ -180,7 +202,7 @@ async def get_available_models_for_provider(
     provider = provider.lower()
     normalized_model_kind = model_kind.lower()
     if normalized_model_kind not in {"llm", "stt", "tts"}:
-        raise ValueError("model_kind must be one of llm, stt, or tts")
+        raise ProviderValidationError("model_kind must be one of llm, stt, or tts")
 
     supported_kinds = SUPPORTED_AUDIO_PROVIDER_KINDS.get(provider, {"llm"})
     if normalized_model_kind not in supported_kinds:
@@ -238,14 +260,14 @@ def validate_discovery_endpoint(api_endpoint: str) -> str:
     """
     raw = (api_endpoint or "").strip()
     if not raw:
-        raise ValueError("api_endpoint is required for this provider")
+        raise ProviderValidationError("api_endpoint is required for this provider")
 
     parts = urlsplit(raw)
     if parts.scheme not in {"http", "https"}:
-        raise ValueError("api_endpoint must be an http(s) URL")
+        raise ProviderValidationError("api_endpoint must be an http(s) URL")
     host = (parts.hostname or "").strip()
     if not host:
-        raise ValueError("api_endpoint must include a host")
+        raise ProviderValidationError("api_endpoint must include a host")
 
     try:
         ip = ipaddress.ip_address(host)
@@ -253,7 +275,9 @@ def validate_discovery_endpoint(api_endpoint: str) -> str:
         # A DNS name. Block the obvious loopback aliases; anything else is
         # allowed, matching how api_endpoint is treated elsewhere.
         if host.lower() in {"localhost", "localhost.localdomain"}:
-            raise ValueError("api_endpoint must not point at a private address")
+            raise ProviderValidationError(
+                "api_endpoint must not point at a private address"
+            )
         return raw
 
     if (
@@ -264,7 +288,9 @@ def validate_discovery_endpoint(api_endpoint: str) -> str:
         or ip.is_multicast
         or ip.is_unspecified
     ):
-        raise ValueError("api_endpoint must not point at a private address")
+        raise ProviderValidationError(
+            "api_endpoint must not point at a private address"
+        )
     return raw
 
 
@@ -287,15 +313,18 @@ async def _get_openai_compatible_models(
             api_key=api_key or "placeholder",
             base_url=base_url,
             max_retries=1,
-            timeout=15.0,
+            timeout=MODEL_DISCOVERY_TIMEOUT_SECONDS,
         )
-        response = await client.models.list()
+        # The SDK's __aenter__ returns the client itself; the context manager
+        # closes the underlying HTTP connection pool on exit.
+        async with client:
+            response = await client.models.list()
     except AuthenticationError as e:
         # Do not log the key or the full request URL: a key passed as a query
         # param would otherwise land in logs (see the api_key handling in the
         # endpoint layer).
         logger.warning("Authentication failed listing models from %s", base_url)
-        raise ValueError(
+        raise ProviderAuthError(
             "Invalid API key for this endpoint. Please check your API key and "
             "try again."
         ) from e
@@ -395,8 +424,8 @@ async def _get_openai_models(api_key: Optional[str] = None) -> ModelDiscoveryRes
 
         # Use provided API key or fall back to environment variable
         client = AsyncOpenAI(api_key=api_key) if api_key else AsyncOpenAI()
-
-        models_response = await client.models.list()
+        async with client:
+            models_response = await client.models.list()
         models = models_response.data
 
         chat_models = [
@@ -412,7 +441,7 @@ async def _get_openai_models(api_key: Optional[str] = None) -> ModelDiscoveryRes
     except AuthenticationError as e:
         logger.warning("OpenAI authentication failed: %s", type(e).__name__)
         # Re-raise authentication errors so the user knows their API key is invalid
-        raise ValueError(
+        raise ProviderAuthError(
             "Invalid OpenAI API key. Please check your API key and try again."
         )
     except Exception as e:
@@ -453,7 +482,10 @@ async def _get_anthropic_models(api_key: Optional[str] = None) -> ModelDiscovery
 
     try:
         client = AsyncAnthropic(api_key=api_key)
-        page = await client.models.list(limit=1000)
+        # The SDK's __aenter__ returns the client itself; the context manager
+        # closes the underlying HTTP connection pool on exit.
+        async with client:
+            page = await client.models.list(limit=1000)
     except Exception as e:
         error_msg = str(e).lower()
         error_type = type(e).__name__.lower()
@@ -472,7 +504,7 @@ async def _get_anthropic_models(api_key: Optional[str] = None) -> ModelDiscovery
             for keyword in ["authentication", "permission", "unauthorized"]
         ):
             logger.warning("Anthropic authentication failed: %s", type(e).__name__)
-            raise ValueError(
+            raise ProviderAuthError(
                 "Invalid Anthropic API key. Please check your API key and try again."
             )
         logger.warning(
@@ -492,6 +524,38 @@ async def _get_anthropic_models(api_key: Optional[str] = None) -> ModelDiscovery
 
 # Fallback catalog used when the Google listing call cannot be made.
 # Provenance: hand-curated current Gemini ids, no deprecated preview/exp names.
+def _build_scoped_google_client(api_key: str) -> Optional[object]:
+    """Build a Gemini model client bound to ``api_key`` only, or None.
+
+    ``genai.configure(api_key=...)`` mutates PROCESS-GLOBAL SDK state, so two
+    concurrent discovery requests for different accounts can race and one
+    account's listing can be made with the other's key. Building a per-call
+    client keeps the key on the call stack instead.
+
+    The pinned SDK (google-generativeai 0.8.x) has no ``genai.Client``, but
+    ``genai.list_models`` accepts a ``client`` argument, and the underlying
+    ``ModelServiceClient`` takes a per-instance api_key through
+    ``ClientOptions``. Returns None when that construction is unavailable, so
+    the caller can fall back rather than lose listing entirely.
+    """
+    try:
+        import google.ai.generativelanguage as glm
+        from google.api_core import client_options as client_options_lib
+
+        return glm.ModelServiceClient(
+            client_options=client_options_lib.ClientOptions(api_key=api_key)
+        )
+    except Exception as e:
+        # Never log the key or the exception text; the type name is enough to
+        # tell an operator which construction path is unavailable.
+        logger.debug(
+            "Key-scoped Google client unavailable (%s), falling back to "
+            "process-global configure()",
+            type(e).__name__,
+        )
+        return None
+
+
 GOOGLE_FALLBACK_MODELS = [
     "gemini-2.5-pro",
     "gemini-2.5-flash",
@@ -518,15 +582,24 @@ async def _get_google_models(api_key: Optional[str] = None) -> ModelDiscoveryRes
         return _fallback(GOOGLE_FALLBACK_MODELS, ERROR_SDK_MISSING)
 
     try:
-        genai.configure(api_key=api_key)
-
         fetched_models = []
         list_models = getattr(genai, "list_models", None)
         if not callable(list_models):
             logger.warning("genai.list_models unavailable, using bundled fallback")
             return _fallback(GOOGLE_FALLBACK_MODELS, ERROR_SDK_MISSING)
 
-        for model in list_models():
+        scoped_client = _build_scoped_google_client(api_key)
+        if scoped_client is not None:
+            listing = list_models(client=scoped_client)
+        else:
+            # No key-scoped client available: fall back to the process-global
+            # configure() so listing keeps working on older/newer SDKs. This
+            # path carries the cross-request contamination risk described in
+            # _build_scoped_google_client.
+            genai.configure(api_key=api_key)
+            listing = list_models()
+
+        for model in listing:
             model_name = getattr(model, "name", "")
             supported_methods = set(
                 getattr(model, "supported_generation_methods", []) or []
@@ -563,7 +636,7 @@ async def _get_google_models(api_key: Optional[str] = None) -> ModelDiscoveryRes
             ]
         ):
             logger.warning("Google authentication failed: %s", type(e).__name__)
-            raise ValueError(
+            raise ProviderAuthError(
                 "Invalid Google API key. Please check your API key and try again."
             )
         logger.warning(
@@ -609,12 +682,15 @@ async def _get_catalog_provider_models(
             api_key=api_key,
             base_url=base_url,
             max_retries=1,
-            timeout=15.0,
+            timeout=MODEL_DISCOVERY_TIMEOUT_SECONDS,
         )
-        response = await client.models.list()
+        # The SDK's __aenter__ returns the client itself; the context manager
+        # closes the underlying HTTP connection pool on exit.
+        async with client:
+            response = await client.models.list()
     except AuthenticationError as e:
         logger.warning("%s authentication failed: %s", provider_label, type(e).__name__)
-        raise ValueError(
+        raise ProviderAuthError(
             f"Invalid {provider_label} API key. Please check your API key and "
             "try again."
         ) from e

@@ -4650,8 +4650,14 @@ class OpenAIGatewayService:
                     ),
                 )
             except Exception:
-                # Admin alert is best-effort; never block error mapping.
-                pass
+                # Admin alert is best-effort; never block error mapping. Logged
+                # at debug so a systematically failing notifier (or a broken
+                # lazy import above) leaves a breadcrumb instead of vanishing.
+                logger.debug(
+                    "Admin notification for gateway %s error failed",
+                    status_code,
+                    exc_info=True,
+                )
 
         return ModelGatewayAPIError(
             provider=provider,

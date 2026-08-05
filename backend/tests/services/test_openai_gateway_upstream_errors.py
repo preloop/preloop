@@ -264,6 +264,79 @@ def test_normalize_plain_message_unchanged():
     assert err.to_payload()["error"].get("provider_detail") is None
 
 
+# The exact wire text litellm 1.81.13 produces for an invalid Gemini key. It
+# was captured by executing `litellm.completion(model="gemini/...")` against
+# the real endpoint with a bogus key, not hand-written, so this test tracks
+# what the provider actually sends: a Google JSON envelope nested inside the
+# "GeminiException - " marker, with the useful sentence three levels down.
+_GEMINI_AUTH_BLOB = """litellm.AuthenticationError: GeminiException - {
+  "error": {
+    "code": 400,
+    "message": "API key not valid. Please pass a valid API key.",
+    "status": "INVALID_ARGUMENT",
+    "details": [
+      {
+        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+        "reason": "API_KEY_INVALID",
+        "domain": "googleapis.com",
+        "metadata": {
+          "service": "generativelanguage.googleapis.com"
+        }
+      },
+      {
+        "@type": "type.googleapis.com/google.rpc.LocalizedMessage",
+        "locale": "en-US",
+        "message": "API key not valid. Please pass a valid API key."
+      }
+    ]
+  }
+}"""
+
+
+def test_normalize_gemini_error_lifts_google_envelope():
+    """Gemini/Google was the untested provider in the surfacing path.
+
+    Google nests the human sentence inside a JSON envelope that also carries
+    type URLs, a reason code and a service domain. The user must get the
+    sentence, not the envelope.
+    """
+    err = OpenAIGatewayService._normalize_upstream_error(
+        "gemini", _FakeHTTPError(_GEMINI_AUTH_BLOB, status_code=401)
+    )
+    assert err.message == "API key not valid. Please pass a valid API key."
+    # None of the envelope scaffolding may reach the user.
+    assert "GeminiException" not in err.message
+    assert "litellm." not in err.message
+    assert "type.googleapis.com" not in err.message
+    assert "API_KEY_INVALID" not in err.message
+    assert "generativelanguage.googleapis.com" not in err.message
+    assert err.to_payload()["error"]["message"] == (
+        "API key not valid. Please pass a valid API key."
+    )
+
+
+def test_normalize_gemini_quota_error_surfaces_sentence_and_hint():
+    """The other common Gemini failure: quota exhaustion mid-incident."""
+    blob = (
+        "litellm.RateLimitError: GeminiException - "
+        '{"error": {"code": 429, "message": "Resource has been exhausted '
+        '(e.g. check quota).", "status": "RESOURCE_EXHAUSTED"}}'
+    )
+    err = OpenAIGatewayService._normalize_upstream_error(
+        "gemini", _FakeHTTPError(blob, status_code=429)
+    )
+    assert err.message == "Resource has been exhausted (e.g. check quota)."
+    assert "RESOURCE_EXHAUSTED" not in err.message
+    # The provider marker is kept on the error object as a short hint...
+    assert err.provider_detail == "gemini"
+    # ...but deliberately does NOT appear in the Gemini response body, which
+    # must stay Google's native {code, message, status} envelope. Only the
+    # OpenAI-shaped payload carries provider_detail.
+    payload = err.to_payload()
+    assert set(payload["error"]) == {"code", "message", "status"}
+    assert payload["error"]["code"] == 429
+
+
 class TestNotifyAdminsTraceScrubbing:
     """Regression: the admin notification in _normalize_upstream_error must
     scrub secrets from the exception trace and cap its length."""

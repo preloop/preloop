@@ -504,6 +504,10 @@ class TestGetGoogleModels:
 
             assert result.source == "live"
             assert result.models == ["gemini-3.0-pro"]
+            # Under a fully mocked google package the key-scoped client cannot
+            # be constructed, so this exercises the documented fallback path:
+            # process-global configure(). The scoped path (which must NOT call
+            # configure) is covered by the real-SDK tests below.
             mock_genai.configure.assert_called_once_with(api_key="valid_key")
             # No paid generate_content validation ping.
             mock_genai.GenerativeModel.assert_not_called()
@@ -602,6 +606,63 @@ class TestGetGoogleModels:
             assert result.models == GOOGLE_FALLBACK_MODELS
             assert result.source == "fallback"
             assert result.error in FALLBACK_ERROR_REASONS
+
+    @pytest.mark.asyncio
+    async def test_scoped_google_client_isolates_keys(self):
+        """The key must live on a per-call client, not in global SDK state.
+
+        genai.configure() mutates PROCESS-GLOBAL state, so two concurrent
+        discovery requests for different accounts could race and list one
+        account's models with the other's key. These assertions run against
+        the REAL SDK: a fully mocked google package makes the scoped client
+        unconstructible, which is why the mocked tests above cannot cover it.
+        """
+        from preloop.services.ai_model_provider import _build_scoped_google_client
+
+        first = _build_scoped_google_client("AIza-key-one")
+        second = _build_scoped_google_client("AIza-key-two")
+        if first is None or second is None:
+            pytest.skip("google.ai.generativelanguage not available")
+
+        assert first is not second
+        assert first.transport._credentials.token == "AIza-key-one"
+        assert second.transport._credentials.token == "AIza-key-two"
+
+    @pytest.mark.asyncio
+    async def test_live_listing_does_not_touch_global_configure(self):
+        """Regression: the scoped path must never call genai.configure()."""
+        import google.generativeai as real_genai
+        from preloop.services import ai_model_provider as module
+
+        if module._build_scoped_google_client("AIza-probe") is None:
+            pytest.skip("google.ai.generativelanguage not available")
+
+        configure_calls = []
+        captured = {}
+
+        def fake_list_models(client=None):
+            captured["client"] = client
+            entry = MagicMock()
+            entry.name = "models/gemini-2.5-pro"
+            entry.supported_generation_methods = ["generateContent"]
+            return [entry]
+
+        with (
+            patch.object(
+                real_genai,
+                "configure",
+                side_effect=lambda **kw: configure_calls.append(kw),
+            ),
+            patch.object(real_genai, "list_models", side_effect=fake_list_models),
+        ):
+            result = await _get_google_models("AIza-scoped-key")
+
+        assert result.source == "live"
+        assert result.models == ["gemini-2.5-pro"]
+        # The whole point: global state was never mutated.
+        assert configure_calls == []
+        # ...and the key travelled on the per-call client instead.
+        assert captured["client"].transport._credentials.token == "AIza-scoped-key"
 
 
 class TestGetQwenModels:
@@ -831,6 +892,20 @@ class TestGetMoonshotModels:
             assert call_kwargs["base_url"] == "https://api.moonshot.ai/v1"
 
     @pytest.mark.asyncio
+    async def test_empty_live_list_falls_back(self):
+        """A listing with zero models must yield the bundled catalog, not []."""
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(return_value=_models_response())
+            mock_client.return_value = mock_instance
+
+            result = await _get_moonshot_models("valid_key")
+
+            assert result.models == MOONSHOT_KNOWN_MODELS
+            assert result.source == "fallback"
+            assert result.error == "empty_response"
+
+    @pytest.mark.asyncio
     async def test_authentication_error(self):
         from openai import AuthenticationError
 
@@ -885,6 +960,20 @@ class TestGetZaiModels:
             assert result.models == ["glm-5", "glm-5.2"]
             call_kwargs = mock_client.call_args[1]
             assert call_kwargs["base_url"] == "https://api.z.ai/api/paas/v4"
+
+    @pytest.mark.asyncio
+    async def test_empty_live_list_falls_back(self):
+        """A listing with zero models must yield the bundled catalog, not []."""
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(return_value=_models_response())
+            mock_client.return_value = mock_instance
+
+            result = await _get_zai_models("valid_key")
+
+            assert result.models == ZAI_KNOWN_MODELS
+            assert result.source == "fallback"
+            assert result.error == "empty_response"
 
     @pytest.mark.asyncio
     async def test_authentication_error(self):
@@ -943,6 +1032,20 @@ class TestGetMistralModels:
             assert result.models == ["codestral-2508", "mistral-large-3"]
             call_kwargs = mock_client.call_args[1]
             assert call_kwargs["base_url"] == "https://api.mistral.ai/v1"
+
+    @pytest.mark.asyncio
+    async def test_empty_live_list_falls_back(self):
+        """A listing with zero models must yield the bundled catalog, not []."""
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(return_value=_models_response())
+            mock_client.return_value = mock_instance
+
+            result = await _get_mistral_models("valid_key")
+
+            assert result.models == MISTRAL_KNOWN_MODELS
+            assert result.source == "fallback"
+            assert result.error == "empty_response"
 
     @pytest.mark.asyncio
     async def test_authentication_error(self):

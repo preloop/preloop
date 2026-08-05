@@ -42,7 +42,11 @@ from preloop.schemas.gateway_usage import (
 from preloop.services.model_gateway_usage import ModelGatewayUsageService
 from preloop.services.runtime_session_explorer import RuntimeSessionExplorerService
 from preloop.utils.permissions import require_permission
-from preloop.services.ai_model_provider import get_available_models_for_provider
+from preloop.services.ai_model_provider import (
+    ProviderAuthError,
+    ProviderValidationError,
+    get_available_models_for_provider,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -452,12 +456,28 @@ async def _fetch_provider_models(
             source=result.source,
             error=result.error,
         )
-    except ValueError as e:
-        # ValueError is raised for authentication and validation errors. The
-        # message is provider text, never the key.
+    except ProviderAuthError as e:
+        # The provider rejected the caller's API key. The message is our own
+        # fixed text, never the key.
         logger.warning("Cannot list models for provider %s: %s", provider, e)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(e),
+        )
+    except ProviderValidationError as e:
+        # The request was invalid before any provider was contacted (bad
+        # model_kind, rejected or SSRF-blocked endpoint).
+        logger.warning("Cannot list models for provider %s: %s", provider, e)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except ValueError as e:
+        # An unexpected internal ValueError. Treat it as a bad request:
+        # calling it "unauthorized" would mislabel non-auth failures.
+        logger.warning("Cannot list models for provider %s: %s", provider, e)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         )
     except Exception as e:
