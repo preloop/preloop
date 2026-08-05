@@ -244,6 +244,40 @@ class AIModelCredentialExportResponse(BaseModel):
     account_id: Optional[str] = None
 
 
+class AvailableModelsRequest(BaseModel):
+    """Discovery request for a provider's model catalog.
+
+    The API key is carried in the body rather than the query string on
+    purpose: as a query parameter it was written to access logs in plaintext
+    and leaked live provider keys.
+    """
+
+    api_key: Optional[str] = Field(
+        None,
+        description=(
+            "Provider API key used to list models. Never logged and never "
+            "persisted by this endpoint."
+        ),
+    )
+    api_endpoint: Optional[str] = Field(
+        None,
+        description=(
+            "Base URL of an OpenAI-compatible endpoint, e.g. "
+            "https://openrouter.ai/api/v1. Required for the "
+            "'openai-compatible' and 'custom' providers, which have no fixed "
+            "model catalog."
+        ),
+    )
+    model_kind: Literal["llm", "stt", "tts"] = Field(
+        "llm", description="Model service kind to fetch"
+    )
+
+    @field_serializer("api_key")
+    def _hide_api_key(self, value: Optional[str]) -> Optional[str]:
+        """Keep the key out of any serialized copy of this model (logs, traces)."""
+        return "***" if value else value
+
+
 class AIModelGatewayUsageSummaryResponse(BaseModel):
     """Gateway usage summary for one durable AI model."""
 

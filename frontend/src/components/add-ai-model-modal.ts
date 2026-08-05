@@ -44,6 +44,13 @@ const PROVIDER_OPTIONS: ProviderOption[] = [
 ];
 
 /**
+ * Providers with no fixed model catalog: their models are listed from the
+ * user-supplied endpoint's own OpenAI-compatible GET /models, so an endpoint
+ * has to be entered before fetching can work.
+ */
+const ENDPOINT_LISTED_PROVIDERS = ['openai-compatible', 'custom'];
+
+/**
  * Reusable AI model add/edit dialog.
  *
  * Usage:
@@ -316,12 +323,14 @@ export class AddAIModelModal extends LitElement {
 
   private async _fetchModelSuggestionsForProvider(
     provider: string,
-    apiKey?: string
+    apiKey?: string,
+    apiEndpoint?: string
   ): Promise<string[]> {
     return await getAvailableModelsForProvider(
       provider,
       apiKey,
-      this._selectedServiceKind
+      this._selectedServiceKind,
+      apiEndpoint
     );
   }
 
@@ -331,13 +340,24 @@ export class AddAIModelModal extends LitElement {
       return;
     }
 
+    const provider = this._currentModel.provider_name;
+    const apiEndpoint = this._currentModel.api_endpoint?.trim();
+    // These providers have no fixed catalog: the list comes from the
+    // endpoint's own /models, so without an endpoint there is nothing to ask.
+    if (ENDPOINT_LISTED_PROVIDERS.includes(provider) && !apiEndpoint) {
+      this._modelsFetchError =
+        'Enter the API endpoint first, then fetch models';
+      return;
+    }
+
     this._isFetchingModels = true;
     this._modelsFetchError = null;
 
     try {
       this._modelSuggestions = await this._fetchModelSuggestionsForProvider(
-        this._currentModel.provider_name,
-        this._currentModel.api_key
+        provider,
+        this._currentModel.api_key,
+        apiEndpoint
       );
       if (this._modelSuggestions.length === 0) {
         this._modelsFetchError = `No ${this._selectedServiceKind.toUpperCase()} models available for this provider`;

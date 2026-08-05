@@ -5987,6 +5987,141 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/ai-models/providers/{provider}/available-models:
+    post:
+      tags:
+      - AI Models
+      - AI Models
+      summary: Get Available Models for Provider
+      description: 'Fetch available models from the specified AI provider.
+
+
+        For OpenAI, this fetches the latest available models from their API. For
+
+        Anthropic and Google this returns a curated list of known models. For
+
+        openai-compatible / custom / openrouter providers, the configured
+
+        ``api_endpoint`` is queried for its OpenAI-compatible model list.
+
+
+        The provider API key travels in the request BODY, never the query string:
+
+        as a query parameter it was written to access logs in plaintext.'
+      operationId: list_provider_available_models_api_v1_ai_models_providers__provider__available_models_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: provider
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Provider
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/AvailableModelsRequest'
+              - type: 'null'
+              title: Request In
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+                title: Response List Provider Available Models Api V1 Ai Models Providers  Provider  Available
+                  Models Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - AI Models
+      - AI Models
+      summary: Get Available Models for Provider (deprecated)
+      description: 'Deprecated GET form, kept for clients that have not moved to POST
+        yet.
+
+
+        The api_key query parameter this endpoint used to accept has been REMOVED,
+
+        not merely deprecated: it wrote live provider keys into access logs in
+
+        plaintext. Pass the key in the X-Provider-Api-Key header, or use the POST
+
+        form. A key sent as a query parameter is ignored.'
+      operationId: get_provider_available_models_api_v1_ai_models_providers__provider__available_models_get
+      deprecated: true
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: provider
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Provider
+      - name: api_endpoint
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Base URL of an OpenAI-compatible endpoint, required for the
+            openai-compatible and custom providers.
+          title: Api Endpoint
+        description: Base URL of an OpenAI-compatible endpoint, required for the openai-compatible
+          and custom providers.
+      - name: model_kind
+        in: query
+        required: false
+        schema:
+          enum:
+          - llm
+          - stt
+          - tts
+          type: string
+          description: Model service kind to fetch
+          default: llm
+          title: Model Kind
+        description: Model service kind to fetch
+      - name: X-Provider-Api-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Provider API key. Headers are not written to access logs.
+          title: X-Provider-Api-Key
+        description: Provider API key. Headers are not written to access logs.
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+                title: Response Get Provider Available Models Api V1 Ai Models Providers  Provider  Available
+                  Models Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/audio/transcriptions:
     post:
       tags:
@@ -6501,75 +6636,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/ai-models/providers/{provider}/available-models:
-    get:
-      tags:
-      - AI Models
-      - AI Models
-      summary: Get Available Models for Provider
-      description: 'Fetch available models from the specified AI provider.
-
-
-        For OpenAI, this will fetch the latest available models from their API.
-
-        For Anthropic and Google, this returns a curated list of known models.
-
-
-        Note: This endpoint does not require authentication as it''s just fetching
-
-        publicly available model names. The api_key parameter is optional for
-
-        fetching live data from OpenAI.'
-      operationId: get_provider_available_models_api_v1_ai_models_providers__provider__available_models_get
-      parameters:
-      - name: provider
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Provider
-      - name: api_key
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Optional API key for fetching models
-          title: Api Key
-        description: Optional API key for fetching models
-      - name: model_kind
-        in: query
-        required: false
-        schema:
-          enum:
-          - llm
-          - stt
-          - tts
-          type: string
-          description: Model service kind to fetch
-          default: llm
-          title: Model Kind
-        description: Model service kind to fetch
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  type: string
-                title: Response Get Provider Available Models Api V1 Ai Models Providers  Provider  Available
-                  Models Get
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-      security:
-      - bearerAuth: []
   /api/v1/private/webhooks/{tracker_type}/{organization_id}:
     post:
       tags:
@@ -10485,6 +10551,42 @@ components:
       - challenge_token
       title: AuthenticationVerifyRequest
       description: Authenticator response for the authentication ceremony.
+    AvailableModelsRequest:
+      properties:
+        api_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Api Key
+          description: Provider API key used to list models. Never logged and never
+            persisted by this endpoint.
+        api_endpoint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Api Endpoint
+          description: Base URL of an OpenAI-compatible endpoint, e.g. https://openrouter.ai/api/v1.
+            Required for the 'openai-compatible' and 'custom' providers, which have
+            no fixed model catalog.
+        model_kind:
+          type: string
+          enum:
+          - llm
+          - stt
+          - tts
+          title: Model Kind
+          description: Model service kind to fetch
+          default: llm
+      type: object
+      title: AvailableModelsRequest
+      description: 'Discovery request for a provider''s model catalog.
+
+
+        The API key is carried in the body rather than the query string on
+
+        purpose: as a query parameter it was written to access logs in plaintext
+
+        and leaked live provider keys.'
     Body_diff_policy_api_v1_policies_diff_post:
       properties:
         file:
