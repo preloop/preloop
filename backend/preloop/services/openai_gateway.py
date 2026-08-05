@@ -5189,13 +5189,89 @@ class OpenAIGatewayService:
                 usage_source="partial" if has_partial_usage else None,
                 accumulated_output_text=accumulated_output_text,
             )
-        except Exception:  # pragma: no cover - defensive; never break teardown
-            logger.warning(
-                "Failed to record gateway usage after client disconnect",
-                exc_info=True,
+        except Exception as exc:  # pragma: no cover - defensive; never break teardown
+            # Catching alone is not enough: a failed flush poisons the session
+            # for anything that runs after this teardown. Roll back too.
+            self._rollback_activity_recording(
+                exc, context="gateway usage recording after client disconnect"
             )
 
+    def _rollback_activity_recording(self, exc: Exception, *, context: str) -> None:
+        """Restore the request's db session after a failed telemetry write.
+
+        The gateway shares one SQLAlchemy session between the response path and
+        the usage/activity bookkeeping. When a bookkeeping flush fails (for
+        example Postgres rejecting a JSONB value), the session enters a
+        pending-rollback state where every subsequent statement raises. Rolling
+        back here returns the session to a usable state so the caller can still
+        return the upstream response and any later query still works.
+
+        A separate session was considered and rejected: bookkeeping reads
+        objects (usage_row) that are live in this session, so a second session
+        would need them re-fetched or merged, which adds a query per request
+        and a new class of stale-read bug. Rollback is cheap, local, and keeps
+        the existing object graph valid.
+        """
+        try:
+            self.db.rollback()
+        except Exception:  # pragma: no cover - rollback of a dead connection
+            logger.warning("Failed to roll back the session after %s failed", context)
+        logger.warning(
+            "Skipped %s after %s; returning the upstream response unchanged",
+            context,
+            type(exc).__name__,
+        )
+
     def _record_gateway_request(
+        self,
+        *,
+        endpoint: str,
+        method: str,
+        status_code: int,
+        duration: float,
+        ai_model: AIModel,
+        requested_model: Optional[str],
+        response_payload: Optional[Dict[str, Any]],
+        upstream_response: Optional[Dict[str, Any]],
+        endpoint_kind: str,
+        budget_result: Optional[BudgetCheckResult] = None,
+        error_detail: Optional[str] = None,
+        error_class: Optional[str] = None,
+        request_payload: Optional[Dict[str, Any]] = None,
+        usage_source: Optional[str] = None,
+        accumulated_output_text: Optional[str] = None,
+    ) -> None:
+        """Persist one usage fact for a gateway request, never fatally.
+
+        Recording usage is bookkeeping. It runs on the request path and shares
+        the request's db session, so a failure here (a rejected JSONB value, a
+        constraint violation) would otherwise poison that session and turn an
+        upstream success into a customer-visible 502. Every caller, streaming
+        and non-streaming alike, gets that protection by going through this
+        wrapper rather than each site wrapping itself and one being forgotten.
+        """
+        try:
+            self._record_gateway_request_inner(
+                endpoint=endpoint,
+                method=method,
+                status_code=status_code,
+                duration=duration,
+                ai_model=ai_model,
+                requested_model=requested_model,
+                response_payload=response_payload,
+                upstream_response=upstream_response,
+                endpoint_kind=endpoint_kind,
+                budget_result=budget_result,
+                error_detail=error_detail,
+                error_class=error_class,
+                request_payload=request_payload,
+                usage_source=usage_source,
+                accumulated_output_text=accumulated_output_text,
+            )
+        except Exception as exc:
+            self._rollback_activity_recording(exc, context="gateway usage recording")
+
+    def _record_gateway_request_inner(
         self,
         *,
         endpoint: str,
@@ -5475,11 +5551,20 @@ class OpenAIGatewayService:
             total_tokens=total_tokens,
             estimated_cost=float(usage_row.estimated_cost or 0.0),
         )
-        ModelGatewayEventEmitter(self.db).emit_for_usage(
-            usage=usage_row,
-            request_payload=request_payload,
-            response_payload=response_payload,
-        )
+        try:
+            ModelGatewayEventEmitter(self.db).emit_for_usage(
+                usage=usage_row,
+                request_payload=request_payload,
+                response_payload=response_payload,
+            )
+        except Exception as exc:
+            # Bookkeeping must never turn a successful model call into a 502.
+            # A failed flush leaves the shared session in a pending-rollback
+            # state, so roll it back explicitly: catching the exception alone
+            # would let the poisoned session break every later query on this
+            # request. Log the exception TYPE only; the payload that triggered
+            # this can contain customer content.
+            self._rollback_activity_recording(exc, context="gateway activity event")
         try:
             GatewayUsageSearchService(self.db).auto_index_interaction(
                 usage=usage_row,

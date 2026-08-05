@@ -13,6 +13,7 @@ from ..models.flow_execution import FlowExecution
 from ..models.managed_agent import ManagedAgent
 from ..models.runtime_session import RuntimeSession
 from ..models.user import User
+from ...utils.jsonb_sanitize import sanitize_for_jsonb
 from .base import CRUDBase
 
 # Known ``meta_data.purpose`` tags for internal model-gateway usage rows.
@@ -229,7 +230,9 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             runtime_principal_id=runtime_principal_id,
             runtime_principal_name=runtime_principal_name,
             rate_limit_retry_after_ms=rate_limit_retry_after_ms,
-            meta_data=meta_data,
+            # error_detail here can carry raw upstream body text, which for a
+            # binary response contains NUL and would be rejected by JSONB.
+            meta_data=sanitize_for_jsonb(meta_data),
             timestamp=datetime.now(timezone.utc),
         )
 

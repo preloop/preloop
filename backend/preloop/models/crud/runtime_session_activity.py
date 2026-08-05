@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from ..models.managed_agent import ManagedAgent
 from ..models.runtime_session import RuntimeSession
 from ..models.runtime_session_activity import RuntimeSessionActivity
+from ...utils.jsonb_sanitize import sanitize_for_jsonb
 from .base import CRUDBase
 
 MAX_AGENT_CONTROL_MESSAGE_SUMMARY_LEN = 2000
@@ -86,7 +87,7 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             tool_name=tool_name,
             status=status,
             summary=summary,
-            metadata_=metadata,
+            metadata_=sanitize_for_jsonb(metadata),
             timestamp=activity_timestamp,
         )
         db.add(db_obj)
@@ -126,7 +127,7 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             activity_type="model_gateway_call",
             status=status,
             summary=summary,
-            metadata_=metadata,
+            metadata_=sanitize_for_jsonb(metadata),
             timestamp=activity_timestamp,
         )
         db.add(db_obj)
@@ -163,7 +164,7 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             activity_type="agent_control_message",
             status=status,
             summary=summary,
-            metadata_=metadata,
+            metadata_=sanitize_for_jsonb(metadata),
             timestamp=activity_timestamp,
         )
         db.add(db_obj)

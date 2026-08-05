@@ -322,6 +322,21 @@ class Settings(BaseSettings):
             "and untruncated; a cleaner follow-up is to read those directly.)"
         ),
     )
+    model_gateway_activity_max_body_chars: int = Field(
+        8192,
+        description=(
+            "Maximum characters retained per string inside the request and "
+            "response bodies embedded in runtime_session_activity metadata "
+            "(JSONB). This is deliberately tighter than "
+            "MODEL_GATEWAY_MAX_PREVIEW_CHARS because the UI never renders "
+            "these bodies in full: the transcript reads conversation_preview, "
+            "and the only direct consumers take a 300-character substring for "
+            "the activity preview or read request.tools. A gateway request "
+            "that returned a binary body once produced a 533KB activity row, "
+            "which is a database bloat and query-latency problem independent "
+            "of encoding. Tune via MODEL_GATEWAY_ACTIVITY_MAX_BODY_CHARS."
+        ),
+    )
     flow_execution_max_wait_seconds: int = Field(
         3600,
         description="Maximum wall-clock time to wait for one flow execution before failing it",
@@ -600,6 +615,9 @@ class Settings(BaseSettings):
             in ("true", "1", "t", "yes"),
             model_gateway_max_preview_chars=int(
                 os.getenv("MODEL_GATEWAY_MAX_PREVIEW_CHARS", "32768")
+            ),
+            model_gateway_activity_max_body_chars=int(
+                os.getenv("MODEL_GATEWAY_ACTIVITY_MAX_BODY_CHARS", "8192")
             ),
             flow_execution_max_wait_seconds=int(
                 os.getenv("FLOW_EXECUTION_MAX_WAIT_SECONDS", "3600")

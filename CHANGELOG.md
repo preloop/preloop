@@ -146,6 +146,23 @@ across renames and re-onboarding.
 
 ### Fixed
 
+- **Gateway no longer returns 502 when activity metadata contains binary
+  content**: an agent that fetched a gzip or otherwise binary URL through the
+  gateway could take down its own request. The response body was embedded into
+  `runtime_session_activity.metadata` (JSONB), Postgres rejected the NUL byte
+  it contained (`UntranslatableCharacter`), and because that insert shares the
+  request's database session, the failed flush left the session in a
+  pending-rollback state. A model call that had already succeeded upstream came
+  back to the customer as a 502, and later operations on the same session
+  failed too. Three changes: all activity and usage metadata is now sanitized
+  of NUL, control characters and lone surrogates (tab, newline and carriage
+  return are preserved) before any JSONB write; request and response bodies
+  stored in activity metadata are capped (default 8192 characters per string,
+  `MODEL_GATEWAY_ACTIVITY_MAX_BODY_CHARS`) with an explicit truncation marker,
+  since one incident row reached 533,682 characters; and usage recording is now
+  non-fatal, rolling the session back and logging the failure type so that
+  bookkeeping can never fail a request whose model call succeeded.
+
 - **Auxiliary model calls resolve credentials from the secret service**: nine
   internal sites (approval summaries, session/interaction titles, policy
   generation, agent name extraction, issue compliance/duplicates/dependencies)
