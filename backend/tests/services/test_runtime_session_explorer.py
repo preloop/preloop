@@ -531,7 +531,9 @@ def test_call_interaction_summary_model_parses_json(service):
         0
     ].message.content = '{"title": "T", "summary": "S", "risk_level": "low"}'
     with patch.object(rse_mod.litellm, "completion", return_value=completion):
-        result = service._call_interaction_summary_model(model=model, payload=payload)
+        result = service._call_interaction_summary_model(
+            model, {"api_key": "sk-test"}, payload=payload
+        )
     assert result["title"] == "T"
 
 
@@ -543,7 +545,9 @@ def test_call_interaction_summary_model_strips_code_fence(service):
         0
     ].message.content = '```json\n{"title": "T", "summary": "S"}\n```'
     with patch.object(rse_mod.litellm, "completion", return_value=completion):
-        result = service._call_interaction_summary_model(model=model, payload={})
+        result = service._call_interaction_summary_model(
+            model, {"api_key": "sk-test"}, payload={}
+        )
     assert result["title"] == "T"
 
 
@@ -554,7 +558,9 @@ def test_call_interaction_summary_model_rejects_non_object(service):
     completion.choices[0].message.content = "[1, 2, 3]"
     with patch.object(rse_mod.litellm, "completion", return_value=completion):
         with pytest.raises(ValueError):
-            service._call_interaction_summary_model(model=model, payload={})
+            service._call_interaction_summary_model(
+                model, {"api_key": "sk-test"}, payload={}
+            )
 
 
 # --- summarize_account_runtime_session_interaction -------------------------

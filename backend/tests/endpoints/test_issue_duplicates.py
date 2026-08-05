@@ -22,6 +22,7 @@ from preloop.schemas import (
     IssueUpdate,
 )
 from preloop.models.models.issue import Issue
+from preloop.services.secret_service import ResolvedModelCredentials
 
 
 @pytest.fixture
@@ -1399,3 +1400,151 @@ def test_check_or_create_issue_duplicate_creates_via_ai(
         )
 
     assert result == mock_created
+
+
+@patch("preloop.api.endpoints.issue_duplicates.openai.OpenAI")
+def test_get_resolution_suggestion_resolves_vault_credentials(
+    mock_openai_class: MagicMock, mocker: MockerFixture
+) -> None:
+    """A vault-backed model resolves its key instead of constructing a bare client.
+
+    Regression: this endpoint used to call openai.OpenAI() with no credentials, so
+    models using credentials_secret_id (no plaintext api_key column) silently 401'd.
+    The resolved key and the model's endpoint must both reach the client.
+    """
+    mock_issue = MagicMock()
+    mock_issue.project_id = str(uuid4())
+    mock_issue.title = "Title"
+    mock_issue.description = "Description"
+
+    mocker.patch(
+        "preloop.api.endpoints.issue_duplicates.crud_issue",
+        new_callable=MagicMock,
+    ).get.side_effect = [mock_issue, mock_issue]
+
+    mocker.patch(
+        "preloop.api.endpoints.issue_duplicates.get_accessible_projects",
+        return_value=[MagicMock()],
+    )
+
+    # Model with no plaintext api_key: credentials live in the secret backend.
+    vault_model = MagicMock(
+        model_identifier="gpt-5.4",
+        api_key=None,
+        api_endpoint="https://custom.example.com/v1",
+    )
+    mocker.patch(
+        "preloop.api.endpoints.issue_duplicates.crud_ai_model.get_default_active_model",
+        return_value=vault_model,
+    )
+
+    mocker.patch(
+        "preloop.api.endpoints.issue_duplicates.load_duplicates_prompts_config",
+        return_value={
+            "merge_issues_v1": {
+                "system": "You are a helper.",
+                "user": "Merge: {title1} {description1} | {title2} {description2}",
+            }
+        },
+    )
+
+    mock_secret_service = MagicMock()
+    mock_secret_service.resolve_ai_model_credentials.return_value = (
+        ResolvedModelCredentials(
+            credential_type="api_key",
+            backend_type="openbao_kv_v2",
+            value="sk-resolved-from-vault",
+        )
+    )
+    mocker.patch(
+        "preloop.services.model_credentials.get_secret_service",
+        return_value=mock_secret_service,
+    )
+
+    mock_client = MagicMock()
+    mock_openai_class.return_value = mock_client
+    mock_client.chat.completions.create.return_value = MagicMock(
+        choices=[
+            MagicMock(
+                message=MagicMock(
+                    content='{"merged_title": "Merged", "merged_description": "Desc", "explanation": "Combined"}'
+                )
+            )
+        ]
+    )
+
+    result = get_resolution_suggestion(
+        db=MagicMock(),
+        current_user=MagicMock(),
+        issue1_id=str(uuid4()),
+        issue2_id=str(uuid4()),
+        resolution="merged",
+        settings=MagicMock(PROMPTS_FILE="prompts.yaml"),
+    )
+
+    assert result.merged_title == "Merged"
+    mock_openai_class.assert_called_once_with(
+        api_key="sk-resolved-from-vault",
+        base_url="https://custom.example.com/v1",
+    )
+
+
+@patch("preloop.api.endpoints.issue_duplicates.openai.OpenAI")
+def test_get_resolution_suggestion_no_credentials_raises_500(
+    mock_openai_class: MagicMock, mocker: MockerFixture, monkeypatch
+) -> None:
+    """With no resolvable key and no env var, fail fast instead of calling out."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    mock_issue = MagicMock()
+    mock_issue.project_id = str(uuid4())
+    mock_issue.title = "Title"
+    mock_issue.description = "Description"
+
+    mocker.patch(
+        "preloop.api.endpoints.issue_duplicates.crud_issue",
+        new_callable=MagicMock,
+    ).get.side_effect = [mock_issue, mock_issue]
+
+    mocker.patch(
+        "preloop.api.endpoints.issue_duplicates.get_accessible_projects",
+        return_value=[MagicMock()],
+    )
+
+    keyless_model = MagicMock(
+        model_identifier="gpt-5.4", api_key=None, api_endpoint=None
+    )
+    mocker.patch(
+        "preloop.api.endpoints.issue_duplicates.crud_ai_model.get_default_active_model",
+        return_value=keyless_model,
+    )
+
+    mocker.patch(
+        "preloop.api.endpoints.issue_duplicates.load_duplicates_prompts_config",
+        return_value={
+            "merge_issues_v1": {
+                "system": "You are a helper.",
+                "user": "Merge: {title1} {description1} | {title2} {description2}",
+            }
+        },
+    )
+
+    mock_secret_service = MagicMock()
+    mock_secret_service.resolve_ai_model_credentials.return_value = None
+    mocker.patch(
+        "preloop.services.model_credentials.get_secret_service",
+        return_value=mock_secret_service,
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        get_resolution_suggestion(
+            db=MagicMock(),
+            current_user=MagicMock(),
+            issue1_id=str(uuid4()),
+            issue2_id=str(uuid4()),
+            resolution="merged",
+            settings=MagicMock(PROMPTS_FILE="prompts.yaml"),
+        )
+
+    assert excinfo.value.status_code == 500
+    mock_openai_class.assert_not_called()

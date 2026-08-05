@@ -27,6 +27,7 @@ from preloop.models.crud.ai_model import ai_model as crud_ai_model
 from preloop.models.crud.audit_log import crud_audit_log
 from preloop.models.models.ai_model import AIModel
 from preloop.services.litellm_routing import to_litellm_model
+from preloop.services.model_credentials import resolve_model_call_credentials
 from preloop.services.policy import export_current_policy
 from preloop.services.policy.schema import PolicyDocument
 
@@ -315,8 +316,7 @@ If a "CURRENT ACCOUNT CONFIGURATION" block is provided below:
         errors from the first.
         """
         litellm_model = self._to_litellm_model(model)
-        api_key = model.api_key
-        api_base = model.api_endpoint
+        creds_kwargs = resolve_model_call_credentials(model, db=self.db)
 
         kwargs: Dict[str, Any] = {
             "model": litellm_model,
@@ -326,11 +326,8 @@ If a "CURRENT ACCOUNT CONFIGURATION" block is provided below:
             ],
             "temperature": 0.2,
             "max_tokens": 8192,
+            **creds_kwargs,
         }
-        if api_key:
-            kwargs["api_key"] = api_key
-        if api_base:
-            kwargs["api_base"] = api_base
 
         for attempt in range(2):
             try:

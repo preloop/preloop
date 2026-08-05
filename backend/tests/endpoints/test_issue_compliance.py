@@ -15,6 +15,7 @@ from preloop.api.endpoints.issue_compliance import (
     update_issue_content,
 )
 from preloop.models.models import AIModel, Issue, Organization, Project, User
+from preloop.services.secret_service import ResolvedModelCredentials
 
 
 @pytest.fixture
@@ -1159,6 +1160,180 @@ class TestGetComplianceImprovementSuggestion:
                 current_user=mock_user,
                 settings=mock_settings,
             )
+
+    def test_credentials_secret_id_model_resolves_via_vault(
+        self,
+        mock_user,
+        mock_issue,
+        mock_project,
+        mock_organization,
+        mock_settings,
+        mocker,
+    ):
+        """A vault-backed model resolves its key instead of constructing a bare client.
+
+        Regression: this endpoint used to call openai.OpenAI() with no credentials,
+        so models using credentials_secret_id (no plaintext api_key column) silently
+        401'd. The resolved key and the model's endpoint must both reach the client.
+        """
+        compliance_result = MagicMock()
+        compliance_result.compliance_factor = 0.8
+        compliance_result.reason = "Good"
+        compliance_result.suggestion = "Improve"
+
+        # Model with no plaintext api_key: credentials live in the secret backend.
+        vault_model = MagicMock(spec=AIModel)
+        vault_model.id = "model-123"
+        vault_model.model_identifier = "gpt-5.4"
+        vault_model.api_key = None
+        vault_model.api_endpoint = "https://custom.example.com/v1"
+
+        mocker.patch(
+            "preloop.api.endpoints.issue_compliance._calculate_issue_compliance",
+            return_value=compliance_result,
+        )
+        mocker.patch(
+            "preloop.api.endpoints.issue_compliance.crud_issue"
+        ).get.return_value = mock_issue
+        mocker.patch(
+            "preloop.api.endpoints.issue_compliance.crud_project"
+        ).get.return_value = mock_project
+        mocker.patch(
+            "preloop.api.endpoints.issue_compliance.crud_organization"
+        ).get.return_value = mock_organization
+        mocker.patch(
+            "preloop.api.endpoints.issue_compliance.crud_ai_model"
+        ).get_default_active_model.return_value = vault_model
+        mocker.patch(
+            "preloop.api.endpoints.issue_compliance.load_compliance_prompts_config",
+            return_value={
+                "dor_compliance_v1": {
+                    "name": "DoR",
+                    "short_name": "DoR",
+                    "evaluate": {"name": "e", "system": "s", "user": "u"},
+                    "propose_improvement": {"name": "p", "system": "s", "user": "u"},
+                }
+            },
+        )
+
+        mock_secret_service = MagicMock()
+        mock_secret_service.resolve_ai_model_credentials.return_value = (
+            ResolvedModelCredentials(
+                credential_type="api_key",
+                backend_type="openbao_kv_v2",
+                value="sk-resolved-from-vault",
+            )
+        )
+        mocker.patch(
+            "preloop.services.model_credentials.get_secret_service",
+            return_value=mock_secret_service,
+        )
+
+        mock_openai = mocker.patch(
+            "preloop.api.endpoints.issue_compliance.openai.OpenAI"
+        )
+        mock_openai.return_value.chat.completions.create.return_value.choices = [
+            MagicMock(
+                message=MagicMock(
+                    content=json.dumps(
+                        {
+                            "title": "T",
+                            "description": "D",
+                            "changes": "C",
+                        }
+                    )
+                )
+            )
+        ]
+
+        result = get_compliance_improvement_suggestion(
+            issue_id="issue-789",
+            prompt_name="dor_compliance_v1",
+            db=MagicMock(),
+            current_user=mock_user,
+            settings=mock_settings,
+        )
+
+        assert result.title == "T"
+        mock_openai.assert_called_once_with(
+            api_key="sk-resolved-from-vault",
+            base_url="https://custom.example.com/v1",
+        )
+
+    def test_missing_credentials_raise_500_without_calling_provider(
+        self,
+        mock_user,
+        mock_issue,
+        mock_project,
+        mock_organization,
+        mock_settings,
+        monkeypatch,
+        mocker,
+    ):
+        """With no resolvable key and no env var, fail fast instead of calling out."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        compliance_result = MagicMock()
+        compliance_result.compliance_factor = 0.8
+        compliance_result.reason = "Good"
+        compliance_result.suggestion = "Improve"
+
+        keyless_model = MagicMock(spec=AIModel)
+        keyless_model.id = "model-123"
+        keyless_model.model_identifier = "gpt-5.4"
+        keyless_model.api_key = None
+        keyless_model.api_endpoint = None
+
+        mocker.patch(
+            "preloop.api.endpoints.issue_compliance._calculate_issue_compliance",
+            return_value=compliance_result,
+        )
+        mocker.patch(
+            "preloop.api.endpoints.issue_compliance.crud_issue"
+        ).get.return_value = mock_issue
+        mocker.patch(
+            "preloop.api.endpoints.issue_compliance.crud_project"
+        ).get.return_value = mock_project
+        mocker.patch(
+            "preloop.api.endpoints.issue_compliance.crud_organization"
+        ).get.return_value = mock_organization
+        mocker.patch(
+            "preloop.api.endpoints.issue_compliance.crud_ai_model"
+        ).get_default_active_model.return_value = keyless_model
+        mocker.patch(
+            "preloop.api.endpoints.issue_compliance.load_compliance_prompts_config",
+            return_value={
+                "dor_compliance_v1": {
+                    "name": "DoR",
+                    "short_name": "DoR",
+                    "evaluate": {"name": "e", "system": "s", "user": "u"},
+                    "propose_improvement": {"name": "p", "system": "s", "user": "u"},
+                }
+            },
+        )
+
+        mock_secret_service = MagicMock()
+        mock_secret_service.resolve_ai_model_credentials.return_value = None
+        mocker.patch(
+            "preloop.services.model_credentials.get_secret_service",
+            return_value=mock_secret_service,
+        )
+
+        mock_openai = mocker.patch(
+            "preloop.api.endpoints.issue_compliance.openai.OpenAI"
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            get_compliance_improvement_suggestion(
+                issue_id="issue-789",
+                prompt_name="dor_compliance_v1",
+                db=MagicMock(),
+                current_user=mock_user,
+                settings=mock_settings,
+            )
+
+        assert exc_info.value.status_code == 500
+        mock_openai.assert_not_called()
 
 
 class TestUpdateIssueContent:
