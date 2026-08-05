@@ -14,6 +14,17 @@ across renames and re-onboarding.
 
 ### Added
 
+- **Auxiliary model fallback to system-wide default**: approval summaries and
+  session/interaction titles now automatically retry with the system-wide
+  default model when the account's primary model fails (auth error, provider
+  error, or timeout). The fallback is subject to a per-account daily cap
+  (default 50, configurable via `PRELOOP_AUX_FALLBACK_DAILY_CAP`) and emits a
+  deduped warning per account per day when triggered. No fallback occurs if the
+  system default is the same model that failed or if no system default is
+  configured. The main gateway/completion path is unaffected and never falls
+  back. Failures degrade gracefully (approval summary returns None, session
+  titles use local fallback).
+
 - **Cursor bundled-model usage import** (#123): Cursor's Composer/Auto models
   never traverse the model gateway, so their spend was invisible. Two new
   endpoints ingest it: `POST /api/v1/usage/import` for normalized events and
@@ -134,6 +145,16 @@ across renames and re-onboarding.
   archived match; use `preloop agents remove` for permanent deletion.
 
 ### Fixed
+
+- **Auxiliary model calls resolve credentials from the secret service**: seven
+  internal sites (approval summaries, session/interaction titles, policy
+  generation, agent name extraction, issue compliance/duplicates/dependencies)
+  were reading the raw `api_key` column directly instead of resolving via the
+  secret service, so accounts whose models use `credentials_secret_id` got
+  silent 401s. All seven sites now route through a shared credential resolver
+  that handles legacy plaintext keys, vault-backed secrets, OAuth, and ambient
+  credentials identically to the main gateway path. The `os.getenv` fallback in
+  issue compliance and duplicates endpoints is preserved.
 
 - **DeepSeek and Qwen model pickers show the models the provider actually
   serves**: both providers were queried with a valid API key and the response
