@@ -246,5 +246,5 @@ def temporary_credential_file(
     finally:
         try:
             os.unlink(path)
-        except OSError:
+        except FileNotFoundError:
             logger.warning("Could not remove temporary git credential file")

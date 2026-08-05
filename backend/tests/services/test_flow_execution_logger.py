@@ -481,3 +481,15 @@ class TestLogAgentOutputScrubbing:
         logger.log_agent_output("")
 
         assert logger.get_agent_output_lines() == [""]
+
+    def test_token_only_line_keeps_redaction_marker(self):
+        """A line that is nothing but a token must scrub to the prefixed
+        ``github_pat_[REDACTED]`` form, not collapse to the empty string.
+
+        This locks in that the ``or ""`` fallback in ``log_agent_output`` only
+        guards against ``None``; it must never swallow the redaction marker.
+        """
+        logger = FlowExecutionLogger()
+        logger.log_agent_output(self.PAT)
+
+        assert logger.get_agent_output_lines() == ["github_pat_[REDACTED]"]

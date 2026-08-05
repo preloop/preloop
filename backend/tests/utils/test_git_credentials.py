@@ -215,7 +215,9 @@ class TestTemporaryCredentialFile:
             assert match
             path = match.group(1)
 
-            assert LEAKED_PAT in open(path).read()
+            with open(path) as cred_file:
+                content = cred_file.read()
+            assert LEAKED_PAT in content
             mode = stat.S_IMODE(os.stat(path).st_mode)
             assert mode == 0o600, (
                 f"credential file is world/group readable: {oct(mode)}"

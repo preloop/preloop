@@ -2,6 +2,7 @@
 
 import pytest
 
+from preloop.utils import repo_urls
 from preloop.utils.repo_urls import (
     repo_url_log_location,
     tracker_host_kind,
@@ -34,8 +35,6 @@ class TestInjectOauthTokenRemoved:
     """
 
     def test_helper_is_gone(self) -> None:
-        import preloop.utils.repo_urls as repo_urls
-
         assert not hasattr(repo_urls, "inject_oauth_token")
 
         with pytest.raises(ImportError):

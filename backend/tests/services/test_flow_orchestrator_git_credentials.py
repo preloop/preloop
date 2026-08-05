@@ -79,7 +79,8 @@ class TestPerformGitCloneCommand:
             if captured["env"] and "GIT_CONFIG_VALUE_0" in captured["env"]:
                 path = captured["env"]["GIT_CONFIG_VALUE_0"].split("=", 1)[1]
                 captured["credential_file"] = path
-                captured["credential_file_content"] = open(path).read()
+                with open(path) as cred_file:
+                    captured["credential_file_content"] = cred_file.read()
             process = AsyncMock()
             process.returncode = 0
             process.communicate.return_value = (b"done", b"")

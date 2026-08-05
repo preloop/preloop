@@ -126,7 +126,11 @@ def scrub_secrets(text: Optional[str]) -> Optional[str]:
 
 
 def scrub_secret_lines(lines: List[str]) -> List[str]:
-    """Scrub a batch of log lines."""
+    """Scrub a batch of log lines.
+
+    None-safe by design: entries that are ``None`` become ``""`` so callers
+    always get back a list of strings.
+    """
 
     return [scrub_secrets(line) or "" for line in lines]
 
