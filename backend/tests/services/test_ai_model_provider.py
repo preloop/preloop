@@ -629,9 +629,72 @@ class TestGetGoogleModels:
         assert second.transport._credentials.token == "AIza-key-two"
 
     @pytest.mark.asyncio
+    async def test_scoped_path_does_not_touch_global_configure_mocked(self):
+        """Regression: the scoped path must never call genai.configure().
+
+        This is the SDK-free twin of the real-SDK test below. The google
+        packages are optional extras (``ai-providers``) and are not installed
+        in CI, so the real-SDK test skips there and this one carries the
+        assertion instead.
+
+        The round-3 trap this avoids: mocking the whole google package makes
+        _build_scoped_google_client() fail and return None, which silently
+        routes the call to the FALLBACK branch, so a naive mocked test asserts
+        nothing about the scoped branch. Here the builder itself is patched to
+        hand back a sentinel, which forces the scoped branch to be taken.
+        """
+        from preloop.services import ai_model_provider as module
+
+        sentinel_client = object()
+        mock_google = MagicMock()
+        mock_genai = MagicMock()
+
+        captured = {}
+
+        def fake_list_models(client=None):
+            captured["client"] = client
+            entry = MagicMock()
+            entry.name = "models/gemini-2.5-pro"
+            entry.supported_generation_methods = ["generateContent"]
+            return [entry]
+
+        mock_genai.list_models = MagicMock(side_effect=fake_list_models)
+        mock_google.generativeai = mock_genai
+
+        with patch.dict(
+            sys.modules,
+            {"google": mock_google, "google.generativeai": mock_genai},
+            clear=False,
+        ):
+            with patch.object(
+                module, "_build_scoped_google_client", return_value=sentinel_client
+            ):
+                result = await _get_google_models("AIza-scoped-key")
+
+        assert result.source == "live"
+        assert result.models == ["gemini-2.5-pro"]
+        # The whole point: global state was never mutated.
+        mock_genai.configure.assert_not_called()
+        # ...and the key-scoped client travelled on the call instead.
+        assert captured["client"] is sentinel_client
+
+    @pytest.mark.asyncio
     async def test_live_listing_does_not_touch_global_configure(self):
-        """Regression: the scoped path must never call genai.configure()."""
-        import google.generativeai as real_genai
+        """Regression: the scoped path must never call genai.configure().
+
+        Runs against the REAL SDK, which additionally proves the key rides on
+        the client's credentials. The google packages are optional extras and
+        are absent in CI, hence importorskip; the assertion still runs in CI
+        in mocked form via the test above.
+        """
+        real_genai = pytest.importorskip(
+            "google.generativeai",
+            reason="google-generativeai extra not installed",
+        )
+        pytest.importorskip(
+            "google.ai.generativelanguage",
+            reason="google-generativeai extra not installed",
+        )
         from preloop.services import ai_model_provider as module
 
         if module._build_scoped_google_client("AIza-probe") is None:
