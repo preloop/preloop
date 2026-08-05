@@ -96,15 +96,23 @@ class TestBuildAuxKwargsPrecedence:
 
         assert result["api_base"] == "https://correct.example.com"
 
-    def test_reasoning_effort_default_applied(self):
-        """When nobody specifies reasoning_effort, the default is 'none'."""
+    def test_deepseek_gets_thinking_disabled_default(self):
+        """DeepSeek models get extra_body thinking disabled, not reasoning_effort."""
         model = _make_model()
         result = build_aux_kwargs(model, {}, call_site_kwargs={"model": "test"})
 
-        assert result["reasoning_effort"] == "none"
+        assert "reasoning_effort" not in result
+        assert result.get("extra_body") == {"thinking": {"type": "disabled"}}
+
+    def test_openai_non_reasoning_gets_no_reasoning_knob(self):
+        """A non-reasoning OpenAI model (gpt-4o) gets no reasoning knob at all."""
+        model = _make_model(model_identifier="gpt-4o", provider_name="openai")
+        result = build_aux_kwargs(model, {}, call_site_kwargs={"model": "test"})
+
+        assert "reasoning_effort" not in result
 
     def test_model_parameters_reasoning_effort_wins_over_default(self):
-        """model_parameters reasoning_effort overrides the safety default."""
+        """model_parameters reasoning_effort overrides any capability default."""
         model = _make_model(model_parameters={"reasoning_effort": "high"})
         result = build_aux_kwargs(model, {}, call_site_kwargs={"model": "test"})
 
@@ -131,6 +139,31 @@ class TestBuildAuxKwargsPrecedence:
 
         assert result["model"] == "test"
 
+    def test_extra_body_merge_not_clobber(self):
+        """model_parameters extra_body merges with the default, not replaces it."""
+        model = _make_model(
+            model_parameters={"extra_body": {"custom_key": "custom_val"}}
+        )
+        result = build_aux_kwargs(model, {}, call_site_kwargs={"model": "test"})
+
+        eb = result.get("extra_body", {})
+        # Default thinking-disable from DeepSeek detection must survive.
+        assert eb.get("thinking") == {"type": "disabled"}
+        # model_parameters custom key must also be present.
+        assert eb.get("custom_key") == "custom_val"
+
+    def test_model_parameters_extra_body_thinking_wins(self):
+        """Operator-set thinking in extra_body overrides the default."""
+        model = _make_model(
+            model_parameters={
+                "extra_body": {"thinking": {"type": "enabled", "budget_tokens": 5000}}
+            }
+        )
+        result = build_aux_kwargs(model, {}, call_site_kwargs={"model": "test"})
+
+        eb = result.get("extra_body", {})
+        assert eb["thinking"] == {"type": "enabled", "budget_tokens": 5000}
+
 
 # ---------------------------------------------------------------------------
 # 2. OpenAI SDK extra kwargs helper
@@ -140,10 +173,17 @@ class TestBuildAuxKwargsPrecedence:
 class TestGetAuxOpenaiSdkExtraKwargs:
     """Tests for the OpenAI SDK call-site helper."""
 
-    def test_reasoning_effort_default(self):
-        model = _make_model()
+    def test_no_reasoning_effort_for_deepseek(self):
+        """DeepSeek model on OpenAI SDK path gets no reasoning_effort."""
+        model = _make_model()  # deepseek by default
         result = get_aux_openai_sdk_extra_kwargs(model)
-        assert result["reasoning_effort"] == "none"
+        assert "reasoning_effort" not in result
+
+    def test_no_reasoning_effort_for_non_reasoning_openai(self):
+        """gpt-4o (non-reasoning) gets no reasoning_effort."""
+        model = _make_model(model_identifier="gpt-4o", provider_name="openai")
+        result = get_aux_openai_sdk_extra_kwargs(model)
+        assert "reasoning_effort" not in result
 
     def test_model_parameters_override_default(self):
         model = _make_model(model_parameters={"reasoning_effort": "medium"})
@@ -412,3 +452,169 @@ class TestGatewayUnaffected:
 
         source = inspect.getsource(gateway_module)
         assert "resolve_ai_model_credentials" in source
+
+
+# ---------------------------------------------------------------------------
+# 7. Real litellm get_optional_params integration tests (no mocks, no network)
+# ---------------------------------------------------------------------------
+
+
+class TestLitellmRealGetOptionalParams:
+    """Call litellm's REAL get_optional_params to verify the reasoning-disable
+    knobs actually reach the wire (or stay absent) as intended.
+
+    These tests do not mock litellm. They exercise the pure parameter-mapping
+    logic that litellm provides, which runs locally with no network calls.
+    """
+
+    def test_deepseek_thinking_disabled_survives(self):
+        """extra_body thinking disabled for DeepSeek IS present in the output.
+
+        This test must FAIL against c3f8c85e, which produces extra_body={}.
+        """
+        import litellm.utils
+
+        # Build kwargs the way build_aux_kwargs does for DeepSeek
+        model = _make_model()
+        result = build_aux_kwargs(
+            model,
+            {},
+            call_site_kwargs={
+                "model": "deepseek/deepseek-v4-flash",
+                "max_tokens": 150,
+            },
+        )
+
+        # Simulate what litellm.completion does internally
+        params = litellm.utils.get_optional_params(
+            model="deepseek/deepseek-v4-flash",
+            custom_llm_provider="deepseek",
+            max_tokens=result.get("max_tokens", 150),
+            drop_params=result.get("drop_params", True),
+            extra_body=result.get("extra_body"),
+            **(
+                {"reasoning_effort": result["reasoning_effort"]}
+                if "reasoning_effort" in result
+                else {}
+            ),
+        )
+
+        eb = params.get("extra_body", {})
+        assert eb.get("thinking") == {"type": "disabled"}, (
+            f"thinking disable knob must survive in extra_body, got {params}"
+        )
+
+    def test_o4_mini_no_reasoning_effort(self):
+        """o4-mini must NOT receive reasoning_effort in the output.
+
+        This test must FAIL against c3f8c85e, which sends reasoning_effort="none".
+        """
+        import litellm.utils
+
+        model = _make_model(model_identifier="o4-mini", provider_name="openai")
+        result = build_aux_kwargs(
+            model,
+            {},
+            call_site_kwargs={
+                "model": "o4-mini",
+                "max_tokens": 150,
+            },
+        )
+
+        params = litellm.utils.get_optional_params(
+            model="o4-mini",
+            custom_llm_provider="openai",
+            max_tokens=result.get("max_tokens", 150),
+            drop_params=result.get("drop_params", True),
+            **(
+                {"reasoning_effort": result["reasoning_effort"]}
+                if "reasoning_effort" in result
+                else {}
+            ),
+        )
+
+        assert "reasoning_effort" not in params, (
+            f"o4-mini must not receive reasoning_effort, got {params}"
+        )
+
+    def test_gpt4o_no_reasoning_knob(self):
+        """gpt-4o (non-reasoning model) must not have any reasoning knob."""
+        import litellm.utils
+
+        model = _make_model(model_identifier="gpt-4o", provider_name="openai")
+        result = build_aux_kwargs(
+            model,
+            {},
+            call_site_kwargs={
+                "model": "gpt-4o",
+                "max_tokens": 150,
+            },
+        )
+
+        params = litellm.utils.get_optional_params(
+            model="gpt-4o",
+            custom_llm_provider="openai",
+            max_tokens=result.get("max_tokens", 150),
+            drop_params=result.get("drop_params", True),
+            **(
+                {"reasoning_effort": result["reasoning_effort"]}
+                if "reasoning_effort" in result
+                else {}
+            ),
+        )
+
+        assert "reasoning_effort" not in params, (
+            f"gpt-4o must not receive reasoning_effort, got {params}"
+        )
+
+    def test_gpt51_gets_reasoning_effort_none(self):
+        """gpt-5.1 supports reasoning_effort='none' and should receive it."""
+        import litellm.utils
+
+        model = _make_model(model_identifier="gpt-5.1", provider_name="openai")
+        result = build_aux_kwargs(
+            model,
+            {},
+            call_site_kwargs={
+                "model": "gpt-5.1",
+                "max_tokens": 150,
+            },
+        )
+
+        params = litellm.utils.get_optional_params(
+            model="gpt-5.1",
+            custom_llm_provider="openai",
+            max_tokens=result.get("max_tokens", 150),
+            drop_params=result.get("drop_params", True),
+            **(
+                {"reasoning_effort": result["reasoning_effort"]}
+                if "reasoning_effort" in result
+                else {}
+            ),
+        )
+
+        assert params.get("reasoning_effort") == "none", (
+            f"gpt-5.1 should receive reasoning_effort='none', got {params}"
+        )
+
+    def test_model_parameters_wins_over_capability_default(self):
+        """model_parameters reasoning_effort overrides the capability default.
+
+        Even for DeepSeek (where the default is extra_body thinking), an
+        operator-set reasoning_effort must appear in the final kwargs.
+        """
+        model = _make_model(
+            model_parameters={"reasoning_effort": "high"},
+        )
+        result = build_aux_kwargs(
+            model,
+            {},
+            call_site_kwargs={
+                "model": "deepseek/deepseek-v4-flash",
+                "max_tokens": 150,
+            },
+        )
+
+        assert result["reasoning_effort"] == "high", (
+            "model_parameters must win over any capability default"
+        )

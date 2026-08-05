@@ -147,6 +147,85 @@ class ReasoningModelEmptyContentError(Exception):
     """
 
 
+def _model_supports_none_reasoning_effort(
+    model_identifier: str, custom_llm_provider: str
+) -> bool:
+    """Check whether litellm's model map says the model accepts reasoning_effort="none".
+
+    Returns False on any error or when the model is not in litellm's map.
+    """
+    try:
+        from litellm.utils import _supports_factory
+
+        return bool(
+            _supports_factory(
+                model=model_identifier,
+                custom_llm_provider=custom_llm_provider,
+                key="supports_none_reasoning_effort",
+            )
+        )
+    except Exception:
+        return False
+
+
+def _get_reasoning_disable_defaults(model: AIModel) -> dict[str, Any]:
+    """Return capability-checked kwargs that disable extended reasoning for aux calls.
+
+    Only returns a disable knob when there is positive evidence the model
+    accepts that exact form. Unknown models, or any lookup failure, produce
+    an empty dict so the model behaves as it does by default. The
+    empty-content guard (:func:`check_reasoning_model_empty_content`) catches
+    the bad outcome if reasoning runs away.
+
+    DeepSeek: ``extra_body={"thinking": {"type": "disabled"}}`` is the only
+    form that survives ``DeepSeekChatConfig.map_openai_params``; the
+    ``reasoning_effort`` kwarg and ``thinking={"type":"disabled"}`` as a
+    top-level kwarg are both silently swallowed.
+
+    OpenAI: ``reasoning_effort="none"`` is only valid for models whose litellm
+    model map entry has ``supports_none_reasoning_effort: True`` (e.g. gpt-5.1).
+    Models like o4-mini support ``reasoning_effort`` but NOT the ``"none"``
+    level, so sending it would produce a 400.
+    """
+    provider = (getattr(model, "provider_name", None) or "").strip().lower()
+    identifier = (getattr(model, "model_identifier", None) or "").strip()
+
+    # DeepSeek: the only wire-surviving form is extra_body.
+    if provider == "deepseek" or (
+        "/" in identifier and identifier.split("/", 1)[0].strip().lower() == "deepseek"
+    ):
+        return {"extra_body": {"thinking": {"type": "disabled"}}}
+
+    # OpenAI (and openai-codex, or empty-provider which defaults to openai):
+    # only send reasoning_effort="none" when litellm confirms the model
+    # accepts that level.
+    if provider in ("openai", "openai-codex", ""):
+        lookup = identifier.split("/", 1)[-1] if "/" in identifier else identifier
+        if _model_supports_none_reasoning_effort(lookup, "openai"):
+            return {"reasoning_effort": "none"}
+
+    return {}
+
+
+def _merge_extra_body(target: dict[str, Any], source: dict[str, Any]) -> None:
+    """Merge *source* into *target*, deep-merging ``extra_body`` dicts.
+
+    All keys are overwritten by *source* except ``extra_body``: when both
+    sides carry a dict-valued ``extra_body``, the two dicts are merged with
+    *source* keys winning individual sub-keys rather than replacing the
+    entire dict.
+    """
+    for k, v in source.items():
+        if (
+            k == "extra_body"
+            and isinstance(v, dict)
+            and isinstance(target.get(k), dict)
+        ):
+            target[k] = {**target[k], **v}
+        else:
+            target[k] = v
+
+
 def build_aux_kwargs(
     model: AIModel,
     creds_kwargs: dict[str, Any],
@@ -159,28 +238,29 @@ def build_aux_kwargs(
     1. ``call_site_kwargs`` (temperature, max_tokens, messages, model, ...)
     2. ``creds_kwargs``     (api_key, api_base from credential resolution)
     3. ``model.model_parameters`` (operator-set knobs stored on the model row)
-    4. safety defaults     (``drop_params=True``, ``reasoning_effort="none"``)
+    4. safety defaults     (``drop_params=True``, capability-checked reasoning
+       disable knob)
 
     The construction starts with the lowest-priority dict and overwrites
     upward, so a key that appears in both ``model_parameters`` and
-    ``call_site_kwargs`` keeps the call-site value.
+    ``call_site_kwargs`` keeps the call-site value. ``extra_body`` dicts are
+    deep-merged so a default thinking-disable knob is not clobbered by an
+    unrelated extra_body key in a higher layer.
     """
-    # Layer 4: safety defaults.
-    merged: dict[str, Any] = {
-        "drop_params": True,
-        "reasoning_effort": "none",
-    }
+    # Layer 4: safety defaults (capability-checked, not blanket).
+    merged: dict[str, Any] = {"drop_params": True}
+    merged.update(_get_reasoning_disable_defaults(model))
 
     # Layer 3: model row's JSONB column.
     model_params = getattr(model, "model_parameters", None)
     if isinstance(model_params, dict):
-        merged.update(model_params)
+        _merge_extra_body(merged, model_params)
 
     # Layer 2: resolved credentials (api_key, api_base).
-    merged.update(creds_kwargs)
+    _merge_extra_body(merged, creds_kwargs)
 
     # Layer 1: call-site explicit args (always win).
-    merged.update(call_site_kwargs)
+    _merge_extra_body(merged, call_site_kwargs)
 
     return merged
 
@@ -192,15 +272,23 @@ def get_aux_openai_sdk_extra_kwargs(
 ) -> dict[str, Any]:
     """Return extra kwargs for ``openai.OpenAI().chat.completions.create()`` aux calls.
 
-    Merges the model row's ``model_parameters`` with a ``reasoning_effort="none"``
-    default. Call-site kwargs already passed as named arguments take precedence:
-    any key present in ``call_site_kwargs`` is excluded from the result so the
-    caller can simply spread the return value into the create call without
-    overriding its own explicit arguments.
+    Merges the model row's ``model_parameters`` with a capability-checked
+    reasoning-disable default. Call-site kwargs already passed as named
+    arguments take precedence: any key present in ``call_site_kwargs`` is
+    excluded from the result so the caller can simply spread the return value
+    into the create call without overriding its own explicit arguments.
 
     Only keys known to be safe named parameters of the OpenAI SDK are included.
+    ``reasoning_effort="none"`` is only added when litellm's model map confirms
+    the model accepts that level; otherwise no reasoning knob is sent.
     """
-    extras: dict[str, Any] = {"reasoning_effort": "none"}
+    extras: dict[str, Any] = {}
+
+    # Capability-checked default: only add reasoning_effort for models that
+    # accept "none". The OpenAI SDK path is always the openai provider.
+    identifier = (getattr(model, "model_identifier", None) or "").strip()
+    if _model_supports_none_reasoning_effort(identifier, "openai"):
+        extras["reasoning_effort"] = "none"
 
     model_params = getattr(model, "model_parameters", None)
     if isinstance(model_params, dict):
