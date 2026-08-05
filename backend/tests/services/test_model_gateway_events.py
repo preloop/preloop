@@ -489,3 +489,79 @@ async def test_publish_to_nats_drops_event_when_truncated_payload_is_still_too_l
         await emitter._publish_to_nats(event)
 
     nats_client.publish.assert_not_called()
+
+
+def test_build_event_strips_nul_and_control_bytes_from_bodies():
+    """Regression: gzip/binary bodies must not reach a JSONB column.
+
+    Incident 2026-08-05: an agent fetched a URL that returned gzip, the body
+    landed in runtime_session_activity.metadata, and Postgres rejected the NUL
+    with UntranslatableCharacter, poisoning the request's session.
+    """
+    import json
+
+    emitter = ModelGatewayEventEmitter(MagicMock())
+    usage = _build_usage()
+    gzip_magic = "\x1f\x8b\x08\x00"
+
+    with (
+        patch.object(settings, "model_gateway_capture_content", True),
+        patch.object(settings, "model_gateway_max_preview_chars", 100000),
+        patch.object(settings, "model_gateway_activity_max_body_chars", 100000),
+    ):
+        event = emitter._build_event(
+            usage=usage,
+            request_payload={"messages": [{"role": "user", "content": "fetch it"}]},
+            response_payload={"body": gzip_magic + "binary\x00payload"},
+        )
+
+    payload = event["payload"]
+    assert payload["response"]["body"] == "binarypayload"
+    # The captured bodies must survive the same encode path psycopg2 uses.
+    # (api_key_name is a MagicMock attribute here, so encode only the bodies.)
+    encoded = json.dumps(
+        {"request": payload["request"], "response": payload["response"]}
+    )
+    assert "\x00" not in encoded
+    assert "\u0000" not in encoded
+
+
+def test_build_event_caps_activity_bodies_with_an_explicit_marker():
+    """533KB activity rows are a DB bloat problem independent of encoding."""
+    emitter = ModelGatewayEventEmitter(MagicMock())
+    usage = _build_usage()
+
+    with (
+        patch.object(settings, "model_gateway_capture_content", True),
+        patch.object(settings, "model_gateway_max_preview_chars", 100000),
+        patch.object(settings, "model_gateway_activity_max_body_chars", 50),
+    ):
+        event = emitter._build_event(
+            usage=usage,
+            request_payload={"messages": [{"role": "user", "content": "hi"}]},
+            response_payload={"body": "z" * 500},
+        )
+
+    body = event["payload"]["response"]["body"]
+    assert body.startswith("z" * 50)
+    assert body.endswith("... [truncated 450 bytes]")
+
+
+def test_build_event_preserves_newlines_and_tabs_in_bodies():
+    """Transcripts must keep their shape; only invisible controls are dropped."""
+    emitter = ModelGatewayEventEmitter(MagicMock())
+    usage = _build_usage()
+    text = "def f():\n\treturn 1\r\n"
+
+    with (
+        patch.object(settings, "model_gateway_capture_content", True),
+        patch.object(settings, "model_gateway_max_preview_chars", 100000),
+        patch.object(settings, "model_gateway_activity_max_body_chars", 100000),
+    ):
+        event = emitter._build_event(
+            usage=usage,
+            request_payload={"messages": [{"role": "user", "content": "hi"}]},
+            response_payload={"body": text},
+        )
+
+    assert event["payload"]["response"]["body"] == text

@@ -24,6 +24,7 @@ from preloop.services.account_realtime import (
     emit_account_event,
 )
 from preloop.sync.services.event_bus import get_nats_client
+from preloop.utils.jsonb_sanitize import sanitize_for_jsonb
 from preloop.utils.request_fingerprint import public_request_fingerprint
 
 logger = logging.getLogger(__name__)
@@ -292,8 +293,16 @@ class ModelGatewayEventEmitter:
                 "error_detail": error_detail,
                 "capture_policy": self._build_capture_policy(conversation_preview),
                 "conversation_preview": conversation_preview,
-                "request": self._sanitize_payload(request_payload),
-                "response": self._sanitize_payload(response_payload),
+                # These two bodies are the ones that carried 533KB of binary
+                # content in the 2026-08-05 incident. Cap them here, at the
+                # point they enter the activity payload, so the JSONB row stays
+                # a bounded size regardless of what the upstream returned.
+                "request": self._cap_activity_body(
+                    self._sanitize_payload(request_payload)
+                ),
+                "response": self._cap_activity_body(
+                    self._sanitize_payload(response_payload)
+                ),
             },
         }
 
@@ -333,6 +342,19 @@ class ModelGatewayEventEmitter:
         if status_code >= 400:
             return "error"
         return "success"
+
+    @staticmethod
+    def _cap_activity_body(value: Any) -> Any:
+        """Bound one request/response body before it is stored as JSONB.
+
+        Separate from the preview cap on purpose. Previews feed the transcript
+        UI and are tuned for readability; these bodies are archival and are
+        never rendered in full, so they get the tighter activity cap.
+        """
+        return sanitize_for_jsonb(
+            value,
+            max_string_chars=settings.model_gateway_activity_max_body_chars,
+        )
 
     def _sanitize_payload(self, value: Any) -> Any:
         if value is None:
