@@ -16,6 +16,7 @@ from preloop.services.ai_model_provider import (
     QWEN_KNOWN_MODELS,
     ZAI_KNOWN_MODELS,
     FALLBACK_ERROR_REASONS,
+    MODEL_DISCOVERY_TIMEOUT_SECONDS,
     ModelDiscoveryResult,
     _get_openai_models,
     _get_anthropic_models,
@@ -329,9 +330,43 @@ class TestGetOpenAIModels:
 
             result = await _get_openai_models(None)
 
-            # Should call AsyncOpenAI without api_key parameter
-            mock_client.assert_called_once_with()
+            # Should call AsyncOpenAI without api_key parameter so the SDK
+            # picks the key up from the environment.
+            mock_client.assert_called_once()
+            assert "api_key" not in mock_client.call_args.kwargs
+            assert mock_client.call_args.args == ()
             assert "gpt-5.4" in result.models
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("api_key", ["test_key", None])
+    async def test_get_openai_models_client_is_bounded(self, api_key):
+        """The client must carry the shared discovery timeout and one retry.
+
+        Without them a hung upstream blocks the picker request forever; every
+        other provider in this module already bounds its client this way.
+        """
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(
+                return_value=_models_response("gpt-5.4")
+            )
+            mock_client.return_value = mock_instance
+
+            await _get_openai_models(api_key)
+
+            kwargs = mock_client.call_args.kwargs
+            assert kwargs["timeout"] == MODEL_DISCOVERY_TIMEOUT_SECONDS
+            assert kwargs["max_retries"] == 1
+
+    @pytest.mark.asyncio
+    async def test_get_openai_models_missing_sdk_returns_fallback(self):
+        """A missing openai package is a named fallback, not an ImportError."""
+        with patch.dict(sys.modules, {"openai": None}):
+            result = await _get_openai_models("test_key")
+
+        assert result.models == OPENAI_FALLBACK_MODELS
+        assert result.source == "fallback"
+        assert result.error == "sdk_missing"
 
 
 class TestGetAnthropicModels:
@@ -1292,6 +1327,52 @@ class TestOpenAICompatibleModels:
             )
 
         assert result.models == ["some-model"]
+
+    @pytest.mark.asyncio
+    async def test_missing_sdk_returns_named_fallback_not_import_error(self):
+        """No openai package: a named fallback, never an escaping ImportError.
+
+        _get_openai_compatible_models used to import at function top level
+        outside any guard, so an environment without the SDK produced a 500
+        from the model-picker endpoint instead of an empty picker.
+        """
+        with patch.dict(sys.modules, {"openai": None}):
+            result = await get_available_models_for_provider(
+                "openai-compatible",
+                "test_key",
+                api_endpoint="https://gateway.example.com/v1",
+            )
+
+        assert result.models == []
+        assert result.source == "fallback"
+        assert result.error == "sdk_missing"
+
+
+class TestCatalogProviderSdkMissing:
+    """The shared OpenAI-compatible catalog path (Qwen, DeepSeek, Moonshot...).
+
+    _get_catalog_provider_models imported the SDK outside a guard too, so a
+    missing package raised instead of falling back to the bundled catalog.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "fetch,expected",
+        [
+            (_get_qwen_models, QWEN_KNOWN_MODELS),
+            (_get_deepseek_models, DEEPSEEK_KNOWN_MODELS),
+            (_get_moonshot_models, MOONSHOT_KNOWN_MODELS),
+            (_get_zai_models, ZAI_KNOWN_MODELS),
+            (_get_mistral_models, MISTRAL_KNOWN_MODELS),
+        ],
+    )
+    async def test_missing_sdk_returns_bundled_catalog(self, fetch, expected):
+        with patch.dict(sys.modules, {"openai": None}):
+            result = await fetch("test_key")
+
+        assert result.models == expected
+        assert result.source == "fallback"
+        assert result.error == "sdk_missing"
 
 
 class TestDiscoveryEndpointValidation:

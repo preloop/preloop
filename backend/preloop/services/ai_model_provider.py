@@ -305,7 +305,14 @@ async def _get_openai_compatible_models(
     too. There is no bundled catalog for arbitrary endpoints, so a failed
     fetch yields an empty fallback with a reason rather than a stale guess.
     """
-    from openai import AsyncOpenAI, AuthenticationError
+    try:
+        from openai import AsyncOpenAI, AuthenticationError
+    except ImportError:
+        # Same guard as _get_anthropic_models/_get_google_models: a missing
+        # SDK is a named fallback reason, not an unhandled ImportError
+        # escaping into the endpoint layer.
+        logger.warning("OpenAI package not installed, cannot list models")
+        return _fallback([], ERROR_SDK_MISSING)
 
     base_url = validate_discovery_endpoint(api_endpoint).rstrip("/")
     try:
@@ -421,9 +428,30 @@ async def _get_openai_models(api_key: Optional[str] = None) -> ModelDiscoveryRes
     """
     try:
         from openai import AsyncOpenAI, AuthenticationError
+    except ImportError:
+        # The import must be guarded separately: if it stayed inside the main
+        # try below, an ImportError would make the interpreter evaluate
+        # ``except AuthenticationError`` against an unbound name and raise
+        # NameError instead of returning a fallback.
+        logger.warning("OpenAI package not installed, cannot list models")
+        return _fallback(OPENAI_FALLBACK_MODELS, ERROR_SDK_MISSING)
 
-        # Use provided API key or fall back to environment variable
-        client = AsyncOpenAI(api_key=api_key) if api_key else AsyncOpenAI()
+    try:
+        # Use provided API key or fall back to environment variable. Timeout
+        # and single retry match every other provider in this file: without
+        # them a hung connection blocks the listing request indefinitely.
+        client = (
+            AsyncOpenAI(
+                api_key=api_key,
+                max_retries=1,
+                timeout=MODEL_DISCOVERY_TIMEOUT_SECONDS,
+            )
+            if api_key
+            else AsyncOpenAI(
+                max_retries=1,
+                timeout=MODEL_DISCOVERY_TIMEOUT_SECONDS,
+            )
+        )
         async with client:
             models_response = await client.models.list()
         models = models_response.data
@@ -675,7 +703,13 @@ async def _get_catalog_provider_models(
     if not api_key:
         return _fallback(known_models)
 
-    from openai import AsyncOpenAI, AuthenticationError
+    try:
+        from openai import AsyncOpenAI, AuthenticationError
+    except ImportError:
+        logger.warning(
+            "OpenAI package not installed, cannot list %s models", provider_label
+        )
+        return _fallback(known_models, ERROR_SDK_MISSING)
 
     try:
         client = AsyncOpenAI(
