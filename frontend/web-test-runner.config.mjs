@@ -3,8 +3,7 @@ import { esbuildPlugin } from '@web/dev-server-esbuild';
 import fs from 'fs/promises';
 import path from 'path';
 
-// Run headless in CI, headed for local development
-const isCI = process.env.CI === 'true';
+const headed = process.env.HEADED === 'true';
 
 const cssInlinePlugin = {
   name: 'css-inline-plugin',
@@ -26,7 +25,7 @@ export default {
   plugins: [cssInlinePlugin, esbuildPlugin({ ts: true, tsconfig: './tsconfig.json', target: 'es2020' })],
   browsers: [playwrightLauncher({
     product: 'chromium',
-    launchOptions: { headless: isCI }
+    launchOptions: { headless: !headed }
   })],
   testFramework: {
     config: {

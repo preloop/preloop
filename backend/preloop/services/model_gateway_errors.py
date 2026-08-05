@@ -2,11 +2,126 @@
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass
 from typing import Any, Literal, Optional
 
+from preloop.utils.secret_scrubbing import scrub_secrets
 
 GatewayProvider = Literal["openai", "anthropic", "gemini"]
+
+# Hard cap on any upstream-provider text surfaced to end users. Upstream
+# messages can embed multi-KB metadata blobs; the user needs the sentence,
+# not the dump.
+_MAX_SURFACED_MESSAGE_CHARS = 400
+_MAX_PROVIDER_DETAIL_CHARS = 160
+
+# litellm doubles (sometimes triples) its own exception-class prefix onto the
+# provider message, e.g. "litellm.NotFoundError: litellm.NotFoundError: ...".
+_LITELLM_PREFIX_RE = re.compile(r"^(?:litellm\.\w+(?:Error|Exception):\s*)+")
+# "<Provider>Exception - " marker litellm inserts before the raw body, e.g.
+# "OpenrouterException - {...}" or "OpenAIException - invalid request".
+_PROVIDER_MARKER_RE = re.compile(r"^(?P<name>[A-Za-z][A-Za-z0-9_]*)Exception\s*-\s*")
+
+
+@dataclass(frozen=True)
+class UpstreamErrorDetail:
+    """The upstream provider's own message, lifted out of a litellm blob.
+
+    Attributes:
+        message: The human-readable sentence the upstream provider produced,
+            scrubbed of secrets and length-capped. Falls back to the cleaned
+            litellm text when no structured body is present.
+        provider_detail: A short hint (upstream provider name plus a compact
+            context fragment), or ``None`` when nothing useful was found.
+            Never a metadata dump.
+    """
+
+    message: str
+    provider_detail: Optional[str] = None
+
+
+def _parse_embedded_json(text: str) -> Optional[dict[str, Any]]:
+    """Parse a JSON object embedded at (or after) the start of ``text``."""
+    start = text.find("{")
+    if start < 0:
+        return None
+    try:
+        parsed, _end = json.JSONDecoder().raw_decode(text[start:])
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _compact_hint(
+    provider_name: Optional[str], body: Optional[dict[str, Any]]
+) -> Optional[str]:
+    """Build the short ``provider_detail`` hint. Never a metadata dump."""
+    fragments: list[str] = []
+    if provider_name:
+        fragments.append(provider_name)
+    if body is not None:
+        error_obj = body.get("error")
+        metadata = error_obj.get("metadata") if isinstance(error_obj, dict) else None
+        if isinstance(metadata, dict):
+            requested = metadata.get("requested_providers")
+            if isinstance(requested, list) and requested:
+                names = ", ".join(str(item) for item in requested[:3])
+                fragments.append(f"(requested_providers: {names})")
+    if not fragments:
+        return None
+    hint = " ".join(fragments)[:_MAX_PROVIDER_DETAIL_CHARS]
+    return scrub_secrets(hint)
+
+
+def extract_upstream_error_detail(raw_message: str) -> UpstreamErrorDetail:
+    """Lift the upstream provider's own message out of a litellm error blob.
+
+    Strips the repeated ``litellm.<Class>Error:`` prefixes and the
+    ``<Provider>Exception - `` marker, then parses the embedded JSON body
+    (``{"error": {"message": ...}}``) when present and lifts the inner
+    human-readable message. Falls back to the cleaned litellm text when no
+    parseable body exists. Everything surfaced is passed through
+    :func:`scrub_secrets` and length-capped.
+
+    Args:
+        raw_message: The raw exception message, possibly litellm-wrapped.
+
+    Returns:
+        An :class:`UpstreamErrorDetail` with the user-facing message and an
+        optional short provider hint.
+    """
+    text = str(raw_message).strip()
+    text = _LITELLM_PREFIX_RE.sub("", text)
+
+    provider_name: Optional[str] = None
+    marker = _PROVIDER_MARKER_RE.match(text)
+    if marker:
+        provider_name = marker.group("name").lower()
+        text = text[marker.end() :]
+
+    body = _parse_embedded_json(text)
+    message = text
+    if body is not None:
+        error_obj = body.get("error")
+        inner: Any = None
+        if isinstance(error_obj, dict):
+            inner = error_obj.get("message")
+        elif isinstance(error_obj, str):
+            inner = error_obj
+        elif isinstance(body.get("message"), str):
+            inner = body.get("message")
+        if isinstance(inner, str) and inner.strip():
+            message = inner.strip()
+
+    message = (scrub_secrets(message) or "Gateway upstream error")[
+        :_MAX_SURFACED_MESSAGE_CHARS
+    ]
+    return UpstreamErrorDetail(
+        message=message,
+        provider_detail=_compact_hint(provider_name, body),
+    )
 
 
 def _default_error_type(provider: GatewayProvider, status_code: int) -> str:
@@ -73,6 +188,7 @@ class ModelGatewayAPIError(Exception):
     error_class: Optional[str] = None
     retry_after_seconds: Optional[int] = None
     terminal: bool = False
+    provider_detail: Optional[str] = None
 
     def __post_init__(self) -> None:
         super().__init__(self.message)
@@ -105,6 +221,8 @@ class ModelGatewayAPIError(Exception):
             "param": self.param,
             "code": self.code,
         }
+        if self.provider_detail:
+            error_payload["provider_detail"] = self.provider_detail
         return {"error": error_payload}
 
     def response_headers(self) -> dict[str, str]:

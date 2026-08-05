@@ -12,7 +12,10 @@ from sqlalchemy.orm import Session
 from preloop.api.auth import get_current_active_user
 from preloop.config import get_settings, Settings
 from preloop.schemas.issue import IssueResponse, IssueUpdate
-from preloop.services.model_credentials import resolve_model_call_credentials
+from preloop.services.model_credentials import (
+    get_aux_openai_sdk_extra_kwargs,
+    resolve_model_call_credentials,
+)
 from preloop.schemas.issue_compliance import (
     ComplianceSuggestionResponse,
     CompliancePromptMetadata,
@@ -132,11 +135,20 @@ def _calculate_issue_compliance(
             )
 
         client = openai.OpenAI(api_key=api_key)
+        aux_extras = get_aux_openai_sdk_extra_kwargs(
+            default_model,
+            call_site_kwargs={
+                "model": default_model.model_identifier,
+                "messages": messages,
+                "response_format": {"type": "json_object"},
+            },
+        )
 
         response = client.chat.completions.create(
             model=default_model.model_identifier,
             messages=messages,
             response_format={"type": "json_object"},
+            **aux_extras,
         )
         llm_response_text = response.choices[0].message.content.strip()
 
@@ -278,14 +290,24 @@ def get_compliance_improvement_suggestion(
         raise HTTPException(status_code=500, detail="OpenAI API key not configured.")
 
     client = openai.OpenAI(api_key=api_key, base_url=creds_kwargs.get("api_base"))
+    compliance_messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    aux_extras = get_aux_openai_sdk_extra_kwargs(
+        default_model,
+        call_site_kwargs={
+            "model": default_model.model_identifier,
+            "messages": compliance_messages,
+            "response_format": {"type": "json_object"},
+        },
+    )
     try:
         llm_response = client.chat.completions.create(
             model=default_model.model_identifier,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
+            messages=compliance_messages,
             response_format={"type": "json_object"},
+            **aux_extras,
         )
         suggestion_data = json.loads(llm_response.choices[0].message.content)
         return ComplianceSuggestionResponse(**suggestion_data)

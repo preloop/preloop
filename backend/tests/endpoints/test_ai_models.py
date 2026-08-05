@@ -10,6 +10,7 @@ from preloop.schemas.ai_model import (
     AIModelCreate,
     AIModelRead,
     AIModelUpdate,
+    AvailableModelsResponse,
 )
 from preloop.models.models.account import Account
 
@@ -195,6 +196,28 @@ async def test_delete_ai_model(mock_account: Account, mocker: MockerFixture):
     mock_crud_ai_model.remove.assert_called_once_with(db=mocker.ANY, id=model_id)
 
 
+def test_available_models_post_route_declares_provenance_response_model():
+    """The POST discovery route publishes {models, source, error}."""
+    route = next(
+        r
+        for r in ai_models.router.routes
+        if r.path == "/ai-models/providers/{provider}/available-models"
+        and "POST" in r.methods
+    )
+    assert route.response_model is AvailableModelsResponse
+
+
+def test_available_models_response_defaults_and_shape():
+    response = AvailableModelsResponse(models=["kimi-k3"], source="live")
+    dumped = response.model_dump()
+    assert dumped == {"models": ["kimi-k3"], "source": "live", "error": None}
+
+
+def test_available_models_response_rejects_unknown_source():
+    with pytest.raises(ValidationError):
+        AvailableModelsResponse(models=[], source="hardcoded")
+
+
 def test_ai_model_schema_rejects_mixed_inline_and_external_credentials():
     """Schema validation should reject mixing api_key with external secret fields."""
     with pytest.raises(ValidationError) as create_error:
@@ -262,3 +285,105 @@ def test_ai_model_schema_rejects_secret_reuse_with_new_credentials(extra):
     assert "credentials_secret_id cannot be combined with new credential material" in (
         str(error.value)
     )
+
+
+@pytest.mark.asyncio
+async def test_fetch_provider_models_500_does_not_leak_exception_text(
+    mocker: MockerFixture,
+):
+    """Regression: an unexpected exception in _fetch_provider_models must
+    return a fixed 500 message, never the raw exception text, which can
+    contain endpoint URLs or key material."""
+    from fastapi import HTTPException
+
+    secret_detail = "Connection to https://api.example.com?key=sk-SUPERSECRET failed"
+
+    mocker.patch(
+        "preloop.api.endpoints.ai_models.get_available_models_for_provider",
+        side_effect=RuntimeError(secret_detail),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await ai_models._fetch_provider_models(
+            provider="openai",
+            api_key="test-key",
+            model_kind="llm",
+            api_endpoint=None,
+        )
+
+    http_exc = exc_info.value
+    assert http_exc.status_code == 500
+    assert secret_detail not in http_exc.detail
+    assert "Check server logs for details" in http_exc.detail
+
+
+@pytest.mark.asyncio
+async def test_fetch_provider_models_validation_error_is_400():
+    """An SSRF-blocked or otherwise invalid api_endpoint is a bad request,
+    not an authentication failure: it must map to 400, not 401."""
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc_info:
+        await ai_models._fetch_provider_models(
+            provider="openai-compatible",
+            api_key="sk-SUPERSECRET-KEY",
+            model_kind="llm",
+            api_endpoint="http://169.254.169.254/latest/meta-data",
+        )
+
+    http_exc = exc_info.value
+    assert http_exc.status_code == 400
+    assert "private address" in http_exc.detail
+    assert "sk-SUPERSECRET-KEY" not in http_exc.detail
+
+
+@pytest.mark.asyncio
+async def test_fetch_provider_models_auth_error_is_401(mocker: MockerFixture):
+    """A provider-rejected API key maps to 401 with the fixed message."""
+    from fastapi import HTTPException
+
+    from preloop.services.ai_model_provider import ProviderAuthError
+
+    mocker.patch(
+        "preloop.api.endpoints.ai_models.get_available_models_for_provider",
+        side_effect=ProviderAuthError(
+            "Invalid OpenAI API key. Please check your API key and try again."
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await ai_models._fetch_provider_models(
+            provider="openai",
+            api_key="sk-SUPERSECRET-KEY",
+            model_kind="llm",
+            api_endpoint=None,
+        )
+
+    http_exc = exc_info.value
+    assert http_exc.status_code == 401
+    assert "Invalid OpenAI API key" in http_exc.detail
+    assert "sk-SUPERSECRET-KEY" not in http_exc.detail
+
+
+@pytest.mark.asyncio
+async def test_fetch_provider_models_bare_value_error_is_400(mocker: MockerFixture):
+    """Regression: an unexpected internal ValueError used to be mislabeled as
+    401 unauthorized. Validation (400) is the safer default."""
+    from fastapi import HTTPException
+
+    mocker.patch(
+        "preloop.api.endpoints.ai_models.get_available_models_for_provider",
+        side_effect=ValueError("some internal invariant broke"),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await ai_models._fetch_provider_models(
+            provider="openai",
+            api_key="sk-SUPERSECRET-KEY",
+            model_kind="llm",
+            api_endpoint=None,
+        )
+
+    http_exc = exc_info.value
+    assert http_exc.status_code == 400
+    assert "sk-SUPERSECRET-KEY" not in http_exc.detail

@@ -90,7 +90,11 @@ from preloop.services.managed_agent_identity import (
     merge_managed_agents,
     rekey_managed_agent,
 )
-from preloop.services.model_credentials import resolve_model_call_credentials
+from preloop.services.model_credentials import (
+    build_aux_kwargs,
+    check_reasoning_model_empty_content,
+    resolve_model_call_credentials,
+)
 from preloop.services.model_gateway_usage import ModelGatewayUsageService
 from preloop.services.runtime_session_explorer import RuntimeSessionExplorerService
 from preloop.services.subject_governance import (
@@ -1254,7 +1258,7 @@ async def extract_agent_name(
     litellm_model = to_litellm_model(default_model)
     creds_kwargs = resolve_model_call_credentials(default_model, db=db)
 
-    kwargs = {
+    call_site_kwargs = {
         "model": litellm_model,
         "messages": [
             {
@@ -1265,11 +1269,14 @@ async def extract_agent_name(
         ],
         "temperature": 0.0,
         "max_tokens": 100,
-        **creds_kwargs,
     }
+    kwargs = build_aux_kwargs(
+        default_model, creds_kwargs, call_site_kwargs=call_site_kwargs
+    )
 
     def _call():
         response = litellm.completion(**kwargs)
+        check_reasoning_model_empty_content(response)
         return response.choices[0].message.content.strip()
 
     try:

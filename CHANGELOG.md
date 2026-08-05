@@ -136,6 +136,23 @@ across renames and re-onboarding.
   `GET /models` (300+ entries render in full), and the "Other..." escape hatch
   still accepts custom identifiers such as the Auto Router
   (`openrouter/auto-beta`).
+- **Moonshot (Kimi), Z.ai (GLM) and Mistral as first-class providers**: three
+  new entries in the add-model dialog, each with its base URL prefilled and a
+  link to the provider's key page, so "Fetch Available Models" works without
+  typing an endpoint. Moonshot ships with bundled pricing for `kimi-k3`,
+  `kimi-k2.7-code`, `kimi-k2.7-code-highspeed` and `kimi-k2.6` taken from
+  Moonshot's published price list, so Kimi traffic is cost attributed from the
+  first request instead of landing as unpriced usage. `kimi-k3` leads the
+  keyless Moonshot list. Mistral is a BYOK option that keeps model traffic with
+  a European provider for teams that care where inference runs.
+- **Model lists say where they came from**: the available-models endpoint now
+  returns `{models, source, error}` instead of a bare array, and the dialog
+  renders a short notice when a list is the bundled fallback rather than the
+  provider's live catalog, naming the reason (request timed out, network error,
+  provider returned nothing, no API endpoint configured). With no key entered
+  the notice invites you to add one and fetch again instead of blaming the
+  provider. The reason vocabulary is fixed and carries no provider text, so a
+  failing provider cannot echo a URL or key material into the console.
 
 ### Changed
 
@@ -192,6 +209,35 @@ across renames and re-onboarding.
   key still surfaces as an authentication error; a network or listing failure
   falls back to the bundled catalog instead of emptying the picker. The
   keyless fallback catalog now includes the DeepSeek v4 models.
+
+- **Every provider now attempts a live model list**: DeepSeek and Qwen were
+  fixed earlier, but the same fetch-and-discard pattern survived elsewhere.
+  Anthropic returned a list hardcoded in early 2025 after spending a paid
+  `messages.create` call purely to check the key; it now lists models through
+  the Anthropic models endpoint and costs nothing to refresh. Google spent a
+  paid `generate_content` call for the same reason and silently returned its
+  hardcoded list when the listing came back empty; the paid ping is gone and an
+  empty listing is reported rather than hidden. OpenAI truncated the account's
+  catalog to the first ten ids and filtered to `gpt-*`, which hid the entire
+  o-series and would have hidden every future family; the cap is removed and
+  non-chat ids (embeddings, whisper, tts, image, moderation) are excluded
+  instead. No provider returns a bundled list without saying so.
+
+- **Failed model tests said nothing useful**: testing a model that the upstream
+  provider rejected showed only "Failed to run model request" while the real
+  reason, for example "No allowed providers are available for the selected
+  model", was visible only in the gateway log. The provider's own message is now
+  lifted out of the upstream error and shown, with a short hint naming the
+  provider. The surfaced text is scrubbed for credentials and capped in length,
+  and stack traces and provider metadata blobs are not included.
+
+- **Editing a model with a stored key failed**: opening any saved model and
+  changing a field posted the whole form back, including the credential fields
+  belonging to the stored secret, and the API rejected it with
+  `credential_type/credential_payload cannot be combined with external
+  credential fields`. Editing was effectively impossible without deleting and
+  recreating the model. The update now sends only the fields the form manages,
+  and credential fields only when a new API key is actually typed.
 
 - **Commit statuses post to the repository that triggered the flow** (#175): a
   flow watching several projects always posted its GitHub check to

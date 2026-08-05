@@ -23,6 +23,7 @@ from preloop.schemas.ai_model import (
     AIModelRead,
     AIModelUpdate,
     AvailableModelsRequest,
+    AvailableModelsResponse,
 )
 from preloop.services.secret_service import (
     PRINCIPAL_BOUND_OAUTH_CREDENTIAL_TYPES,
@@ -41,7 +42,11 @@ from preloop.schemas.gateway_usage import (
 from preloop.services.model_gateway_usage import ModelGatewayUsageService
 from preloop.services.runtime_session_explorer import RuntimeSessionExplorerService
 from preloop.utils.permissions import require_permission
-from preloop.services.ai_model_provider import get_available_models_for_provider
+from preloop.services.ai_model_provider import (
+    ProviderAuthError,
+    ProviderValidationError,
+    get_available_models_for_provider,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -357,21 +362,22 @@ def export_ai_model_credentials(
 
 @router.post(
     "/ai-models/providers/{provider}/available-models",
-    response_model=List[str],
+    response_model=AvailableModelsResponse,
     summary="Get Available Models for Provider",
     tags=["AI Models"],
 )
 async def list_provider_available_models(
     provider: str,
     request_in: Optional[AvailableModelsRequest] = None,
-) -> List[str]:
+) -> AvailableModelsResponse:
     """
-    Fetch available models from the specified AI provider.
+    Fetch available models from the specified AI provider, with provenance.
 
-    For OpenAI, this fetches the latest available models from their API. For
-    Anthropic and Google this returns a curated list of known models. For
-    openai-compatible / custom / openrouter providers, the configured
-    ``api_endpoint`` is queried for its OpenAI-compatible model list.
+    Every provider attempts a live listing when a key (and endpoint where
+    applicable) is present; the response reports ``source`` ("live" or
+    "fallback") and a short safe ``error`` reason when a live attempt failed.
+    The reason comes from a fixed vocabulary and never contains raw provider
+    error text, endpoint URLs, or key material.
 
     The provider API key travels in the request BODY, never the query string:
     as a query parameter it was written to access logs in plaintext.
@@ -414,17 +420,23 @@ async def get_provider_available_models(
     """
     Deprecated GET form, kept for clients that have not moved to POST yet.
 
+    Returns a BARE LIST of model ids, unlike the POST form, which reports
+    provenance as ``{models, source, error}``. The bare-list shape is kept
+    here on purpose so unknown external callers of the deprecated route do
+    not break; new clients should use POST and read the provenance.
+
     The api_key query parameter this endpoint used to accept has been REMOVED,
     not merely deprecated: it wrote live provider keys into access logs in
     plaintext. Pass the key in the X-Provider-Api-Key header, or use the POST
     form. A key sent as a query parameter is ignored.
     """
-    return await _fetch_provider_models(
+    result = await _fetch_provider_models(
         provider=provider,
         api_key=x_provider_api_key,
         model_kind=model_kind,
         api_endpoint=api_endpoint,
     )
+    return result.models
 
 
 async def _fetch_provider_models(
@@ -433,18 +445,39 @@ async def _fetch_provider_models(
     api_key: Optional[str],
     model_kind: Literal["llm", "stt", "tts"],
     api_endpoint: Optional[str],
-) -> List[str]:
+) -> AvailableModelsResponse:
     """Shared body of the GET and POST available-models endpoints."""
     try:
-        return await get_available_models_for_provider(
+        result = await get_available_models_for_provider(
             provider, api_key, model_kind, api_endpoint
         )
-    except ValueError as e:
-        # ValueError is raised for authentication and validation errors. The
-        # message is provider text, never the key.
+        return AvailableModelsResponse(
+            models=result.models,
+            source=result.source,
+            error=result.error,
+        )
+    except ProviderAuthError as e:
+        # The provider rejected the caller's API key. The message is our own
+        # fixed text, never the key.
         logger.warning("Cannot list models for provider %s: %s", provider, e)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(e),
+        )
+    except ProviderValidationError as e:
+        # The request was invalid before any provider was contacted (bad
+        # model_kind, rejected or SSRF-blocked endpoint).
+        logger.warning("Cannot list models for provider %s: %s", provider, e)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except ValueError as e:
+        # An unexpected internal ValueError. Treat it as a bad request:
+        # calling it "unauthorized" would mislabel non-auth failures.
+        logger.warning("Cannot list models for provider %s: %s", provider, e)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         )
     except Exception as e:
@@ -453,5 +486,5 @@ async def _fetch_provider_models(
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch available models: {str(e)}",
+            detail="Failed to fetch available models. Check server logs for details.",
         )

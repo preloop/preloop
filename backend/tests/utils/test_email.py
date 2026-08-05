@@ -1,5 +1,6 @@
 """Tests for email utility."""
 
+import logging
 import pytest
 from unittest.mock import MagicMock, patch
 from preloop.utils.email import (
@@ -11,6 +12,24 @@ from preloop.utils.email import (
     send_tracker_registered_email,
     send_product_notification_email,
 )
+
+
+class _CapturingHandler(logging.Handler):
+    """Collect formatted records straight off a specific logger.
+
+    Deliberately NOT caplog: preloop's logging config sets propagate=False on
+    its loggers (backend/preloop/logging.py), so caplog's root handler sees
+    nothing and a "secret is absent from the logs" assertion would pass
+    against an empty string. Round 2 of PR #181 shipped exactly that vacuous
+    test. Attaching here guarantees the records are real.
+    """
+
+    def __init__(self):
+        super().__init__(level=logging.DEBUG)
+        self.messages = []
+
+    def emit(self, record):
+        self.messages.append(record.getMessage())
 
 
 class TestSendEmail:
@@ -550,3 +569,64 @@ class TestEmailError:
     def test_email_error_inherits_from_exception(self):
         """Test that EmailError inherits from Exception."""
         assert issubclass(EmailError, Exception)
+
+
+class TestUnconfiguredSmtpDoesNotLogSecrets:
+    """The dev-mode early return must not write email bodies to the log.
+
+    Regression for CodeQL alert #191 (py/clear-text-logging-sensitive-data,
+    backend/preloop/utils/email.py:78). When SMTP is unconfigured, send_email
+    logs and returns instead of sending. It used to log the full body. Several
+    senders embed a single-use auth token in that body, so the token landed in
+    the logs in clear text while still valid.
+    """
+
+    @patch("preloop.utils.email.SMTP_USERNAME", "")
+    @patch("preloop.utils.email.SMTP_PASSWORD", "")
+    def test_password_reset_token_is_not_logged(self):
+        """The end-to-end case: a reset token must never reach the log."""
+        token = "super-secret-reset-token-abc123"
+        handler = _CapturingHandler()
+        email_logger = logging.getLogger("preloop.utils.email")
+        previous_level = email_logger.level
+        email_logger.addHandler(handler)
+        email_logger.setLevel(logging.DEBUG)
+        try:
+            send_password_reset_email("user@example.com", token)
+        finally:
+            email_logger.removeHandler(handler)
+            email_logger.setLevel(previous_level)
+
+        # The handler must actually have captured something, otherwise the
+        # assertion below would be vacuously true.
+        assert handler.messages, "no log records captured; assertion would be vacuous"
+        combined = "\n".join(handler.messages)
+        assert token not in combined
+        # The reset link carries the token, so it must be absent too.
+        assert "reset-password?token=" not in combined
+
+    @patch("preloop.utils.email.SMTP_USERNAME", "")
+    @patch("preloop.utils.email.SMTP_PASSWORD", "")
+    def test_body_text_is_not_logged_but_send_is_reported(self):
+        """The body is suppressed while the operator-facing signal survives."""
+        handler = _CapturingHandler()
+        email_logger = logging.getLogger("preloop.utils.email")
+        previous_level = email_logger.level
+        email_logger.addHandler(handler)
+        email_logger.setLevel(logging.DEBUG)
+        try:
+            send_email(
+                to_email="recipient@example.com",
+                subject="Test Subject",
+                body_text="BODY-SENTINEL-should-not-be-logged",
+            )
+        finally:
+            email_logger.removeHandler(handler)
+            email_logger.setLevel(previous_level)
+
+        assert handler.messages, "no log records captured; assertion would be vacuous"
+        combined = "\n".join(handler.messages)
+        assert "BODY-SENTINEL-should-not-be-logged" not in combined
+        # The operator still learns that an email would have been sent.
+        assert "recipient@example.com" in combined
+        assert "Test Subject" in combined

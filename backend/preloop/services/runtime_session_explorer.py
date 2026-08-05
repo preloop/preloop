@@ -24,7 +24,11 @@ from preloop.models.crud import (
 )
 from preloop.models.models.account import Account
 from preloop.services.litellm_routing import to_litellm_model
-from preloop.services.model_credentials import call_with_default_model_fallback
+from preloop.services.model_credentials import (
+    build_aux_kwargs,
+    call_with_default_model_fallback,
+    check_reasoning_model_empty_content,
+)
 from preloop.schemas.gateway_usage import (
     AccountGatewayUsageSearchResponse,
     AccountRuntimeSessionDetailResponse,
@@ -672,7 +676,7 @@ class RuntimeSessionExplorerService:
             },
             "messages": compact_messages,
         }
-        kwargs: dict[str, Any] = {
+        call_site_kwargs: dict[str, Any] = {
             "model": self._to_litellm_model(model),
             "messages": [
                 {
@@ -696,10 +700,13 @@ class RuntimeSessionExplorerService:
             # summary; a tight cap is fully consumed by reasoning and returns
             # empty content (no summary) on reasoning-model defaults.
             "max_tokens": 2048,
-            **creds_kwargs,
         }
+        kwargs = build_aux_kwargs(
+            model, creds_kwargs, call_site_kwargs=call_site_kwargs
+        )
 
         response = litellm.completion(**kwargs)
+        check_reasoning_model_empty_content(response)
         raw = response.choices[0].message.content or "{}"
         raw = raw.strip()
         if raw.startswith("```"):

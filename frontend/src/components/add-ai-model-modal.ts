@@ -6,6 +6,7 @@ import {
   getAvailableModelsForProvider,
   createAIModel,
   updateAIModel,
+  type AvailableModelsResult,
 } from '../api';
 import type { AIModel } from '../types';
 import type SlSelect from '@shoelace-style/shoelace/dist/components/select/select.js';
@@ -32,9 +33,12 @@ interface ProviderOption {
 const PROVIDER_OPTIONS: ProviderOption[] = [
   { value: 'openai', label: 'OpenAI', serviceKinds: ['llm', 'stt', 'tts'] },
   { value: 'anthropic', label: 'Anthropic', serviceKinds: ['llm'] },
+  { value: 'moonshot', label: 'Moonshot (Kimi)', serviceKinds: ['llm'] },
   { value: 'google', label: 'Google', serviceKinds: ['llm', 'stt'] },
   { value: 'qwen', label: 'Qwen', serviceKinds: ['llm'] },
   { value: 'deepseek', label: 'DeepSeek', serviceKinds: ['llm'] },
+  { value: 'zai', label: 'Z.ai (GLM)', serviceKinds: ['llm'] },
+  { value: 'mistral', label: 'Mistral', serviceKinds: ['llm'] },
   { value: 'openrouter', label: 'OpenRouter', serviceKinds: ['llm'] },
   {
     value: 'openai-compatible',
@@ -57,6 +61,9 @@ const PROVIDER_DEFAULT_ENDPOINTS: Record<string, string> = {
   google: 'https://generativelanguage.googleapis.com/v1beta',
   qwen: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
   deepseek: 'https://api.deepseek.com/v1',
+  moonshot: 'https://api.moonshot.ai/v1',
+  zai: 'https://api.z.ai/api/paas/v4',
+  mistral: 'https://api.mistral.ai/v1',
   openrouter: 'https://openrouter.ai/api/v1',
   'openai-compatible': '',
   custom: '',
@@ -69,6 +76,24 @@ const PROVIDER_DEFAULT_ENDPOINTS: Record<string, string> = {
  * (OpenRouter) that is already satisfied without the user typing anything.
  */
 const ENDPOINT_LISTED_PROVIDERS = ['openai-compatible', 'custom', 'openrouter'];
+
+/**
+ * Human wording for the server's fixed fallback-reason vocabulary.
+ *
+ * Keys must stay in step with `AvailableModelsFallbackReason` in api.ts, which
+ * mirrors the server's set. Anything unrecognized falls back to a generic
+ * phrase rather than being rendered, so a server-side code can never put raw
+ * upstream text on screen.
+ */
+const FALLBACK_REASON_LABELS: Record<string, string> = {
+  timeout: 'timed out',
+  network: 'network error',
+  empty_response: 'empty response',
+  unsupported: 'live listing not supported',
+  missing_endpoint: 'no API endpoint configured',
+  sdk_missing: 'provider SDK not installed',
+  unknown: 'provider unavailable',
+};
 
 /**
  * Reusable AI model add/edit dialog.
@@ -118,6 +143,10 @@ export class AddAIModelModal extends LitElement {
   @state() private _isOtherModel = false;
   @state() private _isFetchingModels = false;
   @state() private _modelsFetchError: string | null = null;
+  /** Where the current suggestions came from: null until a fetch completes. */
+  @state() private _modelsSource: 'live' | 'fallback' | null = null;
+  /** Short safe reason code accompanying a fallback listing. */
+  @state() private _modelsFallbackReason: string | null = null;
   /**
    * Extra models to create alongside the primary one, all sharing the single
    * provider key entered on this form. Create-mode only.
@@ -185,9 +214,10 @@ export class AddAIModelModal extends LitElement {
     this._isSubmitting = false;
     this._isFetchingModels = false;
     this._modelsFetchError = null;
+    this._modelsSource = null;
+    this._modelsFallbackReason = null;
   }
 
-  /** Merge gateway routing metadata; gateway.enabled only when upstream credentials exist. */
   /**
    * @param modelIdOverride Build the gateway alias for this model id instead of
    *   the primary one. Used when creating extra models that share one key —
@@ -278,6 +308,8 @@ export class AddAIModelModal extends LitElement {
     this._isOtherModel = false;
     this._additionalModelIds = [];
     this._modelsFetchError = null;
+    this._modelsSource = null;
+    this._modelsFallbackReason = null;
     this.requestUpdate();
     if (this._selectedServiceKind !== 'llm') {
       void this._fetchModelsForCurrentProvider();
@@ -296,6 +328,12 @@ export class AddAIModelModal extends LitElement {
         return 'https://dashscope.console.aliyun.com/apiKey';
       case 'deepseek':
         return 'https://platform.deepseek.com/api_keys';
+      case 'moonshot':
+        return 'https://platform.moonshot.ai/console/api-keys';
+      case 'zai':
+        return 'https://z.ai/manage-apikey/apikey-list';
+      case 'mistral':
+        return 'https://console.mistral.ai/api-keys';
       case 'openrouter':
         return 'https://openrouter.ai/keys';
       case 'openai-compatible':
@@ -327,6 +365,8 @@ export class AddAIModelModal extends LitElement {
     this._isOtherModel = false;
     this._additionalModelIds = [];
     this._modelsFetchError = null;
+    this._modelsSource = null;
+    this._modelsFallbackReason = null;
     this.requestUpdate();
     if (providerSupported && modelKind !== 'llm') {
       void this._fetchModelsForCurrentProvider();
@@ -337,7 +377,7 @@ export class AddAIModelModal extends LitElement {
     provider: string,
     apiKey?: string,
     apiEndpoint?: string
-  ): Promise<string[]> {
+  ): Promise<AvailableModelsResult> {
     return await getAvailableModelsForProvider(
       provider,
       apiKey,
@@ -369,19 +409,27 @@ export class AddAIModelModal extends LitElement {
 
     this._isFetchingModels = true;
     this._modelsFetchError = null;
+    this._modelsSource = null;
+    this._modelsFallbackReason = null;
 
     try {
-      this._modelSuggestions = await this._fetchModelSuggestionsForProvider(
+      const result = await this._fetchModelSuggestionsForProvider(
         provider,
         this._currentModel.api_key,
         apiEndpoint
       );
+      this._modelSuggestions = result.models;
+      this._modelsSource = result.source;
+      this._modelsFallbackReason =
+        result.source === 'fallback' ? result.error || null : null;
       if (this._modelSuggestions.length === 0) {
         this._modelsFetchError = `No ${this._selectedServiceKind.toUpperCase()} models available for this provider`;
       }
     } catch (error) {
       console.error('Failed to fetch models:', error);
       this._modelSuggestions = [];
+      this._modelsSource = null;
+      this._modelsFallbackReason = null;
       this._modelsFetchError =
         error instanceof Error ? error.message : 'Failed to fetch models';
     } finally {
@@ -498,9 +546,23 @@ export class AddAIModelModal extends LitElement {
     this._isSubmitting = true;
 
     try {
-      const payload = {
-        ...this._currentModel,
+      // Build the payload from form-managed fields only. Spreading the whole
+      // model would echo stored credential bookkeeping (credential_type,
+      // credentials_secret_id, credentials_backend_type, ...) back into the
+      // update schema, whose validator rejects inline + external credential
+      // fields together, breaking every edit. A key is sent only when the
+      // user typed a new one; blank means "keep the existing key".
+      const typedApiKey = (this._currentModel.api_key || '').trim();
+      const payload: Record<string, unknown> = {
+        name: this._currentModel.name,
+        description: this._currentModel.description,
+        provider_name: this._currentModel.provider_name,
+        model_identifier: this._currentModel.model_identifier,
+        model_kind: this._currentModel.model_kind,
+        api_endpoint: this._currentModel.api_endpoint,
+        is_default: this._currentModel.is_default,
         meta_data: this._buildMetaDataForSubmit(),
+        ...(typedApiKey ? { api_key: typedApiKey } : {}),
       };
       if (this._isEditing) {
         const updated = await updateAIModel(this._currentModel.id!, payload);
@@ -535,6 +597,55 @@ export class AddAIModelModal extends LitElement {
   }
 
   // ── render ───────────────────────────────────────────
+
+  /**
+   * Non-blocking provenance notice for the model list. Fallback listings say
+   * so, with a short safe reason; live listings get a subtle count. Never
+   * renders raw upstream text.
+   *
+   * A fallback WITHOUT a reason is not a failure: the server sends that when
+   * no live attempt was possible, which for these providers means no API key
+   * was entered yet. Saying "could not fetch" there would blame the provider
+   * for the user not having typed a key.
+   */
+  private _renderModelsProvenanceNotice() {
+    if (this._modelsSource === 'fallback') {
+      if (!this._modelsFallbackReason) {
+        return html`
+          <div
+            class="models-provenance-notice"
+            style="color: var(--sl-color-neutral-600); font-size: 0.875rem; margin-top: 0.5rem;"
+          >
+            Showing known models. Enter an API key and fetch again for this
+            provider's live list. You can also enter any model id via Other...
+          </div>
+        `;
+      }
+      const reason =
+        FALLBACK_REASON_LABELS[this._modelsFallbackReason] ||
+        'provider unavailable';
+      return html`
+        <div
+          class="models-provenance-notice"
+          style="color: var(--sl-color-warning-700); font-size: 0.875rem; margin-top: 0.5rem;"
+        >
+          Could not fetch the live model list (${reason}). Showing known models,
+          which may be incomplete. You can still enter any model id via Other...
+        </div>
+      `;
+    }
+    if (this._modelsSource === 'live' && this._modelSuggestions.length > 0) {
+      return html`
+        <div
+          class="models-provenance-notice"
+          style="color: var(--sl-color-neutral-500); font-size: 0.8125rem; margin-top: 0.5rem;"
+        >
+          Fetched ${this._modelSuggestions.length} models
+        </div>
+      `;
+    }
+    return html``;
+  }
 
   render() {
     if (!this.open) return html``;
@@ -720,6 +831,7 @@ export class AddAIModelModal extends LitElement {
                   `
                 : ''
             }
+            ${this._renderModelsProvenanceNotice()}
           </div>
 
           ${
@@ -770,7 +882,7 @@ export class AddAIModelModal extends LitElement {
                         .value=${this._additionalModelIds}
                         @sl-change=${this._handleAdditionalModelsChange}
                         ?disabled=${this._isSubmitting}
-                        help-text="Add more models from this provider. They all reuse the same API key you entered above."
+                        help-text="Add more models from this provider. They all reuse the same API key you entered above. Each is created as a separate model entry, managed on its own."
                       >
                         ${repeat(
                           this._additionalModelChoices,

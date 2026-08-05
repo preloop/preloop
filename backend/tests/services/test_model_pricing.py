@@ -1,7 +1,12 @@
 """Tests for model pricing estimation."""
 
+import json
+
+import pytest
+
 from preloop.models.models.ai_model import AIModel
 from preloop.models.models.model_price_override import ModelPriceOverride
+from preloop.services.model_price_catalog import CATALOG_PATH, load_catalog
 from preloop.services.model_pricing import (
     _iter_litellm_model_candidates,
     estimate_ai_model_usage_cost,
@@ -211,6 +216,117 @@ def test_discount_only_override_applies_to_litellm_list_price(monkeypatch) -> No
     )
 
     assert cost == 0.03
+
+
+class TestNewProviderPricing:
+    """moonshot, zai and mistral fallback ids must resolve to a price.
+
+    moonshot ids are priced from Preloop's bundled snapshot (official
+    Moonshot prices; the pinned litellm map lacks kimi-k3 and the k2.7-code
+    family). zai and mistral ids are priced from the pinned litellm map.
+    """
+
+    def test_candidates_include_moonshot_prefix(self) -> None:
+        ai_model = AIModel(provider_name="moonshot", model_identifier="kimi-k3")
+        candidates = list(_iter_litellm_model_candidates(ai_model))
+        assert "kimi-k3" in candidates
+        assert "moonshot/kimi-k3" in candidates
+
+    def test_candidates_include_zai_prefix(self) -> None:
+        ai_model = AIModel(provider_name="zai", model_identifier="glm-5")
+        candidates = list(_iter_litellm_model_candidates(ai_model))
+        assert "zai/glm-5" in candidates
+
+    def test_candidates_include_mistral_prefix(self) -> None:
+        ai_model = AIModel(
+            provider_name="mistral", model_identifier="mistral-large-latest"
+        )
+        candidates = list(_iter_litellm_model_candidates(ai_model))
+        assert "mistral/mistral-large-latest" in candidates
+
+    def test_bundled_table_prices_every_moonshot_fallback_id(self) -> None:
+        from preloop.services.ai_model_provider import MOONSHOT_KNOWN_MODELS
+
+        prices = json.loads(CATALOG_PATH.read_text())
+        for model_id in MOONSHOT_KNOWN_MODELS:
+            key = f"moonshot/{model_id}"
+            assert key in prices, f"{key} missing from model_prices.json"
+            entry = prices[key]
+            assert entry["litellm_provider"] == "moonshot"
+            assert entry["mode"] == "chat"
+            assert entry["input_cost_per_token"] > 0
+            assert entry["output_cost_per_token"] > 0
+            # No official max_output_tokens is published; do not invent one.
+            assert "max_output_tokens" not in entry
+            assert "max_tokens" not in entry
+
+    def test_kimi_k3_official_prices_in_bundled_table(self) -> None:
+        """Official prices from platform.moonshot.ai/docs/pricing/chat-k3.md:
+        cache-hit input 0.30, cache-miss input 3.00, output 15.00 per 1M."""
+        prices = json.loads(CATALOG_PATH.read_text())
+        entry = prices["moonshot/kimi-k3"]
+        assert entry["input_cost_per_token"] == 3e-06
+        assert entry["output_cost_per_token"] == 1.5e-05
+        assert entry["cache_read_input_token_cost"] == 3e-07
+        assert entry["max_input_tokens"] == 1048576
+
+    def test_kimi_k3_cost_resolves_through_estimator(self) -> None:
+        """End to end: an AIModel row for kimi-k3 produces a catalog price."""
+        load_catalog(force=True)
+        ai_model = AIModel(provider_name="moonshot", model_identifier="kimi-k3")
+        estimate = estimate_ai_model_usage_cost_detailed(
+            ai_model,
+            prompt_tokens=1_000_000,
+            completion_tokens=1_000_000,
+            total_tokens=2_000_000,
+        )
+        assert estimate.source == "catalog"
+        # 1M input at $3/M plus 1M output at $15/M.
+        assert estimate.cost == pytest.approx(18.0, rel=1e-6)
+
+    @pytest.mark.parametrize(
+        "model_id", ["kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6"]
+    )
+    def test_other_moonshot_fallback_ids_resolve(self, model_id: str) -> None:
+        load_catalog(force=True)
+        ai_model = AIModel(provider_name="moonshot", model_identifier=model_id)
+        estimate = estimate_ai_model_usage_cost_detailed(
+            ai_model, prompt_tokens=1000, completion_tokens=1000, total_tokens=2000
+        )
+        assert estimate.source == "catalog"
+        assert estimate.cost is not None and estimate.cost > 0
+
+    def test_zai_fallback_ids_resolve_via_litellm_map(self) -> None:
+        from preloop.services.ai_model_provider import ZAI_KNOWN_MODELS
+
+        for model_id in ZAI_KNOWN_MODELS:
+            ai_model = AIModel(provider_name="zai", model_identifier=model_id)
+            estimate = estimate_ai_model_usage_cost_detailed(
+                ai_model,
+                prompt_tokens=1000,
+                completion_tokens=1000,
+                total_tokens=2000,
+            )
+            assert estimate.source == "catalog", f"{model_id} is unpriced"
+            # glm-4.7-flash is free in litellm's map, so cost can be 0.0;
+            # what matters is that a price RESOLVED (source above).
+            assert estimate.cost is not None, f"{model_id} has no cost"
+
+    def test_mistral_fallback_ids_resolve_via_litellm_map(self) -> None:
+        from preloop.services.ai_model_provider import MISTRAL_KNOWN_MODELS
+
+        for model_id in MISTRAL_KNOWN_MODELS:
+            ai_model = AIModel(provider_name="mistral", model_identifier=model_id)
+            estimate = estimate_ai_model_usage_cost_detailed(
+                ai_model,
+                prompt_tokens=1000,
+                completion_tokens=1000,
+                total_tokens=2000,
+            )
+            assert estimate.source == "catalog", f"{model_id} is unpriced"
+            assert estimate.cost is not None and estimate.cost > 0, (
+                f"{model_id} has no cost"
+            )
 
 
 def test_model_price_override_serializes_adjustment_terms() -> None:
