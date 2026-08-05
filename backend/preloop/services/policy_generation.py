@@ -27,7 +27,11 @@ from preloop.models.crud.ai_model import ai_model as crud_ai_model
 from preloop.models.crud.audit_log import crud_audit_log
 from preloop.models.models.ai_model import AIModel
 from preloop.services.litellm_routing import to_litellm_model
-from preloop.services.model_credentials import resolve_model_call_credentials
+from preloop.services.model_credentials import (
+    build_aux_kwargs,
+    check_reasoning_model_empty_content,
+    resolve_model_call_credentials,
+)
 from preloop.services.policy import export_current_policy
 from preloop.services.policy.schema import PolicyDocument
 
@@ -318,7 +322,7 @@ If a "CURRENT ACCOUNT CONFIGURATION" block is provided below:
         litellm_model = self._to_litellm_model(model)
         creds_kwargs = resolve_model_call_credentials(model, db=self.db)
 
-        kwargs: Dict[str, Any] = {
+        call_site_kwargs: Dict[str, Any] = {
             "model": litellm_model,
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -326,12 +330,15 @@ If a "CURRENT ACCOUNT CONFIGURATION" block is provided below:
             ],
             "temperature": 0.2,
             "max_tokens": 8192,
-            **creds_kwargs,
         }
+        kwargs = build_aux_kwargs(
+            model, creds_kwargs, call_site_kwargs=call_site_kwargs
+        )
 
         for attempt in range(2):
             try:
                 response = litellm.completion(**kwargs)
+                check_reasoning_model_empty_content(response)
                 raw = response.choices[0].message.content or ""
                 yaml_text = self._extract_yaml(raw)
 

@@ -122,6 +122,143 @@ def resolve_model_call_credentials(
     return kwargs
 
 
+# Keys from model_parameters that are safe to pass to OpenAI SDK
+# chat.completions.create() as named arguments. Kept narrow: unknown keys
+# could collide with SDK-internal parameters or future additions.
+_OPENAI_SDK_SAFE_MODEL_PARAM_KEYS = frozenset(
+    {
+        "reasoning_effort",
+        "temperature",
+        "top_p",
+        "max_tokens",
+        "max_completion_tokens",
+        "presence_penalty",
+        "frequency_penalty",
+        "seed",
+    }
+)
+
+
+class ReasoningModelEmptyContentError(Exception):
+    """A reasoning model exhausted its token budget on reasoning and returned empty content.
+
+    Raised by :func:`check_reasoning_model_empty_content` so that
+    :func:`call_with_default_model_fallback` can retry on the system default model.
+    """
+
+
+def build_aux_kwargs(
+    model: AIModel,
+    creds_kwargs: dict[str, Any],
+    *,
+    call_site_kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    """Merge model_parameters, credentials, and call-site kwargs for an aux call.
+
+    Precedence (highest to lowest):
+    1. ``call_site_kwargs`` (temperature, max_tokens, messages, model, ...)
+    2. ``creds_kwargs``     (api_key, api_base from credential resolution)
+    3. ``model.model_parameters`` (operator-set knobs stored on the model row)
+    4. safety defaults     (``drop_params=True``, ``reasoning_effort="none"``)
+
+    The construction starts with the lowest-priority dict and overwrites
+    upward, so a key that appears in both ``model_parameters`` and
+    ``call_site_kwargs`` keeps the call-site value.
+    """
+    # Layer 4: safety defaults.
+    merged: dict[str, Any] = {
+        "drop_params": True,
+        "reasoning_effort": "none",
+    }
+
+    # Layer 3: model row's JSONB column.
+    model_params = getattr(model, "model_parameters", None)
+    if isinstance(model_params, dict):
+        merged.update(model_params)
+
+    # Layer 2: resolved credentials (api_key, api_base).
+    merged.update(creds_kwargs)
+
+    # Layer 1: call-site explicit args (always win).
+    merged.update(call_site_kwargs)
+
+    return merged
+
+
+def get_aux_openai_sdk_extra_kwargs(
+    model: AIModel,
+    *,
+    call_site_kwargs: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Return extra kwargs for ``openai.OpenAI().chat.completions.create()`` aux calls.
+
+    Merges the model row's ``model_parameters`` with a ``reasoning_effort="none"``
+    default. Call-site kwargs already passed as named arguments take precedence:
+    any key present in ``call_site_kwargs`` is excluded from the result so the
+    caller can simply spread the return value into the create call without
+    overriding its own explicit arguments.
+
+    Only keys known to be safe named parameters of the OpenAI SDK are included.
+    """
+    extras: dict[str, Any] = {"reasoning_effort": "none"}
+
+    model_params = getattr(model, "model_parameters", None)
+    if isinstance(model_params, dict):
+        for k, v in model_params.items():
+            if k in _OPENAI_SDK_SAFE_MODEL_PARAM_KEYS:
+                extras[k] = v
+
+    # Remove keys the call site already supplies.
+    if call_site_kwargs:
+        for k in call_site_kwargs:
+            extras.pop(k, None)
+
+    return extras
+
+
+def check_reasoning_model_empty_content(response: Any) -> None:
+    """Raise if a reasoning model used all tokens on reasoning and returned nothing.
+
+    A completion with *empty* ``content``, ``finish_reason == "length"``, and a
+    non-empty ``reasoning_content`` attribute means the model burned the entire
+    token budget on its internal reasoning pass and produced no user-visible
+    output. This is a failure for aux generation paths and should trigger a
+    fallback retry.
+
+    Raises:
+        ReasoningModelEmptyContentError: when the condition is detected.
+    """
+    try:
+        choice = response.choices[0]
+    except (AttributeError, IndexError, TypeError):
+        return
+
+    finish_reason = getattr(choice, "finish_reason", None)
+    if finish_reason != "length":
+        return
+
+    message = getattr(choice, "message", None)
+    if message is None:
+        return
+
+    content = getattr(message, "content", None) or ""
+    if content.strip():
+        return  # has real content, not the failure mode
+
+    # Check for reasoning payload (attribute or dict key).
+    reasoning = getattr(message, "reasoning_content", None)
+    if reasoning is None and isinstance(getattr(message, "__dict__", None), dict):
+        reasoning = message.__dict__.get("reasoning_content")
+    if reasoning is None and hasattr(message, "get"):
+        reasoning = message.get("reasoning_content")
+
+    if reasoning and str(reasoning).strip():
+        raise ReasoningModelEmptyContentError(
+            "Model exhausted token budget on reasoning; content is empty "
+            "(finish_reason=length)."
+        )
+
+
 async def call_with_default_model_fallback(
     *,
     db: Session,

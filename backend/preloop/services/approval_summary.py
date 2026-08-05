@@ -12,7 +12,11 @@ from sqlalchemy.orm import Session
 from preloop.models.crud.ai_model import ai_model as crud_ai_model
 from preloop.models.models.ai_model import AIModel
 from preloop.services.litellm_routing import to_litellm_model
-from preloop.services.model_credentials import call_with_default_model_fallback
+from preloop.services.model_credentials import (
+    build_aux_kwargs,
+    call_with_default_model_fallback,
+    check_reasoning_model_empty_content,
+)
 from preloop.utils.redaction import redact_dict
 
 logger = logging.getLogger(__name__)
@@ -82,7 +86,7 @@ def _call_summary_model(
         "agent_reasoning": (agent_reasoning or "")[:500] or None,
         "tool_args": _compact_args(tool_args),
     }
-    kwargs: dict[str, Any] = {
+    call_site_kwargs: dict[str, Any] = {
         "model": _to_litellm_model(model),
         "messages": [
             {
@@ -105,10 +109,11 @@ def _call_summary_model(
         ],
         "temperature": 0.1,
         "max_tokens": SUMMARY_MAX_TOKENS,
-        **creds_kwargs,
     }
+    kwargs = build_aux_kwargs(model, creds_kwargs, call_site_kwargs=call_site_kwargs)
 
     response = litellm.completion(**kwargs)
+    check_reasoning_model_empty_content(response)
     text = (response.choices[0].message.content or "").strip()
     if text.startswith("```"):
         text = text.split("\n", 1)[-1]

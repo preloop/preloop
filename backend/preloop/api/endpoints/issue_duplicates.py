@@ -8,7 +8,10 @@ import os
 import json
 from datetime import datetime, UTC
 
-from preloop.services.model_credentials import resolve_model_call_credentials
+from preloop.services.model_credentials import (
+    get_aux_openai_sdk_extra_kwargs,
+    resolve_model_call_credentials,
+)
 from preloop.schemas.issue_duplicate import (
     IssueDuplicate as IssueDuplicateSchema,
     IssueDuplicateSuggestionRequest,
@@ -178,11 +181,20 @@ def check_or_create_issue_duplicate(
             )
 
         client = openai.OpenAI(api_key=api_key)
+        aux_extras = get_aux_openai_sdk_extra_kwargs(
+            default_model,
+            call_site_kwargs={
+                "model": default_model.model_identifier,
+                "messages": messages,
+                "response_format": {"type": "json_object"},
+            },
+        )
 
         response = client.chat.completions.create(
             model=default_model.model_identifier,
             messages=messages,
             response_format={"type": "json_object"},
+            **aux_extras,
         )
         llm_response_text = response.choices[0].message.content.strip()
         logger.info(
@@ -907,15 +919,25 @@ def get_resolution_suggestion(
         raise HTTPException(status_code=500, detail="OpenAI API key not configured.")
 
     client = openai.OpenAI(api_key=api_key, base_url=creds_kwargs.get("api_base"))
+    dup_messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": prompt_text},
+    ]
+    aux_extras = get_aux_openai_sdk_extra_kwargs(
+        default_model,
+        call_site_kwargs={
+            "model": default_model.model_identifier,
+            "messages": dup_messages,
+            "response_format": {"type": "json_object"},
+        },
+    )
 
     try:
         llm_response = client.chat.completions.create(
             model=default_model.model_identifier,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt_text},
-            ],
+            messages=dup_messages,
             response_format={"type": "json_object"},
+            **aux_extras,
         )
         suggestion_data = json.loads(llm_response.choices[0].message.content)
 

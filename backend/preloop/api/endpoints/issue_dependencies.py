@@ -16,7 +16,10 @@ from preloop.models.crud import (
     crud_issue_set,
     crud_issue_relationship,
 )
-from preloop.services.model_credentials import resolve_model_call_credentials
+from preloop.services.model_credentials import (
+    get_aux_openai_sdk_extra_kwargs,
+    resolve_model_call_credentials,
+)
 from preloop.models.db.session import get_db_session as get_db
 from preloop.models.models.issue import Issue
 from preloop.api.auth import get_current_active_user
@@ -168,14 +171,24 @@ def detect_issue_dependencies(
         creds_kwargs = resolve_model_call_credentials(ai_model, db=db)
         api_key = creds_kwargs.get("api_key") or openai.api_key
         client = openai.OpenAI(api_key=api_key, base_url=creds_kwargs.get("api_base"))
+        dep_messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        aux_extras = get_aux_openai_sdk_extra_kwargs(
+            ai_model,
+            call_site_kwargs={
+                "model": ai_model.model_identifier,
+                "messages": dep_messages,
+                "response_format": {"type": "json_object"},
+            },
+        )
 
         response = client.chat.completions.create(
             model=ai_model.model_identifier,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
+            messages=dep_messages,
             response_format={"type": "json_object"},
+            **aux_extras,
         )
 
         response_content = response.choices[0].message.content
@@ -460,13 +473,23 @@ def extend_dependency_scan(
         creds_kwargs = resolve_model_call_credentials(ai_model, db=db)
         api_key = creds_kwargs.get("api_key") or openai.api_key
         client = openai.OpenAI(api_key=api_key)
+        dep_messages2 = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        aux_extras = get_aux_openai_sdk_extra_kwargs(
+            ai_model,
+            call_site_kwargs={
+                "model": ai_model.model_identifier,
+                "messages": dep_messages2,
+                "response_format": {"type": "json_object"},
+            },
+        )
         response = client.chat.completions.create(
             model=ai_model.model_identifier,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
+            messages=dep_messages2,
             response_format={"type": "json_object"},
+            **aux_extras,
         )
         response_content = response.choices[0].message.content
         dependencies_from_ai = json.loads(response_content).get("dependencies", [])
