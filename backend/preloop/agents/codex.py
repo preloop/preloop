@@ -224,7 +224,12 @@ class CodexAgent(ContainerAgentExecutor):
         # Container configuration
         container_config = {
             "Image": self.image,
-            "Env": [f"{k}={v}" for k, v in env.items()],
+            "Env": [
+                f"{k}={v}"
+                for k, v in self._apply_git_credential_env(
+                    env, execution_context
+                ).items()
+            ],
             # Don't override entrypoint - let codex-universal image configure environment
             # The entrypoint drops into bash, so pass -c and script as arguments to bash
             "Cmd": ["-c", script],

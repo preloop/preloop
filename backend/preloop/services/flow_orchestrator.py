@@ -2,6 +2,7 @@ import logging
 import uuid
 import json
 import asyncio
+import shlex
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 import re
@@ -33,7 +34,14 @@ from preloop.services.prompt_resolvers import (
 from preloop.services.flow_execution_logger import FlowExecutionLogger
 from preloop.sync.event_normalizer import attach_trigger_subject
 from preloop.services.model_runtime_resolver import resolve_ai_model_runtime
-from preloop.utils.repo_urls import inject_oauth_token, tracker_host_kind
+from preloop.utils.git_credentials import (
+    GitCredential,
+    credential_username,
+    strip_url_credentials,
+    temporary_credential_file,
+)
+from preloop.utils.repo_urls import repo_url_log_location, tracker_host_kind
+from preloop.utils.secret_scrubbing import scrub_secrets
 from preloop.services.account_realtime import (
     ACCOUNT_TOPIC_AUDIT,
     ACCOUNT_TOPIC_RUNTIME_SESSIONS,
@@ -1114,40 +1122,47 @@ class FlowExecutionOrchestrator:
                 else:
                     branch = self._extract_pr_branch_from_trigger()
 
-            branch_arg = f" -b {branch}" if branch else ""
+            branch_arg = f" -b {shlex.quote(branch)}" if branch else ""
 
-            # Prepare git clone command
+            # Resolve tracker credentials. The token is written to a
+            # short-lived credential file rather than into the clone URL, so
+            # the resulting remote carries no secret (issue #173).
+            credential: Optional[GitCredential] = None
             use_tracker_creds = git_config.get("use_tracker_credentials", True)
             if use_tracker_creds:
-                # Get tracker credentials from trigger event
                 credentials = await self._get_tracker_credentials()
                 if credentials:
-                    # Inject credentials into URL
-                    repo_url = self._inject_credentials_into_url(repo_url, credentials)
+                    credential = self._build_clone_credential(repo_url, credentials)
 
+            repo_url = strip_url_credentials(repo_url)
             clone_cmd = (
-                f"git clone --recursive{branch_arg} {repo_url} {full_clone_path}"
+                f"git clone --recursive{branch_arg} "
+                f"{shlex.quote(repo_url)} {shlex.quote(full_clone_path)}"
             )
 
             logger.info(f"Executing git clone to {full_clone_path}")
 
-            # Execute git clone
-            process = await asyncio.create_subprocess_shell(
-                clone_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=work_dir,
-            )
+            with temporary_credential_file(credential) as clone_env:
+                # Execute git clone
+                process = await asyncio.create_subprocess_shell(
+                    clone_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=work_dir,
+                    env=clone_env,
+                )
 
-            stdout, stderr = await process.communicate()
+                stdout, stderr = await process.communicate()
 
             if process.returncode != 0:
                 logger.error(
-                    f"Git clone failed with code {process.returncode}: {stderr.decode()}"
+                    "Git clone failed with code %s: %s",
+                    process.returncode,
+                    scrub_secrets(stderr.decode()),
                 )
                 return None
 
-            logger.info(f"Git clone successful: {stdout.decode()}")
+            logger.info(f"Git clone successful: {scrub_secrets(stdout.decode())}")
 
             # Checkout the specific commit SHA from trigger event if available
             # This ensures we're reviewing the exact code from the PR/push event
@@ -1404,35 +1419,45 @@ class FlowExecutionOrchestrator:
             )
             return None
 
-    def _inject_credentials_into_url(
+    def _build_clone_credential(
         self, repo_url: str, credentials: Dict[str, str]
-    ) -> str:
-        """Inject credentials into repository URL for authentication."""
+    ) -> Optional[GitCredential]:
+        """Build a credential for a repository without altering its URL.
+
+        Replaces the previous ``_inject_credentials_into_url``. Embedding the
+        token in the URL made it the repository's ``origin`` remote, so any
+        later ``git remote -v`` leaked it into flow execution logs (issue
+        #173). The token is now supplied through a short-lived credential file
+        instead, leaving the remote clean.
+        """
         try:
             token = credentials.get("token")
             tracker_type = credentials.get("tracker_type")
 
             if not token:
-                return repo_url
+                return None
 
             host_kind = tracker_host_kind(repo_url)
-            if host_kind in {"github", "gitlab"} or tracker_type in {
-                "github",
-                "gitlab",
-            }:
-                return inject_oauth_token(repo_url, token)
+            if host_kind is None and tracker_type not in {"github", "gitlab"}:
+                logger.warning(
+                    "Could not determine tracker type for %s; "
+                    "using the generic credential username",
+                    repo_url_log_location(repo_url),
+                )
 
-            # If we can't inject, return original URL
-            logger.warning("Could not inject credentials into repository URL")
-            return repo_url
+            return GitCredential(
+                repo_url=strip_url_credentials(repo_url),
+                username=credential_username(host_kind, tracker_type),
+                token=token,
+            )
 
         except Exception as e:
             logger.error(
-                "Error injecting credentials: %s",
+                "Error building git credential: %s",
                 type(e).__name__,
                 exc_info=True,
             )
-            return repo_url
+            return None
 
     async def _execute_custom_commands(self, work_dir: str) -> bool:
         """

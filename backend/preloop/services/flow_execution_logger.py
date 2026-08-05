@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from preloop.utils.redaction import redact_dict
+from preloop.utils.secret_scrubbing import scrub_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -147,10 +148,14 @@ class FlowExecutionLogger:
         """
         Log a line of agent output.
 
+        The line is scrubbed of known credential formats before it is stored,
+        because these lines become ``model_output_summary``, which is served
+        over the API and rendered in the console (issue #173).
+
         Args:
             line: A single line of agent stdout/stderr
         """
-        self.agent_output_lines.append(line)
+        self.agent_output_lines.append(scrub_secrets(line) or "")
 
     def get_agent_output_lines(self) -> List[str]:
         """

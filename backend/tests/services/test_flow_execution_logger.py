@@ -442,3 +442,54 @@ class TestPrivateParsers:
         logger._try_extract_command_execution("")
 
         # May or may not extract depending on implementation
+
+
+class TestLogAgentOutputScrubbing:
+    """Agent output becomes ``model_output_summary``, which the issue #173
+    report names as one of the places the PAT was visible.
+    """
+
+    PAT = "github_pat_11ABCDEFG0aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789"
+
+    def test_leaked_remote_line_is_scrubbed(self):
+        logger = FlowExecutionLogger()
+        logger.log_agent_output(
+            f"origin\thttps://{self.PAT}@github.com/acme/private.git (fetch)"
+        )
+
+        assert self.PAT not in logger.get_agent_output_lines()[0]
+        assert "[REDACTED]" in logger.get_agent_output_lines()[0]
+
+    def test_summary_carries_no_token(self):
+        logger = FlowExecutionLogger()
+        logger.log_agent_output("$ git remote -v")
+        logger.log_agent_output(
+            f"origin\thttps://{self.PAT}@github.com/acme/private.git (push)"
+        )
+
+        assert self.PAT not in logger.get_agent_output_summary()
+
+    def test_clean_output_is_unchanged(self):
+        logger = FlowExecutionLogger()
+        logger.log_agent_output("Running tests...")
+
+        assert logger.get_agent_output_lines() == ["Running tests..."]
+
+    def test_empty_line_is_preserved(self):
+        """The summary is joined by newline, so blank lines must survive."""
+        logger = FlowExecutionLogger()
+        logger.log_agent_output("")
+
+        assert logger.get_agent_output_lines() == [""]
+
+    def test_token_only_line_keeps_redaction_marker(self):
+        """A line that is nothing but a token must scrub to the prefixed
+        ``github_pat_[REDACTED]`` form, not collapse to the empty string.
+
+        This locks in that the ``or ""`` fallback in ``log_agent_output`` only
+        guards against ``None``; it must never swallow the redaction marker.
+        """
+        logger = FlowExecutionLogger()
+        logger.log_agent_output(self.PAT)
+
+        assert logger.get_agent_output_lines() == ["github_pat_[REDACTED]"]

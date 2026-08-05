@@ -376,6 +376,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 after the loop.
         """
         from preloop.models.models.flow_execution_log import FlowExecutionLog
+        from preloop.utils.secret_scrubbing import scrub_secrets, scrub_structure
 
         # NATS messages nest actual content under "payload" (e.g. payload.line
         # for agent_log_line).  Derive message from the best available field
@@ -386,11 +387,14 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         )
         metadata = payload or log_data.get("metadata") or log_data.get("data")
 
+        # Last gate before persistence: redact known credential formats so a
+        # secret cannot be stored even if its producer skipped scrubbing
+        # (issue #173).
         log_entry = FlowExecutionLog(
             execution_id=execution_id,
             log_type=log_data.get("type", "log"),
-            message=message,
-            metadata_=metadata if metadata else None,
+            message=scrub_secrets(message),
+            metadata_=scrub_structure(metadata) if metadata else None,
         )
         db.add(log_entry)
         if commit:
