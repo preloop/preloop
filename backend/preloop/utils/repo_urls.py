@@ -1,9 +1,13 @@
-"""Helpers for safe repository URL handling and credential injection."""
+"""Helpers for safe repository URL handling.
+
+Credential handling deliberately lives in ``preloop.utils.git_credentials``:
+URLs here are only ever parsed or sanitized, never given a secret.
+"""
 
 from __future__ import annotations
 
 from typing import Optional
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse
 
 
 def tracker_host_kind(url: str) -> Optional[str]:
@@ -30,42 +34,13 @@ def tracker_host_kind(url: str) -> Optional[str]:
     return None
 
 
-def inject_oauth_token(
-    repo_url: str,
-    token: str,
-    *,
-    user: str = "oauth2",
-    token_as_username: bool = False,
-) -> str:
-    """Insert credentials into an HTTPS repo URL using urlparse/urlunparse."""
-
-    parsed = urlparse(repo_url)
-    if parsed.scheme not in {"http", "https"}:
-        return repo_url
-
-    if parsed.username or parsed.password:
-        return repo_url
-
-    hostname = parsed.hostname or ""
-    hostport = hostname
-    if parsed.port is not None:
-        hostport = f"{hostname}:{parsed.port}"
-
-    if token_as_username:
-        netloc = f"{token}@{hostport}"
-    else:
-        netloc = f"{user}:{token}@{hostport}"
-
-    return urlunparse(
-        (
-            parsed.scheme,
-            netloc,
-            parsed.path,
-            parsed.params,
-            parsed.query,
-            parsed.fragment,
-        )
-    )
+# NOTE: ``inject_oauth_token`` used to live here. It embedded a tracker token
+# in the clone URL, which made the secret part of the repository's ``origin``
+# remote and leaked it into flow execution logs via ``git remote -v``
+# (issue #173). It has been removed rather than deprecated so it cannot be
+# reintroduced by autocomplete. Use ``preloop.utils.git_credentials`` instead,
+# which supplies the token through a git credential helper and leaves the
+# remote URL clean.
 
 
 def repo_url_log_location(repo_url: str) -> str:

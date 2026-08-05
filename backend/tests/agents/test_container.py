@@ -1077,3 +1077,221 @@ class TestKubernetesPodWaitMessage:
 
         assert "ImagePullBackOff" in message
         assert "Back-off pulling image" in message
+
+
+class TestGitCloneCredentialsNotInUrl:
+    """Regression tests for issue #173: the tracker PAT leaked into flow logs
+    because it was embedded in the clone URL, which made it part of the cloned
+    repository's ``origin`` remote and therefore visible in ``git remote -v``.
+    """
+
+    PAT = "github_pat_11ABCDEFG0aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789"
+
+    def _context(self, repo_url="https://github.com/acme/private.git", **overrides):
+        context = {
+            "flow_id": "flow-1",
+            "execution_id": "exec-1",
+            "git_clone_config": {
+                "enabled": True,
+                "repositories": [
+                    {
+                        "repository_url": repo_url,
+                        "clone_path": "/workspace",
+                        "tracker_id": "tracker-1",
+                    }
+                ],
+            },
+            "git_credentials_map": {
+                "tracker-1": {"token": self.PAT, "tracker_type": "github"}
+            },
+        }
+        context.update(overrides)
+        return context
+
+    def test_clone_command_contains_no_token(self, container_executor):
+        command = container_executor._prepare_git_clone_command(self._context())
+        assert self.PAT not in command
+
+    def test_clone_url_is_credential_free(self, container_executor):
+        """The URL handed to ``git clone`` becomes the origin remote verbatim."""
+        command = container_executor._prepare_git_clone_command(self._context())
+        assert "https://github.com/acme/private.git" in command
+        assert "@github.com" not in command
+
+    def test_clone_url_is_stripped_when_config_already_has_a_token(
+        self, container_executor
+    ):
+        """A token pasted into the configured URL must not survive either."""
+        context = self._context(
+            repo_url=f"https://{self.PAT}@github.com/acme/private.git"
+        )
+        command = container_executor._prepare_git_clone_command(context)
+        assert self.PAT not in command
+        assert "@github.com" not in command
+
+    def test_credential_helper_is_configured(self, container_executor):
+        command = container_executor._prepare_git_clone_command(self._context())
+        assert "credential.helper" in command
+        assert "PRELOOP_GIT_CREDENTIALS" in command
+
+    def test_token_is_passed_through_the_environment(self, container_executor):
+        """The secret travels as an env var, never inside the shell script."""
+        context = self._context()
+        container_executor._prepare_git_clone_command(context)
+
+        env = container_executor._git_credential_env(context)
+        assert self.PAT in env["PRELOOP_GIT_CREDENTIALS"]
+        assert "x-access-token" in env["PRELOOP_GIT_CREDENTIALS"]
+
+    def test_gitlab_uses_its_credential_username(self, container_executor):
+        context = self._context(repo_url="https://gitlab.com/acme/repo.git")
+        context["git_credentials_map"]["tracker-1"]["tracker_type"] = "gitlab"
+        container_executor._prepare_git_clone_command(context)
+
+        env = container_executor._git_credential_env(context)
+        assert "gitlab-ci-token" in env["PRELOOP_GIT_CREDENTIALS"]
+
+    def test_no_credential_env_without_a_token(self, container_executor):
+        context = self._context()
+        context["git_credentials_map"] = {}
+        with patch.object(
+            container_executor, "_get_token_from_project", return_value=(None, None)
+        ):
+            command = container_executor._prepare_git_clone_command(context)
+
+        assert "git clone" in command
+        assert container_executor._git_credential_env(context) == {}
+
+    def test_multiple_repos_each_get_a_credential(self, container_executor):
+        context = self._context()
+        context["git_clone_config"]["repositories"].append(
+            {
+                "repository_url": "https://gitlab.com/acme/other.git",
+                "clone_path": "/workspace-2",
+                "tracker_id": "tracker-2",
+            }
+        )
+        context["git_credentials_map"]["tracker-2"] = {
+            "token": "glpat-aBcDeFgHiJkLmNoPqRs",
+            "tracker_type": "gitlab",
+        }
+
+        command = container_executor._prepare_git_clone_command(context)
+        assert self.PAT not in command
+        assert "glpat-aBcDeFgHiJkLmNoPqRs" not in command
+
+        credentials = context[container_executor.GIT_CREDENTIALS_CONTEXT_KEY]
+        assert len(credentials) == 2
+
+    def test_credentials_are_keyed_by_repository_index(self, container_executor):
+        """A skipped repository must not shift the remaining tokens' indices,
+        which would give repo #2 the API token belonging to repo #1.
+        """
+        context = self._context()
+        context["git_clone_config"]["repositories"].insert(
+            0, {"clone_path": "/workspace-0"}
+        )  # no repository_url: this one is skipped
+
+        container_executor._prepare_git_clone_command(context)
+
+        credentials = context[container_executor.GIT_CREDENTIALS_CONTEXT_KEY]
+        assert list(credentials) == [1]
+
+    def test_setup_runs_before_any_clone(self, container_executor):
+        """Otherwise the first clone would prompt for credentials and hang."""
+        command = container_executor._prepare_git_clone_command(self._context())
+        assert command.index("credential.helper") < command.index("git clone")
+
+
+class TestGitApiTokensNotInScript:
+    """The PR/MR creation curls used to interpolate the raw token into the
+    generated shell script (issue #173).
+    """
+
+    PAT = "github_pat_11ABCDEFG0aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789"
+
+    def _context(self):
+        return {
+            "flow_id": "flow-1",
+            "execution_id": "exec-1",
+            "flow_name": "PR Reviewer",
+            "_git_target_branch": "preloop/fix",
+            "_git_source_branch": "main",
+            "git_clone_config": {
+                "enabled": True,
+                "create_pull_request": True,
+                "repositories": [
+                    {
+                        "repository_url": "https://github.com/acme/private.git",
+                        "clone_path": "/workspace",
+                        "tracker_id": "tracker-1",
+                    }
+                ],
+            },
+            "git_credentials_map": {
+                "tracker-1": {"token": self.PAT, "tracker_type": "github"}
+            },
+            "trigger_event_data": {
+                "repository": {"clone_url": "https://github.com/acme/private.git"},
+            },
+        }
+
+    def test_post_execution_commands_contain_no_token(self, container_executor):
+        context = self._context()
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        assert self.PAT not in commands
+
+    def test_post_execution_uses_an_env_var_reference(self, container_executor):
+        context = self._context()
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        assert "${PRELOOP_GIT_TOKEN_1}" in commands
+
+    def test_token_reaches_the_container_environment(self, container_executor):
+        context = self._context()
+        container_executor._prepare_git_post_execution_commands(context)
+        env = container_executor._apply_git_credential_env({}, context)
+        assert env["PRELOOP_GIT_TOKEN_1"] == self.PAT
+
+
+class TestLogScrubbing:
+    """Logs are scrubbed on read as well, so a token already present in a
+    running container's output never reaches the API or the console (#173).
+    """
+
+    PAT = "github_pat_11ABCDEFG0aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789"
+
+    @patch.object(ContainerAgentExecutor, "_get_docker_client")
+    async def test_get_logs_scrubs_leaked_remote(
+        self, mock_get_client, container_executor
+    ):
+        leak = f"origin\thttps://{self.PAT}@github.com/acme/private.git (fetch)"
+        mock_docker = AsyncMock()
+        mock_container = AsyncMock()
+        mock_container.log.return_value = ["Cloning...", leak]
+        mock_docker.containers.get.return_value = mock_container
+        mock_get_client.return_value = mock_docker
+
+        logs = await container_executor.get_logs("container-123")
+
+        assert not any(self.PAT in line for line in logs)
+        assert any("[REDACTED]" in line for line in logs)
+        assert logs[0] == "Cloning...", "clean lines pass through unchanged"
+
+    @patch.object(ContainerAgentExecutor, "_stream_docker_logs")
+    async def test_stream_logs_scrubs_leaked_remote(
+        self, mock_stream, container_executor
+    ):
+        leak = f"origin\thttps://{self.PAT}@github.com/acme/private.git (push)"
+
+        async def _lines(_session_reference):
+            yield leak
+
+        mock_stream.side_effect = _lines
+
+        streamed = [
+            line async for line in container_executor.stream_logs("container-123")
+        ]
+
+        assert streamed == [
+            "origin\thttps://[REDACTED]@github.com/acme/private.git (push)"
+        ]

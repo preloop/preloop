@@ -300,7 +300,12 @@ exit $AIDER_EXIT_CODE
         # Container configuration
         container_config = {
             "Image": self.image,
-            "Env": [f"{k}={v}" for k, v in env.items()],
+            "Env": [
+                f"{k}={v}"
+                for k, v in self._apply_git_credential_env(
+                    env, execution_context
+                ).items()
+            ],
             "Entrypoint": ["bash", "-c"],  # Override image entrypoint
             "Cmd": [aider_cmd],  # Pass the script as single argument to bash -c
             "WorkingDir": "/workspace",

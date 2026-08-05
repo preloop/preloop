@@ -303,3 +303,69 @@ class TestOpenHandsAgent:
         # Should not fail, just skip the parameters
         assert "LLM_TEMPERATURE" not in env
         assert "LLM_MAX_TOKENS" not in env
+
+
+class TestOpenHandsGitCloneCredentials:
+    """OpenHands overrides _prepare_git_clone_command, so it needs its own
+    coverage for the credential leak in issue #173.
+    """
+
+    PAT = "github_pat_11ABCDEFG0aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789"
+
+    def _context(self, repo_url="https://github.com/acme/private.git"):
+        return {
+            "flow_id": "flow-1",
+            "execution_id": "exec-1",
+            "git_clone_config": {
+                "enabled": True,
+                "repositories": [
+                    {
+                        "repository_url": repo_url,
+                        "clone_path": "/workspace",
+                        "tracker_id": "tracker-1",
+                    }
+                ],
+            },
+            "git_credentials_map": {
+                "tracker-1": {"token": self.PAT, "tracker_type": "github"}
+            },
+        }
+
+    def test_clone_command_contains_no_token(self, openhands_config):
+        agent = OpenHandsAgent(openhands_config)
+        command = agent._prepare_git_clone_command(self._context())
+        assert self.PAT not in command
+        assert "@github.com" not in command
+
+    def test_clone_url_is_credential_free(self, openhands_config):
+        agent = OpenHandsAgent(openhands_config)
+        command = agent._prepare_git_clone_command(self._context())
+        assert "git clone https://github.com/acme/private.git /workspace" in command
+
+    def test_credential_helper_is_installed_before_cloning(self, openhands_config):
+        agent = OpenHandsAgent(openhands_config)
+        command = agent._prepare_git_clone_command(self._context())
+        assert command.index("credential.helper") < command.index("git clone")
+
+    def test_token_travels_in_the_environment(self, openhands_config):
+        agent = OpenHandsAgent(openhands_config)
+        context = self._context()
+        agent._prepare_git_clone_command(context)
+        env = agent._git_credential_env(context)
+        assert self.PAT in env["PRELOOP_GIT_CREDENTIALS"]
+
+    def test_url_token_is_stripped(self, openhands_config):
+        agent = OpenHandsAgent(openhands_config)
+        command = agent._prepare_git_clone_command(
+            self._context(f"https://{self.PAT}@github.com/acme/private.git")
+        )
+        assert self.PAT not in command
+
+    def test_repo_url_and_branch_are_shell_quoted(self, openhands_config):
+        """Both are attacker-influenced through webhook payloads."""
+        agent = OpenHandsAgent(openhands_config)
+        context = self._context("https://github.com/acme/repo.git; echo pwned")
+        context["git_clone_config"]["repositories"][0]["branch"] = "main; echo pwned"
+        command = agent._prepare_git_clone_command(context)
+        assert "-b 'main; echo pwned'" in command
+        assert "'https://github.com/acme/repo.git; echo pwned'" in command

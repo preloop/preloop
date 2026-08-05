@@ -11,7 +11,17 @@ from aiodocker.exceptions import DockerError
 
 from .base import AgentExecutionResult, AgentExecutor, AgentStatus
 from preloop.services.mcp_config_service import MCPConfigService
-from preloop.utils.repo_urls import inject_oauth_token, tracker_host_kind
+from preloop.utils.git_credentials import (
+    GitCredential,
+    build_credential_env,
+    build_credential_setup_shell,
+    credential_username,
+    git_token_env_var,
+    needs_http_path_scoping,
+    strip_url_credentials,
+)
+from preloop.utils.repo_urls import repo_url_log_location, tracker_host_kind
+from preloop.utils.secret_scrubbing import scrub_secret_lines, scrub_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -221,7 +231,12 @@ class ContainerAgentExecutor(AgentExecutor):
         # Container configuration
         container_config = {
             "Image": self.image,
-            "Env": [f"{k}={v}" for k, v in env.items()],
+            "Env": [
+                f"{k}={v}"
+                for k, v in self._apply_git_credential_env(
+                    env, execution_context
+                ).items()
+            ],
             "User": "10000:10000",  # Explicitly set user and group
             "WorkingDir": working_dir,  # Set working directory to git repo if configured
             "Labels": {
@@ -339,8 +354,13 @@ class ContainerAgentExecutor(AgentExecutor):
             )
             env["MCP_CONFIG_JSON"] = json.dumps(mcp_config)
 
-        # Convert env dict to list of V1EnvVar
-        env_vars = [client.V1EnvVar(name=k, value=v) for k, v in env.items()]
+        # Convert env dict to list of V1EnvVar. Git credentials are merged in
+        # here rather than baked into the agent script, so the token stays out
+        # of the pod's command line (issue #173).
+        env_vars = [
+            client.V1EnvVar(name=k, value=v)
+            for k, v in self._apply_git_credential_env(env, execution_context).items()
+        ]
 
         # Get resource limits from config or use defaults
         memory_limit = os.getenv("AGENT_MEMORY_LIMIT", "2Gi")
@@ -1029,15 +1049,21 @@ class ContainerAgentExecutor(AgentExecutor):
         """
         Get logs from a container (batch mode).
 
+        Output is scrubbed of known credential formats before it is returned,
+        because every consumer of this method either persists the lines or
+        shows them to a user (issue #173).
+
         Args:
             session_reference: Container ID or Job name
             tail: Number of recent log lines, or None for all logs
 
         Returns:
-            List of log lines
+            List of log lines, with secrets redacted
         """
         if self.use_kubernetes:
-            return await self._get_kubernetes_logs(session_reference, tail)
+            return scrub_secret_lines(
+                await self._get_kubernetes_logs(session_reference, tail)
+            )
 
         try:
             docker = await self._get_docker_client()
@@ -1054,7 +1080,7 @@ class ContainerAgentExecutor(AgentExecutor):
                     decoded_logs.append(line.decode("utf-8", errors="replace"))
                 else:
                     decoded_logs.append(line)
-            return decoded_logs
+            return scrub_secret_lines(decoded_logs)
 
         except DockerError as e:
             self.logger.error(
@@ -1066,18 +1092,22 @@ class ContainerAgentExecutor(AgentExecutor):
         """
         Stream logs from a container in real-time.
 
+        Lines are scrubbed of known credential formats before they are yielded,
+        so neither the persisted execution log nor the live console feed can
+        carry a token (issue #173).
+
         Args:
             session_reference: Container ID or Job name
 
         Yields:
-            Log lines as they are produced
+            Log lines as they are produced, with secrets redacted
         """
         if self.use_kubernetes:
             async for line in self._stream_kubernetes_logs(session_reference):
-                yield line
+                yield scrub_secrets(line)
         else:
             async for line in self._stream_docker_logs(session_reference):
-                yield line
+                yield scrub_secrets(line)
 
     async def _stream_docker_logs(self, container_id: str):
         """
@@ -1294,6 +1324,67 @@ class ContainerAgentExecutor(AgentExecutor):
             )
             yield f"[ERROR] Unexpected error: {error_message}"
 
+    # Keys under which resolved git secrets are stashed on the execution
+    # context, to be turned into container environment variables. Private to
+    # this class; nothing outside the agent layer should read them.
+    GIT_CREDENTIALS_CONTEXT_KEY = "_git_credentials"
+    GIT_API_TOKENS_CONTEXT_KEY = "_git_api_tokens"
+
+    def _register_git_credentials(
+        self,
+        execution_context: Dict[str, Any],
+        credentials: Dict[int, GitCredential],
+    ) -> None:
+        """Stash resolved git-transport credentials for conversion to env vars."""
+
+        if credentials:
+            execution_context[self.GIT_CREDENTIALS_CONTEXT_KEY] = credentials
+
+    def _register_git_api_token(
+        self, execution_context: Dict[str, Any], repo_index: int, token: str
+    ) -> str:
+        """Stash a REST API token for one repository and return its env var name.
+
+        The post-execution PR/MR calls talk to the GitHub/GitLab REST API, not
+        to git, so they cannot use the credential helper. They read the token
+        from this variable instead of having it baked into the shell script.
+        """
+
+        tokens = execution_context.setdefault(self.GIT_API_TOKENS_CONTEXT_KEY, {})
+        tokens[repo_index] = token
+        return git_token_env_var(repo_index)
+
+    def _git_credential_env(self, execution_context: Dict[str, Any]) -> Dict[str, str]:
+        """Return env vars carrying git secrets for this execution.
+
+        Called by every container start path after the init and post-execution
+        commands have been built, since that is when secrets are resolved.
+        Returns an empty dict when the flow clones nothing or has no token.
+        """
+
+        credentials: Dict[int, GitCredential] = (
+            execution_context.get(self.GIT_CREDENTIALS_CONTEXT_KEY) or {}
+        )
+        env = dict(
+            build_credential_env(credentials[index] for index in sorted(credentials))
+        )
+
+        api_tokens: Dict[int, str] = (
+            execution_context.get(self.GIT_API_TOKENS_CONTEXT_KEY) or {}
+        )
+        for repo_index, token in api_tokens.items():
+            env[git_token_env_var(repo_index)] = token
+
+        return env
+
+    def _apply_git_credential_env(
+        self, env: Dict[str, str], execution_context: Dict[str, Any]
+    ) -> Dict[str, str]:
+        """Merge git credential env vars into an agent's environment."""
+
+        env.update(self._git_credential_env(execution_context))
+        return env
+
     def _prepare_init_commands(self, execution_context: Dict[str, Any]) -> str:
         """
         Prepare initialization commands (git clone, custom commands).
@@ -1467,53 +1558,73 @@ class ContainerAgentExecutor(AgentExecutor):
 
         return repo_url
 
-    def _inject_git_credentials_into_url(
+    def _resolve_repository_token(
         self,
-        repo_url: str,
         repo_config: Dict[str, Any],
         execution_context: Dict[str, Any],
-    ) -> str:
-        """Inject tracker credentials into HTTPS clone URLs when needed."""
+    ) -> tuple[Optional[str], Optional[str]]:
+        """Return ``(token, tracker_type)`` for one repository entry."""
 
-        if "@" in repo_url:
-            return repo_url
-
-        token: Optional[str] = None
-        tracker_type: Optional[str] = None
         tracker_id = repo_config.get("tracker_id")
         git_credentials_map = execution_context.get("git_credentials_map", {})
 
         if tracker_id and tracker_id in git_credentials_map:
             tracker_creds = git_credentials_map.get(tracker_id, {})
-            token = tracker_creds.get("token")
-            tracker_type = tracker_creds.get("tracker_type")
-        else:
-            trigger_project_id = execution_context.get("trigger_project_id")
-            if trigger_project_id:
-                token, tracker_type = self._get_token_from_project(
-                    trigger_project_id, execution_context.get("account_id")
-                )
+            return tracker_creds.get("token"), tracker_creds.get("tracker_type")
 
+        trigger_project_id = execution_context.get("trigger_project_id")
+        if trigger_project_id:
+            return self._get_token_from_project(
+                trigger_project_id, execution_context.get("account_id")
+            )
+
+        return None, None
+
+    def _build_git_credential(
+        self,
+        repo_url: str,
+        repo_config: Dict[str, Any],
+        execution_context: Dict[str, Any],
+    ) -> Optional[GitCredential]:
+        """Resolve the credential for a repository without touching its URL.
+
+        The returned credential is written to a git credential store inside the
+        container. The clone URL itself stays credential-free, so ``git remote
+        -v`` in the workspace cannot leak the token (issue #173).
+        """
+
+        safe_url = strip_url_credentials(repo_url)
+
+        token, tracker_type = self._resolve_repository_token(
+            repo_config, execution_context
+        )
         if not token:
             self.logger.warning(
-                "No token available to inject into repository URL. "
-                "Clone may fail if the repository is private."
+                "No token available for %s. "
+                "Clone may fail if the repository is private.",
+                repo_url_log_location(safe_url),
             )
-            return repo_url
+            return None
 
-        host_kind = tracker_host_kind(repo_url)
-        if host_kind == "github" or tracker_type == "github":
-            self.logger.info("Injected GitHub token into URL")
-            return inject_oauth_token(repo_url, token, token_as_username=True)
-        if host_kind == "gitlab" or tracker_type == "gitlab":
-            self.logger.info("Injected GitLab token into URL")
-            return inject_oauth_token(repo_url, token, user="gitlab-ci-token")
+        host_kind = tracker_host_kind(safe_url)
+        if host_kind is None and tracker_type not in {"github", "gitlab"}:
+            # Still authenticate: an unrecognized host is usually a self-hosted
+            # instance, and refusing here would break clones that work today.
+            # Only the username convention is uncertain, not the token itself.
+            self.logger.warning(
+                "Could not determine tracker type for %s (tracker_type=%s); "
+                "using the generic credential username",
+                repo_url_log_location(safe_url),
+                tracker_type,
+            )
 
-        self.logger.warning(
-            "Could not determine tracker type for token injection (tracker_type=%s)",
-            tracker_type,
+        username = credential_username(host_kind, tracker_type)
+        self.logger.info(
+            "Prepared git credential for %s (user=%s, token not in URL)",
+            repo_url_log_location(safe_url),
+            username,
         )
-        return repo_url
+        return GitCredential(repo_url=safe_url, username=username, token=token)
 
     def _resolve_repository_clone_path(
         self, repo_config: Dict[str, Any], repo_index: int
@@ -1710,8 +1821,14 @@ echo "========================================="
         target_branch: str,
         commit_sha: Optional[str],
         trigger_data: Dict[str, Any],
+        credentials: Optional[Dict[int, GitCredential]] = None,
     ) -> Optional[list[str]]:
-        """Build shell command blocks for one repository."""
+        """Build shell command blocks for one repository.
+
+        Any resolved credential is recorded in ``credentials`` rather than
+        written into the clone URL, so the remote stored in ``.git/config``
+        never contains a secret (issue #173).
+        """
 
         repo_url = self._resolve_repository_clone_url(
             repo_config, repo_index, execution_context, trigger_data
@@ -1726,9 +1843,14 @@ echo "========================================="
             )
             return None
 
-        repo_url = self._inject_git_credentials_into_url(
+        credential = self._build_git_credential(
             repo_url, repo_config, execution_context
         )
+        if credential is not None and credentials is not None:
+            credentials[repo_index] = credential
+
+        # The URL that reaches `git clone` is always credential-free.
+        repo_url = strip_url_credentials(repo_url)
         full_path = self._resolve_repository_clone_path(repo_config, repo_index)
         clone_branch = self._resolve_repository_clone_branch(
             repo_config,
@@ -1786,6 +1908,7 @@ echo "========================================="
             )
 
             clone_commands: list[str] = []
+            credentials: Dict[int, GitCredential] = {}
             configured_repos_count = 0
             for idx, repo_config in enumerate(repositories):
                 command_block = self._build_repository_clone_command_block(
@@ -1796,6 +1919,7 @@ echo "========================================="
                     target_branch=target_branch,
                     commit_sha=commit_sha,
                     trigger_data=trigger_data,
+                    credentials=credentials,
                 )
                 if command_block is None:
                     continue
@@ -1818,9 +1942,19 @@ echo "========================================="
                 self.logger.error(error_msg)
                 return f'echo "{error_msg}" && exit 1'
 
+            # Stash the credentials on the context so the agent can pass them
+            # to the container as environment variables. They must never be
+            # rendered into the script itself, which is echoed by some images
+            # and can end up in `kubectl describe`.
+            self._register_git_credentials(execution_context, credentials)
+
+            credential_setup = build_credential_setup_shell(
+                use_http_path=needs_http_path_scoping(credentials.values())
+            )
+
             execution_context["_git_target_branch"] = target_branch
             execution_context["_git_source_branch"] = source_branch
-            return " && ".join(git_setup_commands + clone_commands)
+            return " && ".join(git_setup_commands + [credential_setup] + clone_commands)
 
         except Exception as e:
             self.logger.error(f"Error preparing git clone command: {e}", exc_info=True)
@@ -1887,6 +2021,16 @@ echo "========================================="
                 tracker_type = tracker_creds.get("tracker_type")
                 token = tracker_creds.get("token")
 
+                # The REST API token is passed through the environment rather
+                # than interpolated into the script, so it cannot leak via the
+                # container command line, `kubectl describe`, or a shell trace
+                # (issue #173). `token_ref` is the shell expansion to use.
+                token_ref = ""
+                if token:
+                    token_ref = "${%s}" % self._register_git_api_token(
+                        execution_context, idx, token
+                    )
+
                 # Commands to check for commits and push
                 # Note: Directory is guaranteed to exist because git clone validation would have failed earlier
                 repo_post_commands = [
@@ -1946,7 +2090,7 @@ echo "========================================="
                                     # Use custom title and description
                                     pr_create_cmd = f"""
     curl -X POST \\
-      -H "Authorization: token {token}" \\
+      -H "Authorization: token {token_ref}" \\
       -H "Accept: application/vnd.github.v3+json" \\
       https://api.github.com/repos/{owner}/{repo}/pulls \\
       -d "$(cat <<'PREOF'
@@ -1979,7 +2123,7 @@ PREOF
 
     # Create PR with dynamic title/body
     curl -X POST \\
-      -H "Authorization: token {token}" \\
+      -H "Authorization: token {token_ref}" \\
       -H "Accept: application/vnd.github.v3+json" \\
       https://api.github.com/repos/{owner}/{repo}/pulls \\
       -d "$(cat <<PREOF
@@ -2048,7 +2192,7 @@ PREOF
                                 mr_create_cmd = f"""
     echo "Creating Merge Request on {gitlab_host}..."
     curl -X POST \\
-      -H "PRIVATE-TOKEN: {token}" \\
+      -H "PRIVATE-TOKEN: {token_ref}" \\
       -H "Content-Type: application/json" \\
       https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests \\
       -d "$(cat <<'MREOF'
@@ -2081,7 +2225,7 @@ MREOF
 
     echo "Creating Merge Request on {gitlab_host}..."
     curl -X POST \\
-      -H "PRIVATE-TOKEN: {token}" \\
+      -H "PRIVATE-TOKEN: {token_ref}" \\
       -H "Content-Type: application/json" \\
       https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests \\
       -d "$(cat <<MREOF
@@ -2125,17 +2269,22 @@ MREOF
     ) -> Optional[str]:
         """Construct repository URL from project and tracker information.
 
-        Uses the tracker URL, project slug, and authentication token to construct
-        a complete clone URL in the format:
-        - GitLab: https://gitlab-ci-token:{token}@{host}/{slug}.git
-        - GitHub: https://{token}@github.com/{slug}.git
+        Uses the tracker URL and project slug to construct a clone URL in the
+        format:
+        - GitLab: https://{host}/{slug}.git
+        - GitHub: https://github.com/{slug}.git
+
+        The URL is deliberately credential-free (issue #173). The tracker token
+        is still required for the lookup to succeed, because a project whose
+        tracker has no key configured cannot be cloned at all, but the token is
+        delivered separately through the git credential helper.
 
         Args:
             project_id: Project ID
             account_id: Account ID
 
         Returns:
-            Repository clone URL with token injected, or None if not found
+            Credential-free repository clone URL, or None if not found
         """
         self.logger.info(
             f"Looking up repo URL for project_id={project_id}, account_id={account_id}"
@@ -2207,7 +2356,7 @@ MREOF
                 slug = project.slug
 
                 if tracker_type == "gitlab":
-                    # GitLab format: https://gitlab-ci-token:{token}@{host}/{slug}.git
+                    # GitLab format: https://{host}/{slug}.git (no credentials)
                     if not tracker.url:
                         self.logger.warning(
                             f"GitLab tracker {tracker.id} has no URL configured"
@@ -2225,19 +2374,19 @@ MREOF
                     if not slug.endswith(".git"):
                         slug = f"{slug}.git"
 
-                    clone_url = f"https://gitlab-ci-token:{token}@{host}/{slug}"
+                    clone_url = f"https://{host}/{slug}"
                     self.logger.info(
                         f"Constructed GitLab clone URL for {slug} on {host}"
                     )
                     return clone_url
 
                 elif tracker_type == "github":
-                    # GitHub format: https://{token}@github.com/{slug}.git
+                    # GitHub format: https://github.com/{slug}.git (no credentials)
                     # Ensure slug ends with .git
                     if not slug.endswith(".git"):
                         slug = f"{slug}.git"
 
-                    clone_url = f"https://{token}@github.com/{slug}"
+                    clone_url = f"https://github.com/{slug}"
                     self.logger.info(f"Constructed GitHub clone URL for {slug}")
                     return clone_url
 

@@ -1,7 +1,8 @@
 """Tests for preloop.utils.repo_urls module."""
 
+import pytest
+
 from preloop.utils.repo_urls import (
-    inject_oauth_token,
     repo_url_log_location,
     tracker_host_kind,
 )
@@ -21,31 +22,24 @@ class TestTrackerHostKind:
         assert tracker_host_kind("https://mygitlab.com/repo") is None
 
 
-class TestInjectOauthToken:
-    def test_default_oauth2_user(self) -> None:
-        url = "https://github.com/org/repo.git"
-        assert (
-            inject_oauth_token(url, "secret-token")
-            == "https://oauth2:secret-token@github.com/org/repo.git"
-        )
+class TestInjectOauthTokenRemoved:
+    """``inject_oauth_token`` was removed as part of the fix for issue #173.
 
-    def test_gitlab_ci_token_user(self) -> None:
-        url = "https://gitlab.com/org/repo.git"
-        assert (
-            inject_oauth_token(url, "secret-token", user="gitlab-ci-token")
-            == "https://gitlab-ci-token:secret-token@gitlab.com/org/repo.git"
-        )
+    It embedded the tracker token in the clone URL, which made the secret part
+    of the repository's ``origin`` remote and leaked it through ``git remote
+    -v`` into flow execution logs. Credentials are now delivered by
+    ``preloop.utils.git_credentials`` via a git credential helper.
 
-    def test_token_as_username(self) -> None:
-        url = "https://github.com/org/repo.git"
-        assert (
-            inject_oauth_token(url, "secret-token", token_as_username=True)
-            == "https://secret-token@github.com/org/repo.git"
-        )
+    This test pins the removal so the helper cannot quietly come back.
+    """
 
-    def test_skips_existing_credentials(self) -> None:
-        url = "https://oauth2:existing@github.com/org/repo.git"
-        assert inject_oauth_token(url, "secret-token") == url
+    def test_helper_is_gone(self) -> None:
+        import preloop.utils.repo_urls as repo_urls
+
+        assert not hasattr(repo_urls, "inject_oauth_token")
+
+        with pytest.raises(ImportError):
+            from preloop.utils.repo_urls import inject_oauth_token  # noqa: F401
 
 
 class TestRepoUrlLogLocation:
