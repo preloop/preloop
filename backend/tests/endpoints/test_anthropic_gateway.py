@@ -368,3 +368,50 @@ def test_messages_stream_midstream_failure_emits_sse_error_event(
     assert "event: error" in response.text
     assert "upstream connection reset" in response.text
     assert "event: message_stop" not in response.text
+
+
+def test_claude_code_session_header_reaches_gateway_service(
+    app, client, db_session, test_user
+):
+    """``X-Claude-Code-Session-Id`` must become the gateway's per-run session id.
+
+    Claude Code never sends ``X-Preloop-Session-Id``; dropping its native header
+    is what let a brand-new Claude Code conversation append onto the previous
+    session's logs. Preloop's own header still wins when both are present.
+    """
+    app.dependency_overrides[get_anthropic_gateway_auth_context] = lambda: (
+        ModelGatewayAuthContext(token="runtime-token", user=test_user)
+    )
+    session_uuid = "26d2f152-2d10-49e5-a68c-e471d55aadad"
+
+    for headers, expected in (
+        ({"X-Claude-Code-Session-Id": session_uuid}, session_uuid),
+        (
+            {
+                "X-Claude-Code-Session-Id": session_uuid,
+                "X-Preloop-Session-Id": "explicit-run",
+            },
+            "explicit-run",
+        ),
+        ({}, None),
+    ):
+        with patch(
+            "preloop.api.endpoints.anthropic_gateway.OpenAIGatewayService"
+        ) as service_cls:
+            service_cls.return_value.create_message.return_value = {"type": "message"}
+            response = client.post(
+                "/anthropic/v1/messages",
+                headers={
+                    "x-api-key": "ignored",
+                    "anthropic-version": "2023-06-01",
+                    **headers,
+                },
+                json={
+                    "model": "anthropic/claude-sonnet-4-5",
+                    "messages": [{"role": "user", "content": "Hello"}],
+                    "max_tokens": 256,
+                },
+            )
+
+        assert response.status_code == 200
+        assert service_cls.call_args.kwargs["client_session_id"] == expected

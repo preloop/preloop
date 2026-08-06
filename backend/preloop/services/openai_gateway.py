@@ -241,6 +241,55 @@ def _normalize_client_session_id(raw: Optional[str]) -> Optional[str]:
     return candidate
 
 
+# Claude Code stamps its OWN session id on every Anthropic request in two
+# places: the ``X-Claude-Code-Session-Id`` header and the Anthropic-native
+# ``metadata.user_id`` field, which carries a JSON *string* shaped like
+# ``{"device_id": ..., "account_uuid": ..., "session_id": "<uuid>"}``. That
+# ``session_id`` is Claude Code's real conversation id — it is the filename of
+# the transcript at ``~/.claude/projects/<slug>/<session-uuid>.jsonl``.
+#
+# Without reading it, every Claude Code run on one machine keys to the same
+# durable-credential principal and collapses into a single eternal runtime
+# session, so a brand-new conversation appends onto an old session row. Reading
+# it lets the existing per-run session keying (see ``_resolve_runtime_session``)
+# give each real Claude Code session its own runtime session.
+#
+# The metadata blob is bounded before parsing so a hostile client cannot make us
+# parse an unbounded string, and every failure mode degrades to ``None`` (the
+# pre-existing source-keyed behavior) rather than raising.
+_NATIVE_SESSION_METADATA_MAX_LEN = 4096
+
+
+def _session_id_from_anthropic_metadata(
+    payload: Optional[Dict[str, Any]],
+) -> Optional[str]:
+    """Extract the agent's own session id from an Anthropic ``metadata`` block.
+
+    Args:
+        payload: The Anthropic Messages request payload (may be ``None``).
+
+    Returns:
+        The client's native session id when the payload carries a parseable
+        ``metadata.user_id`` JSON object containing a ``session_id`` that
+        passes :func:`_normalize_client_session_id`; otherwise ``None``.
+    """
+    if not isinstance(payload, dict):
+        return None
+    metadata = payload.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    user_id = metadata.get("user_id")
+    if not isinstance(user_id, str) or len(user_id) > _NATIVE_SESSION_METADATA_MAX_LEN:
+        return None
+    try:
+        decoded = json.loads(user_id)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(decoded, dict):
+        return None
+    return _normalize_client_session_id(decoded.get("session_id"))
+
+
 class OpenAIGatewayService:
     """Service for Preloop's OpenAI-compatible gateway."""
 
@@ -257,7 +306,8 @@ class OpenAIGatewayService:
         self.auth_context = auth_context
         self.upstream_backend = upstream_backend or get_model_gateway_backend()
         self.budget_enforcer = budget_enforcer
-        # Per-run session id supplied by the client (X-Preloop-Session-Id).
+        # Per-run session id supplied by the client (X-Preloop-Session-Id, or
+        # an agent-native equivalent such as X-Claude-Code-Session-Id).
         # Validated/normalized once; invalid values fall back to source keying.
         self._client_session_id = _normalize_client_session_id(client_session_id)
         self._resolved_runtime_session_id: Optional[str] = None
@@ -282,6 +332,28 @@ class OpenAIGatewayService:
         # Computed once from the account inventory on first use so listing,
         # alias resolution, and default selection all consume the same set.
         self._authorized_model_ids_cache: Optional[frozenset[str]] = None
+
+    def _adopt_native_session_id(self, payload: Optional[Dict[str, Any]]) -> None:
+        """Adopt the agent's own session id from an Anthropic request payload.
+
+        Claude Code never sends ``X-Preloop-Session-Id``; it identifies its
+        conversation in ``metadata.user_id`` instead. Without this, every run on
+        one machine shares the durable credential's single principal id and all
+        traffic collapses onto one eternal runtime session, so a new Claude Code
+        conversation appends onto a previous session's logs.
+
+        An explicit ``X-Preloop-Session-Id`` always wins, and this is a no-op
+        once the runtime session has been resolved for the request, so the
+        session identity of an in-flight request can never change mid-call.
+
+        Args:
+            payload: The Anthropic Messages request payload.
+        """
+        if self._client_session_id or self._resolved_runtime_session_attempted:
+            return
+        native_session_id = _session_id_from_anthropic_metadata(payload)
+        if native_session_id:
+            self._client_session_id = native_session_id
 
     def _resolve_runtime_session(self) -> Optional[str]:
         if self._resolved_runtime_session_attempted:
@@ -683,6 +755,7 @@ class OpenAIGatewayService:
         anthropic_beta: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Handle Anthropic Messages API-compatible requests."""
+        self._adopt_native_session_id(payload)
         if payload.get("stream"):
             raise ModelGatewayAPIError(
                 provider="anthropic",
@@ -819,6 +892,7 @@ class OpenAIGatewayService:
         anthropic_beta: Optional[str] = None,
     ) -> Iterator[str]:
         """Handle streaming Anthropic Messages API-compatible requests."""
+        self._adopt_native_session_id(payload)
         model = self._resolve_requested_model(
             payload.get("model"), provider="anthropic"
         )

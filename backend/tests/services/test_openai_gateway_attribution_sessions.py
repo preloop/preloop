@@ -8,6 +8,7 @@ Covers:
 
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List, Optional
 from unittest.mock import patch
 
@@ -555,3 +556,215 @@ def test_optimize_request_context_skips_repeated_account_fetch(
         service._optimize_request_context(messages=messages, payload=payload)
         service._optimize_request_context(messages=messages, payload=payload)
         assert get_mock.call_count == 1
+
+
+# --------------------------------------------------------------------------
+# Claude Code session identity -- a NEW Claude Code conversation must get its
+# own runtime session instead of appending onto the previous one.
+#
+# Claude Code never sends X-Preloop-Session-Id. It stamps its real conversation
+# id (the ~/.claude/projects/<slug>/<uuid>.jsonl transcript name) on the
+# X-Claude-Code-Session-Id header and inside metadata.user_id, which is a JSON
+# *string*. Before the fix, both were ignored, so every run on a machine keyed
+# to the durable credential's single principal id and collapsed into one
+# eternal session row.
+# --------------------------------------------------------------------------
+
+
+_ANTHROPIC_LITELLM_RESPONSE = {
+    "id": "msg_session_identity",
+    "created": 1710000000,
+    "choices": [
+        {
+            "message": {"role": "assistant", "content": "ok"},
+            "finish_reason": "stop",
+        }
+    ],
+    "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+}
+
+
+def _create_anthropic_gateway_model(db_session, account_id) -> Any:
+    return crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Claude Gateway Model",
+            "provider_name": "anthropic",
+            "model_identifier": "claude-sonnet-4-5",
+            "api_key": "provider-secret",
+            "meta_data": {
+                "gateway": {
+                    "enabled": True,
+                    "model_alias": "anthropic/claude-sonnet-4-5",
+                    "provider_adapter": "preloop",
+                },
+                "pricing": {
+                    "input_price_per_1k": 0.01,
+                    "output_price_per_1k": 0.02,
+                },
+            },
+            "is_default": True,
+        },
+        account_id=account_id,
+    )
+
+
+def _claude_code_key(db_session, test_user) -> Any:
+    """A durable Claude Code credential: one principal id reused for every run."""
+    runtime_api_key, _ = crud_api_key.create_runtime_key(
+        db_session,
+        name="Claude Code Durable Credential",
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        context_data={
+            "credential_kind": "managed_agent_durable",
+            "runtime_principal": {
+                "type": "claude_code",
+                "id": "claude-code-64fd76044120",
+                "name": "Claude Code",
+            },
+        },
+    )
+    return runtime_api_key
+
+
+def _claude_code_payload(session_id: Optional[str]) -> Dict[str, Any]:
+    """Build the Anthropic payload Claude Code actually sends."""
+    payload: Dict[str, Any] = {
+        "model": "anthropic/claude-sonnet-4-5",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 256,
+    }
+    if session_id is not None:
+        payload["metadata"] = {
+            "user_id": json.dumps(
+                {
+                    "device_id": "87f960fb6adfa93494bd7141bcbf3a9489c897fa7c0a9d0ac60f07b6078503db",
+                    "account_uuid": "",
+                    "session_id": session_id,
+                }
+            )
+        }
+    return payload
+
+
+def _run_message(service: OpenAIGatewayService, payload: Dict[str, Any]) -> Any:
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value=_ANTHROPIC_LITELLM_RESPONSE,
+    ):
+        return service.create_message(payload)
+
+
+def _anthropic_usage_rows(db_session) -> List[ApiUsage]:
+    return (
+        db_session.query(ApiUsage)
+        .filter(ApiUsage.endpoint == "/anthropic/v1/messages")
+        .order_by(ApiUsage.timestamp.asc())
+        .all()
+    )
+
+
+def test_claude_code_native_metadata_splits_sessions(db_session, test_user):
+    """Two Claude Code conversations must not merge into one runtime session."""
+    _create_anthropic_gateway_model(db_session, test_user.account_id)
+
+    api_key = _claude_code_key(db_session, test_user)
+    _run_message(
+        _service(db_session, test_user, api_key),
+        _claude_code_payload("26d2f152-2d10-49e5-a68c-e471d55aadad"),
+    )
+    _run_message(
+        _service(db_session, test_user, api_key),
+        _claude_code_payload("5436a7b6-8e38-493b-a172-304a1a000000"),
+    )
+
+    rows = _anthropic_usage_rows(db_session)
+    session_ids = {r.runtime_session_id for r in rows}
+    assert None not in session_ids
+    assert len(session_ids) == 2
+
+
+def test_claude_code_same_conversation_reuses_session(db_session, test_user):
+    """Turns of ONE Claude Code conversation stay in one runtime session."""
+    _create_anthropic_gateway_model(db_session, test_user.account_id)
+
+    api_key = _claude_code_key(db_session, test_user)
+    payload = _claude_code_payload("26d2f152-2d10-49e5-a68c-e471d55aadad")
+    _run_message(_service(db_session, test_user, api_key), payload)
+    _run_message(_service(db_session, test_user, api_key), payload)
+
+    rows = _anthropic_usage_rows(db_session)
+    session_ids = {r.runtime_session_id for r in rows}
+    assert None not in session_ids
+    assert len(session_ids) == 1
+
+
+def test_claude_code_session_id_lands_on_runtime_session_row(db_session, test_user):
+    """The runtime session is keyed by Claude Code's own conversation id."""
+    _create_anthropic_gateway_model(db_session, test_user.account_id)
+
+    session_uuid = "26d2f152-2d10-49e5-a68c-e471d55aadad"
+    api_key = _claude_code_key(db_session, test_user)
+    _run_message(
+        _service(db_session, test_user, api_key), _claude_code_payload(session_uuid)
+    )
+
+    row = _anthropic_usage_rows(db_session)[0]
+    runtime_session = crud_runtime_session.get_account_session(
+        db_session,
+        account_id=str(test_user.account_id),
+        runtime_session_id=str(row.runtime_session_id),
+    )
+    assert runtime_session is not None
+    # `<principal id>:<claude code session id>` -- the transcript uuid is what
+    # makes this row traceable back to a real Claude Code conversation.
+    assert runtime_session.session_source_id.endswith(f":{session_uuid}")
+
+
+def test_preloop_session_header_wins_over_claude_metadata(db_session, test_user):
+    """An explicit X-Preloop-Session-Id is never overridden by the payload."""
+    _create_anthropic_gateway_model(db_session, test_user.account_id)
+
+    api_key = _claude_code_key(db_session, test_user)
+    _run_message(
+        _service(db_session, test_user, api_key, client_session_id="explicit-run"),
+        _claude_code_payload("26d2f152-2d10-49e5-a68c-e471d55aadad"),
+    )
+
+    row = _anthropic_usage_rows(db_session)[0]
+    runtime_session = crud_runtime_session.get_account_session(
+        db_session,
+        account_id=str(test_user.account_id),
+        runtime_session_id=str(row.runtime_session_id),
+    )
+    assert runtime_session is not None
+    assert runtime_session.session_source_id.endswith(":explicit-run")
+
+
+def test_claude_code_malformed_metadata_falls_back_without_error(db_session, test_user):
+    """Unparseable/oversized/hostile metadata degrades to source keying."""
+    _create_anthropic_gateway_model(db_session, test_user.account_id)
+    api_key = _claude_code_key(db_session, test_user)
+
+    base = _claude_code_payload(None)
+    for metadata in (
+        {"user_id": "not-json"},
+        {"user_id": json.dumps({"session_id": "bad value!"})},
+        {"user_id": json.dumps({"device_id": "d"})},  # no session_id
+        {"user_id": json.dumps(["not", "an", "object"])},
+        {"user_id": "x" * 5000},  # over the parse cap
+        {"user_id": 12345},  # wrong type
+        {"user_id": json.dumps({"session_id": "x" * 400})},  # over the id cap
+    ):
+        _run_message(
+            _service(db_session, test_user, api_key), {**base, "metadata": metadata}
+        )
+
+    rows = _anthropic_usage_rows(db_session)
+    assert len(rows) == 7
+    session_ids = {r.runtime_session_id for r in rows}
+    assert None not in session_ids
+    # No usable session id anywhere -> all collapse to one source-keyed row,
+    # exactly the pre-fix behavior. Nothing raised.
+    assert len(session_ids) == 1
