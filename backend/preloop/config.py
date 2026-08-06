@@ -254,6 +254,22 @@ class Settings(BaseSettings):
             "Current supported value: litellm"
         ),
     )
+    runtime_session_idle_timeout_minutes: int = Field(
+        720,
+        description=(
+            "Idle window after which a gateway runtime session is considered "
+            "finished, so the next request opens a NEW session row instead of "
+            "appending to a stale one. This is the honest fallback for agents "
+            "that put no session id on the wire (Gemini CLI, Hermes, OpenClaw's "
+            "Anthropic transport): without it their sessions grow forever. It is "
+            "a safety net only — a native session id always wins, so agents that "
+            "do identify their conversation (Claude Code, Codex, OpenCode, and "
+            "anything sending X-Preloop-Session-Id or prompt_cache_key) are "
+            "split by that id and are unaffected by this timeout. Set to 0 to "
+            "disable the closer entirely and restore the previous "
+            "never-ending-session behavior."
+        ),
+    )
     model_gateway_claude_family_autoregister_enabled: bool = Field(
         True,
         description=(

@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+import pytest
 from uuid import uuid4
 
 from sqlalchemy.exc import OperationalError
@@ -253,8 +254,23 @@ def test_gateway_request_recording_survives_activity_touch_timeout():
     service.db.rollback.assert_called_once()
 
 
-def test_runtime_session_resolution_rolls_back_after_timeout():
-    """Startup session resolution should not leave the DB session poisoned."""
+@pytest.mark.parametrize(
+    ("lookup_name", "client_session_id"),
+    [
+        # Signal-less agents look up the latest idle generation...
+        ("get_latest_idle_generation", None),
+        # ...while a natively identified conversation looks up its exact key.
+        ("get_by_source", "session-abc"),
+    ],
+)
+def test_runtime_session_resolution_rolls_back_after_timeout(
+    lookup_name, client_session_id
+):
+    """Startup session resolution should not leave the DB session poisoned.
+
+    Both lookup paths must roll back: a poisoned session would otherwise fail
+    every later write on the request, including the usage row.
+    """
     account_id = uuid4()
     user = SimpleNamespace(id=uuid4(), account_id=account_id)
     api_key = SimpleNamespace(
@@ -276,10 +292,11 @@ def test_runtime_session_resolution_rolls_back_after_timeout():
             user=user,
             api_key=api_key,
         ),
+        client_session_id=client_session_id,
     )
 
     with patch(
-        "preloop.services.openai_gateway.crud_runtime_session.get_by_source",
+        f"preloop.services.openai_gateway.crud_runtime_session.{lookup_name}",
         side_effect=OperationalError(
             "SELECT runtime_session",
             {},

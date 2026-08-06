@@ -9,11 +9,13 @@ Covers:
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 from unittest.mock import patch
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
+from preloop.config import settings
 from preloop.models.crud import (
     crud_account,
     crud_ai_model,
@@ -21,6 +23,7 @@ from preloop.models.crud import (
     crud_runtime_session,
 )
 from preloop.models.models.api_usage import ApiUsage
+from preloop.services.agent_session_headers import native_session_id_from_headers
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.openai_gateway import OpenAIGatewayService
 from preloop.services.subject_governance import (
@@ -768,3 +771,312 @@ def test_claude_code_malformed_metadata_falls_back_without_error(db_session, tes
     # No usable session id anywhere -> all collapse to one source-keyed row,
     # exactly the pre-fix behavior. Nothing raised.
     assert len(session_ids) == 1
+
+
+# ---------------------------------------------------------------------------
+# Per-agent native session ids (Codex, OpenCode) and prompt_cache_key.
+#
+# Same bug class as the Claude Code tests above: a durable managed-agent
+# credential has a machine-scoped `runtime_principal.id` that never changes, so
+# without a per-conversation signal every conversation on that machine collapses
+# onto one runtime_session row that is never ended.
+# ---------------------------------------------------------------------------
+
+
+def _durable_key(db_session, test_user, principal_type: str) -> Any:
+    """A durable credential for one agent family: one id reused for every run."""
+    runtime_api_key, _ = crud_api_key.create_runtime_key(
+        db_session,
+        name=f"{principal_type} Durable Credential",
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        context_data={
+            "credential_kind": "managed_agent_durable",
+            "runtime_principal": {
+                "type": principal_type,
+                "id": f"{principal_type}-64fd76044120",
+                "name": principal_type,
+            },
+        },
+    )
+    return runtime_api_key
+
+
+def _openai_usage_rows(db_session) -> List[ApiUsage]:
+    return (
+        db_session.query(ApiUsage)
+        .filter(ApiUsage.endpoint == "/openai/v1/chat/completions")
+        .order_by(ApiUsage.timestamp.asc())
+        .all()
+    )
+
+
+def _source_id_for(db_session, test_user, row: ApiUsage) -> str:
+    runtime_session = crud_runtime_session.get_account_session(
+        db_session,
+        account_id=str(test_user.account_id),
+        runtime_session_id=str(row.runtime_session_id),
+    )
+    assert runtime_session is not None
+    return runtime_session.session_source_id
+
+
+def test_codex_session_header_splits_sessions(db_session, test_user):
+    """Codex sends its conversation uuid as `session-id` on every request."""
+    _create_gateway_model(db_session, test_user.account_id)
+    api_key = _durable_key(db_session, test_user, "codex")
+
+    for session_uuid in (
+        "26d2f152-2d10-49e5-a68c-e471d55aadad",
+        "5436a7b6-8e38-493b-a172-304a1a000000",
+    ):
+        service = _service(
+            db_session,
+            test_user,
+            api_key,
+            client_session_id=native_session_id_from_headers(
+                {"session-id": session_uuid},
+                auth_context=SimpleNamespace(api_key=api_key),
+            ),
+        )
+        _run_chat(
+            service,
+            {"model": "openai/gpt-5", "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    rows = _openai_usage_rows(db_session)
+    session_ids = {r.runtime_session_id for r in rows}
+    assert None not in session_ids
+    assert len(session_ids) == 2
+
+
+def test_codex_thread_id_header_is_read_when_session_id_absent(db_session, test_user):
+    """Codex sends the same uuid on `thread-id`; the fix survives either."""
+    api_key = _durable_key(db_session, test_user, "codex")
+
+    resolved = native_session_id_from_headers(
+        {"thread-id": "26d2f152-2d10-49e5-a68c-e471d55aadad"},
+        auth_context=SimpleNamespace(api_key=api_key),
+    )
+
+    assert resolved == "26d2f152-2d10-49e5-a68c-e471d55aadad"
+
+
+def test_opencode_session_header_splits_sessions(db_session, test_user):
+    """OpenCode sends `x-session-id` per conversation."""
+    _create_gateway_model(db_session, test_user.account_id)
+    api_key = _durable_key(db_session, test_user, "opencode")
+
+    for session_id in ("ses_8a1f", "ses_9b2e"):
+        service = _service(
+            db_session,
+            test_user,
+            api_key,
+            client_session_id=native_session_id_from_headers(
+                {"x-session-id": session_id},
+                auth_context=SimpleNamespace(api_key=api_key),
+            ),
+        )
+        _run_chat(
+            service,
+            {"model": "openai/gpt-5", "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    rows = _openai_usage_rows(db_session)
+    assert len({r.runtime_session_id for r in rows}) == 2
+
+
+def test_native_headers_are_ignored_for_other_principal_types(db_session, test_user):
+    """`Session-Id` is a GENERIC name any proxy or CDN may stamp.
+
+    Session boundaries can never be re-derived after the fact, so a wrong
+    boundary is permanent. Reading these headers is therefore gated on the
+    credential's own principal type.
+    """
+    codex_key = _durable_key(db_session, test_user, "codex")
+    other_key = _durable_key(db_session, test_user, "gemini_cli")
+
+    assert (
+        native_session_id_from_headers(
+            {"session-id": "abc"}, auth_context=SimpleNamespace(api_key=codex_key)
+        )
+        == "abc"
+    )
+    # Same header, different agent: not trusted.
+    assert (
+        native_session_id_from_headers(
+            {"session-id": "abc"}, auth_context=SimpleNamespace(api_key=other_key)
+        )
+        is None
+    )
+    # No credential at all: nothing to gate on, so nothing is trusted.
+    assert (
+        native_session_id_from_headers(
+            {"session-id": "abc"}, auth_context=SimpleNamespace(api_key=None)
+        )
+        is None
+    )
+    # OpenCode's header must not be honoured for a codex credential either.
+    assert (
+        native_session_id_from_headers(
+            {"x-session-id": "abc"}, auth_context=SimpleNamespace(api_key=codex_key)
+        )
+        is None
+    )
+
+
+def test_prompt_cache_key_splits_sessions(db_session, test_user):
+    """`prompt_cache_key` is OpenAI's per-conversation field (replaces `user`)."""
+    _create_gateway_model(db_session, test_user.account_id)
+    api_key = _durable_key(db_session, test_user, "custom")
+
+    for cache_key in ("conv-alpha", "conv-beta"):
+        _run_chat(
+            _service(db_session, test_user, api_key),
+            {
+                "model": "openai/gpt-5",
+                "messages": [{"role": "user", "content": "hi"}],
+                "prompt_cache_key": cache_key,
+            },
+        )
+
+    rows = _openai_usage_rows(db_session)
+    assert len({r.runtime_session_id for r in rows}) == 2
+    assert _source_id_for(db_session, test_user, rows[0]).endswith(":conv-alpha")
+
+
+def test_preloop_header_wins_over_prompt_cache_key(db_session, test_user):
+    """Explicit Preloop header outranks the body's cache key."""
+    _create_gateway_model(db_session, test_user.account_id)
+    api_key = _durable_key(db_session, test_user, "custom")
+
+    _run_chat(
+        _service(db_session, test_user, api_key, client_session_id="explicit-run"),
+        {
+            "model": "openai/gpt-5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "prompt_cache_key": "conv-alpha",
+        },
+    )
+
+    row = _openai_usage_rows(db_session)[0]
+    assert _source_id_for(db_session, test_user, row).endswith(":explicit-run")
+
+
+def test_malformed_prompt_cache_key_falls_back_without_error(db_session, test_user):
+    """A hostile or unusable cache key degrades to source keying, never 500s."""
+    _create_gateway_model(db_session, test_user.account_id)
+    api_key = _durable_key(db_session, test_user, "custom")
+
+    for cache_key in ("bad value!", "x" * 400, 12345, None, {"nested": "object"}):
+        _run_chat(
+            _service(db_session, test_user, api_key),
+            {
+                "model": "openai/gpt-5",
+                "messages": [{"role": "user", "content": "hi"}],
+                "prompt_cache_key": cache_key,
+            },
+        )
+
+    rows = _openai_usage_rows(db_session)
+    assert len(rows) == 5
+    # All fell back to the same source-keyed session; none errored.
+    assert len({r.runtime_session_id for r in rows}) == 1
+
+
+# ---------------------------------------------------------------------------
+# Inactivity closer: the honest fallback for signal-less sources.
+#
+# Gemini CLI, Hermes and OpenClaw's Anthropic transport put NO conversation id
+# on the wire, so only the clock can bound their sessions. This is a safety net
+# only: a native id always wins.
+# ---------------------------------------------------------------------------
+
+
+def _age_runtime_session(db_session, row: ApiUsage, *, minutes: int) -> Any:
+    """Backdate a session's activity so it looks idle."""
+    runtime_session = crud_runtime_session.get_account_session(
+        db_session,
+        account_id=str(row.account_id),
+        runtime_session_id=str(row.runtime_session_id),
+    )
+    stale = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=minutes)
+    runtime_session.last_activity_at = stale
+    runtime_session.started_at = stale
+    db_session.add(runtime_session)
+    db_session.flush()
+    return runtime_session
+
+
+def test_idle_signal_less_session_rolls_to_a_new_generation(db_session, test_user):
+    """A signal-less agent's next conversation must not append to a stale row."""
+    _create_gateway_model(db_session, test_user.account_id)
+    api_key = _durable_key(db_session, test_user, "gemini_cli")
+    payload = {"model": "openai/gpt-5", "messages": [{"role": "user", "content": "hi"}]}
+
+    _run_chat(_service(db_session, test_user, api_key), payload)
+    first = _openai_usage_rows(db_session)[0]
+    stale_session = _age_runtime_session(db_session, first, minutes=10_000)
+
+    _run_chat(_service(db_session, test_user, api_key), payload)
+
+    rows = _openai_usage_rows(db_session)
+    assert len({r.runtime_session_id for r in rows}) == 2
+    # The stale row is closed AT ITS OWN LAST ACTIVITY, not at "now": history
+    # must not be rewritten to claim the session ran until this moment.
+    db_session.refresh(stale_session)
+    assert stale_session.ended_at is not None
+    assert stale_session.ended_at == stale_session.last_activity_at
+    # The new generation is distinguishable as closer-minted.
+    assert ":idle-" in _source_id_for(db_session, test_user, rows[1])
+
+
+def test_active_signal_less_session_is_not_split(db_session, test_user):
+    """Inside the window, consecutive turns stay in one session."""
+    _create_gateway_model(db_session, test_user.account_id)
+    api_key = _durable_key(db_session, test_user, "gemini_cli")
+    payload = {"model": "openai/gpt-5", "messages": [{"role": "user", "content": "hi"}]}
+
+    _run_chat(_service(db_session, test_user, api_key), payload)
+    _run_chat(_service(db_session, test_user, api_key), payload)
+
+    rows = _openai_usage_rows(db_session)
+    assert len({r.runtime_session_id for r in rows}) == 1
+
+
+def test_native_session_id_is_never_split_by_idleness(db_session, test_user):
+    """A natively identified conversation is immune to the closer.
+
+    Resuming a real Codex conversation after a week is still that conversation;
+    only the agent's own id decides, never the clock.
+    """
+    _create_gateway_model(db_session, test_user.account_id)
+    api_key = _durable_key(db_session, test_user, "custom")
+    payload = {
+        "model": "openai/gpt-5",
+        "messages": [{"role": "user", "content": "hi"}],
+        "prompt_cache_key": "conv-alpha",
+    }
+
+    _run_chat(_service(db_session, test_user, api_key), payload)
+    _age_runtime_session(db_session, _openai_usage_rows(db_session)[0], minutes=10_000)
+    _run_chat(_service(db_session, test_user, api_key), payload)
+
+    rows = _openai_usage_rows(db_session)
+    assert len({r.runtime_session_id for r in rows}) == 1
+
+
+def test_idle_closer_can_be_disabled(db_session, test_user):
+    """`runtime_session_idle_timeout_minutes = 0` restores the old behavior."""
+    _create_gateway_model(db_session, test_user.account_id)
+    api_key = _durable_key(db_session, test_user, "gemini_cli")
+    payload = {"model": "openai/gpt-5", "messages": [{"role": "user", "content": "hi"}]}
+
+    _run_chat(_service(db_session, test_user, api_key), payload)
+    _age_runtime_session(db_session, _openai_usage_rows(db_session)[0], minutes=10_000)
+
+    with patch.object(settings, "runtime_session_idle_timeout_minutes", 0):
+        _run_chat(_service(db_session, test_user, api_key), payload)
+
+    rows = _openai_usage_rows(db_session)
+    assert len({r.runtime_session_id for r in rows}) == 1
