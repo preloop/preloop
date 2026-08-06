@@ -163,6 +163,39 @@ across renames and re-onboarding.
 
 ### Fixed
 
+- **Session tracking for all agents** (#190): agents that authenticate with a
+  durable managed-agent credential share one machine-scoped runtime principal,
+  so every conversation on a machine collapsed into a single runtime session
+  that never ended. Codex (`Session-Id`/`Thread-Id`), OpenCode (`X-Session-Id`)
+  and any client sending OpenAI's `prompt_cache_key` are now split per
+  conversation. Agent-native headers are only trusted when the credential
+  identifies that agent, since `Session-Id` and `X-Session-Id` are generic
+  names an intermediary may stamp. `X-Preloop-Session-Id` still takes
+  precedence over everything. The `preloop agents` OpenClaw provider now
+  enables `supportsPromptCacheKey`, so OpenClaw stops stripping its own
+  conversation key against the Preloop gateway (this also improves upstream
+  prompt-cache hit rate). Session identity telemetry follows OpenTelemetry
+  GenAI's `gen_ai.conversation.id` vocabulary.
+
+- **Sessions from agents that send no conversation id are now bounded by
+  inactivity** (#190): Gemini CLI, Hermes and OpenClaw's Anthropic transport
+  put no session id on the wire at all, so their sessions previously grew
+  forever. After an idle window (`RUNTIME_SESSION_IDLE_TIMEOUT_MINUTES`,
+  default 720, set to `0` to disable) the stale session is closed at its own
+  last activity, so history is never rewritten, and the next request starts a
+  new one. This is a fallback only: an agent that does identify its
+  conversation is never split by the clock.
+
+- **Codex flows failed at their first model call** (#190): every Codex flow
+  errored with `Missing required parameter: 'tools[N].name'` on OpenAI models
+  or `unknown variant 'namespace'` on DeepSeek, because the Codex CLI sends
+  tool shapes (freeform `custom` tools, `namespace` containers, host-executed
+  search tools) that upstreams reject, and the gateway rewrote custom tools
+  into a form that dropped their name for models routed to the Responses API.
+  Tools are now translated into plain function tools, with namespaced tools
+  flattened rather than dropped so an agent keeps its MCP toolset, and tool
+  calls are rendered back in the shape Codex expects.
+
 - **OpenClaw plugin manifest migrated to the OpenClaw 2026.7.2-beta.7 schema**
   (`@preloop-ai/openclaw-plugin` 0.2.1): the ClawHub listing showed a
   `manifest-unknown-fields` warning because `openclaw.plugin.json` declared 11
