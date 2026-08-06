@@ -30,72 +30,71 @@ def _load_codex_replay_payload() -> dict:
 def _assert_replay_tools_normalized(
     request_tools: list[dict], normalized_tools: list[dict]
 ) -> None:
-    """Assert generic tool normalization invariants for replayed Requests payloads."""
-    supported_request_tools = [
-        tool
-        for tool in request_tools
-        if tool.get("type")
-        not in {
-            "web_search",
-            "web_search_preview",
-            "file_search",
-            "code_interpreter",
-            "computer_use_preview",
-        }
-    ]
-    assert len(normalized_tools) == len(supported_request_tools)
+    """Assert tool normalization invariants for replayed Responses payloads.
+
+    Every tool that reaches an upstream must be a plain `function` tool. Codex
+    sends freeform `custom` tools and host-executed entries that no upstream
+    accepts: OpenAI answers `400 Missing required parameter: 'tools[N].name'`
+    for models litellm routes to `/v1/responses`, and DeepSeek rejects any
+    non-`function` type. See `preloop.services.codex_tool_compat`.
+    """
+    host_executed = {
+        "web_search",
+        "web_search_preview",
+        "tool_search",
+        "file_search",
+        "code_interpreter",
+        "computer_use_preview",
+        "image_generation",
+        "local_shell",
+    }
+    expected_tools = []
+    for tool in request_tools:
+        if tool.get("type") in host_executed:
+            continue
+        if tool.get("type") == "namespace":
+            # A namespace is a container, not a tool. Its nested tools must be
+            # LIFTED, not dropped: on prod the `mcp__preloop` namespace held the
+            # flow's entire MCP toolset, so dropping it would leave the agent
+            # silently toolless rather than visibly broken.
+            expected_tools.extend(tool.get("tools") or [])
+            continue
+        expected_tools.append(tool)
+    assert len(normalized_tools) == len(expected_tools)
     for request_tool, normalized_tool in zip(
-        supported_request_tools, normalized_tools, strict=False
+        expected_tools, normalized_tools, strict=False
     ):
-        assert normalized_tool["type"] == request_tool["type"]
+        # Invariant: nothing but `function` survives normalization.
+        assert normalized_tool["type"] == "function"
+        assert normalized_tool["function"]["name"] == request_tool["name"]
+        assert "name" not in normalized_tool
 
         if request_tool["type"] == "function":
-            assert normalized_tool["function"]["name"] == request_tool["name"]
             assert normalized_tool["function"]["description"] == request_tool.get(
                 "description"
             )
             assert normalized_tool["function"]["parameters"] == request_tool.get(
                 "parameters"
             )
-            assert "name" not in normalized_tool
             continue
 
-        if request_tool["type"] == "custom":
-            assert normalized_tool["custom"]["name"] == request_tool["name"]
-            assert normalized_tool["custom"].get("description") == request_tool.get(
-                "description"
-            )
-            request_format = request_tool.get("format")
-            normalized_format = normalized_tool["custom"].get("format")
-            if (
-                isinstance(request_format, dict)
-                and request_format.get("type") == "grammar"
-            ):
-                expected_grammar = {}
-                if isinstance(request_format.get("grammar"), dict):
-                    if request_format["grammar"].get("syntax") is not None:
-                        expected_grammar["syntax"] = request_format["grammar"]["syntax"]
-                    if request_format["grammar"].get("definition") is not None:
-                        expected_grammar["definition"] = request_format["grammar"][
-                            "definition"
-                        ]
-                else:
-                    if request_format.get("syntax") is not None:
-                        expected_grammar["syntax"] = request_format["syntax"]
-                    if request_format.get("definition") is not None:
-                        expected_grammar["definition"] = request_format["definition"]
-                    elif isinstance(request_format.get("grammar"), str):
-                        expected_grammar["definition"] = request_format["grammar"]
+        # A downgraded freeform tool takes its raw payload as one string arg.
+        assert request_tool["type"] == "custom"
+        parameters = normalized_tool["function"]["parameters"]
+        assert parameters["required"] == ["input"]
+        assert parameters["properties"]["input"]["type"] == "string"
 
-                assert normalized_format == {
-                    "type": "grammar",
-                    "grammar": expected_grammar,
-                }
-                assert "syntax" not in normalized_format
-                assert "definition" not in normalized_format
-            continue
-
-        assert normalized_tool == request_tool
+        # The grammar is the only description of the payload syntax, so it has
+        # to survive into the description a plain-function model can read.
+        request_format = request_tool.get("format")
+        if isinstance(request_format, dict) and request_format.get("type") == "grammar":
+            definition = request_format.get("definition")
+            if definition is None and isinstance(request_format.get("grammar"), dict):
+                definition = request_format["grammar"].get("definition")
+            if definition is None and isinstance(request_format.get("grammar"), str):
+                definition = request_format["grammar"]
+            if definition:
+                assert definition.strip() in normalized_tool["function"]["description"]
 
 
 def test_openai_gateway_responses_codex_replay_normalizes_tools(

@@ -1211,8 +1211,17 @@ def test_create_response_rejects_incomplete_tool_history(db_session, test_user):
     mock_completion.assert_not_called()
 
 
-def test_create_response_wraps_flat_custom_tools_for_upstream(db_session, test_user):
-    """Flat Responses custom tools should be wrapped in the nested custom block."""
+def test_create_response_downgrades_custom_tools_to_functions(db_session, test_user):
+    """Codex freeform `custom` tools must be downgraded to plain functions.
+
+    Regression test for the prod failure on flow execution `0792099a`
+    (`api_usage` `dcf29ac5`): this previously wrapped the tool into the nested
+    chat-completions `custom` block, which deletes the top-level `name`. For
+    any model litellm routes to `/v1/responses` (e.g. `gpt-5.2-codex`) that
+    yields `400 Missing required parameter: 'tools[N].name'`, and DeepSeek
+    rejects non-`function` tool types outright. A plain function tool is the
+    only shape both routes and all providers accept.
+    """
     crud_ai_model.create_with_account(
         db=db_session,
         obj_in={
@@ -1262,20 +1271,36 @@ def test_create_response_wraps_flat_custom_tools_for_upstream(db_session, test_u
     kwargs = mock_completion.call_args.kwargs
     assert kwargs["tools"] == [
         {
-            "type": "custom",
-            "custom": {
+            "type": "function",
+            "function": {
                 "name": "get_pull_request",
                 "description": "Fetch one pull request",
-                "input_schema": {"type": "object"},
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "input": {
+                            "type": "string",
+                            "description": (
+                                "The complete, raw tool payload as plain text."
+                            ),
+                        }
+                    },
+                    "required": ["input"],
+                    "additionalProperties": False,
+                },
             },
         }
     ]
 
 
-def test_create_response_maps_custom_grammar_definition_for_upstream(
+def test_create_response_inlines_custom_tool_grammar_into_description(
     db_session, test_user
 ):
-    """Grammar custom tools should nest grammar details under format.grammar."""
+    """A downgraded grammar tool must carry its grammar in the description.
+
+    The lark grammar is the only place the payload syntax is written down, so
+    dropping it would leave the model unable to produce a valid payload.
+    """
     crud_ai_model.create_with_account(
         db=db_session,
         obj_in={
@@ -1327,14 +1352,13 @@ def test_create_response_maps_custom_grammar_definition_for_upstream(
         )
 
     kwargs = mock_completion.call_args.kwargs
-    assert kwargs["tools"][0]["type"] == "custom"
-    assert kwargs["tools"][0]["custom"]["format"]["type"] == "grammar"
-    assert kwargs["tools"][0]["custom"]["format"]["grammar"] == {
-        "syntax": "lark",
-        "definition": 'start: "hello"',
-    }
-    assert "syntax" not in kwargs["tools"][0]["custom"]["format"]
-    assert "definition" not in kwargs["tools"][0]["custom"]["format"]
+    tool = kwargs["tools"][0]
+    assert tool["type"] == "function"
+    assert tool["function"]["name"] == "code_exec"
+    # The grammar survives, inlined where a plain-function model can read it.
+    assert 'start: "hello"' in tool["function"]["description"]
+    assert "lark grammar" in tool["function"]["description"]
+    assert tool["function"]["parameters"]["required"] == ["input"]
 
 
 def test_create_response_drops_unsupported_hosted_tools_for_upstream(
@@ -2643,3 +2667,267 @@ def test_resolve_requested_model_unknown_model_still_404s():
         service._resolve_requested_model("gpt-5", provider="anthropic")
 
     assert excinfo.value.status_code == 404
+
+
+def _codex_freeform_service() -> OpenAIGatewayService:
+    """A service whose current request declared a freeform `apply_patch`."""
+    auth_context = ModelGatewayAuthContext(
+        token="token",
+        user=SimpleNamespace(id="user-1", account_id="account-1"),
+    )
+    service = OpenAIGatewayService(MagicMock(), auth_context)
+    service._codex_freeform_tool_names = {"apply_patch"}
+    return service
+
+
+def test_stream_response_emits_freeform_tool_call_as_custom_tool_call():
+    """Codex aborts the run if its freeform tool is answered as a function_call.
+
+    Verified live against `codex-cli`: a `function_call` reply produces
+    `Fatal error: tool apply_patch invoked with incompatible payload` and no
+    file is written, while a `custom_tool_call` carrying the raw patch text
+    applies cleanly. Both prod failures were on this streaming path
+    (`endpoint_kind: responses_stream`), so it is the path that must be right.
+    """
+    service = _codex_freeform_service()
+    ai_model = SimpleNamespace(id="model-1", provider_name="openai")
+    upstream_stream = iter(
+        [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "function": {"name": "apply_patch"},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {
+                                        "arguments": '{"input": "*** Begin Patch"}'
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        ]
+    )
+
+    with (
+        patch.object(service, "_resolve_requested_model", return_value=ai_model),
+        patch.object(service, "_check_budget", return_value=None),
+        patch.object(service, "_call_litellm", return_value=upstream_stream),
+        patch.object(service, "_record_gateway_request"),
+    ):
+        events = [
+            _parse_sse_payload(event)
+            for event in service.stream_response(
+                {"model": "openai/gpt-5", "input": "Edit the file"}
+            )
+        ]
+
+    added = [
+        event
+        for event in events
+        if isinstance(event, dict) and event.get("type") == "response.output_item.added"
+    ]
+    # The item is announced as custom_tool_call from the very first event: a
+    # client that saw `function_call` first would already have rejected it.
+    assert len(added) == 1
+    assert added[0]["item"]["type"] == "custom_tool_call"
+    assert added[0]["item"]["name"] == "apply_patch"
+
+    completed = events[-2]
+    output_item = completed["response"]["output"][0]
+    assert output_item["type"] == "custom_tool_call"
+    assert output_item["call_id"] == "call_1"
+    # Raw patch text, not the JSON envelope the model was asked to produce.
+    assert output_item["input"] == "*** Begin Patch"
+    assert "arguments" not in output_item
+
+    # No function-call argument deltas may leak for a freeform tool.
+    assert not [
+        event
+        for event in events
+        if isinstance(event, dict)
+        and event.get("type", "").startswith("response.function_call_arguments")
+    ]
+
+
+def test_stream_response_still_emits_plain_function_calls_normally():
+    """A non-freeform tool keeps the ordinary function_call event sequence."""
+    auth_context = ModelGatewayAuthContext(
+        token="token",
+        user=SimpleNamespace(id="user-1", account_id="account-1"),
+    )
+    service = OpenAIGatewayService(MagicMock(), auth_context)
+    ai_model = SimpleNamespace(id="model-1", provider_name="openai")
+    upstream_stream = iter(
+        [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "function": {
+                                        "name": "exec_command",
+                                        "arguments": '{"cmd":',
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {"index": 0, "function": {"arguments": ' "ls"}'}}
+                            ]
+                        }
+                    }
+                ]
+            },
+        ]
+    )
+
+    with (
+        patch.object(service, "_resolve_requested_model", return_value=ai_model),
+        patch.object(service, "_check_budget", return_value=None),
+        patch.object(service, "_call_litellm", return_value=upstream_stream),
+        patch.object(service, "_record_gateway_request"),
+    ):
+        events = [
+            _parse_sse_payload(event)
+            for event in service.stream_response(
+                {"model": "openai/gpt-5", "input": "List files"}
+            )
+        ]
+
+    types = [
+        event["type"] for event in events if isinstance(event, dict) and "type" in event
+    ]
+    assert "response.function_call_arguments.delta" in types
+    assert "response.function_call_arguments.done" in types
+    assert "response.custom_tool_call_input.done" not in types
+
+    output_item = events[-2]["response"]["output"][0]
+    assert output_item["type"] == "function_call"
+    assert output_item["arguments"] == '{"cmd": "ls"}'
+
+
+def test_responses_input_accepts_echoed_custom_tool_call_history():
+    """Turn 2 of every Codex session replays these items; they must not 400."""
+    auth_context = ModelGatewayAuthContext(
+        token="token",
+        user=SimpleNamespace(id="user-1", account_id="account-1"),
+    )
+    service = OpenAIGatewayService(MagicMock(), auth_context)
+
+    messages = service._normalize_responses_input(
+        {
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": "Edit the file",
+                },
+                {
+                    "type": "custom_tool_call",
+                    "call_id": "call_1",
+                    "name": "apply_patch",
+                    "input": "*** Begin Patch",
+                },
+                {
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_1",
+                    "output": "Success. Updated: hello.txt",
+                },
+            ]
+        }
+    )
+
+    assert messages[0]["role"] == "user"
+    assert messages[1]["role"] == "assistant"
+    assert messages[1]["tool_calls"][0]["id"] == "call_1"
+    assert messages[1]["tool_calls"][0]["function"]["name"] == "apply_patch"
+    assert messages[2] == {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "content": "Success. Updated: hello.txt",
+    }
+
+
+def test_create_response_round_trips_a_freeform_tool_call():
+    """Full request->response symmetry on the non-streaming path."""
+    service = _codex_freeform_service()
+    ai_model = SimpleNamespace(id="model-1", provider_name="openai")
+
+    upstream = {
+        "id": "chatcmpl_1",
+        "created": 1710000000,
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "apply_patch",
+                                "arguments": '{"input": "*** Begin Patch"}',
+                            },
+                        }
+                    ],
+                }
+            }
+        ],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+
+    with (
+        patch.object(service, "_resolve_requested_model", return_value=ai_model),
+        patch.object(service, "_check_budget", return_value=None),
+        patch.object(service, "_call_litellm", return_value=upstream),
+        patch.object(service, "_record_gateway_request"),
+        patch.object(service, "_emit_gateway_request_started"),
+    ):
+        response = service.create_response(
+            {
+                "model": "openai/gpt-5",
+                "input": "Edit the file",
+                "tools": [
+                    {
+                        "type": "custom",
+                        "name": "apply_patch",
+                        "description": "Apply a patch",
+                    }
+                ],
+            }
+        )
+
+    output_item = response["output"][0]
+    assert output_item["type"] == "custom_tool_call"
+    assert output_item["name"] == "apply_patch"
+    assert output_item["input"] == "*** Begin Patch"

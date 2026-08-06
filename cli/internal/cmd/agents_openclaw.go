@@ -5300,6 +5300,25 @@ func buildOpenClawManagedProvider(
 			modelEntry["name"] = configuredModel.ModelAlias
 		}
 		modelEntry["api"] = gatewayAPI
+		// OpenClaw computes a per-conversation `prompt_cache_key` and then
+		// STRIPS it for any Responses-API endpoint it classifies as
+		// "proxy-like", which every Preloop gateway URL is. The result is that
+		// OpenClaw's OpenAI transport arrives with no conversation id at all,
+		// so every conversation on a machine collapses onto one runtime
+		// session that never ends. `supportsPromptCacheKey: true` is the
+		// documented opt-out (it forces shouldStripResponsesPromptCache=false),
+		// and it also recovers upstream prompt-cache hit rate, which the strip
+		// was silently costing us. Merged after the catalog copy so an explicit
+		// operator setting still wins.
+		if compat, ok := modelEntry["compat"].(map[string]interface{}); ok {
+			if _, set := compat["supportsPromptCacheKey"]; !set {
+				compat["supportsPromptCacheKey"] = true
+			}
+		} else {
+			modelEntry["compat"] = map[string]interface{}{
+				"supportsPromptCacheKey": true,
+			}
+		}
 		modelEntries = append(modelEntries, modelEntry)
 	}
 

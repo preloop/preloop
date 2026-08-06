@@ -36,6 +36,15 @@ _summary_columns_cache: dict[int, bool] = {}
 # can never inflate the session it was validating.
 INTERNAL_USAGE_PURPOSES = ("session_optimization", "session_title", "replay_validation")
 
+# Infix marking a runtime session row minted by the gateway's inactivity closer
+# rather than by an agent-declared conversation id. A source id shaped
+# ``<principal>:idle-<epoch>`` is the Nth generation of a signal-less agent's
+# session; ``<principal>:<something-else>`` is keyed by a real session id the
+# agent (or the client's X-Preloop-Session-Id) supplied. Keeping the two
+# namespaces distinguishable is what lets provenance be reported honestly and
+# stops the closer from ever matching a natively-keyed row.
+IDLE_GENERATION_INFIX = ":idle-"
+
 
 def _exclude_internal_usage_condition():
     """Return a NULL-safe filter that excludes Preloop-internal usage rows.
@@ -175,6 +184,58 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.account_id == account_id,
                 self.model.session_source_type == session_source_type,
                 self.model.session_source_id == session_source_id,
+            )
+            .first()
+        )
+
+    def get_latest_idle_generation(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        session_source_type: str,
+        session_source_id: str,
+    ) -> Optional[RuntimeSession]:
+        """Return the newest generation of one source-keyed runtime session.
+
+        Sources that put no session id on the wire (Gemini CLI, Hermes,
+        OpenClaw's Anthropic transport) can only be bounded by an idle window.
+        When one goes idle, the gateway closes the row and rolls to a fresh
+        generation whose source id is ``<base>:idle-<timestamp>`` — the row
+        itself is preserved, so the session's history is never rewritten. This
+        returns the generation that traffic should currently land on: the
+        newest of the base row and its ``:idle-`` descendants.
+
+        The ``:idle-`` infix is what keeps this unambiguous. Rows suffixed with
+        an agent's *native* conversation id (``<base>:<uuid>``) are resolved by
+        exact source key and are deliberately NOT matched here.
+
+        Args:
+            db: Database session.
+            account_id: Owning account.
+            session_source_type: Runtime principal type (e.g. ``gemini_cli``).
+            session_source_id: The BASE source id, without any generation
+                suffix.
+
+        Returns:
+            The newest matching runtime session, or ``None`` when the principal
+            has no session row yet.
+        """
+        return (
+            db.query(self.model)
+            .filter(
+                self.model.account_id == account_id,
+                self.model.session_source_type == session_source_type,
+                or_(
+                    self.model.session_source_id == session_source_id,
+                    self.model.session_source_id.startswith(
+                        f"{session_source_id}{IDLE_GENERATION_INFIX}"
+                    ),
+                ),
+            )
+            .order_by(
+                self.model.started_at.desc(),
+                self.model.id.desc(),
             )
             .first()
         )

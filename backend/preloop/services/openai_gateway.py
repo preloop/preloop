@@ -10,9 +10,9 @@ import re
 import threading
 import time
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from itertools import chain
-from typing import Any, Dict, Iterator, List, Optional, Protocol
+from typing import Any, Dict, Iterator, List, Optional, Protocol, Set
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
@@ -30,6 +30,14 @@ from preloop.models.crud import (
     crud_managed_agent_ai_model_binding,
     crud_runtime_session,
     crud_runtime_session_activity,
+)
+from preloop.models.crud.runtime_session import IDLE_GENERATION_INFIX
+from preloop.services.codex_tool_compat import (
+    unwrap_freeform_arguments,
+    custom_tool_call_output,
+    normalize_custom_tool_call_item,
+    restore_custom_tool_calls,
+    sanitize_codex_tools,
 )
 from preloop.models.models.ai_model import AIModel
 from preloop.services.account_realtime import (
@@ -290,6 +298,38 @@ def _session_id_from_anthropic_metadata(
     return _normalize_client_session_id(decoded.get("session_id"))
 
 
+# OpenAI split the old overloaded ``user`` field in two, and the split maps
+# exactly onto Preloop's session problem: ``safety_identifier`` is the stable
+# per-install PRINCIPAL, while ``prompt_cache_key`` is per-CONVERSATION (that is
+# what makes prefix caching work at all). The OpenAI spec is explicit that
+# ``prompt_cache_key`` "Replaces the ``user`` field" and that ``user`` is
+# deprecated in its favour, so it is the closest thing the OpenAI wire has to a
+# conversation-id standard — and because agents populate it for their own cache
+# hit rate, they send it without being asked. Verified empirically: Codex sets it
+# to its session uuid, OpenClaw sets it to its session id.
+#
+# It is a *cache* key and not an identity key, so it ranks BELOW an explicit
+# X-Preloop-Session-Id and below a vendor-namespaced session header: an agent may
+# legitimately share one key across conversations with identical prefixes or
+# rotate it on compaction. It is a strong signal, not a guarantee.
+def _session_id_from_openai_payload(
+    payload: Optional[Dict[str, Any]],
+) -> Optional[str]:
+    """Extract a conversation id from an OpenAI-shaped request body.
+
+    Args:
+        payload: A chat-completions or Responses request payload (may be
+            ``None``).
+
+    Returns:
+        The normalized ``prompt_cache_key`` when present and valid; otherwise
+        ``None`` (caller falls back to source keying).
+    """
+    if not isinstance(payload, dict):
+        return None
+    return _normalize_client_session_id(payload.get("prompt_cache_key"))
+
+
 class OpenAIGatewayService:
     """Service for Preloop's OpenAI-compatible gateway."""
 
@@ -314,6 +354,13 @@ class OpenAIGatewayService:
         self._resolved_runtime_session_attempted = skip_runtime_session_resolution
         self._last_context_optimization: Optional[ContextOptimizationStats] = None
         self._last_tools_meta: Optional[List[Dict[str, Any]]] = None
+        # Names of tools the client sent as freeform Codex ``custom`` tools on
+        # THIS request. Set when the request tools are translated, read when
+        # the response output items are built, so the model's ``function_call``
+        # can be rendered back as the ``custom_tool_call`` Codex requires (it
+        # aborts the run on the function shape). Reset per request so a
+        # translated turn never leaks into an untranslated one.
+        self._codex_freeform_tool_names: Set[str] = set()
         # Upstream credential type ("oauth" | "api_key" | "ambient") of the
         # credential used to call the provider on THIS request, captured at
         # resolution time and read into the usage row at log time. Powers
@@ -354,6 +401,101 @@ class OpenAIGatewayService:
         native_session_id = _session_id_from_anthropic_metadata(payload)
         if native_session_id:
             self._client_session_id = native_session_id
+
+    def _adopt_openai_native_session_id(
+        self, payload: Optional[Dict[str, Any]]
+    ) -> None:
+        """Adopt a conversation id from an OpenAI-shaped request body.
+
+        Mirrors :meth:`_adopt_native_session_id` for the OpenAI wire, where the
+        body-level signal is ``prompt_cache_key`` rather than Anthropic's
+        ``metadata.user_id``. Codex populates it with its session uuid on every
+        request; OpenClaw populates it with its session id once the CLI stops
+        stripping it (see ``agents_openclaw.go``).
+
+        Precedence is unchanged and strictly additive: an explicit
+        ``X-Preloop-Session-Id`` or a vendor-namespaced session header was
+        already folded into ``self._client_session_id`` by the endpoint, so this
+        only fires when nothing better arrived. It is a no-op once the runtime
+        session has been resolved, so an in-flight request can never change
+        identity mid-call.
+
+        Args:
+            payload: The OpenAI chat-completions or Responses request payload.
+        """
+        if self._client_session_id or self._resolved_runtime_session_attempted:
+            return
+        native_session_id = _session_id_from_openai_payload(payload)
+        if native_session_id:
+            self._client_session_id = native_session_id
+
+    def _runtime_session_idle_cutoff(self) -> Optional[datetime]:
+        """Return the timestamp before which an idle session is considered over.
+
+        Returns:
+            A naive-UTC cutoff, or ``None`` when the closer is disabled.
+        """
+        try:
+            idle_minutes = int(
+                getattr(settings, "runtime_session_idle_timeout_minutes", 0) or 0
+            )
+        except (TypeError, ValueError):
+            return None
+        if idle_minutes <= 0:
+            return None
+        return datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+            minutes=idle_minutes
+        )
+
+    @staticmethod
+    def _is_runtime_session_idle(session: Any, cutoff: Optional[datetime]) -> bool:
+        """Report whether a runtime session has been silent past the cutoff.
+
+        Args:
+            session: A ``RuntimeSession`` row (or ``None``).
+            cutoff: The idle cutoff from :meth:`_runtime_session_idle_cutoff`.
+
+        Returns:
+            ``True`` when the session's last observed activity predates the
+            cutoff, so a new request should open a fresh session row.
+        """
+        if session is None or cutoff is None:
+            return False
+        observed_at = session.last_activity_at or session.started_at
+        if observed_at is None:
+            return False
+        if observed_at.tzinfo is not None:
+            observed_at = observed_at.astimezone(timezone.utc).replace(tzinfo=None)
+        return observed_at < cutoff
+
+    def _close_idle_runtime_session(self, session: Any, *, base_source_id: str) -> str:
+        """End an idle runtime session and return the next generation's key.
+
+        The stale row is stamped ``ended_at`` at its own last observed activity
+        (not "now"), so its duration reflects when the agent actually stopped
+        rather than when we happened to notice.
+
+        Args:
+            session: The idle ``RuntimeSession`` row.
+            base_source_id: The principal's base source id, without any
+                generation suffix.
+
+        Returns:
+            The source id the next generation should be keyed by.
+        """
+        ended_at = session.last_activity_at or session.started_at
+        try:
+            session.ended_at = ended_at
+            self.db.add(session)
+            self.db.flush()
+        except SQLAlchemyError:
+            self.db.rollback()
+            logger.warning("Failed to close idle runtime session", exc_info=True)
+            # Fall through: we still roll to a new generation. A stale row left
+            # open is a cosmetic defect; continuing to append a brand-new
+            # conversation onto it is the bug this closer exists to prevent.
+        stamp = int((ended_at or datetime.now(timezone.utc)).timestamp())
+        return f"{base_source_id}{IDLE_GENERATION_INFIX}{stamp}"
 
     def _resolve_runtime_session(self) -> Optional[str]:
         if self._resolved_runtime_session_attempted:
@@ -411,14 +553,38 @@ class OpenAIGatewayService:
                     )
             if not runtime_session_id and session_source_type and session_source_id:
                 try:
-                    from datetime import datetime, timezone
-
-                    rs = crud_runtime_session.get_by_source(
-                        self.db,
-                        account_id=str(self.auth_context.user.account_id),
-                        session_source_type=session_source_type,
-                        session_source_id=session_source_id,
-                    )
+                    if self._client_session_id:
+                        # Natively identified: the agent told us which
+                        # conversation this is, so the exact source key is
+                        # authoritative and the idle closer must not interfere.
+                        # A conversation that resumes after a long pause keeps
+                        # its own id and correctly reattaches to its own row.
+                        rs = crud_runtime_session.get_by_source(
+                            self.db,
+                            account_id=str(self.auth_context.user.account_id),
+                            session_source_type=session_source_type,
+                            session_source_id=session_source_id,
+                        )
+                    else:
+                        # Signal-less: only the clock can bound this session.
+                        rs = crud_runtime_session.get_latest_idle_generation(
+                            self.db,
+                            account_id=str(self.auth_context.user.account_id),
+                            session_source_type=session_source_type,
+                            session_source_id=session_source_id,
+                        )
+                        if self._is_runtime_session_idle(
+                            rs, self._runtime_session_idle_cutoff()
+                        ):
+                            # Close the stale generation and roll to a new one,
+                            # so the next conversation starts on a fresh row
+                            # instead of appending to hours-old history. The old
+                            # row keeps its own traffic; nothing is rewritten.
+                            session_source_id = self._close_idle_runtime_session(
+                                rs,
+                                base_source_id=session_source_id,
+                            )
+                            rs = None
                     if rs is None or rs.ended_at is not None:
                         observed_at = datetime.now(timezone.utc)
                         rs = crud_runtime_session.upsert_by_source(
@@ -525,6 +691,7 @@ class OpenAIGatewayService:
 
     def create_chat_completion(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Handle OpenAI-compatible chat completions."""
+        self._adopt_openai_native_session_id(payload)
         if payload.get("stream"):
             raise ModelGatewayAPIError(
                 provider="openai",
@@ -656,6 +823,7 @@ class OpenAIGatewayService:
 
     def create_response(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Handle OpenAI Responses API-compatible requests."""
+        self._adopt_openai_native_session_id(payload)
         if payload.get("stream"):
             raise ModelGatewayAPIError(
                 provider="openai",
@@ -1300,6 +1468,7 @@ class OpenAIGatewayService:
 
     def stream_chat_completion(self, payload: Dict[str, Any]) -> Iterator[str]:
         """Handle streaming OpenAI-compatible chat completions."""
+        self._adopt_openai_native_session_id(payload)
         model = self._resolve_requested_model(payload.get("model"), provider="openai")
         messages = payload.get("messages")
         if not isinstance(messages, list) or not messages:
@@ -1560,6 +1729,7 @@ class OpenAIGatewayService:
 
     def stream_response(self, payload: Dict[str, Any]) -> Iterator[str]:
         """Handle streaming OpenAI Responses API-compatible requests."""
+        self._adopt_openai_native_session_id(payload)
         model = self._resolve_requested_model(payload.get("model"), provider="openai")
         messages = self._normalize_responses_input(payload)
         started_at = time.perf_counter()
@@ -1720,9 +1890,40 @@ class OpenAIGatewayService:
                                     "arguments": "",
                                 },
                                 "output_index": len(output_items),
+                                # The item type depends on the tool NAME, which
+                                # can arrive in a later chunk than the id. So
+                                # the `output_item.added` event is deferred
+                                # until the name is known: announcing a Codex
+                                # freeform tool as `function_call` and
+                                # correcting it later would make Codex abort.
+                                "announced": False,
+                                "arguments": "",
                             }
                             tool_call_states[index] = state
                             output_items.append(state["item"])
+                        function_payload = tool_delta.get("function") or {}
+                        if function_payload.get("name"):
+                            state["item"]["name"] = function_payload["name"]
+                        arguments_delta = function_payload.get("arguments")
+                        if arguments_delta:
+                            state["arguments"] += arguments_delta
+
+                        name = state["item"]["name"]
+                        is_freeform = name in self._codex_freeform_tool_names
+                        if not state["announced"] and name:
+                            if is_freeform:
+                                # Codex freeform tools take raw text under
+                                # `input`, not a JSON `arguments` string.
+                                state["item"] = {
+                                    "id": state["item"]["id"],
+                                    "type": "custom_tool_call",
+                                    "status": "in_progress",
+                                    "call_id": state["item"]["call_id"],
+                                    "name": name,
+                                    "input": "",
+                                }
+                                output_items[state["output_index"]] = state["item"]
+                            state["announced"] = True
                             yield self._sse_event(
                                 {
                                     "type": "response.output_item.added",
@@ -1731,11 +1932,11 @@ class OpenAIGatewayService:
                                     "item": state["item"],
                                 }
                             )
-                        function_payload = tool_delta.get("function") or {}
-                        if function_payload.get("name"):
-                            state["item"]["name"] = function_payload["name"]
-                        arguments_delta = function_payload.get("arguments")
-                        if arguments_delta:
+                        if arguments_delta and state["announced"] and not is_freeform:
+                            # Freeform tools emit no incremental deltas: the
+                            # raw payload has to be unwrapped from the model's
+                            # JSON envelope, which cannot be done on a partial
+                            # string. The full value is sent at `.done` below.
                             state["item"]["arguments"] += arguments_delta
                             yield self._sse_event(
                                 {
@@ -1798,15 +1999,41 @@ class OpenAIGatewayService:
                 for state in sorted(
                     tool_call_states.values(), key=lambda item: item["output_index"]
                 ):
+                    if not state["announced"]:
+                        # A tool call whose name never arrived. Announce it as
+                        # it stands rather than dropping it silently.
+                        state["item"]["arguments"] = state["arguments"]
+                        state["announced"] = True
+                        yield self._sse_event(
+                            {
+                                "type": "response.output_item.added",
+                                "response_id": response_id,
+                                "output_index": state["output_index"],
+                                "item": state["item"],
+                            }
+                        )
                     state["item"]["status"] = "completed"
-                    yield self._sse_event(
-                        {
-                            "type": "response.function_call_arguments.done",
-                            "item_id": state["item"]["id"],
-                            "output_index": state["output_index"],
-                            "arguments": state["item"]["arguments"],
-                        }
-                    )
+                    if state["item"]["type"] == "custom_tool_call":
+                        state["item"]["input"] = unwrap_freeform_arguments(
+                            state["arguments"]
+                        )
+                        yield self._sse_event(
+                            {
+                                "type": "response.custom_tool_call_input.done",
+                                "item_id": state["item"]["id"],
+                                "output_index": state["output_index"],
+                                "input": state["item"]["input"],
+                            }
+                        )
+                    else:
+                        yield self._sse_event(
+                            {
+                                "type": "response.function_call_arguments.done",
+                                "item_id": state["item"]["id"],
+                                "output_index": state["output_index"],
+                                "arguments": state["item"]["arguments"],
+                            }
+                        )
                     yield self._sse_event(
                         {
                             "type": "response.output_item.done",
@@ -4444,12 +4671,36 @@ class OpenAIGatewayService:
                 continue
 
             item_type = item.get("type")
-            if item_type == "function_call":
+            if item_type in ("function_call", "custom_tool_call"):
                 if pending_tool_call_ids:
                     raise tool_response_error()
-                normalized_tool_call = self._normalize_responses_tool_call_item(item)
+                # Codex echoes its freeform calls back as `custom_tool_call`
+                # on every subsequent turn. Without this branch, turn 2 of any
+                # Codex session 400s here, on our own gateway, before it ever
+                # reaches an upstream.
+                if item_type == "custom_tool_call":
+                    normalized_tool_call = normalize_custom_tool_call_item(item)
+                else:
+                    normalized_tool_call = self._normalize_responses_tool_call_item(
+                        item
+                    )
                 if normalized_tool_call:
                     staged_tool_calls.append(normalized_tool_call)
+                continue
+
+            if item_type == "custom_tool_call_output":
+                flush_staged_tool_calls()
+                call_id = custom_tool_call_output(item)
+                if not call_id or call_id not in pending_tool_call_ids:
+                    raise tool_response_error()
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": self._content_to_text(item.get("output", "")),
+                    }
+                )
+                pending_tool_call_ids.discard(call_id)
                 continue
 
             if item_type == "function_call_output":
@@ -4820,7 +5071,23 @@ class OpenAIGatewayService:
     def _build_response_output_items(
         self, response_dict: Dict[str, Any]
     ) -> List[Dict[str, Any]]:
-        """Build Responses API output items from one chat-completions payload."""
+        """Build Responses API output items from one chat-completions payload.
+
+        Calls to tools the client sent as freeform Codex ``custom`` tools are
+        rendered back in the ``custom_tool_call`` shape before returning: Codex
+        aborts the whole run with "invoked with incompatible payload" if it is
+        answered with an ordinary ``function_call`` for those tools. This is a
+        no-op for every request that did not carry such a tool.
+        """
+        return restore_custom_tool_calls(
+            self._build_response_output_items_raw(response_dict),
+            self._codex_freeform_tool_names,
+        )
+
+    def _build_response_output_items_raw(
+        self, response_dict: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """Build Responses output items without the Codex tool translation."""
         output_items: List[Dict[str, Any]] = []
         assistant_text = self._extract_assistant_text(response_dict)
         if assistant_text:
@@ -4885,9 +5152,18 @@ class OpenAIGatewayService:
                     text_parts.append(content.get("text", ""))
         return "".join(text_parts)
 
-    @staticmethod
-    def _normalize_openai_tools(tools: Any) -> Any:
-        """Normalize Responses API tools to chat-completions tool format."""
+    def _normalize_openai_tools(self, tools: Any) -> Any:
+        """Normalize Responses API tools to chat-completions tool format.
+
+        Runs the Codex compatibility translation first: the Codex CLI emits
+        ``custom`` (freeform/lark), ``namespace`` (nested container) and
+        host-executed tool entries that every upstream rejects outright, which
+        is why every Codex flow used to die on its first model call. See
+        :mod:`preloop.services.codex_tool_compat`. Requests without those
+        shapes are returned by that step untouched.
+        """
+        tools, freeform_names = sanitize_codex_tools(tools)
+        self._codex_freeform_tool_names = freeform_names
         if not isinstance(tools, list):
             return tools
         normalized_tools = []

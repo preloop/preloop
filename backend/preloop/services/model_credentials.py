@@ -177,6 +177,15 @@ def _get_reasoning_disable_defaults(model: AIModel) -> dict[str, Any]:
     empty-content guard (:func:`check_reasoning_model_empty_content`) catches
     the bad outcome if reasoning runs away.
 
+    OpenRouter: routing wins over the vendor prefix in the model id, exactly
+    as in :func:`preloop.services.litellm_routing.to_litellm_model`. A model
+    like ``deepseek/deepseek-v4-flash-0731`` on ``openrouter.ai`` speaks
+    OpenRouter's API, not DeepSeek's, so the DeepSeek-native ``thinking`` knob
+    is silently ignored there and reasoning runs anyway (2026-08-06 prod:
+    every aux call on such a config burned ~600 reasoning tokens and timed
+    out). OpenRouter's own knob is ``extra_body={"reasoning": {"enabled":
+    false}}``, which litellm's OpenrouterConfig passes through verbatim.
+
     DeepSeek: ``extra_body={"thinking": {"type": "disabled"}}`` is the only
     form that survives ``DeepSeekChatConfig.map_openai_params``; the
     ``reasoning_effort`` kwarg and ``thinking={"type":"disabled"}`` as a
@@ -187,8 +196,16 @@ def _get_reasoning_disable_defaults(model: AIModel) -> dict[str, Any]:
     Models like o4-mini support ``reasoning_effort`` but NOT the ``"none"``
     level, so sending it would produce a 400.
     """
+    from preloop.services.litellm_routing import is_openrouter_endpoint
+
     provider = (getattr(model, "provider_name", None) or "").strip().lower()
     identifier = (getattr(model, "model_identifier", None) or "").strip()
+    endpoint = getattr(model, "api_endpoint", None)
+
+    # OpenRouter routing outranks the vendor prefix inside the model id: the
+    # upstream speaks OpenRouter's parameter surface, not the vendor's.
+    if provider == "openrouter" or is_openrouter_endpoint(endpoint):
+        return {"extra_body": {"reasoning": {"enabled": False}}}
 
     # DeepSeek: the only wire-surviving form is extra_body.
     if provider == "deepseek" or (
@@ -280,9 +297,19 @@ def get_aux_openai_sdk_extra_kwargs(
 
     Only keys known to be safe named parameters of the OpenAI SDK are included.
     ``reasoning_effort="none"`` is only added when litellm's model map confirms
-    the model accepts that level; otherwise no reasoning knob is sent.
+    the model accepts that level; otherwise no reasoning knob is sent. Models
+    routed through OpenRouter get OpenRouter's own disable knob via
+    ``extra_body`` (a first-class OpenAI SDK parameter), since reasoning left
+    enabled there burns the token budget before any content is produced.
     """
+    from preloop.services.litellm_routing import is_openrouter_endpoint
+
     extras: dict[str, Any] = {}
+
+    provider = (getattr(model, "provider_name", None) or "").strip().lower()
+    endpoint = getattr(model, "api_endpoint", None)
+    if provider == "openrouter" or is_openrouter_endpoint(endpoint):
+        extras["extra_body"] = {"reasoning": {"enabled": False}}
 
     # Capability-checked default: only add reasoning_effort for models that
     # accept "none". The OpenAI SDK path is always the openai provider.
