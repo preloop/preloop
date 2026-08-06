@@ -496,6 +496,10 @@ class ApprovalService:
                 "tool_args": redact_dict(approval_request.tool_args or {}),
                 "agent_reasoning": approval_request.agent_reasoning,
                 "managed_agent_name": approval_request.managed_agent_name,
+                # Why the call was gated. Rule names and expressions are
+                # operator-authored policy text, not call arguments, so they
+                # are not redacted; tool_args above still are.
+                "rule_context": approval_request.rule_context,
                 "status": approval_request.status,
                 "requested_at": approval_request.requested_at.isoformat(),
                 "resolved_at": (
@@ -541,6 +545,7 @@ class ApprovalService:
         managed_agent_id: Optional[uuid.UUID] = None,
         runtime_session_id: Optional[uuid.UUID] = None,
         managed_agent_name: Optional[str] = None,
+        rule_context: Optional[Dict[str, Any]] = None,
     ) -> ApprovalRequest:
         """Create a new approval request.
 
@@ -553,6 +558,12 @@ class ApprovalService:
             agent_reasoning: Agent's reasoning for the tool call
             execution_id: Flow execution ID (if applicable)
             timeout_seconds: How long to wait for approval (default: 5 minutes)
+            rule_context: Snapshot of the policy rule that required this
+                approval (see services/approval_rule_context.py). Stored as
+                given so a later edit to the rule cannot rewrite the reason a
+                past approval was asked for. None when no rule was evaluated
+                (e.g. the request_approval builtin), in which case surfaces
+                omit the explanation rather than invent one.
 
         Returns:
             Created approval request
@@ -574,6 +585,7 @@ class ApprovalService:
             managed_agent_id=managed_agent_id,
             runtime_session_id=runtime_session_id,
             managed_agent_name=managed_agent_name,
+            rule_context=rule_context,
             status="pending",
             requested_at=datetime.utcnow(),
             expires_at=expires_at,
@@ -609,6 +621,7 @@ class ApprovalService:
                 "approval_workflow_id": str(approval_workflow_id),
                 "tool_args": redact_dict(tool_args),
                 "timeout_seconds": timeout,
+                **({"rule_context": rule_context} if rule_context else {}),
             },
         )
 
@@ -1656,6 +1669,7 @@ class ApprovalService:
         runtime_session_id: Optional[uuid.UUID] = None,
         managed_agent_name: Optional[str] = None,
         standing_bypass_reason: Optional[str] = None,
+        rule_context: Optional[Dict[str, Any]] = None,
     ) -> ApprovalRequest:
         """Create approval request and send notifications through configured channels.
 
@@ -1677,6 +1691,9 @@ class ApprovalService:
                 request is still created and recorded, then immediately
                 auto-approved without notifying anyone. Must be an
                 :class:`AutoApprovedReason` value.
+            rule_context: Snapshot of the policy rule that required this
+                approval, built by services/approval_rule_context.py. Passed
+                straight through to the row; None when no rule was evaluated.
 
         Returns:
             Created approval request (may be already resolved if AI-driven)
@@ -1696,6 +1713,7 @@ class ApprovalService:
             managed_agent_id=managed_agent_id,
             runtime_session_id=runtime_session_id,
             managed_agent_name=managed_agent_name,
+            rule_context=rule_context,
         )
 
         # Generate user-facing summary before any notifications fire.
@@ -2527,6 +2545,7 @@ class ApprovalService:
             agent_reasoning=approval_request.agent_reasoning,
             tool_args=redact_dict(approval_request.tool_args or {}),
             summary=approval_request.summary,
+            rule_context=approval_request.rule_context,
         )
 
         apns_priority = 10 if priority_str in ["urgent", "high"] else 5
@@ -3145,6 +3164,7 @@ class ApprovalService:
             agent_reasoning=f"ESCALATED: {approval_request.agent_reasoning or 'Original approvers did not respond'}",
             tool_args=redact_dict(approval_request.tool_args or {}),
             summary=approval_request.summary,
+            rule_context=approval_request.rule_context,
         )
 
         sent_count = 0

@@ -1351,6 +1351,58 @@ export interface ApprovalRequest {
    * would overstate how much human oversight actually happened.
    */
   decided_by_human?: boolean;
+  /**
+   * Why this request exists: the policy rule that gated the call, captured
+   * when the request was created. Absent on rows created before this field
+   * existed and on approvals raised without rule evaluation (the
+   * `request_approval` builtin). Surfaces must omit the explanation rather
+   * than guess at one.
+   */
+  rule_context?: ApprovalRuleContext | null;
+}
+
+/**
+ * Where an approval's gating came from.
+ *
+ * `tool_access_rule` and `subject_scoped_rule` name an actual rule with an
+ * expression. The rest describe gating that no rule produced, and carry an
+ * `explanation` instead.
+ */
+export type ApprovalRuleContextSource =
+  | 'tool_access_rule'
+  | 'subject_scoped_rule'
+  | 'tool_default_workflow'
+  | 'rule_evaluation_error'
+  | 'agent_permission_hook';
+
+/**
+ * Snapshot of the policy rule that required an approval.
+ *
+ * Recorded at request creation, not recomputed at read time, so editing or
+ * deleting a rule later cannot rewrite the reason a past approval was asked
+ * for. It states WHAT matched. It is not a risk assessment: nobody scored
+ * this call, an expression simply evaluated true.
+ */
+export interface ApprovalRuleContext {
+  source: ApprovalRuleContextSource;
+  /** The policy action taken. In practice always `'require_approval'`. */
+  decision: string;
+  /** Rule description, falling back to its expression, then a generic label. */
+  rule_name: string;
+  /** Plain statement used when no named rule fired. */
+  explanation?: string;
+  rule_id?: string;
+  /** The condition as the operator wrote it, e.g. `args.amount > 1000`. */
+  expression?: string;
+  expression_type?: string;
+  /** Evaluation order; lower runs first. */
+  priority?: number;
+  /** Argument names the expression mentions. Presentational hint only. */
+  referenced_args?: string[];
+  /** Tool config the rule belongs to, for linking to where it is edited. */
+  tool_configuration_id?: string;
+  /** Lower-priority rules that would also have matched. Informational. */
+  also_matched_rule_ids?: string[];
 }
 
 /** Mode of a time-boxed approval bypass. */

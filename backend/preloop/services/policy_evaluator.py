@@ -8,7 +8,7 @@ actions with priority-based rule evaluation.
 import logging
 import re
 import uuid
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session
 
@@ -27,12 +27,110 @@ from preloop.models.crud.tool_configuration import (
     get_tool_config_by_tool_name_async,
 )
 from preloop.models.crud.tool_access_rule import get_multi_by_config_async
+from preloop.services.approval_rule_context import (
+    SOURCE_RULE_EVALUATION_ERROR,
+    SOURCE_SUBJECT_SCOPED_RULE,
+    SOURCE_TOOL_ACCESS_RULE,
+    SOURCE_TOOL_DEFAULT_WORKFLOW,
+    build_rule_context,
+)
 from preloop.services.subject_governance import (
     get_scoped_tool_rules,
     is_tool_enabled_for_subject,
 )
 
 logger = logging.getLogger(__name__)
+
+
+class PolicyDecision(tuple):
+    """A policy outcome that is still the historical 3-tuple.
+
+    Every caller unpacks ``action, approval_workflow_id, rule_description``,
+    and several tests patch the evaluator with a plain tuple, so widening the
+    return type would break them silently. This subclasses ``tuple`` with
+    exactly those three items and hangs the new ``rule_context`` off the side:
+    old unpacking keeps working unchanged, new callers read the attribute.
+
+    Read ``rule_context`` with ``getattr(decision, "rule_context", None)``:
+    a mocked evaluator returns a bare tuple, and a missing attribute must
+    degrade to "no rule context recorded" rather than raise on the approval
+    path.
+
+    Attributes:
+        rule_context: JSON-serialisable snapshot of the rule that produced a
+            ``require_approval`` decision, or None when nothing gated the call
+            (allow/deny) or no rule identity exists.
+    """
+
+    # No __slots__: CPython rejects a nonempty __slots__ on a tuple subclass,
+    # so rule_context lives in the instance dict.
+
+    def __new__(
+        cls,
+        action: str,
+        approval_workflow_id: Optional[Any],
+        rule_description: Optional[str],
+        rule_context: Optional[Dict[str, Any]] = None,
+    ) -> "PolicyDecision":
+        """Build the 3-tuple and attach the rule context."""
+        decision = super().__new__(
+            cls, (action, approval_workflow_id, rule_description)
+        )
+        decision.rule_context = rule_context
+        return decision
+
+    @property
+    def action(self) -> str:
+        """'allow', 'deny', or 'require_approval'."""
+        return self[0]
+
+    @property
+    def approval_workflow_id(self) -> Optional[Any]:
+        """Workflow to raise the approval against, when gating."""
+        return self[1]
+
+    @property
+    def rule_description(self) -> Optional[str]:
+        """Human-readable description of what decided this."""
+        return self[2]
+
+
+def _also_matched_rule_ids(
+    rules: list[Any],
+    *,
+    start_index: int,
+    tool_args: Dict[str, Any],
+    context: Dict[str, Any],
+) -> list[str]:
+    """Ids of lower-priority rules that would also have matched.
+
+    Informational only: the winning rule already decided. Reviewers use this
+    to spot overlapping rules they did not intend. Errors are swallowed
+    because a broken lower-priority rule must not affect a decision that has
+    already been made by a higher-priority one.
+
+    Args:
+        rules: The full priority-ordered rule list.
+        start_index: Index just past the winning rule.
+        tool_args: Arguments the call was made with.
+        context: Evaluation context.
+
+    Returns:
+        Rule ids as strings, in priority order. Empty when none also matched.
+    """
+    also: list[str] = []
+    for rule in rules[start_index:]:
+        try:
+            if _evaluate_rule_condition(
+                expression=rule.condition_expression,
+                condition_type=rule.condition_type,
+                tool_args=tool_args,
+                context=context,
+            ):
+                also.append(str(rule.id))
+        except Exception:  # pragma: no cover - best effort annotation only
+            continue
+    return also
 
 
 def _get_audit_service():
@@ -127,7 +225,7 @@ def _evaluate_rule_candidates(
     correlation_id: Optional[str] = None,
     extra_details: Optional[Dict[str, Any]] = None,
     default_approval_workflow_id: Optional[Any] = None,
-) -> Optional[Tuple[str, Optional[Any], Optional[str]]]:
+) -> Optional[PolicyDecision]:
     for index, rule in enumerate(rules):
         is_enabled = (
             rule.get("is_enabled", True) if isinstance(rule, dict) else rule.is_enabled
@@ -177,7 +275,26 @@ def _evaluate_rule_candidates(
                 correlation_id=correlation_id,
                 extra_details=extra_details,
             )
-            return action, approval_workflow_id, rule_desc
+            rule_context = None
+            if action == "require_approval":
+                rule_context = build_rule_context(
+                    source=SOURCE_SUBJECT_SCOPED_RULE,
+                    decision=action,
+                    rule_id=(
+                        rule.get("id")
+                        if isinstance(rule, dict)
+                        else getattr(rule, "id", None)
+                    ),
+                    rule_name=description,
+                    expression=condition_expression,
+                    expression_type=str(condition_type or "simple"),
+                    priority=(
+                        rule.get("priority")
+                        if isinstance(rule, dict)
+                        else getattr(rule, "priority", None)
+                    ),
+                )
+            return PolicyDecision(action, approval_workflow_id, rule_desc, rule_context)
         except Exception as e:
             error_desc = f"Rule evaluation error: {e} (failing closed)"
             _log_policy_decision_async(
@@ -192,7 +309,23 @@ def _evaluate_rule_candidates(
                 correlation_id=correlation_id,
                 extra_details=extra_details,
             )
-            return "require_approval", approval_workflow_id, error_desc
+            return PolicyDecision(
+                "require_approval",
+                approval_workflow_id,
+                error_desc,
+                build_rule_context(
+                    source=SOURCE_RULE_EVALUATION_ERROR,
+                    decision="require_approval",
+                    rule_name=description or None,
+                    expression=condition_expression,
+                    expression_type=str(condition_type or "simple"),
+                    explanation=(
+                        "A scoped governance rule could not be evaluated, so "
+                        "Preloop failed closed and asked for approval instead "
+                        "of deciding on its own."
+                    ),
+                ),
+            )
     return None
 
 
@@ -206,7 +339,7 @@ def evaluate_policy(
     execution_id: Optional[uuid.UUID] = None,
     trigger_event: Optional[Dict[str, Any]] = None,
     subject_context: Optional[Dict[str, Any]] = None,
-) -> Tuple[str, Optional[uuid.UUID], Optional[str]]:
+) -> PolicyDecision:
     """Evaluate tool access policy and determine the action to take.
 
     This function implements the policy evaluation logic:
@@ -227,10 +360,15 @@ def evaluate_policy(
         trigger_event: Optional trigger event data (for condition evaluation context).
 
     Returns:
-        Tuple of (action, approval_workflow_id, matched_rule_description).
+        A :class:`PolicyDecision`, which unpacks as the historical 3-tuple
+        (action, approval_workflow_id, matched_rule_description) and also
+        carries ``.rule_context`` describing the rule that gated the call.
         - action: 'allow', 'deny', or 'require_approval'
         - approval_workflow_id: Policy ID to use if action is 'require_approval'
         - matched_rule_description: Description of the matched rule (or reason for default)
+        - rule_context: Snapshot of the winning rule for 'require_approval'
+          decisions, else None. Persisted on the approval request so the
+          approver can see WHICH rule fired and what its expression was.
     """
     account = crud_account.get(db, id=account_id)
     account_meta = (account.meta_data or {}) if account else {}
@@ -238,7 +376,9 @@ def evaluate_policy(
     if not is_tool_enabled_for_subject(
         account_meta, tool_name=tool_name, subject_context=subject_context or {}
     ):
-        return "deny", None, "Tool disabled by agent or API key configuration"
+        return PolicyDecision(
+            "deny", None, "Tool disabled by agent or API key configuration"
+        )
 
     scoped_rules = get_scoped_tool_rules(
         account_meta,
@@ -302,7 +442,9 @@ def evaluate_policy(
             user_id=user_id,
             execution_id=execution_id,
         )
-        return "allow", None, "No scoped rules matched (default allow for subject)"
+        return PolicyDecision(
+            "allow", None, "No scoped rules matched (default allow for subject)"
+        )
 
     if not tool_config:
         # No configuration found, default allow
@@ -316,7 +458,7 @@ def evaluate_policy(
             user_id=user_id,
             execution_id=execution_id,
         )
-        return "allow", None, "No tool configuration found"
+        return PolicyDecision("allow", None, "No tool configuration found")
 
     # Load all access rules for this tool, ordered by priority (lower first)
     rules = crud_tool_access_rule.get_multi_by_config(
@@ -350,10 +492,16 @@ def evaluate_policy(
                 user_id=user_id,
                 execution_id=execution_id,
             )
-            return (
+            return PolicyDecision(
                 "require_approval",
                 tool_config.approval_workflow_id,
                 "Tool has approval workflow configured (legacy mode)",
+                build_rule_context(
+                    source=SOURCE_TOOL_DEFAULT_WORKFLOW,
+                    decision="require_approval",
+                    rule_name="Tool default policy",
+                    tool_configuration_id=tool_config.id,
+                ),
             )
         _log_policy_decision_async(
             account_id=account_id,
@@ -364,10 +512,10 @@ def evaluate_policy(
             user_id=user_id,
             execution_id=execution_id,
         )
-        return "allow", None, "No access rules defined"
+        return PolicyDecision("allow", None, "No access rules defined")
 
     # Evaluate rules in priority order
-    for rule in rules:
+    for index, rule in enumerate(rules):
         try:
             logger.info(
                 f"Evaluating rule {rule.id} (priority={rule.priority}, "
@@ -416,10 +564,30 @@ def evaluate_policy(
                     execution_id=execution_id,
                 )
 
-                return (
+                rule_context = None
+                if rule.action == "require_approval":
+                    rule_context = build_rule_context(
+                        source=SOURCE_TOOL_ACCESS_RULE,
+                        decision=rule.action,
+                        rule_id=rule.id,
+                        rule_name=rule.description,
+                        expression=rule.condition_expression,
+                        expression_type=rule.condition_type,
+                        priority=rule.priority,
+                        tool_configuration_id=tool_config.id,
+                        also_matched_rule_ids=_also_matched_rule_ids(
+                            rules,
+                            start_index=index + 1,
+                            tool_args=tool_args,
+                            context=context,
+                        ),
+                    )
+
+                return PolicyDecision(
                     rule.action,
                     approval_workflow_id,
                     rule_desc,
+                    rule_context,
                 )
 
         except Exception as e:
@@ -444,10 +612,20 @@ def evaluate_policy(
                 user_id=user_id,
                 execution_id=execution_id,
             )
-            return (
+            return PolicyDecision(
                 "require_approval",
                 tool_config.approval_workflow_id or default_workflow_id_for_account,
                 error_desc,
+                build_rule_context(
+                    source=SOURCE_RULE_EVALUATION_ERROR,
+                    decision="require_approval",
+                    rule_id=rule.id,
+                    rule_name=rule.description,
+                    expression=rule.condition_expression,
+                    expression_type=rule.condition_type,
+                    priority=rule.priority,
+                    tool_configuration_id=tool_config.id,
+                ),
             )
 
     # No rules matched, default allow
@@ -460,7 +638,7 @@ def evaluate_policy(
         user_id=user_id,
         execution_id=execution_id,
     )
-    return "allow", None, "No rules matched (default allow)"
+    return PolicyDecision("allow", None, "No rules matched (default allow)")
 
 
 def _evaluate_rule_condition(
@@ -788,7 +966,7 @@ async def evaluate_policy_async(
     correlation_id: Optional[str] = None,
     extra_details: Optional[Dict[str, Any]] = None,
     subject_context: Optional[Dict[str, Any]] = None,
-) -> Tuple[str, Optional[uuid.UUID], Optional[str]]:
+) -> PolicyDecision:
     """Async version of evaluate_policy.
 
     See evaluate_policy for full documentation.
@@ -798,7 +976,9 @@ async def evaluate_policy_async(
     if not is_tool_enabled_for_subject(
         account_meta_data, tool_name=tool_name, subject_context=subject_context or {}
     ):
-        return "deny", None, "Tool disabled by agent or API key configuration"
+        return PolicyDecision(
+            "deny", None, "Tool disabled by agent or API key configuration"
+        )
 
     scoped_rules = get_scoped_tool_rules(
         account_meta_data,
@@ -869,7 +1049,9 @@ async def evaluate_policy_async(
             correlation_id=correlation_id,
             extra_details=extra_details,
         )
-        return "allow", None, "No scoped rules matched (default allow for subject)"
+        return PolicyDecision(
+            "allow", None, "No scoped rules matched (default allow for subject)"
+        )
 
     if not tool_config:
         # Log the policy decision (fire-and-forget)
@@ -884,7 +1066,7 @@ async def evaluate_policy_async(
             correlation_id=correlation_id,
             extra_details=extra_details,
         )
-        return "allow", None, "No tool configuration found"
+        return PolicyDecision("allow", None, "No tool configuration found")
 
     # Load all access rules for this tool, ordered by priority (lower first)
     rules = await get_multi_by_config_async(
@@ -908,10 +1090,16 @@ async def evaluate_policy_async(
                 correlation_id=correlation_id,
                 extra_details=extra_details,
             )
-            return (
+            return PolicyDecision(
                 "require_approval",
                 tool_config.approval_workflow_id,
                 "Tool has approval workflow configured (legacy mode)",
+                build_rule_context(
+                    source=SOURCE_TOOL_DEFAULT_WORKFLOW,
+                    decision="require_approval",
+                    rule_name="Tool default policy",
+                    tool_configuration_id=tool_config.id,
+                ),
             )
         _log_policy_decision_async(
             account_id=account_id,
@@ -924,10 +1112,10 @@ async def evaluate_policy_async(
             correlation_id=correlation_id,
             extra_details=extra_details,
         )
-        return "allow", None, "No access rules defined"
+        return PolicyDecision("allow", None, "No access rules defined")
 
     # Evaluate rules in priority order
-    for rule in rules:
+    for index, rule in enumerate(rules):
         try:
             matches = _evaluate_rule_condition(
                 expression=rule.condition_expression,
@@ -972,10 +1160,30 @@ async def evaluate_policy_async(
                     extra_details=extra_details,
                 )
 
-                return (
+                rule_context = None
+                if rule.action == "require_approval":
+                    rule_context = build_rule_context(
+                        source=SOURCE_TOOL_ACCESS_RULE,
+                        decision=rule.action,
+                        rule_id=rule.id,
+                        rule_name=rule.description,
+                        expression=rule.condition_expression,
+                        expression_type=rule.condition_type,
+                        priority=rule.priority,
+                        tool_configuration_id=tool_config.id,
+                        also_matched_rule_ids=_also_matched_rule_ids(
+                            rules,
+                            start_index=index + 1,
+                            tool_args=tool_args,
+                            context=context,
+                        ),
+                    )
+
+                return PolicyDecision(
                     rule.action,
                     approval_workflow_id,
                     rule_desc,
+                    rule_context,
                 )
 
         except Exception as e:
@@ -997,10 +1205,20 @@ async def evaluate_policy_async(
                 correlation_id=correlation_id,
                 extra_details=extra_details,
             )
-            return (
+            return PolicyDecision(
                 "require_approval",
                 tool_config.approval_workflow_id or default_workflow_id_for_account,
                 error_desc,
+                build_rule_context(
+                    source=SOURCE_RULE_EVALUATION_ERROR,
+                    decision="require_approval",
+                    rule_id=rule.id,
+                    rule_name=rule.description,
+                    expression=rule.condition_expression,
+                    expression_type=rule.condition_type,
+                    priority=rule.priority,
+                    tool_configuration_id=tool_config.id,
+                ),
             )
 
     # No rules matched, default allow
@@ -1015,4 +1233,4 @@ async def evaluate_policy_async(
         correlation_id=correlation_id,
         extra_details=extra_details,
     )
-    return "allow", None, "No rules matched (default allow)"
+    return PolicyDecision("allow", None, "No rules matched (default allow)")

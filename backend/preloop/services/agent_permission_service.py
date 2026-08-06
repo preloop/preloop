@@ -374,6 +374,10 @@ async def request_agent_permission(
     if decision == "deny":
         return ("deny", "Denied by client policy", None, False)
 
+    from preloop.services.approval_rule_context import (
+        SOURCE_AGENT_PERMISSION_HOOK,
+        build_rule_context,
+    )
     from preloop.services.approval_service import ApprovalService
     from preloop.models.crud.approval_request import get_approval_request_async
 
@@ -414,6 +418,15 @@ async def request_agent_permission(
                     models.AutoApprovedReason.NATIVE_TOOL_APPROVALS_OFF
                     if approvals_off
                     else None
+                ),
+                # This path does not consult Preloop access rules at all: the
+                # agent's own hook already decided to escalate. Say that
+                # instead of leaving the approver hunting for a rule that
+                # never existed.
+                rule_context=build_rule_context(
+                    source=SOURCE_AGENT_PERMISSION_HOOK,
+                    decision="require_approval",
+                    rule_name="Agent permission hook",
                 ),
             )
         except Exception:

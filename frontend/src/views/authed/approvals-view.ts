@@ -11,6 +11,7 @@ import {
 } from '../../utils/date';
 import { formatApprovalRequester } from '../../utils/approval-identity';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
+import '../../components/approval-rule-context-block';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
@@ -300,6 +301,10 @@ export class ApprovalsView extends AuthedElement {
         tool_args: message.tool_args || {},
         agent_reasoning: message.agent_reasoning || null,
         managed_agent_name: message.managed_agent_name || null,
+        // The broadcast carries the matched-rule snapshot so a live-arriving
+        // row explains itself the same way a fetched one does. Null when the
+        // approval was raised without rule evaluation.
+        rule_context: message.rule_context || null,
         status: 'pending',
         requested_at: message.requested_at || new Date().toISOString(),
         resolved_at: null,
@@ -917,6 +922,21 @@ export class ApprovalsView extends AuthedElement {
                                             >${request.tool_name}</code
                                           >
                                         </span>
+                                      </div>
+                                    `
+                                  : ''
+                              }
+                              ${
+                                request.rule_context
+                                  ? html`
+                                      <div
+                                        class="approval-meta"
+                                        style="margin-top: 2px;"
+                                      >
+                                        <approval-rule-context-block
+                                          compact
+                                          .ruleContext=${request.rule_context}
+                                        ></approval-rule-context-block>
                                       </div>
                                     `
                                   : ''
