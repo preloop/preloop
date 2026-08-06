@@ -21,9 +21,16 @@ from preloop.utils.redaction import redact_dict
 
 logger = logging.getLogger(__name__)
 
-SUMMARY_TIMEOUT_SECONDS = 5.0
+SUMMARY_TIMEOUT_SECONDS = 10.0
 # Per-attempt budget so the primary and the fallback each get a share of the
 # overall SUMMARY_TIMEOUT_SECONDS deadline.
+#
+# Sizing (2026-08-06 prod evidence): short non-reasoning completions through
+# an account-scoped OpenRouter config show p50 2.17s / p90 4.25s / p95 5.10s.
+# The previous 2.5s per-attempt budget sat below the median-to-p90 band, so a
+# healthy primary model timed out on most calls and every summary rode the
+# system-default fallback. 5s per attempt covers ~p95 of a working provider;
+# anything slower is genuinely degraded and should fall back.
 SUMMARY_ATTEMPT_TIMEOUT_SECONDS = SUMMARY_TIMEOUT_SECONDS / 2
 SUMMARY_MAX_TOKENS = 150
 SUMMARY_MAX_CHARS = 400
