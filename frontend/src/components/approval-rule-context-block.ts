@@ -34,6 +34,14 @@ export class ApprovalRuleContextBlock extends LitElement {
   @property({ type: Boolean })
   compact = false;
 
+  /**
+   * The tool this approval is for, used to narrow the Tools page when the
+   * reviewer follows the link. There is no per-tool route to deep-link to
+   * yet, so the next best thing is to not make them scroll a catalogue.
+   */
+  @property({ type: String })
+  toolName: string | null = null;
+
   static styles = css`
     :host {
       display: block;
@@ -114,6 +122,13 @@ export class ApprovalRuleContextBlock extends LitElement {
     return Boolean(this.ruleContext?.expression);
   }
 
+  /** Tools page, narrowed to this tool when we know which one it is. */
+  private get toolsHref(): string {
+    return this.toolName
+      ? `/console/tools#tool=${encodeURIComponent(this.toolName)}`
+      : '/console/tools';
+  }
+
   private renderCompact(context: ApprovalRuleContext) {
     return html`
       <span class="compact" title=${context.expression ?? ''}>
@@ -190,7 +205,7 @@ export class ApprovalRuleContextBlock extends LitElement {
         }
         ${
           context.tool_configuration_id
-            ? html`<a class="rule-link" href="/console/tools"
+            ? html`<a class="rule-link" href=${this.toolsHref}
                 >Review this rule in Tools</a
               >`
             : nothing

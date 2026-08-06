@@ -133,6 +133,52 @@ def _also_matched_rule_ids(
     return also
 
 
+def _matched_rule_context(
+    rule: Any,
+    *,
+    rules: list[Any],
+    index: int,
+    tool_config: Any,
+    tool_args: Dict[str, Any],
+    context: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Snapshot of the rule that gated a call, or None when it did not gate.
+
+    Shared by the sync and async evaluators so the two cannot drift into
+    recording different things about the same rule. Only ``require_approval``
+    produces a snapshot: allow and deny create no approval to attach one to.
+
+    Args:
+        rule: The winning rule.
+        rules: The full priority-ordered rule list.
+        index: Index of the winning rule within ``rules``.
+        tool_config: The tool configuration the rules belong to.
+        tool_args: Arguments the call was made with.
+        context: Evaluation context.
+
+    Returns:
+        The snapshot dict, or None when the action is not require_approval.
+    """
+    if rule.action != "require_approval":
+        return None
+    return build_rule_context(
+        source=SOURCE_TOOL_ACCESS_RULE,
+        decision=rule.action,
+        rule_id=rule.id,
+        rule_name=rule.description,
+        expression=rule.condition_expression,
+        expression_type=rule.condition_type,
+        priority=rule.priority,
+        tool_configuration_id=tool_config.id,
+        also_matched_rule_ids=_also_matched_rule_ids(
+            rules,
+            start_index=index + 1,
+            tool_args=tool_args,
+            context=context,
+        ),
+    )
+
+
 def _get_audit_service():
     """Get the audit service instance (lazy import to avoid circular deps)."""
     try:
@@ -564,24 +610,14 @@ def evaluate_policy(
                     execution_id=execution_id,
                 )
 
-                rule_context = None
-                if rule.action == "require_approval":
-                    rule_context = build_rule_context(
-                        source=SOURCE_TOOL_ACCESS_RULE,
-                        decision=rule.action,
-                        rule_id=rule.id,
-                        rule_name=rule.description,
-                        expression=rule.condition_expression,
-                        expression_type=rule.condition_type,
-                        priority=rule.priority,
-                        tool_configuration_id=tool_config.id,
-                        also_matched_rule_ids=_also_matched_rule_ids(
-                            rules,
-                            start_index=index + 1,
-                            tool_args=tool_args,
-                            context=context,
-                        ),
-                    )
+                rule_context = _matched_rule_context(
+                    rule,
+                    rules=rules,
+                    index=index,
+                    tool_config=tool_config,
+                    tool_args=tool_args,
+                    context=context,
+                )
 
                 return PolicyDecision(
                     rule.action,
@@ -1160,24 +1196,14 @@ async def evaluate_policy_async(
                     extra_details=extra_details,
                 )
 
-                rule_context = None
-                if rule.action == "require_approval":
-                    rule_context = build_rule_context(
-                        source=SOURCE_TOOL_ACCESS_RULE,
-                        decision=rule.action,
-                        rule_id=rule.id,
-                        rule_name=rule.description,
-                        expression=rule.condition_expression,
-                        expression_type=rule.condition_type,
-                        priority=rule.priority,
-                        tool_configuration_id=tool_config.id,
-                        also_matched_rule_ids=_also_matched_rule_ids(
-                            rules,
-                            start_index=index + 1,
-                            tool_args=tool_args,
-                            context=context,
-                        ),
-                    )
+                rule_context = _matched_rule_context(
+                    rule,
+                    rules=rules,
+                    index=index,
+                    tool_config=tool_config,
+                    tool_args=tool_args,
+                    context=context,
+                )
 
                 return PolicyDecision(
                     rule.action,

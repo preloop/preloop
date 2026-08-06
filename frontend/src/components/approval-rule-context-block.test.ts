@@ -140,6 +140,28 @@ describe('ApprovalRuleContextBlock', () => {
     expect(compact?.getAttribute('title')).to.equal('args.amount >= 5000');
   });
 
+  it('links to the tool the rule gates, not the whole catalogue', async () => {
+    const element = (await fixture(html`
+      <approval-rule-context-block
+        .ruleContext=${boundaryRule}
+        .toolName=${'issue_refund'}
+      ></approval-rule-context-block>
+    `)) as ApprovalRuleContextBlock;
+    await element.updateComplete;
+
+    const link = element.shadowRoot?.querySelector('.rule-link');
+    expect(link?.getAttribute('href')).to.equal(
+      '/console/tools#tool=issue_refund'
+    );
+  });
+
+  it('falls back to the Tools page when the tool is unknown', async () => {
+    const element = await mount(boundaryRule);
+
+    const link = element.shadowRoot?.querySelector('.rule-link');
+    expect(link?.getAttribute('href')).to.equal('/console/tools');
+  });
+
   it('renders nothing in compact mode without a context', async () => {
     const element = await mount(null, true);
 

@@ -603,6 +603,7 @@ export class ApprovalView extends AuthedElement {
                 <div class="content-section">
                   <approval-rule-context-block
                     .ruleContext=${this.approvalRequest.rule_context}
+                    .toolName=${this.approvalRequest.tool_name}
                   ></approval-rule-context-block>
                 </div>
               `
