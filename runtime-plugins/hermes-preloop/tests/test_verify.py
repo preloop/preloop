@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -40,7 +39,9 @@ def test_verify_raises_on_runtime_mismatch() -> None:
     block = {"runtime": "other"}
     with patch.object(plugin, "load_config", return_value=config):
         with patch.object(plugin, "_read_control_block", return_value=block):
-            with pytest.raises(ValueError, match="Expected Hermes runtime config, got 'other'"):
+            with pytest.raises(
+                ValueError, match="Expected Hermes runtime config, got 'other'"
+            ):
                 plugin.verify()
 
 
@@ -50,7 +51,9 @@ def test_verify_raises_on_missing_runtime() -> None:
     block = {}
     with patch.object(plugin, "load_config", return_value=config):
         with patch.object(plugin, "_read_control_block", return_value=block):
-            with pytest.raises(ValueError, match="Expected Hermes runtime config, got None"):
+            with pytest.raises(
+                ValueError, match="Expected Hermes runtime config, got None"
+            ):
                 plugin.verify()
 
 
@@ -64,7 +67,9 @@ def test_verify_raises_on_missing_control_ws_url() -> None:
     block = {"runtime": "hermes"}
     with patch.object(plugin, "load_config", return_value=config):
         with patch.object(plugin, "_read_control_block", return_value=block):
-            with pytest.raises(ValueError, match="preloop.control.control_ws_url is required"):
+            with pytest.raises(
+                ValueError, match="preloop.control.control_ws_url is required"
+            ):
                 plugin.verify()
 
 
@@ -78,5 +83,7 @@ def test_verify_raises_on_missing_bearer_token() -> None:
     block = {"runtime": "hermes"}
     with patch.object(plugin, "load_config", return_value=config):
         with patch.object(plugin, "_read_control_block", return_value=block):
-            with pytest.raises(ValueError, match="preloop.control.bearer_token is required"):
+            with pytest.raises(
+                ValueError, match="preloop.control.bearer_token is required"
+            ):
                 plugin.verify()
