@@ -23,6 +23,7 @@ from preloop.services.account_realtime import (
     encode_realtime_event_for_nats,
     emit_account_event,
 )
+from preloop.services.cache_accounting import reported_cache_miss_tokens
 from preloop.sync.services.event_bus import get_nats_client
 from preloop.utils.jsonb_sanitize import sanitize_for_jsonb
 from preloop.utils.request_fingerprint import public_request_fingerprint
@@ -276,6 +277,13 @@ class ModelGatewayEventEmitter:
                     else (meta_data.get("usage_details") or {}).get(
                         "cache_creation_input_tokens"
                     )
+                ),
+                # A cache-MISS count the provider reported outright (today only
+                # DeepSeek's prompt_cache_miss_tokens, which litellm drops on the
+                # floor). None means "no provider miss count" — consumers must
+                # not read that as zero misses.
+                "cache_miss_input_tokens_reported": reported_cache_miss_tokens(
+                    meta_data
                 ),
                 "runtime_session_id": str(usage.runtime_session_id)
                 if usage.runtime_session_id

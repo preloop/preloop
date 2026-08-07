@@ -1,6 +1,7 @@
 """CRUD operations for ApiUsage model."""
 
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 import uuid
 from typing import Any, Dict, List, Optional, Sequence, Union
 from sqlalchemy import Float, String, and_, case, cast, func, or_
@@ -1861,6 +1862,62 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             .offset(offset)
             .all()
         )
+
+    def list_session_cache_rows(
+        self,
+        db: Session,
+        *,
+        account_id: Union[uuid.UUID, str],
+        runtime_session_id: Union[uuid.UUID, str],
+    ) -> List[SimpleNamespace]:
+        """List the cache-accounting columns for every request in a session.
+
+        Deliberately column-projected rather than a full ORM load: the session
+        cache rollup covers ALL requests (it must not change as the UI pages),
+        and full rows carry ``meta_data`` with capped-but-still-large request
+        and response bodies. Only ``meta_data['usage_details']`` is pulled from
+        the JSONB, which is the sole part cache accounting reads.
+
+        Args:
+            db: Database session.
+            account_id: Owning account id.
+            runtime_session_id: Runtime session to summarize.
+
+        Returns:
+            Lightweight namespaces shaped like ``ApiUsage`` rows for the fields
+            :mod:`preloop.services.cache_accounting` consumes.
+        """
+        rows = (
+            db.query(
+                self.model.prompt_tokens,
+                self.model.cache_read_tokens,
+                self.model.cache_creation_tokens,
+                self.model.model_alias,
+                self.model.provider_name,
+                self.model.usage_source,
+                self.model.meta_data["usage_details"].label("usage_details"),
+            )
+            .filter(
+                self.model.action_type == "model_gateway",
+                self.model.account_id == account_id,
+                self.model.runtime_session_id == runtime_session_id,
+            )
+            .all()
+        )
+        return [
+            SimpleNamespace(
+                prompt_tokens=row.prompt_tokens,
+                cache_read_tokens=row.cache_read_tokens,
+                cache_creation_tokens=row.cache_creation_tokens,
+                model_alias=row.model_alias,
+                provider_name=row.provider_name,
+                usage_source=row.usage_source,
+                meta_data={"usage_details": row.usage_details}
+                if row.usage_details is not None
+                else None,
+            )
+            for row in rows
+        ]
 
     def count_session_request_rows(
         self,

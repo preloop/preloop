@@ -15,7 +15,12 @@ export type SessionObserverScope =
   | 'ai_model'
   | 'audit';
 
-export type SessionReplayMode = 'timeline' | 'chat' | 'replay' | 'optimize';
+// 'conversation' is the chat-style transcript (<session-chat-view>): only
+// top-level prompts/responses expanded, everything else collapsed.
+// 'timeline' is the original turn/delta transcript, 'chat' its talk-dialog
+// variant; both keep rendering through <session-replay-panel>.
+export type SessionReplayMode =
+  'conversation' | 'timeline' | 'chat' | 'replay' | 'optimize';
 
 export interface ObservedSession {
   id: string;

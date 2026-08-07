@@ -231,3 +231,182 @@ def test_runtime_session_requests_expose_error_class(client, db_session, test_us
     assert items[0]["status_code"] == 499
     assert items[0]["is_error"] is True
     assert items[0]["error_class"] == "stream_abandoned"
+
+
+def _log_cache_request(
+    db_session,
+    *,
+    account_id,
+    runtime_session_id,
+    prompt_tokens,
+    cache_read_tokens=None,
+    cache_creation_tokens=None,
+    model_alias="anthropic/claude-sonnet-4",
+    provider_name="anthropic",
+    meta_data=None,
+):
+    """Insert a gateway row carrying an explicit prompt-cache split."""
+    return crud_api_usage.log_gateway_request(
+        db_session,
+        endpoint="/v1/messages",
+        method="POST",
+        status_code=200,
+        duration=0.5,
+        account_id=str(account_id),
+        runtime_session_id=str(runtime_session_id),
+        model_alias=model_alias,
+        provider_name=provider_name,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=100,
+        total_tokens=prompt_tokens + 100,
+        cache_read_tokens=cache_read_tokens,
+        cache_creation_tokens=cache_creation_tokens,
+        estimated_cost=0.01,
+        usage_source="provider",
+        meta_data=meta_data,
+    )
+
+
+def test_runtime_session_requests_expose_per_call_cache_split(
+    client, db_session, test_user
+):
+    """Each request item should carry read/write/derived-miss cache tokens."""
+    session = _make_session(db_session, test_user.account_id)
+    _log_cache_request(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=session.id,
+        prompt_tokens=10_000,
+        cache_read_tokens=7_000,
+        cache_creation_tokens=2_000,
+    )
+    db_session.commit()
+
+    response = client.get(f"/api/v1/runtime-sessions/{session.id}/requests")
+    assert response.status_code == 200
+    cache = response.json()["items"][0]["cache"]
+    assert cache["cache_read_tokens"] == 7_000
+    assert cache["cache_creation_tokens"] == 2_000
+    assert cache["cache_miss_tokens"] == 1_000
+    assert cache["cache_miss_source"] == "derived"
+    assert cache["has_cache_data"] is True
+    assert cache["usage_source"] == "provider"
+
+
+def test_runtime_session_requests_absent_cache_is_null_not_zero(
+    client, db_session, test_user
+):
+    """A provider that reports no cache split must serialize to null, not 0."""
+    session = _make_session(db_session, test_user.account_id)
+    _log_request(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=session.id,
+        status_code=200,
+        total_tokens=1000,
+        estimated_cost=0.02,
+        when=datetime.now(UTC),
+    )
+    db_session.commit()
+
+    response = client.get(f"/api/v1/runtime-sessions/{session.id}/requests")
+    assert response.status_code == 200
+    cache = response.json()["items"][0]["cache"]
+    assert cache["cache_read_tokens"] is None
+    assert cache["cache_creation_tokens"] is None
+    assert cache["cache_miss_tokens"] is None
+    assert cache["has_cache_data"] is False
+
+
+def test_runtime_session_requests_promote_deepseek_reported_miss(
+    client, db_session, test_user
+):
+    """DeepSeek's prompt_cache_miss_tokens should surface as a reported miss."""
+    session = _make_session(db_session, test_user.account_id)
+    _log_cache_request(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=session.id,
+        prompt_tokens=1_500,
+        cache_read_tokens=1_280,
+        model_alias="deepseek/deepseek-chat",
+        provider_name="deepseek",
+        meta_data={
+            "usage_details": {
+                "prompt_cache_hit_tokens": 1_280,
+                "prompt_cache_miss_tokens": 220,
+            }
+        },
+    )
+    db_session.commit()
+
+    response = client.get(f"/api/v1/runtime-sessions/{session.id}/requests")
+    assert response.status_code == 200
+    cache = response.json()["items"][0]["cache"]
+    assert cache["cache_miss_tokens"] == 220
+    assert cache["cache_miss_source"] == "reported"
+
+
+def test_runtime_session_requests_cache_summary_spans_whole_session(
+    client, db_session, test_user
+):
+    """The rollup must cover all requests, not just the returned page."""
+    session = _make_session(db_session, test_user.account_id)
+    for _ in range(3):
+        _log_cache_request(
+            db_session,
+            account_id=test_user.account_id,
+            runtime_session_id=session.id,
+            prompt_tokens=1_000,
+            cache_read_tokens=800,
+            cache_creation_tokens=100,
+        )
+    # One blind row: no provider cache split at all.
+    _log_request(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=session.id,
+        status_code=200,
+        total_tokens=4_000,
+        estimated_cost=0.02,
+        when=datetime.now(UTC),
+    )
+    db_session.commit()
+
+    response = client.get(f"/api/v1/runtime-sessions/{session.id}/requests?limit=1")
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["items"]) == 1
+
+    summary = body["cache_summary"]
+    assert summary["requests_total"] == 4
+    assert summary["requests_with_cache_data"] == 3
+    assert summary["requests_without_cache_data"] == 1
+    assert summary["cached_prompt_tokens"] == 2_400
+    assert summary["uncached_prompt_tokens"] == 300
+    assert summary["cache_write_tokens"] == 300
+    assert summary["cache_hit_ratio"] == 0.8889
+    assert summary["uncovered_prompt_tokens"] == 2_000
+
+
+def test_runtime_session_cache_summary_omits_savings_without_exact_prices(
+    client, db_session, test_user
+):
+    """No catalog cache price means no dollar figure, with a stated reason."""
+    session = _make_session(db_session, test_user.account_id)
+    _log_cache_request(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=session.id,
+        prompt_tokens=1_000,
+        cache_read_tokens=900,
+        model_alias="totally-unknown-model-xyz",
+        provider_name="custom",
+    )
+    db_session.commit()
+
+    response = client.get(f"/api/v1/runtime-sessions/{session.id}/requests")
+    assert response.status_code == 200
+    summary = response.json()["cache_summary"]
+    assert summary["estimated_cache_savings_usd"] is None
+    assert summary["savings_omitted_reason"] == "no_catalog_cache_price"

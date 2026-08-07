@@ -60,6 +60,8 @@ from preloop.schemas.gateway_usage import (
     ManagedAgentUsageAggregate,
     RuntimeSessionActivityListResponse,
     RuntimeSessionInteractionSummary,
+    RuntimeSessionCacheSummary,
+    RuntimeSessionRequestCache,
     RuntimeSessionRequestItem,
     RuntimeSessionRequestListResponse,
     RuntimeSessionRequestTool,
@@ -83,6 +85,10 @@ from preloop.services.account_realtime import (
 )
 from preloop.services.account_governance_cache import (
     invalidate_account_governance_cache,
+)
+from preloop.services.cache_accounting import (
+    build_request_cache_accounting,
+    summarize_session_cache,
 )
 from preloop.services.managed_agent_identity import (
     ManagedAgentIdentityError,
@@ -2449,6 +2455,9 @@ async def get_account_session_activity_timeline(
 def _request_row_to_item(row: Any) -> RuntimeSessionRequestItem:
     """Convert an ApiUsage row into a unified-timeline request item.
 
+    Also carries the per-call prompt-cache split (read / write / miss) built by
+    :func:`preloop.services.cache_accounting.build_request_cache_accounting`.
+
     Args:
         row: One ``ApiUsage`` ORM row for a gateway request.
 
@@ -2475,6 +2484,7 @@ def _request_row_to_item(row: Any) -> RuntimeSessionRequestItem:
                 )
             )
     status_code = int(row.status_code or 0)
+    cache = build_request_cache_accounting(row)
     return RuntimeSessionRequestItem(
         id=str(row.id),
         timestamp=row.timestamp,
@@ -2492,6 +2502,9 @@ def _request_row_to_item(row: Any) -> RuntimeSessionRequestItem:
         endpoint=row.endpoint,
         tools=tools,
         tools_total_schema_tokens=tools_total,
+        # NULL cache columns stay NULL through the wire: the UI must say
+        # "not reported by provider", never zero.
+        cache=RuntimeSessionRequestCache(**cache.as_dict()),
     )
 
 
@@ -2550,6 +2563,15 @@ async def list_account_runtime_session_requests(
         failed_only=True,
     )
     items = [_request_row_to_item(row) for row in rows]
+    # The cache rollup spans the whole session, not the current page, so the
+    # summary block is stable while the user pages or filters the list.
+    cache_summary = summarize_session_cache(
+        crud_api_usage.list_session_cache_rows(
+            db,
+            account_id=account.id,
+            runtime_session_id=runtime_session_id,
+        )
+    )
     next_offset = offset + len(items)
     return RuntimeSessionRequestListResponse(
         items=items,
@@ -2559,6 +2581,7 @@ async def list_account_runtime_session_requests(
         offset=offset,
         next_offset=next_offset if next_offset < total else None,
         has_more=next_offset < total,
+        cache_summary=RuntimeSessionCacheSummary(**cache_summary.as_dict()),
     )
 
 

@@ -382,8 +382,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Highlights: **Cursor usage import** brings bundled-model spend into Cost
 analytics, **rate-limit intelligence** turns upstream 429s into a headroom
-report, and **agent identity v2** gives managed agents a stable durable id
-across renames and re-onboarding.
+report, **agent identity v2** gives managed agents a stable durable id across
+renames and re-onboarding, and **live model discovery** lists what each
+provider actually serves instead of a catalog frozen in early 2025.
+
+This release also fixes two credential leaks. Tracker tokens were being
+written into flow execution logs through git remote URLs, and provider API
+keys entered in the model picker were being written to server access logs.
+Both are fixed, and both call for rotating the affected credentials: see the
+Security section below.
 
 ### Added
 
@@ -526,6 +533,14 @@ across renames and re-onboarding.
   the notice invites you to add one and fetch again instead of blaming the
   provider. The reason vocabulary is fixed and carries no provider text, so a
   failing provider cannot echo a URL or key material into the console.
+- **Verifiable trust signals on the README** (#108): CI status, latest GitHub
+  release, and PyPI version badges sit alongside the existing Python and
+  license badges, and every badge points at a signal you can check yourself.
+  An OpenSSF Scorecard workflow runs weekly and on every push to main,
+  publishing its results and uploading SARIF to code scanning, and
+  `docs/OPENSSF_BEST_PRACTICES.md` maps the bestpractices.dev criteria to
+  current repository evidence with the open gaps listed honestly. No badge is
+  claimed before the corresponding result is published.
 
 ### Changed
 
@@ -533,6 +548,17 @@ across renames and re-onboarding.
   decommissions the managed-agent row (PATCH `lifecycle_action=decommission`)
   so usage history and audit trail remain. Re-onboarding reactivates an
   archived match; use `preloop agents remove` for permanent deletion.
+- **Compliance estimation tools no longer ship to every session**:
+  `estimate_compliance` and `improve_compliance` are now default-disabled, so
+  accounts that never use them stop paying their schema cost on every agent
+  request. Enable them on the Tools page to get them back. The `test_progress`
+  debug tool is removed entirely; it was pure schema noise in user sessions.
+- **Cursor onboarding notes describe BYOK accurately**: the CLI's Cursor
+  support note said the base-URL override applied to chat only. It routes the
+  AI panel's third-party model calls in Ask, Plan, and Agent modes through the
+  Preloop gateway, while Tab, inline edit, and Cursor-billed bundled models
+  stay on Cursor's own backend. Those bundled models are exactly what
+  `preloop usage import` exists to account for.
 
 ### Fixed
 
@@ -692,6 +718,33 @@ across renames and re-onboarding.
   existing enrollments keep their identity, spend history, and credentials,
   and are refined in place rather than re-keyed. An older CLI that does not
   send `agent_kind` can no longer reset a known kind back to the generic one.
+- **Gateway streams no longer die as a silent empty HTTP 200** (#109): a
+  streaming completion could return 200 with a zero-byte body, no events and
+  no `finish_reason`, and with a `tools` array present it failed every time.
+  Errors were being raised inside the SSE generator after the 200 status line
+  had already gone out, so nothing could replace it and the client saw an
+  empty success. Upstream calls on the Codex paths now happen before the
+  generator is handed to the server, and the litellm streaming paths pull the
+  first upstream chunk eagerly, so a failure that early surfaces as a real
+  error response with a real status code. A failure that happens mid-stream
+  now emits a provider-native SSE error event (OpenAI, Responses-API,
+  Anthropic, and Gemini shapes) and deliberately omits the terminating
+  `[DONE]` / `message_stop`, so a client can always tell a finished stream
+  from a broken one. The invariant is that a stream either completes, emits an
+  error event, or never returns 200 in the first place.
+- **Claude and ChatGPT subscription traffic no longer 400s on ordinary
+  parameters**: requests routed over the Codex subscription-OAuth branch
+  failed with `Unsupported parameter: max_completion_tokens`, which some
+  runtimes send on every single request. The Codex upstream accepts a fixed
+  parameter set and has no token-limit parameter at all, so unsupported keys
+  are now dropped at the single point where the upstream body is built rather
+  than being passed through to be rejected. The Anthropic Claude Code
+  passthrough got the same treatment from the other direction: it drops only
+  the keys known to break it, so genuinely new Anthropic features keep working
+  without waiting for a gateway release, and `max_completion_tokens` /
+  `max_output_tokens` translate to Anthropic's `max_tokens` when the client
+  did not send one. Messages, system prompts, tools, and `cache_control`
+  blocks pass through byte-identical, so prompt caching is unaffected.
 - **Gateway upstream provider errors are classified** (#116, #117, #118): a
   shared `classify_upstream_error` taxonomy (`network`,
   `upstream_overloaded`, `upstream_rate_limited`, `upstream_quota_exhausted`,
@@ -713,9 +766,64 @@ across renames and re-onboarding.
   transient errors (5xx, network) no longer clear tokens and force re-login;
   only definitive 401/403 does. OAuth logins now store refresh tokens.
   Active sessions slide up to a 30-day cap.
+- **Onboarding tells the truth when live validation fails** (#110): a
+  transient upstream 5xx during `preloop agents onboard` quietly reverted
+  model routing to the previous provider, then printed a green
+  `✓ Onboarded` and pointed you at `preloop agents validate --live`, which
+  could never succeed afterwards. Transient upstream failures are now retried
+  with a short backoff and, if they persist, the gateway configuration is
+  kept in place so `validate --live` really is re-runnable. A rollback that
+  does happen is loud: the headline says the onboarding is incomplete and that
+  routing was reverted, the remediation says to re-run `onboard` rather than
+  `validate`, and the command exits non-zero so scripts and batch runs see the
+  failure. Onboarding that genuinely succeeded still reports `✓ Onboarded`,
+  and a kept-config failure reports degraded validation rather than success.
+- **Hermes plugin installs on a stock Linux box** (#111): every install path
+  failed. Hermes' own plugin installer rejects the package name, and the pip
+  fallback used the system interpreter, which modern distributions refuse to
+  let you write to. The CLI now locates Hermes' own virtualenv from
+  `hermes --version` and installs there; the system interpreter is never used.
+  When the virtualenv cannot be found, the error prints the exact
+  copy-pasteable pip command instead of a bare `pip install`, and `--dry-run`
+  prints the command that actually works. Validation also stopped reporting
+  `control_plugin_installed: no` after a manual install: it now checks the
+  virtualenv and asks Hermes for its plugin list, and a plugin that is
+  installed but disabled is reported as installed with an enable step rather
+  than as missing.
 - **CLI build repair** (#144): restore `recoverDeferredGatewayValidationFailure`
   in `cli/internal/cmd`, which a bad merge left uncompilable and which broke
   the Windows CLI test job on every open PR.
+- **Disabling a built-in tool actually disables it**: the account-level tool
+  toggle on the Tools page was never enforced on the live gateway, so turning
+  a built-in tool off changed nothing for connected agents and its schema kept
+  shipping in every request. Disabled tools are now hidden from the tool list
+  and rejected at call time, and the Tools page reflects what an agent will
+  really see. Flow executions that carry their own explicit tool allow-list,
+  such as the Pull Request Reviewer preset, are unaffected: an account-level
+  disable cannot silently break a preset flow.
+- **MCP scan failures say what actually went wrong** (#124): a failing server
+  scan produced the admin alert `unhandled errors in a TaskGroup
+  (1 sub-exception)`, which named neither the server nor the cause. The real
+  underlying error is now surfaced. Repeated rescans of a server that is
+  already known to be unhealthy no longer re-notify admins on every cycle;
+  the alert fires on the transition into failure.
+- **Deploys no longer drop gateway requests** (#124): the Helm chart shipped
+  the Kubernetes default rollout strategy, which allows healthy pods to be
+  killed before replacements are ready, so upgrades produced brief 502s on
+  small replica counts. API, gateway, and console deployments now roll with
+  `maxUnavailable: 0` and a pre-stop delay so the pod leaves the load
+  balancer's rotation before it starts shutting down. The console deployment
+  gained readiness and liveness probes; it previously had none and was
+  considered ready the instant its container started.
+- **Production error triage from launch week** (#115): GitLab merge-request
+  reviews no longer fail outright when GitLab has no approval to revoke or
+  rejects an inline diff comment, both of which are ordinary GitLab
+  limitations rather than errors; the review completes and the comment falls
+  back to a general discussion referencing the file and line. Duplicate
+  webhook deliveries for the same comment no longer roll back the whole
+  webhook transaction on an embedding insert race. A client that disconnects
+  during the websocket handshake is now treated as an early disconnect with
+  normal cleanup rather than logged as a server error.
 - **Code Quality / Scorecard hygiene**: clear GitHub Code Quality
   maintainability warnings (implicit string concat in gateway tests;
   unused-export false positives), pin GitHub Actions and Docker base images by
@@ -724,6 +832,23 @@ across renames and re-onboarding.
   override frontend `basic-ftp`/`yaml` advisories, harden refresh-token error
   responses, and document/wire `REFRESH_TOKEN_EXPIRE_DAYS` / `MAX_SESSION_DAYS`
   in Helm.
+- **Build reproducibility and supply-chain pinning**: every pip install in CI,
+  the publish and release workflows, and both Dockerfiles now installs from a
+  hash-pinned lockfile, so a compromised or re-uploaded package version cannot
+  silently enter a build. Each lockfile records the command that regenerates
+  it. The one global npm install is pinned to an exact version, npm having no
+  hash mode for global installs. Application dependencies installed with
+  `pip install -e .` are not yet hash-pinned.
+- **Summary and title generation on reasoning models**: approval summaries,
+  session and interaction titles, policy generation, agent name extraction and
+  the issue compliance, duplicate and dependency endpoints now pass the
+  model's own configured parameters through to the provider, and explicitly
+  ask reasoning models not to spend a thinking budget on these short internal
+  calls. The instruction is capability-checked per provider rather than sent
+  blindly, since sending it to a model that does not accept it produced a
+  hard 400 on the request. A reasoning model that returns nothing but a
+  thinking block is now treated as a failure that can fall back to the
+  system-wide default model, instead of quietly producing a blank summary.
 - **Single Alembic head restored** (#162, #163): parallel feature merges left
   the migration graph with multiple heads, breaking `alembic upgrade head` on
   self-hosted upgrades. The heads are collapsed into one mergepoint
@@ -752,6 +877,36 @@ across renames and re-onboarding.
 
 ### Security
 
+- **Tracker access tokens are no longer embedded in git remote URLs** (#173):
+  flows that cloned a repository had the tracker token spliced into the clone
+  URL, which git then wrote into the cloned repository's `origin` remote. Any
+  `git remote -v` the agent ran printed the token straight into the flow
+  execution log, which is served over the API and rendered in the console.
+  Tokens are now handed to git through a short-lived credential file created
+  with restrictive permissions and removed afterwards, and the environment
+  variable that carried it is unset before the agent runs, so the agent cannot
+  read it back out of its own environment. The URL given to `git clone` is
+  always credential-free, and the secret is never written into the container's
+  init script, which is visible to anyone who can describe the pod. Five
+  separate sites were embedding credentials this way, not just the clone path,
+  and the helper that did it has been deleted rather than deprecated so it
+  cannot be reintroduced. As defense in depth, flow logs are now scrubbed at
+  four layers (log read, live stream, agent output capture, and persistence)
+  for URL credentials, authorization and tracker headers, and known token
+  formats including GitHub, GitLab, Anthropic, OpenAI and Preloop keys. Each
+  redaction keeps its prefix, so an operator can still tell which kind of
+  credential leaked and therefore what to rotate. **Operators should rotate
+  any tracker token used by a flow with a git clone step, and treat existing
+  flow execution logs as potentially containing it.**
+- **Service logs no longer echo agent output or email bodies**: debug logging
+  in the flow execution logger wrote agent-derived content into service logs
+  that are not scrubbed; it now records only metadata such as action type,
+  status, and line length. Separately, when SMTP is unconfigured the mailer
+  logged the entire email body, and password reset, verification, and
+  invitation emails all carry a single-use authentication token in that body.
+  The body is no longer logged. Log scrubbing was also made resistant to a
+  crafted long input that could make its URL matching quadratic, which
+  mattered because the input is agent-controlled log lines.
 - **Provider API keys no longer travel in the URL**: the
   `/api/v1/ai-models/providers/{provider}/available-models` endpoint accepted
   `api_key` as a query parameter, so live provider keys were written to
@@ -762,6 +917,14 @@ across renames and re-onboarding.
   cannot be aimed at loopback or link-local addresses. **Operators should
   rotate any provider key entered through the model picker before this
   release**, and check access logs for `api_key=`.
+- **Google model discovery keys are scoped per request**: fetching the Google
+  model list configured the provider SDK through process-global state, so two
+  accounts refreshing their model list at the same time could race and list
+  one account's models using the other account's key. Each discovery call now
+  builds its own client bound to its own key. Model-picker errors also stopped
+  reporting every validation failure as an authentication failure: a blocked
+  endpoint or an invalid model kind used to tell you your API key was wrong.
+  Validation problems now return a distinct status from authentication ones.
 
 ## [0.13.1] - 2026-07-28
 
