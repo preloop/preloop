@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-08-07
+
 Highlights: **Cursor usage import** brings bundled-model spend into Cost
 analytics, **rate-limit intelligence** turns upstream 429s into a headroom
 report, and **agent identity v2** gives managed agents a stable durable id

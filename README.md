@@ -279,7 +279,7 @@ curl -fsSL https://preloop.ai/install/oss | \
 
 **Passkeys (WebAuthn)**: passkey sign-in is enabled by default; set `PASSKEYS_ENABLED=false` to turn it off. Behind a proxy or on a non-standard domain setup, pin the relying party and origin explicitly with `WEBAUTHN_RP_ID` (the registrable domain, e.g. `preloop.example.com`) and `WEBAUTHN_ORIGIN` (e.g. `https://preloop.example.com`); by default both are derived from the request. `WEBAUTHN_CHALLENGE_RATE_LIMIT` (default `30`) caps challenge requests per IP per minute.
 
-To install a pre-release (e.g. a release candidate), pin the version: `curl -fsSL https://preloop.ai/install/oss | PRELOOP_VERSION=0.13.1 sh` (the same works for the CLI installer).
+To install a pre-release (e.g. a release candidate), pin the version: `curl -fsSL https://preloop.ai/install/oss | PRELOOP_VERSION=0.14.0 sh` (the same works for the CLI installer).
 
 #### Upgrading
 
@@ -299,7 +299,7 @@ Self-hosted instances and the CLI send a daily, pseudonymous version check-in (r
 
 ### Release smoke test
 
-Every tagged release is verified automatically before it is published: the `verify-oss-install` job in the release workflow runs [`scripts/release_smoke_test.sh`](scripts/release_smoke_test.sh), which boots `docker-compose.release.yaml` with the tagged images, checks API/gateway/console health, exercises first-user sign-up and login, and fails if any service restart-loops. You can run the same script locally with `PRELOOP_VERSION=0.13.1 ./scripts/release_smoke_test.sh`.
+Every tagged release is verified automatically before it is published: the `verify-oss-install` job in the release workflow runs [`scripts/release_smoke_test.sh`](scripts/release_smoke_test.sh), which boots `docker-compose.release.yaml` with the tagged images, checks API/gateway/console health, exercises first-user sign-up and login, and fails if any service restart-loops. You can run the same script locally with `PRELOOP_VERSION=0.14.0 ./scripts/release_smoke_test.sh`.
 
 For hosted trials, additionally verify that the public URL loads the console, `/api/v1/health` responds, first-user sign-in or sign-up works, `preloop agents discover` can target the public URL, one gateway model call appears in the UI, and one MCP policy event appears in the audit timeline.
 
