@@ -365,6 +365,17 @@ class WebSocketManager:
                 f"Broadcast complete: sent to {sent_count} connection(s) for account {account_id}"
             )
 
+    def _count_account_connections(self, account_id: str) -> int:
+        """Count connections currently bound to one account.
+
+        Args:
+            account_id: Account whose listeners should be counted.
+
+        Returns:
+            Number of active connections registered to ``account_id``.
+        """
+        return sum(1 for acc in self.connection_accounts.values() if acc == account_id)
+
     async def broadcast_json(self, data: dict, account_id: str = None):
         """
         Broadcasts a JSON message to connected clients, optionally filtered by account_id.
@@ -379,32 +390,35 @@ class WebSocketManager:
         high_freq_types = {"agent_log_line", "token_usage_update", "tool_calls_update"}
 
         if account_id:
-            matching_count = sum(
-                1 for acc in self.connection_accounts.values() if acc == account_id
-            )
-            # Only log high-frequency messages at debug level, or when someone is listening
+            # The matching count only ever feeds a log line, so it is computed
+            # lazily. Counting every connection on each broadcast was pure
+            # overhead on the hottest path (agent_log_line), where the result is
+            # discarded whenever DEBUG is off.
             if msg_type in high_freq_types:
-                if matching_count > 0:
-                    logger.debug(
-                        f"Broadcasting {msg_type} to {matching_count} connection(s) "
-                        f"for account {account_id}"
-                    )
-                # Skip logging entirely when no one is listening for high-freq messages
-            elif matching_count > 0:
-                # Non-high-frequency messages (status updates, etc.) log at INFO
-                # only when someone is actually listening.
-                logger.info(
-                    f"Broadcasting {msg_type} to account_id={account_id}, "
-                    f"matching_connections={matching_count}"
-                )
+                # High-frequency messages only ever log at DEBUG, so skip the
+                # scan entirely when that line would be discarded anyway.
+                if logger.isEnabledFor(logging.DEBUG):
+                    matching_count = self._count_account_connections(account_id)
+                    if matching_count > 0:
+                        logger.debug(
+                            f"Broadcasting {msg_type} to {matching_count} "
+                            f"connection(s) for account {account_id}"
+                        )
             else:
-                # No listeners: still useful when debugging missing updates,
-                # but not worth an INFO line per event (this was ~69% of all
-                # gateway log volume in production).
-                logger.debug(
-                    f"Broadcasting {msg_type} to account_id={account_id}, "
-                    f"matching_connections=0"
-                )
+                # Low-volume messages: one scan feeds either the INFO line (when
+                # someone is listening) or the DEBUG "no listeners" line, which
+                # was ~69% of all gateway log volume in production.
+                matching_count = self._count_account_connections(account_id)
+                if matching_count > 0:
+                    logger.info(
+                        f"Broadcasting {msg_type} to account_id={account_id}, "
+                        f"matching_connections={matching_count}"
+                    )
+                else:
+                    logger.debug(
+                        f"Broadcasting {msg_type} to account_id={account_id}, "
+                        f"matching_connections=0"
+                    )
         else:
             logger.info(
                 f"Broadcasting {msg_type} to all {len(self.active_connections)} connections"

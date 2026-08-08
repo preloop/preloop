@@ -83,13 +83,19 @@ class TestPersistExecutionLog:
         assert mock_db.commit.called
         assert mock_db.close.called
 
+    @patch("preloop.services.websocket_manager.notify_admins")
     @patch("preloop.services.websocket_manager.get_db")
     @patch("preloop.services.websocket_manager.logger")
     @patch("preloop.models.crud.crud_flow_execution.append_log")
     def test_sync_batch_insert_logs_database_error(
-        self, mock_append, mock_logger, mock_get_db
+        self, mock_append, mock_logger, mock_get_db, mock_notify
     ):
-        """Test handling database error when persisting log batch."""
+        """Test handling database error when persisting log batch.
+
+        ``notify_admins`` is patched because the drop path really sends admin
+        email/Slack/Mattermost alerts; tests must not depend on TESTING=true
+        being exported to stay quiet.
+        """
         execution_id = "exec_789"
         log_data = {"message": "Test"}
         batch = [(execution_id, log_data)]
@@ -105,6 +111,9 @@ class TestPersistExecutionLog:
         assert mock_logger.error.called
         # Database should still close, but commit shouldn't happen after error
         assert mock_db.close.called
+        # Operators are alerted about the dropped batch (and no live alert
+        # escaped the test suite).
+        assert mock_notify.called
 
     @patch("preloop.services.websocket_manager.get_db")
     def test_sync_batch_insert_logs_closes_db_on_success(self, mock_get_db):
@@ -263,6 +272,57 @@ class TestBroadcastLoggingVolume:
 
         assert mock_logger.info.called
         assert "matching_connections=1" in mock_logger.info.call_args.args[0]
+
+    async def test_high_frequency_broadcast_skips_scan_when_debug_disabled(
+        self, manager
+    ):
+        """The hot path must not scan every connection just to pick a log level.
+
+        ``agent_log_line`` is the highest-volume message type. When DEBUG is
+        off (production), the count is never rendered, so paying an
+        O(connections) scan per message is pure waste.
+        """
+
+        class CountingAccounts(dict):
+            """Dict that records how often the full set of values is scanned."""
+
+            scans = 0
+
+            def values(self):  # type: ignore[override]
+                type(self).scans += 1
+                return super().values()
+
+        manager.connection_accounts = CountingAccounts({"conn-1": "acct-1"})
+
+        with patch("preloop.services.websocket_manager.logger") as mock_logger:
+            mock_logger.isEnabledFor.return_value = False
+            await manager.broadcast_json(
+                {"type": "agent_log_line"}, account_id="acct-1"
+            )
+
+        assert CountingAccounts.scans == 0
+        assert not mock_logger.debug.called
+        assert not mock_logger.info.called
+
+    async def test_high_frequency_broadcast_still_logs_count_when_debug_on(
+        self, manager
+    ):
+        """With DEBUG enabled the count is still reported accurately."""
+        ws = AsyncMock()
+        manager.active_connections["conn-1"] = ws
+        manager.connection_accounts["conn-1"] = "acct-1"
+
+        with patch("preloop.services.websocket_manager.logger") as mock_logger:
+            mock_logger.isEnabledFor.return_value = True
+            await manager.broadcast_json(
+                {"type": "agent_log_line"}, account_id="acct-1"
+            )
+
+        assert mock_logger.debug.called
+        assert any(
+            "1 connection(s)" in call.args[0]
+            for call in mock_logger.debug.call_args_list
+        )
 
 
 class TestWebSocketManager:
@@ -531,9 +591,17 @@ class TestNatsConsumer:
         # Verify error was logged
         assert mock_logger.error.called
 
+    @patch("preloop.services.websocket_manager.notify_admins")
     @patch("preloop.services.websocket_manager.get_task_publisher")
-    async def test_nats_consumer_handles_invalid_json(self, mock_get_publisher):
-        """Test NATS consumer handles invalid JSON messages."""
+    async def test_nats_consumer_handles_invalid_json(
+        self, mock_get_publisher, mock_notify
+    ):
+        """Test NATS consumer handles invalid JSON messages.
+
+        The malformed-message path also alerts admins (on a worker thread), so
+        ``notify_admins`` is patched here for the same reason as the log-drop
+        path: tests must never emit real notifications.
+        """
         manager = WebSocketManager()
 
         # Mock NATS client
@@ -566,6 +634,10 @@ class TestNatsConsumer:
         with patch("preloop.services.websocket_manager.logger") as mock_logger:
             await captured_handler(mock_msg)
             assert mock_logger.warning.called
+
+        # The alert is dispatched to a worker thread; give it a moment to land.
+        await asyncio.sleep(0.1)
+        assert mock_notify.called
 
         # Clean up
         consumer_task.cancel()
