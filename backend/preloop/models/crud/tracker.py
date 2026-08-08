@@ -1,15 +1,62 @@
 """CRUD operations for Tracker model."""
 
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from ..models.tracker import Tracker, TrackerType
 from .base import CRUDBase
 
 TRACKER_API_KEY_SECRET_KIND = "tracker_api_key"
 TRACKER_WEBHOOK_SECRET_KIND = "tracker_webhook_secret"
+
+# Key under Tracker.meta_data holding per-project unknown-project failure
+# state: {"<project_identifier>": {"attempts": int, "last_attempt_at": iso,
+# "first_seen_at": iso, "last_seen_at": iso, "degraded": bool}}.
+UNKNOWN_PROJECTS_META_KEY = "unknown_projects"
+
+# Backoff schedule for re-syncing a tracker after a webhook named a project we
+# do not know about. Doubles per attempt: 5m, 10m, 20m, 40m, capped at 1h.
+UNKNOWN_PROJECT_BASE_BACKOFF = timedelta(minutes=5)
+UNKNOWN_PROJECT_MAX_BACKOFF = timedelta(hours=1)
+
+# After this many failed sync attempts the project is considered degraded and
+# we stop triggering syncs, surfacing it to the user instead.
+UNKNOWN_PROJECT_ATTEMPTS_BEFORE_DEGRADED = 5
+
+
+@dataclass(frozen=True)
+class UnknownProjectState:
+    """Outcome of recording a webhook for a project we cannot resolve.
+
+    Attributes:
+        should_sync: True when the caller should trigger a tracker sync now.
+        attempts: Number of sync attempts made for this project so far.
+        degraded: True once retries are exhausted and the project needs user
+            attention (repo outside the integration's scope).
+        retry_after_seconds: Backoff before the next attempt is due.
+    """
+
+    should_sync: bool
+    attempts: int
+    degraded: bool
+    retry_after_seconds: int
+
+
+def _parse_timestamp(raw: Any) -> Optional[datetime]:
+    """Parse an ISO timestamp from meta_data, tolerating junk/naive values."""
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(raw))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def store_tracker_secret(
@@ -244,6 +291,112 @@ class CRUDTracker(CRUDBase[Tracker]):
             db.commit()
             db.refresh(tracker)
         return tracker
+
+    def record_unknown_project(
+        self,
+        db: Session,
+        *,
+        id: str,
+        project_identifier: str,
+        now: Optional[datetime] = None,
+    ) -> UnknownProjectState:
+        """Record a webhook referencing a project we do not have, with backoff.
+
+        A webhook can name a project the sync has never imported (repo outside
+        the GitHub App's selected-repositories scope, or excluded by a
+        ``TrackerScopeRule``). Re-syncing on every such event is useless work:
+        the scan cannot return a repo the installation cannot see, so the next
+        webhook fails the same lookup and triggers another scan.
+
+        This tracks one failure counter per (tracker, project) in
+        ``Tracker.meta_data`` and returns whether the caller should trigger a
+        sync now. Retries use exponential backoff
+        (:data:`UNKNOWN_PROJECT_BASE_BACKOFF` doubling up to
+        :data:`UNKNOWN_PROJECT_MAX_BACKOFF`); after
+        :data:`UNKNOWN_PROJECT_ATTEMPTS_BEFORE_DEGRADED` failed attempts the
+        project is marked degraded so it is surfaced to the user instead of
+        being retried forever.
+
+        Args:
+            db: Database session.
+            id: Tracker id.
+            project_identifier: Provider-side project/repo id from the webhook.
+            now: Injectable clock for tests.
+
+        Returns:
+            An :class:`UnknownProjectState` describing whether to sync, the
+            attempt count, and whether the project is degraded.
+        """
+        current_time = now or datetime.now(timezone.utc)
+        tracker = self.get(db, id=id)
+        if tracker is None:
+            return UnknownProjectState(
+                should_sync=False, attempts=0, degraded=False, retry_after_seconds=0
+            )
+
+        meta_data = dict(tracker.meta_data or {})
+        unknown_projects = dict(meta_data.get(UNKNOWN_PROJECTS_META_KEY) or {})
+        entry = dict(unknown_projects.get(project_identifier) or {})
+
+        attempts = int(entry.get("attempts") or 0)
+        last_attempt = _parse_timestamp(entry.get("last_attempt_at"))
+
+        backoff = min(
+            UNKNOWN_PROJECT_BASE_BACKOFF * (2 ** max(attempts - 1, 0)),
+            UNKNOWN_PROJECT_MAX_BACKOFF,
+        )
+        due = last_attempt is None or (current_time - last_attempt) >= backoff
+        degraded = attempts >= UNKNOWN_PROJECT_ATTEMPTS_BEFORE_DEGRADED
+        should_sync = due and not degraded
+
+        if should_sync:
+            attempts += 1
+            entry["attempts"] = attempts
+            entry["last_attempt_at"] = current_time.isoformat()
+            entry.setdefault("first_seen_at", current_time.isoformat())
+            degraded = attempts >= UNKNOWN_PROJECT_ATTEMPTS_BEFORE_DEGRADED
+
+        entry["degraded"] = degraded
+        entry["last_seen_at"] = current_time.isoformat()
+        unknown_projects[project_identifier] = entry
+        meta_data[UNKNOWN_PROJECTS_META_KEY] = unknown_projects
+        tracker.meta_data = meta_data
+        flag_modified(tracker, "meta_data")
+        tracker.last_updated = current_time
+        db.add(tracker)
+        db.commit()
+
+        next_backoff = min(
+            UNKNOWN_PROJECT_BASE_BACKOFF * (2 ** max(attempts - 1, 0)),
+            UNKNOWN_PROJECT_MAX_BACKOFF,
+        )
+        return UnknownProjectState(
+            should_sync=should_sync,
+            attempts=attempts,
+            degraded=degraded,
+            retry_after_seconds=int(next_backoff.total_seconds()),
+        )
+
+    def clear_unknown_project(
+        self, db: Session, *, id: str, project_identifier: str
+    ) -> None:
+        """Drop the unknown-project failure state once the project resolves."""
+        tracker = self.get(db, id=id)
+        if tracker is None:
+            return
+        meta_data = dict(tracker.meta_data or {})
+        unknown_projects = dict(meta_data.get(UNKNOWN_PROJECTS_META_KEY) or {})
+        if project_identifier not in unknown_projects:
+            return
+        unknown_projects.pop(project_identifier)
+        if unknown_projects:
+            meta_data[UNKNOWN_PROJECTS_META_KEY] = unknown_projects
+        else:
+            meta_data.pop(UNKNOWN_PROJECTS_META_KEY, None)
+        tracker.meta_data = meta_data
+        flag_modified(tracker, "meta_data")
+        db.add(tracker)
+        db.commit()
 
     def deactivate(self, db: Session, *, id: str) -> Optional[Tracker]:
         """Deactivate a tracker."""

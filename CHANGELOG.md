@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Tracker sync loop on out-of-scope repositories**: a webhook naming a
+  project we never imported triggered a full forced tracker re-sync on *every*
+  event, and logged a "Project ... not found. Triggering a sync" warning plus
+  an admin notification each time. When the repository is outside the
+  integration's scope (a GitHub App installed on *selected repositories*, or an
+  `EXCLUDE` scope rule) the sync can never resolve it, so every subsequent
+  webhook repeated the whole cycle — burning GitHub API calls and admin noise
+  indefinitely. Unknown projects are now tracked per (tracker, project) with
+  exponential backoff (5m doubling to a 1h cap) and are marked **degraded**
+  after 5 failed attempts, at which point syncs stop entirely and the project
+  is surfaced to the user via the new `degraded_projects` field on the tracker
+  API response. The log line is now actionable (account, tracker, project,
+  attempt count and the likely cause) and the per-event admin notification is
+  gone. State clears automatically when the project later syncs successfully.
 - **Database connection pool exhaustion and execution-log data loss**: a
   production gateway pod exhausted its SQLAlchemy pool
   (`QueuePool limit of size 3 overflow 7 reached`) under PR-reviewer load,

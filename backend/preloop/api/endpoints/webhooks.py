@@ -13,6 +13,7 @@ from preloop.models.crud import (
     crud_issue_embedding,
     crud_organization,
     crud_project,
+    crud_tracker,
 )
 from preloop.models.db.session import get_db_session
 from preloop.models.models.tracker import Tracker
@@ -485,19 +486,51 @@ async def receive_webhook(
 
             project = crud_project.get_by_identifier(db, identifier=project_identifier)
             if not project:
+                # The webhook names a project we never imported. Usually the
+                # repo is outside the integration's scope (GitHub App installed
+                # on selected repositories only, or a TrackerScopeRule excludes
+                # it), in which case a sync can never resolve it -- so retry
+                # with backoff and eventually mark it degraded rather than
+                # re-scanning on every event (#tracker-sync-loop).
+                state = crud_tracker.record_unknown_project(
+                    db,
+                    id=str(resolved_tracker.id),
+                    project_identifier=project_identifier,
+                )
+                context = (
+                    f"project={project_identifier} tracker={resolved_tracker.id} "
+                    f"tracker_type={tracker_type} account={resolved_tracker.account_id} "
+                    f"attempts={state.attempts}"
+                )
+                if state.degraded:
+                    logger.warning(
+                        f"Unknown project on webhook; tracker marked degraded, not syncing. {context}. "
+                        "Reason: the project is not visible to this integration after repeated syncs "
+                        "(check that the repository is in the integration's selected repositories and "
+                        "not excluded by a scope rule)."
+                    )
+                    return {
+                        "status": "accepted",
+                        "message": "Project not found; tracker needs attention.",
+                        "degraded": True,
+                    }
+                if not state.should_sync:
+                    logger.info(
+                        f"Unknown project on webhook; sync suppressed by backoff "
+                        f"(retry_after={state.retry_after_seconds}s). {context}."
+                    )
+                    return {
+                        "status": "accepted",
+                        "message": "Project not found; sync backoff in effect.",
+                    }
                 logger.warning(
-                    f"Project with identifier {project_identifier} not found. Triggering a sync for tracker {resolved_tracker.id}."
+                    f"Unknown project on webhook; triggering sync. {context}. "
+                    "Reason: no project row matches the webhook's project identifier."
                 )
                 await task_publisher.publish_task(
                     "poll_tracker",
                     tracker_id=resolved_tracker.id,
                     force_update=True,
-                )
-                # Notify admins
-                await task_publisher.publish_task(
-                    "notify_admins",
-                    subject="Project not found",
-                    message=f"Project with identifier {project_identifier} not found. Triggering a sync for tracker {resolved_tracker.id}.",
                 )
                 return {
                     "status": "accepted",
