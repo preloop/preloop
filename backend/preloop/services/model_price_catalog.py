@@ -28,8 +28,9 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -63,19 +64,98 @@ OPENROUTER_MODELS_URL = os.getenv(
 )
 _OPENROUTER_PREFIX = "openrouter/"
 
-_openrouter_map: Optional[Dict[str, Any]] = None
-_openrouter_fetched_at: float = 0.0
-_openrouter_failed_at: float = 0.0
-
 _lock = threading.Lock()
 _loaded = False
 _metadata: Optional[Dict[str, Any]] = None
 
 # Live-lookup state (per process). All guarded by _lookup_lock.
 _lookup_lock = threading.Lock()
-_remote_map: Optional[Dict[str, Any]] = None
-_remote_fetched_at: float = 0.0
-_remote_failed_at: float = 0.0
+
+
+@dataclass
+class _PriceMapCache:
+    """In-process cache for one remote price map, with failure backoff.
+
+    Both price sources (litellm's published map and OpenRouter's model list)
+    follow the same rules: serve the cached map for ``_REMOTE_TTL_SECONDS``,
+    and after a failed download refuse to retry for
+    ``_REMOTE_FAILURE_BACKOFF_SECONDS`` so an unreachable source cannot be
+    hammered once per unpriced request. All state is guarded by the module's
+    ``_lookup_lock``.
+
+    Attributes:
+        label: Human-readable source name, used in log messages.
+    """
+
+    label: str
+    _map: Optional[Dict[str, Any]] = field(default=None, repr=False)
+    _fetched_at: float = field(default=0.0, repr=False)
+    _failed_at: float = field(default=0.0, repr=False)
+
+    def get(
+        self, fetch: Callable[[], Optional[Dict[str, Any]]]
+    ) -> Optional[Dict[str, Any]]:
+        """Return the cached map, downloading it via ``fetch`` when stale.
+
+        Args:
+            fetch: Callable performing the actual download. It must return
+                None for any failure (network, validation, empty payload);
+                that outcome starts the failure backoff window.
+
+        Returns:
+            The cached or freshly downloaded map, or None when a backoff is in
+            effect or the download failed.
+        """
+        now = time.monotonic()
+        with _lookup_lock:
+            if self._map is not None and now - self._fetched_at < _REMOTE_TTL_SECONDS:
+                return self._map
+            if self._failed_at and now - self._failed_at < (
+                _REMOTE_FAILURE_BACKOFF_SECONDS
+            ):
+                return None
+
+        fetched = fetch()
+        if fetched is None:
+            self.mark_failed()
+            return None
+        self.set(fetched)
+        return fetched
+
+    def set(self, price_map: Dict[str, Any]) -> None:
+        """Store a freshly downloaded map and clear any failure backoff."""
+        with _lookup_lock:
+            self._map = price_map
+            self._fetched_at = time.monotonic()
+            self._failed_at = 0.0
+
+    def mark_failed(self) -> None:
+        """Start the failure backoff window after a failed download."""
+        with _lookup_lock:
+            self._failed_at = time.monotonic()
+
+    def reset(self) -> None:
+        """Drop the cached map and any backoff state (test isolation only)."""
+        with _lookup_lock:
+            self._map = None
+            self._fetched_at = 0.0
+            self._failed_at = 0.0
+
+    def snapshot(self) -> Dict[str, Any]:
+        """Return the cache's current state for tests and diagnostics."""
+        with _lookup_lock:
+            return {
+                "map": self._map,
+                "fetched_at": self._fetched_at,
+                "failed_at": self._failed_at,
+            }
+
+
+# litellm's published map; the primary source for every model.
+_remote_cache = _PriceMapCache("litellm")
+# OpenRouter's own model list; secondary source for marketplace-routed models.
+_openrouter_cache = _PriceMapCache("openrouter")
+
 # candidate name -> monotonic time of the failed lookup (negative cache).
 _negative_cache: Dict[str, float] = {}
 # candidate names with a lookup currently in flight.
@@ -176,34 +256,26 @@ def catalog_metadata() -> Optional[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def _fetch_remote_price_map() -> Optional[Dict[str, Any]]:
-    """Download the upstream price map, honoring cache and failure backoff.
+def _download_remote_price_map() -> Optional[Dict[str, Any]]:
+    """Download litellm's published price map.
 
-    Returns the cached/downloaded map, or None while a failure backoff is in
-    effect or the download fails. When ``MODEL_PRICE_MAP_SHA256`` is set, the
-    response body must match that digest or the fetch is rejected.
+    When ``MODEL_PRICE_MAP_SHA256`` is set the response body must match that
+    digest or the fetch is rejected, so a compromised upstream revision cannot
+    silently change pricing.
+
+    Returns:
+        The decoded map, or None on any failure (the caller starts the
+        failure backoff).
     """
-    global _remote_map, _remote_fetched_at, _remote_failed_at
-    now = time.monotonic()
-    with _lookup_lock:
-        if _remote_map is not None and now - _remote_fetched_at < _REMOTE_TTL_SECONDS:
-            return _remote_map
-        if _remote_failed_at and now - _remote_failed_at < (
-            _REMOTE_FAILURE_BACKOFF_SECONDS
-        ):
-            return None
-
     try:
         import httpx
     except ImportError:
         # Optional dependency for live lookups; do not retry a missing module.
         logger.warning("httpx is unavailable; skipping live model price lookup")
-        with _lookup_lock:
-            _remote_failed_at = time.monotonic()
         return None
 
-    last_error: Optional[BaseException] = None
-    for attempt in range(max(1, _REMOTE_FETCH_RETRIES + 1)):
+    attempts = max(1, _REMOTE_FETCH_RETRIES + 1)
+    for attempt in range(attempts):
         try:
             response = httpx.get(REMOTE_PRICE_MAP_URL, timeout=30.0)
             response.raise_for_status()
@@ -216,31 +288,25 @@ def _fetch_remote_price_map() -> Optional[Dict[str, Any]]:
                         f"(expected {REMOTE_PRICE_MAP_SHA256}, got {digest})"
                     )
             fetched = response.json()
-            last_error = None
-            break
-        except Exception as exc:  # noqa: BLE001 - network is best-effort here
-            last_error = exc
+            return fetched if isinstance(fetched, dict) else None
+        except Exception:  # noqa: BLE001 - network is best-effort here
             logger.warning(
                 "Live model price map download failed (attempt %s/%s)",
                 attempt + 1,
-                max(1, _REMOTE_FETCH_RETRIES + 1),
+                attempts,
                 exc_info=True,
             )
-            fetched = None
-    if last_error is not None or fetched is None:
-        with _lookup_lock:
-            _remote_failed_at = time.monotonic()
-        return None
+    return None
 
-    if not isinstance(fetched, dict):
-        with _lookup_lock:
-            _remote_failed_at = time.monotonic()
-        return None
-    with _lookup_lock:
-        _remote_map = fetched
-        _remote_fetched_at = time.monotonic()
-        _remote_failed_at = 0.0
-    return fetched
+
+def _fetch_remote_price_map() -> Optional[Dict[str, Any]]:
+    """Return litellm's price map, honoring cache and failure backoff.
+
+    Returns:
+        The cached/downloaded map, or None while a failure backoff is in
+        effect or the download fails.
+    """
+    return _remote_cache.get(_download_remote_price_map)
 
 
 def _positive_price(value: Any) -> Optional[float]:
@@ -313,32 +379,18 @@ def _openrouter_entries_from_payload(payload: Any) -> Dict[str, Any]:
     return entries
 
 
-def _fetch_openrouter_price_map() -> Optional[Dict[str, Any]]:
-    """Download OpenRouter's model price list, with cache and failure backoff.
+def _download_openrouter_price_map() -> Optional[Dict[str, Any]]:
+    """Download OpenRouter's model list and convert it to price entries.
 
     Returns:
-        Mapping of ``openrouter/<model id>`` to price entries, or None when a
-        backoff is in effect or the download fails.
+        Mapping of ``openrouter/<model id>`` to price entries, or None on any
+        failure or when the payload yields no usable prices (the caller starts
+        the failure backoff).
     """
-    global _openrouter_map, _openrouter_fetched_at, _openrouter_failed_at
-    now = time.monotonic()
-    with _lookup_lock:
-        if (
-            _openrouter_map is not None
-            and now - _openrouter_fetched_at < _REMOTE_TTL_SECONDS
-        ):
-            return _openrouter_map
-        if _openrouter_failed_at and now - _openrouter_failed_at < (
-            _REMOTE_FAILURE_BACKOFF_SECONDS
-        ):
-            return None
-
     try:
         import httpx
     except ImportError:
         logger.warning("httpx is unavailable; skipping OpenRouter price lookup")
-        with _lookup_lock:
-            _openrouter_failed_at = time.monotonic()
         return None
 
     try:
@@ -347,20 +399,19 @@ def _fetch_openrouter_price_map() -> Optional[Dict[str, Any]]:
         entries = _openrouter_entries_from_payload(response.json())
     except Exception:  # noqa: BLE001 - network is best-effort here
         logger.warning("OpenRouter price list download failed", exc_info=True)
-        with _lookup_lock:
-            _openrouter_failed_at = time.monotonic()
         return None
 
-    if not entries:
-        with _lookup_lock:
-            _openrouter_failed_at = time.monotonic()
-        return None
+    return entries or None
 
-    with _lookup_lock:
-        _openrouter_map = entries
-        _openrouter_fetched_at = time.monotonic()
-        _openrouter_failed_at = 0.0
-    return entries
+
+def _fetch_openrouter_price_map() -> Optional[Dict[str, Any]]:
+    """Return OpenRouter's price map, with cache and failure backoff.
+
+    Returns:
+        Mapping of ``openrouter/<model id>`` to price entries, or None when a
+        backoff is in effect or the download fails.
+    """
+    return _openrouter_cache.get(_download_openrouter_price_map)
 
 
 def lookup_model_price_now(candidates: List[str]) -> Optional[str]:
@@ -505,24 +556,17 @@ def _reprice_usage_row(api_usage_id: str) -> None:
 
 def reset_lookup_state_for_tests() -> None:
     """Clear all live-lookup caches (test isolation only)."""
-    global _remote_map, _remote_fetched_at, _remote_failed_at
-    global _openrouter_map, _openrouter_fetched_at, _openrouter_failed_at
+    _remote_cache.reset()
+    _openrouter_cache.reset()
     with _lookup_lock:
-        _remote_map = None
-        _remote_fetched_at = 0.0
-        _remote_failed_at = 0.0
-        _openrouter_map = None
-        _openrouter_fetched_at = 0.0
-        _openrouter_failed_at = 0.0
         _negative_cache.clear()
         _pending_lookups.clear()
 
 
 def _module_state_for_tests() -> dict[str, Any]:
-    """Expose module cache globals for tests and static analysis."""
+    """Expose module cache state for tests and diagnostics."""
     return {
         "loaded": _loaded,
-        "remote_map": _remote_map,
-        "remote_fetched_at": _remote_fetched_at,
-        "remote_failed_at": _remote_failed_at,
+        "remote": _remote_cache.snapshot(),
+        "openrouter": _openrouter_cache.snapshot(),
     }
