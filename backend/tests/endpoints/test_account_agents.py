@@ -1458,6 +1458,72 @@ def test_account_agent_resume_does_not_revive_operator_revoked_credentials(
     assert durable_key.is_active is False
 
 
+def test_account_agent_resume_does_not_revive_expired_credentials(
+    client, db_session, test_user
+):
+    """Healing on resume must never reactivate a key that has expired.
+
+    The expiry filter runs in SQL, so this also guards against the filter
+    silently not matching the column's naive-UTC storage.
+    """
+    from datetime import timedelta
+
+    from preloop.models.crud import crud_api_key
+
+    agent_id, durable_token = _seed_pauseable_agent(
+        client, db_session, test_user, source_id="expired-credential-host"
+    )
+    agent = crud_managed_agent.get_for_account(
+        db_session, account_id=str(test_user.account_id), agent_id=agent_id
+    )
+    assert agent is not None
+
+    # Recreate a legacy-bricked agent (the only state that has keys to heal)
+    # whose durable key has since expired.
+    agent.lifecycle_state = "suspended"
+    db_session.add(agent)
+    crud_api_key.deactivate_runtime_keys_for_managed_agent(
+        db_session,
+        account_id=test_user.account_id,
+        managed_agent_id=agent_id,
+        commit=False,
+    )
+    durable_key = crud_api_key.get_by_key(db_session, key=durable_token)
+    assert durable_key is not None
+    durable_key.expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=1)
+    db_session.add(durable_key)
+    db_session.flush()
+    assert durable_key.is_active is False
+
+    resume_response = client.patch(
+        f"/api/v1/agents/{agent_id}",
+        json={"lifecycle_action": "resume"},
+    )
+    assert resume_response.status_code == 200
+
+    db_session.refresh(durable_key)
+    assert durable_key.is_expired is True
+    assert durable_key.is_active is False
+
+
+def test_managed_agent_update_operator_state_rejects_unknown_lifecycle_state(
+    db_session, test_user
+):
+    """The CRUD layer refuses a lifecycle state the rest of the system cannot read."""
+    import pytest as _pytest
+
+    from preloop.models.crud import crud_managed_agent
+
+    with _pytest.raises(ValueError, match="Invalid managed agent lifecycle_state"):
+        crud_managed_agent.update_operator_state(
+            db_session,
+            account_id=str(test_user.account_id),
+            agent_id=str(uuid4()),
+            lifecycle_state="bypass",
+            commit=False,
+        )
+
+
 def test_account_agent_decommission_still_revokes_credentials(
     client, db_session, test_user
 ):

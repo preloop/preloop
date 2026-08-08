@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any, Optional
 
@@ -22,6 +23,8 @@ from ..models.api_usage import ApiUsage
 from ..models.flow import Flow
 from ..models.runtime_session import RuntimeSession
 from .base import CRUDBase
+
+logger = logging.getLogger(__name__)
 
 _summary_columns_cache: dict[int, bool] = {}
 
@@ -339,11 +342,21 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             session_source_type=session_source_type,
             session_source_id=session_source_id,
         )
-        if db_obj is None or db_obj.ended_at is None:
+        if db_obj is None:
+            logger.info(
+                "No runtime session to reopen for %s/%s (account %s)",
+                session_source_type,
+                session_source_id,
+                account_id,
+            )
+            return None
+        if db_obj.ended_at is None:
+            # Already open: resuming an agent that was never session-ended.
             return db_obj
         now = datetime.now(UTC)
         db_obj.ended_at = None
-        db_obj.started_at = db_obj.started_at or now
+        # started_at is NOT NULL, so it is left alone: reopening continues the
+        # original session rather than pretending it began now.
         db_obj.last_activity_at = now
         db.add(db_obj)
         if commit:

@@ -1989,13 +1989,18 @@ async def update_account_managed_agent(
     db: Session = Depends(get_db_session),
 ):
     """Update managed-agent ownership or lifecycle controls."""
+    # Locked for the whole handler: ``lifecycle_state`` is read here and the
+    # credential restore/revoke decision below is made from that read, so a
+    # concurrent operator action (a resume racing a decommission) must not
+    # land in between and leave keys reactivated on a decommissioned agent.
     agent = crud_managed_agent.get_for_account(
-        db, account_id=str(account.id), agent_id=agent_id
+        db, account_id=str(account.id), agent_id=agent_id, for_update=True
     )
     if agent is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Managed agent not found"
         )
+    prior_lifecycle_state = agent.lifecycle_state
 
     set_owner = "owner_user_id" in update.model_fields_set
     set_display_name = "display_name" in update.model_fields_set
@@ -2040,13 +2045,12 @@ async def update_account_managed_agent(
     # usage row was written. Hard credential revocation now belongs to the
     # terminal states only: decommission (offboard) and delete.
     should_revoke_runtime_access = lifecycle_state == "decommissioned"
-    revoke_timestamp = datetime.now(UTC) if should_revoke_runtime_access else None
     # Resume/reenroll heal agents whose keys a previous release revoked on
     # suspend, and un-archive decommissioned agents. Restoration is narrow
     # (see crud_api_key.reactivate_runtime_keys_for_managed_agent): only this
     # agent's own unexpired, non-operator-revoked keys.
     should_restore_runtime_access = (
-        lifecycle_state == "active" and agent.lifecycle_state != "active"
+        lifecycle_state == "active" and prior_lifecycle_state != "active"
     )
     updated = crud_managed_agent.update_operator_state(
         db,
@@ -2066,7 +2070,8 @@ async def update_account_managed_agent(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Managed agent not found"
         )
-    if should_revoke_runtime_access and revoke_timestamp is not None:
+    if should_revoke_runtime_access:
+        revoke_timestamp = datetime.now(UTC)
         # Revoke only this agent's keys (plus legacy keys with no agent
         # binding). Several registry entries can share one runtime principal,
         # and a principal-wide sweep would also kill sibling agents' durable

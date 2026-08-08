@@ -165,3 +165,39 @@ def test_get_by_source_breaks_ties_by_recency(db_session, test_user):
 
     assert resolved is not None
     assert str(resolved.id) == str(newest.id)
+
+
+def test_get_by_source_ranks_unknown_lifecycle_last(db_session, test_user):
+    """An unrecognised lifecycle state never outranks a state we understand.
+
+    A row written outside the API (a direct DB mutation, or a state added by a
+    future release and read by an older one) must not shadow a decommissioned
+    sibling, because ranking it higher would resolve token issuance to a row
+    whose semantics this code does not know.
+    """
+    _drop_source_unique_constraint(db_session)
+    base = datetime.now(UTC).replace(tzinfo=None)
+    decommissioned = _make_agent(
+        db_session,
+        test_user,
+        source_id="unknown-state-host",
+        lifecycle_state="decommissioned",
+        created_at=base - timedelta(days=1),
+    )
+    _make_agent(
+        db_session,
+        test_user,
+        source_id="unknown-state-host",
+        lifecycle_state="bypass",
+        created_at=base,
+    )
+
+    resolved = crud_managed_agent.get_by_source(
+        db_session,
+        account_id=str(test_user.account_id),
+        session_source_type="claude_code",
+        session_source_id="unknown-state-host",
+    )
+
+    assert resolved is not None
+    assert str(resolved.id) == str(decommissioned.id)
