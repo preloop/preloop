@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Backfilled costs stayed $0 for models missing from the price snapshot**:
+  `reprice_unpriced_usage.py` recomputed every row against the locally bundled
+  price catalog only. A row is recorded `unpriced` precisely when the model was
+  absent from that snapshot, so the backfill re-derived the same "unpriced"
+  result and reported `updated=0` — those rows could never become priceable by
+  repricing, and the account's dashboard kept showing ~$0 for real usage. The
+  gateway already resolves this at record time via the live upstream price
+  lookup; repricing now performs the same lookup (once per model, not per row,
+  and never fatal when the upstream source is unavailable).
+
 - **Tracker sync loop on out-of-scope repositories**: a webhook naming a
   project we never imported triggered a full forced tracker re-sync on *every*
   event, and logged a "Project ... not found. Triggering a sync" warning plus

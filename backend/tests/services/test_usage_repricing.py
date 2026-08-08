@@ -4,6 +4,8 @@ from datetime import datetime, timedelta, timezone
 
 from preloop.models.crud import crud_ai_model, crud_api_usage
 from preloop.models.models.budget import BudgetSpendActivity
+from preloop.services import usage_repricing
+from preloop.services.model_pricing import CostEstimate
 from preloop.services.usage_repricing import reprice_gateway_usage
 
 
@@ -228,3 +230,89 @@ def test_reprice_single_row_after_live_lookup(db_session, test_user):
         assert (row.meta_data or {}).get("repriced_by") == "live_price_lookup"
     finally:
         litellm.model_cost.pop("live-lookup-model-x", None)
+
+
+def test_reprice_consults_live_lookup_for_models_missing_from_the_catalog(
+    db_session, test_user, monkeypatch
+):
+    """A model absent from the local snapshot is priced via the live lookup.
+
+    Without this, a backfill re-derives "unpriced" for every such row and
+    reports updated=0, so the rows can never become priceable by repricing.
+    """
+    ai_model = _create_model(db_session, test_user)
+    _log_unpriced_row(db_session, test_user, ai_model)
+
+    calls = []
+
+    def _fake_lookup(candidates):
+        calls.append(list(candidates))
+        # Simulate upstream registration making the model priceable.
+        monkeypatch.setattr(
+            usage_repricing,
+            "estimate_ai_model_usage_cost_detailed",
+            lambda *a, **k: CostEstimate(cost=0.25, source="catalog"),
+        )
+        return candidates[0]
+
+    monkeypatch.setattr(
+        usage_repricing,
+        "estimate_ai_model_usage_cost_detailed",
+        lambda *a, **k: CostEstimate(cost=None, source="unpriced"),
+    )
+    monkeypatch.setattr(usage_repricing, "lookup_model_price_now", _fake_lookup)
+
+    start, end = _window()
+    result = reprice_gateway_usage(
+        db_session, account_id=str(test_user.account_id), start=start, end=end
+    )
+
+    assert calls, "an unpriced row must trigger the live price lookup"
+    assert result.rows_updated == 1
+    assert result.cost_after == 0.25
+
+
+def test_reprice_looks_up_each_model_once_not_once_per_row(
+    db_session, test_user, monkeypatch
+):
+    """The lookup is cached per model so a large backfill stays cheap."""
+    ai_model = _create_model(db_session, test_user)
+    for _ in range(5):
+        _log_unpriced_row(db_session, test_user, ai_model)
+
+    calls = []
+    monkeypatch.setattr(
+        usage_repricing,
+        "estimate_ai_model_usage_cost_detailed",
+        lambda *a, **k: CostEstimate(cost=None, source="unpriced"),
+    )
+    monkeypatch.setattr(
+        usage_repricing,
+        "lookup_model_price_now",
+        lambda candidates: calls.append(1) or None,
+    )
+
+    start, end = _window()
+    reprice_gateway_usage(
+        db_session, account_id=str(test_user.account_id), start=start, end=end
+    )
+
+    assert len(calls) == 1, f"expected one lookup for one model, got {len(calls)}"
+
+
+def test_reprice_survives_a_failing_live_lookup(db_session, test_user, monkeypatch):
+    """A lookup error must not abort the backfill."""
+    ai_model = _create_model(db_session, test_user)
+    _log_unpriced_row(db_session, test_user, ai_model)
+
+    def _boom(candidates):
+        raise RuntimeError("upstream down")
+
+    monkeypatch.setattr(usage_repricing, "lookup_model_price_now", _boom)
+
+    start, end = _window()
+    result = reprice_gateway_usage(
+        db_session, account_id=str(test_user.account_id), start=start, end=end
+    )
+
+    assert result.rows_examined == 1

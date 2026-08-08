@@ -25,7 +25,11 @@ from sqlalchemy.orm import Session
 
 from preloop.models.crud import crud_ai_model, crud_api_usage
 from preloop.models.models.ai_model import AIModel
-from preloop.services.model_pricing import estimate_ai_model_usage_cost_detailed
+from preloop.services.model_price_catalog import lookup_model_price_now
+from preloop.services.model_pricing import (
+    _iter_litellm_model_candidates,
+    estimate_ai_model_usage_cost_detailed,
+)
 from preloop.services.pricing_overrides import resolve_pricing_override
 
 logger = logging.getLogger(__name__)
@@ -131,6 +135,9 @@ def reprice_gateway_usage(
     result = RepriceResult(dry_run=dry_run)
     model_cache: Dict[str, Optional[AIModel]] = {}
     override_cache: Dict[str, Optional[dict]] = {}
+    # Models already offered to the live upstream lookup, so a backfill over
+    # thousands of rows performs at most one lookup per model, not per row.
+    lookup_attempted: set[str] = set()
     repriced_at = datetime.now(timezone.utc).isoformat()
     pending_updates = 0
 
@@ -178,14 +185,38 @@ def reprice_gateway_usage(
         usage_details = meta.get("usage_details")
         usage_details = usage_details if isinstance(usage_details, dict) else None
 
-        estimate = estimate_ai_model_usage_cost_detailed(
-            ai_model,
-            prompt_tokens=int(row.prompt_tokens or 0),
-            completion_tokens=int(row.completion_tokens or 0),
-            total_tokens=int(row.total_tokens or 0),
-            usage_details=usage_details,
-            pricing_override=pricing_override,
-        )
+        estimate_kwargs = {
+            "prompt_tokens": int(row.prompt_tokens or 0),
+            "completion_tokens": int(row.completion_tokens or 0),
+            "total_tokens": int(row.total_tokens or 0),
+            "usage_details": usage_details,
+            "pricing_override": pricing_override,
+        }
+        estimate = estimate_ai_model_usage_cost_detailed(ai_model, **estimate_kwargs)
+
+        # A row is recorded ``unpriced`` precisely when the model was missing
+        # from the local price snapshot, and the snapshot ships frozen at
+        # build time. Without consulting the live upstream map here, a
+        # backfill re-derives the same "unpriced" for every such row and
+        # reports updated=0 — the model can never become priceable by
+        # repricing alone. The gateway already resolves this at record time
+        # via schedule_price_lookup; this is the same lookup, run
+        # synchronously because the operator is waiting on the result.
+        # Registration is process-wide, so retrying the estimate afterwards
+        # prices this row and every later row on the same model.
+        if estimate.cost is None and model_id not in lookup_attempted:
+            lookup_attempted.add(model_id)
+            try:
+                if lookup_model_price_now(
+                    list(_iter_litellm_model_candidates(ai_model))
+                ):
+                    estimate = estimate_ai_model_usage_cost_detailed(
+                        ai_model, **estimate_kwargs
+                    )
+            except Exception:  # noqa: BLE001 - pricing must never break a backfill
+                logger.exception(
+                    "Live price lookup failed while repricing model %s", model_id
+                )
 
         unchanged = (
             estimate.cost == row.estimated_cost and estimate.source == row.cost_source
