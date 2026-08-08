@@ -88,7 +88,7 @@ def test_unknown_headed_identifier_still_gets_prefixed():
 
 # --- issue #172: OpenRouter behind provider "openai-compatible" -------------
 #
-# Alex Lennon configured provider "openai-compatible" + endpoint
+# A user configured provider "openai-compatible" with endpoint
 # https://openrouter.ai/api/v1 and got 93 upstream 502s: the vendor prefix in
 # the model id ("deepseek/...") was read as a routing instruction, so litellm
 # loaded its native DeepSeek adapter, stripped the prefix, and rewrote the

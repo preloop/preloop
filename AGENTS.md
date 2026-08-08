@@ -25,6 +25,24 @@ Use the Lit.dev framework for frontend code. If you create new web components en
 - After making changes, present them to the user for review before any git operations beyond committing locally
 - After making significant changes, consider their impact on README.md and ARCHITECTURE.md and update these files accordingly.
 
+## Keep sample data generic
+This repository is public, so anything written here is written for a general
+audience. In commit messages, PR and issue text, comments, docstrings,
+fixtures and changelog entries, prefer generic examples over data copied from
+a real deployment:
+
+- use `example.com` addresses and placeholder names such as `Jane Doe`
+- describe a configuration by its shape ("a user configured an
+  OpenAI-compatible provider"), not by whose it is
+- use synthetic ids in fixtures rather than real account, tracker or project
+  identifiers
+- keep infrastructure sizing (replica counts, resource limits, database
+  tuning) in deployment config and internal runbooks, not in prose
+
+Generic examples read better anyway: they describe the case under test
+instead of an anecdote the reader has no context for. Citing a public issue
+number is fine and usually more useful than restating its background.
+
 ## Code Style
 - **Formatting**: Ruff format with 88 character line length
 - **Imports**: Use isort with black profile, group stdlib/third-party/local

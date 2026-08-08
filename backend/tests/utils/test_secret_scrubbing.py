@@ -1,6 +1,6 @@
 """Tests for preloop.utils.secret_scrubbing.
 
-The samples below are the shapes Alex Lennon reported in issue #173: a tracker
+The samples below are the shapes reported in issue #173: a tracker
 PAT embedded in a git remote URL, surfacing through ``git remote -v`` output
 captured into flow execution logs.
 """
@@ -154,7 +154,7 @@ class TestFalsePositives:
         assert scrub_secrets(line) == line
 
     def test_git_author_line_is_untouched(self) -> None:
-        line = "Author: Alex Lennon <alex@example.com>"
+        line = "Author: Jane Doe <jane@example.com>"
         assert scrub_secrets(line) == line
 
     def test_ssh_remote_is_untouched(self) -> None:

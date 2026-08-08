@@ -88,7 +88,7 @@ class TestParseCursorUsageCsv:
         """Team exports carry extra columns (e.g. User) that are ignored."""
         content = (
             "Date,User,Kind,Model,Total Tokens,Cost\n"
-            "2026-07-28,alex@example.com,Usage-based,composer,500,$0.10\n"
+            "2026-07-28,user@example.com,Usage-based,composer,500,$0.10\n"
         ).encode("utf-8")
 
         result = parse_cursor_usage_csv(content)

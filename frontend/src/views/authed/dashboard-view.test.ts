@@ -549,7 +549,7 @@ describe('DashboardView', () => {
   });
 
   describe('Recent Flow Executions dismiss control (#174)', () => {
-    // Alex's failing run: a git clone error long enough to overflow the row.
+    // A real failing run: a git clone error long enough to overflow the row.
     // The URL has no break opportunity, which is what actually broke the
     // layout: it set the min-content width of the flex column.
     const LONG_ERROR =

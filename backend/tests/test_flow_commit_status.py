@@ -58,7 +58,7 @@ def account_user(db_session: Session, account: Account) -> User:
 
 @pytest.fixture
 def github_projects(db_session: Session, account: Account, account_user: User):
-    """A GitHub tracker with one org and two repos, like Alex's setup."""
+    """A GitHub tracker with one org and two repos, mirroring a real setup."""
     tracker = crud_tracker.create(
         db_session,
         obj_in={
