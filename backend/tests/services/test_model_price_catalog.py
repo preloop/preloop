@@ -192,3 +192,161 @@ def test_schedule_price_lookup_uses_bounded_executor(monkeypatch) -> None:
     assert model_price_catalog.schedule_price_lookup(ai_model=ai_model) is True
     assert len(submitted) == 1
     assert "executor-test-model" in model_price_catalog._pending_lookups
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter marketplace pricing (models absent from litellm's map)
+# ---------------------------------------------------------------------------
+
+
+def test_openrouter_map_converts_per_token_pricing() -> None:
+    """OpenRouter's per-token strings become litellm-shaped price entries.
+
+    OpenRouter publishes authoritative per-token prices as decimal strings.
+    They are converted verbatim (no unit rescaling) so a dashboard number can
+    always be traced back to the vendor's published price.
+    """
+    payload = {
+        "data": [
+            {
+                "id": "deepseek/deepseek-v4-flash-0731",
+                "pricing": {
+                    "prompt": "0.00000009",
+                    "completion": "0.00000018",
+                    "input_cache_read": "0.000000018",
+                },
+            }
+        ]
+    }
+
+    entries = model_price_catalog._openrouter_entries_from_payload(payload)
+
+    entry = entries["openrouter/deepseek/deepseek-v4-flash-0731"]
+    assert entry["input_cost_per_token"] == 9e-08
+    assert entry["output_cost_per_token"] == 1.8e-07
+    assert entry["cache_read_input_token_cost"] == 1.8e-08
+    assert entry["litellm_provider"] == "openrouter"
+
+
+def test_openrouter_map_skips_models_without_usable_prices() -> None:
+    """Zero/missing prices are not registered as a real $0 price.
+
+    A free-tier or price-less listing must stay unpriced rather than assert
+    that the model costs nothing.
+    """
+    payload = {
+        "data": [
+            {"id": "vendor/no-pricing"},
+            {"id": "vendor/zero", "pricing": {"prompt": "0", "completion": "0"}},
+            {"id": "vendor/bad", "pricing": {"prompt": "abc", "completion": "x"}},
+        ]
+    }
+
+    entries = model_price_catalog._openrouter_entries_from_payload(payload)
+
+    assert entries == {}
+
+
+def test_live_lookup_falls_back_to_openrouter_for_marketplace_models(
+    monkeypatch,
+) -> None:
+    """A model missing from litellm's map is priced from OpenRouter.
+
+    This is the exact customer-reported case: OpenRouter-routed DeepSeek usage
+    that litellm does not carry, which previously surfaced as $0.00.
+    """
+    model_price_catalog.reset_lookup_state_for_tests()
+    monkeypatch.setattr(model_price_catalog, "_fetch_remote_price_map", lambda: {})
+    monkeypatch.setattr(
+        model_price_catalog,
+        "_fetch_openrouter_price_map",
+        lambda: {
+            "openrouter/deepseek/deepseek-v4-flash-0731": {
+                "litellm_provider": "openrouter",
+                "mode": "chat",
+                "input_cost_per_token": 9e-08,
+                "output_cost_per_token": 1.8e-07,
+            }
+        },
+    )
+
+    matched = model_price_catalog.lookup_model_price_now(
+        [
+            "openrouter/deepseek/deepseek-v4-flash-0731",
+            "deepseek/deepseek-v4-flash-0731",
+        ]
+    )
+
+    assert matched == "openrouter/deepseek/deepseek-v4-flash-0731"
+    assert "openrouter/deepseek/deepseek-v4-flash-0731" in litellm.model_cost
+
+
+def test_price_map_cache_serves_within_ttl_and_refetches_after_expiry() -> None:
+    """The shared cache hits once within the TTL and refetches once stale."""
+    cache = model_price_catalog._PriceMapCache("test")
+    calls = {"count": 0}
+
+    def _fetch():
+        calls["count"] += 1
+        return {"model": {"input_cost_per_token": 1e-06}}
+
+    assert cache.get(_fetch) is not None
+    assert cache.get(_fetch) is not None
+    assert calls["count"] == 1  # second call served from cache
+
+    # Age the cache past its TTL and confirm exactly one more download.
+    cache._fetched_at -= model_price_catalog._REMOTE_TTL_SECONDS + 1
+    assert cache.get(_fetch) is not None
+    assert calls["count"] == 2
+
+
+def test_price_map_cache_backs_off_after_failure() -> None:
+    """A failed fetch suppresses the next attempt until the backoff expires."""
+    cache = model_price_catalog._PriceMapCache("test")
+    calls = {"count": 0}
+
+    def _failing_fetch():
+        calls["count"] += 1
+        return None
+
+    assert cache.get(_failing_fetch) is None
+    assert cache.get(_failing_fetch) is None
+    assert calls["count"] == 1  # second call sits out the backoff
+
+    cache._failed_at -= model_price_catalog._REMOTE_FAILURE_BACKOFF_SECONDS + 1
+    assert cache.get(_failing_fetch) is None
+    assert calls["count"] == 2
+
+
+def test_openrouter_fetch_failure_backs_off(monkeypatch) -> None:
+    """OpenRouter downloads honor the same backoff as litellm's map."""
+    model_price_catalog.reset_lookup_state_for_tests()
+    calls = {"count": 0}
+
+    class _FakeHttpx:
+        @staticmethod
+        def get(*args, **kwargs):
+            calls["count"] += 1
+            raise RuntimeError("network down")
+
+    import sys
+
+    monkeypatch.setitem(sys.modules, "httpx", _FakeHttpx)
+
+    assert model_price_catalog._fetch_openrouter_price_map() is None
+    assert model_price_catalog._fetch_openrouter_price_map() is None
+    assert calls["count"] == 1  # second call sits out backoff
+
+
+def test_reset_lookup_state_clears_both_caches() -> None:
+    """Test reset clears the litellm and OpenRouter caches together."""
+    model_price_catalog._remote_cache.set({"a": {}})
+    model_price_catalog._openrouter_cache.set({"openrouter/b": {}})
+
+    model_price_catalog.reset_lookup_state_for_tests()
+
+    state = model_price_catalog._module_state_for_tests()
+    assert state["remote"]["map"] is None
+    assert state["remote"]["failed_at"] == 0.0
+    assert state["openrouter"]["map"] is None
+    assert state["openrouter"]["failed_at"] == 0.0

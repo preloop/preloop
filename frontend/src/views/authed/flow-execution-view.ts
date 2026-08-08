@@ -1213,8 +1213,12 @@ export class FlowExecutionView extends LitElement {
         totals.estimatedCost += this.getGatewayMetricNumber(
           event.payload.estimated_cost
         );
+        // A zero cost on a token-bearing call is an unpriced model, not a
+        // free call, so it must not mark the execution as priced.
         if (
-          typeof event.payload.estimated_cost === 'number' ||
+          (typeof event.payload.estimated_cost === 'number' &&
+            (event.payload.estimated_cost > 0 ||
+              !this.getGatewayMetricNumber(event.payload.total_tokens))) ||
           (event.payload.budget as { pricing_available?: unknown } | null)
             ?.pricing_available === true
         ) {
@@ -1259,6 +1263,9 @@ export class FlowExecutionView extends LitElement {
       }
       if (typeof this.execution.estimated_cost === 'number') {
         this.budgetUsed = this.execution.estimated_cost;
+        // Only a non-zero stored cost proves the execution was priced. A 0
+        // alongside spent tokens means "we could not price this", not "this
+        // was free", and must fall through to the token display.
         if (this.execution.estimated_cost > 0) {
           this.hasPricing = true;
         }
@@ -1996,7 +2003,9 @@ export class FlowExecutionView extends LitElement {
                 ${
                   this.hasPricing
                     ? `${this.totalTokens.toLocaleString()} tokens`
-                    : `${this.getTotalToolCallCount().toLocaleString()} tool calls recorded`
+                    : this.totalTokens > 0
+                      ? 'cost unavailable: model not priced'
+                      : `${this.getTotalToolCallCount().toLocaleString()} tool calls recorded`
                 }
               </div>
             </sl-card>

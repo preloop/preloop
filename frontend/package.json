@@ -71,10 +71,10 @@
     "deck.gl": "^9.1.12",
     "dompurify": "^3.4.12",
     "events": "^3.3.0",
-    "js-yaml": "^4.2.0",
+    "js-yaml": "^4.3.1",
     "lit": "^3.1.0",
     "marked": "^16.4.1",
-    "mermaid": "^10.9.5",
+    "mermaid": "^10.9.8",
     "tsne-js": "^1.0.3"
   },
   "devDependencies": {

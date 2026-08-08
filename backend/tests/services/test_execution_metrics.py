@@ -489,5 +489,8 @@ def test_get_execution_metrics_falls_back_to_log_parsing_without_gateway_usage(
     assert metrics["tool_calls"] == 2
     assert metrics["api_requests"] == 0
     assert metrics["token_usage"]["total_tokens"] == 1234
-    assert metrics["estimated_cost"] == 0.0
+    # 1234 tokens were spent with no resolvable price. Reporting 0.0 here is
+    # what made real spend look free; the volume is surfaced instead.
+    assert metrics["estimated_cost"] is None
     assert metrics["has_pricing"] is False
+    assert metrics["unpriced_tokens"] == 1234

@@ -74,6 +74,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remote plus available refs, so the log shows whether the commit was
   force-pushed away, the ref is missing, or credentials failed.
 
+- **Unpriced usage no longer reports as $0.00**: gateway traffic routed through
+  OpenRouter/`openai-compatible` endpoints was metered correctly (tokens
+  captured) but could never be priced, so flows that cost real money displayed
+  a confident `$0.00`. Three defects combined: the synthetic
+  `openai-compatible/` prefix was carried into price-catalog lookups where it
+  can never match; OpenRouter-routed models were not tried under litellm's
+  `openrouter/vendor/model` keys; and a `sum()` over NULL costs was coalesced
+  to `0.0` in `get_gateway_usage_for_execution`, with `FlowOrchestrator`
+  defaulting `estimated_cost` to `0.0`. Cost now stays NULL when nothing could
+  be priced, and the token volume is surfaced instead of a fake zero. Aggregates
+  that mix priced and unpriced rows expose `cost_is_partial` plus the unpriced
+  request/token counts so a subtotal is never presented as a complete bill.
+  Subscription-covered traffic (`cost_source='subscription'`) is unchanged and
+  still reports a legitimate `$0.00`.
+
+- **OpenRouter model pricing**: models served from `openrouter.ai` are now
+  priced from OpenRouter's own `/api/v1/models` endpoint when litellm's map
+  does not carry them, cached and backed off like the existing price-map fetch.
+  Date-stamped marketplace ids (e.g. `deepseek-v4-flash-0731`) are deliberately
+  NOT aliased to their undated entry: they are separately priced SKUs, and the
+  fallback would have overstated cost by ~55% for that model. Models that still
+  cannot be priced stay explicitly unpriced rather than being given a guess.
+
+### Added
+
+- **Admin alert for unpriceable models**: the gateway now notifies admins the
+  first time a `(model_alias, provider)` pair proves unpriceable, including the
+  account and token volume, so missing pricing is noticed instead of silently
+  surfacing as no spend. Deduplicated via a persisted `audit_log` marker with a
+  24h cooldown (`UNPRICED_MODEL_ALERT_COOLDOWN_HOURS`), so it holds across
+  replicas rather than firing once per process, and every failure path is
+  swallowed so alerting can never break a user request.
+
+- **`scripts/reprice_unpriced_usage.py`**: operator script to backfill costs for
+  historical rows recorded while a model was unpriced. Dry run by default;
+  requires `--apply` to persist.
+
 ## [0.14.0] - 2026-08-07
 
 Highlights: **Cursor usage import** brings bundled-model spend into Cost

@@ -125,7 +125,9 @@ class FlowExecutionOrchestrator:
         # Execution metrics tracked during execution
         self.total_tokens: int = 0
         self.tool_calls_count: int = 0
-        self.estimated_cost: float = 0.0
+        # None means "not priced yet / could not be priced". Defaulting this to
+        # 0.0 made unpriced executions display a confident $0.00 in the UI.
+        self.estimated_cost: Optional[float] = None
 
         # Commit status tracking
         self._tracker_client = None

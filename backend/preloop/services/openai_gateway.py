@@ -84,6 +84,7 @@ from preloop.services.upstream_errors import (
     classify_upstream_error,
 )
 from preloop.services.model_price_catalog import schedule_price_lookup
+from preloop.services.unpriced_model_alert import notify_unpriced_model
 from preloop.services.rate_limit_telemetry import (
     RateLimitSnapshot,
     classify_rate_limit_subtype,
@@ -5867,6 +5868,19 @@ class OpenAIGatewayService:
                 schedule_price_lookup(ai_model=ai_model, api_usage_id=str(usage_row.id))
             except Exception:  # noqa: BLE001 - never break recording
                 logger.debug("Scheduling live price lookup failed", exc_info=True)
+            # Tell an admin the catalog is missing this model. Deduplicated
+            # per (model_alias, provider) via a persisted marker, so hot-path
+            # traffic yields one actionable alert, not one per request.
+            try:
+                notify_unpriced_model(
+                    self.db,
+                    account_id=str(self.auth_context.user.account_id),
+                    model_alias=model_alias,
+                    provider_name=ai_model.provider_name,
+                    total_tokens=int(total_tokens or 0),
+                )
+            except Exception:  # noqa: BLE001 - never break recording
+                logger.debug("Unpriced-model admin alert failed", exc_info=True)
 
         log_model_gateway_request(
             self.db,

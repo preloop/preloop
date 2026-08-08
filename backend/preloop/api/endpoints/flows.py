@@ -579,8 +579,13 @@ def get_flow_execution_metrics(
         - tool_calls: Number of MCP tool calls made
         - api_requests: Number of API requests made during execution
         - token_usage: Token usage statistics
-        - estimated_cost: Estimated cost based on token usage (0.0 if no pricing)
-        - has_pricing: Whether pricing is configured in AI model metadata
+        - estimated_cost: Estimated cost in USD, or null when no usage could
+          be priced (never a placeholder 0.0, which would misreport real
+          spend as free)
+        - has_pricing: Whether any request could be priced
+        - cost_is_partial: Whether estimated_cost excludes unpriced requests
+        - unpriced_requests: Requests that could not be priced
+        - unpriced_tokens: Token volume behind the unpriced requests
     """
     from preloop.services.execution_metrics import ExecutionMetricsService
 
@@ -606,8 +611,13 @@ def get_flow_execution_metrics(
             "tool_calls": 0,
             "api_requests": 0,
             "token_usage": {"total_tokens": 0, "input_tokens": 0, "output_tokens": 0},
-            "estimated_cost": 0.0,
+            # Metrics could not be computed, so the cost is unknown rather
+            # than zero; the UI renders this as unavailable, not as free.
+            "estimated_cost": None,
             "has_pricing": False,
+            "cost_is_partial": False,
+            "unpriced_requests": 0,
+            "unpriced_tokens": 0,
         }
 
 

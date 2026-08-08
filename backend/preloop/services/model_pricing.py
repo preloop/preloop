@@ -30,6 +30,52 @@ _DATE_SUFFIX_PATTERNS = (
     re.compile(r"@\d+$"),
 )
 
+# Provider labels that describe HOW Preloop reaches an endpoint rather than a
+# namespace in any price map. Left on a candidate they guarantee a miss, so
+# they are stripped before catalog lookup (issue: OpenRouter usage priced $0).
+_SYNTHETIC_PROVIDER_PREFIXES = ("openai-compatible/", "custom/", "preloop/")
+
+# Hosts that front a model marketplace whose catalog keys litellm namespaces
+# under a provider prefix (e.g. ``openrouter/deepseek/deepseek-chat``).
+_ENDPOINT_HOST_PREFIXES = (("openrouter.ai", "openrouter"),)
+
+
+def _strip_synthetic_prefix(candidate: str) -> str:
+    """Remove Preloop's routing-only provider prefixes from a model name.
+
+    ``openai-compatible``/``custom`` are transport labels, not price-map
+    namespaces, so they must not participate in catalog matching.
+
+    Args:
+        candidate: A raw model alias or identifier.
+
+    Returns:
+        The candidate without a leading synthetic provider prefix.
+    """
+    lowered = candidate.lower()
+    for prefix in _SYNTHETIC_PROVIDER_PREFIXES:
+        if lowered.startswith(prefix):
+            return candidate[len(prefix) :].strip()
+    return candidate
+
+
+def _endpoint_prefix(api_endpoint: Optional[str]) -> Optional[str]:
+    """Return the price-map provider prefix implied by a model's endpoint.
+
+    Args:
+        api_endpoint: The configured base URL for the model, if any.
+
+    Returns:
+        The provider prefix (e.g. ``openrouter``) or None when unknown.
+    """
+    if not isinstance(api_endpoint, str) or not api_endpoint.strip():
+        return None
+    lowered = api_endpoint.lower()
+    for host, prefix in _ENDPOINT_HOST_PREFIXES:
+        if host in lowered:
+            return prefix
+    return None
+
 
 def normalize_gateway_model_alias(alias: Optional[str]) -> Optional[str]:
     """Normalize a gateway/client model alias for pricing and matching.
@@ -47,14 +93,36 @@ def normalize_gateway_model_alias(alias: Optional[str]) -> Optional[str]:
     return trimmed or None
 
 
-def _expand_candidate(candidate: str, provider: str) -> Iterable[str]:
+def _expand_candidate(
+    candidate: str, provider: str, endpoint_prefix: Optional[str] = None
+) -> Iterable[str]:
     """Yield normalized fallback forms of one candidate model name.
 
-    Ordered from most to least specific: the raw name first, then with the
-    Bedrock region prefix stripped, then with trailing date/version stamps
-    removed (litellm aliases the undated name for most models).
+    Ordered from most to least specific. Preloop's routing-only provider
+    prefixes are stripped first, then the marketplace form implied by the
+    model's endpoint is offered (``openrouter/vendor/model``, which is how
+    litellm prices marketplace-routed traffic), then the bare name, then the
+    Bedrock region-stripped form, then the undated form.
+
+    Date suffixes are deliberately NOT stripped from ``vendor/model`` names:
+    on model marketplaces a dated snapshot is a separately priced product
+    (``deepseek-v4-flash-0731`` is $0.09/$0.18 per Mtok while the undated
+    ``deepseek-v4-flash`` is $0.14/$0.28), so aliasing them would invent a
+    price that is wrong by ~55%.
+
+    Args:
+        candidate: Raw model alias or identifier.
+        provider: Configured provider name for the model.
+        endpoint_prefix: Price-map prefix implied by the model's endpoint.
+
+    Yields:
+        Candidate keys to try against the price catalog, most specific first.
     """
     normalized = normalize_gateway_model_alias(candidate) or candidate
+    normalized = _strip_synthetic_prefix(normalized) or normalized
+
+    if endpoint_prefix and not normalized.lower().startswith(f"{endpoint_prefix}/"):
+        yield f"{endpoint_prefix}/{normalized}"
     yield normalized
 
     stripped = normalized
@@ -65,6 +133,13 @@ def _expand_candidate(candidate: str, provider: str) -> Iterable[str]:
             if "/" not in stripped:
                 yield f"bedrock/{stripped}"
             break
+
+    # Marketplace ids carry the vendor in the name (``deepseek/...``). For
+    # those, a date stamp identifies a distinct SKU with its own price, so
+    # falling back to the undated entry would report a confidently wrong
+    # number. Only undate flat, single-segment vendor model names.
+    if "/" in stripped:
+        return
 
     for pattern in _DATE_SUFFIX_PATTERNS:
         undated = pattern.sub("", stripped)
@@ -319,6 +394,7 @@ def _iter_litellm_model_candidates(ai_model: AIModel) -> Iterable[str]:
     gateway_config = (
         meta_data.get("gateway") if isinstance(meta_data.get("gateway"), dict) else {}
     )
+    endpoint_prefix = _endpoint_prefix(getattr(ai_model, "api_endpoint", None))
 
     candidates = []
     gateway_alias = gateway_config.get("model_alias")
@@ -328,14 +404,13 @@ def _iter_litellm_model_candidates(ai_model: AIModel) -> Iterable[str]:
     if model_identifier:
         candidates.append(model_identifier)
         prefix = _PROVIDER_PREFIX.get(provider, provider)
-        if "/" not in model_identifier and not model_identifier.lower().startswith(
-            "preloop/"
-        ):
-            candidates.append(f"{prefix}/{model_identifier}")
+        bare_identifier = _strip_synthetic_prefix(model_identifier)
+        if "/" not in bare_identifier and prefix not in _SYNTHETIC_PROVIDER_PREFIXES:
+            candidates.append(f"{prefix}/{bare_identifier}")
 
     seen = set()
     for candidate in candidates:
-        for expanded in _expand_candidate(candidate.strip(), provider):
+        for expanded in _expand_candidate(candidate.strip(), provider, endpoint_prefix):
             normalized = normalize_gateway_model_alias(expanded) or expanded.strip()
             if not normalized or normalized in seen:
                 continue
