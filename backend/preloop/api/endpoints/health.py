@@ -4,22 +4,25 @@ import logging
 from datetime import UTC, datetime
 from typing import Any, Dict
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 from sqlalchemy import text
-from sqlalchemy.orm import Session
 
-from preloop.models.db.session import get_db_session as get_db
+from preloop.models.db.session import get_health_engine
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
 @router.get("/ping")
-def ping() -> Dict[str, str]:
+async def ping() -> Dict[str, str]:
     """Simple liveness check - no database, no external dependencies.
 
-    Use this for Kubernetes liveness probes to avoid killing pods
-    due to temporary database issues.
+    Declared ``async`` on purpose: a plain ``def`` endpoint is executed in
+    Starlette's bounded anyio worker threadpool (40 threads by default). During
+    a database stall, sync endpoints block those threads waiting on pool
+    checkout, so even this DB-free probe would queue behind them and the
+    liveness probe would time out and get the pod SIGKILLed. Running on the
+    event loop keeps liveness answerable no matter how saturated the DB is.
 
     Returns:
         Simple pong response
@@ -28,8 +31,13 @@ def ping() -> Dict[str, str]:
 
 
 @router.get("/health")
-def health_check(db: Session = Depends(get_db)) -> Dict[str, Any]:
+def health_check() -> Dict[str, Any]:
     """Health check endpoint with database and MCP server status.
+
+    Uses a dedicated single-connection engine rather than the shared request
+    pool: readiness should reflect "can I reach Postgres", not "is the request
+    pool momentarily full". Consuming a pooled connection here made the probe
+    fail during saturation, which amplified load spikes into pod restarts.
 
     Returns:
         Dictionary with health status including:
@@ -47,9 +55,10 @@ def health_check(db: Session = Depends(get_db)) -> Dict[str, Any]:
         "upstream_connections": 0,
     }
 
-    # Verify database connection
+    # Verify database connection via the dedicated health engine
     try:
-        db.execute(text("SELECT 1"))
+        with get_health_engine().connect() as conn:
+            conn.execute(text("SELECT 1"))
         health_status["database"] = "connected"
     except Exception as e:
         logger.error("Database health check failed", exc_info=True)

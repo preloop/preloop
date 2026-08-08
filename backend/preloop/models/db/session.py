@@ -1,11 +1,13 @@
 """Database session management."""
 
 import os
+import threading
 from typing import AsyncGenerator, Generator, Optional
 from contextlib import asynccontextmanager
 
 from loguru import logger
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -22,6 +24,11 @@ _engine = None
 _session_factory = None
 _async_engine = None
 _async_session_factory = None
+_health_engine = None
+# Health probes can arrive concurrently on different threads (Starlette's
+# threadpool), and a plain check-then-create global would let two of them each
+# build an engine, leaking a connection pool the code then forgets about.
+_health_engine_lock = threading.Lock()
 
 
 def _env_int(name: str, default: int) -> int:
@@ -148,6 +155,49 @@ def get_db_session() -> Generator[Session, None, None]:
         yield db
     finally:
         _safe_close_db_session(db)
+
+
+def get_health_engine(database_url: Optional[str] = None) -> Engine:
+    """Return a tiny dedicated engine used only by health checks.
+
+    Health probes must report whether Postgres is reachable, not whether the
+    request pool happens to be saturated. Sharing the main pool made the
+    readiness probe fail exactly when the app was busiest, marking every pod
+    NotReady at once and turning a load spike into an outage.
+
+    This engine keeps a single connection, never overflows, and fails fast so
+    a probe can never sit for the full 30s request-pool timeout.
+    """
+    global _health_engine
+
+    # Double-checked locking: the fast path stays lock-free once the engine
+    # exists, while concurrent first probes create exactly one engine.
+    if _health_engine is not None:
+        return _health_engine
+
+    with _health_engine_lock:
+        if _health_engine is not None:
+            return _health_engine
+
+        url = database_url or os.getenv("DATABASE_URL")
+        if not url:
+            raise Exception("DATABASE_URL not in env")
+
+        _health_engine = create_engine(
+            url,
+            pool_size=1,
+            max_overflow=0,
+            pool_pre_ping=True,
+            pool_recycle=_env_int("DATABASE_POOL_RECYCLE", 1800),
+            # Fail fast: a probe should time out well inside its own deadline.
+            pool_timeout=_env_int("DATABASE_HEALTH_POOL_TIMEOUT", 3),
+            connect_args={
+                "connect_timeout": 3,
+                "options": "-c statement_timeout=3000",
+            },
+            echo=False,
+        )
+        return _health_engine
 
 
 def get_async_engine(database_url: Optional[str] = None) -> AsyncEngine:

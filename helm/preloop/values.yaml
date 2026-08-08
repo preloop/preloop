@@ -268,25 +268,44 @@ config:
 # Database configuration
 database:
   # SQLAlchemy connection pool sizing per component, injected as
-  # DATABASE_POOL_SIZE / DATABASE_MAX_OVERFLOW. Peak connections per pod =
-  # size + maxOverflow. The application defaults (20 + 40 per pod) are NOT
-  # safe once the gateway autoscales: 11 pods x 60 = 660 potential
-  # connections against max_connections=200. Budget with these values:
-  #   api        (1 pod):   10 + 20 = 30
-  #   gateway (<=5 pods):    3 +  7 = 10 each -> 50
-  #   sync workers/monitor/scheduler (5 pods): 2 + 3 = 5 each -> 25
-  # Peak ~105 against max_connections=200 (see cnpg.parameters below),
-  # leaving headroom for jobs, replication, and superuser connections.
+  # DATABASE_POOL_SIZE / DATABASE_MAX_OVERFLOW.
+  #
+  # IMPORTANT: each pod builds TWO pools (the sync engine and the async
+  # engine in models/db/session.py share these settings), plus one connection
+  # for the dedicated health-check engine. So:
+  #   steady per pod  = size * 2 + 1
+  #   ceiling per pod = (size + maxOverflow) * 2 + 1
+  #
+  # The previous comment assumed 1 api pod and 5 worker pods; production
+  # actually runs api=2, gateway=5 (HPA max), workers/monitor/scheduler=8.
+  #
+  # Budget with the values below (api=2, gateway=5, worker=8 pods):
+  #   api     2 x (8+12):  steady  34, ceiling  82
+  #   gateway 5 x (6+14):  steady  65, ceiling 205
+  #   worker  8 x (2+4):   steady  40, ceiling 104
+  #   TOTAL:               steady 139, ceiling 391
+  #
+  # Steady state (139) fits inside max_connections=200 minus the 3 superuser
+  # reserved slots, with ~58 spare for jobs and psql. The absolute ceiling is
+  # deliberately oversubscribed: overflow connections are short-lived and
+  # never all claimed at once (measured production peak is ~65 total). The
+  # 2026-08-08 incident was per-pod starvation, not a global shortage -- one
+  # gateway pod exhausted its 10-connection ceiling while the server as a
+  # whole was 65/200. Raising the gateway ceiling from 10 to 20 per pod is
+  # what fixes it.
+  #
+  # If you increase gateway maxReplicas or add components, re-check the
+  # steady total against max_connections (see cnpg.parameters below).
   pool:
     api:
-      size: 10
-      maxOverflow: 20
+      size: 8
+      maxOverflow: 12
     gateway:
-      size: 3
-      maxOverflow: 7
+      size: 6
+      maxOverflow: 14
     worker:
       size: 2
-      maxOverflow: 3
+      maxOverflow: 4
   # If true, deploys a PostgreSQL instance using CloudNativePG
   enabled: true
   # If external is true, uses an external PostgreSQL instance
