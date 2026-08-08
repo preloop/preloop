@@ -2100,6 +2100,10 @@ async def update_pull_request(
         # Handle reactions
         reaction_added = False
         reaction_removed = False
+        # True when the reaction we were asked to remove was already absent.
+        # Removal is idempotent: "not there" is the desired end state, so we
+        # must NOT report it as a failure or the agent will retry forever.
+        reaction_already_absent = False
         reaction_errors = []
 
         if add_reaction or remove_reaction:
@@ -2139,7 +2143,9 @@ async def update_pull_request(
                             )
                             reaction_removed = True
                         else:
-                            # Reaction not found - not an error, but note it
+                            # Reaction not found - not an error. Removal is
+                            # idempotent, so treat "already absent" as success.
+                            reaction_already_absent = True
                             logger.info(
                                 f"Reaction '{remove_reaction}' not found on PR {pr_number} "
                                 "(may have been already removed or never added)"
@@ -2202,6 +2208,11 @@ async def update_pull_request(
         if remove_reaction:
             if reaction_removed:
                 actions_taken.append(f"removed reaction ({remove_reaction})")
+            elif reaction_already_absent:
+                # Idempotent no-op: the end state the caller asked for already
+                # holds. Reporting this as a failure made agents retry the
+                # same call until the loop guard killed the execution.
+                actions_taken.append(f"reaction already absent ({remove_reaction})")
             else:
                 actions_failed.append(f"remove reaction ({remove_reaction})")
 

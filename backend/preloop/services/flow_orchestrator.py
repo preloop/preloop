@@ -2114,7 +2114,22 @@ class FlowExecutionOrchestrator:
                     )
                     await agent_executor.stop(session_reference)
                     await self._publish_update("user_stopped", {"elapsed": elapsed})
-                    break
+                    self.execution_logger.log_milestone(
+                        "user_requested_stop", {"elapsed": elapsed}
+                    )
+                    # Return explicitly: falling through to the end of the
+                    # while loop would report this as "Execution timed out
+                    # after {max_wait_time} seconds", which is wrong and very
+                    # confusing (executions stopped after 45s were reported as
+                    # 3600s timeouts).
+                    return {
+                        "status": "STOPPED",
+                        "error_message": (
+                            f"Execution stopped by user request after {elapsed} seconds."
+                        ),
+                        "actions_taken": self.execution_logger.get_actions_taken(),
+                        "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                    }
 
                 # Get status with error handling
                 try:

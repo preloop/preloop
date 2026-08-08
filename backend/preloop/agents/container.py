@@ -1747,6 +1747,20 @@ if ! git checkout {q_commit} 2>/dev/null; then
         echo "========================================="
         echo "FATAL ERROR: Could not checkout commit {q_commit_short}"
         echo "Tried direct checkout, commit fetch, source branch, and MR ref."
+        echo "--- diagnostics ---"
+        # Every attempt above hides stderr so the fallback chain stays quiet on
+        # the happy path. Once we have actually failed, re-run the fetch and
+        # checkout WITH stderr so the real cause (auth failure, unknown ref,
+        # commit force-pushed away) reaches the execution log instead of a
+        # generic "could not checkout".
+        echo "$ git fetch origin {q_commit}"
+        git fetch origin {q_commit} 2>&1 | tail -n 5 || true
+        echo "$ git checkout {q_commit}"
+        git checkout {q_commit} 2>&1 | tail -n 5 || true
+        echo "$ git remote -v"
+        git remote -v 2>&1 | sed -n '1,2p' || true
+        echo "available refs:"
+        git for-each-ref --format='%(refname)' --count=20 2>&1 || true
         echo "========================================="
         exit 1
     fi
