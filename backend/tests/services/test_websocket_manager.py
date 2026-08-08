@@ -6,9 +6,13 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy.exc import OperationalError, TimeoutError as SQLAlchemyTimeoutError
 
 from preloop.services.websocket_manager import (
+    LOG_PERSIST_MAX_ATTEMPTS,
+    LOG_PERSIST_MAX_CONCURRENCY,
     WebSocketManager,
+    _log_persist_semaphore,
     nats_consumer,
     persist_execution_log,
     _sync_batch_insert_logs,
@@ -113,6 +117,152 @@ class TestPersistExecutionLog:
             _sync_batch_insert_logs(batch)
 
         assert mock_db.close.called
+
+
+class TestSyncBatchInsertLogsRetry:
+    """Retry/backoff behaviour for transient DB failures (2026-08-08 incident).
+
+    A pool checkout timeout used to drop the whole batch on the first error,
+    silently losing execution logs. These tests pin the retry contract.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_sleep(self):
+        """Keep tests fast while still asserting the backoff schedule."""
+        with patch("preloop.services.websocket_manager.time.sleep") as sleep:
+            yield sleep
+
+    @patch("preloop.services.websocket_manager.get_db")
+    @patch("preloop.models.crud.crud_flow_execution.append_log")
+    def test_retries_pool_timeout_then_succeeds(self, mock_append, mock_get_db):
+        """A transient QueuePool timeout is retried and the batch is saved."""
+        mock_db = MagicMock()
+        mock_get_db.side_effect = lambda: iter([mock_db])
+        # Fail once with the exact error seen in production, then succeed.
+        mock_append.side_effect = [
+            SQLAlchemyTimeoutError("QueuePool limit of size 3 overflow 7 reached"),
+            None,
+        ]
+
+        assert _sync_batch_insert_logs([("exec_1", {"message": "hi"})]) is True
+        assert mock_append.call_count == 2
+        assert mock_db.commit.called
+
+    @patch("preloop.services.websocket_manager.notify_admins")
+    @patch("preloop.services.websocket_manager.get_db")
+    @patch("preloop.models.crud.crud_flow_execution.append_log")
+    def test_drops_only_after_max_attempts(
+        self, mock_append, mock_get_db, mock_notify, _no_sleep
+    ):
+        """Persistent failure drops the batch, but only after all attempts."""
+        mock_db = MagicMock()
+        mock_get_db.side_effect = lambda: iter([mock_db])
+        mock_append.side_effect = SQLAlchemyTimeoutError("QueuePool limit reached")
+
+        assert _sync_batch_insert_logs([("exec_1", {"message": "hi"})]) is False
+        assert mock_append.call_count == LOG_PERSIST_MAX_ATTEMPTS
+        # Operator is still told about real data loss.
+        assert mock_notify.called
+        # Exponential backoff between attempts: 0.5s then 1.0s.
+        assert [c.args[0] for c in _no_sleep.call_args_list] == [0.5, 1.0]
+
+    @patch("preloop.services.websocket_manager.get_db")
+    @patch("preloop.models.crud.crud_flow_execution.append_log")
+    def test_retries_operational_error(self, mock_append, mock_get_db):
+        """Dropped connections (OperationalError) are also transient."""
+        mock_db = MagicMock()
+        mock_get_db.side_effect = lambda: iter([mock_db])
+        mock_append.side_effect = [
+            OperationalError("SELECT 1", {}, Exception("server closed connection")),
+            None,
+        ]
+
+        assert _sync_batch_insert_logs([("exec_1", {"message": "hi"})]) is True
+        assert mock_append.call_count == 2
+
+    @patch("preloop.services.websocket_manager.notify_admins")
+    @patch("preloop.services.websocket_manager.get_db")
+    @patch("preloop.models.crud.crud_flow_execution.append_log")
+    def test_non_retryable_error_fails_fast(
+        self, mock_append, mock_get_db, mock_notify, _no_sleep
+    ):
+        """Programming errors are not retried - no point hammering the DB."""
+        mock_db = MagicMock()
+        mock_get_db.side_effect = lambda: iter([mock_db])
+        mock_append.side_effect = ValueError("bad log payload")
+
+        assert _sync_batch_insert_logs([("exec_1", {"message": "hi"})]) is False
+        assert mock_append.call_count == 1
+        assert not _no_sleep.called
+        assert mock_notify.called
+
+    @patch("preloop.services.websocket_manager.get_db")
+    @patch("preloop.models.crud.crud_flow_execution.append_log")
+    def test_failed_attempt_rolls_back(self, mock_append, mock_get_db):
+        """A failed batch must not leave a dirty transaction on the pool."""
+        mock_db = MagicMock()
+        mock_get_db.side_effect = lambda: iter([mock_db])
+        mock_append.side_effect = [SQLAlchemyTimeoutError("pool"), None]
+
+        _sync_batch_insert_logs([("exec_1", {"message": "hi"})])
+
+        assert mock_db.rollback.called
+        assert mock_db.close.call_count == 2
+
+    @patch("preloop.services.websocket_manager.get_db")
+    def test_empty_batch_touches_no_connection(self, mock_get_db):
+        """An empty batch must not check out a connection at all."""
+        assert _sync_batch_insert_logs([]) is True
+        assert not mock_get_db.called
+
+    def test_semaphore_bounds_log_persistence_concurrency(self):
+        """Background log writes are capped so they cannot drain the pool."""
+        assert LOG_PERSIST_MAX_CONCURRENCY >= 1
+        # Acquire every permit; the next attempt must not succeed immediately.
+        acquired = [
+            _log_persist_semaphore.acquire(blocking=False)
+            for _ in range(LOG_PERSIST_MAX_CONCURRENCY)
+        ]
+        try:
+            assert all(acquired)
+            assert _log_persist_semaphore.acquire(blocking=False) is False
+        finally:
+            for ok in acquired:
+                if ok:
+                    _log_persist_semaphore.release()
+
+
+class TestBroadcastLoggingVolume:
+    """Zero-listener broadcasts were ~69% of production gateway log lines."""
+
+    @pytest.fixture
+    def manager(self):
+        return WebSocketManager()
+
+    async def test_no_info_log_when_no_listeners(self, manager):
+        """Status broadcasts with zero matching connections log at DEBUG."""
+        with patch("preloop.services.websocket_manager.logger") as mock_logger:
+            await manager.broadcast_json(
+                {"type": "flow_status_update"}, account_id="acct-1"
+            )
+
+        assert not mock_logger.info.called
+        assert mock_logger.debug.called
+
+    async def test_info_log_retained_when_listeners_present(self, manager):
+        """Real listeners still produce the operator-visible INFO line."""
+        ws = AsyncMock()
+        conn_id = "conn-1"
+        manager.active_connections[conn_id] = ws
+        manager.connection_accounts[conn_id] = "acct-1"
+
+        with patch("preloop.services.websocket_manager.logger") as mock_logger:
+            await manager.broadcast_json(
+                {"type": "flow_status_update"}, account_id="acct-1"
+            )
+
+        assert mock_logger.info.called
+        assert "matching_connections=1" in mock_logger.info.call_args.args[0]
 
 
 class TestWebSocketManager:

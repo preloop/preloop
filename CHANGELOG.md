@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Database connection pool exhaustion and execution-log data loss**: a
+  production gateway pod exhausted its SQLAlchemy pool
+  (`QueuePool limit of size 3 overflow 7 reached`) under PR-reviewer load,
+  which dropped a batch of NATS execution logs, failed the readiness probe,
+  broke token validation, and ended in a pod restart. Four changes:
+  - `_sync_batch_insert_logs` now retries transient failures
+    (`TimeoutError`/`OperationalError`) up to 3 times with exponential backoff
+    (0.5s, 1.0s) before dropping a batch, rolls back on failure so no dirty
+    transaction is returned to the pool, and returns a success boolean.
+    Background log persistence is additionally bounded by a semaphore so it
+    cannot starve request-serving connections. Batches are still only dropped
+    as a last resort, and admins are still notified when that happens.
+  - Health checks use a dedicated single-connection engine with fast timeouts
+    instead of a pooled request session, so readiness reports "can I reach
+    Postgres" rather than "is the request pool momentarily full".
+  - `/api/v1/ping` (the liveness probe) is now `async`, keeping it on the event
+    loop. As a sync endpoint it ran in Starlette's bounded anyio threadpool and
+    could queue behind blocked database calls, causing Kubernetes to SIGKILL a
+    pod that was merely busy.
+  - Gateway connection pool sizing raised from 3+7 to 6+14 per pod, api tuned
+    to 8+12 and workers to 2+4. Chart comments now document that each pod
+    creates two pools (sync + async engine) and reflect real production replica
+    counts (api=2, gateway=5, workers=8).
+
+- **Gateway log noise**: WebSocket broadcasts with no matching listeners logged
+  at INFO on every event, accounting for ~69% of gateway log lines (8170 of
+  11810 in a two-hour sample). These now log at DEBUG; broadcasts with actual
+  listeners still log at INFO.
+
 ## [0.14.0] - 2026-08-07
 
 Highlights: **Cursor usage import** brings bundled-model spend into Cost
