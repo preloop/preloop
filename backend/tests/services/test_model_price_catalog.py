@@ -192,3 +192,90 @@ def test_schedule_price_lookup_uses_bounded_executor(monkeypatch) -> None:
     assert model_price_catalog.schedule_price_lookup(ai_model=ai_model) is True
     assert len(submitted) == 1
     assert "executor-test-model" in model_price_catalog._pending_lookups
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter marketplace pricing (models absent from litellm's map)
+# ---------------------------------------------------------------------------
+
+
+def test_openrouter_map_converts_per_token_pricing() -> None:
+    """OpenRouter's per-token strings become litellm-shaped price entries.
+
+    OpenRouter publishes authoritative per-token prices as decimal strings.
+    They are converted verbatim (no unit rescaling) so a dashboard number can
+    always be traced back to the vendor's published price.
+    """
+    payload = {
+        "data": [
+            {
+                "id": "deepseek/deepseek-v4-flash-0731",
+                "pricing": {
+                    "prompt": "0.00000009",
+                    "completion": "0.00000018",
+                    "input_cache_read": "0.000000018",
+                },
+            }
+        ]
+    }
+
+    entries = model_price_catalog._openrouter_entries_from_payload(payload)
+
+    entry = entries["openrouter/deepseek/deepseek-v4-flash-0731"]
+    assert entry["input_cost_per_token"] == 9e-08
+    assert entry["output_cost_per_token"] == 1.8e-07
+    assert entry["cache_read_input_token_cost"] == 1.8e-08
+    assert entry["litellm_provider"] == "openrouter"
+
+
+def test_openrouter_map_skips_models_without_usable_prices() -> None:
+    """Zero/missing prices are not registered as a real $0 price.
+
+    A free-tier or price-less listing must stay unpriced rather than assert
+    that the model costs nothing.
+    """
+    payload = {
+        "data": [
+            {"id": "vendor/no-pricing"},
+            {"id": "vendor/zero", "pricing": {"prompt": "0", "completion": "0"}},
+            {"id": "vendor/bad", "pricing": {"prompt": "abc", "completion": "x"}},
+        ]
+    }
+
+    entries = model_price_catalog._openrouter_entries_from_payload(payload)
+
+    assert entries == {}
+
+
+def test_live_lookup_falls_back_to_openrouter_for_marketplace_models(
+    monkeypatch,
+) -> None:
+    """A model missing from litellm's map is priced from OpenRouter.
+
+    This is the exact customer-reported case: OpenRouter-routed DeepSeek usage
+    that litellm does not carry, which previously surfaced as $0.00.
+    """
+    model_price_catalog.reset_lookup_state_for_tests()
+    monkeypatch.setattr(model_price_catalog, "_fetch_remote_price_map", lambda: {})
+    monkeypatch.setattr(
+        model_price_catalog,
+        "_fetch_openrouter_price_map",
+        lambda: {
+            "openrouter/deepseek/deepseek-v4-flash-0731": {
+                "litellm_provider": "openrouter",
+                "mode": "chat",
+                "input_cost_per_token": 9e-08,
+                "output_cost_per_token": 1.8e-07,
+            }
+        },
+    )
+
+    matched = model_price_catalog.lookup_model_price_now(
+        [
+            "openrouter/deepseek/deepseek-v4-flash-0731",
+            "deepseek/deepseek-v4-flash-0731",
+        ]
+    )
+
+    assert matched == "openrouter/deepseek/deepseek-v4-flash-0731"
+    assert "openrouter/deepseek/deepseek-v4-flash-0731" in litellm.model_cost

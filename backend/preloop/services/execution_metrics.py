@@ -29,8 +29,12 @@ class ExecutionMetricsService:
             - tool_calls: Number of MCP tool calls
             - api_requests: Number of API requests made
             - token_usage: Token usage from codex logs
-            - estimated_cost: Estimated cost based on token usage (0.0 if no pricing)
-            - has_pricing: Whether pricing is configured in AI model metadata
+            - estimated_cost: Estimated cost in USD, or None when no usage
+              could be priced (never a placeholder 0.0)
+            - has_pricing: Whether any request could be priced
+            - cost_is_partial: Whether the cost excludes unpriced requests
+            - unpriced_requests: Number of requests that could not be priced
+            - unpriced_tokens: Token volume behind the unpriced requests
         """
         from preloop.models.crud import crud_flow_execution
 
@@ -46,15 +50,27 @@ class ExecutionMetricsService:
         gateway_usage = self._get_gateway_usage(execution)
         api_requests = gateway_usage["api_requests"]
 
+        cost_is_partial = False
+        unpriced_requests = 0
+        unpriced_tokens = 0
         if api_requests > 0:
             token_usage = gateway_usage["token_usage"]
             estimated_cost = gateway_usage["estimated_cost"]
             has_pricing = gateway_usage["has_pricing"]
+            cost_is_partial = bool(gateway_usage.get("cost_is_partial"))
+            unpriced_requests = int(gateway_usage.get("unpriced_requests") or 0)
+            unpriced_tokens = int(gateway_usage.get("unpriced_tokens") or 0)
         else:
             # Fall back to legacy log parsing when the execution did not use
             # explicit gateway attribution.
             token_usage = self._parse_token_usage(execution)
             estimated_cost, has_pricing = self._calculate_cost(execution, token_usage)
+            if not has_pricing and token_usage.get("total_tokens"):
+                # Tokens were spent but no price resolved: report the volume
+                # rather than a $0.00 that the user would read as "free".
+                estimated_cost = None
+                unpriced_tokens = int(token_usage.get("total_tokens") or 0)
+                unpriced_requests = 1
 
         return {
             "tool_calls": tool_calls,
@@ -62,6 +78,9 @@ class ExecutionMetricsService:
             "token_usage": token_usage,
             "estimated_cost": estimated_cost,
             "has_pricing": has_pricing,
+            "cost_is_partial": cost_is_partial,
+            "unpriced_requests": unpriced_requests,
+            "unpriced_tokens": unpriced_tokens,
         }
 
     def _get_gateway_usage(self, execution: models.FlowExecution) -> Dict:

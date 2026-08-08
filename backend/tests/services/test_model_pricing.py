@@ -345,3 +345,64 @@ def test_model_price_override_serializes_adjustment_terms() -> None:
     assert pricing["discount_percent"] == 10.0
     assert pricing["prepaid_token_balance"] == 2000
     assert pricing["prepaid_credit_balance_usd"] == 5.0
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter / openai-compatible routed models (customer-reported $0.00 bug)
+# ---------------------------------------------------------------------------
+
+
+def test_candidates_strip_openai_compatible_provider_prefix() -> None:
+    """The synthetic ``openai-compatible/`` prefix is not a price-map namespace.
+
+    The affected models are recorded as
+    ``openai-compatible/deepseek/deepseek-v4-flash-0731``. ``openai-compatible``
+    is a Preloop routing label, not a litellm provider, so the prefixed form can
+    never match the catalog and must be reduced to the bare vendor/model id.
+    """
+    ai_model = AIModel(
+        provider_name="openai-compatible",
+        model_identifier="deepseek/deepseek-v4-flash-0731",
+        api_endpoint="https://openrouter.ai/api/v1",
+        meta_data={
+            "gateway": {
+                "model_alias": "openai-compatible/deepseek/deepseek-v4-flash-0731"
+            }
+        },
+    )
+    candidates = list(_iter_litellm_model_candidates(ai_model))
+    assert "deepseek/deepseek-v4-flash-0731" in candidates
+    assert "openai-compatible/deepseek/deepseek-v4-flash-0731" not in candidates
+
+
+def test_candidates_add_openrouter_prefix_for_openrouter_endpoint() -> None:
+    """A model served via openrouter.ai gains ``openrouter/`` catalog keys.
+
+    litellm prices OpenRouter-routed models under ``openrouter/vendor/model``,
+    so the endpoint must contribute that candidate form.
+    """
+    ai_model = AIModel(
+        provider_name="openai-compatible",
+        model_identifier="deepseek/deepseek-chat",
+        api_endpoint="https://openrouter.ai/api/v1",
+    )
+    candidates = list(_iter_litellm_model_candidates(ai_model))
+    assert "openrouter/deepseek/deepseek-chat" in candidates
+
+
+def test_dated_openrouter_variant_never_falls_back_to_undated_price() -> None:
+    """A dated OpenRouter snapshot must not inherit the undated model's price.
+
+    ``deepseek-v4-flash-0731`` really costs $0.09/$0.18 per million tokens while
+    the undated ``deepseek-v4-flash`` costs $0.14/$0.28. Silently stripping the
+    ``-0731`` suffix would overstate the bill by ~55%, which is a worse
+    failure than reporting the usage as unpriced.
+    """
+    ai_model = AIModel(
+        provider_name="openai-compatible",
+        model_identifier="deepseek/deepseek-v4-flash-0731",
+        api_endpoint="https://openrouter.ai/api/v1",
+    )
+    candidates = list(_iter_litellm_model_candidates(ai_model))
+    assert "deepseek/deepseek-v4-flash" not in candidates
+    assert "openrouter/deepseek/deepseek-v4-flash" not in candidates

@@ -399,4 +399,69 @@ describe('FlowExecutionView', () => {
     expect(content).to.contain('search_issues');
     expect(content).to.contain('get_issue');
   });
+
+  it('does not claim pricing when a stored cost is a placeholder zero', async () => {
+    // Customer-reported: OpenRouter-routed flows metered 28M tokens but the
+    // model was unpriceable, so estimated_cost persisted as 0 and the UI
+    // announced "$0.00" for real spend. A zero cost with tokens spent must
+    // fall back to the token display instead.
+    const element = await fixture<FlowExecutionView>(
+      html`<flow-execution-view></flow-execution-view>`
+    );
+    (element as any).execution = {
+      id: 'exec-unpriced',
+      total_tokens: 28553143,
+      estimated_cost: 0,
+      tool_calls_count: 3,
+      mcp_usage_logs: [],
+    };
+    (element as any).gatewayEvents = [];
+
+    (element as any).hydrateMetricsFromExecution();
+
+    expect((element as any).hasPricing).to.equal(false);
+    expect((element as any).totalTokens).to.equal(28553143);
+  });
+
+  it('treats a null cost with tokens as unpriced, not free', async () => {
+    const element = await fixture<FlowExecutionView>(
+      html`<flow-execution-view></flow-execution-view>`
+    );
+    (element as any).execution = {
+      id: 'exec-null-cost',
+      total_tokens: 1000,
+      estimated_cost: null,
+      tool_calls_count: 0,
+      mcp_usage_logs: [],
+    };
+    (element as any).gatewayEvents = [];
+
+    (element as any).hydrateMetricsFromExecution();
+
+    expect((element as any).hasPricing).to.equal(false);
+  });
+
+  it('does not treat a zero-cost gateway event as priced', async () => {
+    const element = await fixture<FlowExecutionView>(
+      html`<flow-execution-view></flow-execution-view>`
+    );
+    (element as any).gatewayEvents = [
+      {
+        execution_id: 'exec-1',
+        timestamp: '2026-08-08T10:00:00Z',
+        type: 'model_gateway_call',
+        payload: {
+          api_usage_id: 'usage-unpriced',
+          total_tokens: 5000,
+          estimated_cost: 0,
+          outcome: 'success',
+        },
+      },
+    ];
+
+    (element as any).applyGatewayMetricsFromEvents();
+
+    expect((element as any).totalTokens).to.equal(5000);
+    expect((element as any).hasPricing).to.equal(false);
+  });
 });

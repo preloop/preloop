@@ -1498,7 +1498,26 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         db: Session,
         execution_id: str,
     ) -> Dict[str, Any]:
-        """Return explicit gateway usage totals for an execution when available."""
+        """Return explicit gateway usage totals for an execution when available.
+
+        ``estimated_cost`` is deliberately NOT coalesced to ``0.0``: a NULL
+        cost means "we could not price this", which is different from "this
+        was free". When no request could be priced the cost stays ``None`` and
+        callers render the token volume instead (see ``unpriced_tokens``).
+
+        Args:
+            db: Database session.
+            execution_id: Owning flow execution id.
+
+        Returns:
+            Usage totals including ``estimated_cost`` (``None`` when nothing
+            was priceable), ``cost_is_partial`` when priced and unpriced rows
+            are mixed, and the unpriced request/token volume.
+        """
+        unpriced_condition = and_(
+            ApiUsage.estimated_cost.is_(None),
+            func.coalesce(ApiUsage.cost_source, "") != "subscription",
+        )
         row = (
             db.query(
                 func.count(ApiUsage.id).label("api_requests"),
@@ -1509,10 +1528,21 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                     "completion_tokens"
                 ),
                 func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
-                func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
-                    "estimated_cost"
-                ),
+                # Left un-coalesced on purpose: NULL means "unknown", not zero.
+                func.sum(ApiUsage.estimated_cost).label("estimated_cost"),
                 func.count(ApiUsage.estimated_cost).label("priced_requests"),
+                func.count(ApiUsage.id)
+                .filter(unpriced_condition)
+                .label("unpriced_requests"),
+                func.coalesce(
+                    func.sum(ApiUsage.total_tokens).filter(unpriced_condition), 0
+                ).label("unpriced_tokens"),
+                func.coalesce(
+                    func.sum(ApiUsage.prompt_tokens).filter(unpriced_condition), 0
+                ).label("unpriced_prompt_tokens"),
+                func.coalesce(
+                    func.sum(ApiUsage.completion_tokens).filter(unpriced_condition), 0
+                ).label("unpriced_completion_tokens"),
             )
             .filter(
                 ApiUsage.action_type == "model_gateway",
@@ -1531,8 +1561,16 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 },
                 "estimated_cost": 0.0,
                 "has_pricing": False,
+                "cost_is_partial": False,
+                "unpriced_requests": 0,
+                "unpriced_tokens": 0,
+                "unpriced_prompt_tokens": 0,
+                "unpriced_completion_tokens": 0,
             }
 
+        priced_requests = int(row.priced_requests or 0)
+        unpriced_requests = int(row.unpriced_requests or 0)
+        raw_cost = row.estimated_cost
         return {
             "api_requests": int(row.api_requests or 0),
             "token_usage": {
@@ -1540,8 +1578,17 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 "input_tokens": int(row.prompt_tokens or 0),
                 "output_tokens": int(row.completion_tokens or 0),
             },
-            "estimated_cost": round(float(row.estimated_cost or 0.0), 6),
-            "has_pricing": int(row.priced_requests or 0) > 0,
+            "estimated_cost": (
+                round(float(raw_cost), 6) if raw_cost is not None else None
+            ),
+            "has_pricing": priced_requests > 0,
+            # True when a real cost exists but excludes unpriced traffic, so
+            # callers can label the number as incomplete rather than final.
+            "cost_is_partial": priced_requests > 0 and unpriced_requests > 0,
+            "unpriced_requests": unpriced_requests,
+            "unpriced_tokens": int(row.unpriced_tokens or 0),
+            "unpriced_prompt_tokens": int(row.unpriced_prompt_tokens or 0),
+            "unpriced_completion_tokens": int(row.unpriced_completion_tokens or 0),
         }
 
     def count_by_execution_timeframe(

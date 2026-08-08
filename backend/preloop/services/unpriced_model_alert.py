@@ -1,0 +1,192 @@
+"""Admin alerting for gateway traffic the price catalog cannot price.
+
+When the gateway records usage with ``cost_source='unpriced'`` the tokens are
+metered but no cost can be attributed, so the user sees no spend for real
+spend. That is a silent failure of Preloop's core promise, and in production
+1667 such calls accumulated before anyone noticed.
+
+This module notifies admins the first time a given ``(model_alias, provider)``
+pair proves unpriceable, then stays quiet for :data:`ALERT_COOLDOWN_HOURS`.
+
+Two properties matter because this runs on the hot gateway path:
+
+- **Cross-replica dedup.** The cooldown marker is an ``audit_log`` row, not
+  process memory. Production runs several API and gateway replicas, and a
+  previous incident was caused by an in-memory-only throttle firing once per
+  replica. The in-process cache here is only a fast path in front of the
+  persisted marker.
+- **Never fails the request.** Every database and notification error is caught
+  and logged. A pricing-visibility alert must never turn into a user-facing
+  gateway error.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import threading
+import time
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+
+from sqlalchemy.orm import Session
+
+from preloop.models.crud import crud_audit_log
+from preloop.sync.tasks import notify_admins
+
+logger = logging.getLogger(__name__)
+
+#: Audit action used as the persisted, cross-replica dedup marker.
+UNPRICED_ALERT_ACTION = "unpriced_model_alert"
+
+#: Quiet period per (model_alias, provider) after an alert is sent.
+ALERT_COOLDOWN_HOURS = int(os.getenv("UNPRICED_MODEL_ALERT_COOLDOWN_HOURS", "24"))
+
+# Fast path only; the audit-log marker remains authoritative across replicas.
+_local_lock = threading.Lock()
+_local_recent: dict[str, float] = {}
+
+
+def _dedupe_key(model_alias: str, provider_name: Optional[str]) -> str:
+    """Build the per-model dedup key.
+
+    Args:
+        model_alias: Recorded model alias that could not be priced.
+        provider_name: Provider that served the request.
+
+    Returns:
+        A stable key identifying the model/provider pair.
+    """
+    return f"{(provider_name or 'unknown').strip().lower()}|{model_alias.strip()}"
+
+
+def reset_alert_state_for_tests() -> None:
+    """Clear the in-process fast-path cache (test isolation only)."""
+    with _local_lock:
+        _local_recent.clear()
+
+
+def _recently_alerted_locally(key: str, cooldown_seconds: float) -> bool:
+    """Return True when this process alerted for ``key`` inside the cooldown."""
+    now = time.monotonic()
+    with _local_lock:
+        last = _local_recent.get(key)
+        return last is not None and now - last < cooldown_seconds
+
+
+def _mark_locally(key: str) -> None:
+    """Record a local alert timestamp for the fast path."""
+    with _local_lock:
+        _local_recent[key] = time.monotonic()
+
+
+def _recently_alerted_in_db(
+    db: Session, *, account_id: str, key: str, cooldown_hours: int
+) -> bool:
+    """Return True when any replica already alerted for ``key`` recently.
+
+    Args:
+        db: Database session.
+        account_id: Account whose traffic was unpriced.
+        key: Dedup key for the model/provider pair.
+        cooldown_hours: Quiet period length.
+
+    Returns:
+        True when a marker newer than the cooldown exists.
+    """
+    since = datetime.now(timezone.utc) - timedelta(hours=cooldown_hours)
+    existing = crud_audit_log.get_by_account(
+        db,
+        account_id=account_id,
+        action=UNPRICED_ALERT_ACTION,
+        resource_type="model_pricing",
+        start_date=since,
+        limit=200,
+    )
+    return any(entry.resource_id == key for entry in existing)
+
+
+def notify_unpriced_model(
+    db: Session,
+    *,
+    account_id: str,
+    model_alias: str,
+    provider_name: Optional[str],
+    total_tokens: int,
+    cooldown_hours: Optional[int] = None,
+) -> bool:
+    """Alert admins that a model could not be priced, at most once per cooldown.
+
+    Safe to call on every unpriced gateway request: repeats inside the cooldown
+    are dropped, and all failures are swallowed so the caller's request is
+    never affected.
+
+    Args:
+        db: Database session.
+        account_id: Account whose usage could not be priced.
+        model_alias: Model alias recorded on the usage row.
+        provider_name: Provider that served the request.
+        total_tokens: Tokens on the triggering request, for context.
+        cooldown_hours: Override for the quiet period.
+
+    Returns:
+        True when a notification was actually sent.
+    """
+    if not model_alias or not account_id:
+        return False
+
+    window = ALERT_COOLDOWN_HOURS if cooldown_hours is None else cooldown_hours
+    key = _dedupe_key(model_alias, provider_name)
+
+    try:
+        if _recently_alerted_locally(key, window * 3600):
+            return False
+        if _recently_alerted_in_db(
+            db, account_id=account_id, key=key, cooldown_hours=window
+        ):
+            _mark_locally(key)
+            return False
+
+        # Claim the cooldown BEFORE notifying so a notification failure cannot
+        # turn into a retry storm on the next request.
+        crud_audit_log.log_action(
+            db,
+            account_id=account_id,
+            action=UNPRICED_ALERT_ACTION,
+            resource_type="model_pricing",
+            resource_id=key,
+            status="success",
+            details={
+                "model_alias": model_alias,
+                "provider_name": provider_name,
+                "total_tokens": total_tokens,
+            },
+        )
+        _mark_locally(key)
+    except Exception:  # noqa: BLE001 - alerting must never break the gateway
+        logger.exception(
+            "Unpriced-model alert bookkeeping failed for provider %s",
+            provider_name,
+        )
+        return False
+
+    subject = f"Preloop: no pricing for model {model_alias}"
+    message = (
+        "Preloop metered gateway usage it could not price, so this traffic "
+        "shows no cost for the customer.\n\n"
+        f"Model alias: {model_alias}\n"
+        f"Provider: {provider_name or 'unknown'}\n"
+        f"Account: {account_id}\n"
+        f"Tokens on triggering request: {total_tokens:,}\n\n"
+        "Add pricing for this model (or a per-account price override), then "
+        "reprice historical rows with the usage repricing task so the "
+        "customer's dashboard becomes accurate retroactively.\n"
+        f"Further alerts for this model are suppressed for {window}h."
+    )
+
+    try:
+        notify_admins(subject, message)
+    except Exception:  # noqa: BLE001 - never raise into the request path
+        logger.exception("Failed to send unpriced-model notification")
+        return False
+    return True
