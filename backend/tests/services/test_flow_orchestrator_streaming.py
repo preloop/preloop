@@ -737,3 +737,44 @@ class TestMonitoringIntegration:
             except asyncio.CancelledError:
                 # Expected when cancelling the orchestrator run task in the test.
                 pass
+
+
+class TestUserStopResult:
+    """A user-requested stop must not be reported as a timeout."""
+
+    @pytest.mark.asyncio
+    async def test_stop_returns_stopped_status_not_timeout(self, orchestrator):
+        """Regression: stop used to fall through to the timeout branch.
+
+        Executions cancelled after a few seconds were persisted with
+        "Execution timed out after 3600 seconds", which was both a wrong
+        status (FAILED instead of STOPPED) and a nonsensical message.
+        """
+        from preloop.agents.base import AgentStatus
+
+        mock_agent_executor = AsyncMock()
+        mock_agent_executor.get_status = AsyncMock(return_value=AgentStatus.RUNNING)
+        mock_agent_executor.stop = AsyncMock()
+
+        async def mock_stream(session_reference):
+            yield "Test log"
+
+        mock_agent_executor.stream_logs = mock_stream
+
+        orchestrator.flow = MagicMock()
+        orchestrator.flow.agent_type = "test"
+        orchestrator.flow.agent_config = {}
+        orchestrator.execution_logger.get_actions_taken = MagicMock(return_value=[])
+        orchestrator.execution_logger.get_mcp_usage_logs = MagicMock(return_value=[])
+        orchestrator.execution_logger.log_milestone = MagicMock()
+
+        orchestrator._stop_requested.set()
+
+        result = await orchestrator._monitor_agent_execution(
+            "session-123", mock_agent_executor
+        )
+
+        assert result["status"] == "STOPPED"
+        assert "timed out" not in (result["error_message"] or "")
+        assert "stopped by user request" in result["error_message"]
+        mock_agent_executor.stop.assert_any_call("session-123")

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **PR reviewer flows killed by a false "repeated MCP tool loop"**: removing a
+  reaction that was already gone (the `eyes` "I'm looking at this" marker that
+  PR-review presets clear when finishing) was reported by
+  `update_pull_request` as `FAILED: remove reaction (eyes)`. Agents believed
+  the call had failed and retried it verbatim; after four identical retries the
+  orchestrator's loop guard stopped the run and marked the whole execution
+  FAILED — even though the review had already been posted to the PR. Reaction
+  removal is now idempotent: "already absent" is reported as success. This was
+  the single largest source of PR-reviewer failures for daily users.
+
+- **User-requested stops reported as "Execution timed out after 3600 seconds"**:
+  the stop branch of the agent monitoring loop used `break`, falling through to
+  the timeout handler at the end of the loop. Executions cancelled after a few
+  seconds were persisted as FAILED with a bogus 3600-second timeout message.
+  Stops now return status `STOPPED` with an accurate elapsed time.
+
+- **Opaque git checkout failures**: every step of the checkout fallback chain
+  discards stderr, so an unrecoverable failure produced only
+  `FATAL ERROR: Could not checkout commit <sha>` with no cause. The failure
+  path now re-runs the fetch/checkout with stderr attached and prints the
+  remote plus available refs, so the log shows whether the commit was
+  force-pushed away, the ref is missing, or credentials failed.
+
 ## [0.14.0] - 2026-08-07
 
 Highlights: **Cursor usage import** brings bundled-model spend into Cost
