@@ -176,7 +176,7 @@ func detectClaudeCodeAuthState() (agentAuthState, string) {
 		return agentAuthStateReady, "API key configured in ~/.claude.json"
 	}
 	if claudeKeychainPresenceProbe() {
-		return agentAuthStateReady, "OS keychain entry present (service: Claude Code-credentials)"
+		return agentAuthStateReady, "OS keychain entry present (service: \"Claude Code-credentials\")"
 	}
 	return agentAuthStateNotLoggedIn, "no credential file, keychain entry, or API key found"
 }
@@ -187,7 +187,7 @@ func detectCodexAuthState() (agentAuthState, string) {
 	if err != nil {
 		if os.IsNotExist(err) {
 			if codexKeychainPresenceProbe() {
-				return agentAuthStateReady, "OS keychain entry present (service: Codex Auth)"
+				return agentAuthStateReady, "OS keychain entry present (service: \"Codex Auth\")"
 			}
 			return agentAuthStateNotLoggedIn, "no auth.json found"
 		}

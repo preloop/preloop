@@ -96,6 +96,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   NOT aliased to their undated entry: they are separately priced SKUs, and the
   fallback would have overstated cost by ~55% for that model. Models that still
   cannot be priced stay explicitly unpriced rather than being given a guess.
+- **Re-onboarding could reactivate an enrollment server-side and then refuse
+  it locally**: when `preloop agents onboard` matched an existing enrollment by
+  a v1 or legacy runtime-principal id, it PATCHed `lifecycle_action=reenroll`
+  and printed "Reactivated ..." *before* deciding whether to re-attach — and
+  the re-attach confirmation only ever ran for fuzzy ("fallback") matches. An
+  interactive run without `-y` therefore failed with "declined re-attaching
+  enrollment ..." without ever asking, leaving the account with a reactivated
+  agent and the machine with no config written. The confirmation now runs for
+  every non-v2 match (default yes) and happens before any server-side change;
+  if the subsequent re-key fails, the enrollment is restored to its previous
+  lifecycle state instead of being left reactivated.
+- **Paused (suspended) enrollments are now resumed automatically on
+  re-onboarding**: only decommissioned agents were revived, so re-onboarding a
+  suspended agent left it suspended and every token issuance for it kept
+  failing with 403. Onboarding now maps the lifecycle state to the correct
+  revival action — `decommissioned` → `reenroll`, `suspended` → `resume`, per
+  the backend's lifecycle map — and prints "Resuming paused enrollment ..."
+  before doing it.
+- **`preloop login` no longer re-authenticates when you are already signed
+  in**: it prints the current identity and exits; pass `--force` to switch
+  accounts. `--token` and non-interactive logins are unchanged. The install
+  script does the same check before prompting, so re-running the installer on
+  a machine that already has a valid session goes straight to onboarding
+  instead of asking you to log in again.
+- **Keychain service names in onboarding output are now quoted**, so the
+  hyphenated macOS service `"Claude Code-credentials"` can no longer be
+  misread as running into the surrounding prose.
 
 ### Added
 
@@ -110,6 +137,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`scripts/reprice_unpriced_usage.py`**: operator script to backfill costs for
   historical rows recorded while a model was unpriced. Dry run by default;
   requires `--apply` to persist.
+
+- **`test:integration:cli-onboard` CI job** (manual): builds the CLI from the
+  branch, onboards a planted Claude Code install in API-key mode against the
+  deployed test environment, and asserts that the enrollment routes through the
+  gateway and that a request made with the minted credential is metered. Shares
+  its onboarding semantics with the recorded e2e rig module 08 via
+  `scripts/e2e-rig/lib/cli_onboard.py`. Uses the existing `PRELOOP_TEST_API_KEY`
+  variable; no new secrets.
+- **`test:unit:scripts` CI job**: runs the install script's shell-helper tests
+  and the e2e rig's pure-python unit tests, neither of which any existing job
+  executed.
 
 ## [0.14.0] - 2026-08-07
 

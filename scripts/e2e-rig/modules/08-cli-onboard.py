@@ -5,7 +5,6 @@ over ssh and is recorded to an asciicast (pexpect+agg pipeline, never vhs).
 
 from __future__ import annotations
 
-import json
 import subprocess
 import sys
 import time
@@ -14,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
 import capture  # noqa: E402
+import cli_onboard  # noqa: E402
 import riglib  # noqa: E402
 
 HOST = riglib.env("RIG_HOST")
@@ -23,7 +23,8 @@ CLI_VERSION = riglib.env("RIG_CLI_VERSION")
 CAST = riglib.run_dir() / "casts" / "08-cli-onboard.cast"
 MP4 = riglib.run_dir() / "casts" / "08-cli-onboard.mp4"
 # The CLI's own login persistence target (see cli/internal/config/config.go).
-CLI_CONFIG_FILE = "$HOME/.preloop/config.yaml"
+# Shared with the CI twin (scripts/e2e-rig/ci_cli_onboard.py) via lib/cli_onboard.py.
+CLI_CONFIG_FILE = f"$HOME/{cli_onboard.CLI_CONFIG_RELPATH}"
 
 
 def ssh(cmd: str, check: bool = True) -> subprocess.CompletedProcess:
@@ -56,11 +57,7 @@ def stage_cli_login(token: str) -> None:
     secret. The recorded scene then runs `preloop auth status`, which
     verifies the stored login against the server on camera.
     """
-    config_yaml = (
-        f"access_token: {json.dumps(token)}\n"
-        f'refresh_token: ""\n'
-        f"api_url: {json.dumps(URL)}\n"
-    )
+    config_yaml = cli_onboard.login_config_yaml(token, URL)
     subprocess.run(
         [
             "ssh",
@@ -151,19 +148,16 @@ def main() -> None:
 
     # Structured post-check (not recorded): what actually got onboarded.
     result = ssh("preloop agents list --json 2>/dev/null || true", check=False)
-    agents = []
-    try:
-        parsed = json.loads(result.stdout or "[]")
-        agents = parsed if isinstance(parsed, list) else parsed.get("agents", [])
-    except json.JSONDecodeError:
+    agents = cli_onboard.agents_from_list_json(result.stdout)
+    if not agents:
         riglib.note("agents list --json unavailable/unparseable; saving raw text")
         (riglib.run_dir() / "state" / "onboarded-agents.txt").write_text(result.stdout)
     riglib.save_state("onboarded-agents.json", agents)
 
-    names = [a.get("display_name") for a in agents if isinstance(a, dict)]
+    names = cli_onboard.onboarded_agent_names(agents)
     if not names:
         raise SystemExit("no agents onboarded — check the cast/log")
-    riglib.note(f"onboarded agents: {', '.join(str(n) for n in names)}")
+    riglib.note(f"onboarded agents: {', '.join(names)}")
 
 
 if __name__ == "__main__":

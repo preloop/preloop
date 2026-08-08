@@ -2738,7 +2738,7 @@ func resolveGeminiKeyringAPIKey() (string, string) {
 	}
 	if apiKey := extractGeminiAPIKeyFromCredentialBlob(raw); apiKey != "" {
 		return apiKey, fmt.Sprintf(
-			"Resolved Gemini CLI API key from OS secure storage (service: %s, account: %s).",
+			"Resolved Gemini CLI API key from OS secure storage (service: %q, account: %q).",
 			geminiAPIKeyServiceName,
 			geminiAPIKeyAccountName,
 		)
@@ -2961,7 +2961,7 @@ func resolveClaudeManagedAPIKey() (string, string) {
 	if runtime.GOOS == "darwin" {
 		if user := strings.TrimSpace(os.Getenv("USER")); user != "" {
 			if token, err := keyring.Get("Claude Code", user); err == nil && strings.TrimSpace(token) != "" {
-				return strings.TrimSpace(token), "Resolved Claude Code managed API key from OS Keychain (service: Claude Code)."
+				return strings.TrimSpace(token), "Resolved Claude Code managed API key from OS Keychain (service: \"Claude Code\")."
 			}
 		}
 	}
@@ -3010,7 +3010,7 @@ func resolveClaudeKeychainToken() (string, string) {
 	}
 	if raw := readClaudeKeychainCredentialBlob(); raw != "" {
 		if token := extractClaudeTokenFromCredentialBlob(raw); token != "" {
-			return token, "Resolved Claude Code auth token from OS Keychain (service: Claude Code-credentials)."
+			return token, "Resolved Claude Code auth token from OS Keychain (service: \"Claude Code-credentials\")."
 		}
 	}
 	candidates := []string{}
@@ -3037,7 +3037,7 @@ func resolveClaudeKeychainToken() (string, string) {
 		}
 		if token := extractClaudeTokenFromCredentialBlob(secret); token != "" {
 			return token, fmt.Sprintf(
-				"Resolved Claude Code auth token from OS Keychain (service: Claude Code-credentials, account: %s).",
+				"Resolved Claude Code auth token from OS Keychain (service: \"Claude Code-credentials\", account: %s).",
 				account,
 			)
 		}
@@ -3128,7 +3128,7 @@ func resolveClaudeKeychainOAuthCredential() (*claudeOAuthCredential, string) {
 			raw,
 			time.Now().UTC().Add(time.Hour).UnixMilli(),
 		); credential != nil {
-			return credential, "Resolved Claude Code OAuth credentials from OS Keychain (service: Claude Code-credentials)."
+			return credential, "Resolved Claude Code OAuth credentials from OS Keychain (service: \"Claude Code-credentials\")."
 		}
 	}
 	return nil, ""
@@ -3720,7 +3720,7 @@ func readCodexKeychainOAuthCredential() (*codexOAuthCredential, string) {
 		return nil, ""
 	}
 	return credential, fmt.Sprintf(
-		"Resolved Codex ChatGPT OAuth credentials from OS Keychain (service: Codex Auth, account: %s).",
+		"Resolved Codex ChatGPT OAuth credentials from OS Keychain (service: \"Codex Auth\", account: %s).",
 		account,
 	)
 }
@@ -7428,22 +7428,22 @@ func resolveOpenClawProviderAPIKey(
 
 		for _, account := range accountsToCheck {
 			if secret, err := keyring.Get("openclaw", account); err == nil && secret != "" {
-				return secret, fmt.Sprintf("Resolved OpenClaw provider API key from OS Keychain (service: openclaw, account: %s).", account)
+				return secret, fmt.Sprintf("Resolved OpenClaw provider API key from OS Keychain (service: \"openclaw\", account: %s).", account)
 			}
 
 			// Fallback check for "OpenClaw" capitalized service name
 			if secret, err := keyring.Get("OpenClaw", account); err == nil && secret != "" {
-				return secret, fmt.Sprintf("Resolved OpenClaw provider API key from OS Keychain (service: OpenClaw, account: %s).", account)
+				return secret, fmt.Sprintf("Resolved OpenClaw provider API key from OS Keychain (service: \"OpenClaw\", account: %s).", account)
 			}
 
 			// Fallback check for "openclaw-ai" NPM package service name
 			if secret, err := keyring.Get("openclaw-ai", account); err == nil && secret != "" {
-				return secret, fmt.Sprintf("Resolved OpenClaw provider API key from OS Keychain (service: openclaw-ai, account: %s).", account)
+				return secret, fmt.Sprintf("Resolved OpenClaw provider API key from OS Keychain (service: \"openclaw-ai\", account: %s).", account)
 			}
 
 			// Fallback check for "OpenClaw-AI" package service name
 			if secret, err := keyring.Get("OpenClaw-AI", account); err == nil && secret != "" {
-				return secret, fmt.Sprintf("Resolved OpenClaw provider API key from OS Keychain (service: OpenClaw-AI, account: %s).", account)
+				return secret, fmt.Sprintf("Resolved OpenClaw provider API key from OS Keychain (service: \"OpenClaw-AI\", account: %s).", account)
 			}
 		}
 

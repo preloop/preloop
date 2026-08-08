@@ -1,7 +1,8 @@
 """Unit tests for the e2e rig's pure-python logic.
 
-Covers snapshot_diff (the offboarding-assertion semantics) and the output
-redaction shared by lib/riglib.py and research_agent.py. Stdlib + pytest
+Covers snapshot_diff (the offboarding-assertion semantics), the output
+redaction shared by lib/riglib.py and research_agent.py, and cli_onboard (the
+onboarding semantics shared by module 08 and its CI twin). Stdlib + pytest
 only; no VM, network, or recording toolchain involved.
 
 Run: pytest scripts/e2e-rig/tests
@@ -19,6 +20,7 @@ RIG_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(RIG_DIR))
 sys.path.insert(0, str(RIG_DIR / "lib"))
 
+import cli_onboard  # noqa: E402
 import research_agent  # noqa: E402
 import riglib  # noqa: E402
 import snapshot_diff  # noqa: E402
@@ -179,3 +181,82 @@ class TestCompareSnapshots:
         write(final, ".config/opencode/config.json", "{}")
         report = snapshot_diff.compare_snapshots(baseline, final, tmp_path / "diffs")
         assert report["verdict"] == "PASS"
+
+
+# --- cli_onboard (shared by module 08 and ci_cli_onboard.py) ----------------
+
+
+class TestLoginConfigYaml:
+    def test_matches_the_cli_config_schema(self):
+        out = cli_onboard.login_config_yaml("tok", "https://preloop.example/")
+        assert 'access_token: "tok"' in out
+        assert 'refresh_token: ""' in out
+        # Trailing slash stripped: the CLI joins paths onto api_url directly.
+        assert 'api_url: "https://preloop.example"' in out
+
+    def test_quotes_tokens_that_would_break_yaml(self):
+        # A raw `a: b` scalar containing ": " parses as a nested mapping.
+        out = cli_onboard.login_config_yaml("ab: cd#ef", "https://x")
+        assert 'access_token: "ab: cd#ef"' in out
+
+
+class TestAgentsFromListJson:
+    def test_bare_array(self):
+        agents = cli_onboard.agents_from_list_json('[{"display_name": "Claude Code"}]')
+        assert cli_onboard.onboarded_agent_names(agents) == ["Claude Code"]
+
+    def test_paged_object_shape(self):
+        agents = cli_onboard.agents_from_list_json('{"items": [{"display_name": "x"}]}')
+        assert cli_onboard.onboarded_agent_names(agents) == ["x"]
+
+    def test_unparseable_is_empty_not_fatal(self):
+        assert cli_onboard.agents_from_list_json("not json at all") == []
+
+    def test_entries_without_a_name_are_not_counted_as_onboarded(self):
+        agents = cli_onboard.agents_from_list_json('[{"id": "a"}]')
+        assert cli_onboard.onboarded_agent_names(agents) == []
+
+
+class TestFindAgentsBySourceType:
+    def test_case_insensitive_match(self):
+        agents = [
+            {"session_source_type": "Claude_Code"},
+            {"session_source_type": "codex"},
+        ]
+        assert cli_onboard.find_agents_by_source_type(agents, "claude_code") == [
+            agents[0]
+        ]
+
+    def test_no_match(self):
+        assert cli_onboard.find_agents_by_source_type([{"a": 1}], "claude_code") == []
+
+
+class TestIsGatewayRouted:
+    def test_boolean_signal(self):
+        assert cli_onboard.is_gateway_routed({"model_gateway_configured": True})
+
+    def test_state_string_fallback(self):
+        assert cli_onboard.is_gateway_routed({"onboarding_state": "fully_onboarded"})
+
+    def test_mcp_only_enrollment_is_not_routed(self):
+        assert not cli_onboard.is_gateway_routed({"onboarding_state": "mcp_proxy_only"})
+
+
+class TestGatewayEnvFromSettings:
+    def test_reads_what_onboarding_writes(self):
+        settings = {
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://preloop.example/anthropic/",
+                "ANTHROPIC_API_KEY": "pl-durable",
+            }
+        }
+        assert cli_onboard.gateway_env_from_settings(settings) == (
+            "https://preloop.example/anthropic",
+            "pl-durable",
+        )
+
+    def test_missing_env_block(self):
+        assert cli_onboard.gateway_env_from_settings({"model": "x"}) == ("", "")
+
+    def test_non_dict_input(self):
+        assert cli_onboard.gateway_env_from_settings(None) == ("", "")
