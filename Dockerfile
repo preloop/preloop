@@ -29,7 +29,17 @@ RUN pip install --no-cache-dir --require-hashes -r requirements/docker-build.txt
 COPY backend/ backend/
 COPY scripts/ scripts/
 
-# Install the main application
+# Install the main application.
+#
+# Scorecard's Pinned-Dependencies check flags this line ("pipCommand not pinned
+# by hash"). It only accepts an editable install when `--no-deps` is also
+# passed, because it cannot verify transitive dependencies otherwise. We do not
+# do that here: `--no-deps` would install the `preloop` package with *none* of
+# its runtime dependencies (fastapi, sqlalchemy, pydantic, ...), producing an
+# image that fails on import. The build tooling this step relies on (pip,
+# setuptools, wheel, build) IS hash-pinned, above, via
+# requirements/docker-build.txt. Accepting the warning is the correct trade-off
+# until the application dependency set itself is lockfile-managed.
 RUN pip install --no-cache-dir -e .
 
 # Expose the port
