@@ -2981,3 +2981,73 @@ def test_detect_platform_from_url_unknown():
     with pytest.raises(ValueError) as exc_info:
         mcp._detect_platform_from_url("https://example.com/unknown/path")
     assert "Cannot determine platform" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_update_pull_request_remove_absent_reaction_is_success(
+    db_session: Session, test_user: User
+):
+    """Removing a reaction that is already gone must report success.
+
+    Regression: the tool reported "FAILED: remove reaction (eyes)" when the
+    reaction was not present. Agents then retried the identical call until the
+    orchestrator's repeated-MCP-tool-loop guard killed the whole execution,
+    after the review had already been posted.
+    """
+    tracker = Tracker(
+        name="test-tracker-absent-reaction",
+        account_id=test_user.account_id,
+        tracker_type="github",
+        api_key="test_key",
+        url="https://github.com",
+    )
+    db_session.add(tracker)
+    db_session.commit()
+
+    organization = Organization(
+        name="test-org-absent-reaction",
+        identifier="test-org-absent-reaction",
+        tracker_id=tracker.id,
+    )
+    db_session.add(organization)
+    db_session.commit()
+
+    project = Project(
+        name="owner/repo",
+        identifier="owner/repo",
+        slug="owner/repo",
+        organization_id=organization.id,
+    )
+    db_session.add(project)
+    db_session.commit()
+
+    with (
+        patch("preloop.api.endpoints.mcp.get_http_request") as mock_get_request,
+        patch("preloop.api.endpoints.mcp.get_db") as mock_get_db,
+        patch(
+            "preloop.api.endpoints.mcp._get_authenticated_user",
+            new_callable=AsyncMock,
+        ) as mock_auth,
+        patch(
+            "preloop.api.endpoints.mcp.get_tracker_client",
+            new_callable=AsyncMock,
+        ) as mock_get_tracker,
+    ):
+        mock_get_request.return_value.headers = {"authorization": "Bearer testtoken"}
+        mock_get_db.return_value = iter([db_session])
+        mock_auth.return_value = (db_session, test_user)
+
+        mock_tracker = MagicMock()
+        mock_tracker.tracker_type = "github"
+        # False == "no such reaction found to remove"
+        mock_tracker.remove_issue_reaction = AsyncMock(return_value=False)
+        mock_get_tracker.return_value = mock_tracker
+
+        response = await mcp.update_pull_request(
+            pull_request="owner/repo#123",
+            remove_reaction="eyes",
+        )
+
+    assert response.status == "updated"
+    assert "FAILED" not in response.message
+    assert "already absent" in response.message
