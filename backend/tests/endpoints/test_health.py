@@ -28,7 +28,7 @@ class TestHealthCheck:
         mock_pool.get_active_servers.return_value = ["server1", "server2"]
         mock_get_client_pool.return_value = mock_pool
 
-        result = health_check(db=mock_db_session)
+        result = health_check()
 
         assert result["status"] == "healthy"
         assert result["database"] == "connected"
@@ -55,7 +55,7 @@ class TestHealthCheck:
         mock_pool.get_active_servers.return_value = []
         mock_get_client_pool.return_value = mock_pool
 
-        result = health_check(db=mock_db_session)
+        result = health_check()
 
         assert result["status"] == "unhealthy"
         # Health responses expose exception type only (no detail / stack).
@@ -82,7 +82,7 @@ class TestHealthCheck:
         mock_pool.get_active_servers.return_value = []
         mock_get_client_pool.return_value = mock_pool
 
-        result = health_check(db=mock_db_session)
+        result = health_check()
 
         assert result["status"] == "healthy"
         assert result["database"] == "connected"
@@ -108,7 +108,7 @@ class TestHealthCheck:
         mock_pool.get_active_servers.return_value = []
         mock_get_client_pool.return_value = mock_pool
 
-        result = health_check(db=mock_db_session)
+        result = health_check()
 
         assert result["status"] == "healthy"
         assert result["database"] == "connected"
@@ -133,7 +133,7 @@ class TestHealthCheck:
         # Mock MCP client pool error
         mock_get_client_pool.side_effect = Exception("Client pool unavailable")
 
-        result = health_check(db=mock_db_session)
+        result = health_check()
 
         assert result["status"] == "healthy"
         assert result["database"] == "connected"
@@ -160,7 +160,7 @@ class TestHealthCheck:
         mock_pool.get_active_servers.return_value = []
         mock_get_client_pool.return_value = mock_pool
 
-        result = health_check(db=mock_db_session)
+        result = health_check()
 
         assert result["status"] == "healthy"
         assert result["database"] == "connected"
@@ -171,5 +171,45 @@ class TestHealthCheck:
 
 @pytest.fixture
 def mock_db_session():
-    """Create a mock database session."""
-    return MagicMock()
+    """Patch the dedicated health engine and expose its connection mock.
+
+    The health endpoint no longer takes a pooled request session; it uses a
+    small dedicated engine so probes stay answerable while the request pool is
+    saturated. Tests configure ``.execute`` exactly as before.
+    """
+    conn = MagicMock()
+    engine = MagicMock()
+    engine.connect.return_value.__enter__.return_value = conn
+    with patch("preloop.api.endpoints.health.get_health_engine", return_value=engine):
+        yield conn
+
+
+class TestPingLiveness:
+    """The liveness probe must survive database saturation."""
+
+    def test_ping_is_async(self):
+        """Regression guard for the 2026-08-08 gateway SIGKILL.
+
+        A sync ``def`` endpoint runs in Starlette's bounded anyio threadpool.
+        When sync DB endpoints block that pool waiting on connection checkout,
+        a sync /ping queues behind them, the liveness probe times out and
+        Kubernetes kills the pod. Staying async keeps liveness on the event
+        loop and independent of the DB.
+        """
+        import inspect
+
+        from preloop.api.endpoints.health import ping
+
+        assert inspect.iscoroutinefunction(ping)
+
+    def test_ping_does_not_touch_database(self):
+        """/ping must never acquire a database connection."""
+        import asyncio
+
+        from preloop.api.endpoints.health import ping
+
+        with patch("preloop.api.endpoints.health.get_health_engine") as engine:
+            result = asyncio.run(ping())
+
+        assert not engine.called
+        assert result["status"] == "pong"
