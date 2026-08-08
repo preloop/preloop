@@ -4958,21 +4958,20 @@ func ensureManagedAgentIdentityReady(
 		return agent, nil, nil
 	}
 
-	if strings.EqualFold(strings.TrimSpace(matched.LifecycleState), "decommissioned") {
-		reenrolled, err := reenrollArchivedManagedAgent(
-			client,
-			matched,
-			autoApprove,
-			input,
-			output,
-		)
-		if err != nil {
-			return agent, nil, err
-		}
-		matched = reenrolled
-	}
-
 	if matchKind == "v2" {
+		if managedAgentLifecycleRevivalAction(matched.LifecycleState) != "" {
+			revived, err := reenrollArchivedManagedAgent(
+				client,
+				matched,
+				autoApprove,
+				input,
+				output,
+			)
+			if err != nil {
+				return agent, nil, err
+			}
+			matched = revived
+		}
 		agent.RuntimePrincipalID = matched.SessionSourceID
 		_ = pinLocalRuntimePrincipalID(agent, matched.SessionSourceID)
 		if strings.TrimSpace(agent.DisplayName) == "" {
@@ -4981,9 +4980,13 @@ func ensureManagedAgentIdentityReady(
 		return agent, matched, nil
 	}
 
-	// v1/legacy/fallback: re-key to v2 before continuing.
-	reuse := autoApprove || nonInteractiveAutoConfirm() || matchKind == "fallback"
-	if matchKind == "fallback" && !autoApprove && !nonInteractiveAutoConfirm() {
+	// v1/legacy/fallback: confirm re-attaching BEFORE any server mutation so
+	// declining leaves the server record exactly as it was (previously the
+	// reenroll PATCH ran first and v1/legacy interactive runs errored with
+	// "declined re-attaching enrollment" without ever prompting, leaving a
+	// reactivated server enrollment with no local config — split-brain).
+	reuse := autoApprove || nonInteractiveAutoConfirm()
+	if !reuse {
 		confirmed, err := confirmActionDefaultYes(
 			bufio.NewReader(input),
 			output,
@@ -5006,7 +5009,23 @@ func ensureManagedAgentIdentityReady(
 			matched.ID,
 		)
 	}
+	priorLifecycleState := matched.LifecycleState
+	revivedBeforeRekey := false
+	if managedAgentLifecycleRevivalAction(matched.LifecycleState) != "" {
+		revived, err := reviveManagedAgentLifecycle(client, matched, output)
+		if err != nil {
+			return agent, nil, err
+		}
+		matched = revived
+		revivedBeforeRekey = true
+	}
 	if err := rekeyManagedAgentRecord(client, matched.ID, v2ID, principalIdentityForAgent(agent)); err != nil {
+		if revivedBeforeRekey {
+			// Best effort: put the enrollment back the way we found it so a
+			// failed re-key does not leave a reactivated server record with
+			// no local config.
+			restoreManagedAgentLifecycle(client, matched, priorLifecycleState, output)
+		}
 		return agent, nil, err
 	}
 	agent.RuntimePrincipalID = v2ID
@@ -5119,10 +5138,138 @@ func ensureArchivedManagedAgentReenrolled(
 	if matched == nil {
 		return nil, nil
 	}
-	if !strings.EqualFold(strings.TrimSpace(matched.LifecycleState), "decommissioned") {
+	if managedAgentLifecycleRevivalAction(matched.LifecycleState) == "" {
 		return matched, nil
 	}
 	return reenrollArchivedManagedAgent(client, matched, autoApprove, input, output)
+}
+
+// managedAgentLifecycleRevivalAction maps a non-active lifecycle state to the
+// PATCH lifecycle_action that revives it (see the lifecycle map in
+// backend/preloop/api/endpoints/account.py): a decommissioned (archived)
+// agent is revived with "reenroll", a suspended (paused) agent with "resume".
+// Returns "" when the agent needs no revival.
+func managedAgentLifecycleRevivalAction(lifecycleState string) string {
+	switch strings.ToLower(strings.TrimSpace(lifecycleState)) {
+	case "decommissioned":
+		return "reenroll"
+	case "suspended":
+		return "resume"
+	default:
+		return ""
+	}
+}
+
+// reviveManagedAgentLifecycle PATCHes the revival lifecycle_action for a
+// suspended or decommissioned managed agent without prompting (callers are
+// expected to have confirmed with the user already).
+func reviveManagedAgentLifecycle(
+	client *api.Client,
+	matched *managedAgentSummary,
+	output io.Writer,
+) (*managedAgentSummary, error) {
+	if matched == nil {
+		return nil, nil
+	}
+	if output == nil {
+		output = os.Stdout
+	}
+	action := managedAgentLifecycleRevivalAction(matched.LifecycleState)
+	if action == "" {
+		return matched, nil
+	}
+	if action == "resume" {
+		fmt.Fprintf( //nolint:errcheck
+			output,
+			"Resuming paused enrollment %s (%s)...\n",
+			matched.DisplayName,
+			matched.ID,
+		)
+	}
+	request := map[string]interface{}{
+		"lifecycle_action": action,
+	}
+	var updated managedAgentSummary
+	if err := client.Patch("/api/v1/agents/"+matched.ID, request, &updated); err != nil {
+		return nil, fmt.Errorf(
+			"failed to %s managed agent %q: %w", action, matched.ID, err,
+		)
+	}
+	fmt.Fprintf( //nolint:errcheck
+		output,
+		"Reactivated enrollment %s (%s).\n",
+		matched.DisplayName,
+		matched.ID,
+	)
+	mergeRevivedManagedAgentSummary(&updated, matched)
+	return &updated, nil
+}
+
+// restoreManagedAgentLifecycle best-effort re-applies the prior lifecycle
+// state after a failed follow-up step, so a decline/failure does not leave the
+// server record reactivated while the local install has no config.
+func restoreManagedAgentLifecycle(
+	client *api.Client,
+	matched *managedAgentSummary,
+	priorLifecycleState string,
+	output io.Writer,
+) {
+	if matched == nil || client == nil {
+		return
+	}
+	if output == nil {
+		output = os.Stdout
+	}
+	var action string
+	switch strings.ToLower(strings.TrimSpace(priorLifecycleState)) {
+	case "decommissioned":
+		action = "decommission"
+	case "suspended":
+		action = "suspend"
+	default:
+		return
+	}
+	request := map[string]interface{}{
+		"lifecycle_action": action,
+		"reason":           "rolled back: re-onboarding did not complete",
+	}
+	var updated managedAgentSummary
+	if err := client.Patch("/api/v1/agents/"+matched.ID, request, &updated); err != nil {
+		fmt.Fprintf( //nolint:errcheck
+			output,
+			"Warning: could not restore enrollment %s to %s after failure: %v\n",
+			matched.ID,
+			priorLifecycleState,
+			err,
+		)
+		return
+	}
+	fmt.Fprintf( //nolint:errcheck
+		output,
+		"Restored enrollment %s to %s after failure.\n",
+		matched.ID,
+		priorLifecycleState,
+	)
+}
+
+// mergeRevivedManagedAgentSummary fills fields the PATCH response may omit
+// from the previously fetched summary.
+func mergeRevivedManagedAgentSummary(updated, previous *managedAgentSummary) {
+	if strings.TrimSpace(updated.ID) == "" {
+		updated.ID = previous.ID
+	}
+	if strings.TrimSpace(updated.DisplayName) == "" {
+		updated.DisplayName = previous.DisplayName
+	}
+	if strings.TrimSpace(updated.SessionSourceID) == "" {
+		updated.SessionSourceID = previous.SessionSourceID
+	}
+	if strings.TrimSpace(updated.SessionSourceType) == "" {
+		updated.SessionSourceType = previous.SessionSourceType
+	}
+	if strings.TrimSpace(updated.LifecycleState) == "" {
+		updated.LifecycleState = "active"
+	}
 }
 
 func reenrollArchivedManagedAgent(
@@ -5142,58 +5289,64 @@ func reenrollArchivedManagedAgent(
 		output = os.Stdout
 	}
 
+	action := managedAgentLifecycleRevivalAction(matched.LifecycleState)
+	if action == "" {
+		return matched, nil
+	}
+	stateLabel := "archived"
+	if action == "resume" {
+		stateLabel = "paused"
+	}
+
 	reuse := autoApprove || nonInteractiveAutoConfirm()
 	if !reuse {
 		confirmed, err := confirmActionDefaultYes(
 			bufio.NewReader(input),
 			output,
 			fmt.Sprintf(
-				"An archived enrollment for this install already exists as '%s'. Reuse it? [Y/n]: ",
+				"An %s enrollment for this install already exists as '%s'. Reuse it? [Y/n]: ",
+				stateLabel,
 				matched.DisplayName,
 			),
 		)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read reenroll confirmation: %w", err)
+			return nil, fmt.Errorf("failed to read %s confirmation: %w", action, err)
 		}
 		reuse = confirmed
 	}
 	if !reuse {
 		return nil, fmt.Errorf(
-			"declined reusing archived enrollment %s (%s). Run 'preloop agents remove %s' first if you want a fresh identity",
+			"declined reusing %s enrollment %s (%s). Run 'preloop agents remove %s' first if you want a fresh identity",
+			stateLabel,
 			matched.DisplayName,
 			matched.ID,
 			matched.ID,
 		)
 	}
 
+	if action == "resume" {
+		fmt.Fprintf( //nolint:errcheck
+			output,
+			"Resuming paused enrollment %s (%s)...\n",
+			matched.DisplayName,
+			matched.ID,
+		)
+	}
 	request := map[string]interface{}{
-		"lifecycle_action": "reenroll",
+		"lifecycle_action": action,
 	}
 	var updated managedAgentSummary
 	if err := client.Patch("/api/v1/agents/"+matched.ID, request, &updated); err != nil {
-		return nil, fmt.Errorf("failed to reenroll archived managed agent %q: %w", matched.ID, err)
+		return nil, fmt.Errorf("failed to %s %s managed agent %q: %w", action, stateLabel, matched.ID, err)
 	}
 	fmt.Fprintf( //nolint:errcheck
 		output,
-		"Reactivated archived enrollment %s (%s).\n",
+		"Reactivated %s enrollment %s (%s).\n",
+		stateLabel,
 		matched.DisplayName,
 		matched.ID,
 	)
-	if strings.TrimSpace(updated.ID) == "" {
-		updated.ID = matched.ID
-	}
-	if strings.TrimSpace(updated.DisplayName) == "" {
-		updated.DisplayName = matched.DisplayName
-	}
-	if strings.TrimSpace(updated.SessionSourceID) == "" {
-		updated.SessionSourceID = matched.SessionSourceID
-	}
-	if strings.TrimSpace(updated.SessionSourceType) == "" {
-		updated.SessionSourceType = matched.SessionSourceType
-	}
-	if strings.TrimSpace(updated.LifecycleState) == "" {
-		updated.LifecycleState = "active"
-	}
+	mergeRevivedManagedAgentSummary(&updated, matched)
 	return &updated, nil
 }
 

@@ -269,9 +269,42 @@ fi
 PRELOOP_URL="$target_url"
 export PRELOOP_URL
 
-# Step 3: offer to authenticate. If we found local agents we tell the user
-# explicitly that logging in lets us onboard them.
+# existing_login_identity echoes the identity lines of an already-verified
+# login and returns 0; it returns 1 when there is no usable session.
+#
+# `preloop auth status` exits 0 in every case, including its degraded verdicts
+# ("Authenticated (stored login could not be refreshed)", "Authenticated
+# (token may be invalid or server unreachable)") which mean the CLI never
+# confirmed the session with the server. Only the exact "Authenticated" line
+# counts as signed in; everything else must fall through to a real login.
+existing_login_identity() {
+  status_output="$("$1" auth status 2>/dev/null || true)"
+  printf '%s\n' "$status_output" | grep -q '^Authenticated$' || return 1
+  printf '%s\n' "$status_output" | grep -E '^  (User|Email|Org):' || true
+  return 0
+}
+
+# Step 3: offer to authenticate — unless this machine already has a verified
+# session, in which case say who it belongs to and go straight to onboarding.
+# If we found local agents we tell the user explicitly that logging in lets us
+# onboard them.
 echo ""
+if identity_lines="$(existing_login_identity "$PRELOOP_BIN")"; then
+  echo "Already signed in to ${target_url}:"
+  [ -n "$identity_lines" ] && printf '%s\n' "$identity_lines"
+  echo "Run 'preloop login --force' to switch accounts."
+  if [ "$discovered_agents" = "1" ]; then
+    echo ""
+    onboard_ans="$(prompt_default_yes "Onboard discovered agents now? [Y/n]")"
+    case "$onboard_ans" in
+      y|yes)
+        "$PRELOOP_BIN" agents discover < /dev/tty || true
+        ;;
+    esac
+  fi
+  exit 0
+fi
+
 if [ "$discovered_agents" = "1" ]; then
   prompt="Sign in (or sign up) to ${target_url} now to onboard the agents above? [Y/s/n]"
 else

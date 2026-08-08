@@ -54,7 +54,24 @@ Module exit codes: `0` pass, `3` skip (recorded with a note), anything else
 fails the run.
 
 Unit tests for the pure-python pieces (snapshot diff semantics, output
-redaction) live in `tests/` — run them with `pytest scripts/e2e-rig/tests`.
+redaction, the shared onboarding semantics in `lib/cli_onboard.py`) live in
+`tests/` — run them with `pytest scripts/e2e-rig/tests`.
+
+### Headless CI twin
+
+`ci_cli_onboard.py` runs module 08's assertions inside a GitLab job
+(`test:integration:cli-onboard`, manual) against a deployed test environment:
+it onboards a planted Claude Code install in API-key mode and checks that the
+enrollment routes through the gateway and that a request made with the minted
+credential is metered. It cannot be module 08 itself — no VM, no ssh, no
+pexpect/agg in the job container — so the parts that define what "onboarded"
+means (login persistence, `agents list --json` parsing, gateway env
+extraction) live in `lib/cli_onboard.py` and are shared by both.
+
+```bash
+PRELOOP_TEST_URL=https://<env> PRELOOP_TEST_API_KEY=<key> \
+  python3 scripts/e2e-rig/ci_cli_onboard.py
+```
 
 ## Requirements
 
