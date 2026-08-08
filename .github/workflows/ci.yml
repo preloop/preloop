@@ -46,6 +46,10 @@ jobs:
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 
+      # The lint toolchain (pip, pre-commit, ruff) is hash-pinned via lint.txt.
+      # The editable install below is the project itself; Scorecard only accepts
+      # `-e` together with `--no-deps`, which would leave the package importable
+      # but dependency-less and break the run. See the note in Dockerfile.
       - name: Install Python dependencies
         run: |
           pip install --require-hashes -r .github/requirements/lint.txt
@@ -99,6 +103,8 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
+      # Test toolchain hash-pinned via test.txt; see the Dockerfile note for why
+      # the project's own editable install is not `--no-deps`.
       - name: Install dependencies
         run: |
           pip install --require-hashes -r .github/requirements/test.txt
@@ -196,6 +202,8 @@ jobs:
             ${{ runner.os }}-pip-runtime-plugins-
             ${{ runner.os }}-pip-
 
+      # Runtime-plugin test toolchain hash-pinned via runtime-test.txt; see the
+      # Dockerfile note for why the editable install is not `--no-deps`.
       - name: Install Python dependencies
         run: |
           pip install --require-hashes -r .github/requirements/runtime-test.txt
