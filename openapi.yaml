@@ -17299,6 +17299,24 @@ components:
           type: array
           title: Scope Rules
           description: List of scope rules for the tracker
+        degraded_projects:
+          items:
+            type: string
+          type: array
+          title: Degraded Projects
+          description: 'Project identifiers seen on webhooks that never resolved.
+
+
+            These are repositories/projects the tracker receives webhooks for but
+
+            which repeated syncs could not import -- almost always because the
+
+            integration''s scope excludes them (GitHub App installed on selected
+
+            repositories only, or an EXCLUDE scope rule). Surfaced so the user can
+
+            fix the scope instead of the sync retrying forever.'
+          readOnly: true
       type: object
       required:
       - name
@@ -17307,6 +17325,7 @@ components:
       - account_id
       - created
       - last_updated
+      - degraded_projects
       title: TrackerResponse
       description: Response model for tracker data (excluding sensitive info like
         api_key).

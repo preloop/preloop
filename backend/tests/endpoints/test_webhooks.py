@@ -8,6 +8,7 @@ import pytest
 
 from fastapi import HTTPException
 from preloop.api.endpoints import webhooks
+from preloop.models.crud.tracker import UnknownProjectState
 
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
@@ -583,6 +584,103 @@ class TestWebhooksEndpoint:
 
         assert response.status_code == 200
         assert response.json()["status"] == "accepted"
+
+    def _post_unknown_project_webhook(self, org_mock, secret):
+        """POST an issues webhook whose repository id is unknown to us."""
+        payload_dict = {
+            "action": "opened",
+            "issue": {"id": 789, "number": 2, "title": "T", "body": "B"},
+            "repository": {"id": 1327729611, "full_name": "acme/unknown"},
+            "organization": {"id": "test-org-fixture"},
+        }
+        body = json.dumps(payload_dict, separators=(",", ":")).encode("utf-8")
+        signature = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+        return self.test_client.post(
+            f"/api/v1/private/webhooks/github/{org_mock.id}",
+            json=payload_dict,
+            headers={
+                "X-Hub-Signature-256": f"sha256={signature}",
+                "X-GitHub-Event": "issues",
+            },
+        )
+
+    def _unknown_project_org(self, configured_mock_org_fixture, secret):
+        """Wire up an org whose tracker will see an unresolvable project."""
+        org = configured_mock_org_fixture
+        setup_mock_webhook_secret(org, secret)
+        org.tracker = MagicMock(name="MockTrackerUnknownProject")
+        org.tracker.id = "tracker-gh-unknown-project"
+        org.tracker.account_id = "account-1"
+        org.tracker.is_active = True
+        org.tracker.tracker_type = "github"
+        org.tracker.subscribed_events = ["issues"]
+        self.mock_session.query.return_value.options.return_value.filter.return_value.first.return_value = org
+        return org
+
+    @patch("preloop.api.endpoints.webhooks.crud_tracker")
+    @patch("preloop.api.endpoints.webhooks.crud_project")
+    def test_unknown_project_backoff_suppresses_sync(
+        self, mock_crud_project, mock_crud_tracker, configured_mock_org_fixture
+    ):
+        """While backoff is active no sync task is published (the loop fix)."""
+        secret = "unknown-project-secret"
+        org = self._unknown_project_org(configured_mock_org_fixture, secret)
+        mock_crud_project.get_by_identifier.return_value = None
+        mock_crud_tracker.record_unknown_project.return_value = UnknownProjectState(
+            should_sync=False, attempts=2, degraded=False, retry_after_seconds=600
+        )
+
+        response = self._post_unknown_project_webhook(org, secret)
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "accepted"
+        published = [
+            c.args[0] for c in self.mock_task_publisher.publish_task.call_args_list
+        ]
+        assert "poll_tracker" not in published
+
+    @patch("preloop.api.endpoints.webhooks.crud_tracker")
+    @patch("preloop.api.endpoints.webhooks.crud_project")
+    def test_unknown_project_degraded_reports_needs_attention(
+        self, mock_crud_project, mock_crud_tracker, configured_mock_org_fixture
+    ):
+        """Once degraded we stop syncing and say the tracker needs attention."""
+        secret = "unknown-project-degraded-secret"
+        org = self._unknown_project_org(configured_mock_org_fixture, secret)
+        mock_crud_project.get_by_identifier.return_value = None
+        mock_crud_tracker.record_unknown_project.return_value = UnknownProjectState(
+            should_sync=False, attempts=5, degraded=True, retry_after_seconds=3600
+        )
+
+        response = self._post_unknown_project_webhook(org, secret)
+
+        assert response.status_code == 200
+        assert response.json()["degraded"] is True
+        published = [
+            c.args[0] for c in self.mock_task_publisher.publish_task.call_args_list
+        ]
+        assert "poll_tracker" not in published
+
+    @patch("preloop.api.endpoints.webhooks.crud_tracker")
+    @patch("preloop.api.endpoints.webhooks.crud_project")
+    def test_unknown_project_first_sighting_still_syncs(
+        self, mock_crud_project, mock_crud_tracker, configured_mock_org_fixture
+    ):
+        """The first sighting must still trigger exactly one sync."""
+        secret = "unknown-project-first-secret"
+        org = self._unknown_project_org(configured_mock_org_fixture, secret)
+        mock_crud_project.get_by_identifier.return_value = None
+        mock_crud_tracker.record_unknown_project.return_value = UnknownProjectState(
+            should_sync=True, attempts=1, degraded=False, retry_after_seconds=300
+        )
+
+        response = self._post_unknown_project_webhook(org, secret)
+
+        assert response.status_code == 200
+        published = [
+            c.args[0] for c in self.mock_task_publisher.publish_task.call_args_list
+        ]
+        assert published.count("poll_tracker") == 1
 
 
 @pytest.mark.asyncio

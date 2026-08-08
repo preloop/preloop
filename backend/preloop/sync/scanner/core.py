@@ -19,6 +19,7 @@ from preloop.models.crud import (
     crud_organization,
     crud_project,
     crud_comment,
+    crud_tracker,
 )
 from preloop.models.models import (
     Issue,
@@ -257,6 +258,13 @@ class TrackerClient:
                 else:
                     project = crud_project.create(db, obj_in=proj_create_data)
                 processed_projects.append(project)
+                # The project resolved, so any unknown-project backoff/degraded
+                # state recorded from webhooks is stale -- drop it.
+                crud_tracker.clear_unknown_project(
+                    db,
+                    id=str(self.tracker.id),
+                    project_identifier=str(project_identifier),
+                )
             except Exception as e:
                 logger.error(
                     f"Error processing project data for {proj_data.get('name', 'N/A')}: {e}",
