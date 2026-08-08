@@ -51,7 +51,7 @@ class TestOpenRouterReasoningDisable:
     """OpenRouter-routed models must get OpenRouter's knob, not the vendor's."""
 
     def test_openrouter_endpoint_beats_deepseek_prefix(self):
-        """Alex's exact prod config: openai-compatible + openrouter.ai + deepseek/ id.
+        """A real-world prod config: openai-compatible + openrouter.ai + deepseek/ id.
 
         Must produce the OpenRouter reasoning-disable form. The DeepSeek
         ``thinking`` knob is ignored by OpenRouter and lets reasoning eat the
