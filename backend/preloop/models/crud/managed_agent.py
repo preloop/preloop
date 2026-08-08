@@ -337,13 +337,43 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         session_source_type: str,
         session_source_id: str,
     ) -> Optional[ManagedAgent]:
-        """Look up one agent by its durable source identity."""
+        """Look up one agent by its durable source identity, deterministically.
+
+        A unique constraint normally keeps one row per
+        ``(account, source_type, source_id)``, but sibling rows do exist in
+        the field (rekey/merge races, databases restored from older dumps).
+        An unordered ``.first()`` let a stale archived sibling shadow the live
+        agent, which nondeterministically blocked runtime token issuance and
+        broke key-to-agent resolution on the gateway auth path. Resolution is
+        therefore explicit: most usable lifecycle first (active, then the
+        resumable suspended, then decommissioned), then most recent.
+
+        Args:
+            db: Database session.
+            account_id: Account that owns the agent.
+            session_source_type: Durable principal type.
+            session_source_id: Durable principal id.
+
+        Returns:
+            The best-matching managed agent, or None when there is no match.
+        """
+        lifecycle_rank = case(
+            (self.model.lifecycle_state == "active", 0),
+            (self.model.lifecycle_state == "suspended", 1),
+            (self.model.lifecycle_state == "decommissioned", 3),
+            else_=2,
+        )
         return (
             db.query(self.model)
             .filter(
                 self.model.account_id == account_id,
                 self.model.session_source_type == session_source_type,
                 self.model.session_source_id == session_source_id,
+            )
+            .order_by(
+                lifecycle_rank.asc(),
+                self.model.created_at.desc(),
+                self.model.id.desc(),
             )
             .first()
         )
@@ -455,7 +485,11 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             db_obj.lifecycle_state = lifecycle_state
             db_obj.lifecycle_reason = lifecycle_reason
             db_obj.lifecycle_updated_at = now
-            if lifecycle_state in {"suspended", "decommissioned"}:
+            # Only the terminal state unbinds the runtime session. Pausing is
+            # reversible and every auth path rejects non-active agents on each
+            # request, so dropping the binding here would just make resume
+            # unable to restore the agent to its previous state.
+            if lifecycle_state == "decommissioned":
                 db_obj.runtime_session_id = None
         db.add(db_obj)
         if commit:

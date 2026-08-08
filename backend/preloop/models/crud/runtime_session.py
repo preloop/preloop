@@ -307,6 +307,52 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             db.flush()
         return db_obj
 
+    def reopen_for_managed_agent(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        session_source_type: str,
+        session_source_id: str,
+        commit: bool = True,
+    ) -> Optional[RuntimeSession]:
+        """Reopen the identity session of a resumed managed agent.
+
+        A previous release stamped ``ended_at`` when an agent was suspended
+        and never cleared it, so session-bound runtime keys kept failing after
+        resume. Reopening is a no-op when no session exists or the session is
+        already open.
+
+        Args:
+            db: Database session.
+            account_id: Account that owns the session.
+            session_source_type: Durable principal type of the agent.
+            session_source_id: Durable principal id of the agent.
+            commit: Commit the transaction when True.
+
+        Returns:
+            The reopened session, or None when there is nothing to reopen.
+        """
+        db_obj = self.get_by_source(
+            db,
+            account_id=account_id,
+            session_source_type=session_source_type,
+            session_source_id=session_source_id,
+        )
+        if db_obj is None or db_obj.ended_at is None:
+            return db_obj
+        now = datetime.now(UTC)
+        db_obj.ended_at = None
+        db_obj.started_at = db_obj.started_at or now
+        db_obj.last_activity_at = now
+        db.add(db_obj)
+        if commit:
+            db.commit()
+            db.refresh(db_obj)
+        else:
+            db.flush()
+        return db_obj
+
     def upsert_by_source(
         self,
         db: Session,
