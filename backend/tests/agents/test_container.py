@@ -870,6 +870,10 @@ class TestExtractBranchFromTrigger:
 
         assert "refs/merge-requests/2/head:preloop-mr-head" in command
         assert "FATAL ERROR: Could not checkout commit" in command
+        # On failure we must re-run git WITH stderr so the log shows why.
+        assert "--- diagnostics ---" in command
+        assert "git fetch origin" in command
+        assert "git for-each-ref" in command
 
 
 class TestGitShellQuoting:
