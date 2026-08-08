@@ -47,6 +47,12 @@ PRELOOP_BIN = os.environ.get("PRELOOP_BIN", "preloop")
 HOME = Path(os.environ["HOME"])
 ARTIFACT_DIR = Path(os.environ.get("CLI_ONBOARD_ARTIFACTS", "cli-onboard-artifacts"))
 
+# Usage is committed on the request path, but a follow-up read can race the
+# commit. Poll rather than sleep once. Slower deployments can widen the window
+# without touching the job definition.
+USAGE_POLL_ATTEMPTS = int(os.environ.get("CLI_ONBOARD_USAGE_POLL_ATTEMPTS", "6"))
+USAGE_POLL_INTERVAL = float(os.environ.get("CLI_ONBOARD_USAGE_POLL_INTERVAL", "5"))
+
 # Upstream Anthropic never sees this: onboarding replaces it with the durable
 # Preloop credential. Its only job is to put the install in API-key mode so
 # no OAuth/subscription lineage is exercised (module 08 covers that path on a
@@ -220,17 +226,24 @@ def main() -> None:
         fail("the Preloop gateway rejected the credential onboarding minted")
 
     print("== assert the request was metered ==", flush=True)
-    # Usage is written on the request path, but the response can return before
-    # the commit is visible to a follow-up read; poll briefly.
     total = before
-    for attempt in range(1, 7):
+    for attempt in range(1, USAGE_POLL_ATTEMPTS + 1):
         total = account_gateway_requests()
-        print(f"gateway requests now: {total} (attempt {attempt})", flush=True)
+        print(
+            f"gateway requests now: {total} (attempt {attempt}/{USAGE_POLL_ATTEMPTS})",
+            flush=True,
+        )
         if total > before:
             break
-        time.sleep(5)
+        if attempt < USAGE_POLL_ATTEMPTS:
+            time.sleep(USAGE_POLL_INTERVAL)
     if total <= before:
-        fail(f"no usage row recorded (before={before}, after={total})")
+        waited = USAGE_POLL_ATTEMPTS * USAGE_POLL_INTERVAL
+        fail(
+            f"no usage row recorded after {waited:.0f}s "
+            f"(before={before}, after={total}); raise "
+            f"CLI_ONBOARD_USAGE_POLL_ATTEMPTS if this deployment is slower"
+        )
 
     print("CLI onboarding e2e passed", flush=True)
 

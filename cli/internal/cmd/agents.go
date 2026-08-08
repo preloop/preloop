@@ -5178,14 +5178,6 @@ func reviveManagedAgentLifecycle(
 	if action == "" {
 		return matched, nil
 	}
-	if action == "resume" {
-		fmt.Fprintf( //nolint:errcheck
-			output,
-			"Resuming paused enrollment %s (%s)...\n",
-			matched.DisplayName,
-			matched.ID,
-		)
-	}
 	request := map[string]interface{}{
 		"lifecycle_action": action,
 	}
@@ -5195,9 +5187,16 @@ func reviveManagedAgentLifecycle(
 			"failed to %s managed agent %q: %w", action, matched.ID, err,
 		)
 	}
+	// One line per revival, naming what actually happened: a paused agent was
+	// resumed, a decommissioned one re-enrolled.
+	outcome := "Reactivated enrollment"
+	if action == "resume" {
+		outcome = "Resumed paused enrollment"
+	}
 	fmt.Fprintf( //nolint:errcheck
 		output,
-		"Reactivated enrollment %s (%s).\n",
+		"%s %s (%s).\n",
+		outcome,
 		matched.DisplayName,
 		matched.ID,
 	)
@@ -5324,14 +5323,6 @@ func reenrollArchivedManagedAgent(
 		)
 	}
 
-	if action == "resume" {
-		fmt.Fprintf( //nolint:errcheck
-			output,
-			"Resuming paused enrollment %s (%s)...\n",
-			matched.DisplayName,
-			matched.ID,
-		)
-	}
 	request := map[string]interface{}{
 		"lifecycle_action": action,
 	}
@@ -5339,13 +5330,23 @@ func reenrollArchivedManagedAgent(
 	if err := client.Patch("/api/v1/agents/"+matched.ID, request, &updated); err != nil {
 		return nil, fmt.Errorf("failed to %s %s managed agent %q: %w", action, stateLabel, matched.ID, err)
 	}
-	fmt.Fprintf( //nolint:errcheck
-		output,
-		"Reactivated %s enrollment %s (%s).\n",
-		stateLabel,
-		matched.DisplayName,
-		matched.ID,
-	)
+	// One line per revival, naming what actually happened.
+	if action == "resume" {
+		fmt.Fprintf( //nolint:errcheck
+			output,
+			"Resumed paused enrollment %s (%s).\n",
+			matched.DisplayName,
+			matched.ID,
+		)
+	} else {
+		fmt.Fprintf( //nolint:errcheck
+			output,
+			"Reactivated %s enrollment %s (%s).\n",
+			stateLabel,
+			matched.DisplayName,
+			matched.ID,
+		)
+	}
 	mergeRevivedManagedAgentSummary(&updated, matched)
 	return &updated, nil
 }

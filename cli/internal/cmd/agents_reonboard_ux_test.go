@@ -252,8 +252,11 @@ func TestIdentityReadySuspendedMatchIsResumed(t *testing.T) {
 	if len(*patches) != 1 || (*patches)[0]["lifecycle_action"] != "resume" {
 		t.Fatalf("expected one resume PATCH for a suspended agent, got %v", *patches)
 	}
-	if !strings.Contains(out.String(), "Resuming paused enrollment") {
+	if !strings.Contains(out.String(), "Resumed paused enrollment") {
 		t.Fatalf("expected resume note, got %q", out.String())
+	}
+	if strings.Contains(out.String(), "Reactivated enrollment") {
+		t.Fatalf("resume must not also print the reenroll wording, got %q", out.String())
 	}
 }
 
