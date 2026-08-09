@@ -282,6 +282,23 @@ class TestSessionSummary:
         assert summary.covered_prompt_tokens == 1_000
         assert summary.uncovered_prompt_tokens == 0
 
+    def test_unknown_prompt_totals_not_zeroed_in_model_groups(self):
+        """A group must disclose unknown prompt totals, not absorb them as 0."""
+        summary = summarize_session_cache(
+            [
+                _row(prompt_tokens=None, cache_read_tokens=500),
+                _row(prompt_tokens=1_000, cache_read_tokens=800),
+            ]
+        )
+        assert len(summary.models) == 1
+        group = summary.models[0]
+        # The None row contributes to the unknown counter, never 0 tokens.
+        assert group.prompt_tokens == 1_000
+        assert group.requests_with_unknown_prompt_tokens == 1
+        assert group.requests == 2
+        payload = group.as_dict()
+        assert payload["requests_with_unknown_prompt_tokens"] == 1
+
     def test_summary_as_dict_exposes_models(self):
         """The per-model breakdown is part of the serialized summary."""
         summary = summarize_session_cache(

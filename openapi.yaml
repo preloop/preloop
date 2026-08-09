@@ -15967,13 +15967,24 @@ components:
           type: integer
           title: Prompt Tokens
           default: 0
+        requests_with_unknown_prompt_tokens:
+          type: integer
+          title: Requests With Unknown Prompt Tokens
+          default: 0
         write_reported:
           type: boolean
           title: Write Reported
           default: false
       type: object
       title: RuntimeSessionCacheModelGroup
-      description: Per-(model, provider) breakdown inside the session cache rollup.
+      description: 'Per-(model, provider) breakdown inside the session cache rollup.
+
+
+        ``requests_with_unknown_prompt_tokens`` counts this group''s rows whose
+
+        provider reported no prompt total; their tokens are excluded from
+
+        ``prompt_tokens`` rather than counted as zero.'
     RuntimeSessionCacheSummary:
       properties:
         requests_total:

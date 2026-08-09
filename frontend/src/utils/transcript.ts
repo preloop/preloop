@@ -89,6 +89,10 @@ export interface TranscriptStats {
    *  tool-result detection. When > 0 the UI must disclose that some
    *  user-role bubbles may actually be tool results. */
   eventsWithoutRawBody: number;
+  /** Gateway events whose raw body WAS captured but where one or more
+   *  tool-result items yielded no matchable text — exact detection is only
+   *  partial there, so those results may still render as user prompts. */
+  eventsWithPartialToolResults: number;
   totalEvents: number;
 }
 
@@ -201,31 +205,47 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+/** Result of scanning a raw request body for exact tool-result texts. */
+export interface RawToolResultScan {
+  /** Normalized match prefixes, or null when exact detection is IMPOSSIBLE
+   *  (no raw message array captured, or tool-result-shaped items present but
+   *  NONE yielded usable text). An EMPTY set is a positive claim: the raw
+   *  body was parsed and contains no tool results at all. */
+  prefixes: Set<string> | null;
+  /** Tool-result-shaped items that yielded no matchable text. When
+   *  `prefixes` is non-null and this is > 0, exact detection is PARTIAL for
+   *  the event: the unextractable results cannot be matched and may be
+   *  misclassified, so the UI must disclose the uncertainty. */
+  unusableToolResults: number;
+}
+
 /**
  * Exact tool-result texts from the raw request body, as normalized match
  * prefixes. Detects OpenAI `role: "tool"` messages, Anthropic user messages
  * whose content array carries `type: "tool_result"` blocks, and Responses
  * API `function_call_output` items.
  *
- * Returns null when exact detection is IMPOSSIBLE, so callers can degrade
- * honestly: either no raw message array was captured (capture off, older
- * rows), or tool-result-shaped items were present but none yielded usable
- * text (unrecognized structure). An EMPTY set is a positive claim: the raw
- * body was parsed and contains no tool results at all.
+ * `prefixes` is null when exact detection is IMPOSSIBLE, so callers can
+ * degrade honestly: either no raw message array was captured (capture off,
+ * older rows), or tool-result-shaped items were present but none yielded
+ * usable text (unrecognized structure). When only SOME items yielded text,
+ * the set is returned (exact matching still helps for those) and
+ * `unusableToolResults` counts the rest so callers can disclose the gap.
  */
 export function collectRawToolResultPrefixes(
   event: FlowGatewayEvent
-): Set<string> | null {
+): RawToolResultScan {
   const request = isRecord(event.payload?.request)
     ? (event.payload!.request as Record<string, unknown>)
     : null;
-  if (!request) return null;
+  if (!request) return { prefixes: null, unusableToolResults: 0 };
   const arrays: Array<readonly unknown[]> = [];
   if (Array.isArray(request.messages)) arrays.push(request.messages);
   if (Array.isArray(request.input)) arrays.push(request.input);
-  if (!arrays.length) return null;
+  if (!arrays.length) return { prefixes: null, unusableToolResults: 0 };
 
   const prefixes = new Set<string>();
+  let unusableToolResults = 0;
   let sawToolResultShape = false;
   for (const rawMessages of arrays) {
     for (const raw of rawMessages) {
@@ -236,6 +256,7 @@ export function collectRawToolResultPrefixes(
         sawToolResultShape = true;
         const text = contentToText(raw.content ?? raw.output ?? raw);
         if (text.trim()) prefixes.add(normalizeForMatch(text));
+        else unusableToolResults += 1;
         continue;
       }
       const content = raw.content;
@@ -246,6 +267,7 @@ export function collectRawToolResultPrefixes(
           sawToolResultShape = true;
           const text = contentToText(block.content ?? block);
           if (text.trim()) prefixes.add(normalizeForMatch(text));
+          else unusableToolResults += 1;
         }
       }
     }
@@ -254,8 +276,10 @@ export function collectRawToolResultPrefixes(
   // detection would silently misclassify every one of them as a prompt, so
   // report "no usable raw body" instead and let the heuristics (and the
   // stats disclosure) take over.
-  if (sawToolResultShape && !prefixes.size) return null;
-  return prefixes;
+  if (sawToolResultShape && !prefixes.size) {
+    return { prefixes: null, unusableToolResults };
+  }
+  return { prefixes, unusableToolResults };
 }
 
 function previewMessages(
@@ -306,6 +330,7 @@ export function buildConversation(
     injectedCount: 0,
     toolCallCount: 0,
     eventsWithoutRawBody: 0,
+    eventsWithPartialToolResults: 0,
     totalEvents: 0,
   };
 
@@ -326,8 +351,12 @@ export function buildConversation(
   const seenSignatures = new Set<string>();
 
   for (const event of gatewayEvents) {
-    const toolResultPrefixes = collectRawToolResultPrefixes(event);
+    const scan = collectRawToolResultPrefixes(event);
+    const toolResultPrefixes = scan.prefixes;
     if (toolResultPrefixes === null) stats.eventsWithoutRawBody += 1;
+    else if (scan.unusableToolResults > 0) {
+      stats.eventsWithPartialToolResults += 1;
+    }
     const failed = eventIsFailure(event);
 
     previewMessages(event).forEach((message, messageIndex) => {

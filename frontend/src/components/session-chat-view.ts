@@ -78,6 +78,7 @@ export class SessionChatView extends LitElement {
       injectedCount: 0,
       toolCallCount: 0,
       eventsWithoutRawBody: 0,
+      eventsWithPartialToolResults: 0,
       totalEvents: 0,
     },
   };
@@ -552,6 +553,17 @@ ${
                   ${stats.eventsWithoutRawBody} of ${stats.totalEvents}
                   requests, so some tool results may appear as user prompts
                   there.
+                </div>
+              `
+            : nothing
+        }
+        ${
+          stats.eventsWithPartialToolResults > 0
+            ? html`
+                <div class="coverage-note" role="note">
+                  ${stats.eventsWithPartialToolResults} of ${stats.totalEvents}
+                  requests carried tool results with no extractable text, so
+                  some of those may appear as user prompts.
                 </div>
               `
             : nothing

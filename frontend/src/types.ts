@@ -638,6 +638,9 @@ export interface RuntimeSessionCacheModelGroup {
   cache_read_tokens: number;
   cache_creation_tokens: number;
   prompt_tokens: number;
+  /** Rows whose provider reported no prompt total; excluded from
+   *  `prompt_tokens` rather than counted as zero. */
+  requests_with_unknown_prompt_tokens?: number;
   write_reported: boolean;
 }
 

@@ -77,7 +77,7 @@ describe('collectRawToolResultPrefixes', () => {
     const event = gatewayEvent('e1', '2026-08-06T10:00:00Z', [
       { role: 'user', text: 'hello' },
     ]);
-    expect(collectRawToolResultPrefixes(event)).to.equal(null);
+    expect(collectRawToolResultPrefixes(event).prefixes).to.equal(null);
   });
 
   it('detects Anthropic tool_result blocks inside user messages', () => {
@@ -102,7 +102,7 @@ describe('collectRawToolResultPrefixes', () => {
         },
       }
     );
-    const prefixes = collectRawToolResultPrefixes(event);
+    const { prefixes } = collectRawToolResultPrefixes(event);
     expect(prefixes).to.not.equal(null);
     expect(prefixes!.has('file contents here')).to.equal(true);
   });
@@ -114,7 +114,7 @@ describe('collectRawToolResultPrefixes', () => {
         input: [{ type: 'function_call_output', output: 'ls output' }],
       },
     });
-    const prefixes = collectRawToolResultPrefixes(event)!;
+    const prefixes = collectRawToolResultPrefixes(event).prefixes!;
     expect(prefixes.has('exit code 0')).to.equal(true);
     expect(prefixes.has('ls output')).to.equal(true);
   });
@@ -132,16 +132,44 @@ describe('collectRawToolResultPrefixes', () => {
         ],
       },
     });
-    expect(collectRawToolResultPrefixes(event)).to.equal(null);
+    const scan = collectRawToolResultPrefixes(event);
+    expect(scan.prefixes).to.equal(null);
+    expect(scan.unusableToolResults).to.equal(1);
   });
 
   it('returns an empty set when the raw body truly has no tool results', () => {
     const event = gatewayEvent('e1', '2026-08-06T10:00:00Z', [], {
       request: { messages: [{ role: 'user', content: 'plain prompt' }] },
     });
-    const prefixes = collectRawToolResultPrefixes(event);
-    expect(prefixes).to.not.equal(null);
-    expect(prefixes!.size).to.equal(0);
+    const scan = collectRawToolResultPrefixes(event);
+    expect(scan.prefixes).to.not.equal(null);
+    expect(scan.prefixes!.size).to.equal(0);
+    expect(scan.unusableToolResults).to.equal(0);
+  });
+
+  it('keeps usable prefixes and counts the unusable rest (partial)', () => {
+    // One tool result yields text, a sibling does not: exact matching must
+    // still work for the extractable one, while the other is disclosed.
+    const event = gatewayEvent('e1', '2026-08-06T10:00:00Z', [], {
+      request: {
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                content: [{ type: 'text', text: 'good output' }],
+              },
+              { type: 'tool_result', content: [{ weird: true }] },
+            ],
+          },
+        ],
+      },
+    });
+    const scan = collectRawToolResultPrefixes(event);
+    expect(scan.prefixes).to.not.equal(null);
+    expect(scan.prefixes!.has('good output')).to.equal(true);
+    expect(scan.unusableToolResults).to.equal(1);
   });
 });
 
@@ -302,6 +330,44 @@ describe('buildConversation', () => {
     ];
     const { stats } = buildConversation(events);
     expect(stats.eventsWithoutRawBody).to.equal(1);
+  });
+
+  it('discloses partial tool-result extraction separately', () => {
+    // The raw body yields one usable prefix but a second tool result has no
+    // extractable text: the event still gets exact matching for the usable
+    // one, and the partial-coverage stat discloses the other.
+    const events = [
+      gatewayEvent(
+        'e1',
+        '2026-08-06T10:00:00Z',
+        [
+          { role: 'user', text: 'good output' },
+          { role: 'user', text: 'mystery text' },
+          { role: 'assistant', text: 'ok', source: 'response' },
+        ],
+        {
+          request: {
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  {
+                    type: 'tool_result',
+                    content: [{ type: 'text', text: 'good output' }],
+                  },
+                  { type: 'tool_result', content: [{ weird: 1 }] },
+                ],
+              },
+            ],
+          },
+        }
+      ),
+    ];
+    const { stats } = buildConversation(events);
+    expect(stats.eventsWithoutRawBody).to.equal(0);
+    expect(stats.eventsWithPartialToolResults).to.equal(1);
+    // The extractable tool result was still exactly matched.
+    expect(stats.toolResultCount).to.equal(1);
   });
 
   it('keeps identical texts at different conversation positions distinct', () => {

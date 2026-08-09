@@ -662,7 +662,12 @@ class RuntimeSessionRequestItem(BaseModel):
 
 
 class RuntimeSessionCacheModelGroup(BaseModel):
-    """Per-(model, provider) breakdown inside the session cache rollup."""
+    """Per-(model, provider) breakdown inside the session cache rollup.
+
+    ``requests_with_unknown_prompt_tokens`` counts this group's rows whose
+    provider reported no prompt total; their tokens are excluded from
+    ``prompt_tokens`` rather than counted as zero.
+    """
 
     model_alias: Optional[str] = None
     provider_name: Optional[str] = None
@@ -670,6 +675,7 @@ class RuntimeSessionCacheModelGroup(BaseModel):
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
     prompt_tokens: int = 0
+    requests_with_unknown_prompt_tokens: int = 0
     write_reported: bool = False
 
 

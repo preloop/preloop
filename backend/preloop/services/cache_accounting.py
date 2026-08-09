@@ -276,6 +276,10 @@ class SessionCacheModelGroup:
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
     prompt_tokens: int = 0
+    # Rows in this group whose provider reported NO prompt total. Their tokens
+    # are excluded from ``prompt_tokens`` rather than folded in as 0, matching
+    # the session-level ``requests_with_unknown_prompt_tokens`` semantics.
+    requests_with_unknown_prompt_tokens: int = 0
     write_reported: bool = False
 
     def as_dict(self) -> dict[str, Any]:
@@ -286,6 +290,9 @@ class SessionCacheModelGroup:
             "cache_read_tokens": self.cache_read_tokens,
             "cache_creation_tokens": self.cache_creation_tokens,
             "prompt_tokens": self.prompt_tokens,
+            "requests_with_unknown_prompt_tokens": (
+                self.requests_with_unknown_prompt_tokens
+            ),
             "write_reported": self.write_reported,
         }
 
@@ -398,7 +405,13 @@ def summarize_session_cache(rows: Iterable[Any]) -> SessionCacheSummary:
             group = SessionCacheModelGroup(model_alias=key[0], provider_name=key[1])
             groups[key] = group
         group.requests += 1
-        group.prompt_tokens += prompt_tokens or 0
+        # None is "not reported", never zero — same contract as the
+        # session-level sums above. Unknown rows are disclosed per group
+        # instead of silently contributing a misleading 0-token share.
+        if prompt_tokens is None:
+            group.requests_with_unknown_prompt_tokens += 1
+        else:
+            group.prompt_tokens += prompt_tokens
         group.cache_read_tokens += read
         if creation is not None:
             group.write_reported = True
