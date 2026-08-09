@@ -27,8 +27,8 @@ import {
   parseUTCDate,
   formatLocalTime,
   formatUTCDateTime,
-  formatDurationBetween,
 } from '../../utils/date';
+import { RUNNING_STATUSES, executionDurationText } from '../../utils/execution';
 import '../../components/preloop-gateway-event.ts';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
@@ -612,12 +612,7 @@ export class FlowExecutionView extends LitElement {
   /** Whether the loaded execution has not reached a terminal state yet. */
   private isExecutionRunning(): boolean {
     const status = this.execution?.status;
-    return (
-      status === 'RUNNING' ||
-      status === 'STARTING' ||
-      status === 'INITIALIZING' ||
-      status === 'PENDING'
-    );
+    return status !== undefined && RUNNING_STATUSES.has(status);
   }
 
   private startDurationTicker() {
@@ -650,29 +645,15 @@ export class FlowExecutionView extends LitElement {
 
   /**
    * Duration text for the Timing card: the final span once the run ended,
-   * a live-ticking elapsed value while it runs, and an em dash when the
+   * a live-ticking elapsed value while it runs (measured against
+   * `durationNow`, which the ticker refreshes), and an em dash when the
    * timestamps cannot produce anything meaningful.
    */
   private renderTimingDuration(): string {
     const execution = this.execution;
     if (!execution) return '—';
 
-    if (execution.end_time) {
-      return (
-        formatDurationBetween(execution.start_time, execution.end_time) || '—'
-      );
-    }
-
-    if (this.isExecutionRunning()) {
-      const elapsed = formatDurationBetween(
-        execution.start_time,
-        null,
-        this.durationNow
-      );
-      return elapsed ? `Running · ${elapsed}` : '—';
-    }
-
-    return '—';
+    return executionDurationText(execution, this.durationNow) || '—';
   }
 
   async updated(changedProperties: Map<string, any>) {

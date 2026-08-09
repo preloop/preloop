@@ -15,11 +15,8 @@ import {
   getAccountAgents,
 } from '../../api';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
-import {
-  parseUTCDate,
-  formatLocalDateTime,
-  formatDurationBetween,
-} from '../../utils/date';
+import { parseUTCDate, formatLocalDateTime } from '../../utils/date';
+import { executionDurationText } from '../../utils/execution';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/textarea/textarea.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
@@ -68,14 +65,6 @@ interface CustomCommands {
 interface WebhookConfig {
   webhook_secret: string;
 }
-
-/** Statuses that mean the run has not reached a terminal state yet. */
-const RUNNING_STATUSES = new Set([
-  'PENDING',
-  'STARTING',
-  'INITIALIZING',
-  'RUNNING',
-]);
 
 interface Flow {
   id?: string;
@@ -904,7 +893,7 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
                                 ${formatLocalDateTime(exec.start_time)}
                               </td>
                               <td style="padding: 8px;">
-                                ${this.executionDuration(exec) || '—'}
+                                ${executionDurationText(exec) || '—'}
                               </td>
                               <td style="padding: 8px;">
                                 <sl-button
@@ -939,24 +928,6 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
       default:
         return 'neutral';
     }
-  }
-
-  /**
-   * Duration cell for the recent-executions table. Finished runs show their
-   * span, live runs count up on each render (list refreshes come from the
-   * existing WebSocket updates, no per-row timers), and rows that ended
-   * without an `end_time` fall back to an em dash instead of claiming the run
-   * is still going.
-   */
-  private executionDuration(exec: any): string {
-    if (exec.end_time) {
-      return formatDurationBetween(exec.start_time, exec.end_time);
-    }
-    if (RUNNING_STATUSES.has(exec.status)) {
-      const elapsed = formatDurationBetween(exec.start_time, null);
-      return elapsed ? `Running · ${elapsed}` : '';
-    }
-    return '';
   }
 
   private extractTriggerEventPlaceholders(): string[] {

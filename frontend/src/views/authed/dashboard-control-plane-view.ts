@@ -54,7 +54,8 @@ import type {
   RuntimeSessionSummary,
   AIModel,
 } from '../../types';
-import { parseUTCDate, formatDurationBetween } from '../../utils/date';
+import { parseUTCDate } from '../../utils/date';
+import { executionDurationText } from '../../utils/execution';
 import { getAgentControlState } from '../../utils/agent-control';
 import {
   pickDefaultModel,
@@ -96,14 +97,6 @@ interface MCPServer {
   url: string;
   status: string;
 }
-
-/** Statuses that mean the run has not reached a terminal state yet. */
-const RUNNING_STATUSES = new Set([
-  'PENDING',
-  'STARTING',
-  'INITIALIZING',
-  'RUNNING',
-]);
 
 interface FlowExecution {
   id: string;
@@ -238,27 +231,10 @@ export class DashboardView extends AuthedElement {
     }
   }
 
-  /**
-   * Duration suffix for an execution row. Finished runs show their span,
-   * live runs count up on each render (rows refresh with the dashboard's
-   * existing polling, no per-row timers), and anything unusable yields an
-   * empty string so the caller appends nothing.
-   */
-  private executionDuration(exec: FlowExecution): string {
-    if (exec.end_time) {
-      return formatDurationBetween(exec.start_time, exec.end_time);
-    }
-    if (RUNNING_STATUSES.has(exec.status)) {
-      const elapsed = formatDurationBetween(exec.start_time, null);
-      return elapsed ? `Running · ${elapsed}` : '';
-    }
-    return '';
-  }
-
   /** Start time plus, when known, how long the run took or has been going. */
   private executionSecondaryText(exec: FlowExecution): string {
     const started = this.formatDate(exec.start_time);
-    const duration = this.executionDuration(exec);
+    const duration = executionDurationText(exec);
     return duration ? `${started} · ${duration}` : started;
   }
 

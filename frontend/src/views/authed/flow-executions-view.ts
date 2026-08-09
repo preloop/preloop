@@ -9,22 +9,11 @@ import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
-import {
-  parseUTCDate,
-  formatLocalDateTime,
-  formatDurationBetween,
-} from '../../utils/date';
+import { parseUTCDate, formatLocalDateTime } from '../../utils/date';
+import { executionDurationText } from '../../utils/execution';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import { reducedMotionStyles } from '../../styles/reduced-motion';
 import '../../components/view-header.ts';
-
-/** Statuses that mean the run has not reached a terminal state yet. */
-const RUNNING_STATUSES = new Set([
-  'PENDING',
-  'STARTING',
-  'INITIALIZING',
-  'RUNNING',
-]);
 
 interface FlowExecution {
   id: string;
@@ -362,7 +351,7 @@ export class FlowExecutionsView extends AuthedElement {
                                 </div>
                               </td>
                               <td>${formatLocalDateTime(exec.start_time)}</td>
-                              <td>${this.executionDuration(exec) || '—'}</td>
+                              <td>${executionDurationText(exec) || '—'}</td>
                               <td>${exec.tool_calls_count || 0}</td>
                               <td>
                                 <sl-button
@@ -458,25 +447,5 @@ export class FlowExecutionsView extends AuthedElement {
       default:
         return 'neutral';
     }
-  }
-
-  /**
-   * Duration text for an execution row.
-   *
-   * Finished runs show the elapsed span; still-running ones show live elapsed
-   * time (recomputed on each render, refreshed by the existing polling, no
-   * per-row timers). Legacy rows that ended without an `end_time`, and rows
-   * whose timestamps are unusable, get an empty string so the caller can show
-   * a placeholder.
-   */
-  private executionDuration(exec: FlowExecution): string {
-    if (exec.end_time) {
-      return formatDurationBetween(exec.start_time, exec.end_time);
-    }
-    if (RUNNING_STATUSES.has(exec.status)) {
-      const elapsed = formatDurationBetween(exec.start_time, null);
-      return elapsed ? `Running · ${elapsed}` : '';
-    }
-    return '';
   }
 }
