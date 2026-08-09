@@ -10,6 +10,7 @@ import aiodocker
 from aiodocker.exceptions import DockerError
 
 from .base import AgentExecutionResult, AgentExecutor, AgentStatus
+from .failure_analysis import analyze_agent_failure
 from preloop.services.mcp_config_service import MCPConfigService
 from preloop.utils.git_credentials import (
     GitCredential,
@@ -923,10 +924,14 @@ class ContainerAgentExecutor(AgentExecutor):
 
     def _extract_error_from_logs(self, logs_text: str) -> str:
         """
-        Extract error message from logs.
+        Extract a human-actionable error message from logs.
 
-        Searches from the END of logs for the most relevant error, filtering
-        out status/metadata lines that don't contain useful error information.
+        Delegates to :func:`analyze_agent_failure`, which looks for the
+        *meaningful* failure signal (an upstream provider status and the
+        agent's own exhausted retry loop) anywhere in the log, rather than
+        returning whatever the last error-shaped line happened to be. The tail
+        of a failed run is usually a stack trace or a stringified error object
+        (``[object Object]``), which names no cause.
 
         Args:
             logs_text: Full log text
@@ -934,60 +939,7 @@ class ContainerAgentExecutor(AgentExecutor):
         Returns:
             Extracted error message or empty string
         """
-        lines = logs_text.split("\n")
-
-        # Filter out status/metadata lines that aren't useful for error display
-        status_prefixes = (
-            "[Agent Status]",
-            "[Status Update]",
-            "Status:",
-            '{"status":',
-        )
-
-        # Get content lines (non-empty, non-status lines)
-        content_lines = []
-        for line in lines:
-            stripped = line.strip()
-            if stripped and not stripped.startswith(status_prefixes):
-                content_lines.append(line)
-
-        if not content_lines:
-            return ""
-
-        # Priority 1: Look for explicit ERROR: lines from the end (most relevant)
-        # These are typically agent-generated errors like "ERROR: Quota exceeded"
-        for i in range(len(content_lines) - 1, -1, -1):
-            line = content_lines[i]
-            if line.strip().upper().startswith("ERROR:"):
-                # Found an explicit error line - return it with some context
-                start = max(0, i - 2)
-                end = min(len(content_lines), i + 3)
-                return "\n".join(content_lines[start:end])
-
-        # Priority 2: Look for Python exceptions/tracebacks from the end
-        for i in range(len(content_lines) - 1, -1, -1):
-            line_lower = content_lines[i].lower()
-            if any(
-                pattern in line_lower
-                for pattern in ["traceback", "exception:", "raise "]
-            ):
-                # Found exception - include context
-                start = max(0, i)
-                end = min(len(content_lines), i + 10)
-                return "\n".join(content_lines[start:end])
-
-        # Priority 3: Look for other error patterns from the end
-        for i in range(len(content_lines) - 1, -1, -1):
-            line_lower = content_lines[i].lower()
-            if any(pattern in line_lower for pattern in ["error", "failed", "fatal"]):
-                # Include some context around the error
-                start = max(0, i - 2)
-                end = min(len(content_lines), i + 3)
-                return "\n".join(content_lines[start:end])
-
-        # Priority 4: If no error patterns found, return last few content lines
-        # as they may contain relevant information about why the execution failed
-        return "\n".join(content_lines[-5:])
+        return analyze_agent_failure(logs_text).message
 
     async def stop(self, session_reference: str) -> None:
         """

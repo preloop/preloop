@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Unhelpful failure messages and no retry when an upstream model provider
+  failed**: when the model provider in front of an agent returned a gateway
+  timeout, the agent CLI exhausted its own internal retries hundreds of log
+  lines before exiting, and the extractor that builds
+  `FlowExecution.error_message` returned only the tail of the log. A user
+  reviewing a failed run saw exactly
+  `"  status: 504\n}\nAn unexpected critical error occurred:[object Object]"`
+  — 69 characters that name no cause and suggest no action. Agent-log failure
+  analysis now scans the whole log for the *meaningful* signal (an upstream
+  HTTP status plus the agent's exhausted retry loop) instead of the last
+  error-shaped line, and produces messages like `Upstream model provider timed
+  out (HTTP 504) after 3 attempts.` Lines that carry no information
+  (`[object Object]`, bare `status: NNN` fragments, proxy HTML error pages) are
+  never surfaced as the cause when a real signal exists. Classification reuses
+  the shared upstream-error taxonomy, so a hard quota exhaustion is still
+  distinguished from a transient throttle.
+
+  A transient upstream failure is also no longer terminal: a flow execution
+  whose attempt failed on a retryable upstream error (timeout, bad gateway,
+  overload, throttling, connection reset) is retried with exponential backoff
+  (`FLOW_EXECUTION_MAX_ATTEMPTS`, default 2;
+  `FLOW_EXECUTION_RETRY_BACKOFF_SECONDS`, default 15). Retries are never
+  silent — each one is recorded as an `execution_retry_scheduled` milestone and
+  surfaced on the execution timeline. Non-transient failures (bad credentials,
+  denied permissions, exhausted quota, unknown model) are never retried. To
+  rule out double-posting a review comment, push or pull request, an attempt is
+  only retried when the agent process exited non-zero, which is the condition
+  under which the container's post-execution git block does not run.
+
 - **Backfilled costs stayed $0 for models missing from the price snapshot**:
   `reprice_unpriced_usage.py` recomputed every row against the locally bundled
   price catalog only. A row is recorded `unpriced` precisely when the model was
