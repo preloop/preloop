@@ -25,6 +25,7 @@ from preloop.models.models.ai_model import AIModel
 from preloop.models.models.runtime_session import RuntimeSession
 from preloop.agents import create_agent_executor, AgentStatus
 from preloop.agents.failure_analysis import analyze_agent_failure
+from preloop.config import settings
 from preloop.services.prompt_resolvers import (
     resolver_registry,
     ResolverContext,
@@ -507,8 +508,6 @@ class FlowExecutionOrchestrator:
             if self.execution_log:
                 # Construct absolute URL to the execution details page
                 # GitHub/GitLab require absolute URLs for commit status links
-                from preloop.config import settings
-
                 base_url = getattr(settings, "preloop_url", None) or getattr(
                     settings, "PRELOOP_URL", None
                 )
@@ -2062,8 +2061,6 @@ class FlowExecutionOrchestrator:
         )
 
         try:
-            from preloop.config import settings
-
             # Start listening for user commands
             await self._listen_for_commands()
 
@@ -2495,8 +2492,6 @@ class FlowExecutionOrchestrator:
             Tuple of ``(agent_result, session_reference)`` for the final
             attempt made.
         """
-        from preloop.config import settings
-
         max_attempts = max(1, int(settings.flow_execution_max_attempts))
         backoff_seconds = max(0, int(settings.flow_execution_retry_backoff_seconds))
 
@@ -2524,6 +2519,20 @@ class FlowExecutionOrchestrator:
                         "Execution %s exhausted all %s attempts",
                         self.execution_log.id if self.execution_log else "unknown",
                         max_attempts,
+                    )
+                    # Mirror the per-retry milestone: without this, the final
+                    # failure of a retried run looks identical on the timeline
+                    # to a first-attempt failure.
+                    self.execution_logger.log_milestone(
+                        "execution_retries_exhausted",
+                        {
+                            "attempts": max_attempts,
+                            "session_reference": session_reference,
+                        },
+                    )
+                    await self._emit_execution_warning(
+                        f"All {max_attempts} attempts failed; giving up.",
+                        details={"attempts": max_attempts},
                     )
                 break
 

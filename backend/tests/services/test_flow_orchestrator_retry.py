@@ -343,6 +343,15 @@ class TestTransientRetry:
         assert 1 < len(calls) <= 3, f"expected bounded retries, got {len(calls)}"
         assert orchestrator.execution_log.status == "FAILED"
 
+        # Exhaustion must be visible on the timeline: without a marker, the
+        # final failure of a retried run looks identical to a first-attempt
+        # failure.
+        milestones = [
+            entry["milestone"]
+            for entry in orchestrator.execution_logger.get_milestones()
+        ]
+        assert "execution_retries_exhausted" in milestones
+
 
 @pytest.mark.asyncio
 class TestSideEffectSafety:

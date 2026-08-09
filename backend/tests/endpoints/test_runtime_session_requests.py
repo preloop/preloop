@@ -206,7 +206,6 @@ def test_runtime_session_requests_expose_error_class(client, db_session, test_us
     simply cancelled a stream (``client_cancelled``) — both are status 499.
     """
     session = _make_session(db_session, test_user.account_id)
-    now = datetime.now(UTC)
 
     crud_api_usage.log_gateway_request(
         db_session,
