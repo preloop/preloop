@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **PR Reviewer preset: token-optimised prompt**: the stock Pull Request
+  Reviewer preset now bounds every open-ended read that previously let agents
+  walk the repository. Project doc reads are capped (agent-instruction files in
+  full, README/ARCHITECTURE/CONTRIBUTING heads only, CHANGELOG dropped,
+  manifests/CI/linter configs only when the diff touches them); project-context
+  discovery is limited to the diff plus at most 3 files outside it; Phase 2
+  works hunk-first instead of opening whole changed files; each finding gets a
+  verification budget (2 greps + 2 file reads, then phrase as a question); the
+  documentation-impact pass runs only when the diff adds user-facing surface;
+  previous-finding re-verification reads the ±40-line region instead of the
+  whole file; the PR description is only rewritten when its content changed;
+  persisting-issue stamps are replaced instead of stacked and unchanged-status
+  comments are left alone; a single-fetch rule forbids re-calling
+  `get_pull_request`; empty severity sections are omitted from the summary; and
+  small first-time PRs (<~50 changed lines) take a fast path that skips the
+  ceremony while keeping the full security/quality checks. New: incremental
+  re-review — the summary comment now records the reviewed HEAD SHA in a
+  `<!-- preloop-review:reviewed-sha:... -->` marker, and on
+  `pull_request_updated` triggers the reviewer diffs against that SHA via git
+  in the clone and reviews only the new hunks (with a full-review fallback on
+  force-push/rebase or a missing marker), making per-push review cost
+  proportional to the push delta instead of the whole PR.
+
 ### Fixed
 
 - **Unhelpful failure messages and no retry when an upstream model provider
