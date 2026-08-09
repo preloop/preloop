@@ -28,6 +28,13 @@ ERROR_CLASS_UPSTREAM_AUTH = "upstream_auth"
 ERROR_CLASS_UPSTREAM_ERROR = "upstream_error"
 ERROR_CLASS_UPSTREAM_DISCONNECT = "upstream_disconnect"
 ERROR_CLASS_CLIENT_CANCELLED = "client_cancelled"
+# The client was already gone when the gateway tried to write the FIRST byte
+# of a streaming response, so the response generator never ran. Distinct from
+# ``client_cancelled`` (client left part-way through a stream it was reading):
+# an abandoned stream usually means something in front of the gateway — a
+# proxy read timeout, an ingress hang-up — killed the request, whereas a
+# cancellation is normal client behaviour (user hit Ctrl-C, agent moved on).
+ERROR_CLASS_STREAM_ABANDONED = "stream_abandoned"
 
 
 @dataclass(frozen=True)

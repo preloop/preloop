@@ -15999,6 +15999,11 @@ components:
           type: boolean
           title: Is Error
           default: false
+        error_class:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Class
         finish_reason:
           anyOf:
           - type: string

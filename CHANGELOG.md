@@ -38,6 +38,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only retried when the agent process exited non-zero, which is the condition
   under which the container's post-execution git block does not run.
 
+- **Streaming gateway requests killed in front of the gateway left no trace**:
+  every streaming endpoint calls the upstream model provider *before* handing
+  its SSE generator to the web layer, so that upstream failures surface as real
+  HTTP errors instead of empty `200` streams. If the client was already gone
+  when the first chunk was due — which is exactly what a proxy read-timeout in
+  front of the gateway looks like — the generator body never ran, and neither
+  did the usage accounting inside it (a Python generator closed before its
+  first `next()` never executes, `finally` included). The provider had already
+  been asked to generate and was billing for it, but Preloop recorded no usage
+  row, no status code and no error class: the user's agent failed while the
+  console reported a clean bill of health. Such requests are now recorded as
+  status `499` with a new `stream_abandoned` error class, distinct from the
+  `client_cancelled` class used when a client drops a stream it was actively
+  reading. `ApiUsage.error_class` is also exposed on the per-request session
+  timeline API, so failures that share a status code (a proxy timeout versus a
+  user cancelling) can finally be told apart in the product. Spend semantics
+  are unchanged: an abandoned stream streamed nothing, so no provider tokens
+  are invented, and the already-working mid-stream disconnect path still
+  records exactly one row.
+
 - **Backfilled costs stayed $0 for models missing from the price snapshot**:
   `reprice_unpriced_usage.py` recomputed every row against the locally bundled
   price catalog only. A row is recorded `unpriced` precisely when the model was
