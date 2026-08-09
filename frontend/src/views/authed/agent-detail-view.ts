@@ -61,7 +61,11 @@ import {
 } from '../../utils/scoped-governance';
 import { getAgentControlState } from '../../utils/agent-control';
 import { renderAgentIcon } from '../../utils/agent-icons';
-import { getAgentSourceLabel } from '../../utils/agent-display';
+import {
+  getAgentSourceLabel,
+  getSystemAgentTags,
+  getVisibleAgentTags,
+} from '../../utils/agent-display';
 
 interface GovernanceToolDefinition {
   name: string;
@@ -721,7 +725,7 @@ export class AgentDetailView extends LitElement {
     if (!this.agent) return 'Unknown';
     if (this.agent.lifecycle_state === 'decommissioned')
       return 'Decommissioned';
-    if (this.agent.lifecycle_state === 'suspended') return 'Suspended';
+    if (this.agent.lifecycle_state === 'suspended') return 'Paused';
     if (this.agent.activity_status === 'active_now') return 'Active now';
     if (this.agent.activity_status === 'recently_active')
       return 'Recently active';
@@ -1049,7 +1053,7 @@ export class AgentDetailView extends LitElement {
 
   private promptEditTags(): void {
     if (!this.agent) return;
-    const currentTags = Object.entries(this.agent.tags || {})
+    const currentTags = getVisibleAgentTags(this.agent.tags)
       .map(([k, v]) => (v && v !== 'true' ? `${k}=${v}` : k))
       .join(' ');
 
@@ -1059,7 +1063,9 @@ export class AgentDetailView extends LitElement {
 
   private submitTagsDialog(): void {
     if (this.tagsDialogInput !== null) {
-      const tags: Record<string, string> = {};
+      // Server-owned identity.* tags are hidden from the editor, so carry
+      // them over explicitly; the PATCH replaces the whole tag map.
+      const tags: Record<string, string> = getSystemAgentTags(this.agent?.tags);
       this.tagsDialogInput.split(/\s+/).forEach((t: string) => {
         if (!t) return;
         const [k, ...vParts] = t.split('=');
@@ -1068,6 +1074,40 @@ export class AgentDetailView extends LitElement {
       void this.saveTags(tags);
     }
     this.showTagsDialog = false;
+  }
+
+  /**
+   * Render re-keying history behind a collapsed disclosure.
+   *
+   * Re-keying records the agent's superseded principal ids as an
+   * `identity.previous_ids` tag. It is useful for support, but rendering it
+   * as a normal tag chip put a long comma-separated id string in the header.
+   */
+  private renderIdentityHistory() {
+    const previousIds = (this.agent?.tags || {})['identity.previous_ids'];
+    if (!previousIds) return nothing;
+    const ids = previousIds
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean);
+    if (ids.length === 0) return nothing;
+    return html`
+      <details
+        style="margin-top: var(--sl-spacing-x-small); font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-600);"
+      >
+        <summary style="cursor: pointer;">
+          Identity history (${ids.length})
+        </summary>
+        <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px;">
+          ${ids.map(
+            (id) =>
+              html`<code style="font-size: var(--sl-font-size-x-small);"
+                >${id}</code
+              >`
+          )}
+        </div>
+      </details>
+    `;
   }
 
   private async saveTags(tags: Record<string, string>): Promise<void> {
@@ -1332,7 +1372,7 @@ export class AgentDetailView extends LitElement {
     if (!this.agentId || !this.agent) {
       return;
     }
-    const actionLabel = lifecycleAction === 'suspend' ? 'halt' : 'resume';
+    const actionLabel = lifecycleAction === 'suspend' ? 'pause' : 'resume';
     if (
       !window.confirm(
         `Are you sure you want to ${actionLabel} ${this.agent.display_name}?`
@@ -1346,7 +1386,7 @@ export class AgentDetailView extends LitElement {
         lifecycle_action: lifecycleAction,
         reason:
           lifecycleAction === 'suspend'
-            ? 'Manually halted by admin'
+            ? 'Manually paused by admin'
             : 'Manually resumed by admin',
       });
       await this.loadData();
@@ -1427,26 +1467,29 @@ export class AgentDetailView extends LitElement {
       this.agent.lifecycle_state === 'suspended' ||
       this.agent.lifecycle_state === 'decommissioned';
 
+    // Play/pause toggle in warning (amber) tones: pausing is reversible, so
+    // danger red stays reserved for offboard/remove.
     if (isSuspendedOrDecommissioned) {
       actions.push({
         id: 'resume',
         label: 'Resume',
         variant: 'success',
-        icon: 'plug',
+        icon: 'play-fill',
         loading: this.actionLoading,
         onClick: () => this.updateAgentLifecycle('resume'),
-        tooltip: "This action re-enables the agent's API keys.",
+        tooltip:
+          'Resume this agent. Its existing credentials start working again immediately.',
       });
     } else {
       actions.push({
-        id: 'halt',
-        label: 'Halt',
-        variant: 'danger',
-        icon: 'power',
+        id: 'pause',
+        label: 'Pause',
+        variant: 'warning',
+        icon: 'pause-fill',
         loading: this.actionLoading,
         onClick: () => this.updateAgentLifecycle('suspend'),
         tooltip:
-          "This action immediately disables the agent's API keys and is fully reversible.",
+          'Pause this agent. Requests are blocked while paused; Resume restores it without re-onboarding.',
       });
     }
 
@@ -2424,7 +2467,7 @@ export class AgentDetailView extends LitElement {
               </div>
 
               ${
-                this.agent.tags && Object.keys(this.agent.tags).length > 0
+                getVisibleAgentTags(this.agent.tags).length > 0
                   ? html`
                       <div
                         style="display: flex; gap: var(--sl-spacing-small); align-items: center; margin-top: var(--sl-spacing-x-small);"
@@ -2435,7 +2478,7 @@ export class AgentDetailView extends LitElement {
                           Tags:
                         </div>
                         <div style="display: flex; flex-wrap: wrap; gap: 4px;">
-                          ${Object.entries(this.agent.tags).map(
+                          ${getVisibleAgentTags(this.agent.tags).map(
                             ([k, v]) => html`
                               <sl-badge
                                 variant="neutral"
@@ -2457,6 +2500,7 @@ export class AgentDetailView extends LitElement {
                     `
                   : nothing
               }
+              ${this.renderIdentityHistory()}
             </div>
           </div>
 

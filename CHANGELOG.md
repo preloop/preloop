@@ -133,6 +133,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Keychain service names in onboarding output are now quoted**, so the
   hyphenated macOS service `"Claude Code-credentials"` can no longer be
   misread as running into the surrounding prose.
+- **Agent pause is now fully reversible** (#193): pausing an agent
+  (`lifecycle_action=suspend`) deactivated *every* runtime API key the agent
+  owned and closed its runtime session, but resume only flipped the lifecycle
+  flag back to `active` — nothing reactivated the keys or reopened the session.
+  A resumed agent therefore looked healthy in the console while every gateway
+  request 401'd before a usage row could be written, so the agent silently
+  logged nothing. Pause is now enforced purely as a lifecycle check on the
+  read-through auth path (`authenticate_bearer_token`, API-key auth, and
+  runtime token issuance already re-read `lifecycle_state` from the database on
+  every request), so credentials are left untouched and resume is an exact
+  inverse. Hard credential revocation is now reserved for the terminal states:
+  decommission and delete. Resume and `reenroll` additionally heal agents
+  bricked by the previous behavior — reactivating that agent's own unexpired
+  keys and clearing `ended_at` — without ever reviving a credential an operator
+  revoked on purpose.
+
+- **Deterministic agent lookup by source**: `managed_agent.get_by_source()`
+  returned an arbitrary row when several agents shared a session source, so a
+  stale suspended or decommissioned sibling could shadow the live agent during
+  token issuance. It now orders by lifecycle state (active, then suspended,
+  then decommissioned) and falls back to most-recent-first.
 
 ### Added
 
@@ -158,6 +179,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`test:unit:scripts` CI job**: runs the install script's shell-helper tests
   and the e2e rig's pure-python unit tests, neither of which any existing job
   executed.
+
+### Changed
+
+- **"Halt" is now "Pause" throughout the console**, rendered as a play/pause
+  toggle in amber/warning tones. Red/danger styling stays reserved for the
+  genuinely destructive offboard and remove actions, matching the fact that
+  pausing is now reversible.
+
+- **`identity.*` tags are hidden from the default agent tag chips** and shown
+  instead under a collapsed "Identity history" disclosure on the agent detail
+  view. These tags are server-written bookkeeping from agent re-keying, not
+  operator labels; they are preserved unchanged when an operator edits tags.
 
 ## [0.14.0] - 2026-08-07
 

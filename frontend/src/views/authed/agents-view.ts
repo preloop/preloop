@@ -48,7 +48,11 @@ import { reducedMotionStyles } from '../../styles/reduced-motion';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import { getAgentControlState } from '../../utils/agent-control';
 import { renderAgentIcon } from '../../utils/agent-icons';
-import { getAgentSourceLabel } from '../../utils/agent-display';
+import {
+  getAgentSourceLabel,
+  getSystemAgentTags,
+  getVisibleAgentTags,
+} from '../../utils/agent-display';
 
 const AVAILABLE_AGENT_KINDS = [
   { value: 'openclaw', label: 'OpenClaw' },
@@ -1749,7 +1753,7 @@ export class AgentsView extends LitElement {
 
   private getLifecycleLabel(agent: ManagedAgentSummary): string {
     if (agent.lifecycle_state === 'decommissioned') return 'Decommissioned';
-    if (agent.lifecycle_state === 'suspended') return 'Suspended';
+    if (agent.lifecycle_state === 'suspended') return 'Paused';
     if (agent.activity_status === 'active_now') return 'Active now';
     if (agent.activity_status === 'recently_active') return 'Recently active';
     if (agent.ended_at) return 'Ended';
@@ -2191,7 +2195,7 @@ export class AgentsView extends LitElement {
   }
 
   private promptEditAgentTags(agent: ManagedAgentSummary): void {
-    const currentTags = Object.entries(agent.tags || {})
+    const currentTags = getVisibleAgentTags(agent.tags)
       .map(([key, value]) =>
         value && value !== 'true' ? `${key}=${value}` : key
       )
@@ -2202,7 +2206,8 @@ export class AgentsView extends LitElement {
     );
     if (input === null) return;
 
-    const tags: Record<string, string> = {};
+    // Hidden server-owned identity.* tags must survive the replace.
+    const tags: Record<string, string> = getSystemAgentTags(agent.tags);
     input.split(/\s+/).forEach((tag) => {
       if (!tag) return;
       const [key, ...valueParts] = tag.split('=');
@@ -2240,7 +2245,7 @@ export class AgentsView extends LitElement {
     agent: ManagedAgentSummary,
     lifecycleAction: 'suspend' | 'resume'
   ): Promise<void> {
-    const label = lifecycleAction === 'suspend' ? 'halt' : 'resume';
+    const label = lifecycleAction === 'suspend' ? 'pause' : 'resume';
     if (
       !window.confirm(
         `Are you sure you want to ${label} ${agent.display_name}?`
@@ -2252,7 +2257,7 @@ export class AgentsView extends LitElement {
       lifecycle_action: lifecycleAction,
       reason:
         lifecycleAction === 'suspend'
-          ? 'Manually halted from managed agents view'
+          ? 'Manually paused from managed agents view'
           : 'Manually resumed from managed agents view',
     });
   }
@@ -2516,12 +2521,14 @@ export class AgentsView extends LitElement {
     const isSuspendedOrDecommissioned =
       agent.lifecycle_state === 'suspended' ||
       agent.lifecycle_state === 'decommissioned';
+    // Play/pause toggle in warning (amber) tones; danger red is reserved for
+    // the destructive Remove action below.
     actions.push(
       isSuspendedOrDecommissioned
         ? {
             id: 'resume',
             label: 'Resume',
-            icon: 'plug',
+            icon: 'play-fill',
             variant: 'success',
             loading: this.actionAgentId === agent.id,
             onClick: () => {
@@ -2529,10 +2536,10 @@ export class AgentsView extends LitElement {
             },
           }
         : {
-            id: 'halt',
-            label: 'Halt',
-            icon: 'power',
-            variant: 'danger',
+            id: 'pause',
+            label: 'Pause',
+            icon: 'pause-fill',
+            variant: 'warning',
             loading: this.actionAgentId === agent.id,
             onClick: () => {
               void this.updateAgentLifecycle(agent, 'suspend');
@@ -2578,7 +2585,7 @@ export class AgentsView extends LitElement {
   }
 
   private renderAgentIdentityBadges(agent: ManagedAgentSummary) {
-    const tags = Object.entries(agent.tags || {});
+    const tags = getVisibleAgentTags(agent.tags);
     return html`
       <div class="identity-badges">
         <sl-badge variant="${this.getLifecycleVariant(agent)}" pill>
@@ -3331,13 +3338,11 @@ export class AgentsView extends LitElement {
                               : ''
                           }
                           ${
-                            !isFlow &&
-                            agent?.tags &&
-                            Object.keys(agent.tags).length > 0
+                            !isFlow && getVisibleAgentTags(agent?.tags).length
                               ? html` <div
                                   style="display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px;"
                                 >
-                                  ${Object.entries(agent.tags)
+                                  ${getVisibleAgentTags(agent?.tags)
                                     .slice(0, 3)
                                     .map(
                                       ([k, v]) => html`
@@ -3357,11 +3362,14 @@ export class AgentsView extends LitElement {
                                       `
                                     )}
                                   ${
-                                    Object.keys(agent.tags).length > 3
+                                    getVisibleAgentTags(agent?.tags).length > 3
                                       ? html`<div
                                           style="font-size: 0.65rem; padding: 2px;"
                                         >
-                                          +${Object.keys(agent.tags).length - 3}
+                                          +${
+                                            getVisibleAgentTags(agent?.tags)
+                                              .length - 3
+                                          }
                                         </div>`
                                       : ''
                                   }

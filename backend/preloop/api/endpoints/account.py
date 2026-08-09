@@ -1989,13 +1989,18 @@ async def update_account_managed_agent(
     db: Session = Depends(get_db_session),
 ):
     """Update managed-agent ownership or lifecycle controls."""
+    # Locked for the whole handler: ``lifecycle_state`` is read here and the
+    # credential restore/revoke decision below is made from that read, so a
+    # concurrent operator action (a resume racing a decommission) must not
+    # land in between and leave keys reactivated on a decommissioned agent.
     agent = crud_managed_agent.get_for_account(
-        db, account_id=str(account.id), agent_id=agent_id
+        db, account_id=str(account.id), agent_id=agent_id, for_update=True
     )
     if agent is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Managed agent not found"
         )
+    prior_lifecycle_state = agent.lifecycle_state
 
     set_owner = "owner_user_id" in update.model_fields_set
     set_display_name = "display_name" in update.model_fields_set
@@ -2031,8 +2036,22 @@ async def update_account_managed_agent(
     bound_runtime_session_id = (
         str(agent.runtime_session_id) if agent.runtime_session_id is not None else None
     )
-    should_revoke_runtime_access = lifecycle_state in {"suspended", "decommissioned"}
-    revoke_timestamp = datetime.now(UTC) if should_revoke_runtime_access else None
+    # Pause (``suspended``) is a REVERSIBLE lifecycle flag: every auth path
+    # re-reads ``lifecycle_state`` from the database on every request
+    # (model_gateway_auth.authenticate_bearer_token, jwt._authenticate_with_api_key,
+    # runtime token issuance), so a paused agent is rejected without touching
+    # its credentials. Deactivating keys made pause irreversible, because
+    # resume had no inverse and every later gateway call 401'd before any
+    # usage row was written. Hard credential revocation now belongs to the
+    # terminal states only: decommission (offboard) and delete.
+    should_revoke_runtime_access = lifecycle_state == "decommissioned"
+    # Resume/reenroll heal agents whose keys a previous release revoked on
+    # suspend, and un-archive decommissioned agents. Restoration is narrow
+    # (see crud_api_key.reactivate_runtime_keys_for_managed_agent): only this
+    # agent's own unexpired, non-operator-revoked keys.
+    should_restore_runtime_access = (
+        lifecycle_state == "active" and prior_lifecycle_state != "active"
+    )
     updated = crud_managed_agent.update_operator_state(
         db,
         account_id=str(account.id),
@@ -2051,7 +2070,8 @@ async def update_account_managed_agent(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Managed agent not found"
         )
-    if should_revoke_runtime_access and revoke_timestamp is not None:
+    if should_revoke_runtime_access:
+        revoke_timestamp = datetime.now(UTC)
         # Revoke only this agent's keys (plus legacy keys with no agent
         # binding). Several registry entries can share one runtime principal,
         # and a principal-wide sweep would also kill sibling agents' durable
@@ -2077,6 +2097,24 @@ async def update_account_managed_agent(
                 ended_at=revoke_timestamp,
                 commit=False,
             )
+    if should_restore_runtime_access:
+        crud_api_key.reactivate_runtime_keys_for_managed_agent(
+            db,
+            account_id=account.id,
+            managed_agent_id=str(agent.id),
+            commit=False,
+        )
+        # A previous release ended the bound session on suspend and nothing
+        # ever reopened it, which kept session-bound runtime keys rejected
+        # after resume. Reopen the agent's own session so the inverse of a
+        # pause is a genuine round trip.
+        crud_runtime_session.reopen_for_managed_agent(
+            db,
+            account_id=str(account.id),
+            session_source_type=agent.session_source_type,
+            session_source_id=agent.session_source_id,
+            commit=False,
+        )
     db.commit()
     db.refresh(updated)
 

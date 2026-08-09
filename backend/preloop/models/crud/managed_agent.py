@@ -20,6 +20,11 @@ from .base import CRUDBase
 MANAGED_AGENT_ACTIVE_WINDOW = timedelta(minutes=10)
 MANAGED_AGENT_RECENT_WINDOW = timedelta(hours=24)
 
+# The only lifecycle states the system understands. ``get_by_source`` ranks
+# these explicitly and the auth paths branch on them, so writing anything else
+# would silently change how an agent resolves and authenticates.
+MANAGED_AGENT_LIFECYCLE_STATES = frozenset({"active", "suspended", "decommissioned"})
+
 
 def normalize_managed_agent_kind(
     session_source_type: Optional[str], *, agent_kind: Optional[str] = None
@@ -337,13 +342,47 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         session_source_type: str,
         session_source_id: str,
     ) -> Optional[ManagedAgent]:
-        """Look up one agent by its durable source identity."""
+        """Look up one agent by its durable source identity, deterministically.
+
+        A unique constraint normally keeps one row per
+        ``(account, source_type, source_id)``, but sibling rows do exist in
+        the field (rekey/merge races, databases restored from older dumps).
+        An unordered ``.first()`` let a stale archived sibling shadow the live
+        agent, which nondeterministically blocked runtime token issuance and
+        broke key-to-agent resolution on the gateway auth path. Resolution is
+        therefore explicit: most usable lifecycle first (active, then the
+        resumable suspended, then decommissioned, then anything unrecognised),
+        then most recent.
+
+        Args:
+            db: Database session.
+            account_id: Account that owns the agent.
+            session_source_type: Durable principal type.
+            session_source_id: Durable principal id.
+
+        Returns:
+            The best-matching managed agent, or None when there is no match.
+        """
+        # Unknown states sort last, not between suspended and decommissioned:
+        # an unrecognised value is the one case where we know least, so it must
+        # never win over a state we do understand.
+        lifecycle_rank = case(
+            (self.model.lifecycle_state == "active", 0),
+            (self.model.lifecycle_state == "suspended", 1),
+            (self.model.lifecycle_state == "decommissioned", 2),
+            else_=99,
+        )
         return (
             db.query(self.model)
             .filter(
                 self.model.account_id == account_id,
                 self.model.session_source_type == session_source_type,
                 self.model.session_source_id == session_source_id,
+            )
+            .order_by(
+                lifecycle_rank.asc(),
+                self.model.created_at.desc(),
+                self.model.id.desc(),
             )
             .first()
         )
@@ -382,14 +421,33 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         return query.order_by(self.model.created_at.desc()).all()
 
     def get_for_account(
-        self, db: Session, *, account_id: str, agent_id: str
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        agent_id: str,
+        for_update: bool = False,
     ) -> Optional[ManagedAgent]:
-        """Return one managed agent scoped to the given account."""
-        return (
-            db.query(self.model)
-            .filter(self.model.account_id == account_id, self.model.id == agent_id)
-            .first()
+        """Return one managed agent scoped to the given account.
+
+        Args:
+            db: Database session.
+            account_id: Account the agent must belong to.
+            agent_id: Identifier of the agent to load.
+            for_update: Take a row lock (``SELECT ... FOR UPDATE``) so the
+                caller can read ``lifecycle_state``, decide on it, and write
+                without a concurrent operator action landing in between. Only
+                meaningful inside a transaction that commits afterwards.
+
+        Returns:
+            The managed agent, or ``None`` when no such agent exists.
+        """
+        query = db.query(self.model).filter(
+            self.model.account_id == account_id, self.model.id == agent_id
         )
+        if for_update:
+            query = query.with_for_update()
+        return query.first()
 
     def touch_last_seen_for_principal(
         self,
@@ -440,7 +498,19 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         set_tags: bool = False,
         commit: bool = True,
     ) -> Optional[ManagedAgent]:
-        """Update ownership and lifecycle controls for one managed agent."""
+        """Update ownership and lifecycle controls for one managed agent.
+
+        Raises:
+            ValueError: If ``lifecycle_state`` is not a recognised state.
+        """
+        if (
+            lifecycle_state is not None
+            and lifecycle_state not in MANAGED_AGENT_LIFECYCLE_STATES
+        ):
+            raise ValueError(
+                f"Invalid managed agent lifecycle_state {lifecycle_state!r}; "
+                f"expected one of {sorted(MANAGED_AGENT_LIFECYCLE_STATES)}"
+            )
         db_obj = self.get_for_account(db, account_id=account_id, agent_id=agent_id)
         if db_obj is None:
             return None
@@ -453,9 +523,17 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             db_obj.tags = tags
         if lifecycle_state is not None:
             db_obj.lifecycle_state = lifecycle_state
+            # Reset deliberately, including to None. lifecycle_reason explains
+            # the CURRENT state, alongside lifecycle_updated_at; carrying a
+            # previous transition's reason forward would label a resumed agent
+            # with the reason it was paused.
             db_obj.lifecycle_reason = lifecycle_reason
             db_obj.lifecycle_updated_at = now
-            if lifecycle_state in {"suspended", "decommissioned"}:
+            # Only the terminal state unbinds the runtime session. Pausing is
+            # reversible and every auth path rejects non-active agents on each
+            # request, so dropping the binding here would just make resume
+            # unable to restore the agent to its previous state.
+            if lifecycle_state == "decommissioned":
                 db_obj.runtime_session_id = None
         db.add(db_obj)
         if commit:
