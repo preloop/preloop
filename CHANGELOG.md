@@ -34,6 +34,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Preset updates never reached renamed flow clones**: preset propagation
+  (`sync_preset_to_derived_flows`) only finds flows via `source_preset_id`,
+  and the one-time linking migration only matched flows named
+  "Copy of <preset name>". A flow cloned from a preset and then renamed —
+  with a prompt still byte-identical to the preset — stayed unlinked forever
+  and silently never received preset updates. A new content-hash linking pass
+  (`link_unlinked_flows_by_content`, also run by
+  `scripts/sync_flow_presets.py` before propagation) links unlinked,
+  non-preset, account-owned flows whose prompt hash equals a preset's current
+  prompt or a historical link-time version of it, regardless of name.
+  Conservative by construction: only byte-identical prompts link (customized
+  prompts can never match, so user edits can never be overwritten), hashes
+  matching multiple presets are skipped and logged, and differing tools are
+  marked customized and notified rather than replaced.
+
 - **Unhelpful failure messages and no retry when an upstream model provider
   failed**: when the model provider in front of an agent returned a gateway
   timeout, the agent CLI exhausted its own internal retries hundreds of log
