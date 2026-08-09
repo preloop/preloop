@@ -22,6 +22,15 @@ export type SessionObserverScope =
 export type SessionReplayMode =
   'conversation' | 'timeline' | 'chat' | 'replay' | 'optimize';
 
+/**
+ * Event dispatched by transcript views to ask <preloop-session-observer> for
+ * the next (earlier) page of gateway events. Dispatch sites use this constant;
+ * Lit template `@event=` listener bindings must stay literal, so the observer's
+ * templates repeat the string — keep them in sync with this.
+ */
+export const SESSION_EVENTS_PAGE_REQUESTED_EVENT =
+  'session-events-page-requested';
+
 export interface ObservedSession {
   id: string;
   sourceId: string | null;

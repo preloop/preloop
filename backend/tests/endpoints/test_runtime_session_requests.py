@@ -410,3 +410,68 @@ def test_runtime_session_cache_summary_omits_savings_without_exact_prices(
     summary = response.json()["cache_summary"]
     assert summary["estimated_cache_savings_usd"] is None
     assert summary["savings_omitted_reason"] == "no_catalog_cache_price"
+
+
+def test_runtime_session_cache_summary_excludes_replay_validation_rows(
+    client, db_session, test_user
+):
+    """Replay-validation traffic must not inflate the cache rollup."""
+    session = _make_session(db_session, test_user.account_id)
+    _log_cache_request(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=session.id,
+        prompt_tokens=1_000,
+        cache_read_tokens=800,
+    )
+    # A Preloop-driven replay-validation re-execution of the same call.
+    _log_cache_request(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=session.id,
+        prompt_tokens=1_000,
+        cache_read_tokens=800,
+        meta_data={"purpose": "replay_validation"},
+    )
+    db_session.commit()
+
+    response = client.get(f"/api/v1/runtime-sessions/{session.id}/requests")
+    assert response.status_code == 200
+    summary = response.json()["cache_summary"]
+    assert summary["requests_total"] == 1
+    assert summary["cached_prompt_tokens"] == 800
+
+
+def test_runtime_session_cache_summary_exposes_per_model_groups(
+    client, db_session, test_user
+):
+    """The per-model breakdown must reach the API response."""
+    session = _make_session(db_session, test_user.account_id)
+    _log_cache_request(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=session.id,
+        prompt_tokens=1_000,
+        cache_read_tokens=800,
+        cache_creation_tokens=100,
+    )
+    _log_cache_request(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=session.id,
+        prompt_tokens=2_000,
+        cache_read_tokens=1_500,
+        model_alias="gpt-4o",
+        provider_name="openai",
+    )
+    db_session.commit()
+
+    response = client.get(f"/api/v1/runtime-sessions/{session.id}/requests")
+    assert response.status_code == 200
+    summary = response.json()["cache_summary"]
+    models = {entry["model_alias"]: entry for entry in summary["models"]}
+    assert set(models) == {"anthropic/claude-sonnet-4", "gpt-4o"}
+    assert models["anthropic/claude-sonnet-4"]["cache_read_tokens"] == 800
+    assert models["anthropic/claude-sonnet-4"]["write_reported"] is True
+    assert models["gpt-4o"]["cache_read_tokens"] == 1_500
+    assert models["gpt-4o"]["write_reported"] is False

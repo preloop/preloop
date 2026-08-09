@@ -661,23 +661,38 @@ class RuntimeSessionRequestItem(BaseModel):
     )
 
 
+class RuntimeSessionCacheModelGroup(BaseModel):
+    """Per-(model, provider) breakdown inside the session cache rollup."""
+
+    model_alias: Optional[str] = None
+    provider_name: Optional[str] = None
+    requests: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+    prompt_tokens: int = 0
+    write_reported: bool = False
+
+
 class RuntimeSessionCacheSummary(BaseModel):
     """Whole-session prompt-cache rollup.
 
     The ratio's denominator is the *covered* traffic only: requests whose
     provider actually reported a cache split. ``uncovered_prompt_tokens`` is
     surfaced next to it so the UI can state coverage instead of folding blind
-    rows in as misses.
+    rows in as misses. ``requests_with_unknown_prompt_tokens`` counts rows
+    whose provider reported no prompt total at all; their tokens are excluded
+    from both sums rather than counted as zero.
 
     ``cache_write_tokens`` is ``None`` when no provider in this session has a
     billable cache-write concept at all (OpenAI, Gemini, DeepSeek), which is
     not the same statement as zero rewritten tokens.
 
-    ``estimated_cache_savings_usd`` is populated only when the vendored price
-    catalog carries explicit input AND cache-read prices for every model that
-    contributed cache reads; otherwise it is ``None`` and
-    ``savings_omitted_reason`` says why. No multiplier-based approximation is
-    ever returned here.
+    ``estimated_cache_savings_usd`` is computed only from explicit catalog
+    input AND cache-read prices — never a multiplier-based approximation.
+    ``savings_basis`` is ``catalog_exact`` when every model that contributed
+    cache reads was priced, ``catalog_exact_partial`` when the figure is a
+    lower bound covering only the priced models. When no contributing model is
+    priced the figure is ``None`` and ``savings_omitted_reason`` says why.
     """
 
     requests_total: int = 0
@@ -692,6 +707,8 @@ class RuntimeSessionCacheSummary(BaseModel):
     estimated_cache_savings_usd: Optional[float] = None
     savings_basis: Optional[str] = None
     savings_omitted_reason: Optional[str] = None
+    requests_with_unknown_prompt_tokens: int = 0
+    models: List[RuntimeSessionCacheModelGroup] = Field(default_factory=list)
 
 
 class RuntimeSessionRequestListResponse(BaseModel):
@@ -705,10 +722,10 @@ class RuntimeSessionRequestListResponse(BaseModel):
     next_offset: Optional[int] = None
     has_more: bool = False
     # Rollup over the whole session, not just the returned page, so the summary
-    # does not change as the user pages through requests.
-    cache_summary: RuntimeSessionCacheSummary = Field(
-        default_factory=RuntimeSessionCacheSummary
-    )
+    # does not change as the user pages through requests. Required on purpose:
+    # a defaulted zeroed-out summary would silently mask an endpoint that
+    # forgot to compute it.
+    cache_summary: RuntimeSessionCacheSummary
 
 
 class RuntimeSessionSummaryInsight(BaseModel):

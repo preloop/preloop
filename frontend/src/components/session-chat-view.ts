@@ -11,6 +11,7 @@
  * observer's existing `session-events-page-requested` event.
  */
 import { LitElement, css, html, nothing } from 'lit';
+import type { PropertyValues } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
@@ -20,22 +21,26 @@ import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import type { FlowGatewayEvent, RuntimeSessionActivityItem } from '../types';
 import type {
+  TranscriptBuildResult,
   TranscriptItem,
   TranscriptMessageItem,
   TranscriptStep,
   TranscriptStepGroupItem,
 } from '../utils/transcript';
 import { buildConversation } from '../utils/transcript';
+import { SESSION_EVENTS_PAGE_REQUESTED_EVENT } from '../utils/session-observer';
 
 const MESSAGE_PREVIEW_CHARS = 2000;
 const STEP_PREVIEW_CHARS = 600;
 
 @customElement('session-chat-view')
 export class SessionChatView extends LitElement {
-  @property({ type: Array })
+  // `attribute: false`: these are data-only properties set via property
+  // bindings; an attribute path would (de)serialize large arrays as JSON.
+  @property({ attribute: false })
   events: FlowGatewayEvent[] = [];
 
-  @property({ type: Array })
+  @property({ attribute: false })
   activity: RuntimeSessionActivityItem[] = [];
 
   @property({ type: Boolean })
@@ -59,6 +64,27 @@ export class SessionChatView extends LitElement {
 
   @state()
   private expandedStepKeys = new Set<string>();
+
+  // Rebuilt in willUpdate() only when `events`/`activity` change, NOT on
+  // every render: expanding a message or toggling a step must not re-run the
+  // whole O(n log n) transcript reconstruction.
+  private conversation: TranscriptBuildResult = {
+    items: [],
+    stats: {
+      promptCount: 0,
+      responseCount: 0,
+      stepCount: 0,
+      toolResultCount: 0,
+      injectedCount: 0,
+      toolCallCount: 0,
+      eventsWithoutRawBody: 0,
+      totalEvents: 0,
+    },
+  };
+
+  // Events seen at the last follow-live scroll; scrolling happens only when
+  // new events actually arrive, never on state-only re-renders.
+  private lastScrolledEventCount = 0;
 
   static styles = css`
     :host {
@@ -241,8 +267,20 @@ export class SessionChatView extends LitElement {
     }
   `;
 
-  updated(): void {
+  willUpdate(changed: PropertyValues<this>): void {
+    if (changed.has('events') || changed.has('activity')) {
+      this.conversation = buildConversation(this.events, this.activity);
+    }
+  }
+
+  updated(changed: PropertyValues<this>): void {
     if (!this.followLive) return;
+    // Scroll only when new events arrived (or follow-live was just switched
+    // on); a scrollTop write on every update would force a reflow — and yank
+    // the view — each time the user expands a message they are reading.
+    const newEvents = this.events.length > this.lastScrolledEventCount;
+    this.lastScrolledEventCount = this.events.length;
+    if (!newEvents && !changed.has('followLive')) return;
     const thread = this.renderRoot.querySelector('.thread');
     if (thread) thread.scrollTop = thread.scrollHeight;
   }
@@ -270,7 +308,7 @@ export class SessionChatView extends LitElement {
 
   private requestEarlierEvents(): void {
     this.dispatchEvent(
-      new CustomEvent('session-events-page-requested', {
+      new CustomEvent(SESSION_EVENTS_PAGE_REQUESTED_EVENT, {
         bubbles: true,
         composed: true,
       })
@@ -485,7 +523,7 @@ ${
       `;
     }
 
-    const { items, stats } = buildConversation(this.events, this.activity);
+    const { items, stats } = this.conversation;
     if (!items.length) {
       return html`<div class="empty">${this.emptyText}</div>`;
     }

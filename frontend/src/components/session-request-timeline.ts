@@ -461,7 +461,9 @@ export class SessionRequestTimeline extends LitElement {
             title=${
               summary.estimated_cache_savings_usd === null
                 ? 'Omitted: a savings figure is only shown when the price catalog supports it exactly'
-                : 'Input price minus cache-read price over the tokens served from cache'
+                : summary.savings_basis === 'catalog_exact_partial'
+                  ? 'Lower bound: covers only the models with exact catalog prices'
+                  : 'Input price minus cache-read price over the tokens served from cache'
             }
           >
             ${
@@ -470,6 +472,11 @@ export class SessionRequestTimeline extends LitElement {
                 : SessionRequestTimeline.savings(
                     summary.estimated_cache_savings_usd
                   )
+            }${
+              summary.estimated_cache_savings_usd !== null &&
+              summary.savings_basis === 'catalog_exact_partial'
+                ? '+'
+                : ''
             }
           </span>
         </div>

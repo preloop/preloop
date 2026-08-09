@@ -47,6 +47,7 @@ PRERENDERED_URLS = (
     "/privacy",
     "/terms",
     "/whatis-mcp",
+    "/ai-act-readiness",
     "/blog",
     "/blog/govern-your-qm-fleet",
     "/vs/litellm",

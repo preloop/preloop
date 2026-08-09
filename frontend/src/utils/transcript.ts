@@ -145,6 +145,17 @@ export const INJECTED_SEGMENT_PATTERNS: Array<{
   },
 ];
 
+/**
+ * Exact-prefix gateway event-type check. The backend emits
+ * `model_gateway_call` (services/model_gateway_events.py); prefix (not
+ * substring) matching keeps hypothetical namespaced variants like
+ * `model_gateway_call_v2` while excluding unrelated types that merely
+ * contain the words somewhere inside.
+ */
+export function isModelGatewayEventType(type: string): boolean {
+  return type.startsWith('model_gateway');
+}
+
 /** First-match injected pattern for a user-role text, or null. */
 export function matchInjectedSegment(
   text: string
@@ -194,8 +205,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * Exact tool-result texts from the raw request body, as normalized match
  * prefixes. Detects OpenAI `role: "tool"` messages, Anthropic user messages
  * whose content array carries `type: "tool_result"` blocks, and Responses
- * API `function_call_output` items. Returns null when no raw message array
- * was captured (capture off, older rows) so callers can degrade honestly.
+ * API `function_call_output` items.
+ *
+ * Returns null when exact detection is IMPOSSIBLE, so callers can degrade
+ * honestly: either no raw message array was captured (capture off, older
+ * rows), or tool-result-shaped items were present but none yielded usable
+ * text (unrecognized structure). An EMPTY set is a positive claim: the raw
+ * body was parsed and contains no tool results at all.
  */
 export function collectRawToolResultPrefixes(
   event: FlowGatewayEvent
@@ -210,12 +226,14 @@ export function collectRawToolResultPrefixes(
   if (!arrays.length) return null;
 
   const prefixes = new Set<string>();
+  let sawToolResultShape = false;
   for (const rawMessages of arrays) {
     for (const raw of rawMessages) {
       if (!isRecord(raw)) continue;
       const role = String(raw.role || '').toLowerCase();
       const itemType = String(raw.type || '').toLowerCase();
       if (role === 'tool' || itemType === 'function_call_output') {
+        sawToolResultShape = true;
         const text = contentToText(raw.content ?? raw.output ?? raw);
         if (text.trim()) prefixes.add(normalizeForMatch(text));
         continue;
@@ -225,12 +243,18 @@ export function collectRawToolResultPrefixes(
       for (const block of content) {
         if (!isRecord(block)) continue;
         if (String(block.type || '').toLowerCase() === 'tool_result') {
+          sawToolResultShape = true;
           const text = contentToText(block.content ?? block);
           if (text.trim()) prefixes.add(normalizeForMatch(text));
         }
       }
     }
   }
+  // Tool-result items existed but none produced matchable text: exact
+  // detection would silently misclassify every one of them as a prompt, so
+  // report "no usable raw body" instead and let the heuristics (and the
+  // stats disclosure) take over.
+  if (sawToolResultShape && !prefixes.size) return null;
   return prefixes;
 }
 
@@ -288,7 +312,7 @@ export function buildConversation(
   const gatewayEvents = events
     .filter(
       (event) =>
-        event.type.includes('model_gateway') || previewMessages(event).length
+        isModelGatewayEventType(event.type) || previewMessages(event).length
     )
     .sort(
       (left, right) =>
@@ -311,9 +335,17 @@ export function buildConversation(
       if (!text && !message.redacted) return;
       const role = (message.role || 'message').toLowerCase();
       const source = (message.source || 'request').toLowerCase();
-      const signature = `${role}::${text}`;
       // Growing-prefix delta: render a message only the first time it
-      // appears across the session's accumulated request histories.
+      // appears across the session's accumulated request histories. The
+      // position index is part of the signature so a genuinely repeated
+      // identical text at a DIFFERENT conversation point (e.g. the user
+      // sending "continue" twice) is not collapsed into one bubble, while
+      // the same message replayed at the same position in later requests
+      // still deduplicates — including an event's response, which the next
+      // request replays as history at that same position. (An event-id
+      // component would defeat the dedup outright: every request replays
+      // the whole history.)
+      const signature = `${messageIndex}::${role}::${text}`;
       if (text && seenSignatures.has(signature)) return;
       if (text) seenSignatures.add(signature);
 

@@ -15939,6 +15939,41 @@ components:
       type: object
       title: RuntimeSessionActivityListResponse
       description: List of activity items for a runtime session.
+    RuntimeSessionCacheModelGroup:
+      properties:
+        model_alias:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Alias
+        provider_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Name
+        requests:
+          type: integer
+          title: Requests
+          default: 0
+        cache_read_tokens:
+          type: integer
+          title: Cache Read Tokens
+          default: 0
+        cache_creation_tokens:
+          type: integer
+          title: Cache Creation Tokens
+          default: 0
+        prompt_tokens:
+          type: integer
+          title: Prompt Tokens
+          default: 0
+        write_reported:
+          type: boolean
+          title: Write Reported
+          default: false
+      type: object
+      title: RuntimeSessionCacheModelGroup
+      description: Per-(model, provider) breakdown inside the session cache rollup.
     RuntimeSessionCacheSummary:
       properties:
         requests_total:
@@ -15994,6 +16029,15 @@ components:
           - type: string
           - type: 'null'
           title: Savings Omitted Reason
+        requests_with_unknown_prompt_tokens:
+          type: integer
+          title: Requests With Unknown Prompt Tokens
+          default: 0
+        models:
+          items:
+            $ref: '#/components/schemas/RuntimeSessionCacheModelGroup'
+          type: array
+          title: Models
       type: object
       title: RuntimeSessionCacheSummary
       description: 'Whole-session prompt-cache rollup.
@@ -16005,7 +16049,11 @@ components:
 
         surfaced next to it so the UI can state coverage instead of folding blind
 
-        rows in as misses.
+        rows in as misses. ``requests_with_unknown_prompt_tokens`` counts rows
+
+        whose provider reported no prompt total at all; their tokens are excluded
+
+        from both sums rather than counted as zero.
 
 
         ``cache_write_tokens`` is ``None`` when no provider in this session has a
@@ -16015,15 +16063,17 @@ components:
         not the same statement as zero rewritten tokens.
 
 
-        ``estimated_cache_savings_usd`` is populated only when the vendored price
+        ``estimated_cache_savings_usd`` is computed only from explicit catalog
 
-        catalog carries explicit input AND cache-read prices for every model that
+        input AND cache-read prices — never a multiplier-based approximation.
 
-        contributed cache reads; otherwise it is ``None`` and
+        ``savings_basis`` is ``catalog_exact`` when every model that contributed
 
-        ``savings_omitted_reason`` says why. No multiplier-based approximation is
+        cache reads was priced, ``catalog_exact_partial`` when the figure is a
 
-        ever returned here.'
+        lower bound covering only the priced models. When no contributing model is
+
+        priced the figure is ``None`` and ``savings_omitted_reason`` says why.'
     RuntimeSessionInteractionSummary:
       properties:
         event_id:
@@ -16672,6 +16722,8 @@ components:
         cache_summary:
           $ref: '#/components/schemas/RuntimeSessionCacheSummary'
       type: object
+      required:
+      - cache_summary
       title: RuntimeSessionRequestListResponse
       description: Paginated per-request rows for one runtime session.
     RuntimeSessionRequestTool:

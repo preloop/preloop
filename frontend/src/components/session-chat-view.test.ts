@@ -1,7 +1,26 @@
 import { expect, fixture, html } from '@open-wc/testing';
 import './session-chat-view';
 import type { SessionChatView } from './session-chat-view';
-import type { FlowGatewayEvent } from '../types';
+import type { FlowGatewayEvent, RuntimeSessionActivityItem } from '../types';
+
+function activityItem(
+  overrides: Partial<RuntimeSessionActivityItem> &
+    Pick<RuntimeSessionActivityItem, 'activity_type' | 'timestamp' | 'title'>
+): RuntimeSessionActivityItem {
+  return {
+    summary: null,
+    status: null,
+    api_usage_id: null,
+    tool_name: null,
+    server_name: null,
+    auth_subject_type: null,
+    api_key_id: null,
+    api_key_name: null,
+    estimated_cost: null,
+    total_tokens: null,
+    ...overrides,
+  };
+}
 
 function previewEvent(
   id: string,
@@ -146,6 +165,106 @@ describe('session-chat-view', () => {
     expect(button).to.exist;
     button.click();
     expect(paged).to.equal(true);
+  });
+
+  it('shows the loading state before any data arrives', async () => {
+    const el = await fixture<SessionChatView>(
+      html`<session-chat-view .loading=${true}></session-chat-view>`
+    );
+    expect(el.shadowRoot!.querySelector('.loading')).to.exist;
+    expect(el.shadowRoot!.querySelector('.loading')!.textContent).to.contain(
+      'Loading conversation'
+    );
+  });
+
+  it('renders operator messages as operator bubbles', async () => {
+    const events = [
+      previewEvent('e1', '2026-08-06T10:00:00Z', [
+        { role: 'user', text: 'run the tests' },
+        { role: 'assistant', text: 'done', source: 'response' },
+      ]),
+    ];
+    const activity = [
+      activityItem({
+        activity_type: 'agent_control_message',
+        timestamp: '2026-08-06T10:02:00Z',
+        title: 'Operator message',
+        summary: 'please also run lint',
+        status: 'delivered',
+      }),
+    ];
+    const el = await fixture<SessionChatView>(
+      html`<session-chat-view
+        .events=${events}
+        .activity=${activity}
+      ></session-chat-view>`
+    );
+    const operator = el.shadowRoot!.querySelector(
+      '.bubble[data-kind="operator"]'
+    );
+    expect(operator).to.exist;
+    expect(operator!.textContent).to.contain('please also run lint');
+  });
+
+  it('renders session lifecycle markers as dividers', async () => {
+    const events = [
+      previewEvent('e1', '2026-08-06T10:01:00Z', [
+        { role: 'user', text: 'hello' },
+        { role: 'assistant', text: 'hi', source: 'response' },
+      ]),
+    ];
+    const activity = [
+      activityItem({
+        activity_type: 'session_started',
+        timestamp: '2026-08-06T10:00:00Z',
+        title: 'Session started',
+      }),
+      activityItem({
+        activity_type: 'session_ended',
+        timestamp: '2026-08-06T10:05:00Z',
+        title: 'Session ended',
+      }),
+    ];
+    const el = await fixture<SessionChatView>(
+      html`<session-chat-view
+        .events=${events}
+        .activity=${activity}
+      ></session-chat-view>`
+    );
+    const dividers = el.shadowRoot!.querySelectorAll('.divider');
+    expect(dividers).to.have.length(2);
+    expect(dividers[0].textContent).to.contain('Session started');
+    expect(dividers[1].textContent).to.contain('Session ended');
+  });
+
+  it('rebuilds the transcript only when events or activity change', async () => {
+    const events = [
+      previewEvent('e1', '2026-08-06T10:00:00Z', [
+        { role: 'user', text: 'hello' },
+        { role: 'assistant', text: 'hi', source: 'response' },
+      ]),
+    ];
+    const el = await fixture<SessionChatView>(
+      html`<session-chat-view .events=${events}></session-chat-view>`
+    );
+    const internals = el as unknown as {
+      conversation: { items: unknown[] };
+    };
+    const built = internals.conversation;
+    // A state-only re-render must reuse the cached transcript object.
+    el.requestUpdate();
+    await el.updateComplete;
+    expect(internals.conversation).to.equal(built);
+    // New events must trigger a rebuild.
+    el.events = [
+      ...events,
+      previewEvent('e2', '2026-08-06T10:01:00Z', [
+        { role: 'user', text: 'more' },
+        { role: 'assistant', text: 'ok', source: 'response' },
+      ]),
+    ];
+    await el.updateComplete;
+    expect(internals.conversation).to.not.equal(built);
   });
 
   it('clamps long messages with a manual reveal', async () => {

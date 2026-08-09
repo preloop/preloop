@@ -6,6 +6,7 @@ from preloop.services.cache_accounting import (
     CACHE_MISS_SOURCE_DERIVED,
     CACHE_MISS_SOURCE_REPORTED,
     SAVINGS_BASIS_CATALOG_EXACT,
+    SAVINGS_BASIS_CATALOG_EXACT_PARTIAL,
     SAVINGS_OMITTED_NO_CACHE_READS,
     SAVINGS_OMITTED_NO_CATALOG_PRICE,
     build_request_cache_accounting,
@@ -122,6 +123,31 @@ class TestRequestAccounting:
         assert reported_cache_miss_tokens({"usage_details": {}}) is None
         assert reported_cache_miss_tokens({"usage_details": "nope"}) is None
 
+    def test_reported_miss_nested_prompt_tokens_details_path(self):
+        """The nested prompt_tokens_details.prompt_cache_miss_tokens is read."""
+        meta_data = {
+            "usage_details": {
+                "prompt_tokens_details": {"prompt_cache_miss_tokens": 640}
+            }
+        }
+        assert reported_cache_miss_tokens(meta_data) == 640
+
+    def test_reported_miss_cache_miss_input_tokens_fallback(self):
+        """The third fallback key, cache_miss_input_tokens, is honored."""
+        meta_data = {"usage_details": {"cache_miss_input_tokens": 77}}
+        assert reported_cache_miss_tokens(meta_data) == 77
+
+    def test_reported_miss_key_precedence(self):
+        """Top-level prompt_cache_miss_tokens wins over the fallbacks."""
+        meta_data = {
+            "usage_details": {
+                "prompt_cache_miss_tokens": 1,
+                "prompt_tokens_details": {"prompt_cache_miss_tokens": 2},
+                "cache_miss_input_tokens": 3,
+            }
+        }
+        assert reported_cache_miss_tokens(meta_data) == 1
+
 
 class TestSessionSummary:
     def test_ratio_denominator_excludes_uncovered_requests(self):
@@ -219,3 +245,69 @@ class TestSessionSummary:
         assert summary.requests_total == 0
         assert summary.cache_hit_ratio is None
         assert summary.cache_write_tokens is None
+
+    def test_mixed_models_savings_is_partial_lower_bound(self):
+        """A priced model's savings survive an unpriced model in the session."""
+        summary = summarize_session_cache(
+            [
+                _row(
+                    prompt_tokens=10_000,
+                    cache_read_tokens=10_000,
+                    model_alias="gpt-4o",
+                    provider_name="openai",
+                ),
+                _row(
+                    prompt_tokens=1_000,
+                    cache_read_tokens=900,
+                    model_alias="totally-unknown-model-xyz",
+                    provider_name="custom",
+                ),
+            ]
+        )
+        assert summary.estimated_cache_savings_usd == 0.0125
+        assert summary.savings_basis == SAVINGS_BASIS_CATALOG_EXACT_PARTIAL
+        assert summary.savings_omitted_reason is None
+
+    def test_unknown_prompt_totals_counted_not_zeroed(self):
+        """prompt_tokens=None is unknown, not zero, in the rollup."""
+        summary = summarize_session_cache(
+            [
+                _row(prompt_tokens=None, cache_read_tokens=500),
+                _row(prompt_tokens=None),
+                _row(prompt_tokens=1_000, cache_read_tokens=800),
+            ]
+        )
+        assert summary.requests_with_unknown_prompt_tokens == 2
+        # Only the row with a real prompt total contributes to the sums.
+        assert summary.covered_prompt_tokens == 1_000
+        assert summary.uncovered_prompt_tokens == 0
+
+    def test_summary_as_dict_exposes_models(self):
+        """The per-model breakdown is part of the serialized summary."""
+        summary = summarize_session_cache(
+            [
+                _row(
+                    prompt_tokens=1_000,
+                    cache_read_tokens=800,
+                    cache_creation_tokens=100,
+                    model_alias="anthropic/claude-sonnet-4",
+                    provider_name="anthropic",
+                ),
+                _row(
+                    prompt_tokens=2_000,
+                    cache_read_tokens=1_500,
+                    model_alias="gpt-4o",
+                    provider_name="openai",
+                ),
+            ]
+        )
+        payload = summary.as_dict()
+        models = {entry["model_alias"]: entry for entry in payload["models"]}
+        assert set(models) == {"anthropic/claude-sonnet-4", "gpt-4o"}
+        anthropic = models["anthropic/claude-sonnet-4"]
+        assert anthropic["cache_read_tokens"] == 800
+        assert anthropic["cache_creation_tokens"] == 100
+        assert anthropic["write_reported"] is True
+        openai = models["gpt-4o"]
+        assert openai["cache_read_tokens"] == 1_500
+        assert openai["write_reported"] is False

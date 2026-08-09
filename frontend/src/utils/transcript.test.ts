@@ -3,6 +3,7 @@ import type { FlowGatewayEvent, RuntimeSessionActivityItem } from '../types';
 import {
   buildConversation,
   collectRawToolResultPrefixes,
+  isModelGatewayEventType,
   matchInjectedSegment,
 } from './transcript';
 
@@ -116,6 +117,40 @@ describe('collectRawToolResultPrefixes', () => {
     const prefixes = collectRawToolResultPrefixes(event)!;
     expect(prefixes.has('exit code 0')).to.equal(true);
     expect(prefixes.has('ls output')).to.equal(true);
+  });
+
+  it('returns null when tool results exist but yield no matchable text', () => {
+    // Unrecognized structure: exact detection would silently misclassify
+    // every tool result as a prompt, so this must degrade to "no raw body".
+    const event = gatewayEvent('e1', '2026-08-06T10:00:00Z', [], {
+      request: {
+        messages: [
+          {
+            role: 'user',
+            content: [{ type: 'tool_result', content: [{ weird: true }] }],
+          },
+        ],
+      },
+    });
+    expect(collectRawToolResultPrefixes(event)).to.equal(null);
+  });
+
+  it('returns an empty set when the raw body truly has no tool results', () => {
+    const event = gatewayEvent('e1', '2026-08-06T10:00:00Z', [], {
+      request: { messages: [{ role: 'user', content: 'plain prompt' }] },
+    });
+    const prefixes = collectRawToolResultPrefixes(event);
+    expect(prefixes).to.not.equal(null);
+    expect(prefixes!.size).to.equal(0);
+  });
+});
+
+describe('isModelGatewayEventType', () => {
+  it('prefix-matches gateway event types, not substrings', () => {
+    expect(isModelGatewayEventType('model_gateway_call')).to.equal(true);
+    expect(isModelGatewayEventType('model_gateway')).to.equal(true);
+    expect(isModelGatewayEventType('audit_model_gateway_call')).to.equal(false);
+    expect(isModelGatewayEventType('tool_call')).to.equal(false);
   });
 });
 
@@ -240,6 +275,51 @@ describe('buildConversation', () => {
     const { stats } = buildConversation(events);
     expect(stats.eventsWithoutRawBody).to.equal(1);
     expect(stats.totalEvents).to.equal(1);
+  });
+
+  it('counts raw bodies with unusable tool-result structure as unavailable', () => {
+    // Raw body present but its tool_result blocks yield no matchable text:
+    // exact detection is impossible, so the disclosure stat must include it.
+    const events = [
+      gatewayEvent(
+        'e1',
+        '2026-08-06T10:00:00Z',
+        [
+          { role: 'user', text: 'possibly a tool result' },
+          { role: 'assistant', text: 'ok', source: 'response' },
+        ],
+        {
+          request: {
+            messages: [
+              {
+                role: 'user',
+                content: [{ type: 'tool_result', content: [{ weird: 1 }] }],
+              },
+            ],
+          },
+        }
+      ),
+    ];
+    const { stats } = buildConversation(events);
+    expect(stats.eventsWithoutRawBody).to.equal(1);
+  });
+
+  it('keeps identical texts at different conversation positions distinct', () => {
+    const events = [
+      gatewayEvent('e1', '2026-08-06T10:00:00Z', [
+        { role: 'user', text: 'continue' },
+        { role: 'assistant', text: 'step one done', source: 'response' },
+      ]),
+      gatewayEvent('e2', '2026-08-06T10:01:00Z', [
+        { role: 'user', text: 'continue' },
+        { role: 'assistant', text: 'step one done' },
+        { role: 'user', text: 'continue' },
+        { role: 'assistant', text: 'step two done', source: 'response' },
+      ]),
+    ];
+    const { stats } = buildConversation(events);
+    // The user saying "continue" twice is two prompts, not one.
+    expect(stats.promptCount).to.equal(2);
   });
 
   it('classifies system messages as collapsed steps', () => {

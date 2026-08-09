@@ -14,17 +14,22 @@ lying**:
   ``meta_data["usage_details"]``), ``derived`` when we subtract a reported read
   from the reported prompt total, and ``None`` when neither is possible;
 * estimated cache savings are computed only from explicit catalog cache prices.
-  When the catalog lacks an exact price for any model that contributed cache
-  reads, savings are omitted with a reason rather than approximated.
+  Models without an exact catalog price never contribute an approximation: the
+  savings figure is either exact for every contributing model
+  (``catalog_exact``), an exact-but-partial lower bound when some models are
+  unpriced (``catalog_exact_partial``), or omitted with a reason.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
+
+logger = logging.getLogger(__name__)
 
 # Provenance of a per-request cache-miss number.
 CACHE_MISS_SOURCE_REPORTED = "reported"
@@ -34,8 +39,12 @@ CACHE_MISS_SOURCE_DERIVED = "derived"
 SAVINGS_OMITTED_NO_CACHE_READS = "no_cache_reads"
 SAVINGS_OMITTED_NO_CATALOG_PRICE = "no_catalog_cache_price"
 
-# Basis label for a savings number we are willing to show.
+# Basis labels for a savings number we are willing to show. ``catalog_exact``
+# means every model that contributed cache reads had explicit catalog prices;
+# ``catalog_exact_partial`` means the figure covers only the priced models and
+# at least one contributing model was skipped for lack of a catalog price.
 SAVINGS_BASIS_CATALOG_EXACT = "catalog_exact"
+SAVINGS_BASIS_CATALOG_EXACT_PARTIAL = "catalog_exact_partial"
 
 _PRICE_CATALOG_PATH = Path(__file__).resolve().parent / "data" / "model_prices.json"
 
@@ -45,8 +54,23 @@ def _price_catalog() -> dict[str, Any]:
     try:
         loaded: Any = json.loads(_PRICE_CATALOG_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
+        # A missing or corrupted catalog silently disables the savings figure
+        # for every model, so make the degradation visible to operators.
+        logger.warning(
+            "Failed to load model price catalog from %s; cache savings will "
+            "be omitted for all models.",
+            _PRICE_CATALOG_PATH,
+            exc_info=True,
+        )
         return {}
-    return loaded if isinstance(loaded, dict) else {}
+    if not isinstance(loaded, dict):
+        logger.warning(
+            "Model price catalog at %s is not a JSON object; cache savings "
+            "will be omitted for all models.",
+            _PRICE_CATALOG_PATH,
+        )
+        return {}
+    return loaded
 
 
 def _as_int(value: Any) -> Optional[int]:
@@ -254,6 +278,17 @@ class SessionCacheModelGroup:
     prompt_tokens: int = 0
     write_reported: bool = False
 
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "model_alias": self.model_alias,
+            "provider_name": self.provider_name,
+            "requests": self.requests,
+            "cache_read_tokens": self.cache_read_tokens,
+            "cache_creation_tokens": self.cache_creation_tokens,
+            "prompt_tokens": self.prompt_tokens,
+            "write_reported": self.write_reported,
+        }
+
 
 @dataclass
 class SessionCacheSummary:
@@ -275,6 +310,10 @@ class SessionCacheSummary:
     estimated_cache_savings_usd: Optional[float] = None
     savings_basis: Optional[str] = None
     savings_omitted_reason: Optional[str] = None
+    # Covered requests whose provider reported no prompt total at all: their
+    # prompt tokens are UNKNOWN, not zero, so they are counted here instead of
+    # being folded into ``covered_prompt_tokens`` as 0.
+    requests_with_unknown_prompt_tokens: int = 0
     models: list[SessionCacheModelGroup] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
@@ -291,6 +330,10 @@ class SessionCacheSummary:
             "estimated_cache_savings_usd": self.estimated_cache_savings_usd,
             "savings_basis": self.savings_basis,
             "savings_omitted_reason": self.savings_omitted_reason,
+            "requests_with_unknown_prompt_tokens": (
+                self.requests_with_unknown_prompt_tokens
+            ),
+            "models": [group.as_dict() for group in self.models],
         }
 
 
@@ -320,14 +363,23 @@ def summarize_session_cache(rows: Iterable[Any]) -> SessionCacheSummary:
     for row in rows:
         summary.requests_total += 1
         accounting = build_request_cache_accounting(row)
-        prompt_tokens = _as_int(getattr(row, "prompt_tokens", None)) or 0
+        # None means the provider reported NO prompt total, which is not the
+        # same claim as zero prompt tokens; such rows are counted separately
+        # instead of contributing 0 to the prompt-token sums.
+        prompt_tokens = _as_int(getattr(row, "prompt_tokens", None))
         if not accounting.has_cache_data:
             summary.requests_without_cache_data += 1
-            summary.uncovered_prompt_tokens += prompt_tokens
+            if prompt_tokens is None:
+                summary.requests_with_unknown_prompt_tokens += 1
+            else:
+                summary.uncovered_prompt_tokens += prompt_tokens
             continue
 
         summary.requests_with_cache_data += 1
-        summary.covered_prompt_tokens += prompt_tokens
+        if prompt_tokens is None:
+            summary.requests_with_unknown_prompt_tokens += 1
+        else:
+            summary.covered_prompt_tokens += prompt_tokens
         read = accounting.cache_read_tokens or 0
         creation = accounting.cache_creation_tokens
         summary.cached_prompt_tokens += read
@@ -346,7 +398,7 @@ def summarize_session_cache(rows: Iterable[Any]) -> SessionCacheSummary:
             group = SessionCacheModelGroup(model_alias=key[0], provider_name=key[1])
             groups[key] = group
         group.requests += 1
-        group.prompt_tokens += prompt_tokens
+        group.prompt_tokens += prompt_tokens or 0
         group.cache_read_tokens += read
         if creation is not None:
             group.write_reported = True
@@ -369,9 +421,16 @@ def summarize_session_cache(rows: Iterable[Any]) -> SessionCacheSummary:
 def _session_cache_savings(
     models: Iterable[SessionCacheModelGroup],
 ) -> tuple[Optional[float], Optional[str], Optional[str]]:
-    """Compute exact-only cache savings across the session's models."""
+    """Compute exact-only cache savings across the session's models.
+
+    Models without an exact catalog price never contribute an approximated
+    figure. When SOME models are priced and some are not, the priced subtotal
+    is still returned, labelled ``catalog_exact_partial`` so the UI can state
+    that the figure is a lower bound rather than dropping it entirely.
+    """
     total = 0.0
     contributing = 0
+    unpriced = 0
     for group in models:
         if group.cache_read_tokens <= 0:
             continue
@@ -380,11 +439,17 @@ def _session_cache_savings(
             model_alias=group.model_alias, provider_name=group.provider_name
         )
         if input_per_1k is None or read_per_1k is None:
-            return None, None, SAVINGS_OMITTED_NO_CATALOG_PRICE
+            unpriced += 1
+            continue
         differential = input_per_1k - read_per_1k
         if differential <= 0:
             continue
         total += (group.cache_read_tokens / 1000.0) * differential
     if contributing == 0:
         return None, None, SAVINGS_OMITTED_NO_CACHE_READS
-    return round(total, 6), SAVINGS_BASIS_CATALOG_EXACT, None
+    if unpriced == contributing:
+        return None, None, SAVINGS_OMITTED_NO_CATALOG_PRICE
+    basis = (
+        SAVINGS_BASIS_CATALOG_EXACT_PARTIAL if unpriced else SAVINGS_BASIS_CATALOG_EXACT
+    )
+    return round(total, 6), basis, None

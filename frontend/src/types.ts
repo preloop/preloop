@@ -549,7 +549,13 @@ export interface RuntimeSessionUpdateRequest {
 }
 
 export interface RuntimeSessionActivityItem {
-  activity_type: 'model_interaction' | 'tool_call' | string;
+  activity_type:
+    | 'model_interaction'
+    | 'tool_call'
+    | 'session_started'
+    | 'session_ended'
+    | 'agent_control_message'
+    | string;
   timestamp: string;
   title: string;
   summary: string | null;
@@ -625,6 +631,16 @@ export interface RuntimeSessionRequestItem {
  * cache-write concept at all. `estimated_cache_savings_usd` is null unless the
  * price catalog supports an exact figure, with `savings_omitted_reason` set.
  */
+export interface RuntimeSessionCacheModelGroup {
+  model_alias: string | null;
+  provider_name: string | null;
+  requests: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  prompt_tokens: number;
+  write_reported: boolean;
+}
+
 export interface RuntimeSessionCacheSummary {
   requests_total: number;
   requests_with_cache_data: number;
@@ -636,8 +652,12 @@ export interface RuntimeSessionCacheSummary {
   cache_write_tokens: number | null;
   cache_hit_ratio: number | null;
   estimated_cache_savings_usd: number | null;
+  /** 'catalog_exact' | 'catalog_exact_partial' (lower bound) | null. */
   savings_basis: string | null;
   savings_omitted_reason: string | null;
+  /** Covered requests whose provider reported no prompt total at all. */
+  requests_with_unknown_prompt_tokens?: number;
+  models?: RuntimeSessionCacheModelGroup[];
 }
 
 export interface RuntimeSessionRequestListResponse {
