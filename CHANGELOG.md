@@ -155,6 +155,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   token issuance. It now orders by lifecycle state (active, then suspended,
   then decommissioned) and falls back to most-recent-first.
 
+- **Streaming model-gateway requests were cut off at 60s with a 504**: the
+  `/openai`, `/anthropic` and `/gemini` routes are the only ones that relay
+  streaming LLM responses, and they were the only proxied routes with no
+  `proxy_read_timeout` override — so they inherited nginx's 60s default at
+  *both* proxy layers (the console nginx and the ingress, which has its own
+  independent default). Time-to-first-byte on a streaming completion is the
+  model's thinking time, so this was deterministic on prompt size rather than
+  intermittent: short prompts answered in seconds, while one large enough to
+  make the model reason past a minute was killed by the proxy. The client saw
+  a 504 that the gateway never observed and could not report, since the
+  request was terminated in front of the application. All three routes now
+  carry an explicit timeout (configurable via `gateway.proxy.*`, default
+  900s), the ingress carries the matching annotations so a default install is
+  correct without extra flags, and `proxy_buffering` is off so tokens are
+  relayed as they arrive instead of being accumulated by nginx. A chart test
+  asserts all of this so the override cannot be silently dropped again.
+
 ### Added
 
 - **Admin alert for unpriceable models**: the gateway now notifies admins the
