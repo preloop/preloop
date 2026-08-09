@@ -441,6 +441,84 @@ describe('FlowExecutionView', () => {
     expect((element as any).hasPricing).to.equal(false);
   });
 
+  describe('timing card duration', () => {
+    const timingSubtext = (element: FlowExecutionView) => {
+      const cards = Array.from(
+        element.shadowRoot?.querySelectorAll('sl-card') || []
+      );
+      const timing = cards.find((card) =>
+        (card.textContent || '').includes('Timing')
+      );
+      return (timing?.querySelector('.summary-subtext')?.textContent || '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    };
+
+    async function load(executionId: string) {
+      const element = (await fixture(
+        html`<flow-execution-view></flow-execution-view>`
+      )) as FlowExecutionView;
+      element.executionId = executionId;
+      await element.updateComplete;
+      await waitUntil(
+        () =>
+          (element as any).execution?.id === executionId &&
+          !(element as any).isLoading,
+        `Execution view did not finish loading ${executionId}`
+      );
+      await element.updateComplete;
+      return element;
+    }
+
+    it('shows the finished duration for a completed execution', async () => {
+      const element = await load('exec-1');
+
+      expect(timingSubtext(element)).to.equal('2m 0s');
+    });
+
+    it('shows a live elapsed duration for a running execution', async () => {
+      const element = await load('exec-running');
+
+      expect(timingSubtext(element)).to.match(/^Running · /);
+    });
+
+    it('ticks the elapsed duration while the execution runs', async () => {
+      const clock = sinon.useFakeTimers({
+        now: new Date('2026-03-09T10:00:10Z'),
+        toFake: ['setInterval', 'clearInterval', 'Date'],
+      });
+
+      try {
+        const element = await load('exec-running');
+        expect(timingSubtext(element)).to.equal('Running · 10s');
+
+        clock.tick(2000);
+        await element.updateComplete;
+
+        expect(timingSubtext(element)).to.equal('Running · 12s');
+      } finally {
+        clock.restore();
+      }
+    });
+
+    it('clears the tick interval when disconnected', async () => {
+      const element = await load('exec-running');
+      const intervalId = (element as any).durationTickIntervalId;
+      expect(intervalId).to.be.a('number');
+
+      const clearSpy = sinon.spy(window, 'clearInterval');
+      try {
+        element.remove();
+        await element.updateComplete;
+
+        expect(clearSpy.calledWith(intervalId)).to.equal(true);
+        expect((element as any).durationTickIntervalId).to.equal(undefined);
+      } finally {
+        clearSpy.restore();
+      }
+    });
+  });
+
   it('does not treat a zero-cost gateway event as priced', async () => {
     const element = await fixture<FlowExecutionView>(
       html`<flow-execution-view></flow-execution-view>`

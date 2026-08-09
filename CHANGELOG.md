@@ -157,6 +157,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Flow execution duration in the console**: the executions table now shows a
+  **Duration** column in place of the raw "End Time" (the start time already
+  said when the run happened; the end time alone never said how long it took),
+  and the same value is appended to the "Started …" line on the Flows and
+  dashboard execution lists. Running executions display `Running · <elapsed>`,
+  ticking every second on the execution detail page and recomputed on each
+  render elsewhere; runs that ended without an `end_time` show `—` instead of
+  claiming to still be running. Both timestamps were already returned by the
+  API, so this is a console-only change.
+
 - **Admin alert for unpriceable models**: the gateway now notifies admins the
   first time a `(model_alias, provider)` pair proves unpriceable, including the
   account and token volume, so missing pricing is noticed instead of silently

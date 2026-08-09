@@ -10,6 +10,7 @@ import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import { parseUTCDate, formatLocalDateTime } from '../../utils/date';
+import { executionDurationText } from '../../utils/execution';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import { reducedMotionStyles } from '../../styles/reduced-motion';
 import '../../components/view-header.ts';
@@ -318,7 +319,7 @@ export class FlowExecutionsView extends AuthedElement {
                           <th>Subject</th>
                           <th>Status</th>
                           <th>Start Time</th>
-                          <th>End Time</th>
+                          <th>Duration</th>
                           <th>Tool Calls</th>
                           <th>Details</th>
                         </tr>
@@ -350,13 +351,7 @@ export class FlowExecutionsView extends AuthedElement {
                                 </div>
                               </td>
                               <td>${formatLocalDateTime(exec.start_time)}</td>
-                              <td>
-                                ${
-                                  exec.end_time
-                                    ? formatLocalDateTime(exec.end_time)
-                                    : '-'
-                                }
-                              </td>
+                              <td>${executionDurationText(exec) || '—'}</td>
                               <td>${exec.tool_calls_count || 0}</td>
                               <td>
                                 <sl-button

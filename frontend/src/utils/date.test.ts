@@ -1,5 +1,7 @@
 import { expect } from '@open-wc/testing';
 import {
+  calculateDuration,
+  formatDurationBetween,
   formatFutureRelativeTime,
   formatRelativeTime,
   parseUTCDate,
@@ -32,5 +34,94 @@ describe('date utilities', () => {
     expect(formatFutureRelativeTime('2026-07-12T19:59:00', now)).to.equal(
       'expired'
     );
+  });
+});
+
+describe('formatDurationBetween', () => {
+  it('formats sub-minute spans in seconds', () => {
+    expect(
+      formatDurationBetween('2026-08-09T10:00:00Z', '2026-08-09T10:00:25Z')
+    ).to.equal('25s');
+  });
+
+  it('formats zero-length spans as 0s', () => {
+    expect(
+      formatDurationBetween('2026-08-09T10:00:00Z', '2026-08-09T10:00:00Z')
+    ).to.equal('0s');
+  });
+
+  it('formats sub-hour spans in minutes and seconds', () => {
+    expect(
+      formatDurationBetween('2026-08-09T10:00:00Z', '2026-08-09T10:04:32Z')
+    ).to.equal('4m 32s');
+  });
+
+  it('formats spans over an hour in hours and minutes', () => {
+    expect(
+      formatDurationBetween('2026-08-09T10:00:00Z', '2026-08-09T11:05:00Z')
+    ).to.equal('1h 5m');
+  });
+
+  it('keeps multi-day spans in hours rather than rolling into days', () => {
+    expect(
+      formatDurationBetween('2026-08-09T10:00:00Z', '2026-08-10T12:00:00Z')
+    ).to.equal('26h 0m');
+  });
+
+  it('treats naive backend strings as UTC on both ends', () => {
+    expect(
+      formatDurationBetween('2026-08-09 10:00:00', '2026-08-09 10:04:32')
+    ).to.equal('4m 32s');
+  });
+
+  it('returns an empty string when the start time is missing', () => {
+    expect(formatDurationBetween(null, '2026-08-09T10:04:32Z')).to.equal('');
+    expect(formatDurationBetween(undefined, '2026-08-09T10:04:32Z')).to.equal(
+      ''
+    );
+    expect(formatDurationBetween('', '2026-08-09T10:04:32Z')).to.equal('');
+  });
+
+  it('returns an empty string when the end precedes the start', () => {
+    expect(
+      formatDurationBetween('2026-08-09T10:05:00Z', '2026-08-09T10:00:00Z')
+    ).to.equal('');
+  });
+
+  it('returns an empty string for unparseable timestamps', () => {
+    expect(
+      formatDurationBetween('not-a-date', '2026-08-09T10:04:32Z')
+    ).to.equal('');
+  });
+
+  it('never emits NaN when the end timestamp is garbage', () => {
+    const now = new Date('2026-08-09T10:00:30Z');
+
+    expect(
+      formatDurationBetween('2026-08-09T10:00:00Z', 'garbage', now)
+    ).to.equal('30s');
+  });
+
+  it('measures elapsed time against now when there is no end time', () => {
+    const now = new Date('2026-08-09T10:07:05Z');
+
+    expect(formatDurationBetween('2026-08-09T10:00:00Z', null, now)).to.equal(
+      '7m 5s'
+    );
+    expect(
+      formatDurationBetween('2026-08-09T10:00:00Z', undefined, now)
+    ).to.equal('7m 5s');
+  });
+
+  it('keeps calculateDuration output identical', () => {
+    expect(
+      calculateDuration('2026-08-09T10:00:00Z', '2026-08-09T10:04:32Z')
+    ).to.equal('4m 32s');
+    expect(
+      calculateDuration('2026-08-09T10:00:00Z', '2026-08-09T11:05:00Z')
+    ).to.equal('1h 5m');
+    expect(
+      calculateDuration('2026-08-09T10:00:00Z', '2026-08-09T10:00:25Z')
+    ).to.equal('25s');
   });
 });

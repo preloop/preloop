@@ -55,6 +55,7 @@ import type {
   AIModel,
 } from '../../types';
 import { parseUTCDate } from '../../utils/date';
+import { executionDurationText } from '../../utils/execution';
 import { getAgentControlState } from '../../utils/agent-control';
 import {
   pickDefaultModel,
@@ -228,6 +229,13 @@ export class DashboardView extends AuthedElement {
         JSON.stringify(this.dismissedExecutions)
       );
     }
+  }
+
+  /** Start time plus, when known, how long the run took or has been going. */
+  private executionSecondaryText(exec: FlowExecution): string {
+    const started = this.formatDate(exec.start_time);
+    const duration = executionDurationText(exec);
+    return duration ? `${started} · ${duration}` : started;
   }
 
   private formatDate(dateStr: string | null | undefined): string {
@@ -2710,7 +2718,7 @@ export class DashboardView extends AuthedElement {
                                 : ''
                             }
                             <span class="item-secondary"
-                              >${this.formatDate(exec.start_time)}</span
+                              >${this.executionSecondaryText(exec)}</span
                             >
                           </div>
                           <div class="item-actions">

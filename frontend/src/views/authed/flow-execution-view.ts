@@ -27,8 +27,8 @@ import {
   parseUTCDate,
   formatLocalTime,
   formatUTCDateTime,
-  calculateDuration,
 } from '../../utils/date';
+import { RUNNING_STATUSES, executionDurationText } from '../../utils/execution';
 import '../../components/preloop-gateway-event.ts';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
@@ -570,6 +570,16 @@ export class FlowExecutionView extends LitElement {
   @state()
   private isRetrying = false;
 
+  /**
+   * Clock used to render the elapsed time of a still-running execution.
+   * Advanced once a second by `durationTickIntervalId` so the Timing card
+   * counts up without waiting for a log message or a page reload.
+   */
+  @state()
+  private durationNow: Date = new Date();
+
+  private durationTickIntervalId?: number;
+
   private logContainerRef?: HTMLElement;
   private wsConnected = false;
   private autoScrollInterval?: number;
@@ -593,12 +603,66 @@ export class FlowExecutionView extends LitElement {
       clearInterval(this.bufferFlushInterval);
       this.bufferFlushInterval = undefined;
     }
+    // Stop the elapsed-duration ticker
+    this.stopDurationTicker();
     // Unsubscribe from WebSocket
     this.unsubscribe?.();
   }
 
+  /** Whether the loaded execution has not reached a terminal state yet. */
+  private isExecutionRunning(): boolean {
+    const status = this.execution?.status;
+    return status !== undefined && RUNNING_STATUSES.has(status);
+  }
+
+  private startDurationTicker() {
+    // Started from updated(); do not touch reactive state here, or every
+    // render of a running execution would schedule another one.
+    if (this.durationTickIntervalId !== undefined) return;
+    this.durationTickIntervalId = window.setInterval(() => {
+      this.durationNow = new Date();
+    }, 1000);
+  }
+
+  private stopDurationTicker() {
+    if (this.durationTickIntervalId !== undefined) {
+      clearInterval(this.durationTickIntervalId);
+      this.durationTickIntervalId = undefined;
+    }
+  }
+
+  /**
+   * Runs the elapsed-time ticker only while the execution is live, so a
+   * finished run does not leave a timer behind re-rendering forever.
+   */
+  private syncDurationTicker() {
+    if (this.isExecutionRunning()) {
+      this.startDurationTicker();
+    } else {
+      this.stopDurationTicker();
+    }
+  }
+
+  /**
+   * Duration text for the Timing card: the final span once the run ended,
+   * a live-ticking elapsed value while it runs (measured against
+   * `durationNow`, which the ticker refreshes), and an em dash when the
+   * timestamps cannot produce anything meaningful.
+   */
+  private renderTimingDuration(): string {
+    const execution = this.execution;
+    if (!execution) return '—';
+
+    return executionDurationText(execution, this.durationNow) || '—';
+  }
+
   async updated(changedProperties: Map<string, any>) {
     super.updated(changedProperties);
+
+    // Keep the elapsed-duration ticker aligned with the execution's state:
+    // start it once a running execution is loaded, stop it as soon as the
+    // status turns terminal.
+    this.syncDurationTicker();
 
     // When executionId property changes, fetch execution data
     if (
@@ -1957,16 +2021,7 @@ export class FlowExecutionView extends LitElement {
                   ></sl-relative-time>
                 </div>
               </sl-tooltip>
-              <div class="summary-subtext">
-                ${
-                  this.execution.end_time
-                    ? calculateDuration(
-                        this.execution.start_time,
-                        this.execution.end_time
-                      )
-                    : 'Running'
-                }
-              </div>
+              <div class="summary-subtext">${this.renderTimingDuration()}</div>
             </sl-card>
             <sl-card>
               <div slot="header">

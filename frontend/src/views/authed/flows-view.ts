@@ -16,6 +16,7 @@ import {
   triggerFlowExecution,
 } from '../../api';
 import { formatLocalDateTime } from '../../utils/date';
+import { executionDurationText } from '../../utils/execution';
 import consoleStyles from '../../styles/console-styles.css?inline';
 
 interface Flow {
@@ -606,6 +607,7 @@ export class FlowsView extends LitElement {
 
   renderExecutionItem(exec: FlowExecution) {
     const flow = this.flows.find((f) => f.id === exec.flow_id);
+    const duration = executionDurationText(exec);
     return html`
       <div
         class="execution-item"
@@ -621,7 +623,10 @@ export class FlowsView extends LitElement {
             <div
               style="font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-600);"
             >
-              Started ${formatLocalDateTime(exec.start_time)}
+              Started
+              ${formatLocalDateTime(exec.start_time)}${
+                duration ? ` · ${duration}` : ''
+              }
             </div>
           </div>
         </div>

@@ -150,4 +150,58 @@ describe('FlowsView', () => {
     const urls = fetchStub.getCalls().map((c) => String(c.args[0]));
     expect(urls.some((u) => u.includes('/api/v1/flows'))).to.be.true;
   });
+
+  describe('recent execution duration', () => {
+    async function renderItem(exec: Record<string, unknown>) {
+      fetchStub = createFetchStub([], []);
+      const element = (await fixture(
+        html`<flows-view></flows-view>`
+      )) as FlowsView;
+      await waitUntil(
+        () => !(element as any).isLoading,
+        'Flows view did not finish loading'
+      );
+
+      const item = await fixture(
+        (element as any).renderExecutionItem(exec) as any
+      );
+      return (item.textContent || '').replace(/\s+/g, ' ').trim();
+    }
+
+    it('appends the duration to the started timestamp when the run finished', async () => {
+      const text = await renderItem({
+        id: 'exec-done',
+        flow_id: 'flow-1',
+        status: 'SUCCEEDED',
+        start_time: '2026-03-09T10:00:00Z',
+        end_time: '2026-03-09T10:04:32Z',
+      });
+
+      expect(text).to.contain('Started');
+      expect(text).to.contain('· 4m 32s');
+    });
+
+    it('shows the live elapsed time for a running execution', async () => {
+      const text = await renderItem({
+        id: 'exec-running',
+        flow_id: 'flow-1',
+        status: 'RUNNING',
+        start_time: new Date(Date.now() - 65_000).toISOString(),
+      });
+
+      expect(text).to.match(/Started .*· Running · \d+m \d+s/);
+    });
+
+    it('appends nothing for a legacy terminal execution without an end time', async () => {
+      const text = await renderItem({
+        id: 'exec-legacy',
+        flow_id: 'flow-1',
+        status: 'FAILED',
+        start_time: '2026-03-09T10:00:00Z',
+      });
+
+      expect(text).to.contain('Started');
+      expect(text).to.not.contain('·');
+    });
+  });
 });

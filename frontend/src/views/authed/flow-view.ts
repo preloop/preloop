@@ -15,11 +15,8 @@ import {
   getAccountAgents,
 } from '../../api';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
-import {
-  parseUTCDate,
-  formatLocalDateTime,
-  calculateDuration,
-} from '../../utils/date';
+import { parseUTCDate, formatLocalDateTime } from '../../utils/date';
+import { executionDurationText } from '../../utils/execution';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/textarea/textarea.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
@@ -896,14 +893,7 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
                                 ${formatLocalDateTime(exec.start_time)}
                               </td>
                               <td style="padding: 8px;">
-                                ${
-                                  exec.end_time
-                                    ? calculateDuration(
-                                        exec.start_time,
-                                        exec.end_time
-                                      )
-                                    : 'Running...'
-                                }
+                                ${executionDurationText(exec) || '—'}
                               </td>
                               <td style="padding: 8px;">
                                 <sl-button
