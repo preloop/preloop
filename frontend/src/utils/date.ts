@@ -120,6 +120,51 @@ export function formatFutureRelativeTime(
 }
 
 /**
+ * Formats the elapsed time between two instants, tolerating missing or
+ * unusable data.
+ *
+ * Used for flow execution durations, where the end timestamp is absent while
+ * the run is still going (in which case elapsed time is measured against
+ * `now`) and can be inconsistent on legacy or clock-skewed rows. Callers get
+ * an empty string rather than "NaN" or a negative duration so they can decide
+ * on their own placeholder.
+ *
+ * @param startTimeString - Start datetime string from backend
+ * @param endTimeString - End datetime string from backend; falls back to `now`
+ * @param now - Instant to measure against when there is no end time
+ * @returns Duration string (e.g., "2h 15m", "45m 30s", "25s") or '' if unknown
+ */
+export function formatDurationBetween(
+  startTimeString: string | null | undefined,
+  endTimeString?: string | null,
+  now: Date = new Date()
+): string {
+  if (!startTimeString) return '';
+
+  const start = parseUTCDate(startTimeString);
+  if (isNaN(start.getTime())) return '';
+
+  let endMs = now.getTime();
+  if (endTimeString) {
+    const end = parseUTCDate(endTimeString);
+    if (!isNaN(end.getTime())) {
+      endMs = end.getTime();
+    }
+  }
+
+  const durationMs = endMs - start.getTime();
+  if (isNaN(durationMs) || durationMs < 0) return '';
+
+  const seconds = Math.floor(durationMs / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+
+  if (hours > 0) return `${hours}h ${minutes % 60}m`;
+  if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
+  return `${seconds}s`;
+}
+
+/**
  * Calculates duration between two datetime strings.
  *
  * @param startTimeString - Start datetime string from backend
@@ -130,14 +175,5 @@ export function calculateDuration(
   startTimeString: string,
   endTimeString: string
 ): string {
-  const start = parseUTCDate(startTimeString);
-  const end = parseUTCDate(endTimeString);
-  const durationMs = end.getTime() - start.getTime();
-  const seconds = Math.floor(durationMs / 1000);
-  const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
-
-  if (hours > 0) return `${hours}h ${minutes % 60}m`;
-  if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
-  return `${seconds}s`;
+  return formatDurationBetween(startTimeString, endTimeString);
 }

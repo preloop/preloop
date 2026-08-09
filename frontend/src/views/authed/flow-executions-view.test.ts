@@ -103,4 +103,94 @@ describe('FlowExecutionsView', () => {
         .some((c) => String(c.args[0]).includes('/api/v1/flows/executions'))
     ).to.be.true;
   });
+
+  describe('duration column', () => {
+    async function renderRows(rows: unknown[]) {
+      fetchStub = stub(rows);
+      const el = (await fixture(
+        html`<flow-executions-view></flow-executions-view>`
+      )) as FlowExecutionsView;
+      await tick();
+      await el.updateComplete;
+      return el;
+    }
+
+    const cellText = (el: FlowExecutionsView, rowIndex: number) => {
+      const cells = el.shadowRoot
+        ?.querySelectorAll('tbody tr')
+        [rowIndex]?.querySelectorAll('td');
+      // Flow Name, Subject, Status, Start Time, Duration, Tool Calls, Details
+      return (cells?.[4]?.textContent || '').replace(/\s+/g, ' ').trim();
+    };
+
+    it('replaces the End Time header with Duration', async () => {
+      const el = await renderRows(EXECUTIONS);
+      const headers = Array.from(
+        el.shadowRoot?.querySelectorAll('thead th') || []
+      ).map((th) => (th.textContent || '').trim());
+
+      expect(headers).to.contain('Duration');
+      expect(headers).to.contain('Start Time');
+      expect(headers).to.not.contain('End Time');
+    });
+
+    it('shows the completed duration for a finished execution', async () => {
+      const el = await renderRows([
+        {
+          id: 'exec-done',
+          flow_id: 'flow-1',
+          flow_name: 'Nightly Sync',
+          status: 'SUCCEEDED',
+          start_time: '2026-03-09T10:00:00Z',
+          end_time: '2026-03-09T10:04:32Z',
+        },
+      ]);
+
+      expect(cellText(el, 0)).to.equal('4m 32s');
+    });
+
+    it('shows live elapsed time for a running execution', async () => {
+      const el = await renderRows([
+        {
+          id: 'exec-running',
+          flow_id: 'flow-2',
+          flow_name: 'Triage',
+          status: 'RUNNING',
+          start_time: new Date(Date.now() - 65_000).toISOString(),
+        },
+      ]);
+
+      const text = cellText(el, 0);
+      expect(text).to.match(/^Running · \d+m \d+s$/);
+    });
+
+    it('shows an em dash for a terminal execution with no end time', async () => {
+      const el = await renderRows([
+        {
+          id: 'exec-legacy',
+          flow_id: 'flow-3',
+          flow_name: 'Legacy',
+          status: 'FAILED',
+          start_time: '2026-03-09T10:00:00Z',
+        },
+      ]);
+
+      expect(cellText(el, 0)).to.equal('—');
+    });
+
+    it('shows an em dash when the timestamps are unusable', async () => {
+      const el = await renderRows([
+        {
+          id: 'exec-skew',
+          flow_id: 'flow-4',
+          flow_name: 'Skewed',
+          status: 'SUCCEEDED',
+          start_time: '2026-03-09T10:05:00Z',
+          end_time: '2026-03-09T10:00:00Z',
+        },
+      ]);
+
+      expect(cellText(el, 0)).to.equal('—');
+    });
+  });
 });

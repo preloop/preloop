@@ -54,7 +54,7 @@ import type {
   RuntimeSessionSummary,
   AIModel,
 } from '../../types';
-import { parseUTCDate } from '../../utils/date';
+import { parseUTCDate, formatDurationBetween } from '../../utils/date';
 import { getAgentControlState } from '../../utils/agent-control';
 import {
   pickDefaultModel,
@@ -96,6 +96,14 @@ interface MCPServer {
   url: string;
   status: string;
 }
+
+/** Statuses that mean the run has not reached a terminal state yet. */
+const RUNNING_STATUSES = new Set([
+  'PENDING',
+  'STARTING',
+  'INITIALIZING',
+  'RUNNING',
+]);
 
 interface FlowExecution {
   id: string;
@@ -228,6 +236,30 @@ export class DashboardView extends AuthedElement {
         JSON.stringify(this.dismissedExecutions)
       );
     }
+  }
+
+  /**
+   * Duration suffix for an execution row. Finished runs show their span,
+   * live runs count up on each render (rows refresh with the dashboard's
+   * existing polling, no per-row timers), and anything unusable yields an
+   * empty string so the caller appends nothing.
+   */
+  private executionDuration(exec: FlowExecution): string {
+    if (exec.end_time) {
+      return formatDurationBetween(exec.start_time, exec.end_time);
+    }
+    if (RUNNING_STATUSES.has(exec.status)) {
+      const elapsed = formatDurationBetween(exec.start_time, null);
+      return elapsed ? `Running · ${elapsed}` : '';
+    }
+    return '';
+  }
+
+  /** Start time plus, when known, how long the run took or has been going. */
+  private executionSecondaryText(exec: FlowExecution): string {
+    const started = this.formatDate(exec.start_time);
+    const duration = this.executionDuration(exec);
+    return duration ? `${started} · ${duration}` : started;
   }
 
   private formatDate(dateStr: string | null | undefined): string {
@@ -2710,7 +2742,7 @@ export class DashboardView extends AuthedElement {
                                 : ''
                             }
                             <span class="item-secondary"
-                              >${this.formatDate(exec.start_time)}</span
+                              >${this.executionSecondaryText(exec)}</span
                             >
                           </div>
                           <div class="item-actions">

@@ -15,7 +15,7 @@ import {
   getFlowExecutions,
   triggerFlowExecution,
 } from '../../api';
-import { formatLocalDateTime } from '../../utils/date';
+import { formatLocalDateTime, formatDurationBetween } from '../../utils/date';
 import consoleStyles from '../../styles/console-styles.css?inline';
 
 interface Flow {
@@ -31,6 +31,14 @@ interface Flow {
     estimated_cost?: number;
   };
 }
+
+/** Statuses that mean the run has not reached a terminal state yet. */
+const RUNNING_STATUSES = new Set([
+  'PENDING',
+  'STARTING',
+  'INITIALIZING',
+  'RUNNING',
+]);
 
 interface FlowExecution {
   id: string;
@@ -606,6 +614,7 @@ export class FlowsView extends LitElement {
 
   renderExecutionItem(exec: FlowExecution) {
     const flow = this.flows.find((f) => f.id === exec.flow_id);
+    const duration = this.executionDuration(exec);
     return html`
       <div
         class="execution-item"
@@ -621,7 +630,10 @@ export class FlowsView extends LitElement {
             <div
               style="font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-600);"
             >
-              Started ${formatLocalDateTime(exec.start_time)}
+              Started
+              ${formatLocalDateTime(exec.start_time)}${
+                duration ? ` · ${duration}` : ''
+              }
             </div>
           </div>
         </div>
@@ -630,6 +642,23 @@ export class FlowsView extends LitElement {
         </sl-button>
       </div>
     `;
+  }
+
+  /**
+   * Duration suffix for the "Started …" line: the final span for finished
+   * runs, live elapsed time for running ones (recomputed on render; list
+   * items refresh via the existing WebSocket updates), and an empty string
+   * when there is nothing trustworthy to show.
+   */
+  private executionDuration(exec: FlowExecution): string {
+    if (exec.end_time) {
+      return formatDurationBetween(exec.start_time, exec.end_time);
+    }
+    if (RUNNING_STATUSES.has(exec.status)) {
+      const elapsed = formatDurationBetween(exec.start_time, null);
+      return elapsed ? `Running · ${elapsed}` : '';
+    }
+    return '';
   }
 
   getStatusVariant(status: string) {
