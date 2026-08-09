@@ -357,6 +357,23 @@ class Settings(BaseSettings):
         3600,
         description="Maximum wall-clock time to wait for one flow execution before failing it",
     )
+    flow_execution_max_attempts: int = Field(
+        2,
+        description=(
+            "Maximum agent attempts per flow execution. Attempts beyond the "
+            "first are only made when the failure was a transient upstream "
+            "model-provider error (timeout, overload, throttling) and the "
+            "failed attempt produced no external side effects. Set to 1 to "
+            "disable flow-level retries."
+        ),
+    )
+    flow_execution_retry_backoff_seconds: int = Field(
+        15,
+        description=(
+            "Base backoff before retrying a flow execution attempt. Doubles "
+            "per attempt, giving an overloaded provider time to recover."
+        ),
+    )
     flow_execution_worker_enabled: bool = Field(
         False,
         description=(
@@ -637,6 +654,12 @@ class Settings(BaseSettings):
             ),
             flow_execution_max_wait_seconds=int(
                 os.getenv("FLOW_EXECUTION_MAX_WAIT_SECONDS", "3600")
+            ),
+            flow_execution_max_attempts=int(
+                os.getenv("FLOW_EXECUTION_MAX_ATTEMPTS", "2")
+            ),
+            flow_execution_retry_backoff_seconds=int(
+                os.getenv("FLOW_EXECUTION_RETRY_BACKOFF_SECONDS", "15")
             ),
             flow_execution_worker_enabled=os.getenv(
                 "FLOW_EXECUTION_WORKER_ENABLED", "false"

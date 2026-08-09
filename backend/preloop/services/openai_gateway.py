@@ -12,7 +12,7 @@ import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from itertools import chain
-from typing import Any, Dict, Iterator, List, Optional, Protocol, Set
+from typing import Any, Dict, Iterator, List, Optional, Protocol, Sequence, Set
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
@@ -74,9 +74,11 @@ from preloop.services.model_gateway_errors import (
     ModelGatewayAPIError,
     extract_upstream_error_detail,
 )
+from preloop.services.model_gateway_stream_observer import ObservedGatewayStream
 from preloop.services.upstream_errors import (
     ERROR_CLASS_CLIENT_CANCELLED,
     ERROR_CLASS_NETWORK,
+    ERROR_CLASS_STREAM_ABANDONED,
     ERROR_CLASS_UPSTREAM_DISCONNECT,
     ERROR_CLASS_UPSTREAM_OVERLOADED,
     ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED,
@@ -1465,7 +1467,15 @@ class OpenAIGatewayService:
                         accumulated_output_text="".join(assistant_parts),
                     )
 
-        return event_stream()
+        return self._observe_stream(
+            event_stream(),
+            endpoint="/anthropic/v1/messages",
+            endpoint_kind="anthropic_messages_stream",
+            started_at=started_at,
+            ai_model=model,
+            payload=payload,
+            budget_result=budget_result,
+        )
 
     def stream_chat_completion(self, payload: Dict[str, Any]) -> Iterator[str]:
         """Handle streaming OpenAI-compatible chat completions."""
@@ -1726,7 +1736,15 @@ class OpenAIGatewayService:
                         accumulated_output_text="".join(assistant_parts),
                     )
 
-        return event_stream()
+        return self._observe_stream(
+            event_stream(),
+            endpoint="/openai/v1/chat/completions",
+            endpoint_kind="chat_completions_stream",
+            started_at=started_at,
+            ai_model=model,
+            payload=payload,
+            budget_result=budget_result,
+        )
 
     def stream_response(self, payload: Dict[str, Any]) -> Iterator[str]:
         """Handle streaming OpenAI Responses API-compatible requests."""
@@ -2124,7 +2142,15 @@ class OpenAIGatewayService:
                         accumulated_output_text="".join(assistant_parts),
                     )
 
-        return event_stream()
+        return self._observe_stream(
+            event_stream(),
+            endpoint="/openai/v1/responses",
+            endpoint_kind="responses_stream",
+            started_at=started_at,
+            ai_model=model,
+            payload=payload,
+            budget_result=budget_result,
+        )
 
     def _get_account_models(self) -> List[AIModel]:
         account_id = self.auth_context.user.account_id
@@ -3341,7 +3367,15 @@ class OpenAIGatewayService:
                 yield self._responses_stream_error_event(exc)
                 yield "data: [DONE]\n\n"
 
-        return event_stream()
+        return self._observe_stream(
+            event_stream(),
+            endpoint="/openai/v1/responses",
+            endpoint_kind="responses_stream",
+            started_at=started_at,
+            ai_model=ai_model,
+            payload=payload,
+            budget_result=budget_result,
+        )
 
     def _stream_openai_codex_chat_completion(
         self,
@@ -3553,7 +3587,15 @@ class OpenAIGatewayService:
                 yield self._openai_stream_error_event(exc)
                 yield self._sse_done()
 
-        return event_stream()
+        return self._observe_stream(
+            event_stream(),
+            endpoint="/openai/v1/chat/completions",
+            endpoint_kind="chat_completions_stream",
+            started_at=started_at,
+            ai_model=ai_model,
+            payload=payload,
+            budget_result=budget_result,
+        )
 
     def _build_responses_api_payload(
         self,
@@ -4190,7 +4232,19 @@ class OpenAIGatewayService:
                 upstream_response.close()
                 upstream_client.close()
 
-        return event_stream()
+        # The upstream HTTP response and client are closed in the generator's
+        # finally, which never runs for a stream nobody consumed — hand them to
+        # the observer so an abandoned passthrough does not leak a connection.
+        return self._observe_stream(
+            event_stream(),
+            endpoint="/anthropic/v1/messages",
+            endpoint_kind="anthropic_messages_stream",
+            started_at=started_at,
+            ai_model=ai_model,
+            payload=payload,
+            budget_result=budget_result,
+            closes=(upstream_response, upstream_client),
+        )
 
     def _build_completion_kwargs(
         self,
@@ -5567,6 +5621,108 @@ class OpenAIGatewayService:
             # for anything that runs after this teardown. Roll back too.
             self._rollback_activity_recording(
                 exc, context="gateway usage recording after client disconnect"
+            )
+
+    def _observe_stream(
+        self,
+        stream: Iterator[str],
+        *,
+        endpoint: str,
+        endpoint_kind: str,
+        started_at: float,
+        ai_model: AIModel,
+        payload: Dict[str, Any],
+        budget_result: Optional[BudgetCheckResult],
+        closes: Sequence[Any] = (),
+    ) -> Iterator[str]:
+        """Wrap an SSE stream so an unconsumed one still records usage.
+
+        The upstream provider is already generating by the time a streaming
+        response is handed to the ASGI layer, so a stream that is torn down
+        before its first chunk is a real, billable request that would
+        otherwise leave no trace (see
+        :mod:`preloop.services.model_gateway_stream_observer`). In production
+        this is what a proxy read-timeout in front of the gateway looks like.
+
+        Args:
+            stream: The SSE iterator to wrap.
+            endpoint: Client-facing endpoint path for the usage row.
+            endpoint_kind: Gateway endpoint kind for the usage row.
+            started_at: ``time.perf_counter()`` taken when the request began.
+            ai_model: Model the request resolved to.
+            payload: Client request payload, used for token estimation.
+            budget_result: Budget decision recorded alongside the row.
+            closes: Extra resources to close on teardown (an upstream HTTP
+                response, a nested gateway stream) whose cleanup normally
+                lives in the wrapped generator's ``finally``.
+
+        Returns:
+            An iterator yielding the same items as ``stream``.
+        """
+
+        def _on_abandoned() -> None:
+            self._record_stream_abandoned(
+                endpoint=endpoint,
+                endpoint_kind=endpoint_kind,
+                started_at=started_at,
+                ai_model=ai_model,
+                payload=payload,
+                budget_result=budget_result,
+            )
+
+        return ObservedGatewayStream(stream, on_abandoned=_on_abandoned, closes=closes)
+
+    def _record_stream_abandoned(
+        self,
+        *,
+        endpoint: str,
+        endpoint_kind: str,
+        started_at: float,
+        ai_model: AIModel,
+        payload: Dict[str, Any],
+        budget_result: Optional[BudgetCheckResult],
+    ) -> None:
+        """Record a streaming request whose response was never consumed.
+
+        Status 499 ("client closed request") matches the mid-stream disconnect
+        record; ``error_class`` is ``stream_abandoned`` so this is
+        distinguishable from a client that cancelled a stream it was actively
+        reading. Nothing was streamed, so there are no provider usage numbers:
+        the shared record path falls back to a local estimate over the request
+        payload, which keeps the request visible without inventing output
+        tokens.
+
+        Never raises — it runs during response teardown.
+        """
+        logger.warning(
+            "Gateway stream abandoned before first chunk: "
+            "endpoint=%s provider=%s model=%s",
+            endpoint,
+            getattr(ai_model, "provider_name", None),
+            payload.get("model"),
+        )
+        try:
+            self._record_gateway_request(
+                endpoint=endpoint,
+                method="POST",
+                status_code=499,
+                duration=time.perf_counter() - started_at,
+                ai_model=ai_model,
+                requested_model=payload.get("model"),
+                response_payload=None,
+                upstream_response=None,
+                endpoint_kind=endpoint_kind,
+                budget_result=budget_result,
+                error_detail=(
+                    "client was gone before the stream produced its first "
+                    "chunk (upstream request had already been sent)"
+                ),
+                error_class=ERROR_CLASS_STREAM_ABANDONED,
+                request_payload=payload,
+            )
+        except Exception as exc:  # pragma: no cover - defensive; never break teardown
+            self._rollback_activity_recording(
+                exc, context="gateway usage recording after stream abandonment"
             )
 
     def _rollback_activity_recording(self, exc: Exception, *, context: str) -> None:

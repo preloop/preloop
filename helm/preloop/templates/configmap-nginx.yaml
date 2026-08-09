@@ -160,7 +160,23 @@ data:
             proxy_set_header X-Forwarded-Proto $scheme;
         }
 
-        # OpenAI-compatible model gateway endpoints
+        # Model gateway endpoints (OpenAI-, Anthropic- and Gemini-compatible).
+        #
+        # These three carry streaming LLM traffic and are the route class that
+        # most needs a long timeout, yet they were the only proxied routes
+        # without one — so they silently inherited nginx's 60s default. On a
+        # streaming completion the clock to the first byte is the model's
+        # thinking time: a short prompt answers in seconds, while a large one
+        # (a full diff, a repository's worth of context) can reason for minutes
+        # before emitting a single token. At 60s that connection is killed and
+        # the caller sees a 504 from the proxy — a failure the gateway never
+        # observes and cannot report, and one that looks intermittent because
+        # it depends entirely on prompt size.
+        #
+        # proxy_buffering must stay off: with buffering on nginx accumulates
+        # the token stream rather than relaying it, which both defeats the
+        # point of SSE for the client and pushes the observed first byte later,
+        # making any ceiling easier to hit.
         location ^~ /openai/ {
             proxy_pass http://{{ include "preloop.fullname" . }}-gateway:80;
             proxy_http_version 1.1;
@@ -168,9 +184,14 @@ data:
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_connect_timeout {{ .Values.gateway.proxy.connectTimeout }}s;
+            proxy_send_timeout {{ .Values.gateway.proxy.sendTimeout }}s;
+            proxy_read_timeout {{ .Values.gateway.proxy.readTimeout }}s;
+            proxy_buffering off;
+            proxy_cache off;
+            client_max_body_size {{ .Values.gateway.proxy.bodySize }};
         }
 
-        # Anthropic-compatible model gateway endpoints
         location ^~ /anthropic/ {
             proxy_pass http://{{ include "preloop.fullname" . }}-gateway:80;
             proxy_http_version 1.1;
@@ -178,9 +199,14 @@ data:
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_connect_timeout {{ .Values.gateway.proxy.connectTimeout }}s;
+            proxy_send_timeout {{ .Values.gateway.proxy.sendTimeout }}s;
+            proxy_read_timeout {{ .Values.gateway.proxy.readTimeout }}s;
+            proxy_buffering off;
+            proxy_cache off;
+            client_max_body_size {{ .Values.gateway.proxy.bodySize }};
         }
 
-        # Gemini-compatible model gateway endpoints
         location ^~ /gemini/ {
             proxy_pass http://{{ include "preloop.fullname" . }}-gateway:80;
             proxy_http_version 1.1;
@@ -188,6 +214,12 @@ data:
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_connect_timeout {{ .Values.gateway.proxy.connectTimeout }}s;
+            proxy_send_timeout {{ .Values.gateway.proxy.sendTimeout }}s;
+            proxy_read_timeout {{ .Values.gateway.proxy.readTimeout }}s;
+            proxy_buffering off;
+            proxy_cache off;
+            client_max_body_size {{ .Values.gateway.proxy.bodySize }};
         }
 
         # Static files with caching

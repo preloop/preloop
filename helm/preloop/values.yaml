@@ -185,6 +185,26 @@ healthMonitor:
 
 # Gateway resources
 gateway:
+  # Proxy settings applied to the model-gateway routes (/openai, /anthropic,
+  # /gemini) at BOTH proxy layers in front of the gateway: the console nginx
+  # and the ingress. These routes relay streaming LLM responses, where the
+  # upstream model can spend minutes reasoning over a large prompt before the
+  # first token exists — nginx's 60s default read timeout is a ceiling on how
+  # long a model is allowed to think, and hitting it returns a 504 the
+  # application never sees. Both layers default to 60s, so both are set here;
+  # raising only one leaves the other cutting the stream.
+  proxy:
+    # Seconds. Generous rather than exact: the cost of waiting is an idle
+    # connection, the cost of being short is a failed request plus whatever
+    # tokens the upstream already billed.
+    readTimeout: 900
+    sendTimeout: 900
+    # Connecting to an in-cluster service either works immediately or is a
+    # real fault; no reason to wait on it.
+    connectTimeout: 10
+    # Agent requests carry whole file trees and diffs as context, which
+    # comfortably exceeds the ingress default of 1m.
+    bodySize: "32m"
   resources:
     requests:
       cpu: "100m"

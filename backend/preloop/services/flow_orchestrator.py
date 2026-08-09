@@ -24,6 +24,8 @@ from preloop.models.models.flow import Flow
 from preloop.models.models.ai_model import AIModel
 from preloop.models.models.runtime_session import RuntimeSession
 from preloop.agents import create_agent_executor, AgentStatus
+from preloop.agents.failure_analysis import analyze_agent_failure
+from preloop.config import settings
 from preloop.services.prompt_resolvers import (
     resolver_registry,
     ResolverContext,
@@ -506,8 +508,6 @@ class FlowExecutionOrchestrator:
             if self.execution_log:
                 # Construct absolute URL to the execution details page
                 # GitHub/GitLab require absolute URLs for commit status links
-                from preloop.config import settings
-
                 base_url = getattr(settings, "preloop_url", None) or getattr(
                     settings, "PRELOOP_URL", None
                 )
@@ -2061,8 +2061,6 @@ class FlowExecutionOrchestrator:
         )
 
         try:
-            from preloop.config import settings
-
             # Start listening for user commands
             await self._listen_for_commands()
 
@@ -2434,6 +2432,160 @@ class FlowExecutionOrchestrator:
 
         logger.debug(f"Execution log updated: status={status}")
 
+    def _retry_decision(self, agent_result: Dict[str, Any]) -> Optional[str]:
+        """Decide whether a failed attempt may be retried.
+
+        Returns ``None`` when the attempt is retryable, or a short reason
+        string explaining why it is not. The reason is logged so an operator
+        can see *why* a failure was treated as terminal.
+
+        The safety boundary is the container's post-execution block (git push,
+        pull-request/merge-request creation), which the agent entrypoints run
+        only when the agent process exited ``0``. A non-zero exit therefore
+        means no external side effect was produced by the container and the
+        attempt can be repeated safely. Anything else — an exit code of 0, an
+        unknown exit code, or side effects already recorded on the timeline —
+        is treated as unsafe, because re-running it risks a duplicate comment,
+        push or pull request. A wrong retry is worse than no retry.
+        """
+        status = agent_result.get("status")
+        if status != "FAILED":
+            # STOPPED (user requested) and SUCCEEDED are never retried.
+            return f"status is {status}, not FAILED"
+
+        exit_code = agent_result.get("exit_code")
+        if exit_code is None:
+            return "agent exit code is unknown, so external side effects cannot be ruled out"
+        if exit_code == 0:
+            return (
+                "agent exited 0, so the container ran its post-execution "
+                "push/pull-request block; retrying could double-post"
+            )
+
+        if self.execution_logger.get_actions_taken():
+            return "the agent already recorded actions; retrying could repeat them"
+
+        analysis = analyze_agent_failure(agent_result.get("error_message") or "")
+        if not analysis.transient:
+            return "the failure is not a transient upstream failure"
+
+        return None
+
+    async def _run_agent_with_retries(
+        self, execution_context: Dict[str, Any]
+    ) -> tuple[Dict[str, Any], Optional[str]]:
+        """Start and monitor the agent, retrying transient upstream failures.
+
+        One provider having a bad minute should not kill a whole review. Each
+        attempt gets a fresh agent session; between attempts we back off so a
+        briefly-overloaded provider has time to recover.
+
+        Retries are deliberately conservative — see :meth:`_retry_decision`
+        for the side-effect boundary that governs them — and always visible:
+        every retry is recorded as an ``execution_retry_scheduled`` milestone
+        and surfaced on the execution timeline, so flakiness is never hidden.
+
+        Args:
+            execution_context: Context prepared for the agent.
+
+        Returns:
+            Tuple of ``(agent_result, session_reference)`` for the final
+            attempt made.
+        """
+        max_attempts = max(1, int(settings.flow_execution_max_attempts))
+        backoff_seconds = max(0, int(settings.flow_execution_retry_backoff_seconds))
+
+        agent_result: Dict[str, Any] = {}
+        session_reference: Optional[str] = None
+
+        for attempt in range(1, max_attempts + 1):
+            session_reference, agent_executor = await self._start_agent_session(
+                execution_context
+            )
+
+            await self._update_execution_log(
+                status="RUNNING",
+                agent_session_reference=session_reference,
+            )
+            self._sync_runtime_session(session_reference=session_reference)
+
+            agent_result = await self._monitor_agent_execution(
+                session_reference, agent_executor
+            )
+
+            if attempt >= max_attempts:
+                if agent_result.get("status") == "FAILED" and max_attempts > 1:
+                    logger.info(
+                        "Execution %s exhausted all %s attempts",
+                        self.execution_log.id if self.execution_log else "unknown",
+                        max_attempts,
+                    )
+                    # Mirror the per-retry milestone: without this, the final
+                    # failure of a retried run looks identical on the timeline
+                    # to a first-attempt failure.
+                    self.execution_logger.log_milestone(
+                        "execution_retries_exhausted",
+                        {
+                            "attempts": max_attempts,
+                            "session_reference": session_reference,
+                        },
+                    )
+                    await self._emit_execution_warning(
+                        f"All {max_attempts} attempts failed; giving up.",
+                        details={"attempts": max_attempts},
+                    )
+                break
+
+            reason = self._retry_decision(agent_result)
+            if reason is not None:
+                logger.info(
+                    "Not retrying execution %s: %s",
+                    self.execution_log.id if self.execution_log else "unknown",
+                    reason,
+                )
+                break
+
+            delay = backoff_seconds * (2 ** (attempt - 1))
+            failure_summary = (agent_result.get("error_message") or "").strip()
+            logger.warning(
+                "Attempt %s/%s of execution %s hit a transient upstream failure; "
+                "retrying in %ss",
+                attempt,
+                max_attempts,
+                self.execution_log.id if self.execution_log else "unknown",
+                delay,
+            )
+            self.execution_logger.log_milestone(
+                "execution_retry_scheduled",
+                {
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "delay_seconds": delay,
+                    "reason": failure_summary,
+                    "session_reference": session_reference,
+                },
+            )
+            # Surfaced on the timeline so a user can see the run was retried
+            # rather than silently taking twice as long.
+            await self._emit_execution_warning(
+                f"Attempt {attempt} of {max_attempts} failed with a transient "
+                f"upstream error; retrying. ({failure_summary})",
+                details={"attempt": attempt, "max_attempts": max_attempts},
+            )
+            await self._publish_update(
+                "execution_retry",
+                {
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "delay_seconds": delay,
+                },
+            )
+
+            if delay:
+                await asyncio.sleep(delay)
+
+        return agent_result, session_reference
+
     async def run(self):
         """
         Execute the flow through its full lifecycle.
@@ -2443,6 +2595,9 @@ class FlowExecutionOrchestrator:
         2. INITIALIZING: Flow and AI model details retrieved
         3. RUNNING: Agent session started
         4. SUCCEEDED/FAILED: Execution completed
+
+        A failed attempt whose cause was a transient upstream model-provider
+        failure is retried (see :meth:`_run_agent_with_retries`).
         """
         try:
             # Stage 1: Retrieve flow details first (needed for account_id in messages)
@@ -2485,22 +2640,11 @@ class FlowExecutionOrchestrator:
                 resolved_input_prompt=execution_context["prompt"],
             )
 
-            # Stage 4: Start agent session (returns both session reference and executor)
-            session_reference, agent_executor = await self._start_agent_session(
+            # Stages 4 and 5: start the agent and monitor it, retrying the
+            # whole attempt when the upstream model provider failed in a way
+            # that another attempt could plausibly survive.
+            agent_result, session_reference = await self._run_agent_with_retries(
                 execution_context
-            )
-
-            # Agent started successfully - now mark as RUNNING with session reference
-            await self._update_execution_log(
-                status="RUNNING",
-                agent_session_reference=session_reference,
-            )
-            self._sync_runtime_session(session_reference=session_reference)
-
-            # Stage 5: Monitor agent execution and collect results
-            # Pass the executor so we don't create a duplicate instance
-            agent_result = await self._monitor_agent_execution(
-                session_reference, agent_executor
             )
 
             # Update execution log with final results including detailed logs

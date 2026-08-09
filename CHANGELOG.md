@@ -9,6 +9,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Unhelpful failure messages and no retry when an upstream model provider
+  failed**: when the model provider in front of an agent returned a gateway
+  timeout, the agent CLI exhausted its own internal retries hundreds of log
+  lines before exiting, and the extractor that builds
+  `FlowExecution.error_message` returned only the tail of the log. A user
+  reviewing a failed run saw exactly
+  `"  status: 504\n}\nAn unexpected critical error occurred:[object Object]"`
+  — 69 characters that name no cause and suggest no action. Agent-log failure
+  analysis now scans the whole log for the *meaningful* signal (an upstream
+  HTTP status plus the agent's exhausted retry loop) instead of the last
+  error-shaped line, and produces messages like `Upstream model provider timed
+  out (HTTP 504) after 3 attempts.` Lines that carry no information
+  (`[object Object]`, bare `status: NNN` fragments, proxy HTML error pages) are
+  never surfaced as the cause when a real signal exists. Classification reuses
+  the shared upstream-error taxonomy, so a hard quota exhaustion is still
+  distinguished from a transient throttle.
+
+  A transient upstream failure is also no longer terminal: a flow execution
+  whose attempt failed on a retryable upstream error (timeout, bad gateway,
+  overload, throttling, connection reset) is retried with exponential backoff
+  (`FLOW_EXECUTION_MAX_ATTEMPTS`, default 2;
+  `FLOW_EXECUTION_RETRY_BACKOFF_SECONDS`, default 15). Retries are never
+  silent — each one is recorded as an `execution_retry_scheduled` milestone and
+  surfaced on the execution timeline. Non-transient failures (bad credentials,
+  denied permissions, exhausted quota, unknown model) are never retried. To
+  rule out double-posting a review comment, push or pull request, an attempt is
+  only retried when the agent process exited non-zero, which is the condition
+  under which the container's post-execution git block does not run.
+
+- **Streaming gateway requests killed in front of the gateway left no trace**:
+  every streaming endpoint calls the upstream model provider *before* handing
+  its SSE generator to the web layer, so that upstream failures surface as real
+  HTTP errors instead of empty `200` streams. If the client was already gone
+  when the first chunk was due — which is exactly what a proxy read-timeout in
+  front of the gateway looks like — the generator body never ran, and neither
+  did the usage accounting inside it (a Python generator closed before its
+  first `next()` never executes, `finally` included). The provider had already
+  been asked to generate and was billing for it, but Preloop recorded no usage
+  row, no status code and no error class: the user's agent failed while the
+  console reported a clean bill of health. Such requests are now recorded as
+  status `499` with a new `stream_abandoned` error class, distinct from the
+  `client_cancelled` class used when a client drops a stream it was actively
+  reading. `ApiUsage.error_class` is also exposed on the per-request session
+  timeline API, so failures that share a status code (a proxy timeout versus a
+  user cancelling) can finally be told apart in the product. Spend semantics
+  are unchanged: an abandoned stream streamed nothing, so no provider tokens
+  are invented, and the already-working mid-stream disconnect path still
+  records exactly one row.
+
 - **Backfilled costs stayed $0 for models missing from the price snapshot**:
   `reprice_unpriced_usage.py` recomputed every row against the locally bundled
   price catalog only. A row is recorded `unpriced` precisely when the model was
@@ -154,6 +203,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stale suspended or decommissioned sibling could shadow the live agent during
   token issuance. It now orders by lifecycle state (active, then suspended,
   then decommissioned) and falls back to most-recent-first.
+
+- **Streaming model-gateway requests were cut off at 60s with a 504**: the
+  `/openai`, `/anthropic` and `/gemini` routes are the only ones that relay
+  streaming LLM responses, and they were the only proxied routes with no
+  `proxy_read_timeout` override — so they inherited nginx's 60s default at
+  *both* proxy layers (the console nginx and the ingress, which has its own
+  independent default). Time-to-first-byte on a streaming completion is the
+  model's thinking time, so this was deterministic on prompt size rather than
+  intermittent: short prompts answered in seconds, while one large enough to
+  make the model reason past a minute was killed by the proxy. The client saw
+  a 504 that the gateway never observed and could not report, since the
+  request was terminated in front of the application. All three routes now
+  carry an explicit timeout (configurable via `gateway.proxy.*`, default
+  900s), the ingress carries the matching annotations so a default install is
+  correct without extra flags, and `proxy_buffering` is off so tokens are
+  relayed as they arrive instead of being accumulated by nginx. A chart test
+  asserts all of this so the override cannot be silently dropped again.
 
 ### Added
 

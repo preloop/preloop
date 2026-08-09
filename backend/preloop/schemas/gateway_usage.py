@@ -621,6 +621,12 @@ class RuntimeSessionRequestItem(BaseModel):
     provider_name: Optional[str] = None
     status_code: int = 0
     is_error: bool = False
+    #: Stable failure taxonomy (see ``preloop.services.upstream_errors``).
+    #: Distinguishes failures that share a status code — notably a stream the
+    #: client never consumed because something in front of the gateway timed
+    #: it out (``stream_abandoned``) from a client that cancelled a stream it
+    #: was reading (``client_cancelled``); both are recorded as 499.
+    error_class: Optional[str] = None
     finish_reason: Optional[str] = None
     is_retry: bool = False
     prompt_tokens: int = 0

@@ -18,7 +18,41 @@ metadata:
   name: {{ $fullName }}
   labels:
     {{- include "preloop.labels" . | nindent 4 }}
-  {{- with .Values.ingress.annotations }}
+  {{- /*
+    The ingress is the outermost of the two proxies in front of the model
+    gateway, and it enforces its own timeouts independently of the console
+    nginx config. Its defaults are 60s, which is shorter than a streaming
+    model response can legitimately take to produce its first token, so a
+    long-running generation is terminated here with a 504 before the
+    application is ever aware of it. These annotations carry the same budget
+    the console nginx uses (see `gateway.proxy` in values.yaml) so that a
+    default install is correct without extra flags — a chart that fixed only
+    the inner proxy would still fail at 60s.
+
+    The controller runs with `allow-snippet-annotations: false` in many
+    deployments, so this must use the first-class annotations rather than a
+    configuration snippet. Operator-supplied `ingress.annotations` are merged
+    last and therefore win.
+  */}}
+  {{- $proxy := .Values.gateway.proxy | default dict }}
+  {{- $annotations := dict
+        "nginx.ingress.kubernetes.io/proxy-read-timeout" $proxy.readTimeout
+        "nginx.ingress.kubernetes.io/proxy-send-timeout" $proxy.sendTimeout
+        "nginx.ingress.kubernetes.io/proxy-connect-timeout" $proxy.connectTimeout
+        "nginx.ingress.kubernetes.io/proxy-body-size" $proxy.bodySize }}
+  {{- $annotations = merge (deepCopy (.Values.ingress.annotations | default dict)) $annotations }}
+  {{- $rendered := dict }}
+  {{- range $key, $value := $annotations }}
+  {{- /*
+    Annotation values must be strings. A numeric timeout supplied via `--set`
+    arrives as an int and would render unquoted, which the API server rejects
+    on apply — so coerce every value rather than trusting the input's type.
+  */}}
+  {{- if not (kindIs "invalid" $value) }}
+  {{- $_ := set $rendered $key (toString $value) }}
+  {{- end }}
+  {{- end }}
+  {{- with $rendered }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}

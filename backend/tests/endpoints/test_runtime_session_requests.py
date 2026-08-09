@@ -195,3 +195,39 @@ def test_runtime_session_requests_unknown_session_returns_404(client):
         "/api/v1/runtime-sessions/00000000-0000-0000-0000-000000000000/requests"
     )
     assert response.status_code == 404
+
+
+def test_runtime_session_requests_expose_error_class(client, db_session, test_user):
+    """Failed rows must carry ``error_class`` so the console can explain them.
+
+    ``ApiUsage.error_class`` is recorded for every gateway failure but was not
+    serialized anywhere, so a request killed by a proxy read-timeout
+    (``stream_abandoned``) was indistinguishable in the UI from a user who
+    simply cancelled a stream (``client_cancelled``) — both are status 499.
+    """
+    session = _make_session(db_session, test_user.account_id)
+
+    crud_api_usage.log_gateway_request(
+        db_session,
+        endpoint="/gemini/v1beta/models/test:streamGenerateContent",
+        method="POST",
+        status_code=499,
+        duration=60.0,
+        account_id=str(test_user.account_id),
+        runtime_session_id=str(session.id),
+        model_alias="test-model",
+        provider_name="openai",
+        error_class="stream_abandoned",
+        meta_data={"error_detail": "client was gone before the first chunk"},
+    )
+
+    response = client.get(
+        f"/api/v1/runtime-sessions/{session.id}/requests?failed_only=true"
+    )
+
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert len(items) == 1
+    assert items[0]["status_code"] == 499
+    assert items[0]["is_error"] is True
+    assert items[0]["error_class"] == "stream_abandoned"

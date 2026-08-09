@@ -2482,6 +2482,7 @@ def _request_row_to_item(row: Any) -> RuntimeSessionRequestItem:
         provider_name=row.provider_name,
         status_code=status_code,
         is_error=status_code >= 400,
+        error_class=row.error_class,
         finish_reason=(meta.get("finish_reason") if isinstance(meta, dict) else None),
         is_retry=bool(meta.get("is_retry", False)) if isinstance(meta, dict) else False,
         prompt_tokens=int(row.prompt_tokens or 0),
