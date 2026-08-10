@@ -19,7 +19,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, Optional, Union
+from typing import Dict, Optional, Sequence, Union
 
 from sqlalchemy.orm import Session
 
@@ -111,7 +111,9 @@ def reprice_single_row(
     return True
 
 
-def _sync_execution_rollups(db: Session, execution_ids) -> int:
+def _sync_execution_rollups(
+    db: Session, execution_ids: Sequence[Union[uuid.UUID, str]]
+) -> int:
     """Refresh stored per-execution cost rollups after repricing.
 
     Args:
@@ -148,6 +150,12 @@ def reprice_gateway_usage(
     batch_size: int = 500,
 ) -> RepriceResult:
     """Re-price gateway usage rows in a time window.
+
+    Note on cost: after the repricing pass, every execution with gateway
+    usage in the window gets its stored cost rollup re-derived one at a time
+    (two queries per execution). This keeps the heal path on the exact same
+    code and semantics as the live rollup sync at the price of O(N)
+    round-trips — acceptable for an operator-triggered backfill.
 
     Args:
         db: Database session.
