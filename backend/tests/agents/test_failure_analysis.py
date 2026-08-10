@@ -132,6 +132,60 @@ class TestTransience:
         assert analysis.transient is True
         assert analysis.retry_exhausted is True
 
+    def test_undici_other_side_closed_is_transient(self):
+        """A gateway pod cycling mid-stream severs the agent's socket.
+
+        Observed during a rollout: the pod was SIGKILLed while the agent was
+        mid-response, and undici surfaced ``SocketError: other side closed``.
+        This is exactly as retryable as a connection reset.
+        """
+        logs = "\n".join(
+            [
+                "Attempt 1 failed: SocketError: other side closed. Retrying...",
+                "Attempt 2 failed: SocketError: other side closed. Retrying...",
+                "Attempt 3 failed: SocketError: other side closed.",
+                "Max attempts reached.",
+            ]
+        )
+
+        analysis = analyze_agent_failure(logs)
+
+        assert analysis.transient is True
+        assert analysis.retry_exhausted is True
+
+    def test_undici_fetch_terminated_is_transient(self):
+        """undici's fetch reports a severed stream as ``TypeError: terminated``."""
+        logs = "\n".join(
+            [
+                "Attempt 1 failed: TypeError: terminated. Retrying with backoff...",
+                "Attempt 2 failed: TypeError: terminated. Retrying with backoff...",
+                "Giving up.",
+            ]
+        )
+
+        analysis = analyze_agent_failure(logs)
+
+        assert analysis.transient is True
+        assert analysis.retry_exhausted is True
+
+    def test_generic_terminated_wording_is_not_transient(self):
+        """Only undici's error shape may match — not any use of 'terminated'.
+
+        An agent killed by policy or by an operator also says "terminated";
+        retrying those burns money and can never succeed.
+        """
+        logs = "\n".join(
+            [
+                "Attempt 1 failed: run terminated by policy",
+                "Attempt 2 failed: run terminated by policy",
+                "Giving up.",
+            ]
+        )
+
+        analysis = analyze_agent_failure(logs)
+
+        assert analysis.transient is False
+
     def test_plain_agent_error_is_not_transient(self):
         """No upstream signal at all must never be treated as retryable."""
         logs = "\n".join(

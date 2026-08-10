@@ -92,11 +92,19 @@ _STATUS_RE = re.compile(
 )
 
 # Transport-level failures that never produced an HTTP status but are just as
-# retryable as a 504.
+# retryable as a 504. The undici entries are what Node's fetch reports when
+# the server side of an in-flight stream goes away (observed when a gateway
+# pod was cycled mid-response during a rollout): ``SocketError: other side
+# closed`` and ``TypeError: terminated``. The latter is anchored to the
+# ``TypeError:`` prefix on purpose — a bare "terminated" also appears in
+# terminal failures ("run terminated by policy") that must never retry.
 _TRANSIENT_NETWORK_RE = re.compile(
     r"\b(?:connection\s+(?:reset|refused|closed|aborted|error)"
     r"|econnreset|econnrefused|epipe|etimedout"
     r"|socket\s+hang\s+up"
+    r"|other\s+side\s+closed"
+    r"|typeerror:\s*terminated"
+    r"|fetch\s+(?:failed|terminated)"
     r"|network\s+error"
     r"|(?:request|read|socket)\s+timed?\s*out"
     r"|timeout\s+(?:of\s+)?\d+\s*ms\s+exceeded)\b",
