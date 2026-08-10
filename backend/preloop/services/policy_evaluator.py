@@ -516,6 +516,15 @@ def _evaluate_simple_condition(expression: str, tool_args: Dict[str, Any]) -> bo
     """
     expression = expression.strip()
 
+    # Handle boolean literals before any normalisation. Users configure
+    # catch-all rules with a bare 'true' (or 'false'); prepending 'args.'
+    # would turn these into unparsable field references.
+    lowered = expression.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+
     # Normalise: if the expression doesn't start with 'args.', prepend it.
     # Users often configure rules via the UI with just the field name, e.g.
     # "amount > 300" instead of "args.amount > 300".
