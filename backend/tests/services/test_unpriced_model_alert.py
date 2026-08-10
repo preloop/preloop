@@ -288,3 +288,50 @@ def test_different_models_sharing_a_bare_tail_alert_independently(
     assert first is True
     assert second is True
     assert mock_notify.call_count == 2
+
+
+def test_endpoint_containing_openrouter_string_is_not_classified_openrouter(
+    db_session, test_user
+):
+    """Provider classification must anchor on the URL host, not a substring.
+
+    An unrelated upstream whose endpoint URL merely contains the string
+    ``openrouter.ai`` (e.g. a path segment on a proxy) must NOT collapse into
+    the ``openrouter`` dedup class: that would let a genuinely different
+    upstream suppress OpenRouter's alert (or vice versa) within the cooldown.
+    """
+    from preloop.models.models.ai_model import AIModel
+
+    account_id = str(test_user.account_id)
+    via_openrouter = AIModel(
+        provider_name="openrouter",
+        model_identifier="deepseek/deepseek-chat",
+        api_endpoint="https://openrouter.ai/api/v1",
+    )
+    lookalike = AIModel(
+        provider_name="custom-proxy",
+        model_identifier="deepseek/deepseek-chat",
+        api_endpoint="https://llm.example.com/openrouter.ai/api/v1",
+    )
+
+    with patch.object(unpriced_model_alert, "notify_admins") as mock_notify:
+        first = notify_unpriced_model(
+            db_session,
+            account_id=account_id,
+            model_alias="deepseek/deepseek-chat",
+            provider_name="openrouter",
+            total_tokens=100,
+            ai_model=via_openrouter,
+        )
+        second = notify_unpriced_model(
+            db_session,
+            account_id=account_id,
+            model_alias="deepseek/deepseek-chat",
+            provider_name="custom-proxy",
+            total_tokens=100,
+            ai_model=lookalike,
+        )
+
+    assert first is True
+    assert second is True
+    assert mock_notify.call_count == 2

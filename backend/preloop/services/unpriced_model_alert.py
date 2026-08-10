@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session
 
 from preloop.models.crud import crud_audit_log
 from preloop.models.models.ai_model import AIModel
+from preloop.services.litellm_routing import is_openrouter_endpoint
 from preloop.services.model_runtime_resolver import gateway_model_alias_candidates
 from preloop.sync.tasks import notify_admins
 
@@ -59,9 +60,8 @@ def _upstream_provider(ai_model: AIModel, provider_name: Optional[str]) -> str:
     keeps those spellings on one dedup key while still separating true
     different upstreams (e.g. OpenRouter-routed vs direct-vendor).
     """
-    endpoint = (ai_model.api_endpoint or "").strip().lower()
     provider = (ai_model.provider_name or provider_name or "unknown").strip().lower()
-    if provider == "openrouter" or "openrouter.ai" in endpoint:
+    if provider == "openrouter" or is_openrouter_endpoint(ai_model.api_endpoint):
         return "openrouter"
     return provider
 
