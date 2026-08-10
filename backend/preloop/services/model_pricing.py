@@ -156,14 +156,64 @@ class CostEstimate:
     """A cost estimate with its pricing provenance.
 
     ``source`` values: ``override`` (account price override), ``model_config``
-    (pricing stored on the AIModel), ``catalog`` (Preloop's vendored price
-    snapshot, which may fall back to litellm's bundled map for models absent
-    from the snapshot), ``unpriced`` (no price could be resolved; ``cost`` is
-    None).
+    (pricing stored on the AIModel), ``provider`` (the upstream reported the
+    request's actual cost in its usage payload; authoritative over any
+    catalog estimate), ``catalog`` (Preloop's vendored price snapshot, which
+    may fall back to litellm's bundled map for models absent from the
+    snapshot), ``unpriced`` (no price could be resolved; ``cost`` is None).
     """
 
     cost: Optional[float]
     source: str
+
+
+def provider_reported_cost(
+    usage_details: Optional[Dict[str, Any]],
+) -> Optional[float]:
+    """Extract the upstream-reported request cost from a usage payload.
+
+    OpenRouter (with usage accounting enabled) returns the request's actual
+    charge inside the response ``usage`` object:
+
+    - ``usage.cost``: credits charged by OpenRouter for the request. On BYOK
+      requests this is only OpenRouter's fee.
+    - ``usage.cost_details.upstream_inference_cost``: what the upstream vendor
+      charged, present on BYOK requests (where ``cost`` excludes it).
+
+    The customer pays both, so when both are present their sum is the
+    authoritative total. Zero and negative values mean "not accounted" (the
+    Auto Router's catalog price is literally ``-1``), never a real charge, so
+    they are treated as absent.
+
+    Args:
+        usage_details: Raw provider usage dict from the response, if any.
+
+    Returns:
+        The provider-reported USD cost, or None when the payload carries no
+        usable cost information.
+    """
+    if not isinstance(usage_details, dict):
+        return None
+
+    def _positive_number(value: Any) -> Optional[float]:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value) if value > 0 else None
+
+    cost_details = usage_details.get("cost_details")
+    upstream_cost = (
+        _positive_number(cost_details.get("upstream_inference_cost"))
+        if isinstance(cost_details, dict)
+        else None
+    )
+    gateway_cost = _positive_number(usage_details.get("cost"))
+
+    if upstream_cost is None and gateway_cost is None:
+        return None
+    total = (upstream_cost or 0.0) + (gateway_cost or 0.0)
+    # Keep more precision than the catalog's round(6): provider-reported
+    # micro-costs (e.g. 1.946e-05) would otherwise collapse to one digit.
+    return round(total, 10)
 
 
 def estimate_ai_model_usage_cost(
@@ -195,7 +245,17 @@ def estimate_ai_model_usage_cost_detailed(
     usage_details: Optional[Dict[str, Any]] = None,
     pricing_override: Optional[Dict[str, Any]] = None,
 ) -> CostEstimate:
-    """Estimate usage cost and report which pricing source produced it."""
+    """Estimate usage cost and report which pricing source produced it.
+
+    Resolution order: an operator's explicit pricing (account override or
+    pricing configured on the model) wins first — it is a deliberate human
+    decision (e.g. amortizing a subscription). Next the provider-reported
+    cost from the response usage payload wins over any catalog estimate: it
+    is the upstream's own ledger figure, exact where the catalog can only
+    approximate (and the Auto Router has no catalog price at all). The
+    catalog is the fallback, and ``unpriced`` means nothing could price the
+    request.
+    """
     configured_pricing = pricing_override or _get_configured_pricing(ai_model)
     if configured_pricing:
         configured_cost = _estimate_cost_from_pricing(
@@ -210,6 +270,10 @@ def estimate_ai_model_usage_cost_detailed(
                 cost=configured_cost,
                 source="override" if pricing_override else "model_config",
             )
+
+    reported_cost = provider_reported_cost(usage_details)
+    if reported_cost is not None:
+        return CostEstimate(cost=reported_cost, source="provider")
 
     if prompt_tokens <= 0 and completion_tokens <= 0:
         return CostEstimate(cost=None, source="unpriced")

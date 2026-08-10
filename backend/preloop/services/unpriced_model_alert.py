@@ -32,6 +32,8 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from preloop.models.crud import crud_audit_log
+from preloop.models.models.ai_model import AIModel
+from preloop.services.model_runtime_resolver import gateway_model_alias_candidates
 from preloop.sync.tasks import notify_admins
 
 logger = logging.getLogger(__name__)
@@ -47,16 +49,39 @@ _local_lock = threading.Lock()
 _local_recent: dict[str, float] = {}
 
 
-def _dedupe_key(model_alias: str, provider_name: Optional[str]) -> str:
+def _dedupe_key(
+    model_alias: str,
+    provider_name: Optional[str],
+    ai_model: Optional[AIModel] = None,
+) -> str:
     """Build the per-model dedup key.
+
+    One gateway model is addressable under several alias spellings
+    (``openrouter/auto-beta``, ``openai-compatible/openrouter/auto-beta``,
+    ``openrouter/openrouter/auto-beta``), and different AIModel configs for
+    the same upstream model may even carry different provider names. Keying
+    on the raw ``(provider, alias)`` pair fired one alert per spelling. When
+    the resolved model is available, the key is instead the canonical
+    spelling from :func:`gateway_model_alias_candidates` — the shortest
+    candidate, which by the resolver's suffix-match rule is the bare tail all
+    spellings share — so every spelling lands on one cooldown marker.
 
     Args:
         model_alias: Recorded model alias that could not be priced.
         provider_name: Provider that served the request.
+        ai_model: The resolved model, when the caller has it.
 
     Returns:
-        A stable key identifying the model/provider pair.
+        A stable key identifying the model across its alias spellings.
     """
+    if ai_model is not None:
+        try:
+            candidates = gateway_model_alias_candidates(ai_model)
+        except Exception:  # noqa: BLE001 - canonicalisation must never break dedup
+            candidates = set()
+        if candidates:
+            canonical = min(candidates, key=lambda c: (len(c), c))
+            return f"model|{canonical.strip().lower()}"
     return f"{(provider_name or 'unknown').strip().lower()}|{model_alias.strip()}"
 
 
@@ -114,6 +139,7 @@ def notify_unpriced_model(
     provider_name: Optional[str],
     total_tokens: int,
     cooldown_hours: Optional[int] = None,
+    ai_model: Optional[AIModel] = None,
 ) -> bool:
     """Alert admins that a model could not be priced, at most once per cooldown.
 
@@ -128,6 +154,8 @@ def notify_unpriced_model(
         provider_name: Provider that served the request.
         total_tokens: Tokens on the triggering request, for context.
         cooldown_hours: Override for the quiet period.
+        ai_model: The resolved model; enables alias-canonical dedup so
+            multiple spellings of one model share a single cooldown.
 
     Returns:
         True when a notification was actually sent.
@@ -136,7 +164,7 @@ def notify_unpriced_model(
         return False
 
     window = ALERT_COOLDOWN_HOURS if cooldown_hours is None else cooldown_hours
-    key = _dedupe_key(model_alias, provider_name)
+    key = _dedupe_key(model_alias, provider_name, ai_model)
 
     try:
         if _recently_alerted_locally(key, window * 3600):

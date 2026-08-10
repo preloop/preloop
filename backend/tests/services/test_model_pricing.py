@@ -406,3 +406,125 @@ def test_dated_openrouter_variant_never_falls_back_to_undated_price() -> None:
     candidates = list(_iter_litellm_model_candidates(ai_model))
     assert "deepseek/deepseek-v4-flash" not in candidates
     assert "openrouter/deepseek/deepseek-v4-flash" not in candidates
+
+
+# ---------------------------------------------------------------------------
+# Provider-reported cost (OpenRouter usage accounting; Auto Router has no
+# catalog price by design, so the provider's own ledger figure is the only
+# accurate source)
+# ---------------------------------------------------------------------------
+
+
+def _openrouter_auto_model() -> AIModel:
+    return AIModel(
+        provider_name="openrouter",
+        model_identifier="openrouter/auto-beta",
+        api_endpoint="https://openrouter.ai/api/v1",
+        meta_data={"gateway": {"enabled": True, "model_alias": "openrouter/auto-beta"}},
+    )
+
+
+def test_provider_reported_cost_wins_over_catalog() -> None:
+    """usage.cost_details.upstream_inference_cost is authoritative over catalog."""
+    ai_model = AIModel(provider_name="openai", model_identifier="gpt-4o")
+    estimate = estimate_ai_model_usage_cost_detailed(
+        ai_model,
+        prompt_tokens=100,
+        completion_tokens=50,
+        total_tokens=150,
+        usage_details={
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "cost_details": {"upstream_inference_cost": 0.00001946},
+        },
+    )
+    assert estimate.source == "provider"
+    assert estimate.cost == pytest.approx(0.00001946)
+
+
+def test_provider_reported_cost_from_top_level_usage_cost() -> None:
+    """OpenRouter's usage.cost (credits charged) alone is authoritative."""
+    estimate = estimate_ai_model_usage_cost_detailed(
+        _openrouter_auto_model(),
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        usage_details={"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.0000205},
+    )
+    assert estimate.source == "provider"
+    assert estimate.cost == pytest.approx(0.0000205)
+
+
+def test_provider_reported_cost_sums_byok_fee_and_upstream_charge() -> None:
+    """BYOK: usage.cost is OpenRouter's fee, upstream_inference_cost the vendor
+    charge; the customer pays both, so the authoritative total is their sum."""
+    estimate = estimate_ai_model_usage_cost_detailed(
+        _openrouter_auto_model(),
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        usage_details={
+            "cost": 0.000001,
+            "cost_details": {"upstream_inference_cost": 0.00002},
+        },
+    )
+    assert estimate.source == "provider"
+    assert estimate.cost == pytest.approx(0.000021)
+
+
+def test_absent_provider_cost_falls_back_to_catalog_unchanged() -> None:
+    """No cost fields in usage -> exactly today's catalog behavior."""
+    ai_model = AIModel(provider_name="openai", model_identifier="gpt-4o")
+    estimate = estimate_ai_model_usage_cost_detailed(
+        ai_model,
+        prompt_tokens=1000,
+        completion_tokens=100,
+        total_tokens=1100,
+        usage_details={"prompt_tokens": 1000, "completion_tokens": 100},
+    )
+    assert estimate.source == "catalog"
+    assert estimate.cost is not None and estimate.cost > 0
+
+
+def test_absent_provider_cost_still_unpriced_for_uncatalogued_model() -> None:
+    """Auto Router without usage accounting stays unpriced (no invented price)."""
+    estimate = estimate_ai_model_usage_cost_detailed(
+        _openrouter_auto_model(),
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        usage_details={"prompt_tokens": 10, "completion_tokens": 5},
+    )
+    assert estimate.source == "unpriced"
+    assert estimate.cost is None
+
+
+def test_zero_or_negative_provider_cost_is_ignored() -> None:
+    """cost=0/-1 mean 'not accounted', never a real $0 charge."""
+    for bogus in (
+        {"cost": 0},
+        {"cost": -1},
+        {"cost_details": {"upstream_inference_cost": 0}},
+    ):
+        estimate = estimate_ai_model_usage_cost_detailed(
+            _openrouter_auto_model(),
+            prompt_tokens=10,
+            completion_tokens=5,
+            total_tokens=15,
+            usage_details={"prompt_tokens": 10, "completion_tokens": 5, **bogus},
+        )
+        assert estimate.source == "unpriced", bogus
+
+
+def test_explicit_price_override_still_wins_over_provider_cost() -> None:
+    """An operator's explicit override outranks even the provider ledger."""
+    estimate = estimate_ai_model_usage_cost_detailed(
+        _openrouter_auto_model(),
+        prompt_tokens=1000,
+        completion_tokens=0,
+        total_tokens=1000,
+        usage_details={"cost": 0.5},
+        pricing_override={"input_price_per_1k": 0.01},
+    )
+    assert estimate.source == "override"
+    assert estimate.cost == pytest.approx(0.01)
