@@ -138,6 +138,46 @@ class TestCreateProject:
                     assert result["name"] == "Test Project"
                     assert result["identifier"] == "test-project"
 
+    def test_create_project_duplicate_check_matches_crud_signature(
+        self, mock_user, mock_organization, mock_project, mock_db_session
+    ):
+        """The duplicate-check call must match CRUDProject.get_by_identifier's signature.
+
+        Regression: create_project passed organization_id= to
+        get_by_identifier, which did not accept it, so every create_project
+        request 500ed with a TypeError before reaching the duplicate check.
+        autospec=True makes the mock enforce the real method signature.
+        """
+        project_create = ProjectCreate(
+            name="Test Project",
+            identifier="test-project",
+            description="A test project",
+            organization_id=mock_organization.id,
+            settings={},
+            tracker_configurations={"repo": "test/repo"},
+        )
+
+        with patch.object(
+            projects.crud_organization, "get", return_value=mock_organization
+        ):
+            with patch.object(
+                projects.crud_project,
+                "get_by_identifier",
+                autospec=True,
+                return_value=None,
+            ):
+                with patch.object(
+                    projects.crud_project, "create", return_value=mock_project
+                ):
+                    result = call_endpoint(
+                        projects.create_project,
+                        project=project_create,
+                        db=mock_db_session,
+                        current_user=mock_user,
+                    )
+
+                    assert result["identifier"] == "test-project"
+
     def test_create_project_organization_not_found(self, mock_user, mock_db_session):
         """Test 404 when organization is not found."""
         project_create = ProjectCreate(
