@@ -20,19 +20,12 @@ These tests exist so a future edit that drops either value back to the
 
 from __future__ import annotations
 
-import shutil
-import subprocess
-import tempfile
-from contextlib import contextmanager
-from pathlib import Path
-from typing import Dict, Iterator, List
+from typing import Dict, List
 
 import pytest
 import yaml
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-CHART_DIR = REPO_ROOT / "helm" / "preloop"
-CHART_VALUES = CHART_DIR / "values.yaml"
+from tests.helm.chart_helpers import helm_template, load_values, resolve_values_path
 
 # Deployments that hold long-lived streaming/long-poll connections, with the
 # dotted values path each one's grace period must come from.
@@ -46,24 +39,9 @@ STREAMING_DEPLOYMENTS = [
 MIN_STREAMING_TIMEOUT_SECONDS = 300
 
 
-def _load_values() -> Dict:
-    """Return the chart's default values."""
-    return yaml.safe_load(CHART_VALUES.read_text())
-
-
-def _resolve_values_path(values: Dict, dotted: str):
-    """Look up a dotted ``.Values`` path, returning None when absent."""
-    node = values
-    for part in dotted.split("."):
-        if not isinstance(node, dict) or part not in node:
-            return None
-        node = node[part]
-    return node
-
-
 def _proxy_read_timeout(values: Dict) -> int:
     """Seconds the proxies in front of the gateway allow between reads."""
-    read_timeout = _resolve_values_path(values, "gateway.proxy.readTimeout")
+    read_timeout = resolve_values_path(values, "gateway.proxy.readTimeout")
     assert read_timeout is not None, "gateway.proxy.readTimeout missing"
     return int(read_timeout)
 
@@ -73,8 +51,8 @@ def test_values_declare_a_stream_covering_grace_period(
     template: str, component: str
 ) -> None:
     """values.yaml must pin a grace period long enough for a full stream."""
-    values = _load_values()
-    grace = _resolve_values_path(values, f"{component}.terminationGracePeriodSeconds")
+    values = load_values()
+    grace = resolve_values_path(values, f"{component}.terminationGracePeriodSeconds")
 
     assert grace is not None, (
         f"{component}.terminationGracePeriodSeconds is not set; the pod falls "
@@ -87,54 +65,17 @@ def test_values_declare_a_stream_covering_grace_period(
     )
 
 
-@contextmanager
-def _offline_chart() -> Iterator[Path]:
-    """Yield a copy of the chart that renders without fetching dependencies.
-
-    ``helm template`` refuses to run while a declared subchart is missing from
-    ``charts/``, which would make these tests require network access. The
-    subcharts are irrelevant to the templates under test, so the copy simply
-    declares none.
-    """
-    with tempfile.TemporaryDirectory() as tmp:
-        chart_copy = Path(tmp) / CHART_DIR.name
-        shutil.copytree(CHART_DIR, chart_copy)
-        chart_yaml = chart_copy / "Chart.yaml"
-        metadata = yaml.safe_load(chart_yaml.read_text())
-        metadata.pop("dependencies", None)
-        chart_yaml.write_text(yaml.safe_dump(metadata))
-        yield chart_copy
-
-
-def _helm_template(template: str, overrides: List[str] | None = None) -> str:
-    """Render one chart template, skipping when helm is unavailable."""
-    helm = shutil.which("helm")
-    if helm is None:  # pragma: no cover - depends on the local toolchain
-        pytest.skip("helm binary not available")
-
-    with _offline_chart() as chart_dir:
-        command = [helm, "template", "preloop", str(chart_dir), "--show-only", template]
-        for override in overrides or []:
-            command += ["--set", override]
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
-
-    assert result.returncode == 0, result.stderr
-    return result.stdout
-
-
 def _rendered_pod_spec(template: str, overrides: List[str] | None = None) -> Dict:
     """Render a deployment template and return its pod spec."""
-    rendered = yaml.safe_load(_helm_template(template, overrides))
+    rendered = yaml.safe_load(helm_template(template, overrides))
     return rendered["spec"]["template"]["spec"]
 
 
 @pytest.mark.parametrize("template,component", STREAMING_DEPLOYMENTS)
 def test_helm_render_sets_the_grace_period(template: str, component: str) -> None:
     """The rendered pod spec must carry the values.yaml grace period."""
-    values = _load_values()
-    expected = _resolve_values_path(
-        values, f"{component}.terminationGracePeriodSeconds"
-    )
+    values = load_values()
+    expected = resolve_values_path(values, f"{component}.terminationGracePeriodSeconds")
     assert expected is not None
 
     pod_spec = _rendered_pod_spec(template)
