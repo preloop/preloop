@@ -40,6 +40,7 @@ from preloop.models import schemas
 from preloop.flow_presets import FLOW_PRESETS, PRESETS_DIR
 from preloop.services.flow_presets_service import (
     compute_content_hash,
+    link_unlinked_flows_by_content,
     sync_preset_to_derived_flows,
     PresetSyncResult,
 )
@@ -344,6 +345,13 @@ def link_existing_flows_to_presets(db: Session, dry_run: bool = False) -> int:
     if not dry_run:
         db.commit()
 
+    logger.info(f"Linked {linked_count} existing flows by name pattern")
+
+    # Second pass: link renamed-but-unmodified clones by prompt content hash.
+    # The name pattern above misses flows that were renamed after cloning;
+    # a byte-identical prompt is proof of origin regardless of the name.
+    linked_count += link_unlinked_flows_by_content(db, dry_run=dry_run)
+
     logger.info(f"Linked {linked_count} existing flows to their source presets")
     return linked_count
 
@@ -363,6 +371,11 @@ def sync_derived_flows(db: Session, dry_run: bool = False) -> List[PresetSyncRes
         List of sync results per preset
     """
     results = []
+
+    # Before propagating, link any unlinked flows whose prompt is
+    # byte-identical to a preset (renamed clones that the name-based
+    # one-time migration missed). Safe: only exact-content matches.
+    link_unlinked_flows_by_content(db, dry_run=dry_run)
 
     # Get all global presets
     presets = (
