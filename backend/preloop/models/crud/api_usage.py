@@ -380,6 +380,43 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             yield from batch
             last_id = batch[-1].id
 
+    def list_execution_ids_with_gateway_usage(
+        self,
+        db: Session,
+        *,
+        account_id: Union[uuid.UUID, str],
+        start: datetime,
+        end: datetime,
+    ) -> List[uuid.UUID]:
+        """List distinct flow execution ids with gateway usage in a window.
+
+        Used after a repricing pass to know which stored per-execution cost
+        rollups may have gone stale (issue #209). The window is half-open:
+        ``start <= timestamp < end``.
+
+        Args:
+            db: Database session.
+            account_id: Account scope.
+            start: Window start (inclusive).
+            end: Window end (exclusive).
+
+        Returns:
+            Distinct ``flow_execution_id`` values (order not guaranteed).
+        """
+        rows = (
+            db.query(ApiUsage.flow_execution_id)
+            .filter(
+                ApiUsage.action_type == "model_gateway",
+                ApiUsage.account_id == account_id,
+                ApiUsage.flow_execution_id.isnot(None),
+                ApiUsage.timestamp >= start,
+                ApiUsage.timestamp < end,
+            )
+            .distinct()
+            .all()
+        )
+        return [row.flow_execution_id for row in rows]
+
     def update_cost_fields(
         self,
         db: Session,
