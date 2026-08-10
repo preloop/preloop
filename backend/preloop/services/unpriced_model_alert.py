@@ -49,6 +49,23 @@ _local_lock = threading.Lock()
 _local_recent: dict[str, float] = {}
 
 
+def _upstream_provider(ai_model: AIModel, provider_name: Optional[str]) -> str:
+    """Best-effort name of the upstream actually serving the model.
+
+    Different AIModel configs for one upstream model can carry different
+    provider names — the production Auto Router incident had it registered as
+    both ``openrouter`` and ``openai-compatible`` (pointed at the OpenRouter
+    endpoint). Normalising every OpenRouter-fronted config to ``openrouter``
+    keeps those spellings on one dedup key while still separating true
+    different upstreams (e.g. OpenRouter-routed vs direct-vendor).
+    """
+    endpoint = (ai_model.api_endpoint or "").strip().lower()
+    provider = (ai_model.provider_name or provider_name or "unknown").strip().lower()
+    if provider == "openrouter" or "openrouter.ai" in endpoint:
+        return "openrouter"
+    return provider
+
+
 def _dedupe_key(
     model_alias: str,
     provider_name: Optional[str],
@@ -66,6 +83,13 @@ def _dedupe_key(
     candidate, which by the resolver's suffix-match rule is the bare tail all
     spellings share — so every spelling lands on one cooldown marker.
 
+    The canonical key is prefixed with the (normalised) upstream provider so
+    two genuinely different models that happen to share a bare alias tail
+    across providers (``openrouter/deepseek/deepseek-chat`` vs a direct
+    ``deepseek/deepseek-chat`` config) do not swallow each other's alerts.
+    OpenRouter-fronted configs are normalised to one prefix regardless of
+    their recorded provider name (see :func:`_upstream_provider`).
+
     Args:
         model_alias: Recorded model alias that could not be priced.
         provider_name: Provider that served the request.
@@ -81,7 +105,8 @@ def _dedupe_key(
             candidates = set()
         if candidates:
             canonical = min(candidates, key=lambda c: (len(c), c))
-            return f"model|{canonical.strip().lower()}"
+            upstream = _upstream_provider(ai_model, provider_name)
+            return f"model|{upstream}|{canonical.strip().lower()}"
     return f"{(provider_name or 'unknown').strip().lower()}|{model_alias.strip()}"
 
 
