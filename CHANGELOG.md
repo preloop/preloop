@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Provider-reported cost is ingested as authoritative**: when the upstream
+  reports the request's actual cost inside the response usage payload
+  (OpenRouter usage accounting: `usage.cost` and
+  `usage.cost_details.upstream_inference_cost`; on BYOK requests the two are
+  complementary and are summed), the gateway now records that figure as
+  `estimated_cost` with the new `cost_source='provider'` marker, winning over
+  catalog estimates. Explicit operator pricing (account overrides /
+  model-config pricing) still outranks it. To make the provider figure
+  present on every response, OpenRouter-bound requests (the `openrouter`
+  provider or any model with an openrouter.ai base URL, both endpoint kinds,
+  streaming included) now ask for usage accounting via
+  `usage: {"include": true}` — strictly provider-scoped, config-gated by
+  `OPENROUTER_USAGE_ACCOUNTING` (default on). This fixes models that have no
+  catalog price at all — OpenRouter's Auto Router (`openrouter/auto-beta`)
+  lists price `-1` by design, so its traffic was recorded as unpriced/$0 and
+  a customer's real spend was understated ~1.5x against OpenRouter's ledger.
+  The per-row repricing entry point also adopts a provider cost stored in a
+  row's `usage_details`, so historical rows can be fixed retroactively.
+
 ### Changed
 
 - **PR Reviewer preset: token-optimised prompt**: the stock Pull Request
@@ -33,6 +54,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   proportional to the push delta instead of the whole PR.
 
 ### Fixed
+
+- **Unpriced-model alerts triple-fired for alias spellings of one model**:
+  the alert dedup key used the raw recorded alias, so one model reachable as
+  `openrouter/auto-beta`, `openai-compatible/openrouter/auto-beta` and
+  `openrouter/openrouter/auto-beta` produced three admin alerts. The dedup
+  key now canonicalises through the runtime resolver's alias candidates, so
+  every spelling of a model shares one alert cooldown.
 
 - **Preset updates never reached renamed flow clones**: preset propagation
   (`sync_preset_to_derived_flows`) only finds flows via `source_preset_id`,

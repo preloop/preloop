@@ -98,7 +98,7 @@ from preloop.services.model_pricing import (
     _iter_litellm_model_candidates,
     estimate_ai_model_usage_cost_detailed,
 )
-from preloop.services.litellm_routing import to_litellm_model
+from preloop.services.litellm_routing import is_openrouter_endpoint, to_litellm_model
 from preloop.services.pricing_overrides import resolve_pricing_override
 from preloop.services.model_runtime_resolver import resolve_ai_model_runtime
 from preloop.services.gateway_usage_search import GatewayUsageSearchService
@@ -133,6 +133,38 @@ _ANTHROPIC_PASSTHROUGH_TIMEOUT_SECONDS = 600
 def _supports_ambient_provider_credentials(ai_model: AIModel) -> bool:
     provider = (ai_model.provider_name or "").strip().lower()
     return provider in {"bedrock", "amazon-bedrock"}
+
+
+def _openrouter_usage_accounting_enabled() -> bool:
+    """Whether outbound OpenRouter requests should ask for usage accounting.
+
+    Default ON: without ``usage: {"include": true}`` OpenRouter omits the
+    request's actual cost from the response usage payload, and models with no
+    catalog price (the Auto Router's list price is ``-1`` by design) record
+    zero spend. Config-gated so an operator can switch it off if OpenRouter's
+    accounting payload ever misbehaves.
+    """
+    return os.getenv("OPENROUTER_USAGE_ACCOUNTING", "true").strip().lower() not in {
+        "false",
+        "0",
+        "no",
+        "off",
+    }
+
+
+def _is_openrouter_upstream(ai_model: AIModel) -> bool:
+    """Whether this model's traffic terminates at OpenRouter.
+
+    True for the explicit ``openrouter`` provider and for any model whose
+    ``api_endpoint`` points at openrouter.ai (e.g. an ``openai-compatible``
+    provider with an OpenRouter base URL). Mirrors the routing decision in
+    :func:`preloop.services.litellm_routing.to_litellm_model` so the
+    usage-accounting flag is sent exactly when the request goes to OpenRouter.
+    """
+    provider = (getattr(ai_model, "provider_name", None) or "").strip().lower()
+    if provider == "openrouter":
+        return True
+    return is_openrouter_endpoint(getattr(ai_model, "api_endpoint", None))
 
 
 def _bedrock_region(ai_model: AIModel) -> Optional[str]:
@@ -4344,6 +4376,16 @@ class OpenAIGatewayService:
             }
         if ai_model.api_endpoint:
             kwargs["api_base"] = ai_model.api_endpoint
+        if _is_openrouter_upstream(ai_model) and _openrouter_usage_accounting_enabled():
+            # Ask OpenRouter to include the request's actual cost in the
+            # response usage payload (usage accounting). litellm forwards
+            # extra_body verbatim on both its OpenRouter adapter and the
+            # generic OpenAI-compatible path, so the flag reaches OpenRouter
+            # for /chat/completions and /responses traffic alike. Strictly
+            # provider-scoped: other upstreams would reject or ignore the
+            # unknown "usage" body field.
+            extra_body = kwargs.setdefault("extra_body", {})
+            extra_body.setdefault("usage", {"include": True})
         if payload.get("tools") is not None:
             if provider == "anthropic":
                 kwargs["tools"] = self._normalize_anthropic_tools(payload["tools"])
@@ -6034,6 +6076,7 @@ class OpenAIGatewayService:
                     model_alias=model_alias,
                     provider_name=ai_model.provider_name,
                     total_tokens=int(total_tokens or 0),
+                    ai_model=ai_model,
                 )
             except Exception:  # noqa: BLE001 - never break recording
                 logger.debug("Unpriced-model admin alert failed", exc_info=True)

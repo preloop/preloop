@@ -159,3 +159,83 @@ def test_database_failure_never_raises(db_session, test_user):
         )
 
     assert sent is False
+
+
+def test_alias_spellings_of_one_model_collapse_to_one_alert(db_session, test_user):
+    """Three spellings of one gateway model must not triple-alert.
+
+    In production the OpenRouter Auto Router was reachable as
+    ``openrouter/auto-beta``, ``openai-compatible/openrouter/auto-beta`` and
+    ``openrouter/openrouter/auto-beta`` (three AIModel configs pointing at the
+    same upstream model), and each spelling fired its own admin alert. The
+    dedup key must canonicalise via the resolver's alias candidates so all
+    spellings share one cooldown.
+    """
+    from preloop.models.models.ai_model import AIModel
+
+    account_id = str(test_user.account_id)
+    spellings = [
+        AIModel(
+            provider_name="openrouter",
+            model_identifier="openrouter/auto-beta",
+            api_endpoint="https://openrouter.ai/api/v1",
+        ),
+        AIModel(
+            provider_name="openai-compatible",
+            model_identifier="openrouter/auto-beta",
+            api_endpoint="https://openrouter.ai/api/v1",
+            meta_data={
+                "gateway": {"model_alias": "openai-compatible/openrouter/auto-beta"}
+            },
+        ),
+        AIModel(
+            provider_name="openrouter",
+            model_identifier="openrouter/auto-beta",
+            meta_data={"gateway": {"model_alias": "openrouter/openrouter/auto-beta"}},
+        ),
+    ]
+    aliases = [
+        "openrouter/auto-beta",
+        "openai-compatible/openrouter/auto-beta",
+        "openrouter/openrouter/auto-beta",
+    ]
+
+    with patch.object(unpriced_model_alert, "notify_admins") as mock_notify:
+        results = [
+            notify_unpriced_model(
+                db_session,
+                account_id=account_id,
+                model_alias=alias,
+                provider_name=model.provider_name,
+                total_tokens=100,
+                ai_model=model,
+            )
+            for model, alias in zip(spellings, aliases, strict=True)
+        ]
+
+    assert results.count(True) == 1
+    assert mock_notify.call_count == 1
+
+
+def test_alert_without_ai_model_still_dedupes_on_raw_alias(db_session, test_user):
+    """Callers without the resolved model keep the previous raw-alias contract."""
+    account_id = str(test_user.account_id)
+
+    with patch.object(unpriced_model_alert, "notify_admins") as mock_notify:
+        first = notify_unpriced_model(
+            db_session,
+            account_id=account_id,
+            model_alias="openai/some-model",
+            provider_name="openai",
+            total_tokens=10,
+        )
+        second = notify_unpriced_model(
+            db_session,
+            account_id=account_id,
+            model_alias="openai/some-model",
+            provider_name="openai",
+            total_tokens=10,
+        )
+
+    assert first is True and second is False
+    assert mock_notify.call_count == 1

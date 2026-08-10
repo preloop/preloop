@@ -2931,3 +2931,309 @@ def test_create_response_round_trips_a_freeform_tool_call():
     assert output_item["type"] == "custom_tool_call"
     assert output_item["name"] == "apply_patch"
     assert output_item["input"] == "*** Begin Patch"
+
+
+def _openrouter_service_and_model(**model_overrides):
+    auth_context = ModelGatewayAuthContext(
+        token="token",
+        user=SimpleNamespace(id="user-1", account_id="account-1"),
+    )
+    upstream_backend = MagicMock()
+    service = OpenAIGatewayService(
+        MagicMock(), auth_context, upstream_backend=upstream_backend
+    )
+    model_kwargs = {
+        "provider_name": "openrouter",
+        "model_identifier": "openrouter/auto-beta",
+        "api_endpoint": "https://openrouter.ai/api/v1",
+        "meta_data": {},
+    }
+    model_kwargs.update(model_overrides)
+    return service, SimpleNamespace(**model_kwargs), upstream_backend
+
+
+def _call_with_api_key(service, ai_model, *, payload=None, stream=False):
+    with patch(
+        "preloop.services.openai_gateway.get_secret_service"
+    ) as mock_secret_service:
+        mock_secret_service.return_value.resolve_ai_model_credentials.return_value = (
+            SimpleNamespace(credential_type="api_key", value="sk-or-key")
+        )
+        service._call_litellm(
+            ai_model,
+            messages=[{"role": "user", "content": "Hello"}],
+            payload=payload or {},
+            stream=stream,
+            provider="openai",
+        )
+
+
+def test_openrouter_upstream_requests_usage_accounting():
+    """OpenRouter (direct provider) gets usage: {"include": true} so every
+    response carries the authoritative cost (Auto Router has no catalog
+    price; without this flag its usage stays unpriced)."""
+    service, ai_model, backend = _openrouter_service_and_model()
+    _call_with_api_key(service, ai_model)
+    kwargs = backend.completion.call_args.kwargs
+    assert kwargs["extra_body"]["usage"] == {"include": True}
+
+
+def test_openai_compatible_openrouter_base_url_requests_usage_accounting():
+    """OpenRouter reached via an openai-compatible base_url is still OpenRouter."""
+    service, ai_model, backend = _openrouter_service_and_model(
+        provider_name="openai-compatible",
+    )
+    _call_with_api_key(service, ai_model)
+    kwargs = backend.completion.call_args.kwargs
+    assert kwargs["extra_body"]["usage"] == {"include": True}
+
+
+def test_openrouter_usage_accounting_applies_to_streaming_requests():
+    """The flag rides on streamed requests too (final usage chunk carries cost)."""
+    service, ai_model, backend = _openrouter_service_and_model()
+    _call_with_api_key(service, ai_model, stream=True)
+    kwargs = backend.completion.call_args.kwargs
+    assert kwargs["stream"] is True
+    assert kwargs["extra_body"]["usage"] == {"include": True}
+
+
+def test_non_openrouter_upstreams_never_get_usage_accounting_flag():
+    """The OpenRouter-only knob must not leak to other upstreams."""
+    service, ai_model, backend = _openrouter_service_and_model(
+        provider_name="openai",
+        model_identifier="gpt-5",
+        api_endpoint=None,
+    )
+    _call_with_api_key(service, ai_model)
+    kwargs = backend.completion.call_args.kwargs
+    assert "extra_body" not in kwargs
+
+
+def test_openrouter_usage_accounting_config_gate(monkeypatch):
+    """OPENROUTER_USAGE_ACCOUNTING=false disables the outbound flag."""
+    monkeypatch.setenv("OPENROUTER_USAGE_ACCOUNTING", "false")
+    service, ai_model, backend = _openrouter_service_and_model()
+    _call_with_api_key(service, ai_model)
+    kwargs = backend.completion.call_args.kwargs
+    assert "extra_body" not in kwargs
+
+
+def test_gateway_records_provider_reported_cost_as_authoritative(db_session, test_user):
+    """An OpenRouter usage-accounting response prices the row from the
+    provider ledger (cost_source='provider') and budget spend consumes it.
+
+    The Auto Router (openrouter/auto-beta) has catalog price -1 by design, so
+    without the provider-reported figure this row would land unpriced with
+    zero spend.
+    """
+    from preloop.models.models.budget import BudgetSpendActivity
+
+    crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "OpenRouter Auto",
+            "provider_name": "openrouter",
+            "model_identifier": "openrouter/auto-beta",
+            "api_endpoint": "https://openrouter.ai/api/v1",
+            "api_key": "sk-or-key",
+            "meta_data": {
+                "gateway": {
+                    "enabled": True,
+                    "model_alias": "openrouter/auto-beta",
+                    "provider_adapter": "preloop",
+                }
+            },
+            "is_default": True,
+        },
+        account_id=test_user.account_id,
+    )
+    service = OpenAIGatewayService(
+        db_session, ModelGatewayAuthContext(token="t", user=test_user)
+    )
+    litellm_response = {
+        "id": "gen-abc",
+        "created": 1710000000,
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": "routed answer"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 973,
+            "completion_tokens": 15,
+            "total_tokens": 988,
+            "cost_details": {
+                "upstream_inference_cost": 0.00001946,
+                "upstream_inference_prompt_cost": 0.00001,
+                "upstream_inference_completions_cost": 0.00000946,
+            },
+        },
+    }
+
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value=litellm_response,
+    ) as mock_completion:
+        service.create_chat_completion(
+            {
+                "model": "openrouter/auto-beta",
+                "messages": [{"role": "user", "content": "Hello"}],
+            }
+        )
+
+    # The outbound request asked OpenRouter for usage accounting.
+    assert mock_completion.call_args.kwargs["extra_body"]["usage"] == {"include": True}
+
+    usage_row = (
+        db_session.query(ApiUsage)
+        .filter(ApiUsage.endpoint == "/openai/v1/chat/completions")
+        .order_by(ApiUsage.timestamp.desc())
+        .first()
+    )
+    assert usage_row is not None
+    assert usage_row.cost_source == "provider"
+    assert usage_row.estimated_cost == pytest.approx(0.00001946)
+    # No unpriced marker; the provider figure priced the row.
+    assert usage_row.prompt_tokens == 973
+
+    spend = (
+        db_session.query(BudgetSpendActivity)
+        .filter(
+            BudgetSpendActivity.account_id == test_user.account_id,
+            BudgetSpendActivity.subject_type == "account",
+            BudgetSpendActivity.model_alias == "openrouter/auto-beta",
+        )
+        .first()
+    )
+    assert spend is not None
+    assert float(spend.spend_usd) == pytest.approx(0.00001946)
+
+
+def test_gateway_without_provider_cost_keeps_catalog_pricing(db_session, test_user):
+    """No cost fields in usage -> catalog pricing exactly as before."""
+    crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Gateway Model",
+            "provider_name": "openai",
+            "model_identifier": "gpt-4o",
+            "api_key": "provider-secret",
+            "meta_data": {
+                "gateway": {
+                    "enabled": True,
+                    "model_alias": "openai/gpt-4o",
+                    "provider_adapter": "preloop",
+                }
+            },
+            "is_default": True,
+        },
+        account_id=test_user.account_id,
+    )
+    service = OpenAIGatewayService(
+        db_session, ModelGatewayAuthContext(token="t", user=test_user)
+    )
+    litellm_response = {
+        "id": "chatcmpl_1",
+        "created": 1710000000,
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": "hi"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18},
+    }
+
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value=litellm_response,
+    ):
+        service.create_chat_completion(
+            {
+                "model": "openai/gpt-4o",
+                "messages": [{"role": "user", "content": "Hello"}],
+            }
+        )
+
+    usage_row = (
+        db_session.query(ApiUsage)
+        .filter(ApiUsage.endpoint == "/openai/v1/chat/completions")
+        .order_by(ApiUsage.timestamp.desc())
+        .first()
+    )
+    assert usage_row is not None
+    assert usage_row.cost_source == "catalog"
+    assert usage_row.estimated_cost is not None and usage_row.estimated_cost > 0
+
+
+def test_responses_endpoint_records_provider_cost_and_requests_accounting(
+    db_session, test_user
+):
+    """The /responses path shares the flag injection and provider pricing.
+
+    Both endpoint kinds build upstream kwargs via ``_build_completion_kwargs``,
+    so this pins that the usage-accounting flag and provider-cost ingestion
+    hold on the Responses API path too, not only chat completions.
+    """
+    crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "OpenRouter Auto",
+            "provider_name": "openai-compatible",
+            "model_identifier": "openrouter/auto-beta",
+            "api_endpoint": "https://openrouter.ai/api/v1",
+            "api_key": "sk-or-key",
+            "meta_data": {
+                "gateway": {
+                    "enabled": True,
+                    "model_alias": "openrouter/auto-beta",
+                    "provider_adapter": "preloop",
+                }
+            },
+            "is_default": True,
+        },
+        account_id=test_user.account_id,
+    )
+    service = OpenAIGatewayService(
+        db_session, ModelGatewayAuthContext(token="t", user=test_user)
+    )
+    litellm_response = {
+        "id": "gen-resp",
+        "created": 1710000000,
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": "routed"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 42,
+            "completion_tokens": 7,
+            "total_tokens": 49,
+            "cost": 0.0000305,
+        },
+    }
+
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value=litellm_response,
+    ) as mock_completion:
+        service.create_response(
+            {
+                "model": "openrouter/auto-beta",
+                "input": "Hello",
+            }
+        )
+
+    assert mock_completion.call_args.kwargs["extra_body"]["usage"] == {"include": True}
+
+    usage_row = (
+        db_session.query(ApiUsage)
+        .filter(ApiUsage.endpoint == "/openai/v1/responses")
+        .order_by(ApiUsage.timestamp.desc())
+        .first()
+    )
+    assert usage_row is not None
+    assert usage_row.cost_source == "provider"
+    assert usage_row.estimated_cost == pytest.approx(0.0000305)
