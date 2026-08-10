@@ -316,3 +316,63 @@ def test_reprice_survives_a_failing_live_lookup(db_session, test_user, monkeypat
     )
 
     assert result.rows_examined == 1
+
+
+def test_reprice_single_row_uses_stored_provider_cost(db_session, test_user):
+    """A stored unpriced row whose usage payload carries the provider cost is
+    repriced from it — the per-row entry point a historical backfill will call.
+
+    Rows recorded before usage accounting was requested may still have
+    ``cost_details`` in their persisted ``usage_details`` (some prod rows do);
+    repricing them must adopt the provider figure and mark
+    ``cost_source='provider'``.
+    """
+    ai_model = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "OpenRouter Auto",
+            "provider_name": "openrouter",
+            "model_identifier": "openrouter/auto-beta",
+            "api_endpoint": "https://openrouter.ai/api/v1",
+            "api_key": "sk-or-key",
+            "meta_data": {
+                "gateway": {
+                    "enabled": True,
+                    "model_alias": "openrouter/auto-beta",
+                    "provider_adapter": "preloop",
+                }
+            },
+        },
+        account_id=test_user.account_id,
+    )
+    row = crud_api_usage.log_gateway_request(
+        db_session,
+        endpoint="/openai/v1/chat/completions",
+        method="POST",
+        status_code=200,
+        duration=0.4,
+        account_id=str(test_user.account_id),
+        user_id=str(test_user.id),
+        ai_model_id=str(ai_model.id),
+        model_alias="openrouter/auto-beta",
+        provider_name="openrouter",
+        prompt_tokens=973,
+        completion_tokens=15,
+        total_tokens=988,
+        estimated_cost=None,
+        cost_source="unpriced",
+        meta_data={
+            "usage_details": {
+                "prompt_tokens": 973,
+                "completion_tokens": 15,
+                "cost_details": {"upstream_inference_cost": 0.00001946},
+            }
+        },
+    )
+
+    updated = usage_repricing.reprice_single_row(db_session, api_usage_id=row.id)
+
+    assert updated is True
+    db_session.refresh(row)
+    assert row.cost_source == "provider"
+    assert row.estimated_cost == 0.00001946
