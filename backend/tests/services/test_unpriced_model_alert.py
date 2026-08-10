@@ -239,3 +239,99 @@ def test_alert_without_ai_model_still_dedupes_on_raw_alias(db_session, test_user
 
     assert first is True and second is False
     assert mock_notify.call_count == 1
+
+
+def test_different_models_sharing_a_bare_tail_alert_independently(
+    db_session, test_user
+):
+    """A shared alias tail across providers must not swallow the second alert.
+
+    ``openrouter/deepseek/deepseek-chat`` (OpenRouter routing to DeepSeek) and
+    a direct ``deepseek-chat`` model both expose the bare tail
+    ``deepseek-chat`` among their alias candidates. They are different
+    provider configurations needing different price-catalog fixes, so the
+    second model's admin alert must not be suppressed by the first model's
+    cooldown.
+    """
+    from preloop.models.models.ai_model import AIModel
+
+    account_id = str(test_user.account_id)
+    via_openrouter = AIModel(
+        provider_name="openrouter",
+        model_identifier="deepseek/deepseek-chat",
+        api_endpoint="https://openrouter.ai/api/v1",
+    )
+    direct = AIModel(
+        provider_name="deepseek",
+        model_identifier="deepseek-chat",
+        api_endpoint="https://api.deepseek.com/v1",
+    )
+
+    with patch.object(unpriced_model_alert, "notify_admins") as mock_notify:
+        first = notify_unpriced_model(
+            db_session,
+            account_id=account_id,
+            model_alias="deepseek/deepseek-chat",
+            provider_name="openrouter",
+            total_tokens=100,
+            ai_model=via_openrouter,
+        )
+        second = notify_unpriced_model(
+            db_session,
+            account_id=account_id,
+            model_alias="deepseek-chat",
+            provider_name="deepseek",
+            total_tokens=100,
+            ai_model=direct,
+        )
+
+    assert first is True
+    assert second is True
+    assert mock_notify.call_count == 2
+
+
+def test_endpoint_containing_openrouter_string_is_not_classified_openrouter(
+    db_session, test_user
+):
+    """Provider classification must anchor on the URL host, not a substring.
+
+    An unrelated upstream whose endpoint URL merely contains the string
+    ``openrouter.ai`` (e.g. a path segment on a proxy) must NOT collapse into
+    the ``openrouter`` dedup class: that would let a genuinely different
+    upstream suppress OpenRouter's alert (or vice versa) within the cooldown.
+    """
+    from preloop.models.models.ai_model import AIModel
+
+    account_id = str(test_user.account_id)
+    via_openrouter = AIModel(
+        provider_name="openrouter",
+        model_identifier="deepseek/deepseek-chat",
+        api_endpoint="https://openrouter.ai/api/v1",
+    )
+    lookalike = AIModel(
+        provider_name="custom-proxy",
+        model_identifier="deepseek/deepseek-chat",
+        api_endpoint="https://llm.example.com/openrouter.ai/api/v1",
+    )
+
+    with patch.object(unpriced_model_alert, "notify_admins") as mock_notify:
+        first = notify_unpriced_model(
+            db_session,
+            account_id=account_id,
+            model_alias="deepseek/deepseek-chat",
+            provider_name="openrouter",
+            total_tokens=100,
+            ai_model=via_openrouter,
+        )
+        second = notify_unpriced_model(
+            db_session,
+            account_id=account_id,
+            model_alias="deepseek/deepseek-chat",
+            provider_name="custom-proxy",
+            total_tokens=100,
+            ai_model=lookalike,
+        )
+
+    assert first is True
+    assert second is True
+    assert mock_notify.call_count == 2
