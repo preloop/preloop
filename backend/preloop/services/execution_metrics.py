@@ -11,6 +11,66 @@ from preloop.services.model_pricing import estimate_ai_model_usage_cost
 
 logger = logging.getLogger(__name__)
 
+#: ``flow_execution.estimated_cost`` is ``Numeric(10, 4)``; quantize writes so
+#: comparisons against the stored value are stable.
+_ROLLUP_DECIMALS = 4
+
+
+def sync_execution_cost_rollup(db: Session, execution_id: str) -> bool:
+    """Recompute ``flow_execution.estimated_cost`` from attributed usage rows.
+
+    The rollup is written once when the execution finishes, but most gateway
+    usage rows are priced *later*: the live price lookup and the repricing
+    backfill fill in ``api_usage.estimated_cost`` after the fact (issue #209).
+    This helper re-derives the stored rollup with the same attribution rule
+    the metrics endpoint uses (``action_type='model_gateway'`` rows whose
+    ``flow_execution_id`` matches, replay-validation traffic excluded) so the
+    per-run number a user sees equals the sum of the usage rows behind it.
+
+    When no attributable row could be priced, the rollup is set to ``NULL``
+    ("unknown"), never a placeholder ``0.0`` that would read as "free" —
+    matching the metrics endpoint's semantics.
+
+    Executions without any attributed gateway rows are left untouched: their
+    rollup may come from the legacy log-parsing path, which this helper has
+    no basis to overwrite.
+
+    Args:
+        db: Database session.
+        execution_id: The flow execution whose rollup to refresh.
+
+    Returns:
+        True when the execution has attributed gateway usage and its rollup
+        was recomputed (even if the value was already in sync); False when
+        the execution does not exist or has no attributed gateway rows.
+    """
+    from preloop.models.crud import crud_api_usage, crud_flow_execution
+
+    execution = crud_flow_execution.get(db, id=execution_id)
+    if execution is None:
+        return False
+
+    usage = crud_api_usage.get_gateway_usage_for_execution(db, execution_id)
+    if not usage["api_requests"]:
+        return False
+
+    raw_cost = usage["estimated_cost"]
+    new_cost = None if raw_cost is None else round(float(raw_cost), _ROLLUP_DECIMALS)
+    old_cost = (
+        None if execution.estimated_cost is None else float(execution.estimated_cost)
+    )
+    if old_cost != new_cost:
+        logger.info(
+            "Syncing cost rollup for execution %s: %s -> %s",
+            execution_id,
+            old_cost,
+            new_cost,
+        )
+        execution.estimated_cost = new_cost
+        db.add(execution)
+        db.flush()
+    return True
+
 
 class ExecutionMetricsService:
     """Calculate metrics for flow executions including token usage and costs."""

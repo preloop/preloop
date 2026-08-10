@@ -19,7 +19,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, Optional, Union
+from typing import Dict, Optional, Sequence, Union
 
 from sqlalchemy.orm import Session
 
@@ -103,7 +103,40 @@ def reprice_single_row(
             "repriced_by": "live_price_lookup",
         },
     )
+    if row.flow_execution_id is not None:
+        # The stored per-execution cost rollup was computed before this row
+        # gained a price; refresh it so the per-run number stays equal to the
+        # sum of its usage rows (issue #209).
+        _sync_execution_rollups(db, [row.flow_execution_id])
     return True
+
+
+def _sync_execution_rollups(
+    db: Session, execution_ids: Sequence[Union[uuid.UUID, str]]
+) -> int:
+    """Refresh stored per-execution cost rollups after repricing.
+
+    Args:
+        db: Database session.
+        execution_ids: Flow execution ids whose rollups may be stale.
+
+    Returns:
+        Number of executions whose rollup was recomputed.
+    """
+    from preloop.services.execution_metrics import sync_execution_cost_rollup
+
+    synced = 0
+    for execution_id in execution_ids:
+        try:
+            if sync_execution_cost_rollup(db, str(execution_id)):
+                synced += 1
+        except Exception:  # noqa: BLE001 - a rollup miss must not fail repricing
+            logger.exception(
+                "Failed to sync cost rollup for execution %s", execution_id
+            )
+    if synced:
+        db.commit()
+    return synced
 
 
 def reprice_gateway_usage(
@@ -117,6 +150,12 @@ def reprice_gateway_usage(
     batch_size: int = 500,
 ) -> RepriceResult:
     """Re-price gateway usage rows in a time window.
+
+    Note on cost: after the repricing pass, every execution with gateway
+    usage in the window gets its stored cost rollup re-derived one at a time
+    (two queries per execution). This keeps the heal path on the exact same
+    code and semantics as the live rollup sync at the price of O(N)
+    round-trips — acceptable for an operator-triggered backfill.
 
     Args:
         db: Database session.
@@ -249,6 +288,18 @@ def reprice_gateway_usage(
 
     if pending_updates and not dry_run:
         db.commit()
+
+    if not dry_run:
+        # Stored per-execution cost rollups were written at execution end,
+        # typically before these rows were priced. Re-derive every rollup the
+        # window touches — not just the ones with rows updated in THIS pass —
+        # so a rollup left stale by an earlier backfill also heals (#209).
+        _sync_execution_rollups(
+            db,
+            crud_api_usage.list_execution_ids_with_gateway_usage(
+                db, account_id=account_id, start=start, end=end
+            ),
+        )
 
     logger.info(
         "Repriced gateway usage for account %s: examined=%s updated=%s "

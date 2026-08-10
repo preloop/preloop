@@ -55,6 +55,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Per-execution cost rollup understated real gateway spend (#209)**:
+  `flow_execution.estimated_cost` is written once when the run finishes, but
+  most gateway usage rows are priced *later* — the live price lookup and the
+  repricing backfill fill in `api_usage.estimated_cost` after the fact — so
+  the stored rollup kept its `0.0` placeholder (or a stale partial sum) while
+  the usage views showed the real cost (~14x understatement in production).
+  Both repricing paths now re-derive the affected executions' rollups from
+  the attributed usage rows (same rule the metrics endpoint uses:
+  `action_type='model_gateway'` rows with a matching `flow_execution_id`,
+  replay-validation traffic excluded), and a bulk reprice pass heals every
+  rollup its window touches — including rollups left stale by earlier
+  backfills. When nothing attributable is priced the rollup becomes `NULL`
+  ("unknown"), never a `0.0` that reads as "free". Running a repricing
+  backfill over the affected window (`only_unpriced=True` suffices) also
+  repairs historical rows.
 - **Unpriced-model alerts triple-fired for alias spellings of one model**:
   the alert dedup key used the raw recorded alias, so one model reachable as
   `openrouter/auto-beta`, `openai-compatible/openrouter/auto-beta` and
