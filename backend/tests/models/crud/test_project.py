@@ -112,6 +112,36 @@ def test_get_by_identifier(crud_project, mock_db_session):
     assert result.identifier == identifier
 
 
+def test_get_by_identifier_with_organization_id(crud_project, mock_db_session):
+    """Test retrieving a project by identifier scoped to an organization.
+
+    Regression: get_by_identifier did not accept organization_id, so
+    endpoint call sites passing it (e.g. create_project's duplicate check)
+    raised TypeError and returned 500.
+    """
+    # Arrange
+    identifier = "test-project"
+    organization_id = str(uuid4())
+    mock_project = Project(
+        id=str(uuid4()), identifier=identifier, organization_id=organization_id
+    )
+
+    mock_query = MagicMock()
+    mock_db_session.query.return_value = mock_query
+    mock_query.filter.return_value = mock_query
+    mock_query.first.return_value = mock_project
+
+    # Act
+    result = crud_project.get_by_identifier(
+        mock_db_session, identifier=identifier, organization_id=organization_id
+    )
+
+    # Assert
+    assert result.identifier == identifier
+    # Both the identifier filter and the organization filter must be applied.
+    assert mock_query.filter.call_count == 2
+
+
 def test_get_for_tracker(crud_project, mock_db_session):
     """Test retrieving projects for a tracker."""
     # Arrange
