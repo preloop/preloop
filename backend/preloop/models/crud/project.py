@@ -109,10 +109,15 @@ class CRUDProject(CRUDBase[Project]):
         return query.order_by(Project.updated_at.desc()).first()
 
     def get_by_identifier(
-        self, db: Session, *, identifier: str, account_id: Optional[str] = None
+        self,
+        db: Session,
+        *,
+        identifier: str,
+        organization_id: Optional[str] = None,
+        account_id: Optional[str] = None,
     ) -> Optional[Project]:
         """
-        Get a project by identifier or slug.
+        Get a project by identifier or slug, optionally scoped to an organization.
 
         For trackers like Jira that use both numeric IDs and human-readable keys,
         this method checks both the identifier field and the slug field.
@@ -120,6 +125,8 @@ class CRUDProject(CRUDBase[Project]):
         query = db.query(Project).filter(
             (Project.identifier == identifier) | (Project.slug == identifier)
         )
+        if organization_id:
+            query = query.filter(Project.organization_id == organization_id)
         if account_id:
             query = (
                 query.join(Project.organization)
