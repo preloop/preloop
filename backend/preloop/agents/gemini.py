@@ -16,6 +16,36 @@ from .container import ContainerAgentExecutor
 
 logger = logging.getLogger(__name__)
 
+# gemini-cli internal helper aliases that must be pinned to the flow's model
+# when running behind the Preloop gateway.  Stock gemini-cli resolves these to
+# hardcoded Google model names (gemini-2.5-flash / gemini-3-flash-preview via
+# the `gemini-*-flash-base` alias chain), which do not exist behind the
+# gateway and 404 (issue #212).  The failing calls are swallowed by the CLI,
+# silently degrading loop detection, the next-speaker (auto-continue) check,
+# tool-output summarization and chat compression — and a run whose
+# continuation check dies mid-review exits 0 without the success sentinel.
+#
+# Deliberately NOT pinned: `web-fetch` and `web-search`.  Their primary path
+# requires Google server-side tools (urlContext / googleSearch) that no
+# gateway model provides; pinning them would make the flow model hallucinate
+# page content instead of failing over to `web-fetch-fallback`, which fetches
+# the page locally and IS pinned to the flow model below.
+GEMINI_CLI_HELPER_ALIASES = (
+    "loop-detection",
+    "loop-detection-double-check",
+    "next-speaker-checker",
+    "web-fetch-fallback",
+    "summarizer-default",
+    "summarizer-shell",
+    "edit-corrector",
+    "llm-edit-fixer",
+    "chat-compression-default",
+    "classifier",
+    "prompt-completion",
+    "fast-ack-helper",
+    "context-snapshotter",
+)
+
 
 def _gemini_cli_base_url(endpoint: str) -> str:
     """Return the Gemini CLI base URL before the SDK-appended API version."""
@@ -282,6 +312,45 @@ class GeminiAgent(ContainerAgentExecutor):
             )
             raise RuntimeError(f"Failed to start Gemini CLI container: {e}")
 
+    def _build_gateway_helper_settings(self, model: str) -> Dict[str, Any]:
+        """
+        Build gemini-cli settings pinning internal helper models to the flow model.
+
+        Only used for Preloop-gateway runs.  Two things are configured:
+
+        - ``modelConfigs.customAliases``: every internal helper alias
+          (loop detection, next-speaker check, web-fetch fallback,
+          summarizers, chat compression, ...) is pointed at the flow's
+          gateway model alias.  Stock gemini-cli resolves these helpers to
+          hardcoded Google models that the gateway does not serve, so every
+          helper call 404s and is silently swallowed (issue #212).  The
+          next-speaker check failing this way is what lets the CLI stop
+          mid-task with exit code 0 and no success sentinel.
+        - ``model.disableLoopDetection``: the CLI's own loop detection is
+          redundant here — the orchestrator has its own MCP tool-loop
+          backstop and execution timeouts — and its LLM-based check both
+          costs gateway tokens (it ships recent history every ~30 turns) and
+          can false-positive on legitimately repetitive review workloads,
+          aborting the run without the sentinel.
+
+        ``web-fetch`` and ``web-search`` primaries are intentionally NOT
+        pinned: they rely on Google server-side tools (urlContext /
+        googleSearch) that gateway models cannot provide.  Left alone, their
+        404 makes web_fetch fail over to the local ``web-fetch-fallback``
+        path, which IS pinned and works with any model.
+        """
+        return {
+            "model": {
+                "disableLoopDetection": True,
+            },
+            "modelConfigs": {
+                "customAliases": {
+                    alias: {"modelConfig": {"model": model}}
+                    for alias in GEMINI_CLI_HELPER_ALIASES
+                }
+            },
+        }
+
     def _build_gemini_script(self, execution_context: Dict[str, Any]) -> str:
         """
         Build the Gemini initialization and execution script.
@@ -333,6 +402,25 @@ fi
         # Convert timeout from seconds to milliseconds for Gemini CLI
         mcp_timeout_ms = execution_context.get("_mcp_tool_timeout", 600) * 1000
 
+        # For Preloop-gateway runs, write a settings.json that pins gemini-cli's
+        # internal helper models to the flow's model and disables the CLI's own
+        # loop detection (see _build_gateway_helper_settings).  Base64-encoded
+        # for safe shell embedding.  Written BEFORE `gemini mcp add`, which
+        # merges the MCP server into the same user settings file.
+        gateway_settings_block = ""
+        if execution_context.get("model_gateway_enabled"):
+            settings_json = json.dumps(
+                self._build_gateway_helper_settings(model), indent=2
+            )
+            settings_b64 = base64.b64encode(settings_json.encode()).decode()
+            gateway_settings_block = f"""
+# Pin gemini-cli internal helper models (loop detection, next-speaker check,
+# web-fetch fallback, summarizers, compression) to the flow's gateway model.
+# Stock gemini-cli calls hardcoded Google models for these, which the Preloop
+# gateway does not serve (404 -> silent helper degradation, issue #212).
+echo '{settings_b64}' | base64 -d > "$HOME/.gemini/settings.json"
+"""
+
         # Create the full script
         script = f"""
 set -e
@@ -381,7 +469,7 @@ fi
 
 # Configure Gemini CLI MCP servers
 mkdir -p ~/.gemini
-
+{gateway_settings_block}
 # Register the Preloop MCP server via `gemini mcp add`.
 # Flags: -t http (HTTP transport), -s user (user scope),
 #         --trust (auto-approve), -H (custom header).

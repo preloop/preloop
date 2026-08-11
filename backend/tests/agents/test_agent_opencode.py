@@ -494,3 +494,39 @@ class TestOpenCodeKubernetesStartup:
             assert call_ctx["_container_command"] == ["/bin/bash"]
             assert call_ctx["_container_args"][0] == "-c"
             assert len(call_ctx["_container_args"]) == 2
+
+
+class TestOpenCodeStderrCapture:
+    """OpenCode failures must be diagnosable from the execution log.
+
+    Staging PR-reviewer runs died with "OpenCode CLI exited with code: 1" and
+    nothing else: opencode's internal logger writes to log files (not stderr)
+    unless --print-logs is passed, and stderr was not routed through the JSON
+    log filter, so fatal errors never reached the captured log stream
+    (issue #212).
+    """
+
+    def _context(self):
+        return {
+            "prompt": "test",
+            "opencode_model": "model-1",
+            "execution_id": "exec-1",
+            "flow_name": "test-flow",
+        }
+
+    def test_script_enables_opencode_logging(self):
+        """opencode run must print its internal logs to stderr."""
+        agent = OpenCodeAgent({})
+        script = agent._build_opencode_script(self._context())
+        assert "--print-logs" in script
+        assert "--log-level WARN" in script
+
+    def test_script_routes_stderr_through_log_filter(self):
+        """stderr must be merged into the pipe feeding the JSON log filter.
+
+        The filter passes non-JSON lines through verbatim, so plain-text
+        stderr log lines reach the captured log stream in order.
+        """
+        agent = OpenCodeAgent({})
+        script = agent._build_opencode_script(self._context())
+        assert "2>&1 | node /tmp/opencode-json-log-filter.js" in script
