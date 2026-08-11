@@ -509,8 +509,13 @@ echo "PRELOOP_AGENT_EXEC_START"
 # directly, we should switch to that instead of positional args $(cat ...) to avoid E2BIG on very large prompts.
 # Auto-approve all permission requests to avoid hangs.
 # We use '--' to prevent argument injection if the prompt starts with a hyphen.
+# --print-logs/--log-level WARN: surface opencode's internal logs on stderr —
+# without this, fatal errors only land in log files inside the container and
+# failures are undiagnosable from the captured log stream (issue #212).
+# 2>&1 merges stderr into the filter pipe; the filter passes non-JSON lines
+# through verbatim, so stderr text reaches the execution log in order.
 set +e
-opencode run --format json --model {opencode_model_arg} --dangerously-skip-permissions -- "$(cat /tmp/prompt.txt)" | node /tmp/opencode-json-log-filter.js
+opencode run --format json --print-logs --log-level WARN --model {opencode_model_arg} --dangerously-skip-permissions -- "$(cat /tmp/prompt.txt)" 2>&1 | node /tmp/opencode-json-log-filter.js
 PIPE_CODES=("${{PIPESTATUS[@]}}")
 OPENCODE_EXIT_CODE=${{PIPE_CODES[0]}}
 FILTER_EXIT_CODE=${{PIPE_CODES[1]:-0}}
