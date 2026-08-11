@@ -107,14 +107,18 @@ def reprice_single_row(
         # The stored per-execution cost rollup was computed before this row
         # gained a price; refresh it so the per-run number stays equal to the
         # sum of its usage rows (issue #209).
-        _sync_execution_rollups(db, [row.flow_execution_id])
+        sync_execution_rollups(db, [row.flow_execution_id])
     return True
 
 
-def _sync_execution_rollups(
+def sync_execution_rollups(
     db: Session, execution_ids: Sequence[Union[uuid.UUID, str]]
 ) -> int:
     """Refresh stored per-execution cost rollups after repricing.
+
+    Public entry point for any path that re-prices `api_usage` rows outside
+    this module (e.g. the ledger backfill) and needs the per-execution
+    rollups to follow.
 
     Args:
         db: Database session.
@@ -294,7 +298,7 @@ def reprice_gateway_usage(
         # typically before these rows were priced. Re-derive every rollup the
         # window touches — not just the ones with rows updated in THIS pass —
         # so a rollup left stale by an earlier backfill also heals (#209).
-        _sync_execution_rollups(
+        sync_execution_rollups(
             db,
             crud_api_usage.list_execution_ids_with_gateway_usage(
                 db, account_id=account_id, start=start, end=end

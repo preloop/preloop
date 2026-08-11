@@ -4595,7 +4595,7 @@ class OpenAIGatewayService:
                 usage = usage.model_dump()
             if not isinstance(usage, dict):
                 continue
-            for key in ("cost", "cost_details"):
+            for key in ("cost", "cost_details", "is_byok"):
                 value = usage.get(key)
                 if value is not None:
                     recovered[key] = value

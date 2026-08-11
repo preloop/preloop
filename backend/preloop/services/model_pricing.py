@@ -183,7 +183,10 @@ def provider_reported_cost(
       requests it is informational and duplicates ``cost`` (live-verified,
       issue #224), so summing would double-count.
 
-    Shape discrimination: sum only when ``cost < upstream_inference_cost``
+    Shape discrimination: when the payload carries an explicit ``is_byok``
+    flag (top-level or inside ``cost_details``) it is authoritative — sum
+    for BYOK, ``cost`` alone otherwise. Without the flag, fall back to the
+    magnitude heuristic: sum only when ``cost < upstream_inference_cost``
     (BYOK: a small fee next to the vendor charge); otherwise ``cost`` alone
     is the total. Zero and negative values mean "not accounted" (the Auto
     Router's catalog price is literally ``-1``), never a real charge, so
@@ -218,12 +221,23 @@ def provider_reported_cost(
         # BYOK shape: cost is OpenRouter's fee, strictly below the vendor
         # charge it excludes -> the customer pays the sum. Credits shape:
         # cost already includes the upstream charge (cost_details merely
-        # echoes it) -> cost alone is the total (#224).
-        total = (
-            gateway_cost + upstream_cost
-            if gateway_cost < upstream_cost
-            else gateway_cost
-        )
+        # echoes it) -> cost alone is the total (#224). An explicit
+        # is_byok flag from the provider is authoritative over the
+        # magnitude heuristic (covers the rare BYOK request whose fee
+        # meets or exceeds the vendor charge).
+        is_byok = usage_details.get("is_byok")
+        if not isinstance(is_byok, bool):
+            is_byok = (
+                cost_details.get("is_byok") if isinstance(cost_details, dict) else None
+            )
+        if isinstance(is_byok, bool):
+            total = gateway_cost + upstream_cost if is_byok else gateway_cost
+        else:
+            total = (
+                gateway_cost + upstream_cost
+                if gateway_cost < upstream_cost
+                else gateway_cost
+            )
     else:
         total = gateway_cost if gateway_cost is not None else upstream_cost
     # Keep more precision than the catalog's round(6): provider-reported

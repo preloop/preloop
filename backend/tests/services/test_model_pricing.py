@@ -489,6 +489,43 @@ def test_byok_shape_small_fee_plus_upstream_is_summed() -> None:
     assert estimate.cost == pytest.approx(0.00000099 + 0.0000198)
 
 
+def test_explicit_is_byok_true_wins_over_magnitude_heuristic() -> None:
+    """A BYOK request whose OpenRouter fee meets/exceeds the vendor charge
+    would be mis-read as credits by the magnitude heuristic; an explicit
+    is_byok flag from the provider is authoritative (#225 review)."""
+    estimate = estimate_ai_model_usage_cost_detailed(
+        _openrouter_auto_model(),
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        usage_details={
+            "cost": 0.00003,
+            "is_byok": True,
+            "cost_details": {"upstream_inference_cost": 0.00002},
+        },
+    )
+    assert estimate.source == "provider"
+    assert estimate.cost == pytest.approx(0.00003 + 0.00002)
+
+
+def test_explicit_is_byok_false_never_sums() -> None:
+    """is_byok=False forces the credits interpretation even when the
+    magnitude heuristic (cost < upstream) would have summed."""
+    estimate = estimate_ai_model_usage_cost_detailed(
+        _openrouter_auto_model(),
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        usage_details={
+            "cost": 0.00000099,
+            "is_byok": False,
+            "cost_details": {"upstream_inference_cost": 0.0000198},
+        },
+    )
+    assert estimate.source == "provider"
+    assert estimate.cost == pytest.approx(0.00000099)
+
+
 def test_credits_shape_duplicate_cost_details_not_double_counted() -> None:
     """Credits-based OpenRouter usage returns cost AND an IDENTICAL
     cost_details.upstream_inference_cost (live-verified, #224). cost is the

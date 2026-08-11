@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import click
 
@@ -87,6 +87,20 @@ def main(account_id: str, start_str: str, end_str: str, apply_changes: bool) -> 
         raise click.UsageError(
             "Window exceeds 31 days; the activity ledger only serves the "
             "last 30 completed UTC days."
+        )
+    today_utc = datetime.now(timezone.utc).date()
+    oldest_served = today_utc - timedelta(days=30)
+    if start < oldest_served:
+        raise click.UsageError(
+            f"--start {start.isoformat()} is older than the activity "
+            f"ledger's horizon ({oldest_served.isoformat()}: the API serves "
+            "only the last 30 completed UTC days). Narrow the window."
+        )
+    if end >= today_utc:
+        click.echo(
+            f"Note: {end.isoformat()} is not a completed UTC day yet; its "
+            "ledger figures may still grow. Rows from an incomplete day are "
+            "safe to re-run later (only still-unpriced rows are touched)."
         )
 
     api_key = os.environ.get("OPENROUTER_ACTIVITY_KEY", "").strip()

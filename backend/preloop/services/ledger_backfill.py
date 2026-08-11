@@ -399,7 +399,7 @@ def apply_ledger_backfill(db: Session, plan: BackfillPlan) -> int:
     Returns:
         Number of rows updated.
     """
-    from preloop.services.usage_repricing import _sync_execution_rollups
+    from preloop.services.usage_repricing import sync_execution_rollups
 
     allocated_at = datetime.now(timezone.utc).isoformat()
     updated = 0
@@ -435,5 +435,5 @@ def apply_ledger_backfill(db: Session, plan: BackfillPlan) -> int:
         # Stored per-execution rollups were computed while these rows were
         # unpriced; re-derive them so each run's cost equals the sum of its
         # usage rows again (same path as #211's repricing sync).
-        _sync_execution_rollups(db, sorted(touched_executions, key=str))
+        sync_execution_rollups(db, sorted(touched_executions, key=str))
     return updated

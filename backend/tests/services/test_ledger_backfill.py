@@ -373,7 +373,7 @@ def test_apply_writes_reconciled_cost_marker_and_syncs_rollups(
     execution_id = uuid.uuid4()
     synced = []
     monkeypatch.setattr(
-        usage_repricing, "_sync_execution_rollups", lambda db, ids: synced.append(ids)
+        usage_repricing, "sync_execution_rollups", lambda db, ids: synced.append(ids)
     )
 
     ledger = [LedgerEntry(day=DAY, model="anthropic/claude-sonnet-4", usage_usd=0.2)]
