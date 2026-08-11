@@ -193,6 +193,59 @@ def test_abandoned_gemini_stream_is_recorded(db_session, test_user):
     assert rows[0].error_class == ERROR_CLASS_STREAM_ABANDONED
 
 
+def test_abandoned_stream_records_usage_after_session_teardown_detached_orm(
+    db_session, test_user
+):
+    """A detached ORM graph at teardown time must not lose the usage row.
+
+    In production the client disconnect (e.g. OpenCode's 120s LLM abort)
+    tears down the FastAPI dependency scope before the stream observer's
+    abandonment accounting runs: the request session closes, its instances
+    are expired and detached, and the first attribute read inside the
+    recording path raises DetachedInstanceError. The gateway then logged
+    "Skipped gateway usage recording after DetachedInstanceError; returning
+    the upstream response unchanged" — and tokens billed by the provider were
+    never metered. Recording must survive detachment by re-fetching the
+    instances by identity.
+    """
+    ai_model = _create_gateway_model(db_session, test_user.account_id, "abandon-det")
+    ai_model_id = ai_model.id
+    service = _service(db_session, test_user)
+
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value=_upstream_chunks(),
+    ) as mock_completion:
+        stream = service.stream_response({"model": "abandon-det", "input": "Hello"})
+        assert mock_completion.called
+        # Simulate request-scope teardown racing the disconnect accounting:
+        # every instance the service holds (ai_model, auth user) becomes
+        # detached with expired attributes, exactly what Session.close() on
+        # the request session produces.
+        db_session.expire_all()
+        db_session.expunge_all()
+        stream.close()
+
+    rows = (
+        db_session.query(ApiUsage)
+        .filter(
+            ApiUsage.action_type == "model_gateway",
+            ApiUsage.ai_model_id == ai_model_id,
+        )
+        .order_by(ApiUsage.timestamp.asc())
+        .all()
+    )
+    assert len(rows) == 1, (
+        f"expected exactly one usage row despite detached ORM instances, "
+        f"got {len(rows)}"
+    )
+    assert rows[0].status_code == 499
+    assert rows[0].error_class == ERROR_CLASS_STREAM_ABANDONED
+    assert (rows[0].prompt_tokens or 0) > 0, (
+        "abandoned-request usage must still be estimated and metered"
+    )
+
+
 def test_fully_consumed_stream_records_one_success_row(db_session, test_user):
     """The happy path must stay a single 200 row with provider tokens.
 

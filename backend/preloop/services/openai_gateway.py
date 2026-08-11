@@ -5736,6 +5736,11 @@ class OpenAIGatewayService:
 
         Never raises — it runs during response teardown.
         """
+        # Teardown can outlive the request scope: by the time an abandoned
+        # stream is closed the session may be closed and ``ai_model`` detached
+        # (even the log line below would raise DetachedInstanceError).
+        # Re-fetch by identity before touching any attribute.
+        ai_model = self._reattach_for_recording(ai_model)
         logger.warning(
             "Gateway stream abandoned before first chunk: "
             "endpoint=%s provider=%s model=%s",
@@ -5822,6 +5827,26 @@ class OpenAIGatewayService:
         wrapper rather than each site wrapping itself and one being forgotten.
         """
         try:
+            # A streaming disconnect runs this during response teardown, and
+            # the request scope may already have closed the session by then:
+            # every ORM instance the service holds (the AIModel, the auth
+            # user, the ApiKey) is detached with expired attributes, and the
+            # first attribute read raises DetachedInstanceError. Before this
+            # reattachment, that skipped the whole record — tokens billed by
+            # the provider were never metered (observed in staging as
+            # "Skipped gateway usage recording after DetachedInstanceError").
+            # The identity key survives detachment, so re-fetch by primary
+            # key; the session itself stays usable after close (a new
+            # transaction begins on next use).
+            ai_model = self._reattach_for_recording(ai_model)
+            auth_context = getattr(self, "auth_context", None)
+            if auth_context is not None:
+                user = self._reattach_for_recording(auth_context.user)
+                if user is not None and user is not auth_context.user:
+                    auth_context.user = user
+                api_key = self._reattach_for_recording(auth_context.api_key)
+                if api_key is not None and api_key is not auth_context.api_key:
+                    auth_context.api_key = api_key
             self._record_gateway_request_inner(
                 endpoint=endpoint,
                 method=method,
@@ -5841,6 +5866,36 @@ class OpenAIGatewayService:
             )
         except Exception as exc:
             self._rollback_activity_recording(exc, context="gateway usage recording")
+
+    def _reattach_for_recording(self, instance: Any) -> Any:
+        """Return an attached equivalent of a possibly-detached ORM instance.
+
+        Usage recording reads attributes off instances loaded earlier in the
+        request (AIModel, User, ApiKey). When it runs during response
+        teardown — a client disconnect, an abandoned stream — the request
+        session may already be closed, leaving those instances detached with
+        expired attributes; any attribute read then raises
+        DetachedInstanceError. The primary-key identity survives detachment,
+        so a detached instance is re-fetched by identity on ``self.db``.
+
+        Falls back to the original instance when nothing better exists (never
+        loaded / row since deleted); the caller's defensive except still
+        applies.
+        """
+        if instance is None:
+            return None
+        try:
+            state = inspect(instance)
+            if not state.detached:
+                return instance
+            identity = state.identity
+            if identity is not None:
+                refreshed = self.db.get(type(instance), identity)
+                if refreshed is not None:
+                    return refreshed
+        except SQLAlchemyError:  # pragma: no cover - defensive
+            pass
+        return instance
 
     def _record_gateway_request_inner(
         self,
