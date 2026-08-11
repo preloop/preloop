@@ -114,7 +114,11 @@ _TRANSIENT_NETWORK_RE = re.compile(
     r"|typeerror:\s*terminated"
     r"|fetch\s+(?:failed|terminated)"
     r"|network\s+error"
-    r"|(?:request|read|socket)\s+timed?\s*out"
+    # "operation timed out" is OpenCode's client-side LLM abort: its provider
+    # options.timeout fires AbortSignal.timeout and the CLI dies with
+    # `error="The operation timed out."` while the request was still
+    # completing upstream — the canonical recoverable shape.
+    r"|(?:request|read|socket|operation)\s+timed?\s*out"
     r"|timeout\s+(?:of\s+)?\d+\s*ms\s+exceeded)\b",
     re.IGNORECASE,
 )

@@ -327,6 +327,47 @@ class TestOpenCodeBuildConfig:
         assert provider["options"]["apiKey"] == "$OPENAI_API_KEY"
         assert "model-1" in provider["models"]
 
+    def test_llm_request_timeout_aligned_with_gateway_stack(self):
+        """The provider LLM timeout must sit at 600s, not OpenCode-fatal 120s.
+
+        OpenCode aborts any LLM request after ``provider.options.timeout`` ms
+        ("The operation timed out."). 120s was below real upstream latency
+        (slow-but-successful gateway calls finished after the CLI had already
+        exited), so the timeout must align with the MCP tool timeout (600s)
+        and stay under the gateway proxy readTimeout (900s).
+        """
+        agent = OpenCodeAgent({})
+        context = {"model_endpoint": "https://custom.api.com/v1"}
+        config = agent._build_opencode_config("model-1", "customllm", context, 600000)
+        options = config["provider"]["customllm"]["options"]
+        assert options["timeout"] == 600000
+        assert options["chunkTimeout"] == 600000
+
+    def test_llm_request_timeout_env_override(self):
+        """OPENCODE_LLM_TIMEOUT_SEC overrides the 600s default."""
+        agent = OpenCodeAgent({})
+        context = {"model_endpoint": "https://custom.api.com/v1"}
+        with patch.dict(os.environ, {"OPENCODE_LLM_TIMEOUT_SEC": "750"}):
+            config = agent._build_opencode_config(
+                "model-1", "customllm", context, 600000
+            )
+        options = config["provider"]["customllm"]["options"]
+        assert options["timeout"] == 750000
+        assert options["chunkTimeout"] == 750000
+
+    def test_llm_request_timeout_invalid_override_falls_back(self):
+        """A malformed OPENCODE_LLM_TIMEOUT_SEC must not fail the run."""
+        agent = OpenCodeAgent({})
+        context = {"model_endpoint": "https://custom.api.com/v1"}
+        for bad in ("ninety", "", "-5", "0"):
+            with patch.dict(os.environ, {"OPENCODE_LLM_TIMEOUT_SEC": bad}):
+                config = agent._build_opencode_config(
+                    "model-1", "customllm", context, 600000
+                )
+            options = config["provider"]["customllm"]["options"]
+            assert options["timeout"] == 600000, bad
+            assert options["chunkTimeout"] == 600000, bad
+
     def test_gateway_endpoint_uses_preloop_provider(self):
         """Gateway-enabled config uses gateway provider and URL."""
         agent = OpenCodeAgent({})

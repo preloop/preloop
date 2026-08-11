@@ -17,6 +17,41 @@ from .container import ContainerAgentExecutor
 logger = logging.getLogger(__name__)
 
 
+def _opencode_llm_timeout_ms() -> int:
+    """
+    Whole-request LLM timeout injected into OpenCode's provider options.
+
+    OpenCode aborts any in-flight LLM request once ``provider.<id>.options.
+    timeout`` (milliseconds) elapses — the value is wrapped in an
+    ``AbortSignal.timeout`` around every provider fetch
+    (packages/opencode/src/provider/provider.ts, present in v1.2.6 baked into
+    the sandbox image and in the ``opencode-ai@latest`` build the runtime
+    script installs). The previous hardcoded 120_000 ms sat far below the rest
+    of the stack — the gateway proxy readTimeout is 900 s and the MCP tool
+    timeout is 600 s — so real-but-slow upstream calls (30k+ token prompts
+    observed completing 20-35 s *after* OpenCode had already aborted at ~120 s)
+    became fatal "The operation timed out." mid-review failures while the
+    tokens were still billed upstream.
+
+    Aligned with the MCP tool timeout (600 s) and kept under the gateway
+    proxy's 900 s so gateway-side timeouts still surface as HTTP errors
+    (retryable) rather than client aborts. Override via
+    ``OPENCODE_LLM_TIMEOUT_SEC``. A malformed override falls back to the
+    default rather than failing the whole run at config-build time.
+    """
+    raw = os.getenv("OPENCODE_LLM_TIMEOUT_SEC", "600")
+    try:
+        seconds = int(raw)
+        if seconds <= 0:
+            raise ValueError
+    except ValueError:
+        logging.getLogger(__name__).warning(
+            "Invalid OPENCODE_LLM_TIMEOUT_SEC=%r; using default 600s", raw
+        )
+        seconds = 600
+    return seconds * 1000
+
+
 def _opencode_provider_local_model_id(model: str, provider: str) -> str:
     """
     Return the model id used inside OpenCode's provider.models map.
@@ -625,6 +660,12 @@ exit $OPENCODE_EXIT_CODE
         #   npm   – AI SDK adapter package (e.g. "@ai-sdk/openai-compatible")
         #   options.baseURL – API endpoint
         #   models – map of model-id → {name}
+        # ``timeout`` is OpenCode's whole-request LLM abort (see
+        # _opencode_llm_timeout_ms); ``chunkTimeout`` is the SSE inter-chunk
+        # inactivity abort in opencode >= 1.18 (ignored by older builds) and
+        # gets the same budget so a long silent reasoning phase between
+        # chunks is not treated as a dead stream.
+        llm_timeout_ms = _opencode_llm_timeout_ms()
         if model_endpoint:
             if gateway_enabled and model_provider in ("google", "gemini"):
                 config["provider"] = {
@@ -633,8 +674,8 @@ exit $OPENCODE_EXIT_CODE
                         "options": {
                             "baseURL": model_endpoint,
                             "apiKey": "$OPENAI_API_KEY",
-                            "timeout": 120000,
-                            "chunkTimeout": 120000,
+                            "timeout": llm_timeout_ms,
+                            "chunkTimeout": llm_timeout_ms,
                         },
                         "models": {
                             model_local_id: {"name": model},
@@ -648,8 +689,8 @@ exit $OPENCODE_EXIT_CODE
                         "options": {
                             "baseURL": model_endpoint,
                             "apiKey": "$GOOGLE_API_KEY",
-                            "timeout": 120000,
-                            "chunkTimeout": 120000,
+                            "timeout": llm_timeout_ms,
+                            "chunkTimeout": llm_timeout_ms,
                         },
                         "models": {
                             model_local_id: {"name": model},
@@ -663,8 +704,8 @@ exit $OPENCODE_EXIT_CODE
                         "options": {
                             "baseURL": model_endpoint,
                             "apiKey": "$OPENAI_API_KEY",
-                            "timeout": 120000,
-                            "chunkTimeout": 120000,
+                            "timeout": llm_timeout_ms,
+                            "chunkTimeout": llm_timeout_ms,
                         },
                         "models": {
                             model_local_id: {"name": model},
