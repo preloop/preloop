@@ -380,6 +380,52 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             yield from batch
             last_id = batch[-1].id
 
+    def iter_unpriced_provider_rows(
+        self,
+        db: Session,
+        *,
+        account_id: Union[uuid.UUID, str],
+        provider_name: str,
+        start: datetime,
+        end: datetime,
+        batch_size: int = 500,
+    ):
+        """Yield unpriced gateway rows for one provider, keyset-paginated.
+
+        Deliberately narrower than :meth:`iter_gateway_rows_for_repricing`:
+        only rows explicitly tagged ``cost_source='unpriced'`` for the given
+        provider are eligible, so a ledger backfill can never touch rows the
+        catalog (or the provider itself) already priced.
+
+        Args:
+            db: Database session.
+            account_id: Account scope (required; no default).
+            provider_name: Recorded provider name (e.g. ``openrouter``).
+            start: Window start (inclusive).
+            end: Window end (exclusive).
+            batch_size: Rows fetched per query.
+
+        Yields:
+            ApiUsage rows ordered by id.
+        """
+        last_id: Optional[uuid.UUID] = None
+        while True:
+            query = db.query(ApiUsage).filter(
+                ApiUsage.account_id == account_id,
+                ApiUsage.action_type == "model_gateway",
+                ApiUsage.provider_name == provider_name,
+                ApiUsage.cost_source == "unpriced",
+                ApiUsage.timestamp >= start,
+                ApiUsage.timestamp < end,
+            )
+            if last_id is not None:
+                query = query.filter(ApiUsage.id > last_id)
+            batch = query.order_by(ApiUsage.id).limit(batch_size).all()
+            if not batch:
+                return
+            yield from batch
+            last_id = batch[-1].id
+
     def list_execution_ids_with_gateway_usage(
         self,
         db: Session,
