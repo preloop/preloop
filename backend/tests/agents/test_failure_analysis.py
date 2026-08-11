@@ -211,6 +211,44 @@ class TestTransience:
         assert analysis.transient is True
         assert "other side closed" in analysis.evidence
 
+    def test_opencode_operation_timed_out_is_transient(self):
+        """OpenCode's client-side LLM timeout abort must classify transient.
+
+        The staging incident shape (executions 5fe6ee91/ddd8123a/cca8dc29/
+        ffbdd25d): OpenCode's provider ``options.timeout`` fires
+        ``AbortSignal.timeout`` after ~120s, the CLI exits 1, and the only
+        stderr signal is its exact structured-log phrasing — no retry-loop
+        lines, no HTTP status. The gateway later completed the same request
+        upstream, so another attempt can plausibly succeed.
+        """
+        logs = "\n".join(
+            [
+                "Reviewing diff...",
+                "timestamp=2026-08-10T14:03:22Z level=ERROR "
+                'message=process service=session error="The operation timed out."',
+            ]
+        )
+
+        analysis = analyze_agent_failure(logs)
+
+        assert analysis.transient is True
+        assert "operation timed out" in analysis.evidence.lower()
+
+    def test_plain_operation_timed_out_wording_is_transient(self):
+        """The generic 'operation timed out' phrasing also classifies transient."""
+        logs = "\n".join(
+            [
+                "Attempt 1 failed: operation timed out",
+                "Attempt 2 failed: operation timed out",
+                "Giving up.",
+            ]
+        )
+
+        analysis = analyze_agent_failure(logs)
+
+        assert analysis.transient is True
+        assert analysis.retry_exhausted is True
+
     def test_generic_terminated_wording_is_not_transient(self):
         """Only undici's error shape may match — not any use of 'terminated'.
 
