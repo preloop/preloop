@@ -355,6 +355,19 @@ class TestOpenCodeBuildConfig:
         assert options["timeout"] == 750000
         assert options["chunkTimeout"] == 750000
 
+    def test_llm_request_timeout_invalid_override_falls_back(self):
+        """A malformed OPENCODE_LLM_TIMEOUT_SEC must not fail the run."""
+        agent = OpenCodeAgent({})
+        context = {"model_endpoint": "https://custom.api.com/v1"}
+        for bad in ("ninety", "", "-5", "0"):
+            with patch.dict(os.environ, {"OPENCODE_LLM_TIMEOUT_SEC": bad}):
+                config = agent._build_opencode_config(
+                    "model-1", "customllm", context, 600000
+                )
+            options = config["provider"]["customllm"]["options"]
+            assert options["timeout"] == 600000, bad
+            assert options["chunkTimeout"] == 600000, bad
+
     def test_gateway_endpoint_uses_preloop_provider(self):
         """Gateway-enabled config uses gateway provider and URL."""
         agent = OpenCodeAgent({})

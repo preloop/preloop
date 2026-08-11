@@ -36,9 +36,20 @@ def _opencode_llm_timeout_ms() -> int:
     Aligned with the MCP tool timeout (600 s) and kept under the gateway
     proxy's 900 s so gateway-side timeouts still surface as HTTP errors
     (retryable) rather than client aborts. Override via
-    ``OPENCODE_LLM_TIMEOUT_SEC``.
+    ``OPENCODE_LLM_TIMEOUT_SEC``. A malformed override falls back to the
+    default rather than failing the whole run at config-build time.
     """
-    return int(os.getenv("OPENCODE_LLM_TIMEOUT_SEC", "600")) * 1000
+    raw = os.getenv("OPENCODE_LLM_TIMEOUT_SEC", "600")
+    try:
+        seconds = int(raw)
+        if seconds <= 0:
+            raise ValueError
+    except ValueError:
+        logging.getLogger(__name__).warning(
+            "Invalid OPENCODE_LLM_TIMEOUT_SEC=%r; using default 600s", raw
+        )
+        seconds = 600
+    return seconds * 1000
 
 
 def _opencode_provider_local_model_id(model: str, provider: str) -> str:
