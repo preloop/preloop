@@ -221,13 +221,11 @@ class TestTransience:
         lines, no HTTP status. The gateway later completed the same request
         upstream, so another attempt can plausibly succeed.
         """
-        logs = "\n".join(
-            [
-                "Reviewing diff...",
-                "timestamp=2026-08-10T14:03:22Z level=ERROR "
-                'message=process service=session error="The operation timed out."',
-            ]
+        error_line = (
+            "timestamp=2026-08-10T14:03:22Z level=ERROR "
+            'message=process service=session error="The operation timed out."'
         )
+        logs = "\n".join(["Reviewing diff...", error_line])
 
         analysis = analyze_agent_failure(logs)
 
