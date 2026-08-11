@@ -4599,6 +4599,16 @@ class OpenAIGatewayService:
                 value = usage.get(key)
                 if value is not None:
                     recovered[key] = value
+        if not recovered:
+            # A litellm stream retained chunks but none carried cost fields.
+            # Either the upstream did not return usage accounting, or a
+            # litellm upgrade changed the retained-chunk shape - log so the
+            # invisible-failure mode #219 fixed cannot silently return.
+            logger.debug(
+                "Provider cost recovery found no cost fields in %d retained "
+                "stream chunks",
+                len(chunks),
+            )
         return recovered
 
     def _stream_error(
