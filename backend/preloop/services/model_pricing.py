@@ -178,11 +178,18 @@ def provider_reported_cost(
     - ``usage.cost``: credits charged by OpenRouter for the request. On BYOK
       requests this is only OpenRouter's fee.
     - ``usage.cost_details.upstream_inference_cost``: what the upstream vendor
-      charged, present on BYOK requests (where ``cost`` excludes it).
+      charged. On BYOK requests ``cost`` excludes it, so the customer pays
+      both and their sum is the authoritative total. On credits-based
+      requests it is informational and duplicates ``cost`` (live-verified,
+      issue #224), so summing would double-count.
 
-    The customer pays both, so when both are present their sum is the
-    authoritative total. Zero and negative values mean "not accounted" (the
-    Auto Router's catalog price is literally ``-1``), never a real charge, so
+    Shape discrimination: when the payload carries an explicit ``is_byok``
+    flag (top-level or inside ``cost_details``) it is authoritative — sum
+    for BYOK, ``cost`` alone otherwise. Without the flag, fall back to the
+    magnitude heuristic: sum only when ``cost < upstream_inference_cost``
+    (BYOK: a small fee next to the vendor charge); otherwise ``cost`` alone
+    is the total. Zero and negative values mean "not accounted" (the Auto
+    Router's catalog price is literally ``-1``), never a real charge, so
     they are treated as absent.
 
     Args:
@@ -210,10 +217,34 @@ def provider_reported_cost(
 
     if upstream_cost is None and gateway_cost is None:
         return None
-    total = (upstream_cost or 0.0) + (gateway_cost or 0.0)
+    if gateway_cost is not None and upstream_cost is not None:
+        # BYOK shape: cost is OpenRouter's fee, strictly below the vendor
+        # charge it excludes -> the customer pays the sum. Credits shape:
+        # cost already includes the upstream charge (cost_details merely
+        # echoes it) -> cost alone is the total (#224). An explicit
+        # is_byok flag from the provider is authoritative over the
+        # magnitude heuristic (covers the rare BYOK request whose fee
+        # meets or exceeds the vendor charge).
+        is_byok = usage_details.get("is_byok")
+        if not isinstance(is_byok, bool):
+            is_byok = (
+                cost_details.get("is_byok") if isinstance(cost_details, dict) else None
+            )
+        if isinstance(is_byok, bool):
+            total = gateway_cost + upstream_cost if is_byok else gateway_cost
+        else:
+            total = (
+                gateway_cost + upstream_cost
+                if gateway_cost < upstream_cost
+                else gateway_cost
+            )
+    else:
+        total = gateway_cost if gateway_cost is not None else upstream_cost
     # Keep more precision than the catalog's round(6): provider-reported
-    # micro-costs (e.g. 1.946e-05) would otherwise collapse to one digit.
-    return round(total, 10)
+    # micro-costs (e.g. 1.946e-05) would otherwise collapse to one digit,
+    # and live OpenRouter charges carry 12 decimal places (#224:
+    # 0.000001979964 must round-trip, not flatten to 0.00000198).
+    return round(total, 12)
 
 
 def estimate_ai_model_usage_cost(

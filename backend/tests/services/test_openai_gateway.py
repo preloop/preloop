@@ -3260,9 +3260,10 @@ _OPENROUTER_STREAM_USAGE = {
     "cost_details": {"upstream_inference_cost": 0.00001946},
 }
 
-# provider_reported_cost sums the OpenRouter charge and the BYOK upstream
-# vendor charge (both are paid by the customer).
-_OPENROUTER_EXPECTED_TOTAL = 0.0000305 + 0.00001946
+# cost >= upstream_inference_cost is the credits shape: usage.cost is the
+# full charge and cost_details is informational, so provider_reported_cost
+# takes cost alone -- summing would double-count (#224).
+_OPENROUTER_EXPECTED_TOTAL = 0.0000305
 
 
 def _real_litellm_openrouter_stream(raw_usage):

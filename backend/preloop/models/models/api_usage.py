@@ -107,9 +107,12 @@ class ApiUsage(Base):
     # ISO-4217 code of estimated_cost; NULL on legacy rows means USD.
     currency: Mapped[Optional[str]] = mapped_column(String(3), nullable=True)
     # override | model_config | provider | catalog | subscription | unpriced
-    # | imported. 'provider' = the upstream reported the request's actual
-    # cost in its usage payload (e.g. OpenRouter usage accounting);
-    # authoritative over catalog estimates.
+    # | reconciled | imported. 'provider' = the upstream reported the
+    # request's actual cost in its usage payload (e.g. OpenRouter usage
+    # accounting); authoritative over catalog estimates. 'reconciled' = the
+    # cost was backfilled from the provider's daily activity ledger,
+    # allocated proportionally by tokens (an honest approximation, not a
+    # per-request figure; see meta_data["reconciled"]).
     cost_source: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     # provider | estimated | partial | imported
     usage_source: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
@@ -160,7 +163,7 @@ class ApiUsage(Base):
         CheckConstraint(
             "cost_source IS NULL OR cost_source IN "
             "('override', 'model_config', 'provider', 'catalog', 'subscription', "
-            "'unpriced', 'imported')",
+            "'unpriced', 'reconciled', 'imported')",
             name="ck_api_usage_cost_source",
         ),
         CheckConstraint(
