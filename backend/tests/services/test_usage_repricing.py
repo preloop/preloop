@@ -2,6 +2,8 @@
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from preloop.models.crud import crud_ai_model, crud_api_usage
 from preloop.models.models.budget import BudgetSpendActivity
 from preloop.services import usage_repricing
@@ -376,3 +378,61 @@ def test_reprice_single_row_uses_stored_provider_cost(db_session, test_user):
     db_session.refresh(row)
     assert row.cost_source == "provider"
     assert row.estimated_cost == 0.00001946
+
+
+def test_reprice_single_row_does_not_double_count_credits_shape(db_session, test_user):
+    """Credits-based OpenRouter rows persist cost AND an identical
+    cost_details.upstream_inference_cost; repricing must adopt the charge
+    once, not their sum (#224). reprice_single_row funnels through
+    provider_reported_cost, so this pins the whole path.
+    """
+    ai_model = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "OpenRouter Auto",
+            "provider_name": "openrouter",
+            "model_identifier": "openrouter/auto-beta",
+            "api_endpoint": "https://openrouter.ai/api/v1",
+            "api_key": "sk-or-key",
+            "meta_data": {
+                "gateway": {
+                    "enabled": True,
+                    "model_alias": "openrouter/auto-beta",
+                    "provider_adapter": "preloop",
+                }
+            },
+        },
+        account_id=test_user.account_id,
+    )
+    row = crud_api_usage.log_gateway_request(
+        db_session,
+        endpoint="/openai/v1/chat/completions",
+        method="POST",
+        status_code=200,
+        duration=0.4,
+        account_id=str(test_user.account_id),
+        user_id=str(test_user.id),
+        ai_model_id=str(ai_model.id),
+        model_alias="openrouter/auto-beta",
+        provider_name="openrouter",
+        prompt_tokens=42,
+        completion_tokens=7,
+        total_tokens=49,
+        estimated_cost=None,
+        cost_source="unpriced",
+        meta_data={
+            "usage_details": {
+                "prompt_tokens": 42,
+                "completion_tokens": 7,
+                "cost": 0.000001979964,
+                "cost_details": {"upstream_inference_cost": 0.000001979964},
+            }
+        },
+    )
+
+    updated = usage_repricing.reprice_single_row(db_session, api_usage_id=row.id)
+
+    assert updated is True
+    db_session.refresh(row)
+    assert row.cost_source == "provider"
+    assert row.estimated_cost == pytest.approx(0.000001979964)

@@ -472,6 +472,58 @@ def test_provider_reported_cost_sums_byok_fee_and_upstream_charge() -> None:
     assert estimate.cost == pytest.approx(0.000021)
 
 
+def test_byok_shape_small_fee_plus_upstream_is_summed() -> None:
+    """cost < upstream_inference_cost is the BYOK shape (fee + vendor charge):
+    the customer pays both, so the total is their sum (#224)."""
+    estimate = estimate_ai_model_usage_cost_detailed(
+        _openrouter_auto_model(),
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        usage_details={
+            "cost": 0.00000099,
+            "cost_details": {"upstream_inference_cost": 0.0000198},
+        },
+    )
+    assert estimate.source == "provider"
+    assert estimate.cost == pytest.approx(0.00000099 + 0.0000198)
+
+
+def test_credits_shape_duplicate_cost_details_not_double_counted() -> None:
+    """Credits-based OpenRouter usage returns cost AND an IDENTICAL
+    cost_details.upstream_inference_cost (live-verified, #224). cost is the
+    total charge; summing would record exactly 2x."""
+    estimate = estimate_ai_model_usage_cost_detailed(
+        _openrouter_auto_model(),
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        usage_details={
+            "cost": 0.000001979964,
+            "cost_details": {"upstream_inference_cost": 0.000001979964},
+        },
+    )
+    assert estimate.source == "provider"
+    assert estimate.cost == pytest.approx(0.000001979964)
+
+
+def test_credits_shape_cost_above_upstream_uses_cost_alone() -> None:
+    """When cost >= upstream_inference_cost, cost already includes the
+    upstream charge (credits shape); cost_details is informational (#224)."""
+    estimate = estimate_ai_model_usage_cost_detailed(
+        _openrouter_auto_model(),
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        usage_details={
+            "cost": 0.0000305,
+            "cost_details": {"upstream_inference_cost": 0.00001946},
+        },
+    )
+    assert estimate.source == "provider"
+    assert estimate.cost == pytest.approx(0.0000305)
+
+
 def test_absent_provider_cost_falls_back_to_catalog_unchanged() -> None:
     """No cost fields in usage -> exactly today's catalog behavior."""
     ai_model = AIModel(provider_name="openai", model_identifier="gpt-4o")
