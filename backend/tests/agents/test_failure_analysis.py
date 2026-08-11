@@ -132,6 +132,126 @@ class TestTransience:
         assert analysis.transient is True
         assert analysis.retry_exhausted is True
 
+    def test_undici_other_side_closed_is_transient(self):
+        """A gateway pod cycling mid-stream severs the agent's socket.
+
+        Observed during a rollout: the pod was SIGKILLed while the agent was
+        mid-response, and undici surfaced ``SocketError: other side closed``.
+        This is exactly as retryable as a connection reset.
+        """
+        logs = "\n".join(
+            [
+                "Attempt 1 failed: SocketError: other side closed. Retrying...",
+                "Attempt 2 failed: SocketError: other side closed. Retrying...",
+                "Attempt 3 failed: SocketError: other side closed.",
+                "Max attempts reached.",
+            ]
+        )
+
+        analysis = analyze_agent_failure(logs)
+
+        assert analysis.transient is True
+        assert analysis.retry_exhausted is True
+
+    def test_undici_fetch_terminated_is_transient(self):
+        """undici's fetch reports a severed stream as ``TypeError: terminated``."""
+        logs = "\n".join(
+            [
+                "Attempt 1 failed: TypeError: terminated. Retrying with backoff...",
+                "Attempt 2 failed: TypeError: terminated. Retrying with backoff...",
+                "Giving up.",
+            ]
+        )
+
+        analysis = analyze_agent_failure(logs)
+
+        assert analysis.transient is True
+        assert analysis.retry_exhausted is True
+
+    def test_undici_fetch_failed_is_transient(self):
+        """undici wraps most transport failures as ``TypeError: fetch failed``.
+
+        This is the most common shape Node's fetch produces for a connection
+        that never completed; it deserves a retry exactly like an explicit
+        socket error.
+        """
+        logs = "\n".join(
+            [
+                "Attempt 1 failed: TypeError: fetch failed. Retrying...",
+                "Attempt 2 failed: TypeError: fetch failed.",
+                "Max attempts reached.",
+            ]
+        )
+
+        analysis = analyze_agent_failure(logs)
+
+        assert analysis.transient is True
+        assert analysis.retry_exhausted is True
+
+    def test_raw_severed_stream_stack_is_transient(self):
+        """The incident shape: a raw undici stack with no retry-loop phrasing.
+
+        A CLI that crashes outright on a severed stream never prints
+        "attempt N failed" — the only signal is the stack itself, on the
+        fallback (non-attempt-line) path. It must still classify transient,
+        and the matched lines must be carried as evidence.
+        """
+        logs = "\n".join(
+            [
+                "Streaming model response...",
+                "TypeError: terminated",
+                "    at Fetch.onAborted (node:internal/deps/undici/undici:11190:53)",
+                "  [cause]: SocketError: other side closed",
+                "      at TLSSocket.onSocketEnd (node:internal/deps/undici/undici:8117:26)",
+            ]
+        )
+
+        analysis = analyze_agent_failure(logs)
+
+        assert analysis.transient is True
+        assert "other side closed" in analysis.evidence
+
+    def test_generic_terminated_wording_is_not_transient(self):
+        """Only undici's error shape may match — not any use of 'terminated'.
+
+        An agent killed by policy or by an operator also says "terminated";
+        retrying those burns money and can never succeed.
+
+        Contract note: this first-pass ``transient=False`` verdict is what
+        production actually enforces — the executor attaches the analysis to
+        the agent result and ``_retry_decision`` consults it directly. The
+        generated *message* for this shape ("was unreachable after 2
+        attempts") re-analyses as transient, which is why the verdict must
+        travel with the result; the end-to-end guarantee is pinned by
+        ``TestRetryVerdictWiring`` in
+        ``tests/services/test_flow_orchestrator_retry.py``.
+        """
+        logs = "\n".join(
+            [
+                "Attempt 1 failed: run terminated by policy",
+                "Attempt 2 failed: run terminated by policy",
+                "Giving up.",
+            ]
+        )
+
+        analysis = analyze_agent_failure(logs)
+
+        assert analysis.transient is False
+
+    def test_raw_policy_termination_is_not_transient(self):
+        """The fallback path must not over-match either: a bare policy kill."""
+        logs = "\n".join(
+            [
+                "Reviewing diff...",
+                "ERROR: run terminated by policy",
+                "Shutting down.",
+            ]
+        )
+
+        analysis = analyze_agent_failure(logs)
+
+        assert analysis.transient is False
+
     def test_plain_agent_error_is_not_transient(self):
         """No upstream signal at all must never be treated as retryable."""
         logs = "\n".join(

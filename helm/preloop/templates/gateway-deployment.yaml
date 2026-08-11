@@ -32,6 +32,11 @@ spec:
         {{- include "preloop.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: gateway
     spec:
+      # In-flight streaming LLM responses must be allowed to finish before
+      # kubelet SIGKILLs the pod. With the k8s default of 30s, rollouts
+      # severed multi-minute agent streams ~20s after preStop began. See
+      # gateway.terminationGracePeriodSeconds in values.yaml.
+      terminationGracePeriodSeconds: {{ .Values.gateway.terminationGracePeriodSeconds }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -227,8 +232,10 @@ spec:
             {{- toYaml .Values.gateway.resources | nindent 12 }}
           # Delay SIGTERM so ingress/kube-proxy endpoint updates propagate
           # before the server stops accepting; avoids 502s during rollouts.
-          # Long-lived SSE/streaming requests then drain within the pod's
-          # termination grace period.
+          # Long-lived SSE/streaming requests then drain during the rest of
+          # terminationGracePeriodSeconds (set on the pod spec above from
+          # gateway.terminationGracePeriodSeconds; the sleep spends part of
+          # that budget, and uvicorn drains until the last stream closes).
           lifecycle:
             preStop:
               exec:

@@ -688,10 +688,16 @@ class ContainerAgentExecutor(AgentExecutor):
                         "Logs contain benign messages (e.g., 'no commits'), not marking as failed."
                     )
 
+            failure_analysis = None
             if status == AgentStatus.FAILED:
+                # Analyse the full logs once and keep the whole verdict:
+                # only the message survives into FlowExecution.error_message,
+                # so the transient/terminal classification must travel on the
+                # result itself for the orchestrator's retry decision.
+                failure_analysis = analyze_agent_failure(logs_text)
                 error_message = (
                     info["State"].get("Error")
-                    or self._extract_error_from_logs(logs_text)
+                    or failure_analysis.message
                     or f"Container exited with code {exit_code}"
                 )
 
@@ -701,6 +707,7 @@ class ContainerAgentExecutor(AgentExecutor):
                 output_summary=output_summary,
                 error_message=error_message,
                 exit_code=exit_code,
+                failure_analysis=failure_analysis,
             )
 
         except DockerError as e:
@@ -768,10 +775,13 @@ class ContainerAgentExecutor(AgentExecutor):
             except Exception as e:
                 self.logger.warning(f"Could not get exit code for Job {job_name}: {e}")
 
+            failure_analysis = None
             if status == AgentStatus.FAILED:
-                error_message = (
-                    self._extract_error_from_logs(logs_text)
-                    or f"Job exited with code {exit_code}"
+                # Same as the Docker path: keep the full-log verdict on the
+                # result, not just the message.
+                failure_analysis = analyze_agent_failure(logs_text)
+                error_message = failure_analysis.message or (
+                    f"Job exited with code {exit_code}"
                     if exit_code is not None
                     else "Job failed"
                 )
@@ -782,6 +792,7 @@ class ContainerAgentExecutor(AgentExecutor):
                 output_summary=output_summary,
                 error_message=error_message,
                 exit_code=exit_code,
+                failure_analysis=failure_analysis,
             )
 
         except ApiException as e:
@@ -932,6 +943,10 @@ class ContainerAgentExecutor(AgentExecutor):
         returning whatever the last error-shaped line happened to be. The tail
         of a failed run is usually a stack trace or a stringified error object
         (``[object Object]``), which names no cause.
+
+        Message-only view: ``get_result`` calls :func:`analyze_agent_failure`
+        directly so the full classification (``transient`` verdict, evidence)
+        can travel on the ``AgentExecutionResult``.
 
         Args:
             logs_text: Full log text

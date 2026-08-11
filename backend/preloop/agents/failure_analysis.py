@@ -92,11 +92,27 @@ _STATUS_RE = re.compile(
 )
 
 # Transport-level failures that never produced an HTTP status but are just as
-# retryable as a 504.
+# retryable as a 504. The undici entries are what Node's fetch reports when
+# the server side of an in-flight stream goes away (observed when a gateway
+# pod was cycled mid-response during a rollout): ``SocketError: other side
+# closed`` and ``TypeError: terminated``. The latter is anchored to the
+# ``TypeError:`` prefix on purpose — a bare "terminated" also appears in
+# terminal failures ("run terminated by policy") that must never retry.
+#
+# These patterns are matched against *any* content line, not only "attempt N
+# failed" lines: a CLI that crashes on a severed stream without running its
+# own retry loop leaves nothing but a raw stack (``TypeError: terminated`` /
+# ``[cause]: SocketError: other side closed``), and that shape must still be
+# classified transient. The asymmetry is deliberate — a false positive costs
+# one bounded, side-effect-safe flow retry, while a false negative terminally
+# fails a recoverable run.
 _TRANSIENT_NETWORK_RE = re.compile(
     r"\b(?:connection\s+(?:reset|refused|closed|aborted|error)"
     r"|econnreset|econnrefused|epipe|etimedout"
     r"|socket\s+hang\s+up"
+    r"|other\s+side\s+closed"
+    r"|typeerror:\s*terminated"
+    r"|fetch\s+(?:failed|terminated)"
     r"|network\s+error"
     r"|(?:request|read|socket)\s+timed?\s*out"
     r"|timeout\s+(?:of\s+)?\d+\s*ms\s+exceeded)\b",
@@ -110,10 +126,13 @@ _TRANSIENT_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504, 520, 522, 52
 
 # Opening of the sentence this module generates for an upstream failure.
 # The generated message is the only thing that survives into
-# ``FlowExecution.error_message``, so it is also the input the orchestrator
-# re-analyses when deciding whether to retry. Recognising our own phrasing
-# makes ``analyze_agent_failure`` idempotent: analysing its output reproduces
-# the same classification.
+# ``FlowExecution.error_message``. The full analysis (including the
+# transient verdict) now travels on the agent result itself, but legacy
+# results carry only the message — recognising our own phrasing keeps
+# re-analysis of that message as faithful as possible. Note the message alone
+# cannot encode every verdict (a no-status sentence loses the
+# transient/terminal distinction), which is exactly why the attached verdict
+# is authoritative when present.
 _UPSTREAM_SENTENCE_PREFIX = "Upstream model provider"
 _GENERATED_ATTEMPTS_RE = re.compile(r"after\s+(\d{1,3})\s+attempts?\b", re.IGNORECASE)
 _GENERATED_EXHAUSTED_RE = re.compile(r"exhausted its retries", re.IGNORECASE)
@@ -173,6 +192,9 @@ class AgentFailureAnalysis:
     retry_exhausted: bool = False
     transient: bool = False
     error_class: Optional[str] = None
+    # Raw log lines the classification was derived from (scrubbed, capped).
+    # Travels with the agent result so the retry decision can be audited.
+    evidence: str = ""
 
 
 def _content_lines(logs_text: str) -> list[str]:
@@ -225,7 +247,8 @@ def _scan_upstream_retry_signal(lines: list[str]) -> _RetrySignal:
 
     for line in lines:
         is_attempt_line = bool(_ATTEMPT_LINE_RE.search(line))
-        if _EXHAUSTED_RE.search(line):
+        is_exhausted_line = bool(_EXHAUSTED_RE.search(line))
+        if is_exhausted_line:
             exhausted = True
             evidence.append(line)
 
@@ -241,8 +264,14 @@ def _scan_upstream_retry_signal(lines: list[str]) -> _RetrySignal:
             status_match = _STATUS_RE.search(line)
             if status_match:
                 statuses.append(int(status_match.group(1)))
-            if _TRANSIENT_NETWORK_RE.search(line):
-                saw_network_failure = True
+
+        # Checked on every content line, not only attempt lines: a severed
+        # stream that crashed the CLI outright surfaces as a raw stack with
+        # no retry-loop phrasing (see the _TRANSIENT_NETWORK_RE comment).
+        if _TRANSIENT_NETWORK_RE.search(line):
+            saw_network_failure = True
+            if not is_attempt_line and not is_exhausted_line:
+                evidence.append(line)
 
     return _RetrySignal(
         # The last reported attempt is the one that ended the run.
@@ -324,10 +353,14 @@ def _fallback_message(lines: list[str]) -> str:
 def _reanalyze_generated_message(text: str) -> Optional[AgentFailureAnalysis]:
     """Re-derive an analysis from a message this module previously generated.
 
-    The orchestrator stores only the generated sentence, then re-analyses it
-    to decide whether to retry. Parsing our own output keeps that decision
-    identical to the one made from the full logs, instead of silently
-    downgrading a known-transient failure to "not transient".
+    This is the *legacy* retry-decision path: agent results that predate the
+    attached first-pass verdict carry only the stored sentence, so the
+    orchestrator falls back to re-analysing it. Parsing our own output keeps
+    that fallback as close as possible to the full-log classification —
+    though not identical: a no-status sentence ("was unreachable") cannot
+    distinguish a severed stream from a terminal failure that also exhausted
+    attempts, so it is treated as transient here. Results carrying the
+    first-pass verdict do not take this path.
     """
     stripped = text.strip()
     if not stripped.startswith(_UPSTREAM_SENTENCE_PREFIX):
@@ -417,6 +450,16 @@ def analyze_agent_failure(logs_text: str) -> AgentFailureAnalysis:
             retry_exhausted=signal.exhausted,
             transient=transient,
             error_class=error_class,
+            evidence=_finalize(signal.evidence),
         )
 
-    return AgentFailureAnalysis(message=_finalize(_fallback_message(lines)))
+    # Fallback path: no retry loop and no HTTP status anywhere. A raw
+    # transport-failure stack (undici "TypeError: terminated" with
+    # "[cause]: SocketError: other side closed") lands here, and it is
+    # exactly as retryable as the attempt-line shapes above — the verdict
+    # comes from the same _TRANSIENT_NETWORK_RE scan of the full log.
+    return AgentFailureAnalysis(
+        message=_finalize(_fallback_message(lines)),
+        transient=signal.saw_network_failure,
+        evidence=_finalize(signal.evidence),
+    )

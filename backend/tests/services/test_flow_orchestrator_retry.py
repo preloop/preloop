@@ -7,6 +7,8 @@ more importantly, the safety boundary that keeps a retry from double-posting
 external side effects (pull-request comments, commit statuses, pushes).
 """
 
+import dataclasses
+
 import pytest
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
@@ -14,6 +16,7 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from preloop.agents.base import AgentExecutionResult, AgentStatus
+from preloop.agents.container import ContainerAgentExecutor
 from preloop.models.crud import crud_account, crud_flow, crud_user
 from preloop.models.models import Account, Flow
 from preloop.models.models.user import User
@@ -461,3 +464,218 @@ class TestSideEffectSafety:
             f"final failure status; got {states}"
         )
         assert states[-1] == "success"
+
+
+# The raw log shape from the rollout incident: the agent CLI crashed on a
+# severed LLM stream *without* running its own retry loop, so the logs carry
+# no "attempt N failed" phrasing at all — only undici's stack. This is the
+# one shape the stored error MESSAGE cannot classify on its own; the verdict
+# has to travel with the agent result.
+SEVERED_STREAM_STACK_LOGS = [
+    "[Agent Status] running",
+    "Streaming model response...",
+    "TypeError: terminated",
+    "    at Fetch.onAborted (node:internal/deps/undici/undici:11190:53)",
+    "    at Fetch.emit (node:events:518:28)",
+    "  [cause]: SocketError: other side closed",
+    "      at TLSSocket.onSocketEnd (node:internal/deps/undici/undici:8117:26)",
+]
+
+
+async def _agent_result_via_container(logs: list[str]) -> dict:
+    """Build the agent-result payload the way production actually does.
+
+    The real ``ContainerAgentExecutor.get_result`` (Docker mocked away)
+    produces the ``AgentExecutionResult`` from the logs; the returned dict
+    mirrors the terminal-result payload ``_monitor_agent_execution`` hands to
+    ``_retry_decision``. Going through the real extraction path is the point:
+    these tests pin the *wiring* from full-log analysis to retry decision,
+    not any single component.
+    """
+    executor = ContainerAgentExecutor(
+        agent_type="codex",
+        config={},
+        image="test-image:latest",
+        use_kubernetes=False,
+    )
+
+    mock_docker = AsyncMock()
+    mock_container = AsyncMock()
+    mock_container.show.return_value = {"State": {"ExitCode": 1, "Error": ""}}
+    mock_docker.containers.get.return_value = mock_container
+
+    with (
+        patch.object(ContainerAgentExecutor, "get_logs", AsyncMock(return_value=logs)),
+        patch.object(
+            ContainerAgentExecutor,
+            "get_status",
+            AsyncMock(return_value=AgentStatus.FAILED),
+        ),
+        patch.object(
+            ContainerAgentExecutor,
+            "_get_docker_client",
+            AsyncMock(return_value=mock_docker),
+        ),
+    ):
+        result = await executor.get_result("container-under-test")
+
+    # ``getattr`` keeps this helper runnable against pre-wiring results, the
+    # same tolerance _retry_decision itself must have for legacy payloads.
+    analysis = getattr(result, "failure_analysis", None)
+    return {
+        "status": result.status.value,
+        "output_summary": result.output_summary,
+        "error_message": result.error_message,
+        "actions_taken": [],
+        "mcp_usage_logs": [],
+        "exit_code": result.exit_code,
+        "failure_analysis": (
+            dataclasses.asdict(analysis) if analysis is not None else None
+        ),
+    }
+
+
+@pytest.mark.asyncio
+class TestRetryVerdictWiring:
+    """The full-log verdict, not the stored message, drives the retry.
+
+    ``container.get_result`` analyses the complete container logs;
+    ``FlowExecution.error_message`` keeps only the generated sentence. These
+    tests pin the contract that the transient/terminal verdict survives that
+    lossy step by travelling on the agent result itself.
+    """
+
+    async def test_severed_stream_stack_is_retried_end_to_end(
+        self, db_session, test_flow, event_data, mock_nats_client
+    ):
+        """The incident shape: a raw undici stack must schedule a retry.
+
+        The fallback error message is the stack text, which re-analysis of
+        the message alone classifies as non-transient. Only the verdict
+        attached to the agent result can carry "this was a severed stream —
+        retry it" across the message bottleneck.
+        """
+        agent_result = await _agent_result_via_container(SEVERED_STREAM_STACK_LOGS)
+
+        orchestrator = _build_orchestrator(
+            db_session, test_flow, event_data, mock_nats_client
+        )
+
+        assert orchestrator._retry_decision(agent_result) is None, (
+            "a stream severed mid-response (undici 'TypeError: terminated' / "
+            "'other side closed') is transient and must be retried"
+        )
+
+    async def test_policy_terminated_attempts_are_not_retried_end_to_end(
+        self, db_session, test_flow, event_data, mock_nats_client
+    ):
+        """A policy kill with retry-loop phrasing must never retry.
+
+        The generated message for this shape is 'Upstream model provider was
+        unreachable after 2 attempts.', which message-only re-analysis calls
+        transient. The first-pass verdict (terminal: no transport failure in
+        the logs) must win.
+        """
+        agent_result = await _agent_result_via_container(
+            [
+                "Attempt 1 failed: run terminated by policy",
+                "Attempt 2 failed: run terminated by policy",
+                "Giving up.",
+            ]
+        )
+
+        orchestrator = _build_orchestrator(
+            db_session, test_flow, event_data, mock_nats_client
+        )
+
+        assert orchestrator._retry_decision(agent_result) is not None, (
+            "a run terminated by policy can never succeed on retry; the "
+            "full-log verdict must override the message's phrasing"
+        )
+
+    async def test_plain_crash_stays_non_retryable_end_to_end(
+        self, db_session, test_flow, event_data, mock_nats_client
+    ):
+        """Guard against over-matching: an ordinary crash must not retry."""
+        agent_result = await _agent_result_via_container(
+            [
+                "Traceback (most recent call last):",
+                '  File "agent.py", line 10, in run',
+                "ValueError: prompt template rendered empty",
+            ]
+        )
+
+        orchestrator = _build_orchestrator(
+            db_session, test_flow, event_data, mock_nats_client
+        )
+
+        assert orchestrator._retry_decision(agent_result) is not None
+
+    async def test_attached_verdict_wins_over_message_phrasing(
+        self, db_session, test_flow, event_data, mock_nats_client
+    ):
+        """Through the retry loop: a terminal verdict beats a transient-looking message."""
+        calls = []
+
+        async def monitor(session_reference, agent_executor):
+            calls.append(session_reference)
+            return {
+                "status": "FAILED",
+                # Message-only re-analysis would call this transient
+                # (no-status branch of _reanalyze_generated_message).
+                "error_message": "Upstream model provider was unreachable "
+                "after 2 attempts.",
+                "exit_code": 1,
+                "actions_taken": [],
+                "mcp_usage_logs": [],
+                "failure_analysis": {
+                    "message": "Upstream model provider was unreachable "
+                    "after 2 attempts.",
+                    "transient": False,
+                },
+            }
+
+        executor = AsyncMock()
+        executor.start = AsyncMock(return_value="session-under-test")
+        executor.cleanup = AsyncMock()
+
+        with (
+            patch(
+                "preloop.services.flow_orchestrator.create_agent_executor",
+                return_value=executor,
+            ),
+            patch.object(
+                FlowExecutionOrchestrator,
+                "_monitor_agent_execution",
+                side_effect=monitor,
+            ),
+            patch("preloop.services.flow_orchestrator.asyncio.sleep", AsyncMock()),
+        ):
+            orchestrator = _build_orchestrator(
+                db_session, test_flow, event_data, mock_nats_client
+            )
+            await orchestrator.run()
+
+        assert len(calls) == 1, (
+            "the first-pass terminal verdict travels with the result and "
+            "must not be overridden by re-analysing the message"
+        )
+
+    async def test_legacy_result_without_verdict_still_retries_on_message(
+        self, db_session, test_flow, event_data, mock_nats_client
+    ):
+        """Backward compat: no attached verdict → fall back to the message."""
+        agent_result = {
+            "status": "FAILED",
+            "error_message": "Upstream model provider timed out (HTTP 504) "
+            "after 3 attempts.",
+            "exit_code": 1,
+            "actions_taken": [],
+            "mcp_usage_logs": [],
+        }
+
+        orchestrator = _build_orchestrator(
+            db_session, test_flow, event_data, mock_nats_client
+        )
+
+        assert orchestrator._retry_decision(agent_result) is None

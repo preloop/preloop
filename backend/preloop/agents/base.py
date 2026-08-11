@@ -4,7 +4,10 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
+
+if TYPE_CHECKING:
+    from .failure_analysis import AgentFailureAnalysis
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +34,11 @@ class AgentExecutionResult:
     actions_taken: Optional[list] = None
     artifacts: Optional[Dict[str, Any]] = None  # Generated files, logs, etc.
     exit_code: Optional[int] = None
+    # First-pass failure classification made against the FULL container logs
+    # (set when status is FAILED and logs were analysed). ``error_message``
+    # keeps only the generated sentence, which cannot encode the
+    # transient/terminal verdict — this carries it to the retry decision.
+    failure_analysis: Optional["AgentFailureAnalysis"] = None
 
 
 class AgentExecutor(ABC):

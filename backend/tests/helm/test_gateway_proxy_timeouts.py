@@ -15,20 +15,21 @@ instead of shipping.
 from __future__ import annotations
 
 import re
-import shutil
-import subprocess
-import tempfile
-from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, Iterator, List
+from typing import Dict, List
 
 import pytest
 import yaml
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-CHART_DIR = REPO_ROOT / "helm" / "preloop"
+from tests.helm.chart_helpers import (
+    CHART_DIR,
+    REPO_ROOT,
+    helm_template,
+    load_values,
+    resolve_values_path,
+)
+
 NGINX_CONFIGMAP = CHART_DIR / "templates" / "configmap-nginx.yaml"
-CHART_VALUES = CHART_DIR / "values.yaml"
 DOCKER_NGINX_TEMPLATE = REPO_ROOT / "frontend" / "docker" / "nginx.conf.template"
 
 # The gateway route prefixes that carry streaming model traffic.
@@ -39,21 +40,6 @@ GATEWAY_LOCATIONS = ("^~ /openai/", "^~ /anthropic/", "^~ /gemini/")
 MIN_STREAMING_TIMEOUT_SECONDS = 300
 
 
-def _load_values() -> Dict:
-    """Return the chart's default values."""
-    return yaml.safe_load(CHART_VALUES.read_text())
-
-
-def _resolve_values_path(values: Dict, dotted: str):
-    """Look up a dotted ``.Values`` path, returning None when absent."""
-    node = values
-    for part in dotted.split("."):
-        if not isinstance(node, dict) or part not in node:
-            return None
-        node = node[part]
-    return node
-
-
 def _render_with_default_values(template_text: str) -> str:
     """Substitute ``.Values`` references so the config can be parsed.
 
@@ -62,13 +48,13 @@ def _render_with_default_values(template_text: str) -> str:
     lets the assertions run in a test environment that has no ``helm``
     binary; when helm *is* available a separate test checks the real render.
     """
-    values = _load_values()
+    values = load_values()
 
     def _replace(match: re.Match) -> str:
         expression = match.group(1).strip()
         values_ref = re.fullmatch(r"\.Values\.([\w.]+)", expression)
         if values_ref:
-            resolved = _resolve_values_path(values, values_ref.group(1))
+            resolved = resolve_values_path(values, values_ref.group(1))
             if resolved is not None:
                 return str(resolved)
         return ""
@@ -161,9 +147,9 @@ def test_gateway_location_streams_tokens_through(
 
 def test_ingress_annotations_match_the_console_timeout() -> None:
     """The ingress is the second 60s proxy in front of the gateway."""
-    values = _load_values()
-    read_timeout = _resolve_values_path(values, "gateway.proxy.readTimeout")
-    send_timeout = _resolve_values_path(values, "gateway.proxy.sendTimeout")
+    values = load_values()
+    read_timeout = resolve_values_path(values, "gateway.proxy.readTimeout")
+    send_timeout = resolve_values_path(values, "gateway.proxy.sendTimeout")
 
     assert read_timeout is not None and int(read_timeout) >= (
         MIN_STREAMING_TIMEOUT_SECONDS
@@ -196,44 +182,9 @@ def test_ingress_annotations_stay_overridable() -> None:
     assert "cert-manager.io/cluster-issuer" in annotations
 
 
-@contextmanager
-def _offline_chart() -> Iterator[Path]:
-    """Yield a copy of the chart that renders without fetching dependencies.
-
-    ``helm template`` refuses to run while a declared subchart is missing from
-    ``charts/``, which would make these tests require network access. The
-    subcharts are irrelevant to the templates under test, so the copy simply
-    declares none.
-    """
-    with tempfile.TemporaryDirectory() as tmp:
-        chart_copy = Path(tmp) / CHART_DIR.name
-        shutil.copytree(CHART_DIR, chart_copy)
-        chart_yaml = chart_copy / "Chart.yaml"
-        metadata = yaml.safe_load(chart_yaml.read_text())
-        metadata.pop("dependencies", None)
-        chart_yaml.write_text(yaml.safe_dump(metadata))
-        yield chart_copy
-
-
-def _helm_template(template: str, overrides: List[str] | None = None) -> str:
-    """Render one chart template, skipping when helm is unavailable."""
-    helm = shutil.which("helm")
-    if helm is None:  # pragma: no cover - depends on the local toolchain
-        pytest.skip("helm binary not available")
-
-    with _offline_chart() as chart_dir:
-        command = [helm, "template", "preloop", str(chart_dir), "--show-only", template]
-        for override in overrides or []:
-            command += ["--set", override]
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
-
-    assert result.returncode == 0, result.stderr
-    return result.stdout
-
-
 def _render_ingress(overrides: List[str] | None = None) -> Dict:
     """Render the ingress template with the chart's default values."""
-    rendered = _helm_template(
+    rendered = helm_template(
         "templates/ingress.yaml",
         ["ingress.enabled=true", *(overrides or [])],
     )
@@ -243,7 +194,7 @@ def _render_ingress(overrides: List[str] | None = None) -> Dict:
 @pytest.mark.parametrize("location", GATEWAY_LOCATIONS)
 def test_helm_render_keeps_the_gateway_timeouts(location: str) -> None:
     """The same guard, against a real ``helm template`` render."""
-    rendered = _helm_template("templates/configmap-nginx.yaml")
+    rendered = helm_template("templates/configmap-nginx.yaml")
 
     body = _location_body(_nginx_config_from_configmap(rendered), location)
     assert _directive_seconds(body, "proxy_read_timeout") >= (

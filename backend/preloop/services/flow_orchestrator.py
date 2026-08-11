@@ -3,6 +3,7 @@ import uuid
 import json
 import asyncio
 import shlex
+from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 import re
@@ -2277,6 +2278,16 @@ class FlowExecutionOrchestrator:
                         "actions_taken": self.execution_logger.get_actions_taken(),
                         "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
                         "exit_code": result.exit_code,
+                        # First-pass failure classification made against the
+                        # FULL container logs. error_message keeps only the
+                        # generated sentence, which cannot encode the
+                        # transient/terminal verdict — _retry_decision needs
+                        # this to survive.
+                        "failure_analysis": (
+                            asdict(result.failure_analysis)
+                            if result.failure_analysis is not None
+                            else None
+                        ),
                     }
 
                 # Check if the success sentinel was seen in logs while
@@ -2465,11 +2476,31 @@ class FlowExecutionOrchestrator:
         if self.execution_logger.get_actions_taken():
             return "the agent already recorded actions; retrying could repeat them"
 
-        analysis = analyze_agent_failure(agent_result.get("error_message") or "")
-        if not analysis.transient:
+        if not self._failure_is_transient(agent_result):
             return "the failure is not a transient upstream failure"
 
         return None
+
+    @staticmethod
+    def _failure_is_transient(agent_result: Dict[str, Any]) -> bool:
+        """Whether the failed attempt is worth retrying.
+
+        Prefers the first-pass verdict the agent executor classified against
+        the FULL container logs (``failure_analysis`` on the result). The
+        stored ``error_message`` is a lossy summary — a raw severed-stream
+        stack yields a fallback message that re-analyses as non-transient,
+        and a no-status "unreachable" sentence re-analyses as transient even
+        for a policy-terminated run — so the message is only consulted for
+        legacy results that carry no attached verdict.
+        """
+        analysis_payload = agent_result.get("failure_analysis")
+        if isinstance(analysis_payload, dict) and "transient" in analysis_payload:
+            return bool(analysis_payload["transient"])
+        if analysis_payload is not None and hasattr(analysis_payload, "transient"):
+            # Tolerate an un-serialised AgentFailureAnalysis instance.
+            return bool(analysis_payload.transient)
+
+        return analyze_agent_failure(agent_result.get("error_message") or "").transient
 
     async def _run_agent_with_retries(
         self, execution_context: Dict[str, Any]

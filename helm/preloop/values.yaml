@@ -137,6 +137,12 @@ api:
   # When unset, falls back to top-level replicaCount.
   # Staging/prod set this to 2 independently of gateway/console.
   replicaCount: null
+  # Same rationale as gateway.terminationGracePeriodSeconds: the api holds
+  # long-lived MCP sessions/long-polls and websockets behind the same 10s
+  # preStop sleep, so the 30s k8s default SIGKILLs them mid-rollout too.
+  # A generous ceiling costs nothing when connections have drained — uvicorn
+  # exits as soon as the last one closes.
+  terminationGracePeriodSeconds: 900
   resources:
     requests:
       cpu: "50m"
@@ -205,6 +211,15 @@ gateway:
     # Agent requests carry whole file trees and diffs as context, which
     # comfortably exceeds the ingress default of 1m.
     bodySize: "32m"
+  # Seconds kubelet waits after starting the preStop hook before SIGKILL.
+  # The k8s default of 30 is far too short for this pod: a rollout SIGKILLed
+  # in-flight streaming LLM responses ~20s after preStop (10s sleep + uvicorn
+  # still draining), and agents mid-review saw the socket die ("other side
+  # closed"), failing their flow executions. This is a ceiling, not a delay:
+  # uvicorn exits as soon as the last in-flight request completes, so an idle
+  # pod still terminates in ~10s. Aligned with proxy.readTimeout above — any
+  # stream the proxies are still willing to carry must be allowed to finish.
+  terminationGracePeriodSeconds: 900
   resources:
     requests:
       cpu: "100m"

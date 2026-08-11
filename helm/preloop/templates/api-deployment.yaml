@@ -31,6 +31,11 @@ spec:
         {{- include "preloop.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: api
     spec:
+      # Long-lived MCP sessions/long-polls and websockets must be allowed to
+      # drain before kubelet SIGKILLs the pod; the k8s default of 30s cuts
+      # them off ~20s after preStop. See api.terminationGracePeriodSeconds
+      # in values.yaml.
+      terminationGracePeriodSeconds: {{ .Values.api.terminationGracePeriodSeconds }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
