@@ -3237,3 +3237,225 @@ def test_responses_endpoint_records_provider_cost_and_requests_accounting(
     assert usage_row is not None
     assert usage_row.cost_source == "provider"
     assert usage_row.estimated_cost == pytest.approx(0.0000305)
+
+
+# ---------------------------------------------------------------------------
+# #219: provider-reported cost must survive litellm's STREAMING transcode.
+#
+# litellm's CustomStreamWrapper rebuilds the final usage chunk from token
+# counts only (stream_chunk_builder.calculate_usage), so OpenRouter's
+# usage-accounting fields (usage.cost / usage.cost_details) are dropped from
+# the transcoded stream even though the raw provider chunk carried them. The
+# tests below drive the REAL litellm streaming pipeline (mocked HTTP
+# transport, no network) so the transcode is exercised as in production --
+# the #208 tests mocked litellm.completion with plain dicts and missed this.
+# ---------------------------------------------------------------------------
+
+_OPENROUTER_STREAM_USAGE = {
+    "prompt_tokens": 973,
+    "completion_tokens": 15,
+    "total_tokens": 988,
+    "prompt_tokens_details": {"cached_tokens": 100},
+    "cost": 0.0000305,
+    "cost_details": {"upstream_inference_cost": 0.00001946},
+}
+
+# provider_reported_cost sums the OpenRouter charge and the BYOK upstream
+# vendor charge (both are paid by the customer).
+_OPENROUTER_EXPECTED_TOTAL = 0.0000305 + 0.00001946
+
+
+def _real_litellm_openrouter_stream(raw_usage):
+    """Build a real litellm CustomStreamWrapper over raw OpenRouter SSE chunks.
+
+    Uses litellm's own HTTP handler with a mocked httpx transport, so the
+    chunks flow through the genuine OpenRouter chunk parser and streaming
+    transcode -- exactly what the gateway consumes in production.
+    """
+    import httpx
+    import litellm
+    from litellm.llms.custom_httpx.http_handler import HTTPHandler
+
+    def sse(data):
+        return f"data: {json.dumps(data)}\n\n".encode()
+
+    body = b"".join(
+        [
+            sse(
+                {
+                    "id": "gen-stream-1",
+                    "object": "chat.completion.chunk",
+                    "created": 1710000000,
+                    "model": "openrouter/auto-beta",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"role": "assistant", "content": "Hel"},
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+            ),
+            sse(
+                {
+                    "id": "gen-stream-1",
+                    "object": "chat.completion.chunk",
+                    "created": 1710000000,
+                    "model": "openrouter/auto-beta",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": "lo"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                }
+            ),
+            # OpenRouter's final usage-accounting chunk: empty choices, usage
+            # with cost + cost_details (per their usage accounting docs).
+            sse(
+                {
+                    "id": "gen-stream-1",
+                    "object": "chat.completion.chunk",
+                    "created": 1710000000,
+                    "model": "openrouter/auto-beta",
+                    "choices": [],
+                    "usage": raw_usage,
+                }
+            ),
+            b"data: [DONE]\n\n",
+        ]
+    )
+
+    def handler(request: "httpx.Request") -> "httpx.Response":
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=body,
+        )
+
+    client = HTTPHandler(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    return litellm.completion(
+        model="openrouter/openrouter/auto-beta",
+        messages=[{"role": "user", "content": "Hello"}],
+        api_key="sk-or-test",
+        stream=True,
+        stream_options={"include_usage": True},
+        extra_body={"usage": {"include": True}},
+        client=client,
+    )
+
+
+def _create_openrouter_gateway_model(db_session, test_user):
+    crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "OpenRouter Auto",
+            "provider_name": "openrouter",
+            "model_identifier": "openrouter/auto-beta",
+            "api_endpoint": "https://openrouter.ai/api/v1",
+            "api_key": "sk-or-key",
+            "meta_data": {
+                "gateway": {
+                    "enabled": True,
+                    "model_alias": "openrouter/auto-beta",
+                    "provider_adapter": "preloop",
+                }
+            },
+            "is_default": True,
+        },
+        account_id=test_user.account_id,
+    )
+
+
+def _latest_usage_row(db_session, endpoint):
+    return (
+        db_session.query(ApiUsage)
+        .filter(ApiUsage.endpoint == endpoint)
+        .order_by(ApiUsage.timestamp.desc())
+        .first()
+    )
+
+
+def test_responses_stream_persists_openrouter_provider_cost(db_session, test_user):
+    """Streaming /responses via OpenRouter prices the row from usage.cost.
+
+    Regression for #219: all post-#208 prod rows (streaming /responses) stayed
+    unpriced because litellm's synthetic final usage chunk drops the cost
+    fields.
+    """
+    _create_openrouter_gateway_model(db_session, test_user)
+    service = OpenAIGatewayService(
+        db_session, ModelGatewayAuthContext(token="t", user=test_user)
+    )
+    stream = _real_litellm_openrouter_stream(dict(_OPENROUTER_STREAM_USAGE))
+
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value=stream,
+    ):
+        events = list(
+            service.stream_response(
+                {"model": "openrouter/auto-beta", "input": "Hello", "stream": True}
+            )
+        )
+    assert any('"response.completed"' in event for event in events)
+
+    usage_row = _latest_usage_row(db_session, "/openai/v1/responses")
+    assert usage_row is not None
+    usage_details = (usage_row.meta_data or {}).get("usage_details") or {}
+    # Token detail must be intact...
+    assert usage_details.get("prompt_tokens") == 973
+    assert usage_details.get("prompt_tokens_details", {}).get("cached_tokens") == 100
+    # ...AND the provider-reported cost fields must survive persistence.
+    assert usage_details.get("cost") == pytest.approx(0.0000305)
+    assert usage_details.get("cost_details", {}).get(
+        "upstream_inference_cost"
+    ) == pytest.approx(0.00001946)
+    assert usage_row.cost_source == "provider"
+    assert usage_row.estimated_cost == pytest.approx(_OPENROUTER_EXPECTED_TOTAL)
+
+
+def test_chat_completions_stream_persists_openrouter_provider_cost(
+    db_session, test_user
+):
+    """Streaming /chat/completions shares the same recovery path."""
+    _create_openrouter_gateway_model(db_session, test_user)
+    service = OpenAIGatewayService(
+        db_session, ModelGatewayAuthContext(token="t", user=test_user)
+    )
+    stream = _real_litellm_openrouter_stream(dict(_OPENROUTER_STREAM_USAGE))
+
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value=stream,
+    ):
+        events = list(
+            service.stream_chat_completion(
+                {
+                    "model": "openrouter/auto-beta",
+                    "messages": [{"role": "user", "content": "Hello"}],
+                    "stream": True,
+                }
+            )
+        )
+    assert events  # stream produced output
+
+    usage_row = _latest_usage_row(db_session, "/openai/v1/chat/completions")
+    assert usage_row is not None
+    usage_details = (usage_row.meta_data or {}).get("usage_details") or {}
+    assert usage_details.get("cost") == pytest.approx(0.0000305)
+    assert usage_details.get("cost_details", {}).get(
+        "upstream_inference_cost"
+    ) == pytest.approx(0.00001946)
+    assert usage_row.cost_source == "provider"
+    assert usage_row.estimated_cost == pytest.approx(_OPENROUTER_EXPECTED_TOTAL)
+
+
+def test_provider_cost_fields_recovery_is_fail_open():
+    """Absent litellm internals must never break the stream accounting."""
+    assert OpenAIGatewayService._provider_cost_fields(iter([])) == {}
+    assert OpenAIGatewayService._provider_cost_fields(None) == {}
+    assert (
+        OpenAIGatewayService._provider_cost_fields(SimpleNamespace(chunks="nope")) == {}
+    )

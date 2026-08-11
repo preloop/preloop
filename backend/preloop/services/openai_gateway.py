@@ -240,6 +240,27 @@ class LiteLLMModelGatewayBackend:
         return litellm.completion(**kwargs)
 
 
+class _PrefetchedUpstreamStream:
+    """Iterator over a prefetched upstream stream keeping the raw handle.
+
+    ``_prefetch_upstream_stream`` used to return a bare ``chain`` iterator,
+    which hid the underlying litellm ``CustomStreamWrapper``. The accounting
+    path needs that wrapper after the stream is drained to recover the
+    provider-reported cost fields litellm's transcode drops from the yielded
+    chunks (issue #219), so the raw stream object is exposed as ``.raw``.
+    """
+
+    def __init__(self, iterator: Iterator[Any], *, raw: Any) -> None:
+        self._iterator = iterator
+        self.raw = raw
+
+    def __iter__(self) -> "_PrefetchedUpstreamStream":
+        return self
+
+    def __next__(self) -> Any:
+        return next(self._iterator)
+
+
 def get_model_gateway_backend(
     backend_name: Optional[str] = None,
 ) -> ModelGatewayBackend:
@@ -1361,6 +1382,13 @@ class OpenAIGatewayService:
                         self._extract_finish_reason(chunk_dict) or last_finish_reason
                     )
 
+                # Recover the OpenRouter usage-accounting cost fields litellm
+                # drops from the transcoded chunks (#219).
+                final_usage_details = self._merge_usage_dicts(
+                    final_usage_details,
+                    self._provider_cost_fields(upstream_stream),
+                )
+
                 response_id = response_id or f"msg_{int(time.time())}"
                 if not emitted_text_start:
                     yield self._anthropic_sse_event(
@@ -1678,6 +1706,13 @@ class OpenAIGatewayService:
                         ):
                             continue
                     yield self._sse_event(event_payload)
+
+                # Recover the OpenRouter usage-accounting cost fields litellm
+                # drops from the transcoded chunks (#219).
+                final_usage_details = self._merge_usage_dicts(
+                    final_usage_details,
+                    self._provider_cost_fields(upstream_stream),
+                )
 
                 assistant_message = {
                     "role": "assistant",
@@ -2012,6 +2047,14 @@ class OpenAIGatewayService:
                             "output_tokens": usage["completion_tokens"],
                             "total_tokens": usage["total_tokens"],
                         }
+
+                # litellm's transcoded chunks never carry the OpenRouter
+                # usage-accounting cost fields; recover them from the raw
+                # stream so the persisted usage_details price the row (#219).
+                final_usage_details = self._merge_usage_dicts(
+                    final_usage_details,
+                    self._provider_cost_fields(upstream_stream),
+                )
 
                 full_text = "".join(assistant_parts)
                 if text_output_index is not None:
@@ -4474,7 +4517,7 @@ class OpenAIGatewayService:
 
     def _prefetch_upstream_stream(
         self, upstream_stream: Any, *, provider: GatewayProvider
-    ) -> Iterator[Any]:
+    ) -> "_PrefetchedUpstreamStream":
         """Pull the first upstream chunk before SSE headers are committed.
 
         ``StreamingResponse`` sends the HTTP 200 status line before iterating
@@ -4488,7 +4531,10 @@ class OpenAIGatewayService:
             provider: Gateway provider used to shape normalized errors.
 
         Returns:
-            An iterator yielding the prefetched chunk followed by the rest.
+            An iterator yielding the prefetched chunk followed by the rest. It
+            keeps a handle on the raw upstream stream object (``.raw``) so the
+            accounting path can recover fields litellm's transcode drops from
+            the yielded chunks (issue #219).
 
         Raises:
             ModelGatewayAPIError: When the first chunk cannot be obtained.
@@ -4497,13 +4543,63 @@ class OpenAIGatewayService:
         try:
             first_chunk = next(iterator)
         except StopIteration:
-            return iter(())
+            return _PrefetchedUpstreamStream(iter(()), raw=upstream_stream)
         except ModelGatewayAPIError:
             raise
         except Exception as exc:
             self._capture_rate_limit_headers(headers_from_exception(exc))
             raise self._normalize_upstream_error(provider, exc) from exc
-        return chain([first_chunk], iterator)
+        return _PrefetchedUpstreamStream(
+            chain([first_chunk], iterator), raw=upstream_stream
+        )
+
+    @staticmethod
+    def _provider_cost_fields(upstream_stream: Any) -> Dict[str, Any]:
+        """Recover provider-reported cost fields from the raw litellm stream.
+
+        OpenRouter's usage accounting puts the request's actual charge on the
+        final streamed chunk (``usage.cost`` / ``usage.cost_details``), but
+        litellm's ``CustomStreamWrapper`` never delivers those fields to its
+        consumer: the synthetic final usage chunk it emits for
+        ``stream_options.include_usage`` is rebuilt from token counts only
+        (``stream_chunk_builder`` -> ``calculate_usage``), and mid-stream
+        chunks have their usage stripped. The wrapper does retain every
+        pre-strip chunk on ``.chunks`` (the list it feeds to
+        ``stream_chunk_builder``), so the cost fields are recovered from
+        there after the stream is drained (issue #219).
+
+        Fail-open by design: when the stream is not a litellm wrapper (codex,
+        passthrough, tests) or litellm's internals change shape, this returns
+        ``{}`` and accounting proceeds without provider cost, exactly as
+        before.
+
+        Args:
+            upstream_stream: The (possibly prefetch-wrapped) upstream stream.
+
+        Returns:
+            Dict with any recovered ``cost`` / ``cost_details`` values, else
+            empty.
+        """
+        raw = getattr(upstream_stream, "raw", upstream_stream)
+        chunks = getattr(raw, "chunks", None)
+        if not isinstance(chunks, list):
+            return {}
+        recovered: Dict[str, Any] = {}
+        for chunk in chunks:
+            usage = getattr(chunk, "usage", None)
+            if usage is None and isinstance(chunk, dict):
+                usage = chunk.get("usage")
+            if usage is None:
+                continue
+            if hasattr(usage, "model_dump"):
+                usage = usage.model_dump()
+            if not isinstance(usage, dict):
+                continue
+            for key in ("cost", "cost_details"):
+                value = usage.get(key)
+                if value is not None:
+                    recovered[key] = value
+        return recovered
 
     def _stream_error(
         self, provider: GatewayProvider, exc: Exception
