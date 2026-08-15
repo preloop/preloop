@@ -2043,6 +2043,34 @@ class FlowExecutionOrchestrator:
                     )
             raise
 
+    async def _capture_result_artifact(
+        self, agent_executor: Any, session_reference: str
+    ) -> Optional[Dict[str, Any]]:
+        """Capture the agent's structured result artifact, if any.
+
+        Eval/observe flows write ``/workspace/result.json`` as their final
+        report; executors that support first-class capture expose
+        ``get_result_artifact``. Best-effort: a missing artifact or an
+        executor without support simply yields None.
+        """
+        getter = getattr(agent_executor, "get_result_artifact", None)
+        if not callable(getter):
+            return None
+        try:
+            artifact = await getter(session_reference)
+        except Exception as e:
+            logger.warning(f"Failed to capture result artifact: {e}")
+            return None
+        # Only plain JSON objects are persistable (also guards against mock
+        # executors in tests returning non-dict values).
+        if not isinstance(artifact, dict):
+            return None
+        self.execution_logger.log_milestone(
+            "result_artifact_captured",
+            {"keys": sorted(artifact.keys())[:20]},
+        )
+        return artifact
+
     async def _monitor_agent_execution(
         self, session_reference: str, agent_executor: Any
     ) -> Dict[str, Any]:
@@ -2277,6 +2305,12 @@ class FlowExecutionOrchestrator:
                         "error_message": error_message,
                         "actions_taken": self.execution_logger.get_actions_taken(),
                         "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                        # Structured result artifact (/workspace/result.json)
+                        # captured first-class from the workspace — the
+                        # eval/observe contract surface (no log scraping).
+                        "result": await self._capture_result_artifact(
+                            agent_executor, session_reference
+                        ),
                         "exit_code": result.exit_code,
                         # First-pass failure classification made against the
                         # FULL container logs. error_message keeps only the
@@ -2316,6 +2350,11 @@ class FlowExecutionOrchestrator:
                             "error_message": None,
                             "actions_taken": self.execution_logger.get_actions_taken(),
                             "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                            # Container is still alive here (post-exec
+                            # commands); the archive API works either way.
+                            "result": await self._capture_result_artifact(
+                                agent_executor, session_reference
+                            ),
                         }
 
                 # Wait before next poll
@@ -2719,6 +2758,7 @@ class FlowExecutionOrchestrator:
                 error_message=agent_result.get("error_message"),
                 actions_taken_summary=agent_result.get("actions_taken"),
                 mcp_usage_logs=agent_result.get("mcp_usage_logs"),
+                result=agent_result.get("result"),
                 end_time=datetime.now(timezone.utc),
                 tool_calls_count=self.tool_calls_count,
                 total_tokens=self.total_tokens,

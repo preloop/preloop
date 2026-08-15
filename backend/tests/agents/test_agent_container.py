@@ -337,3 +337,123 @@ class TestContainerAgentExecutor:
 
         session_ref = await container_executor.start(execution_context)
         assert session_ref == "container-xyz"
+
+
+def _result_artifact_tar(content: bytes, name: str = "result.json"):
+    """Build an in-memory tarfile like Docker's archive API returns."""
+    import io
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        info = tarfile.TarInfo(name=name)
+        info.size = len(content)
+        tf.addfile(info, io.BytesIO(content))
+    buf.seek(0)
+    return tarfile.open(fileobj=buf, mode="r")
+
+
+class TestGetResultArtifact:
+    """Tests for first-class /workspace/result.json capture."""
+
+    @pytest.mark.asyncio
+    async def test_valid_result_artifact(self, container_executor, mock_docker):
+        """A valid JSON object in /workspace/result.json is returned parsed."""
+        payload = (
+            b'{"schema": "preloop.eval.result/v1", "status": "pass",'
+            b' "summary": "ok", "metrics": {"latency_ms": 12}}'
+        )
+        mock_container = AsyncMock()
+        mock_container.get_archive = AsyncMock(
+            return_value=_result_artifact_tar(payload)
+        )
+        mock_docker.containers.get = AsyncMock(return_value=mock_container)
+
+        artifact = await container_executor.get_result_artifact("container-123")
+
+        assert artifact == {
+            "schema": "preloop.eval.result/v1",
+            "status": "pass",
+            "summary": "ok",
+            "metrics": {"latency_ms": 12},
+        }
+        mock_container.get_archive.assert_awaited_once_with("/workspace/result.json")
+
+    @pytest.mark.asyncio
+    async def test_missing_result_artifact_returns_none(
+        self, container_executor, mock_docker
+    ):
+        """No result.json (Docker 404) is the normal case: returns None."""
+        from aiodocker.exceptions import DockerError
+
+        mock_container = AsyncMock()
+        mock_container.get_archive = AsyncMock(
+            side_effect=DockerError(
+                404, {"message": "Could not find the file in container"}
+            )
+        )
+        mock_docker.containers.get = AsyncMock(return_value=mock_container)
+
+        artifact = await container_executor.get_result_artifact("container-123")
+
+        assert artifact is None
+
+    @pytest.mark.asyncio
+    async def test_invalid_json_is_wrapped(self, container_executor, mock_docker):
+        """A present-but-broken result.json yields a wrapped error object."""
+        mock_container = AsyncMock()
+        mock_container.get_archive = AsyncMock(
+            return_value=_result_artifact_tar(b"{not json")
+        )
+        mock_docker.containers.get = AsyncMock(return_value=mock_container)
+
+        artifact = await container_executor.get_result_artifact("container-123")
+
+        assert artifact is not None
+        assert artifact["error"] == "result_artifact_invalid_json"
+
+    @pytest.mark.asyncio
+    async def test_non_object_json_is_wrapped(self, container_executor, mock_docker):
+        """A JSON array/scalar (not an object) yields a wrapped error object."""
+        mock_container = AsyncMock()
+        mock_container.get_archive = AsyncMock(
+            return_value=_result_artifact_tar(b'["not", "an", "object"]')
+        )
+        mock_docker.containers.get = AsyncMock(return_value=mock_container)
+
+        artifact = await container_executor.get_result_artifact("container-123")
+
+        assert artifact is not None
+        assert artifact["error"] == "result_artifact_not_object"
+
+    @pytest.mark.asyncio
+    async def test_oversized_artifact_is_not_persisted(
+        self, container_executor, mock_docker
+    ):
+        """Artifacts above the size cap are reported, not stored."""
+        from preloop.agents.container import MAX_RESULT_ARTIFACT_BYTES
+
+        big = b'{"pad": "' + b"x" * (MAX_RESULT_ARTIFACT_BYTES + 10) + b'"}'
+        mock_container = AsyncMock()
+        mock_container.get_archive = AsyncMock(return_value=_result_artifact_tar(big))
+        mock_docker.containers.get = AsyncMock(return_value=mock_container)
+
+        artifact = await container_executor.get_result_artifact("container-123")
+
+        assert artifact is not None
+        assert artifact["error"] == "result_artifact_too_large"
+        assert artifact["limit_bytes"] == MAX_RESULT_ARTIFACT_BYTES
+
+    @pytest.mark.asyncio
+    async def test_kubernetes_backend_returns_none(self):
+        """Kubernetes capture is stubbed (TODO): returns None."""
+        executor = ContainerAgentExecutor(
+            agent_type="test-agent",
+            config={},
+            image="test-image:latest",
+            use_kubernetes=True,
+        )
+
+        artifact = await executor.get_result_artifact("job-123")
+
+        assert artifact is None

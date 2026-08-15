@@ -335,6 +335,37 @@ def read_flow_execution(
     return execution
 
 
+@router.get("/flows/executions/{execution_id}/result")
+@require_permission("view_flows")
+def get_flow_execution_result(
+    *,
+    db: Session = Depends(get_db),
+    execution_id: uuid.UUID,
+    current_user: User = Depends(get_current_active_user),
+) -> Dict[str, Any]:
+    """Get the structured result artifact reported by a flow execution.
+
+    Eval/observe flows write ``/workspace/result.json`` as their final
+    report; the runner captures it as a first-class execution artifact.
+    Returns 404 if the execution does not exist or reported no result.
+    """
+    execution = crud_flow_execution.get(
+        db=db, id=execution_id, account_id=current_user.account_id
+    )
+    if not execution:
+        raise HTTPException(status_code=404, detail="Flow execution not found")
+    if execution.result is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Flow execution did not report a result artifact",
+        )
+    return {
+        "execution_id": str(execution.id),
+        "status": execution.status,
+        "result": execution.result,
+    }
+
+
 @router.get("/flows/executions/{execution_id}/logs")
 @require_permission("view_flows")
 async def get_flow_execution_logs(
