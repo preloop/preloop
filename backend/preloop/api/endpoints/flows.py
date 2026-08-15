@@ -1136,6 +1136,12 @@ def dismiss_preset_update(
         422: {
             "description": (
                 "Payload does not match the flow's trigger_config; no "
+                "execution was created. Also returned for invalid request "
+                "input (e.g. malformed flow_id)."
+            )
+        },
+            "description": (
+                "Payload does not match the flow's trigger_config; no "
                 "execution was created."
             )
         },
