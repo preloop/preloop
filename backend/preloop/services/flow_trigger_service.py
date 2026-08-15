@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from preloop.models.crud import crud_flow, crud_flow_execution
 from preloop.models.models import Flow
+from preloop.models.models.flow_execution import FlowExecution
 from preloop.models.schemas.flow_execution import FlowExecutionCreate
 from .flow_orchestrator import FlowExecutionOrchestrator
 from preloop.sync.event_normalizer import attach_trigger_subject
@@ -320,7 +321,7 @@ class FlowTriggerService:
 
     def find_duplicate_execution(
         self, flow: Flow, event_data: Dict[str, Any]
-    ) -> Optional[Any]:
+    ) -> Optional[FlowExecution]:
         """Return a running execution of ``flow`` for the same repo + commit
         as ``event_data``, or None.
 
@@ -328,6 +329,12 @@ class FlowTriggerService:
         the commit-SHA deduplication that generic event matching
         (``process_event``) enforces, without silently dropping the event:
         callers can return the existing execution to the caller instead.
+
+        Scope (parity with ``process_event``): dedup applies only when the
+        payload carries a recognizable commit SHA (see
+        ``_extract_commit_sha``); commit-less payloads are never deduplicated.
+        The check-then-insert is also not atomic — a DB-level guard would be
+        needed to close the race for concurrent identical deliveries.
         """
         commit_sha = self._extract_commit_sha(event_data)
         if not commit_sha:
@@ -350,7 +357,7 @@ class FlowTriggerService:
         commit_sha: str,
         account_id: str,
         repo_key: Optional[str] = None,
-    ) -> Optional[Any]:
+    ) -> Optional[FlowExecution]:
         """
         Return a running execution for this repo + commit, if one exists.
 

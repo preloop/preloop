@@ -1117,7 +1117,35 @@ def dismiss_preset_update(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/webhooks/flows/{flow_id}/{webhook_secret}")
+@router.post(
+    "/webhooks/flows/{flow_id}/{webhook_secret}",
+    responses={
+        200: {
+            "description": (
+                "Execution triggered (or deduplicated to an existing running "
+                "execution for the same repo + commit, see 'deduplicated')."
+            )
+        },
+        202: {
+            "description": (
+                "Execution row was created but dispatch failed; poll "
+                "execution_url or retry from the console. Do not re-send "
+                "the webhook."
+            )
+        },
+        422: {
+            "description": (
+                "Payload does not match the flow's trigger_config; no "
+                "execution was created."
+            )
+        },
+        500: {
+            "description": (
+                "No execution could be created (failure at/before the insert)."
+            )
+        },
+    },
+)
 async def trigger_flow_via_webhook(
     *,
     db: Session = Depends(get_db),
@@ -1130,6 +1158,18 @@ async def trigger_flow_via_webhook(
 
     This endpoint allows external services to trigger flows without authentication.
     Security is provided by the unguessable webhook_secret in the URL.
+
+    Success responses carry a nested ``execution`` object with the same
+    ``{id, status, flow_id}`` shape as ``POST /flows/{flow_id}/trigger``, plus
+    flat ``execution_id``/``execution_status``/``execution_url`` fields and
+    ``"status": "triggered"`` for backwards compatibility.
+
+    Deduplication: redelivered payloads carrying the same commit SHA as a
+    still-running execution of this flow return that execution with
+    ``"deduplicated": true`` instead of creating a duplicate. Payloads without
+    a recognizable commit SHA are never deduplicated (same scope as generic
+    event matching); commit-less callers that need idempotent redelivery
+    should include a unique ``sha`` field in the payload.
     """
     # Get the flow without account filtering
     flow = crud_flow.get(db=db, id=flow_id)
