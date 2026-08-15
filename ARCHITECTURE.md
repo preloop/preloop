@@ -664,3 +664,12 @@ Single WebSocket connection per client with pub/sub message routing:
 ## Event-Driven Agentic Flows
 
 For detailed architecture on the Flow subsystem, including the Trigger Service, Flow Orchestrator, NATS queue, Agent infrastructure, and data flows, see the [Flows Architecture documentation](https://docs.preloop.ai/flows/architecture).
+
+### Matrix / Batch Fan-Out
+
+One flow definition can drive an agent-harness × model evaluation grid without cloning the flow per combination:
+
+*   **Trigger:** `POST /api/v1/flows/{flow_id}/trigger` reserves the top-level `matrix` key in the trigger body. When present, it must be a list of up to 25 `{"agent_type"?, "ai_model_id"?}` cells; the trigger fans out to one execution per cell (an empty object `{}` runs the flow defaults). Validation is all-or-nothing (allowed keys, agent types from the agent factory registry, account-visible models), and all execution rows are committed before any cell is dispatched. **Note for existing users:** `matrix` is now a reserved key in trigger bodies — it is stripped before template-variable resolution and never reaches `{{trigger_event...}}` placeholders; rename any pre-existing `matrix` field in custom trigger payloads.
+*   **Batch identity:** all cells share a `batch_id` (indexed column on `flow_execution`). Per-cell overrides are persisted on each execution under the reserved `_matrix` key of `trigger_event_details`, making every cell self-describing. All paths that (re)build an agent executor — initial run, resume, background monitor, crash recovery — resolve the effective agent type through a single shared helper (`resolve_matrix_agent_selection`), so an interrupted cell is always handled by its own harness rather than the flow default.
+*   **Observation:** `GET /api/v1/flows/batches/{batch_id}/executions` lists a batch (account-scoped, sorted by matrix index) with a rollup of status counts, tokens, tool calls, and estimated cost, so an eval matrix can be observed as a unit.
+*   **Response shape:** non-matrix triggers are wire-identical to before; matrix triggers return `batch_id` plus per-cell execution references.

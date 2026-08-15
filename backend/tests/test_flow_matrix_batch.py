@@ -393,3 +393,134 @@ class TestBatchExecutionsEndpoint:
 def test_matrix_overrides_key_is_reserved():
     """The reserved key must stay in sync between model and consumers."""
     assert MATRIX_OVERRIDES_KEY == "_matrix"
+
+
+class TestMatrixOverrideOnRebuiltExecutors:
+    """Regression: every path that (re)builds an agent executor must honour
+    the cell's agent_type override, not the flow default (resume / monitor /
+    recovery all run against interrupted matrix cells)."""
+
+    def _matrix_execution(self, db_session, flow, **kwargs) -> FlowExecution:
+        execution = FlowExecution(
+            flow_id=flow.id,
+            status="RUNNING",
+            batch_id=uuid4(),
+            agent_session_reference="session-ref-123",
+            trigger_event_details={
+                MATRIX_OVERRIDES_KEY: {
+                    "batch_id": str(uuid4()),
+                    "index": 0,
+                    "agent_type": "opencode",
+                }
+            },
+            **kwargs,
+        )
+        db_session.add(execution)
+        db_session.flush()
+        db_session.refresh(execution)
+        return execution
+
+    def test_resolve_matrix_agent_selection_helper(self):
+        from preloop.models.models.flow_execution import (
+            resolve_matrix_agent_selection,
+        )
+
+        assert resolve_matrix_agent_selection(
+            {MATRIX_OVERRIDES_KEY: {"agent_type": "opencode"}},
+            flow_agent_type="openhands",
+            flow_ai_model_id="model-1",
+        ) == ("opencode", "model-1")
+        # No overrides / no details -> flow defaults.
+        assert resolve_matrix_agent_selection(
+            {"payload": {}}, flow_agent_type="openhands"
+        ) == ("openhands", None)
+        assert resolve_matrix_agent_selection(
+            None, flow_agent_type="openhands", flow_ai_model_id="model-1"
+        ) == ("openhands", "model-1")
+
+    @pytest.mark.asyncio
+    async def test_resume_uses_cell_agent_type(
+        self, db_session: Session, test_flow: Flow
+    ):
+        from preloop.services.flow_execution_runner import (
+            resume_existing_execution,
+        )
+        from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+        execution = self._matrix_execution(db_session, test_flow)
+        orchestrator = FlowExecutionOrchestrator(
+            db_session,
+            flow_id=test_flow.id,
+            trigger_event_data=execution.trigger_event_details,
+            nats_client=AsyncMock(),
+        )
+        orchestrator.execution_log = execution
+
+        executor = AsyncMock()
+        with (
+            patch(
+                "preloop.agents.create_agent_executor", return_value=executor
+            ) as create_mock,
+            patch.object(
+                orchestrator,
+                "_monitor_agent_execution",
+                new_callable=AsyncMock,
+                return_value={"status": "SUCCEEDED"},
+            ),
+            patch.object(orchestrator, "_update_execution_log", new_callable=AsyncMock),
+        ):
+            await resume_existing_execution(orchestrator, "session-ref-123")
+
+        create_mock.assert_called_once()
+        assert create_mock.call_args[0][0] == "opencode"
+
+    @pytest.mark.asyncio
+    async def test_monitor_uses_cell_agent_type(
+        self, db_session: Session, test_flow: Flow
+    ):
+        from datetime import datetime, timedelta, timezone
+
+        from preloop.agents import AgentStatus
+        from preloop.services.execution_monitor import ExecutionMonitor
+
+        stale_start = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+            hours=3
+        )
+        execution = self._matrix_execution(
+            db_session, test_flow, start_time=stale_start
+        )
+
+        executor = AsyncMock()
+        executor.get_status.return_value = AgentStatus.RUNNING
+        with patch(
+            "preloop.services.execution_monitor.create_agent_executor",
+            return_value=executor,
+        ) as create_mock:
+            await ExecutionMonitor()._check_execution(db_session, execution)
+
+        create_mock.assert_called_once()
+        assert create_mock.call_args[0][0] == "opencode"
+
+    @pytest.mark.asyncio
+    async def test_recovery_uses_cell_agent_type(
+        self, db_session: Session, test_flow: Flow
+    ):
+        from preloop.agents import AgentStatus
+        from preloop.services.execution_recovery import ExecutionRecoveryService
+
+        execution = self._matrix_execution(db_session, test_flow)
+
+        executor = AsyncMock()
+        # Terminal container state: recovery updates the row and returns
+        # before spawning monitoring tasks, keeping the test self-contained.
+        executor.get_status.return_value = AgentStatus.SUCCEEDED
+        with patch(
+            "preloop.agents.create_agent_executor", return_value=executor
+        ) as create_mock:
+            await ExecutionRecoveryService()._resume_execution_monitoring(
+                db_session, execution, nats_client=AsyncMock()
+            )
+
+        create_mock.assert_called_once()
+        assert create_mock.call_args[0][0] == "opencode"
+        assert execution.status == "SUCCEEDED"

@@ -182,12 +182,17 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
     ) -> List[FlowExecution]:
         """Get all executions created by one matrix/batch trigger.
 
-        Ordered by creation time so rows line up with the matrix entry order
-        (cells are created sequentially at trigger time). Batches are capped
-        at trigger time, so no pagination is needed.
+        Ordered by creation time as a stable default; note this does NOT
+        guarantee matrix-cell order (ids are random UUIDs and created_at has
+        limited resolution) — callers that need cell order must sort by the
+        recorded matrix index, as the batch listing endpoint does. Batches are
+        capped at trigger time, so no pagination is needed. The flow
+        relationship is eagerly loaded because callers render flow names per
+        row.
         """
         query = (
             db.query(FlowExecution)
+            .options(joinedload(FlowExecution.flow))
             .filter(FlowExecution.batch_id == batch_id)
             .order_by(FlowExecution.created_at.asc(), FlowExecution.id.asc())
         )

@@ -12,6 +12,19 @@ from .opencode import OpenCodeAgent
 
 logger = logging.getLogger(__name__)
 
+# Single registry of supported agent harnesses. API-level validation (e.g.
+# matrix triggers in api/endpoints/flows.py) derives its allowed set from
+# SUPPORTED_AGENT_TYPES so adding a harness here is sufficient everywhere.
+_AGENT_EXECUTOR_REGISTRY: Dict[str, type[AgentExecutor]] = {
+    "openhands": OpenHandsAgent,
+    "aider": AiderAgent,
+    "codex": CodexAgent,
+    "gemini": GeminiAgent,
+    "opencode": OpenCodeAgent,
+}
+
+SUPPORTED_AGENT_TYPES = frozenset(_AGENT_EXECUTOR_REGISTRY)
+
 
 def create_agent_executor(agent_type: str, config: Dict[str, Any]) -> AgentExecutor:
     """
@@ -27,20 +40,10 @@ def create_agent_executor(agent_type: str, config: Dict[str, Any]) -> AgentExecu
     Raises:
         ValueError: If agent_type is not supported
     """
-    agent_type_lower = agent_type.lower()
-
-    if agent_type_lower == "openhands":
-        return OpenHandsAgent(config)
-    elif agent_type_lower == "aider":
-        return AiderAgent(config)
-    elif agent_type_lower == "codex":
-        return CodexAgent(config)
-    elif agent_type_lower == "gemini":
-        return GeminiAgent(config)
-    elif agent_type_lower == "opencode":
-        return OpenCodeAgent(config)
-    else:
+    executor_cls = _AGENT_EXECUTOR_REGISTRY.get(agent_type.lower())
+    if executor_cls is None:
         raise ValueError(
             f"Unsupported agent type: {agent_type}. "
-            f"Supported types: codex, gemini, opencode, aider, openhands"
+            f"Supported types: {', '.join(sorted(SUPPORTED_AGENT_TYPES))}"
         )
+    return executor_cls(config)

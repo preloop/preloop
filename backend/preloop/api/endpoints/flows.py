@@ -882,9 +882,6 @@ async def send_execution_command(
         raise HTTPException(status_code=500, detail=f"Failed to send command: {str(e)}")
 
 
-_SUPPORTED_MATRIX_AGENT_TYPES = {"openhands", "aider", "codex", "gemini", "opencode"}
-
-
 def _validate_matrix(
     db: Session, matrix: Any, account_id: uuid.UUID
 ) -> List[Dict[str, Any]]:
@@ -892,7 +889,13 @@ def _validate_matrix(
 
     Validation is all-or-nothing: no execution is created unless every entry
     passes, so a batch never partially materialises from a malformed request.
+    Entry shape (allowed keys, UUID coercion) is enforced by the
+    ``FlowMatrixEntry`` schema; the allowed agent types come straight from the
+    agent factory registry, so both stay in one place.
     """
+    from pydantic import ValidationError
+
+    from preloop.agents.factory import SUPPORTED_AGENT_TYPES
     from preloop.models.crud import crud_ai_model
     from preloop.services.flow_trigger_service import MATRIX_MAX_ENTRIES
 
@@ -908,36 +911,39 @@ def _validate_matrix(
     for index, entry in enumerate(matrix):
         if not isinstance(entry, dict):
             _reject(f"matrix[{index}] must be an object")
-        unknown = set(entry) - {"agent_type", "ai_model_id"}
-        if unknown:
-            _reject(
-                f"matrix[{index}] has unsupported keys: {sorted(unknown)}; "
-                "allowed keys are 'agent_type' and 'ai_model_id'"
+        try:
+            parsed = schemas.FlowMatrixEntry.model_validate(entry)
+        except ValidationError as exc:
+            unknown = sorted(
+                str(error["loc"][0])
+                for error in exc.errors()
+                if error["type"] == "extra_forbidden"
             )
-        cell: Dict[str, Any] = {}
-        agent_type = entry.get("agent_type")
-        if agent_type is not None:
-            if (
-                not isinstance(agent_type, str)
-                or agent_type.lower() not in _SUPPORTED_MATRIX_AGENT_TYPES
-            ):
+            if unknown:
                 _reject(
-                    f"matrix[{index}].agent_type '{agent_type}' is not supported; "
-                    f"supported types: {sorted(_SUPPORTED_MATRIX_AGENT_TYPES)}"
+                    f"matrix[{index}] has unsupported keys: {unknown}; "
+                    "allowed keys are 'agent_type' and 'ai_model_id'"
                 )
-            cell["agent_type"] = agent_type.lower()
-        ai_model_id = entry.get("ai_model_id")
-        if ai_model_id is not None:
-            try:
-                model_uuid = uuid.UUID(str(ai_model_id))
-            except ValueError:
+            first = exc.errors()[0]
+            field = first["loc"][0] if first["loc"] else "entry"
+            if field == "ai_model_id":
                 _reject(f"matrix[{index}].ai_model_id must be a UUID")
-            ai_model = crud_ai_model.get(db, id=str(model_uuid))
+            _reject(f"matrix[{index}].{field}: {first['msg']}")
+        cell: Dict[str, Any] = {}
+        if parsed.agent_type is not None:
+            if parsed.agent_type.lower() not in SUPPORTED_AGENT_TYPES:
+                _reject(
+                    f"matrix[{index}].agent_type '{parsed.agent_type}' is not "
+                    f"supported; supported types: {sorted(SUPPORTED_AGENT_TYPES)}"
+                )
+            cell["agent_type"] = parsed.agent_type.lower()
+        if parsed.ai_model_id is not None:
+            ai_model = crud_ai_model.get(db, id=str(parsed.ai_model_id))
             # Same visibility rule as model listing: account-owned or shared
             # system model (account_id is NULL).
             if not ai_model or ai_model.account_id not in (None, account_id):
-                _reject(f"matrix[{index}].ai_model_id '{model_uuid}' not found")
-            cell["ai_model_id"] = str(model_uuid)
+                _reject(f"matrix[{index}].ai_model_id '{parsed.ai_model_id}' not found")
+            cell["ai_model_id"] = str(parsed.ai_model_id)
         validated.append(cell)
     return validated
 

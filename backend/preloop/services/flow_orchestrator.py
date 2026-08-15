@@ -22,7 +22,10 @@ from preloop.models.crud import (
     crud_user,
 )
 from preloop.models.models.flow import Flow
-from preloop.models.models.flow_execution import MATRIX_OVERRIDES_KEY
+from preloop.models.models.flow_execution import (
+    MATRIX_OVERRIDES_KEY,
+    resolve_matrix_agent_selection,
+)
 from preloop.models.models.ai_model import AIModel
 from preloop.models.models.runtime_session import RuntimeSession
 from preloop.agents import create_agent_executor, AgentStatus
@@ -707,9 +710,10 @@ class FlowExecutionOrchestrator:
         matrix_overrides = (self.trigger_event_data or {}).get(
             MATRIX_OVERRIDES_KEY
         ) or {}
-        self.agent_type = matrix_overrides.get("agent_type") or self.flow.agent_type
-        effective_ai_model_id = (
-            matrix_overrides.get("ai_model_id") or self.flow.ai_model_id
+        self.agent_type, effective_ai_model_id = resolve_matrix_agent_selection(
+            self.trigger_event_data,
+            flow_agent_type=self.flow.agent_type,
+            flow_ai_model_id=self.flow.ai_model_id,
         )
         if matrix_overrides:
             logger.info(
