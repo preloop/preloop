@@ -499,7 +499,7 @@ class TestProcessEvent:
     @patch("preloop.services.flow_trigger_service.asyncio.create_task")
     @patch("preloop.services.flow_trigger_service.get_nats_client")
     @patch("preloop.services.flow_trigger_service.crud_flow")
-    @patch.object(FlowTriggerService, "_has_execution_for_commit")
+    @patch.object(FlowTriggerService, "_find_running_execution_for_commit")
     async def test_process_event_skips_duplicate_execution(
         self,
         mock_has_commit,
@@ -511,7 +511,7 @@ class TestProcessEvent:
         sample_flow,
     ):
         """Test that duplicate executions are skipped when same repo+commit."""
-        mock_has_commit.return_value = True
+        mock_has_commit.return_value = MagicMock()  # an existing execution
         mock_nats.return_value = AsyncMock()
         mock_crud.get_by_trigger.return_value = [sample_flow]
 
