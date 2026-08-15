@@ -294,7 +294,7 @@ sequenceDiagram
 *   **Purpose:** Data synchronization and embedding generation service.
 *   **Functionality:**
     *   The `preloop.sync` CLI can launch one-off scan operations or start a persistent scheduler.
-    *   **Scheduler:** Periodically adds polling tasks for each configured tracker to the NATS queue.
+    *   **Scheduler:** Periodically adds polling tasks for each configured tracker to the NATS queue. The same daemon also reconciles native flow schedules (`sync/services/flow_schedules.py`): one APScheduler cron job per enabled, non-preset flow with `trigger_event_source='schedule'` (config: `flow.schedule_config = {"cron": <5-field crontab>, "timezone": <IANA name>}`, minimum 5-minute interval enforced at the API). Each tick only publishes a `run_scheduled_flow` NATS task; the worker side (`FlowTriggerService.run_scheduled_tick`) re-checks state and enforces the policies — paused flows never fire, and overlapping ticks are skipped while a previous execution is still running (recorded as `flow_schedule_tick_skipped` audit events). Flow API responses expose the derived `schedule_state` (incl. next fire time).
     *   **Worker:** Consumes tasks from the NATS queue. Multiple, specialized worker groups can be deployed, each subscribing to a specific subset of tasks (e.g., polling, webhooks). This allows for independent scaling and monitoring of different task types.
 *   **Execution:** Runs as two distinct, long-running processes (scheduler and worker) or as a one-off CLI command.
 

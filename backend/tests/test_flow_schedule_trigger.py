@@ -84,6 +84,22 @@ class TestScheduleConfigValidation:
     def test_daily_cron_allowed(self):
         assert ScheduleConfig(cron="30 2 * * *").cron == "30 2 * * *"
 
+    def test_seasonal_fast_cron_rejected(self):
+        # Every 2 minutes but only in January: the fire times are far in
+        # the future for most of the year, so a wall-clock-horizon check
+        # would accept it. The simulation is anchored at the schedule's own
+        # first fire time, so this must be rejected year-round.
+        with pytest.raises(ValidationError, match="minimum"):
+            ScheduleConfig(cron="*/2 * * 1 *")
+
+    def test_seasonal_minute_list_rejected(self):
+        # 3-minute gap, restricted to one day per year
+        with pytest.raises(ValidationError, match="minimum"):
+            ScheduleConfig(cron="0,3 * 1 1 *")
+
+    def test_yearly_cron_allowed(self):
+        assert ScheduleConfig(cron="0 0 1 1 *").cron == "0 0 1 1 *"
+
 
 class TestScheduledTick:
     """Worker-side handling of schedule ticks."""
@@ -199,8 +215,42 @@ class TestScheduleJobSync:
         scheduler.add_job.assert_called_once()
         kwargs = scheduler.add_job.call_args[1]
         assert kwargs["id"] == f"{FLOW_SCHEDULE_JOB_PREFIX}{scheduled_flow.id}"
-        assert kwargs["args"] == [str(scheduled_flow.id)]
+        assert kwargs["args"] == [str(scheduled_flow.id), "*/10 * * * *", "UTC"]
         assert "*/10" in repr(kwargs["trigger"])
+
+    def test_sync_is_idempotent_for_unchanged_config(
+        self, db_session: Session, scheduled_flow: Flow
+    ):
+        """A job whose args match the stored (cron, tz) is left untouched."""
+        existing_job = MagicMock()
+        existing_job.id = f"{FLOW_SCHEDULE_JOB_PREFIX}{scheduled_flow.id}"
+        existing_job.args = [str(scheduled_flow.id), "*/10 * * * *", "UTC"]
+        scheduler = MagicMock()
+        scheduler.get_jobs.return_value = [existing_job]
+
+        with self._patch_db(db_session), patch.object(db_session, "close"):
+            sync_flow_schedule_jobs(scheduler)
+
+        scheduler.add_job.assert_not_called()
+        scheduler.remove_job.assert_not_called()
+
+    def test_sync_replaces_job_when_config_changes(
+        self, db_session: Session, scheduled_flow: Flow
+    ):
+        """A job whose args no longer match the stored config is replaced."""
+        existing_job = MagicMock()
+        existing_job.id = f"{FLOW_SCHEDULE_JOB_PREFIX}{scheduled_flow.id}"
+        existing_job.args = [str(scheduled_flow.id), "0 6 * * *", "Europe/Athens"]
+        scheduler = MagicMock()
+        scheduler.get_jobs.return_value = [existing_job]
+
+        with self._patch_db(db_session), patch.object(db_session, "close"):
+            sync_flow_schedule_jobs(scheduler)
+
+        scheduler.add_job.assert_called_once()
+        kwargs = scheduler.add_job.call_args[1]
+        assert kwargs["replace_existing"] is True
+        assert kwargs["args"] == [str(scheduled_flow.id), "*/10 * * * *", "UTC"]
 
     def test_sync_removes_job_for_disabled_flow(
         self, db_session: Session, scheduled_flow: Flow

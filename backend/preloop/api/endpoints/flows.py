@@ -57,6 +57,18 @@ def create_flow(
                 detail="Only administrators can configure custom commands for security reasons",
             )
 
+    # A schedule_config implies a schedule trigger: default the source
+    # (mirrors the webhook auto-default below) and reject contradictory
+    # sources so the config can never sit inert on a non-schedule flow.
+    if flow_in.schedule_config and not flow_in.trigger_event_source:
+        flow_in.trigger_event_source = "schedule"
+    if flow_in.schedule_config and flow_in.trigger_event_source != "schedule":
+        raise HTTPException(
+            status_code=400,
+            detail="schedule_config is only valid when trigger_event_source "
+            "is 'schedule'",
+        )
+
     # Schedule triggers require a cron schedule_config
     if flow_in.trigger_event_source == "schedule":
         if not flow_in.schedule_config:
@@ -963,6 +975,14 @@ def update_flow(
         if flow_in.trigger_event_source is not None
         else flow.trigger_event_source
     )
+    # Reject a schedule_config sent for a flow whose (effective) trigger
+    # source is not 'schedule' - it would be stored but never reconciled.
+    if flow_in.schedule_config and effective_source != "schedule":
+        raise HTTPException(
+            status_code=400,
+            detail="schedule_config is only valid when trigger_event_source "
+            "is 'schedule'",
+        )
     if effective_source == "schedule":
         effective_schedule = (
             flow_in.schedule_config

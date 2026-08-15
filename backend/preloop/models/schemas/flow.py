@@ -84,9 +84,13 @@ class CustomCommands(BaseModel):
 
 # Minimum interval between two scheduled runs of the same flow.
 MIN_SCHEDULE_INTERVAL = timedelta(minutes=5)
-# How far ahead (and how many ticks) we simulate when checking the interval.
-_SCHEDULE_CHECK_MAX_TICKS = 100
-_SCHEDULE_CHECK_HORIZON = timedelta(days=32)
+# How many consecutive fire times we simulate when checking the interval.
+# The simulation is anchored at the schedule's own next fire time (not a
+# wall-clock horizon), so seasonal crons (e.g. "*/2 * * 1 *", January only)
+# are caught no matter when validation runs. Cron minute/hour patterns
+# repeat every matched hour/day, so any sub-minimum gap shows up within the
+# first few matched days - well inside 200 ticks.
+_SCHEDULE_CHECK_MAX_TICKS = 200
 
 
 class ScheduleConfig(BaseModel):
@@ -117,11 +121,13 @@ class ScheduleConfig(BaseModel):
         # Simulate successive fire times and reject schedules that would
         # ever fire more often than MIN_SCHEDULE_INTERVAL apart (e.g.
         # "* * * * *" or irregular minute lists like "0,3 * * * *").
+        # Anchored at the first fire time with no wall-clock horizon so
+        # crons whose fire times are far in the future (month/day-restricted
+        # schedules) are simulated too, not silently accepted.
         now = datetime.now(timezone.utc)
-        horizon = now + _SCHEDULE_CHECK_HORIZON
         prev = trigger.get_next_fire_time(None, now)
         for _ in range(_SCHEDULE_CHECK_MAX_TICKS):
-            if prev is None or prev > horizon:
+            if prev is None:
                 break
             nxt = trigger.get_next_fire_time(prev, prev + timedelta(microseconds=1))
             if nxt is None:

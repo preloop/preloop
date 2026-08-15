@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Native scheduled (cron) flow triggers**: flows can now run on a schedule
+  without an external cron caller hitting the webhook endpoint. Create or
+  update a flow with `trigger_event_source: "schedule"` and
+  `schedule_config: {"cron": "<5-field crontab>", "timezone": "<IANA name>"}`
+  (sending a `schedule_config` alone implies the schedule source, mirroring
+  the webhook default; a `schedule_config` on any other trigger source is
+  rejected instead of stored inert). Cron expressions are validated against a
+  5-minute minimum interval by simulating the schedule's own future fire
+  times, so month/day-restricted expressions are checked too. Flow responses
+  expose a read-only `schedule_state` (active, cron, timezone, next run).
+  Ticks are reconciled by the existing sync scheduler daemon and dispatched
+  as a new `run_scheduled_flow` NATS worker task; paused flows never fire,
+  and a tick that lands while a previous execution is still running is
+  skipped and recorded as a `flow_schedule_tick_skipped` audit event. New
+  migration adds the nullable `flow.schedule_config` column.
 - **Provider-reported cost is ingested as authoritative**: when the upstream
   reports the request's actual cost inside the response usage payload
   (OpenRouter usage accounting: `usage.cost` and

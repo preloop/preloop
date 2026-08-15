@@ -7,7 +7,7 @@ with ``trigger_event_source == 'schedule'``. Jobs only publish the
 (skip-if-previous-running) and pause-suppression policies.
 """
 
-from typing import Dict
+from typing import Dict, Tuple
 
 from apscheduler.jobstores.base import JobLookupError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -22,9 +22,18 @@ from .event_bus import event_bus_service
 FLOW_SCHEDULE_JOB_PREFIX = "flow_schedule_"
 
 
-async def publish_flow_schedule_tick(flow_id: str) -> None:
-    """Publish a 'run_scheduled_flow' task to the NATS queue."""
-    logger.info(f"Publishing scheduled tick for flow {flow_id}")
+async def publish_flow_schedule_tick(
+    flow_id: str, cron: str = "", timezone: str = "UTC"
+) -> None:
+    """Publish a 'run_scheduled_flow' task to the NATS queue.
+
+    ``cron`` and ``timezone`` are carried in the job args purely so the
+    reconcile pass can detect config changes deterministically (and for
+    log context); the worker re-reads the flow's stored config itself.
+    """
+    logger.info(
+        f"Publishing scheduled tick for flow {flow_id} (cron='{cron}' tz='{timezone}')"
+    )
     try:
         ack = await event_bus_service.publish_task("run_scheduled_flow", flow_id)
         if not ack:
@@ -49,7 +58,7 @@ def sync_flow_schedule_jobs(scheduler: AsyncIOScheduler) -> None:
     """
     db = next(get_db_session())
     try:
-        desired: Dict[str, CronTrigger] = {}
+        desired: Dict[str, Tuple[str, str]] = {}
         for flow in crud_flow.get_scheduled(db):
             config: Dict[str, str] = flow.schedule_config or {}
             cron = config.get("cron")
@@ -57,12 +66,14 @@ def sync_flow_schedule_jobs(scheduler: AsyncIOScheduler) -> None:
             if not cron:
                 continue
             try:
-                desired[str(flow.id)] = CronTrigger.from_crontab(cron, timezone=tz)
+                CronTrigger.from_crontab(cron, timezone=tz)
             except Exception as e:
                 logger.error(
                     f"Flow {flow.id} has invalid schedule_config "
                     f"(cron='{cron}', timezone='{tz}'): {e}"
                 )
+                continue
+            desired[str(flow.id)] = (cron, tz)
 
         current = {
             job.id[len(FLOW_SCHEDULE_JOB_PREFIX) :]: job
@@ -78,10 +89,13 @@ def sync_flow_schedule_jobs(scheduler: AsyncIOScheduler) -> None:
             except JobLookupError:
                 logger.warning(f"Schedule job for flow {flow_id} already removed.")
 
-        # Add or update jobs for scheduled flows
-        for flow_id, trigger in desired.items():
+        # Add or update jobs for scheduled flows. The stored (cron, tz)
+        # config is carried in the job args, so idempotence is a plain
+        # comparison against the source config rather than a brittle
+        # trigger-repr comparison.
+        for flow_id, (cron, tz) in desired.items():
             existing = current.get(flow_id)
-            if existing is not None and repr(existing.trigger) == repr(trigger):
+            if existing is not None and list(existing.args) == [flow_id, cron, tz]:
                 continue  # unchanged
             scheduler.add_job(
                 publish_flow_schedule_tick,
@@ -89,12 +103,12 @@ def sync_flow_schedule_jobs(scheduler: AsyncIOScheduler) -> None:
                 name=f"Scheduled flow {flow_id}",
                 replace_existing=True,
                 misfire_grace_time=60,
-                args=[flow_id],
-                trigger=trigger,
+                args=[flow_id, cron, tz],
+                trigger=CronTrigger.from_crontab(cron, timezone=tz),
             )
             logger.info(
                 f"{'Updated' if existing else 'Added'} schedule job for flow "
-                f"{flow_id}: {trigger}"
+                f"{flow_id}: cron='{cron}' tz='{tz}'"
             )
     except Exception as e:
         logger.error(f"Error during flow schedule synchronization: {e}", exc_info=True)
