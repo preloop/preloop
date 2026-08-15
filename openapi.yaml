@@ -6898,6 +6898,46 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/flows/executions/{execution_id}/result:
+    get:
+      tags:
+      - Flows
+      summary: Get Flow Execution Result
+      description: 'Get the structured result artifact reported by a flow execution.
+
+
+        Eval/observe flows write ``/workspace/result.json`` as their final
+
+        report; the runner captures it as a first-class execution artifact.
+
+        Returns 404 if the execution does not exist or reported no result.'
+      operationId: get_flow_execution_result_api_v1_flows_executions__execution_id__result_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Flow Execution Result Api V1 Flows Executions  Execution
+                  Id  Result Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/flows/executions/{execution_id}/logs:
     get:
       tags:
@@ -11516,6 +11556,14 @@ components:
           - type: 'null'
           title: Mcp Usage Logs
           description: Detailed log of each MCP tool call
+        result:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Result
+          description: Structured result artifact reported by the agent (parsed /workspace/result.json,
+            eval/observe runs)
         agent_session_reference:
           anyOf:
           - type: string
