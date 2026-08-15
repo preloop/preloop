@@ -1465,11 +1465,15 @@ class TestWorkspaceSeedValidation:
         import base64
 
         from preloop.utils.workspace_seed import (
-            MAX_TOTAL_SEED_BYTES,
+            MAX_TOTAL_SEED_ENCODED_BYTES,
             WorkspaceSeedError,
         )
 
-        too_big = base64.b64encode(b"x" * (MAX_TOTAL_SEED_BYTES + 1)).decode("ascii")
+        # Encoded size just over the cap (the cap applies to the base64 form).
+        too_big = base64.b64encode(
+            b"x" * (MAX_TOTAL_SEED_ENCODED_BYTES // 4 * 3 + 3)
+        ).decode("ascii")
+        assert len(too_big) > MAX_TOTAL_SEED_ENCODED_BYTES
         orchestrator = self._orchestrator(
             db_session,
             test_flow,

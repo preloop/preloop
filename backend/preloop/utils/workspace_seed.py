@@ -16,11 +16,17 @@ trigger payload may instead declare files to materialize in the agent's
 
 v1 is inline-only (no URLs). Contents are base64 so arbitrary bytes survive
 the JSON payload and the JSONB trigger snapshot. Validation is strict:
-relative paths only (no ``..`` traversal, no absolute paths), a total decoded
-size cap, and a file-count cap. The cap is deliberately at the low end
-(1 MiB) because the v1 transport embeds base64 into the container launch
-command, which on Kubernetes lives in the Job spec and must stay well under
-etcd's ~1.5 MiB object limit alongside the prompt and MCP config.
+relative paths only (no ``..`` traversal, no absolute paths, no ``.git``
+segment at any depth), a total size cap, and a file-count cap. The size cap
+is enforced on the base64-ENCODED form — that is what the v1 transport
+embeds into the container launch command, which on Kubernetes lives in the
+Job spec and must stay well under etcd's ~1.5 MiB object limit alongside
+the prompt and MCP config — and is deliberately at the low end (1 MiB
+encoded, ~768 KiB decoded).
+
+Lexical path validation cannot see symlinks in the cloned workspace, so the
+emitted materialization block re-checks physical containment at runtime;
+see :func:`build_workspace_seed_shell`.
 """
 
 from __future__ import annotations
@@ -41,8 +47,13 @@ WORKSPACE_FILES_KEY = "workspace_files"
 # ``_subject`` key attached by preloop.sync.event_normalizer).
 WORKSPACE_FILE_PATHS_KEY = "_workspace_file_paths"
 
-# Total decoded bytes allowed across all seeded files.
-MAX_TOTAL_SEED_BYTES = 1 * 1024 * 1024  # 1 MiB
+# Total base64-ENCODED bytes allowed across all seeded files. The encoded
+# form (not the decoded content) is what travels inside the container launch
+# command — on Kubernetes that lives in the Job spec, which must stay well
+# under etcd's ~1.5 MiB object limit alongside the prompt and MCP config —
+# so the cap is enforced on the encoded size directly. Decoded content is
+# therefore capped at ~768 KiB (base64 is a 4/3 expansion).
+MAX_TOTAL_SEED_ENCODED_BYTES = 1 * 1024 * 1024  # 1 MiB
 
 # Bound on the number of files, to keep the init-command prelude sane.
 MAX_SEED_FILES = 50
@@ -92,7 +103,12 @@ def _validate_path(raw_path: Any) -> str:
         raise WorkspaceSeedError(f"workspace_files path escapes /workspace: {path!r}")
     if normalized in (".", ""):
         raise WorkspaceSeedError(f"workspace_files path is not a file: {path!r}")
-    if normalized == ".git" or normalized.startswith(".git/"):
+    if ".git" in normalized.split("/"):
+        # Reject a `.git` segment at ANY depth, not just the first: flows may
+        # clone repositories into sub-paths of /workspace (relative
+        # clone_path), so a nested path like `client/.git/hooks/post-commit`
+        # would land inside a real repository's git metadata and could plant
+        # executable git hooks.
         raise WorkspaceSeedError(f"workspace_files path may not target .git: {path!r}")
     return normalized
 
@@ -140,18 +156,22 @@ def parse_workspace_files(
             )
         content = "".join(content.split())  # tolerate wrapped base64
         try:
-            decoded = base64.b64decode(content, validate=True)
+            base64.b64decode(content, validate=True)
         except (binascii.Error, ValueError) as exc:
             raise WorkspaceSeedError(
                 f"workspace_files[{index}] content_base64 is not valid base64: {exc}"
             ) from exc
 
-        total_bytes += len(decoded)
-        if total_bytes > MAX_TOTAL_SEED_BYTES:
+        # Cap the ENCODED size: the base64 text is what is embedded in the
+        # container launch command (K8s Job spec / etcd limit), so that is
+        # the size that matters for the transport.
+        total_bytes += len(content)
+        if total_bytes > MAX_TOTAL_SEED_ENCODED_BYTES:
             raise WorkspaceSeedError(
-                "workspace_files total decoded size exceeds the "
-                f"{MAX_TOTAL_SEED_BYTES // (1024 * 1024)} MiB inline cap; "
-                "use fewer/smaller files"
+                "workspace_files total base64-encoded size exceeds the "
+                f"{MAX_TOTAL_SEED_ENCODED_BYTES // (1024 * 1024)} MiB inline "
+                "cap (the encoded form is embedded in the container launch "
+                "command); use fewer/smaller files"
             )
         files.append(WorkspaceSeedFile(path=path, content_base64=content))
     return files
@@ -184,22 +204,55 @@ def attach_workspace_file_paths(
     return trigger_details
 
 
-def build_workspace_seed_shell(files: List[WorkspaceSeedFile]) -> str:
+def build_workspace_seed_shell(
+    files: List[WorkspaceSeedFile], workspace_root: str = WORKSPACE_ROOT
+) -> str:
     """Build the init-command block that writes seeds under ``/workspace``.
 
     Runs after git clone (which relocates pre-existing files) and before
     custom commands (which may consume the seeds). Contents travel as quoted
     base64 so arbitrary bytes survive the shell.
+
+    Path validation is lexical and cannot see the filesystem, but the seeds
+    are materialized *after* git clone and a cloned repository may contain
+    symlinks (e.g. ``fixtures -> /etc``). The emitted block therefore
+    re-checks containment at runtime before every write:
+
+    - the deepest existing ancestor of the target is resolved physically
+      (``cd -P`` + ``pwd``, POSIX; agent images may lack GNU
+      ``realpath -m``) and must resolve inside the workspace root, so
+      writes cannot escape through a symlinked parent directory — and
+      ``mkdir -p`` only runs after that check, so no directories are
+      created outside the root either (components below the existing
+      ancestor cannot be symlinks: they don't exist yet);
+    - the target itself must not be a symlink (``-L``), so
+      ``> target`` cannot write through a link left by the clone.
+
+    Any violation prints a diagnostic and aborts the init prelude (the
+    block runs in a ``set -e`` subshell), failing the execution loudly.
     """
     if not files:
         return ""
-    commands: List[str] = []
-    for seed in files:
-        target = f"{WORKSPACE_ROOT}/{seed.path}"
-        parent = posixpath.dirname(target)
-        commands.append(f"mkdir -p {shlex.quote(parent)}")
-        commands.append(
-            f"printf '%s' {shlex.quote(seed.content_base64)} "
-            f"| base64 -d > {shlex.quote(target)}"
-        )
-    return " && ".join(commands)
+    # One POSIX shell function, called once per seed. `$w` is the workspace
+    # root; `$1` the validated relative path; `$2` the base64 content.
+    helper = (
+        "__pl_seed() { "
+        't="$w/$1"; d="${t%/*}"; e="$d"; '
+        'while [ ! -d "$e" ]; do e="${e%/*}"; '
+        '[ -n "$e" ] || { echo "workspace_files: $w does not exist" >&2; exit 1; }; '
+        "done; "
+        'r="$(cd -P "$e" && pwd)"; '
+        'case "$r" in "$w"|"$w"/*) ;; *) '
+        'echo "workspace_files: $1 resolves outside $w (symlink escape)" >&2; '
+        "exit 1;; esac; "
+        'if [ -L "$t" ]; then '
+        'echo "workspace_files: refusing to write through symlink: $1" >&2; '
+        "exit 1; fi; "
+        'mkdir -p "$d"; '
+        'printf \'%s\' "$2" | base64 -d > "$t"; }'
+    )
+    calls = "; ".join(
+        f"__pl_seed {shlex.quote(seed.path)} {shlex.quote(seed.content_base64)}"
+        for seed in files
+    )
+    return f"( set -e; w={shlex.quote(workspace_root)}; {helper}; {calls} )"

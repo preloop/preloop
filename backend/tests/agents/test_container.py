@@ -772,9 +772,12 @@ class TestWorkspaceSeedCommands:
             [{"path": "fixtures/input.json", "content_base64": content}]
         )
         result = container_executor._prepare_init_commands(context)
-        assert "mkdir -p /workspace/fixtures" in result
-        assert "base64 -d > /workspace/fixtures/input.json" in result
+        assert "w=/workspace" in result
+        assert "__pl_seed fixtures/input.json" in result
+        assert "base64 -d" in result
         assert content in result
+        # Runtime symlink-containment guard travels with the block.
+        assert "cd -P" in result
 
     def test_seed_commands_run_after_custom_setup_ordering(self, container_executor):
         """Seeds are written before custom commands so they can be consumed."""
@@ -787,7 +790,7 @@ class TestWorkspaceSeedCommands:
             "commands": ["cat seed.txt"],
         }
         result = container_executor._prepare_init_commands(context)
-        assert result.index("/workspace/seed.txt") < result.index("cat seed.txt")
+        assert result.index("__pl_seed seed.txt") < result.index("cat seed.txt")
 
     def test_traversal_path_raises_before_any_command(self, container_executor):
         """Defense-in-depth: unvalidated traversal paths must raise, not run."""
