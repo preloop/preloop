@@ -1162,8 +1162,13 @@ async def trigger_flow_via_webhook(
     # Trigger flow execution with webhook payload
     import logging
 
+    from fastapi.responses import JSONResponse
+
     from preloop.config import settings
-    from preloop.services.flow_trigger_service import FlowTriggerService
+    from preloop.services.flow_trigger_service import (
+        FlowDispatchError,
+        FlowTriggerService,
+    )
 
     logger = logging.getLogger(__name__)
     trigger_service = FlowTriggerService(db)
@@ -1176,17 +1181,90 @@ async def trigger_flow_via_webhook(
         "account_id": str(flow.account_id),
     }
 
+    def _execution_url(execution_id: str) -> str:
+        # Built from settings.preloop_url; self-hosted deployments where the
+        # console lives on a different origin must set PRELOOP_URL (same
+        # pattern as flow_orchestrator and agents/container).
+        return f"{settings.preloop_url}/console/flows/executions/{execution_id}"
+
+    def _response_body(
+        execution_id: str,
+        execution_status: str,
+        *,
+        status: str = "triggered",
+        deduplicated: bool = False,
+    ) -> Dict[str, Any]:
+        # `execution` mirrors the /flows/{flow_id}/trigger response shape;
+        # the flat execution_* fields and "status": "triggered" are kept for
+        # backwards compatibility with existing webhook callers.
+        return {
+            "status": status,
+            "flow_id": str(flow_id),
+            "deduplicated": deduplicated,
+            "execution": {
+                "id": execution_id,
+                "status": execution_status,
+                "flow_id": str(flow_id),
+            },
+            "execution_id": execution_id,
+            "execution_status": execution_status,
+            "execution_url": _execution_url(execution_id),
+        }
+
+    # Enforce the addressed flow's trigger_config policy explicitly. Unlike
+    # the old generic-matching path (process_event), a mismatch is an
+    # explicit 422 rather than a silent skip that still reports success.
+    if not trigger_service.matches_trigger_config(flow, event_data):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Webhook payload does not match trigger_config for flow "
+                f"{flow_id}. Configured filter: {flow.trigger_config}. "
+                "No execution was created. Adjust the payload or the flow's "
+                "trigger_config."
+            ),
+        )
+
+    # Preserve commit-SHA deduplication for direct triggers: a redelivered
+    # webhook (at-least-once delivery, CI retries) for the same repo + commit
+    # returns the EXISTING execution instead of creating a duplicate — and
+    # never a bare skip.
+    duplicate = trigger_service.find_duplicate_execution(flow, event_data)
+    if duplicate is not None:
+        logger.info(
+            f"Webhook for flow {flow_id} deduplicated to existing execution "
+            f"{duplicate.id} (status {duplicate.status})"
+        )
+        return _response_body(str(duplicate.id), duplicate.status, deduplicated=True)
+
     # Trigger this specific flow directly. The flow was already resolved and
-    # validated above (id + secret + enabled + webhook source), so we must not
-    # route through generic event matching (process_event), which can silently
-    # skip the flow (trigger_event_types/trigger_config/dedup filters) or
-    # swallow errors while this endpoint still reports success.
+    # validated above (id + secret + enabled + webhook source) and its
+    # trigger_config checked, so we must not route through generic event
+    # matching (process_event), which can silently skip the flow or swallow
+    # errors while this endpoint still reports success.
     try:
         result = await trigger_service.trigger_flow(
             flow_id=flow_id,
             test_mode=False,
             trigger_event_data=event_data,
         )
+    except FlowDispatchError as e:
+        # The execution row was committed before dispatch failed: report 202
+        # with the execution id so callers can poll, and do NOT claim that no
+        # execution was created (a blind retry would duplicate it — though
+        # commit-SHA dedup above also guards redelivery).
+        logger.error(
+            f"Webhook trigger for flow {flow_id} created execution "
+            f"{e.execution_id} but dispatch failed: {e.original}",
+            exc_info=True,
+        )
+        body = _response_body(e.execution_id, e.execution_status, status="accepted")
+        body["detail"] = (
+            f"Execution {e.execution_id} was created but could not be "
+            "dispatched yet. It remains queued; poll execution_url or retry "
+            "it from the console. Do not re-send this webhook."
+        )
+        return JSONResponse(status_code=202, content=body)
     except Exception as e:
         logger.error(
             f"Webhook trigger failed to create execution for flow {flow_id}: {e}",
@@ -1200,13 +1278,4 @@ async def trigger_flow_via_webhook(
             ),
         )
 
-    execution_id = result["id"]
-    return {
-        "status": "triggered",
-        "flow_id": str(flow_id),
-        "execution_id": execution_id,
-        "execution_status": result["status"],
-        "execution_url": (
-            f"{settings.preloop_url}/console/flows/executions/{execution_id}"
-        ),
-    }
+    return _response_body(result["id"], result["status"])

@@ -16,6 +16,26 @@ from preloop.models.db.session import get_session_factory
 logger = logging.getLogger(__name__)
 
 
+class FlowDispatchError(Exception):
+    """A flow execution row was durably committed, but the subsequent
+    dispatch (NATS acquisition / worker hand-off) failed.
+
+    Callers that surface HTTP responses should NOT report this as
+    "no execution was created": the execution exists (typically PENDING)
+    and blindly retrying the trigger would create a duplicate.
+    """
+
+    def __init__(
+        self, execution_id: str, execution_status: str, original: Exception
+    ) -> None:
+        self.execution_id = execution_id
+        self.execution_status = execution_status
+        self.original = original
+        super().__init__(
+            f"Execution {execution_id} was created but dispatch failed: {original}"
+        )
+
+
 class FlowTriggerService:
     """
     Matches incoming tracker events against active Flow definitions and
@@ -298,15 +318,41 @@ class FlowTriggerService:
 
         return None
 
-    def _has_execution_for_commit(
+    def find_duplicate_execution(
+        self, flow: Flow, event_data: Dict[str, Any]
+    ) -> Optional[Any]:
+        """Return a running execution of ``flow`` for the same repo + commit
+        as ``event_data``, or None.
+
+        Used by direct-trigger callers (e.g. the webhook endpoint) to preserve
+        the commit-SHA deduplication that generic event matching
+        (``process_event``) enforces, without silently dropping the event:
+        callers can return the existing execution to the caller instead.
+        """
+        commit_sha = self._extract_commit_sha(event_data)
+        if not commit_sha:
+            return None
+        repo_key = self._extract_repo_key(event_data)
+        return self._find_running_execution_for_commit(
+            flow.id,
+            commit_sha,
+            str(flow.account_id),
+            repo_key=repo_key,
+        )
+
+    def matches_trigger_config(self, flow: Flow, event_data: Dict[str, Any]) -> bool:
+        """Public wrapper: does ``event_data`` satisfy ``flow.trigger_config``?"""
+        return self._matches_trigger_config(flow, event_data)
+
+    def _find_running_execution_for_commit(
         self,
         flow_id: uuid.UUID,
         commit_sha: str,
         account_id: str,
         repo_key: Optional[str] = None,
-    ) -> bool:
+    ) -> Optional[Any]:
         """
-        Check if there's already a running execution for this repo + commit.
+        Return a running execution for this repo + commit, if one exists.
 
         Deduplication is scoped to (repo, commit_sha) so that:
         - Same repo + same commit SHA  → blocked (duplicate)
@@ -323,8 +369,8 @@ class FlowTriggerService:
                       duplicates.
 
         Returns:
-            True if there's already a running execution for this
-            repo + commit combination.
+            The already-running execution for this repo + commit
+            combination, or None.
         """
         executions = crud_flow_execution.get_running_by_flow(
             self.db,
@@ -357,9 +403,9 @@ class FlowTriggerService:
                 f"repo {repo_key or '(any)'}, and commit {commit_sha[:8]} "
                 f"(status: {execution.status})"
             )
-            return True
+            return execution
 
-        return False
+        return None
 
     async def _run_orchestrator_with_session(
         self,
@@ -720,8 +766,11 @@ class FlowTriggerService:
                     # This catches duplicate events for the same commit
                     # (e.g., push + PR update when description is edited).
                     if commit_sha and account_id:
-                        if self._has_execution_for_commit(
-                            flow.id, commit_sha, account_id, repo_key=repo_key
+                        if (
+                            self._find_running_execution_for_commit(
+                                flow.id, commit_sha, account_id, repo_key=repo_key
+                            )
+                            is not None
                         ):
                             logger.info(
                                 f"Skipping flow '{flow.name}' ({flow.id}) - "
@@ -819,15 +868,21 @@ class FlowTriggerService:
 
         logger.info(f"Created flow execution: {execution_id}")
 
-        # Get NATS client (needed for local fallback path)
-        nats_client = await get_nats_client()
+        # The execution row is durably committed at this point. Any failure
+        # below (NATS acquisition, worker hand-off) must not be reported as
+        # "no execution created" — wrap it so callers can distinguish.
+        try:
+            # Get NATS client (needed for local fallback path)
+            nats_client = await get_nats_client()
 
-        await self._start_flow_execution(
-            flow=flow,
-            event_data=trigger_details,
-            nats_client=nats_client,
-            precreated_execution=execution,
-        )
+            await self._start_flow_execution(
+                flow=flow,
+                event_data=trigger_details,
+                nats_client=nats_client,
+                precreated_execution=execution,
+            )
+        except Exception as e:
+            raise FlowDispatchError(str(execution_id), execution_status, e) from e
 
         return {
             "id": str(execution_id),
