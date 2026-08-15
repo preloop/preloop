@@ -1037,6 +1037,120 @@ class TestFlowExecutionOrchestrator:
             assert "timed out" in orchestrator.execution_log.error_message.lower()
 
     @pytest.mark.asyncio
+    async def test_result_artifact_persisted_end_to_end(
+        self,
+        db_session: Session,
+        test_flow: Flow,
+        mock_nats_client,
+        event_data,
+        mock_agent_executor,
+    ):
+        """The artifact returned by the executor lands in flow_execution.result.
+
+        Covers the orchestrator wiring: _monitor_agent_execution's returned
+        dict -> FlowExecutionUpdate.result -> DB (success path).
+        """
+        from preloop.models.models.flow_execution import FlowExecution
+
+        artifact = {
+            "schema": "preloop.eval.result/v1",
+            "status": "pass",
+            "summary": "all checks green",
+            "metrics": {"latency_ms": 12},
+        }
+        mock_agent_executor.get_result_artifact = AsyncMock(return_value=artifact)
+
+        with patch(
+            "preloop.services.flow_orchestrator.create_agent_executor",
+            return_value=mock_agent_executor,
+        ):
+            orchestrator = FlowExecutionOrchestrator(
+                db=db_session,
+                flow_id=test_flow.id,
+                trigger_event_data=event_data,
+                nats_client=mock_nats_client,
+            )
+
+            await orchestrator.run()
+
+            assert orchestrator.execution_log.status == "SUCCEEDED"
+            mock_agent_executor.get_result_artifact.assert_awaited()
+
+            # Re-read from the DB: the JSONB column must round-trip.
+            persisted = (
+                db_session.query(FlowExecution)
+                .filter(FlowExecution.id == orchestrator.execution_log.id)
+                .one()
+            )
+            assert persisted.result == artifact
+
+    @pytest.mark.asyncio
+    async def test_result_artifact_persisted_on_failure_path(
+        self,
+        db_session: Session,
+        test_flow: Flow,
+        mock_nats_client,
+        event_data,
+    ):
+        """A run that fails during monitoring still keeps its artifact.
+
+        The agent may have written result.json before the monitor gave up;
+        every terminal path of _monitor_agent_execution must capture it.
+        """
+        from preloop.models.models.flow_execution import FlowExecution
+
+        artifact = {
+            "schema": "preloop.eval.result/v1",
+            "status": "error",
+            "summary": "run aborted mid-eval",
+        }
+
+        mock_executor = AsyncMock()
+        mock_executor.start = AsyncMock(return_value="session-123")
+        mock_executor.get_status = AsyncMock(side_effect=Exception("Monitoring error"))
+        mock_executor.stop = AsyncMock()
+        mock_executor.cleanup = AsyncMock()
+        mock_executor.get_result_artifact = AsyncMock(return_value=artifact)
+
+        async def empty_logs(session_ref):
+            if False:  # Never executes, but makes this an async generator
+                yield
+
+        mock_executor.stream_logs = empty_logs
+
+        async def fast_sleep(seconds):
+            pass
+
+        with (
+            patch(
+                "preloop.services.flow_orchestrator.create_agent_executor",
+                return_value=mock_executor,
+            ),
+            patch(
+                "preloop.services.flow_orchestrator.asyncio.sleep",
+                side_effect=fast_sleep,
+            ),
+        ):
+            orchestrator = FlowExecutionOrchestrator(
+                db=db_session,
+                flow_id=test_flow.id,
+                trigger_event_data=event_data,
+                nats_client=mock_nats_client,
+            )
+
+            await orchestrator.run()
+
+            assert orchestrator.execution_log.status == "FAILED"
+            mock_executor.get_result_artifact.assert_awaited()
+
+            persisted = (
+                db_session.query(FlowExecution)
+                .filter(FlowExecution.id == orchestrator.execution_log.id)
+                .one()
+            )
+            assert persisted.result == artifact
+
+    @pytest.mark.asyncio
     async def test_user_stop_command(
         self,
         db_session: Session,

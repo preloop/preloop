@@ -40,6 +40,13 @@ class FlowExecutionBase(BaseModel):
     mcp_usage_logs: Optional[List[Dict[str, Any]]] = Field(
         None, description="Detailed log of each MCP tool call"
     )
+    result: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "Structured result artifact reported by the agent "
+            "(parsed /workspace/result.json, eval/observe runs)"
+        ),
+    )
     openhands_session_reference: Optional[str] = Field(
         None, description="Reference to OpenHands session (e.g., ID, K8s job ID)"
     )

@@ -15,7 +15,7 @@ Use Preloop to **onboard existing agents** with one command, and to **deploy eve
 Run `preloop agents discover` and Preloop will find local agent configs, import representable MCP servers and model metadata, mint managed runtime credentials, and rewrite supported agents to route tool calls through the **Preloop MCP Firewall** and model traffic through the **Preloop Gateway**. For Agent Control, the CLI provisions the credential/config contract and can delegate plugin installation to the runtime marketplace, but the plugin is what keeps the live control channel connected.
 
 
-Build automations with templates like the [Pull Request Reviewer](./backend/presets/002-pull-request-reviewer.yaml), or write your own.
+Build automations with templates like the [Pull Request Reviewer](./backend/presets/002-pull-request-reviewer.yaml) or the [Observe / Eval](./backend/presets/003-observe-eval.yaml) preset — eval runs write a structured `/workspace/result.json` report (`preloop.eval.result/v1`) that Preloop captures and serves back via `GET /api/v1/flows/executions/{id}/result` — or write your own.
 
 > **Official documentation:** Full guides and tutorials at [docs.preloop.ai](https://docs.preloop.ai).
 
