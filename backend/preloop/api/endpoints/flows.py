@@ -1346,11 +1346,6 @@ def dismiss_preset_update(
                 "input (e.g. malformed flow_id)."
             )
         },
-            "description": (
-                "Payload does not match the flow's trigger_config; no "
-                "execution was created."
-            )
-        },
         500: {
             "description": (
                 "No execution could be created (failure at/before the insert)."

@@ -1,7 +1,7 @@
 """Add batch_id to flow_execution for matrix/batch fan-out triggers.
 
 Revision ID: 20260815_flow_exec_batch_id
-Revises: 20260812_cost_source_reconciled
+Revises: 20260815_flow_execution_result
 Create Date: 2026-08-15
 
 A matrix trigger creates one execution per (agent_type, ai_model_id) cell; all
@@ -17,7 +17,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = "20260815_flow_exec_batch_id"
-down_revision: Union[str, None] = "20260812_cost_source_reconciled"
+down_revision: Union[str, None] = "20260815_flow_execution_result"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 # Alembic reads these module globals by name; keep a local reference so static
