@@ -228,6 +228,14 @@ def build_workspace_seed_shell(
     - the target itself must not be a symlink (``-L``), so
       ``> target`` cannot write through a link left by the clone.
 
+    The workspace root itself is canonicalized once at the top of the
+    subshell (``cd -P`` + ``pwd``, falling back to the lexical path if the
+    root does not exist yet), so containment is compared
+    resolved-to-resolved. Without this, a root that is itself a symlink —
+    e.g. an image where ``/workspace`` resolves through a link — would make
+    every physically-resolved ancestor fail the lexical prefix match and
+    abort all seeds spuriously.
+
     Any violation prints a diagnostic and aborts the init prelude (the
     block runs in a ``set -e`` subshell), failing the execution loudly.
     """
@@ -255,4 +263,12 @@ def build_workspace_seed_shell(
         f"__pl_seed {shlex.quote(seed.path)} {shlex.quote(seed.content_base64)}"
         for seed in files
     )
-    return f"( set -e; w={shlex.quote(workspace_root)}; {helper}; {calls} )"
+    # Canonicalize the root once so the containment check compares
+    # resolved-to-resolved; a symlinked root would otherwise fail the
+    # prefix match for every seed. If the root does not exist yet, keep
+    # the lexical path: the helper then fails with its own diagnostic.
+    resolve_root = (
+        f"w0={shlex.quote(workspace_root)}; "
+        'w="$(cd -P "$w0" 2>/dev/null && pwd || printf \'%s\' "$w0")"'
+    )
+    return f"( set -e; {resolve_root}; {helper}; {calls} )"

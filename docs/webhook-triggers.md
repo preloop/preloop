@@ -60,7 +60,8 @@ any agent container starts:
 At runtime the materialization step re-checks physical containment: writes
 that would resolve outside `/workspace` through a symlink in the cloned
 workspace (including a symlinked target file) are refused and fail the
-execution.
+execution. The workspace root itself is canonicalized first, so images
+where `/workspace` resolves through a symlink work normally.
 
 ### Audit & prompt hygiene
 

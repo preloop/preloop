@@ -190,7 +190,10 @@ class TestBuildWorkspaceSeedShell:
             _payload({"path": "fixtures/input.json", "content_base64": _b64(b"{}")})
         )
         shell = build_workspace_seed_shell(files)
-        assert "w=/workspace" in shell
+        assert "w0=/workspace" in shell
+        # The root is canonicalized once so containment compares
+        # resolved-to-resolved (tolerates a symlinked workspace root).
+        assert 'cd -P "$w0"' in shell
         assert "__pl_seed fixtures/input.json" in shell
         assert _b64(b"{}") in shell
         # Runtime symlink-containment guard is present.
@@ -299,6 +302,44 @@ class TestWorkspaceSeedShellRuntime:
         result = self._run(shell)
         assert result.returncode == 0, result.stderr
         assert (workspace / "real/file.txt").read_bytes() == b"ok"
+
+    def test_symlinked_workspace_root_is_tolerated(self, tmp_path):
+        """A workspace root that is itself a symlink (e.g. an image where
+        /workspace resolves through a link) must not abort every seed: the
+        root is canonicalized once and containment is compared
+        resolved-to-resolved."""
+        real = tmp_path / "real-workspace"
+        real.mkdir()
+        link = tmp_path / "workspace-link"
+        link.symlink_to(real)
+
+        shell = self._shell_for(
+            link,
+            {"path": "fixtures/input.json", "content_base64": _b64(b"ok")},
+        )
+        result = self._run(shell)
+        assert result.returncode == 0, result.stderr
+        assert (real / "fixtures/input.json").read_bytes() == b"ok"
+
+    def test_symlinked_root_still_refuses_escape(self, tmp_path):
+        """Canonicalizing the root must not weaken the guard: an escaping
+        symlink inside a symlinked root is still refused."""
+        real = tmp_path / "real-workspace"
+        outside = tmp_path / "outside"
+        real.mkdir()
+        outside.mkdir()
+        link = tmp_path / "workspace-link"
+        link.symlink_to(real)
+        (real / "fixtures").symlink_to(outside)
+
+        shell = self._shell_for(
+            link,
+            {"path": "fixtures/input.json", "content_base64": _b64(b"pwned")},
+        )
+        result = self._run(shell)
+        assert result.returncode != 0
+        assert "resolves outside" in result.stderr
+        assert not (outside / "input.json").exists()
 
     def test_overwrites_regular_file(self, tmp_path):
         (tmp_path / "existing.txt").write_bytes(b"old")

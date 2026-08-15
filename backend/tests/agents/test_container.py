@@ -772,7 +772,7 @@ class TestWorkspaceSeedCommands:
             [{"path": "fixtures/input.json", "content_base64": content}]
         )
         result = container_executor._prepare_init_commands(context)
-        assert "w=/workspace" in result
+        assert "w0=/workspace" in result
         assert "__pl_seed fixtures/input.json" in result
         assert "base64 -d" in result
         assert content in result
