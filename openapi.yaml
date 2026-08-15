@@ -7426,7 +7426,29 @@ paths:
 
         This endpoint allows external services to trigger flows without authentication.
 
-        Security is provided by the unguessable webhook_secret in the URL.'
+        Security is provided by the unguessable webhook_secret in the URL.
+
+
+        Success responses carry a nested ``execution`` object with the same
+
+        ``{id, status, flow_id}`` shape as ``POST /flows/{flow_id}/trigger``, plus
+
+        flat ``execution_id``/``execution_status``/``execution_url`` fields and
+
+        ``"status": "triggered"`` for backwards compatibility.
+
+
+        Deduplication: redelivered payloads carrying the same commit SHA as a
+
+        still-running execution of this flow return that execution with
+
+        ``"deduplicated": true`` instead of creating a duplicate. Payloads without
+
+        a recognizable commit SHA are never deduplicated (same scope as generic
+
+        event matching); commit-less callers that need idempotent redelivery
+
+        should include a unique ``sha`` field in the payload.'
       operationId: trigger_flow_via_webhook_api_v1_webhooks_flows__flow_id___webhook_secret__post
       parameters:
       - name: flow_id
@@ -7444,16 +7466,19 @@ paths:
           title: Webhook Secret
       responses:
         '200':
-          description: Successful Response
+          description: Execution triggered (or deduplicated to an existing running
+            execution for the same repo + commit, see 'deduplicated').
           content:
             application/json:
               schema: {}
+        '202':
+          description: Execution row was created but dispatch failed; poll execution_url
+            or retry from the console. Do not re-send the webhook.
         '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+          description: Payload does not match the flow's trigger_config; no execution
+            was created.
+        '500':
+          description: No execution could be created (failure at/before the insert).
   /api/v1/policies/validate:
     post:
       tags:
