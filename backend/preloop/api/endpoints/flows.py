@@ -1160,8 +1160,12 @@ async def trigger_flow_via_webhook(
         payload = {}
 
     # Trigger flow execution with webhook payload
+    import logging
+
+    from preloop.config import settings
     from preloop.services.flow_trigger_service import FlowTriggerService
 
+    logger = logging.getLogger(__name__)
     trigger_service = FlowTriggerService(db)
 
     # Create event data from webhook payload
@@ -1172,7 +1176,37 @@ async def trigger_flow_via_webhook(
         "account_id": str(flow.account_id),
     }
 
-    # Process the event (will trigger flow execution)
-    await trigger_service.process_event(event_data)
+    # Trigger this specific flow directly. The flow was already resolved and
+    # validated above (id + secret + enabled + webhook source), so we must not
+    # route through generic event matching (process_event), which can silently
+    # skip the flow (trigger_event_types/trigger_config/dedup filters) or
+    # swallow errors while this endpoint still reports success.
+    try:
+        result = await trigger_service.trigger_flow(
+            flow_id=flow_id,
+            test_mode=False,
+            trigger_event_data=event_data,
+        )
+    except Exception as e:
+        logger.error(
+            f"Webhook trigger failed to create execution for flow {flow_id}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Webhook received but no execution could be created for "
+                f"flow {flow_id}. Check server logs for details."
+            ),
+        )
 
-    return {"status": "triggered", "flow_id": str(flow_id)}
+    execution_id = result["id"]
+    return {
+        "status": "triggered",
+        "flow_id": str(flow_id),
+        "execution_id": execution_id,
+        "execution_status": result["status"],
+        "execution_url": (
+            f"{settings.preloop_url}/console/flows/executions/{execution_id}"
+        ),
+    }

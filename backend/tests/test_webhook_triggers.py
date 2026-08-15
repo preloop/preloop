@@ -132,6 +132,12 @@ async def test_trigger_flow_via_webhook_success(db_session: Session, test_user):
     ) as mock_trigger_service:
         mock_service = AsyncMock()
         mock_trigger_service.return_value = mock_service
+        execution_id = "11111111-2222-3333-4444-555555555555"
+        mock_service.trigger_flow.return_value = {
+            "id": execution_id,
+            "status": "PENDING",
+            "flow_id": str(flow.id),
+        }
 
         # Create test client with proper database override
         from fastapi import FastAPI
@@ -156,15 +162,25 @@ async def test_trigger_flow_via_webhook_success(db_session: Session, test_user):
         )
 
         assert response.status_code == 200
-        assert response.json()["status"] == "triggered"
-        assert response.json()["flow_id"] == str(flow.id)
+        body = response.json()
+        assert body["status"] == "triggered"
+        assert body["flow_id"] == str(flow.id)
+        # The response must include the created execution's id so callers
+        # (CI/cron bridges) can poll for completion.
+        assert body["execution_id"] == execution_id
+        assert body["execution_status"] == "PENDING"
+        assert execution_id in body["execution_url"]
 
-        # Verify the trigger service was called
-        mock_service.process_event.assert_called_once()
-        call_args = mock_service.process_event.call_args[0][0]
-        assert call_args["source"] == "webhook"
-        assert call_args["type"] == "webhook"
-        assert call_args["payload"]["data"] == "test payload"
+        # Verify the addressed flow was triggered directly (not generic
+        # event matching, which can silently skip the flow)
+        mock_service.trigger_flow.assert_awaited_once()
+        call_kwargs = mock_service.trigger_flow.call_args.kwargs
+        assert call_kwargs["flow_id"] == flow.id
+        assert call_kwargs["test_mode"] is False
+        event_data = call_kwargs["trigger_event_data"]
+        assert event_data["source"] == "webhook"
+        assert event_data["type"] == "webhook"
+        assert event_data["payload"]["data"] == "test payload"
 
 
 @pytest.mark.asyncio
@@ -307,3 +323,138 @@ async def test_trigger_disabled_webhook_flow(db_session: Session, test_user):
 
     assert response.status_code == 400
     assert "Flow is disabled" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_webhook_trigger_creates_execution_when_generic_matching_would_skip(
+    db_session: Session, test_user
+):
+    """Regression test: a valid webhook call must create an execution even when
+    generic event matching would silently skip the flow.
+
+    Previously the endpoint routed through process_event(), which re-matched
+    flows by trigger_event_types/trigger_config. A flow with a trigger_config
+    filter not satisfied by the webhook payload was silently skipped while the
+    endpoint still returned {"status": "triggered"} with no execution_id.
+    """
+    import secrets
+
+    from preloop.models.crud.flow_execution import CRUDFlowExecution
+    from preloop.services.flow_trigger_service import FlowTriggerService
+
+    db = db_session
+    webhook_secret = secrets.token_urlsafe(32)
+
+    flow_data = schemas.FlowCreate(
+        name="Webhook Flow With Unmatched Trigger Config",
+        trigger_event_source="webhook",
+        trigger_event_types=["webhook"],
+        # This filter does not match the webhook payload below; the generic
+        # matching path (process_event) silently drops the flow for it.
+        trigger_config={"branch": "main"},
+        webhook_config=schemas.WebhookConfig(webhook_secret=webhook_secret),
+        prompt_template="Process: {{trigger_event.payload.data}}",
+        agent_type="openhands",
+        agent_config={},
+        allowed_mcp_servers=[],
+        allowed_mcp_tools=[],
+        is_enabled=True,
+    )
+    flow = crud_flow.create(db=db, flow_in=flow_data, account_id=test_user.account_id)
+    webhook_secret = flow.webhook_config["webhook_secret"]
+
+    from fastapi import FastAPI
+    from preloop.api.endpoints.flows import router
+    from preloop.models.db.session import get_db_session as get_db
+
+    def override_get_db():
+        try:
+            yield db
+        finally:
+            pass
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_db] = override_get_db
+    client = TestClient(app)
+
+    # Patch only the dispatch step so the execution record is still created
+    # by the real trigger path, but no orchestrator/worker is started.
+    with patch.object(
+        FlowTriggerService, "_start_flow_execution", new_callable=AsyncMock
+    ):
+        response = client.post(
+            f"/webhooks/flows/{flow.id}/{webhook_secret}",
+            json={"data": "test payload"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "triggered"
+    # No silent drop: an execution must exist and its id must be returned.
+    assert "execution_id" in body, (
+        "Webhook response must include execution_id so callers can poll"
+    )
+    crud_flow_execution = CRUDFlowExecution()
+    execution = crud_flow_execution.get(db, id=body["execution_id"])
+    assert execution is not None
+    assert str(execution.flow_id) == str(flow.id)
+    assert execution.trigger_event_details["payload"]["data"] == "test payload"
+
+
+@pytest.mark.asyncio
+async def test_webhook_trigger_reports_error_when_no_execution_created(
+    db_session: Session, test_user
+):
+    """If no execution can be created, the webhook must NOT report success."""
+    import secrets
+
+    db = db_session
+    webhook_secret = secrets.token_urlsafe(32)
+
+    flow_data = schemas.FlowCreate(
+        name="Webhook Flow Failing Execution Creation",
+        trigger_event_source="webhook",
+        trigger_event_types=["webhook"],
+        webhook_config=schemas.WebhookConfig(webhook_secret=webhook_secret),
+        prompt_template="Test",
+        agent_type="openhands",
+        agent_config={},
+        allowed_mcp_servers=[],
+        allowed_mcp_tools=[],
+        is_enabled=True,
+    )
+    flow = crud_flow.create(db=db, flow_in=flow_data, account_id=test_user.account_id)
+    webhook_secret = flow.webhook_config["webhook_secret"]
+
+    from fastapi import FastAPI
+    from preloop.api.endpoints.flows import router
+    from preloop.models.db.session import get_db_session as get_db
+
+    def override_get_db():
+        try:
+            yield db
+        finally:
+            pass
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_db] = override_get_db
+    client = TestClient(app)
+
+    with patch(
+        "preloop.services.flow_trigger_service.FlowTriggerService"
+    ) as mock_trigger_service:
+        mock_service = AsyncMock()
+        mock_trigger_service.return_value = mock_service
+        mock_service.trigger_flow.side_effect = RuntimeError("db write failed")
+
+        response = client.post(
+            f"/webhooks/flows/{flow.id}/{webhook_secret}",
+            json={"data": "test"},
+        )
+
+    assert response.status_code == 500
+    body = response.json()
+    assert "no execution could be created" in body["detail"]
+    assert body.get("status") != "triggered"
