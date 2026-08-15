@@ -1416,3 +1416,88 @@ class TestFlowExecutionOrchestrator:
         """Test warning when AI model not found."""
         # This scenario is prevented by FK constraint in production
         pass
+
+
+class TestWorkspaceSeedValidation:
+    """Trigger-payload workspace_files are validated before any agent starts."""
+
+    @staticmethod
+    def _orchestrator(db_session, test_flow, mock_nats_client, payload):
+        orchestrator = FlowExecutionOrchestrator(
+            db=db_session,
+            flow_id=test_flow.id,
+            trigger_event_data={
+                "source": "webhook",
+                "type": "webhook",
+                "payload": payload,
+            },
+            nats_client=mock_nats_client,
+        )
+        orchestrator._get_flow_details()
+        orchestrator.execution_log = type("ExecutionLogStub", (), {"id": uuid4()})()
+        return orchestrator
+
+    @pytest.mark.asyncio
+    async def test_traversal_path_fails_context_preparation(
+        self, db_session: Session, test_flow: Flow, mock_nats_client
+    ):
+        """A `..` seed path must abort before the agent container starts."""
+        from preloop.utils.workspace_seed import WorkspaceSeedError
+
+        orchestrator = self._orchestrator(
+            db_session,
+            test_flow,
+            mock_nats_client,
+            {
+                "workspace_files": [
+                    {"path": "../../etc/passwd", "content_base64": "eA=="}
+                ]
+            },
+        )
+        with pytest.raises(WorkspaceSeedError, match="escapes /workspace"):
+            await orchestrator._prepare_execution_context()
+
+    @pytest.mark.asyncio
+    async def test_oversized_seed_fails_context_preparation(
+        self, db_session: Session, test_flow: Flow, mock_nats_client
+    ):
+        """Seeds above the inline cap must abort with a clear message."""
+        import base64
+
+        from preloop.utils.workspace_seed import (
+            MAX_TOTAL_SEED_BYTES,
+            WorkspaceSeedError,
+        )
+
+        too_big = base64.b64encode(b"x" * (MAX_TOTAL_SEED_BYTES + 1)).decode("ascii")
+        orchestrator = self._orchestrator(
+            db_session,
+            test_flow,
+            mock_nats_client,
+            {"workspace_files": [{"path": "big.bin", "content_base64": too_big}]},
+        )
+        with pytest.raises(WorkspaceSeedError, match="inline cap"):
+            await orchestrator._prepare_execution_context()
+
+    @pytest.mark.asyncio
+    async def test_valid_seed_files_flow_into_context(
+        self, db_session: Session, test_flow: Flow, mock_nats_client
+    ):
+        """Valid workspace_files pass validation and stay on the trigger data
+        so the agent layer can materialize them."""
+        import base64
+
+        content = base64.b64encode(b'{"fixture": true}').decode("ascii")
+        orchestrator = self._orchestrator(
+            db_session,
+            test_flow,
+            mock_nats_client,
+            {
+                "workspace_files": [
+                    {"path": "fixtures/input.json", "content_base64": content}
+                ]
+            },
+        )
+        execution_context = await orchestrator._prepare_execution_context()
+        seeded = execution_context["trigger_event_data"]["payload"]["workspace_files"]
+        assert seeded[0]["path"] == "fixtures/input.json"

@@ -23,6 +23,10 @@ from preloop.utils.git_credentials import (
 )
 from preloop.utils.repo_urls import repo_url_log_location, tracker_host_kind
 from preloop.utils.secret_scrubbing import scrub_secret_lines, scrub_secrets
+from preloop.utils.workspace_seed import (
+    build_workspace_seed_shell,
+    parse_workspace_files,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1405,6 +1409,13 @@ class ContainerAgentExecutor(AgentExecutor):
         else:
             self.logger.debug("No git_clone_config in execution context")
 
+        # Seed /workspace files declared on the trigger payload. After git
+        # clone (whose pre-clone backup would sweep earlier writes away) and
+        # before custom commands (which may consume the seeded files).
+        seed_cmd = self._prepare_workspace_seed_commands(execution_context)
+        if seed_cmd:
+            commands.append(seed_cmd)
+
         # Prepare custom commands if enabled
         custom_commands = execution_context.get("custom_commands")
         if custom_commands and custom_commands.get("enabled"):
@@ -1418,6 +1429,29 @@ class ContainerAgentExecutor(AgentExecutor):
         if commands:
             return " && ".join(commands)
         return ""
+
+    def _prepare_workspace_seed_commands(
+        self, execution_context: Dict[str, Any]
+    ) -> str:
+        """Build shell commands writing trigger-payload ``workspace_files``.
+
+        The orchestrator has already validated the declaration (and failed
+        the execution otherwise); re-parsing here is a defense-in-depth guard
+        that raises rather than materializing an unvalidated path.
+        """
+        trigger_data = execution_context.get("trigger_event_data") or {}
+        payload = (
+            trigger_data.get("payload") if isinstance(trigger_data, dict) else None
+        )
+        seeds = parse_workspace_files(payload)
+        if not seeds:
+            return ""
+        self.logger.info(
+            "Seeding %d workspace file(s) from trigger payload: %s",
+            len(seeds),
+            [seed.path for seed in seeds],
+        )
+        return build_workspace_seed_shell(seeds)
 
     def _resolve_git_clone_repositories(
         self, execution_context: Dict[str, Any], git_config: Dict[str, Any]

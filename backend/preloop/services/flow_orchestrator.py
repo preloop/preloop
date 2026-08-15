@@ -44,6 +44,10 @@ from preloop.utils.git_credentials import (
     temporary_credential_file,
 )
 from preloop.utils.repo_urls import repo_url_log_location, tracker_host_kind
+from preloop.utils.workspace_seed import (
+    attach_workspace_file_paths,
+    parse_workspace_files,
+)
 from preloop.utils.secret_scrubbing import scrub_secrets
 from preloop.services.account_realtime import (
     ACCOUNT_TOPIC_AUDIT,
@@ -1548,6 +1552,23 @@ class FlowExecutionOrchestrator:
 
         resolved_prompt = await self._resolve_prompt()
 
+        # Validate trigger-payload workspace seeds before any agent starts: a
+        # bad `workspace_files` declaration (path traversal, oversized inline
+        # content) must fail the execution here with a clear message rather
+        # than inside the container. Raises WorkspaceSeedError -> run() marks
+        # the execution FAILED with that message.
+        workspace_files = parse_workspace_files(
+            self.trigger_event_data.get("payload")
+            if isinstance(self.trigger_event_data, dict)
+            else None
+        )
+        if workspace_files:
+            logger.info(
+                "Trigger payload seeds %d workspace file(s): %s",
+                len(workspace_files),
+                [seed.path for seed in workspace_files],
+            )
+
         # Create short-lived API token for this flow execution
         account_api_token = None
         if self.flow.account_id:
@@ -2376,6 +2397,7 @@ class FlowExecutionOrchestrator:
         # Ensure trigger_event_data is JSON serializable (convert UUIDs, datetimes, etc.)
         serializable_event_data = _make_json_serializable(self.trigger_event_data)
         attach_trigger_subject(serializable_event_data)
+        attach_workspace_file_paths(serializable_event_data)
 
         execution_create = schemas.FlowExecutionCreate(
             flow_id=self.flow_id,

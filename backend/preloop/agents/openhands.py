@@ -318,6 +318,12 @@ class OpenHandsAgent(ContainerAgentExecutor):
         else:
             self.logger.debug("No git_clone_config in execution context")
 
+        # Seed /workspace files declared on the trigger payload (see base
+        # class): after git clone, before custom commands.
+        seed_cmd = self._prepare_workspace_seed_commands(execution_context)
+        if seed_cmd:
+            commands.append(seed_cmd)
+
         # Prepare custom commands if enabled
         custom_commands = execution_context.get("custom_commands")
         if custom_commands and custom_commands.get("enabled"):

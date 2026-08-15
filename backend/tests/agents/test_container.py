@@ -740,6 +740,66 @@ class TestPrepareInitCommands:
         assert "npm run build" in result
 
 
+class TestWorkspaceSeedCommands:
+    """Tests for trigger-payload workspace_files materialization."""
+
+    @staticmethod
+    def _context(workspace_files):
+        return {
+            "flow_id": "123",
+            "execution_id": "456",
+            "trigger_event_data": {
+                "source": "webhook",
+                "payload": {"workspace_files": workspace_files},
+            },
+        }
+
+    def test_no_workspace_files_returns_empty(self, container_executor):
+        """No workspace_files in the payload adds no commands."""
+        context = {
+            "flow_id": "123",
+            "execution_id": "456",
+            "trigger_event_data": {"payload": {"x": 1}},
+        }
+        assert container_executor._prepare_init_commands(context) == ""
+
+    def test_seed_commands_write_files(self, container_executor):
+        """workspace_files become base64-decode writes under /workspace."""
+        import base64
+
+        content = base64.b64encode(b'{"fixture": true}').decode("ascii")
+        context = self._context(
+            [{"path": "fixtures/input.json", "content_base64": content}]
+        )
+        result = container_executor._prepare_init_commands(context)
+        assert "mkdir -p /workspace/fixtures" in result
+        assert "base64 -d > /workspace/fixtures/input.json" in result
+        assert content in result
+
+    def test_seed_commands_run_after_custom_setup_ordering(self, container_executor):
+        """Seeds are written before custom commands so they can be consumed."""
+        import base64
+
+        content = base64.b64encode(b"data").decode("ascii")
+        context = self._context([{"path": "seed.txt", "content_base64": content}])
+        context["custom_commands"] = {
+            "enabled": True,
+            "commands": ["cat seed.txt"],
+        }
+        result = container_executor._prepare_init_commands(context)
+        assert result.index("/workspace/seed.txt") < result.index("cat seed.txt")
+
+    def test_traversal_path_raises_before_any_command(self, container_executor):
+        """Defense-in-depth: unvalidated traversal paths must raise, not run."""
+        from preloop.utils.workspace_seed import WorkspaceSeedError
+
+        context = self._context(
+            [{"path": "../../etc/cron.d/evil", "content_base64": "eA=="}]
+        )
+        with pytest.raises(WorkspaceSeedError):
+            container_executor._prepare_init_commands(context)
+
+
 class TestExtractBranchFromTrigger:
     """Tests for branch extraction helpers used during git clone."""
 
