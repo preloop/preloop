@@ -1,7 +1,16 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
+from zoneinfo import ZoneInfo
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 
 class GitCloneRepository(BaseModel):
@@ -73,6 +82,82 @@ class CustomCommands(BaseModel):
     )
 
 
+# Minimum interval between two scheduled runs of the same flow.
+MIN_SCHEDULE_INTERVAL = timedelta(minutes=5)
+# How far ahead (and how many ticks) we simulate when checking the interval.
+_SCHEDULE_CHECK_MAX_TICKS = 100
+_SCHEDULE_CHECK_HORIZON = timedelta(days=32)
+
+
+class ScheduleConfig(BaseModel):
+    """Configuration for schedule (cron) triggers."""
+
+    cron: str = Field(
+        description="5-field crontab expression (minute hour day month day_of_week)"
+    )
+    timezone: str = Field(
+        default="UTC",
+        description="IANA timezone name the cron expression is evaluated in",
+    )
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, v: str) -> str:
+        """Ensure the timezone is a valid IANA name."""
+        try:
+            ZoneInfo(v)
+        except Exception:
+            raise ValueError(f"Unknown IANA timezone: '{v}'")
+        return v
+
+    @model_validator(mode="after")
+    def validate_cron(self) -> "ScheduleConfig":
+        """Parse the cron expression and enforce the minimum interval."""
+        trigger = self.build_trigger()
+        # Simulate successive fire times and reject schedules that would
+        # ever fire more often than MIN_SCHEDULE_INTERVAL apart (e.g.
+        # "* * * * *" or irregular minute lists like "0,3 * * * *").
+        now = datetime.now(timezone.utc)
+        horizon = now + _SCHEDULE_CHECK_HORIZON
+        prev = trigger.get_next_fire_time(None, now)
+        for _ in range(_SCHEDULE_CHECK_MAX_TICKS):
+            if prev is None or prev > horizon:
+                break
+            nxt = trigger.get_next_fire_time(prev, prev + timedelta(microseconds=1))
+            if nxt is None:
+                break
+            if nxt - prev < MIN_SCHEDULE_INTERVAL:
+                minutes = int(MIN_SCHEDULE_INTERVAL.total_seconds() // 60)
+                raise ValueError(
+                    f"Schedule '{self.cron}' fires more often than the minimum "
+                    f"interval of {minutes} minutes "
+                    f"(e.g. {prev.isoformat()} -> {nxt.isoformat()})"
+                )
+            prev = nxt
+        return self
+
+    def build_trigger(self):
+        """Build an APScheduler CronTrigger from this config.
+
+        Raises:
+            ValueError: If the cron expression is invalid.
+        """
+        from apscheduler.triggers.cron import CronTrigger
+
+        try:
+            return CronTrigger.from_crontab(self.cron, timezone=self.timezone)
+        except ValueError as e:
+            raise ValueError(f"Invalid cron expression '{self.cron}': {e}")
+
+    def next_fire_time(self) -> Optional[datetime]:
+        """Compute the next fire time from now, or None if it never fires."""
+        try:
+            trigger = self.build_trigger()
+        except ValueError:
+            return None
+        return trigger.get_next_fire_time(None, datetime.now(timezone.utc))
+
+
 class WebhookConfig(BaseModel):
     """Configuration for webhook triggers."""
 
@@ -93,6 +178,7 @@ class FlowBase(BaseModel):
     trigger_project_ids: Optional[List[UUID]] = None
     trigger_config: Optional[Dict[str, Any]] = None
     webhook_config: Optional[WebhookConfig] = None
+    schedule_config: Optional[ScheduleConfig] = None
     prompt_template: Optional[str] = None
     ai_model_id: Optional[UUID] = None
     agent_type: Optional[str] = "openhands"
@@ -147,8 +233,24 @@ class FlowResponse(FlowBase):
     tools_customized: bool = False
     preset_update_available: bool = False
     execution_stats: Optional[Dict[str, Any]] = None
+    # Computed schedule state for schedule-triggered flows (read-only)
+    schedule_state: Optional[Dict[str, Any]] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+    @model_validator(mode="after")
+    def compute_schedule_state(self) -> "FlowResponse":
+        """Expose schedule state (next run etc.) for schedule triggers."""
+        if self.trigger_event_source == "schedule" and self.schedule_config:
+            active = bool(self.is_enabled)
+            next_run = self.schedule_config.next_fire_time() if active else None
+            self.schedule_state = {
+                "active": active,
+                "cron": self.schedule_config.cron,
+                "timezone": self.schedule_config.timezone,
+                "next_run_at": next_run.isoformat() if next_run else None,
+            }
+        return self
 
     @field_serializer(
         "id",

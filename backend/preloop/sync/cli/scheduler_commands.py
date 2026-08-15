@@ -8,6 +8,7 @@ import asyncio
 from preloop.config import settings
 from preloop.models.db.session import get_db_session
 from ..services.manager import sync_scheduled_jobs
+from ..services.flow_schedules import sync_flow_schedule_jobs
 from ..services.event_bus import event_bus_service
 
 
@@ -76,6 +77,20 @@ async def run_scheduler_async(
     )
     logger.info(
         f"Scheduled tracker job synchronization every {reload_interval} seconds."
+    )
+
+    scheduler.add_job(
+        sync_flow_schedule_jobs,
+        trigger=IntervalTrigger(seconds=reload_interval),
+        args=[scheduler],
+        id="flow_schedule_sync_job",
+        name="Sync Scheduled Flow Jobs",
+        replace_existing=True,
+        misfire_grace_time=60,
+        next_run_time=datetime.now(pytz.utc),
+    )
+    logger.info(
+        f"Scheduled flow schedule synchronization every {reload_interval} seconds."
     )
 
     # Daily provider-billing ingestion (cost reconciliation). The worker-side

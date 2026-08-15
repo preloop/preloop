@@ -57,6 +57,16 @@ def create_flow(
                 detail="Only administrators can configure custom commands for security reasons",
             )
 
+    # Schedule triggers require a cron schedule_config
+    if flow_in.trigger_event_source == "schedule":
+        if not flow_in.schedule_config:
+            raise HTTPException(
+                status_code=400,
+                detail="schedule_config with a cron expression is required "
+                "for schedule triggers",
+            )
+        flow_in.trigger_event_types = ["schedule"]
+
     # If this is a webhook trigger, auto-generate a secure webhook secret
     if flow_in.trigger_event_source == "webhook" or (
         not flow_in.trigger_event_source and not flow_in.trigger_event_types
@@ -946,6 +956,27 @@ def update_flow(
                 status_code=403,
                 detail="Only administrators can configure custom commands for security reasons",
             )
+
+    # Schedule triggers must always keep a valid cron schedule_config
+    effective_source = (
+        flow_in.trigger_event_source
+        if flow_in.trigger_event_source is not None
+        else flow.trigger_event_source
+    )
+    if effective_source == "schedule":
+        effective_schedule = (
+            flow_in.schedule_config
+            if "schedule_config" in flow_in.model_fields_set
+            else flow.schedule_config
+        )
+        if not effective_schedule:
+            raise HTTPException(
+                status_code=400,
+                detail="schedule_config with a cron expression is required "
+                "for schedule triggers",
+            )
+        if flow_in.trigger_event_source == "schedule":
+            flow_in.trigger_event_types = ["schedule"]
 
     # Detect customization for template-tracked flows
     # If the user modifies the prompt or tools, mark them as customized

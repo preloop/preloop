@@ -205,6 +205,25 @@ class CRUDFlow(CRUDBase[models.Flow]):
             query = query.filter(cast(self.model.account_id, String) == account_id_str)
         return query.offset(skip).limit(limit).all()
 
+    def get_scheduled(self, db: Session) -> List[models.Flow]:
+        """
+        Retrieve all flows with an active schedule (cron) trigger.
+
+        Returns enabled, non-preset flows with
+        ``trigger_event_source == 'schedule'`` and a schedule_config set.
+        Used by the scheduler to reconcile cron jobs.
+        """
+        return (
+            db.query(self.model)
+            .filter(
+                self.model.trigger_event_source == "schedule",
+                self.model.is_enabled.is_(True),
+                self.model.is_preset.is_(False),
+                self.model.schedule_config.isnot(None),
+            )
+            .all()
+        )
+
     def create(
         self,
         db: Session,

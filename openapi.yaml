@@ -11219,6 +11219,10 @@ components:
           anyOf:
           - $ref: '#/components/schemas/WebhookConfig'
           - type: 'null'
+        schedule_config:
+          anyOf:
+          - $ref: '#/components/schemas/ScheduleConfig'
+          - type: 'null'
         prompt_template:
           type: string
           title: Prompt Template
@@ -11664,6 +11668,10 @@ components:
           anyOf:
           - $ref: '#/components/schemas/WebhookConfig'
           - type: 'null'
+        schedule_config:
+          anyOf:
+          - $ref: '#/components/schemas/ScheduleConfig'
+          - type: 'null'
         prompt_template:
           anyOf:
           - type: string
@@ -11772,6 +11780,12 @@ components:
             type: object
           - type: 'null'
           title: Execution Stats
+        schedule_state:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Schedule State
       type: object
       required:
       - id
@@ -11830,6 +11844,10 @@ components:
         webhook_config:
           anyOf:
           - $ref: '#/components/schemas/WebhookConfig'
+          - type: 'null'
+        schedule_config:
+          anyOf:
+          - $ref: '#/components/schemas/ScheduleConfig'
           - type: 'null'
         prompt_template:
           anyOf:
@@ -16406,6 +16424,22 @@ components:
       - action
       title: RuntimeSessionUpdateRequest
       description: Operator-driven updates for one runtime session.
+    ScheduleConfig:
+      properties:
+        cron:
+          type: string
+          title: Cron
+          description: 5-field crontab expression (minute hour day month day_of_week)
+        timezone:
+          type: string
+          title: Timezone
+          description: IANA timezone name the cron expression is evaluated in
+          default: UTC
+      type: object
+      required:
+      - cron
+      title: ScheduleConfig
+      description: Configuration for schedule (cron) triggers.
     ScopeType:
       type: string
       enum:

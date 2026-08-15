@@ -27,6 +27,12 @@ class Flow(Base):
     #     "webhook_secret": str - secret token for authenticating webhook requests
     # }
     webhook_config = Column(JSON, nullable=True, default=None)
+    # Schedule-specific configuration (for trigger_event_source == 'schedule')
+    # Structure: {
+    #     "cron": str - 5-field crontab expression (e.g. "0 6 * * 1-5"),
+    #     "timezone": str - IANA timezone name (e.g. "Europe/Athens")
+    # }
+    schedule_config = Column(JSON, nullable=True, default=None)
     prompt_template = Column(Text, nullable=False)
     ai_model_id = Column(
         UUID(as_uuid=True),
