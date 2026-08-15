@@ -22,6 +22,7 @@ from preloop.models.crud import (
     crud_user,
 )
 from preloop.models.models.flow import Flow
+from preloop.models.models.flow_execution import MATRIX_OVERRIDES_KEY
 from preloop.models.models.ai_model import AIModel
 from preloop.models.models.runtime_session import RuntimeSession
 from preloop.agents import create_agent_executor, AgentStatus
@@ -111,6 +112,9 @@ class FlowExecutionOrchestrator:
         self.trigger_event_data = trigger_event_data
         self.flow: Optional[Flow] = None
         self.ai_model: Optional[AIModel] = None
+        # Effective agent type: flow.agent_type unless overridden by a matrix
+        # cell (see MATRIX_OVERRIDES_KEY); resolved in _get_flow_details.
+        self.agent_type: Optional[str] = None
         self.execution_log = None
         self.runtime_session: Optional[RuntimeSession] = None
         self.nats_client: Client = nats_client
@@ -697,21 +701,39 @@ class FlowExecutionOrchestrator:
         if not self.flow:
             raise ValueError(f"Flow with id {self.flow_id} not found")
 
-        logger.info(
-            f"Found flow: {self.flow.name} (agent_type: {self.flow.agent_type})"
+        # Apply per-cell matrix overrides (batch fan-out) without mutating the
+        # shared flow row: a matrix trigger stores its cell's agent_type /
+        # ai_model_id inside trigger_event_details under MATRIX_OVERRIDES_KEY.
+        matrix_overrides = (self.trigger_event_data or {}).get(
+            MATRIX_OVERRIDES_KEY
+        ) or {}
+        self.agent_type = matrix_overrides.get("agent_type") or self.flow.agent_type
+        effective_ai_model_id = (
+            matrix_overrides.get("ai_model_id") or self.flow.ai_model_id
         )
+        if matrix_overrides:
+            logger.info(
+                "Matrix overrides for execution (batch %s, cell %s): "
+                "agent_type=%s, ai_model_id=%s",
+                matrix_overrides.get("batch_id"),
+                matrix_overrides.get("index"),
+                matrix_overrides.get("agent_type"),
+                matrix_overrides.get("ai_model_id"),
+            )
+
+        logger.info(f"Found flow: {self.flow.name} (agent_type: {self.agent_type})")
 
         # Get AI model if specified
-        if self.flow.ai_model_id:
+        if effective_ai_model_id:
             ai_model_id_str = (
-                str(self.flow.ai_model_id)
-                if isinstance(self.flow.ai_model_id, uuid.UUID)
-                else self.flow.ai_model_id
+                str(effective_ai_model_id)
+                if isinstance(effective_ai_model_id, uuid.UUID)
+                else effective_ai_model_id
             )
             self.ai_model = crud_ai_model.get(self.db, id=ai_model_id_str)
             if not self.ai_model:
                 logger.warning(
-                    f"AI model {self.flow.ai_model_id} not found for flow {self.flow_id}"
+                    f"AI model {effective_ai_model_id} not found for flow {self.flow_id}"
                 )
             else:
                 logger.info(
@@ -1542,8 +1564,9 @@ class FlowExecutionOrchestrator:
 
     async def _prepare_execution_context(self) -> Dict[str, Any]:
         """Prepare the full execution context for the agent."""
+        effective_agent_type = self.agent_type or self.flow.agent_type
         logger.info(
-            f"Preparing execution context for agent type: {self.flow.agent_type}"
+            f"Preparing execution context for agent type: {effective_agent_type}"
         )
 
         resolved_prompt = await self._resolve_prompt()
@@ -1565,7 +1588,7 @@ class FlowExecutionOrchestrator:
             "flow_name": self.flow.name,  # Used for generating git branch names
             "execution_id": str(self.execution_log.id),
             "prompt": resolved_prompt,
-            "agent_type": self.flow.agent_type,
+            "agent_type": effective_agent_type,
             "agent_config": self.flow.agent_config,
             "allowed_mcp_servers": self.flow.allowed_mcp_servers,
             "allowed_mcp_tools": self.flow.allowed_mcp_tools,

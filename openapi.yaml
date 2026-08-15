@@ -6868,6 +6868,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/flows/batches/{batch_id}/executions:
+    get:
+      tags:
+      - Flows
+      summary: Read Batch Executions
+      description: 'List all executions of one matrix/batch trigger with a rollup.
+
+
+        The rollup aggregates status counts, tokens, tool calls and estimated
+
+        cost across the batch so an eval matrix can be observed as a unit.'
+      operationId: read_batch_executions_api_v1_flows_batches__batch_id__executions_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: batch_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Batch Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchExecutionsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/flows/executions/{execution_id}:
     get:
       tags:
@@ -7180,9 +7215,16 @@ paths:
       tags:
       - Flows
       summary: Trigger Flow Execution
-      description: "Trigger a test execution for a flow.\n\nArgs:\n    flow_id: Flow\
-        \ to trigger\n    trigger_event_data: Optional custom trigger event data for\
-        \ testing template variables\n\nReturns:\n    Execution details"
+      description: "Trigger a test execution for a flow.\n\nThe body is free-form\
+        \ trigger event data, except for the reserved key\n``matrix``: when present\
+        \ it must be a list of up to 25\n``{\"agent_type\"?, \"ai_model_id\"?}`` objects\
+        \ and the trigger fans out to\none execution per entry, all sharing a ``batch_id``\
+        \ (an empty object runs\nthe flow defaults). Without ``matrix`` the behaviour\
+        \ is unchanged.\n\nArgs:\n    flow_id: Flow to trigger\n    trigger_event_data:\
+        \ Optional custom trigger event data for testing\n        template variables,\
+        \ plus the optional reserved ``matrix`` key\n\nReturns:\n    Execution details,\
+        \ or batch details (``batch_id`` + per-cell\n    ``execution_id``) when a\
+        \ matrix was given"
       operationId: trigger_flow_execution_api_v1_flows__flow_id__trigger_post
       security:
       - bearerAuth: []
@@ -10639,6 +10681,169 @@ components:
         attempt failed; it never carries raw exception text, which can embed
 
         endpoint URLs or key material.'
+    BatchExecutionListItem:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        flow_id:
+          type: string
+          format: uuid
+          title: Flow Id
+        status:
+          type: string
+          title: Status
+        start_time:
+          type: string
+          format: date-time
+          title: Start Time
+        end_time:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: End Time
+        error_message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Message
+        retry_of_execution_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Retry Of Execution Id
+        batch_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Batch Id
+        tool_calls_count:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Tool Calls Count
+          default: 0
+        total_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Total Tokens
+          default: 0
+        estimated_cost:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Estimated Cost
+          default: 0.0
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+        flow_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Flow Name
+        trigger_subject:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Trigger Subject
+          description: 'Short human-readable description of what triggered this execution,
+            e.g. ''preloop/preloop #78 · Pull Request Updated · 5167595c''. Null for
+            executions created before subjects were recorded, or where no identifying
+            detail could be derived.'
+        trigger_subject_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Trigger Subject Url
+          description: Link to the resource that triggered this execution (e.g. the
+            pull request or merge request), when the trigger payload carries one.
+        matrix:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Matrix
+          description: Matrix cell overrides this execution was created with (index,
+            agent_type, ai_model_id)
+      type: object
+      required:
+      - id
+      - flow_id
+      - status
+      - start_time
+      - created_at
+      - updated_at
+      title: BatchExecutionListItem
+      description: Execution row in a batch listing, annotated with its matrix cell.
+    BatchExecutionsResponse:
+      properties:
+        batch_id:
+          type: string
+          format: uuid
+          title: Batch Id
+        flow_id:
+          type: string
+          format: uuid
+          title: Flow Id
+        rollup:
+          $ref: '#/components/schemas/BatchRollup'
+        executions:
+          items:
+            $ref: '#/components/schemas/BatchExecutionListItem'
+          type: array
+          title: Executions
+      type: object
+      required:
+      - batch_id
+      - flow_id
+      - rollup
+      - executions
+      title: BatchExecutionsResponse
+      description: Executions of one batch plus a status/cost/token rollup.
+    BatchRollup:
+      properties:
+        total:
+          type: integer
+          title: Total
+        by_status:
+          additionalProperties:
+            type: integer
+          type: object
+          title: By Status
+        completed:
+          type: integer
+          title: Completed
+          description: Executions in a terminal state (succeeded/failed/etc.)
+          default: 0
+        total_tokens:
+          type: integer
+          title: Total Tokens
+          default: 0
+        total_estimated_cost:
+          type: number
+          title: Total Estimated Cost
+          default: 0.0
+        total_tool_calls:
+          type: integer
+          title: Total Tool Calls
+          default: 0
+      type: object
+      required:
+      - total
+      - by_status
+      title: BatchRollup
+      description: Aggregate metrics over the executions of one batch.
     Body_diff_policy_api_v1_policies_diff_post:
       properties:
         file:
@@ -11366,6 +11571,12 @@ components:
             format: uuid
           - type: 'null'
           title: Retry Of Execution Id
+        batch_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Batch Id
         tool_calls_count:
           anyOf:
           - type: integer
@@ -11511,6 +11722,13 @@ components:
           - type: 'null'
           title: Retry Of Execution Id
           description: ID of the original execution if this is a retry
+        batch_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Batch Id
+          description: Shared ID linking executions created by one matrix/batch trigger
         tool_calls_count:
           anyOf:
           - type: integer

@@ -14,6 +14,15 @@ from .base import Base
 # layer can project it without models depending on sync.
 TRIGGER_SUBJECT_KEY = "_subject"
 
+# Reserved key under which per-cell matrix overrides are stored inside
+# FlowExecution.trigger_event_details when an execution was created as part of
+# a matrix/batch trigger. Shape:
+# {"batch_id": str, "index": int, "agent_type": str?, "ai_model_id": str?}
+# Keeping the overrides on the execution makes each cell self-describing (the
+# orchestrator applies them without any flow mutation) and lets retries of a
+# single cell keep their overrides for free.
+MATRIX_OVERRIDES_KEY = "_matrix"
+
 
 class FlowExecution(Base):
     __tablename__ = "flow_execution"
@@ -56,6 +65,10 @@ class FlowExecution(Base):
         nullable=True,
         index=True,
     )  # Links to the original execution this is a retry of
+
+    # Batch/matrix fan-out: executions created from one matrix trigger share a
+    # batch_id so the whole batch can be listed and rolled up as a unit.
+    batch_id = Column(UUID(as_uuid=True), nullable=True, index=True)
 
     # Execution metrics
     tool_calls_count = Column(

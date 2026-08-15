@@ -50,6 +50,10 @@ class FlowExecutionBase(BaseModel):
     retry_of_execution_id: Optional[uuid.UUID] = Field(
         None, description="ID of the original execution if this is a retry"
     )
+    batch_id: Optional[uuid.UUID] = Field(
+        None,
+        description="Shared ID linking executions created by one matrix/batch trigger",
+    )
     tool_calls_count: Optional[int] = Field(
         0, description="Total number of tool/MCP calls made during execution"
     )
@@ -106,6 +110,7 @@ class FlowExecutionListResponse(BaseModel):
     end_time: Optional[datetime] = None
     error_message: Optional[str] = None
     retry_of_execution_id: Optional[uuid.UUID] = None
+    batch_id: Optional[uuid.UUID] = None
     tool_calls_count: Optional[int] = 0
     total_tokens: Optional[int] = 0
     estimated_cost: Optional[float] = 0.0
@@ -136,6 +141,77 @@ class FlowExecutionListResponse(BaseModel):
 # Schema for FlowExecution as stored in DB (identical to Response for now)
 class FlowExecutionInDB(FlowExecutionResponse):
     pass
+
+
+# --- Matrix / batch fan-out schemas ---
+
+
+class FlowMatrixEntry(BaseModel):
+    """One cell of a matrix trigger. Empty entry means 'flow defaults'."""
+
+    agent_type: Optional[str] = Field(
+        None,
+        description="Agent harness override (e.g. 'opencode'); None = flow default",
+    )
+    ai_model_id: Optional[uuid.UUID] = Field(
+        None, description="AI model override; None = flow default"
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class BatchExecutionRef(BaseModel):
+    """Per-cell execution reference in a batch trigger response."""
+
+    index: int
+    # Both keys are provided on purpose: "id" matches the existing single
+    # trigger response, "execution_id" matches the webhook trigger response
+    # shape (see fix/webhook-trigger-execution-id).
+    id: uuid.UUID
+    execution_id: uuid.UUID
+    status: str
+    agent_type: Optional[str] = None
+    ai_model_id: Optional[uuid.UUID] = None
+
+
+class BatchTriggerResponse(BaseModel):
+    """Response for a trigger request that carried a matrix."""
+
+    batch_id: uuid.UUID
+    flow_id: uuid.UUID
+    executions: List[BatchExecutionRef]
+
+
+class BatchRollup(BaseModel):
+    """Aggregate metrics over the executions of one batch."""
+
+    total: int
+    by_status: Dict[str, int]
+    completed: int = Field(
+        0, description="Executions in a terminal state (succeeded/failed/etc.)"
+    )
+    total_tokens: int = 0
+    total_estimated_cost: float = 0.0
+    total_tool_calls: int = 0
+
+
+class BatchExecutionListItem(FlowExecutionListResponse):
+    """Execution row in a batch listing, annotated with its matrix cell."""
+
+    matrix: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Matrix cell overrides this execution was created with "
+        "(index, agent_type, ai_model_id)",
+    )
+
+
+class BatchExecutionsResponse(BaseModel):
+    """Executions of one batch plus a status/cost/token rollup."""
+
+    batch_id: uuid.UUID
+    flow_id: uuid.UUID
+    rollup: BatchRollup
+    executions: List[BatchExecutionListItem]
 
 
 # Pydantic model for sending commands to a flow execution

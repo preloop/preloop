@@ -174,6 +174,27 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             query = query.join(Flow).filter(Flow.account_id == account_id)
         return query.offset(skip).limit(limit).all()
 
+    def get_by_batch(
+        self,
+        db: Session,
+        batch_id: uuid.UUID,
+        account_id: Optional[str] = None,
+    ) -> List[FlowExecution]:
+        """Get all executions created by one matrix/batch trigger.
+
+        Ordered by creation time so rows line up with the matrix entry order
+        (cells are created sequentially at trigger time). Batches are capped
+        at trigger time, so no pagination is needed.
+        """
+        query = (
+            db.query(FlowExecution)
+            .filter(FlowExecution.batch_id == batch_id)
+            .order_by(FlowExecution.created_at.asc(), FlowExecution.id.asc())
+        )
+        if account_id:
+            query = query.join(Flow).filter(Flow.account_id == account_id)
+        return query.all()
+
     def get_running_by_flow(
         self,
         db: Session,
@@ -240,6 +261,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                     FlowExecution.end_time,
                     FlowExecution.error_message,
                     FlowExecution.retry_of_execution_id,
+                    FlowExecution.batch_id,
                     FlowExecution.tool_calls_count,
                     FlowExecution.total_tokens,
                     FlowExecution.estimated_cost,

@@ -1,7 +1,7 @@
 import uuid
 import secrets
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NoReturn, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
@@ -294,6 +294,90 @@ def read_flow_executions(
         execution.flow_name = execution.flow.name if execution.flow else None
 
     return executions
+
+
+# Terminal execution statuses, mirroring the orchestrator's state machine.
+_TERMINAL_EXECUTION_STATUSES = {
+    "SUCCEEDED",
+    "FAILED",
+    "STOPPED",
+    "TIMEOUT",
+    "CANCELLED",
+}
+
+
+@router.get(
+    "/flows/batches/{batch_id}/executions",
+    response_model=schemas.BatchExecutionsResponse,
+)
+@require_permission("view_flows")
+def read_batch_executions(
+    *,
+    db: Session = Depends(get_db),
+    batch_id: uuid.UUID,
+    current_user: User = Depends(get_current_active_user),
+):
+    """List all executions of one matrix/batch trigger with a rollup.
+
+    The rollup aggregates status counts, tokens, tool calls and estimated
+    cost across the batch so an eval matrix can be observed as a unit.
+    """
+    from preloop.models.models.flow_execution import MATRIX_OVERRIDES_KEY
+
+    executions = crud_flow_execution.get_by_batch(
+        db, batch_id=batch_id, account_id=current_user.account_id
+    )
+    if not executions:
+        raise HTTPException(status_code=404, detail="Batch not found")
+
+    by_status: Dict[str, int] = {}
+    total_tokens = 0
+    total_cost = 0.0
+    total_tool_calls = 0
+    completed = 0
+    items = []
+    for execution in executions:
+        by_status[execution.status] = by_status.get(execution.status, 0) + 1
+        total_tokens += execution.total_tokens or 0
+        total_cost += float(execution.estimated_cost or 0)
+        total_tool_calls += execution.tool_calls_count or 0
+        if execution.status in _TERMINAL_EXECUTION_STATUSES:
+            completed += 1
+        cell = (execution.trigger_event_details or {}).get(MATRIX_OVERRIDES_KEY)
+        item = schemas.BatchExecutionListItem.model_validate(execution)
+        item.flow_name = execution.flow.name if execution.flow else None
+        item.matrix = (
+            {
+                "index": cell.get("index"),
+                "agent_type": cell.get("agent_type"),
+                "ai_model_id": cell.get("ai_model_id"),
+            }
+            if cell
+            else None
+        )
+        items.append(item)
+
+    # Present cells in matrix order (creation order is the fallback for rows
+    # without a recorded index).
+    items.sort(
+        key=lambda i: i.matrix["index"]
+        if i.matrix and i.matrix.get("index") is not None
+        else 1_000_000
+    )
+
+    return schemas.BatchExecutionsResponse(
+        batch_id=batch_id,
+        flow_id=executions[0].flow_id,
+        rollup=schemas.BatchRollup(
+            total=len(executions),
+            by_status=by_status,
+            completed=completed,
+            total_tokens=total_tokens,
+            total_estimated_cost=round(total_cost, 4),
+            total_tool_calls=total_tool_calls,
+        ),
+        executions=items,
+    )
 
 
 @router.get(
@@ -798,6 +882,66 @@ async def send_execution_command(
         raise HTTPException(status_code=500, detail=f"Failed to send command: {str(e)}")
 
 
+_SUPPORTED_MATRIX_AGENT_TYPES = {"openhands", "aider", "codex", "gemini", "opencode"}
+
+
+def _validate_matrix(
+    db: Session, matrix: Any, account_id: uuid.UUID
+) -> List[Dict[str, Any]]:
+    """Validate a matrix trigger payload; raise HTTP 422 on any bad entry.
+
+    Validation is all-or-nothing: no execution is created unless every entry
+    passes, so a batch never partially materialises from a malformed request.
+    """
+    from preloop.models.crud import crud_ai_model
+    from preloop.services.flow_trigger_service import MATRIX_MAX_ENTRIES
+
+    def _reject(detail: str) -> NoReturn:
+        raise HTTPException(status_code=422, detail=detail)
+
+    if not isinstance(matrix, list) or not matrix:
+        _reject("matrix must be a non-empty list of objects")
+    if len(matrix) > MATRIX_MAX_ENTRIES:
+        _reject(f"matrix supports at most {MATRIX_MAX_ENTRIES} entries")
+
+    validated: List[Dict[str, Any]] = []
+    for index, entry in enumerate(matrix):
+        if not isinstance(entry, dict):
+            _reject(f"matrix[{index}] must be an object")
+        unknown = set(entry) - {"agent_type", "ai_model_id"}
+        if unknown:
+            _reject(
+                f"matrix[{index}] has unsupported keys: {sorted(unknown)}; "
+                "allowed keys are 'agent_type' and 'ai_model_id'"
+            )
+        cell: Dict[str, Any] = {}
+        agent_type = entry.get("agent_type")
+        if agent_type is not None:
+            if (
+                not isinstance(agent_type, str)
+                or agent_type.lower() not in _SUPPORTED_MATRIX_AGENT_TYPES
+            ):
+                _reject(
+                    f"matrix[{index}].agent_type '{agent_type}' is not supported; "
+                    f"supported types: {sorted(_SUPPORTED_MATRIX_AGENT_TYPES)}"
+                )
+            cell["agent_type"] = agent_type.lower()
+        ai_model_id = entry.get("ai_model_id")
+        if ai_model_id is not None:
+            try:
+                model_uuid = uuid.UUID(str(ai_model_id))
+            except ValueError:
+                _reject(f"matrix[{index}].ai_model_id must be a UUID")
+            ai_model = crud_ai_model.get(db, id=str(model_uuid))
+            # Same visibility rule as model listing: account-owned or shared
+            # system model (account_id is NULL).
+            if not ai_model or ai_model.account_id not in (None, account_id):
+                _reject(f"matrix[{index}].ai_model_id '{model_uuid}' not found")
+            cell["ai_model_id"] = str(model_uuid)
+        validated.append(cell)
+    return validated
+
+
 @router.post("/flows/{flow_id}/trigger")
 @require_permission("execute_flows")
 async def trigger_flow_execution(
@@ -810,22 +954,47 @@ async def trigger_flow_execution(
     """
     Trigger a test execution for a flow.
 
+    The body is free-form trigger event data, except for the reserved key
+    ``matrix``: when present it must be a list of up to 25
+    ``{"agent_type"?, "ai_model_id"?}`` objects and the trigger fans out to
+    one execution per entry, all sharing a ``batch_id`` (an empty object runs
+    the flow defaults). Without ``matrix`` the behaviour is unchanged.
+
     Args:
         flow_id: Flow to trigger
-        trigger_event_data: Optional custom trigger event data for testing template variables
+        trigger_event_data: Optional custom trigger event data for testing
+            template variables, plus the optional reserved ``matrix`` key
 
     Returns:
-        Execution details
+        Execution details, or batch details (``batch_id`` + per-cell
+        ``execution_id``) when a matrix was given
     """
     # Verify flow exists and user has access
     flow = crud_flow.get(db=db, id=flow_id, account_id=current_user.account_id)
     if not flow:
         raise HTTPException(status_code=404, detail="Flow not found")
 
+    # Pop the reserved matrix key so it never leaks into template variables.
+    matrix = None
+    if trigger_event_data and "matrix" in trigger_event_data:
+        matrix = trigger_event_data.pop("matrix")
+
     # Trigger flow execution
     from preloop.services.flow_trigger_service import FlowTriggerService
 
     trigger_service = FlowTriggerService(db)
+
+    if matrix is not None:
+        validated_matrix = _validate_matrix(
+            db, matrix, account_id=current_user.account_id
+        )
+        return await trigger_service.trigger_flow_matrix(
+            flow_id=flow_id,
+            matrix=validated_matrix,
+            test_mode=True,
+            trigger_event_data=trigger_event_data,
+        )
+
     result = await trigger_service.trigger_flow(
         flow_id=flow_id, test_mode=True, trigger_event_data=trigger_event_data
     )
