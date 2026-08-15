@@ -2158,6 +2158,12 @@ class FlowExecutionOrchestrator:
                         ),
                         "actions_taken": self.execution_logger.get_actions_taken(),
                         "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                        # An eval run may have already written result.json
+                        # before the user stopped it; the container is kept
+                        # (AutoRemove=False) so capture still works.
+                        "result": await self._capture_result_artifact(
+                            agent_executor, session_reference
+                        ),
                     }
 
                 # Get status with error handling
@@ -2199,6 +2205,12 @@ class FlowExecutionOrchestrator:
                                 "error_message": f"Monitoring error: {retry_error_message}",
                                 "actions_taken": self.execution_logger.get_actions_taken(),
                                 "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                                # Best-effort: the daemon may be the very
+                                # thing that is failing, but if the artifact
+                                # is reachable we must not lose it.
+                                "result": await self._capture_result_artifact(
+                                    agent_executor, session_reference
+                                ),
                             }
 
                         # Continue polling for transient errors
@@ -2245,6 +2257,11 @@ class FlowExecutionOrchestrator:
                         "error_message": error_message,
                         "actions_taken": self.execution_logger.get_actions_taken(),
                         "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                        # Capture whatever the agent reported before it got
+                        # stuck in the tool loop.
+                        "result": await self._capture_result_artifact(
+                            agent_executor, session_reference
+                        ),
                     }
 
                 if status in (
@@ -2373,6 +2390,11 @@ class FlowExecutionOrchestrator:
                 "error_message": f"Execution timed out after {max_wait_time} seconds",
                 "actions_taken": self.execution_logger.get_actions_taken(),
                 "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                # A timed-out eval run may still have written result.json;
+                # the stopped container is kept, so the artifact is reachable.
+                "result": await self._capture_result_artifact(
+                    agent_executor, session_reference
+                ),
             }
 
         except Exception as e:
@@ -2389,6 +2411,11 @@ class FlowExecutionOrchestrator:
                 "error_message": f"Monitoring error: {error_message}",
                 "actions_taken": self.execution_logger.get_actions_taken(),
                 "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                # _capture_result_artifact never raises; best-effort capture
+                # so an unexpected monitor error does not lose the artifact.
+                "result": await self._capture_result_artifact(
+                    agent_executor, session_reference
+                ),
             }
         finally:
             # Always cleanup monitoring resources

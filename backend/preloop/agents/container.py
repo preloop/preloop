@@ -830,8 +830,9 @@ class ContainerAgentExecutor(AgentExecutor):
 
         Returns the parsed JSON object, a wrapped ``{"error": ...}`` object
         when the file exists but is unusable (invalid JSON, not an object,
-        oversized), or ``None`` when the agent wrote no artifact — which is
-        the normal case for non-eval flows.
+        oversized) or the Docker daemon failed with a non-404 status while
+        fetching it, or ``None`` when the agent wrote no artifact (Docker
+        404) — which is the normal case for non-eval flows.
 
         TODO(kubernetes): a completed pod's filesystem is not reachable via
         the API without a sidecar or a reader mounting the workspace volume,
@@ -847,9 +848,24 @@ class ContainerAgentExecutor(AgentExecutor):
             docker = await self._get_docker_client()
             container = await docker.containers.get(session_reference)
             tar = await container.get_archive(RESULT_ARTIFACT_PATH)
-        except DockerError:
-            # Most commonly 404: the agent did not write a result artifact.
-            return None
+        except DockerError as e:
+            if e.status == 404:
+                # File (or container) not found: the agent did not write a
+                # result artifact — the normal case for non-eval flows.
+                return None
+            # Any other daemon status (500, 429, ...) is an infra failure,
+            # not "no artifact". Keep it visible: an eval run whose artifact
+            # could not be fetched must not look identical to a run that
+            # reported nothing.
+            self.logger.warning(
+                f"Failed to read result artifact from container "
+                f"{session_reference[:12]}: {_exception_message(e)}"
+            )
+            return {
+                "error": "result_artifact_fetch_failed",
+                "detail": _exception_message(e)[:500],
+                "docker_status": e.status,
+            }
         except Exception as e:
             self.logger.warning(
                 f"Failed to read result artifact from container "

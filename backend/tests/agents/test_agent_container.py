@@ -399,6 +399,31 @@ class TestGetResultArtifact:
         assert artifact is None
 
     @pytest.mark.asyncio
+    async def test_non_404_docker_error_is_wrapped(
+        self, container_executor, mock_docker
+    ):
+        """A daemon failure (non-404) is an infra error, not "no artifact".
+
+        It must stay visible as a wrapped error object so an eval run whose
+        artifact could not be fetched is distinguishable from a run that
+        reported nothing.
+        """
+        from aiodocker.exceptions import DockerError
+
+        mock_container = AsyncMock()
+        mock_container.get_archive = AsyncMock(
+            side_effect=DockerError(500, {"message": "daemon exploded"})
+        )
+        mock_docker.containers.get = AsyncMock(return_value=mock_container)
+
+        artifact = await container_executor.get_result_artifact("container-123")
+
+        assert artifact is not None
+        assert artifact["error"] == "result_artifact_fetch_failed"
+        assert artifact["docker_status"] == 500
+        assert "daemon exploded" in artifact["detail"]
+
+    @pytest.mark.asyncio
     async def test_invalid_json_is_wrapped(self, container_executor, mock_docker):
         """A present-but-broken result.json yields a wrapped error object."""
         mock_container = AsyncMock()
