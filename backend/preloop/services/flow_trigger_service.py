@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from preloop.models.crud import crud_flow, crud_flow_execution
 from preloop.models.models import Flow
-from preloop.models.models.flow_execution import FlowExecution
+from preloop.models.models.flow_execution import FlowExecution, MATRIX_OVERRIDES_KEY
 from preloop.models.schemas.flow_execution import FlowExecutionCreate
 from .flow_orchestrator import FlowExecutionOrchestrator
 from preloop.sync.event_normalizer import attach_trigger_subject
@@ -15,6 +15,11 @@ from preloop.sync.services.event_bus import get_nats_client
 from preloop.models.db.session import get_session_factory
 
 logger = logging.getLogger(__name__)
+
+# Maximum number of matrix cells a single trigger may fan out to. Keeps a
+# runaway matrix from creating unbounded executions in one request; the
+# design-partner use case is a 5x3 grid, so 25 leaves headroom.
+MATRIX_MAX_ENTRIES = 25
 
 
 class FlowDispatchError(Exception):
@@ -895,6 +900,115 @@ class FlowTriggerService:
             "id": str(execution_id),
             "status": execution_status,
             "flow_id": flow_id_str,
+        }
+
+    async def trigger_flow_matrix(
+        self,
+        flow_id: uuid.UUID,
+        matrix: List[Dict[str, Any]],
+        test_mode: bool = False,
+        trigger_event_data: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Fan a single trigger out to one execution per matrix entry.
+
+        Each entry may override ``agent_type`` and/or ``ai_model_id`` for its
+        cell (an empty entry runs the flow defaults). All executions share a
+        freshly minted ``batch_id``. All rows are created and committed before
+        any cell is dispatched, so a dispatch failure mid-batch leaves visible
+        PENDING rows rather than silently missing cells.
+
+        Args:
+            flow_id: The flow definition shared by all cells
+            matrix: List of ``{"agent_type"?, "ai_model_id"?}`` overrides
+            test_mode: Whether this is a test/manual trigger
+            trigger_event_data: Optional trigger event data shared by all cells
+
+        Returns:
+            Dict with batch_id, flow_id and per-cell execution references.
+
+        Raises:
+            ValueError: If the flow does not exist or the matrix is empty or
+                exceeds MATRIX_MAX_ENTRIES. (Entry contents are validated at
+                the API layer, where account scoping is known.)
+        """
+        if not matrix:
+            raise ValueError("matrix must contain at least one entry")
+        if len(matrix) > MATRIX_MAX_ENTRIES:
+            raise ValueError(
+                f"matrix supports at most {MATRIX_MAX_ENTRIES} entries, "
+                f"got {len(matrix)}"
+            )
+
+        flow = crud_flow.get(self.db, id=str(flow_id))
+        if not flow:
+            raise ValueError(f"Flow {flow_id} not found")
+
+        from preloop.services.flow_orchestrator import _make_json_serializable
+
+        batch_id = uuid.uuid4()
+        logger.info(
+            "Triggering matrix batch %s for flow '%s' (%s) with %d cells",
+            batch_id,
+            flow.name,
+            flow.id,
+            len(matrix),
+        )
+
+        executions = []
+        cells = []
+        for index, entry in enumerate(matrix):
+            trigger_details: Dict[str, Any] = {}
+            if trigger_event_data:
+                trigger_details.update(trigger_event_data)
+            trigger_details["test_mode"] = test_mode
+            trigger_details = _make_json_serializable(trigger_details)
+            attach_trigger_subject(trigger_details)
+
+            cell: Dict[str, Any] = {"batch_id": str(batch_id), "index": index}
+            if entry.get("agent_type"):
+                cell["agent_type"] = str(entry["agent_type"])
+            if entry.get("ai_model_id"):
+                cell["ai_model_id"] = str(entry["ai_model_id"])
+            trigger_details[MATRIX_OVERRIDES_KEY] = cell
+            cells.append(cell)
+
+            execution_data = FlowExecutionCreate(
+                flow_id=flow_id,
+                status="PENDING",
+                trigger_event_details=trigger_details,
+                batch_id=batch_id,
+            )
+            executions.append(
+                crud_flow_execution.create(self.db, obj_in=execution_data)
+            )
+
+        self.db.commit()
+        for execution in executions:
+            self.db.refresh(execution)
+
+        nats_client = await get_nats_client()
+        for execution in executions:
+            await self._start_flow_execution(
+                flow=flow,
+                event_data=execution.trigger_event_details,
+                nats_client=nats_client,
+                precreated_execution=execution,
+            )
+
+        return {
+            "batch_id": str(batch_id),
+            "flow_id": str(flow_id),
+            "executions": [
+                {
+                    "index": cell["index"],
+                    "id": str(execution.id),
+                    "execution_id": str(execution.id),
+                    "status": execution.status,
+                    "agent_type": cell.get("agent_type"),
+                    "ai_model_id": cell.get("ai_model_id"),
+                }
+                for execution, cell in zip(executions, cells, strict=True)
+            ],
         }
 
     async def _run_orchestrator_without_creation(self, orchestrator):
