@@ -2469,6 +2469,58 @@ export async function deleteFlow(flowId: string) {
   }
 }
 
+export interface SchedulePreview {
+  type: string;
+  description: string;
+  timezone: string;
+  next_run_times: string[];
+}
+
+/**
+ * Preview a flow schedule trigger configuration.
+ *
+ * Returns a human-readable description and the next few run times.
+ * Invalid configurations (bad cron, below the minimum interval, unknown
+ * timezone) are rejected by the backend with a 422; the validation
+ * message is surfaced as the thrown Error's message so callers can show
+ * it inline.
+ */
+export async function previewFlowSchedule(
+  scheduleConfig: unknown
+): Promise<SchedulePreview> {
+  const response = await fetchWithAuth('/api/v1/flows/schedule/preview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ schedule_config: scheduleConfig }),
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(extractValidationMessage(errorData));
+  }
+  return response.json();
+}
+
+/**
+ * Extract a readable message from a FastAPI error body.
+ *
+ * 422 validation errors carry `detail` as a list of {loc, msg, ...};
+ * other errors carry `detail` as a string.
+ */
+function extractValidationMessage(errorData: any): string {
+  const detail = errorData?.detail;
+  if (typeof detail === 'string') {
+    return detail;
+  }
+  if (Array.isArray(detail) && detail.length > 0) {
+    return detail
+      .map((item: any) =>
+        String(item?.msg || 'Invalid value').replace(/^Value error,\s*/, '')
+      )
+      .join('; ');
+  }
+  return 'Invalid schedule configuration';
+}
+
 export async function getFlowPresets(): Promise<any[]> {
   const response = await fetchWithAuth('/api/v1/flows/presets');
   if (!response.ok) {

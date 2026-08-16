@@ -151,6 +151,79 @@ describe('FlowsView', () => {
     expect(urls.some((u) => u.includes('/api/v1/flows'))).to.be.true;
   });
 
+  describe('schedule indicators', () => {
+    async function renderFlows(flows: unknown[]) {
+      fetchStub = createFetchStub(flows, []);
+      const element = (await fixture(
+        html`<flows-view></flows-view>`
+      )) as FlowsView;
+      await waitUntil(
+        () => !(element as any).isLoading,
+        'Flows view did not finish loading'
+      );
+      await element.updateComplete;
+      return element;
+    }
+
+    it('shows the next run time for scheduled flows', async () => {
+      const element = await renderFlows([
+        {
+          id: 'flow-sched',
+          name: 'Nightly Report',
+          trigger_event_source: 'schedule',
+          is_enabled: true,
+          schedule_state: {
+            active: true,
+            type: 'daily',
+            description: 'Daily at 09:00 (Europe/Athens)',
+            timezone: 'Europe/Athens',
+            next_run_at: '2026-08-17T06:00:00+00:00',
+          },
+        },
+      ]);
+
+      const card = element.shadowRoot?.querySelector('.flow-card');
+      expect(card?.textContent).to.contain('Next run');
+      expect(card?.textContent).to.not.contain('Schedule paused');
+    });
+
+    it('shows a paused badge when a scheduled flow is disabled', async () => {
+      const element = await renderFlows([
+        {
+          id: 'flow-paused',
+          name: 'Paused Report',
+          trigger_event_source: 'schedule',
+          is_enabled: false,
+          schedule_state: {
+            active: false,
+            type: 'daily',
+            description: 'Daily at 09:00 (Europe/Athens)',
+            timezone: 'Europe/Athens',
+            next_run_at: null,
+          },
+        },
+      ]);
+
+      const card = element.shadowRoot?.querySelector('.flow-card');
+      expect(card?.textContent).to.contain('Schedule paused');
+      expect(card?.textContent).to.not.contain('Next run');
+    });
+
+    it('shows no schedule indicator for non-scheduled flows', async () => {
+      const element = await renderFlows([
+        {
+          id: 'flow-hook',
+          name: 'Webhook Flow',
+          trigger_event_source: 'webhook',
+        },
+      ]);
+
+      const card = element.shadowRoot?.querySelector('.flow-card');
+      expect(card?.textContent).to.not.contain('Next run');
+      expect(card?.textContent).to.not.contain('Schedule paused');
+    });
+  });
+
   describe('recent execution duration', () => {
     async function renderItem(exec: Record<string, unknown>) {
       fetchStub = createFetchStub([], []);
