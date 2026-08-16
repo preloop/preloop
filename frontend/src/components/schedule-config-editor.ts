@@ -142,6 +142,15 @@ export class ScheduleConfigEditor extends LitElement {
 
   /** Friendly mode to restore when the Advanced cron switch is turned off. */
   private lastFriendlyType: Exclude<ScheduleConfig['type'], 'cron'> = 'daily';
+
+  /**
+   * Last-edited config per mode, so switching away and back restores the
+   * user's field values (cron expression, interval amount, weekly days)
+   * instead of resetting them to defaults.
+   */
+  private stashedConfigs: Partial<
+    Record<ScheduleConfig['type'], ScheduleConfig>
+  > = {};
   private needsDefaultEmit = false;
 
   disconnectedCallback() {
@@ -181,24 +190,34 @@ export class ScheduleConfigEditor extends LitElement {
   private switchType(type: ScheduleConfig['type']) {
     const timezone = this.config.timezone || browserTimezone();
     const prev = this.config as any;
-    if (type === 'cron' && this.config.type !== 'cron') {
-      this.lastFriendlyType = this.config.type;
+    if (this.config.type !== type) {
+      this.stashedConfigs[this.config.type] = this.config;
+      if (this.config.type !== 'cron') {
+        this.lastFriendlyType = this.config.type;
+      }
     }
+    const stashed = this.stashedConfigs[type];
     let next: ScheduleConfig;
-    switch (type) {
-      case 'interval':
-        next = { type, every: 1, unit: 'hours', timezone };
-        break;
-      case 'daily':
-        next = { type, at: prev.at || '09:00', timezone };
-        break;
-      case 'weekly':
-        next = { type, days: ['mon'], at: prev.at || '09:00', timezone };
-        break;
-      case 'cron':
-      default:
-        next = { type: 'cron', expr: '0 9 * * *', timezone };
-        break;
+    if (stashed && stashed.type === type) {
+      // Restore the user's previous values for this mode; the timezone is
+      // shared across modes, so keep the current one.
+      next = { ...stashed, timezone };
+    } else {
+      switch (type) {
+        case 'interval':
+          next = { type, every: 1, unit: 'hours', timezone };
+          break;
+        case 'daily':
+          next = { type, at: prev.at || '09:00', timezone };
+          break;
+        case 'weekly':
+          next = { type, days: ['mon'], at: prev.at || '09:00', timezone };
+          break;
+        case 'cron':
+        default:
+          next = { type: 'cron', expr: '0 9 * * *', timezone };
+          break;
+      }
     }
     this.value = next;
     this.emitChange();

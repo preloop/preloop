@@ -208,4 +208,105 @@ describe('ScheduleConfigEditor', () => {
       );
     expect(previewCalls.length).to.equal(0);
   });
+
+  it('discards a stale in-flight preview after a newer local validation error', async () => {
+    let resolvePreview: ((response: Response) => void) | undefined;
+    fetchStub = sinon
+      .stub(window, 'fetch')
+      .callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.includes('/api/v1/flows/schedule/preview')) {
+          return new Promise<Response>((resolve) => {
+            resolvePreview = resolve;
+          });
+        }
+        return new Response(JSON.stringify({ detail: `Unhandled: ${url}` }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+
+    const element = (await fixture(
+      html`<schedule-config-editor
+        .value=${{ type: 'daily', at: '09:00', timezone: 'UTC' }}
+      ></schedule-config-editor>`
+    )) as ScheduleConfigEditor;
+
+    // Wait for the debounced preview request to go out (and stay pending).
+    await waitUntil(() => resolvePreview !== undefined, 'preview never sent', {
+      timeout: 4000,
+    });
+
+    // Newer edit that fails client-side validation before the response lands.
+    element.value = { type: 'weekly', days: [], at: '09:00', timezone: 'UTC' };
+    await element.updateComplete;
+
+    // Now the stale response resolves — it must be discarded.
+    resolvePreview!(
+      new Response(JSON.stringify(okPreview({ type: 'daily' }).body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await element.updateComplete;
+
+    expect(
+      element.shadowRoot?.querySelector(
+        '[data-testid="schedule-preview-error"]'
+      )?.textContent
+    ).to.contain('Select at least one day');
+    expect(
+      element.shadowRoot?.querySelector('[data-testid="schedule-preview"]')
+    ).to.not.exist;
+  });
+
+  it('preserves field values when switching modes and back', async () => {
+    fetchStub = stubPreview(okPreview);
+    const changes: ScheduleConfig[] = [];
+    const element = (await fixture(
+      html`<schedule-config-editor
+        .value=${{ type: 'interval', every: 3, unit: 'days', timezone: 'UTC' }}
+        @schedule-change=${(e: CustomEvent) => changes.push(e.detail.value)}
+      ></schedule-config-editor>`
+    )) as ScheduleConfigEditor;
+
+    const setMode = async (mode: string) => {
+      const radioGroup = element.shadowRoot?.querySelector('sl-radio-group');
+      expect(radioGroup, `radio group for ${mode}`).to.exist;
+      (radioGroup as any).value = mode;
+      radioGroup?.dispatchEvent(
+        new CustomEvent('sl-change', { bubbles: true })
+      );
+      await element.updateComplete;
+    };
+    const setAdvanced = async (checked: boolean) => {
+      const toggle = element.shadowRoot?.querySelector('sl-switch');
+      expect(toggle).to.exist;
+      (toggle as any).checked = checked;
+      toggle?.dispatchEvent(new CustomEvent('sl-change', { bubbles: true }));
+      await element.updateComplete;
+    };
+
+    // Interval values survive a round-trip through daily mode.
+    await setMode('daily');
+    await setMode('interval');
+    let latest = changes[changes.length - 1] as any;
+    expect(latest.type).to.equal('interval');
+    expect(latest.every).to.equal(3);
+    expect(latest.unit).to.equal('days');
+
+    // A custom cron expression survives toggling Advanced off and on.
+    await setAdvanced(true);
+    element.value = { type: 'cron', expr: '15 6 * * mon-fri', timezone: 'UTC' };
+    await element.updateComplete;
+    await setAdvanced(false);
+    latest = changes[changes.length - 1] as any;
+    expect(latest.type).to.equal('interval'); // last friendly mode restored
+    expect(latest.every).to.equal(3);
+    await setAdvanced(true);
+    latest = changes[changes.length - 1] as any;
+    expect(latest.type).to.equal('cron');
+    expect(latest.expr).to.equal('15 6 * * mon-fri');
+  });
 });
