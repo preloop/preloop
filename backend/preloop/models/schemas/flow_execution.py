@@ -40,6 +40,13 @@ class FlowExecutionBase(BaseModel):
     mcp_usage_logs: Optional[List[Dict[str, Any]]] = Field(
         None, description="Detailed log of each MCP tool call"
     )
+    result: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "Structured result artifact reported by the agent "
+            "(parsed /workspace/result.json, eval/observe runs)"
+        ),
+    )
     agent_session_reference: Optional[str] = Field(
         None,
         description="Reference to agent session (e.g., session ID, K8s job ID, container ID, process ID)",
@@ -76,6 +83,7 @@ class FlowExecutionUpdate(BaseModel):
     model_output_summary: Optional[str] = None
     actions_taken_summary: Optional[List[Dict[str, Any]]] = None
     mcp_usage_logs: Optional[List[Dict[str, Any]]] = None
+    result: Optional[Dict[str, Any]] = None
     agent_session_reference: Optional[str] = None
     error_message: Optional[str] = None
     tool_calls_count: Optional[int] = None

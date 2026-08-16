@@ -6898,6 +6898,46 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/flows/executions/{execution_id}/result:
+    get:
+      tags:
+      - Flows
+      summary: Get Flow Execution Result
+      description: 'Get the structured result artifact reported by a flow execution.
+
+
+        Eval/observe flows write ``/workspace/result.json`` as their final
+
+        report; the runner captures it as a first-class execution artifact.
+
+        Returns 404 if the execution does not exist or reported no result.'
+      operationId: get_flow_execution_result_api_v1_flows_executions__execution_id__result_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Flow Execution Result Api V1 Flows Executions  Execution
+                  Id  Result Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/flows/executions/{execution_id}/logs:
     get:
       tags:
@@ -7426,7 +7466,29 @@ paths:
 
         This endpoint allows external services to trigger flows without authentication.
 
-        Security is provided by the unguessable webhook_secret in the URL.'
+        Security is provided by the unguessable webhook_secret in the URL.
+
+
+        Success responses carry a nested ``execution`` object with the same
+
+        ``{id, status, flow_id}`` shape as ``POST /flows/{flow_id}/trigger``, plus
+
+        flat ``execution_id``/``execution_status``/``execution_url`` fields and
+
+        ``"status": "triggered"`` for backwards compatibility.
+
+
+        Deduplication: redelivered payloads carrying the same commit SHA as a
+
+        still-running execution of this flow return that execution with
+
+        ``"deduplicated": true`` instead of creating a duplicate. Payloads without
+
+        a recognizable commit SHA are never deduplicated (same scope as generic
+
+        event matching); commit-less callers that need idempotent redelivery
+
+        should include a unique ``sha`` field in the payload.'
       operationId: trigger_flow_via_webhook_api_v1_webhooks_flows__flow_id___webhook_secret__post
       parameters:
       - name: flow_id
@@ -7444,16 +7506,19 @@ paths:
           title: Webhook Secret
       responses:
         '200':
-          description: Successful Response
+          description: Execution triggered (or deduplicated to an existing running
+            execution for the same repo + commit, see 'deduplicated').
           content:
             application/json:
               schema: {}
+        '202':
+          description: Execution row was created but dispatch failed; poll execution_url
+            or retry from the console. Do not re-send the webhook.
         '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+          description: Payload does not match the flow's trigger_config; no execution
+            was created.
+        '500':
+          description: No execution could be created (failure at/before the insert).
   /api/v1/policies/validate:
     post:
       tags:
@@ -11491,6 +11556,14 @@ components:
           - type: 'null'
           title: Mcp Usage Logs
           description: Detailed log of each MCP tool call
+        result:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Result
+          description: Structured result artifact reported by the agent (parsed /workspace/result.json,
+            eval/observe runs)
         agent_session_reference:
           anyOf:
           - type: string

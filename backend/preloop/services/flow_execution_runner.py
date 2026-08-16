@@ -77,6 +77,7 @@ async def resume_existing_execution(
             error_message=agent_result.get("error_message"),
             actions_taken_summary=agent_result.get("actions_taken"),
             mcp_usage_logs=agent_result.get("mcp_usage_logs"),
+            result=agent_result.get("result"),
             end_time=datetime.now(timezone.utc),
         )
         logger.info(

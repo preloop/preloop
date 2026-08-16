@@ -41,6 +41,10 @@ class FlowExecution(Base):
         JSONB, nullable=True
     )  # Structured log of agent actions
     mcp_usage_logs = Column(JSONB, nullable=True)  # Detailed log of MCP tool calls
+    # Structured result artifact reported by the agent (eval/observe runs):
+    # the parsed contents of /workspace/result.json captured by the runner
+    # after the agent finishes. First-class alternative to scraping logs.
+    result = Column(JSONB, nullable=True)
     execution_logs = Column(
         JSONB, nullable=True
     )  # Full execution logs (array of log messages)

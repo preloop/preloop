@@ -30,6 +30,13 @@ from preloop.utils.workspace_seed import (
 
 logger = logging.getLogger(__name__)
 
+# Path inside the agent container where eval/observe flows write their
+# structured result report (see backend/presets/003-observe-eval.yaml).
+RESULT_ARTIFACT_PATH = "/workspace/result.json"
+# Guardrail: refuse to persist oversized artifacts (the preset asks agents to
+# keep result.json small and reference workspace files for bulky output).
+MAX_RESULT_ARTIFACT_BYTES = 256 * 1024
+
 
 def _exception_message(exc: BaseException) -> str:
     """Return a useful message for exceptions whose str() is empty."""
@@ -814,6 +821,99 @@ class ContainerAgentExecutor(AgentExecutor):
     # Marker printed by the agent script before the agent command runs.
     # Must match AGENT_EXEC_START_MARKER in flow_orchestrator.py.
     AGENT_EXEC_START_MARKER = "PRELOOP_AGENT_EXEC_START"
+
+    async def get_result_artifact(
+        self, session_reference: str
+    ) -> Optional[Dict[str, Any]]:
+        """Capture the structured result artifact written by the agent.
+
+        Reads ``RESULT_ARTIFACT_PATH`` (``/workspace/result.json``) out of the
+        container via the Docker archive API — no log scraping or sentinel
+        parsing. Works for both running and exited containers (containers are
+        started with ``AutoRemove: False``).
+
+        Returns the parsed JSON object, a wrapped ``{"error": ...}`` object
+        when the file exists but is unusable (invalid JSON, not an object,
+        oversized) or the Docker daemon failed with a non-404 status while
+        fetching it, or ``None`` when the agent wrote no artifact (Docker
+        404) — which is the normal case for non-eval flows.
+
+        TODO(kubernetes): a completed pod's filesystem is not reachable via
+        the API without a sidecar or a reader mounting the workspace volume,
+        so Kubernetes capture ships separately; this returns None there.
+        """
+        if self.use_kubernetes:
+            self.logger.debug(
+                "Result artifact capture is not yet implemented for Kubernetes"
+            )
+            return None
+
+        try:
+            docker = await self._get_docker_client()
+            container = await docker.containers.get(session_reference)
+            tar = await container.get_archive(RESULT_ARTIFACT_PATH)
+        except DockerError as e:
+            if e.status == 404:
+                # File (or container) not found: the agent did not write a
+                # result artifact — the normal case for non-eval flows.
+                return None
+            # Any other daemon status (500, 429, ...) is an infra failure,
+            # not "no artifact". Keep it visible: an eval run whose artifact
+            # could not be fetched must not look identical to a run that
+            # reported nothing.
+            self.logger.warning(
+                f"Failed to read result artifact from container "
+                f"{session_reference[:12]}: {_exception_message(e)}"
+            )
+            return {
+                "error": "result_artifact_fetch_failed",
+                "detail": _exception_message(e)[:500],
+                "docker_status": e.status,
+            }
+        except Exception as e:
+            self.logger.warning(
+                f"Failed to read result artifact from container "
+                f"{session_reference[:12]}: {_exception_message(e)}"
+            )
+            return None
+
+        try:
+            member = next((m for m in tar.getmembers() if m.isfile()), None)
+            if member is None:
+                return None
+            if member.size > MAX_RESULT_ARTIFACT_BYTES:
+                self.logger.warning(
+                    f"Result artifact from container {session_reference[:12]} "
+                    f"is too large ({member.size} bytes), not persisting content"
+                )
+                return {
+                    "error": "result_artifact_too_large",
+                    "size_bytes": member.size,
+                    "limit_bytes": MAX_RESULT_ARTIFACT_BYTES,
+                }
+            fileobj = tar.extractfile(member)
+            if fileobj is None:
+                return None
+            raw = fileobj.read(MAX_RESULT_ARTIFACT_BYTES + 1)
+            parsed = json.loads(raw.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            self.logger.warning(
+                f"Result artifact from container {session_reference[:12]} "
+                f"is not valid JSON: {e}"
+            )
+            return {
+                "error": "result_artifact_invalid_json",
+                "detail": str(e)[:500],
+            }
+        finally:
+            tar.close()
+
+        if not isinstance(parsed, dict):
+            return {
+                "error": "result_artifact_not_object",
+                "detail": f"expected a JSON object, got {type(parsed).__name__}",
+            }
+        return parsed
 
     def _detect_error_in_logs(self, logs_text: str) -> bool:
         """
