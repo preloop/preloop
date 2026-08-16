@@ -593,10 +593,13 @@ export class PreloopFlowForm extends LitElement {
         trigger_event_types: this.flow.trigger_event_types || ['webhook'],
         trigger_organization_id: this.flow.trigger_organization_id || undefined,
         trigger_project_ids: this.flow.trigger_project_ids || undefined,
+        // Explicit null (not undefined) so the backend's exclude_unset update
+        // path clears a previously-saved schedule_config when the trigger is
+        // changed away from Schedule.
         schedule_config:
           this.triggerType === 'schedule'
             ? this.flow.schedule_config || defaultScheduleConfig()
-            : undefined,
+            : null,
         git_clone_config: this.flow.git_clone_config || { enabled: false },
         max_iterations: this.flow.max_iterations || undefined,
         max_budget: this.flow.max_budget || undefined,

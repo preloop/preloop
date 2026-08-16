@@ -139,6 +139,9 @@ export class ScheduleConfigEditor extends LitElement {
 
   private previewDebounce?: number;
   private previewSeq = 0;
+
+  /** Friendly mode to restore when the Advanced cron switch is turned off. */
+  private lastFriendlyType: Exclude<ScheduleConfig['type'], 'cron'> = 'daily';
   private needsDefaultEmit = false;
 
   disconnectedCallback() {
@@ -178,6 +181,9 @@ export class ScheduleConfigEditor extends LitElement {
   private switchType(type: ScheduleConfig['type']) {
     const timezone = this.config.timezone || browserTimezone();
     const prev = this.config as any;
+    if (type === 'cron' && this.config.type !== 'cron') {
+      this.lastFriendlyType = this.config.type;
+    }
     let next: ScheduleConfig;
     switch (type) {
       case 'interval':
@@ -231,6 +237,9 @@ export class ScheduleConfigEditor extends LitElement {
   }
 
   private schedulePreview() {
+    // Invalidate any in-flight preview so a stale response can't overwrite
+    // newer state (e.g. a local validation error shown after an edit).
+    this.previewSeq++;
     if (this.previewDebounce) clearTimeout(this.previewDebounce);
     const localError = this.localValidationError();
     if (localError) {
@@ -246,7 +255,7 @@ export class ScheduleConfigEditor extends LitElement {
   }
 
   private async fetchPreview() {
-    const seq = ++this.previewSeq;
+    const seq = this.previewSeq;
     try {
       const preview = await previewFlowSchedule(this.config);
       if (seq !== this.previewSeq) return;
@@ -461,7 +470,9 @@ export class ScheduleConfigEditor extends LitElement {
           <sl-switch
             .checked=${isCron}
             @sl-change=${(e: any) =>
-              this.switchType(e.target.checked ? 'cron' : 'daily')}
+              this.switchType(
+                e.target.checked ? 'cron' : this.lastFriendlyType
+              )}
           >
             Advanced: cron expression
           </sl-switch>
