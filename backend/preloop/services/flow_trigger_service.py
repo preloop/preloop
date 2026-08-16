@@ -815,6 +815,91 @@ class FlowTriggerService:
                 exc_info=True,
             )
 
+    async def run_scheduled_tick(self, flow_id: uuid.UUID | str) -> str:
+        """
+        Handle one tick of a schedule (cron) trigger for a flow.
+
+        Overlap policy is skip-if-previous-running: if the flow already has
+        an execution in a running state, the tick is skipped and recorded as
+        a ``flow_schedule_tick_skipped`` audit event. Disabled (paused)
+        flows never fire.
+
+        Args:
+            flow_id: The ID of the schedule-triggered flow.
+
+        Returns:
+            One of "triggered", "skipped_overlap", "suppressed_disabled",
+            or "not_scheduled".
+        """
+        from datetime import datetime, timezone as dt_timezone
+
+        from preloop.models.crud import crud_event
+
+        flow = crud_flow.get(self.db, id=str(flow_id))
+        if not flow or flow.trigger_event_source != "schedule":
+            logger.warning(
+                f"Scheduled tick for flow {flow_id} ignored - flow missing or "
+                f"no longer schedule-triggered"
+            )
+            return "not_scheduled"
+
+        if not flow.is_enabled:
+            logger.info(
+                f"Scheduled tick suppressed for disabled flow '{flow.name}' ({flow.id})"
+            )
+            return "suppressed_disabled"
+
+        from preloop.models.schemas.flow import parse_schedule_config
+
+        raw_schedule = flow.schedule_config or {}
+        try:
+            # Normalize legacy {"cron": ...} shapes into the typed union form
+            schedule_config = parse_schedule_config(raw_schedule).model_dump()
+        except Exception:
+            schedule_config = raw_schedule
+        scheduled_at = datetime.now(dt_timezone.utc).isoformat()
+
+        running = crud_flow_execution.get_running_by_flow(self.db, flow_id=flow.id)
+        if running:
+            logger.info(
+                f"Skipping scheduled tick for flow '{flow.name}' ({flow.id}) - "
+                f"{len(running)} execution(s) still running (overlap policy: skip)"
+            )
+            crud_event.log_event(
+                self.db,
+                event_type="flow_schedule_tick_skipped",
+                account_id=flow.account_id,
+                event_data={
+                    "flow_id": str(flow.id),
+                    "flow_name": flow.name,
+                    "reason": "previous_execution_running",
+                    "running_execution_ids": [str(e.id) for e in running[:10]],
+                    "schedule": schedule_config,
+                    "timezone": schedule_config.get("timezone", "UTC"),
+                    "scheduled_at": scheduled_at,
+                },
+            )
+            return "skipped_overlap"
+
+        event_data = {
+            "source": "schedule",
+            "type": "schedule",
+            "account_id": str(flow.account_id) if flow.account_id else None,
+            "payload": {
+                "schedule": schedule_config,
+                "timezone": schedule_config.get("timezone", "UTC"),
+                "scheduled_at": scheduled_at,
+            },
+        }
+        nats_client = await get_nats_client()
+        await self._start_flow_execution(
+            flow=flow,
+            event_data=event_data,
+            nats_client=nats_client,
+        )
+        logger.info(f"Scheduled execution initiated for flow '{flow.name}' ({flow.id})")
+        return "triggered"
+
     async def trigger_flow(
         self,
         flow_id: uuid.UUID,

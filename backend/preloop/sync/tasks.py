@@ -19,6 +19,7 @@ DISPATCHABLE_TASKS: tuple[str, ...] = (
     "poll_tracker",
     "notify_admins",
     "process_webhook_event",
+    "run_scheduled_flow",
     "cleanup_tracker_webhooks",
     "reprice_gateway_usage_task",
     "ingest_provider_billing",
@@ -208,6 +209,27 @@ async def process_webhook_event(
 
         trigger_service = FlowTriggerService(db)
         await trigger_service.process_event(event_data)
+    finally:
+        db.close()
+
+
+async def run_scheduled_flow(flow_id: str) -> None:
+    """
+    Handle one tick of a schedule (cron) flow trigger.
+
+    Published by the scheduler service for flows with
+    ``trigger_event_source == 'schedule'``. Delegates to
+    ``FlowTriggerService.run_scheduled_tick`` which enforces the overlap
+    (skip-if-previous-running) and pause-suppression policies.
+    """
+    logger.info("Processing scheduled tick for flow %s", flow_id)
+    db = next(get_db_session())
+    try:
+        from preloop.services.flow_trigger_service import FlowTriggerService
+
+        trigger_service = FlowTriggerService(db)
+        outcome = await trigger_service.run_scheduled_tick(flow_id)
+        logger.info("Scheduled tick for flow %s -> %s", flow_id, outcome)
     finally:
         db.close()
 

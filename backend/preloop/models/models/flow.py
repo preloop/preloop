@@ -27,6 +27,14 @@ class Flow(Base):
     #     "webhook_secret": str - secret token for authenticating webhook requests
     # }
     webhook_config = Column(JSON, nullable=True, default=None)
+    # Schedule-specific configuration (for trigger_event_source == 'schedule')
+    # Discriminated on "type" (see schemas.flow.ScheduleConfig):
+    #   {"type": "cron", "expr": "0 6 * * 1-5", "timezone": "Europe/Athens"}
+    #   {"type": "interval", "every": 30, "unit": "minutes", "timezone": ...}
+    #   {"type": "daily", "at": "06:30", "timezone": ...}
+    #   {"type": "weekly", "days": ["mon", "fri"], "at": "09:00", "timezone": ...}
+    # Legacy rows may lack "type" and use {"cron": ..., "timezone": ...}.
+    schedule_config = Column(JSON, nullable=True, default=None)
     prompt_template = Column(Text, nullable=False)
     ai_model_id = Column(
         UUID(as_uuid=True),
