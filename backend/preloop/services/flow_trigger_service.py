@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from preloop.models.crud import crud_flow, crud_flow_execution
 from preloop.models.models import Flow
+from preloop.models.models.flow_execution import FlowExecution, MATRIX_OVERRIDES_KEY
 from preloop.models.schemas.flow_execution import FlowExecutionCreate
 from .flow_orchestrator import FlowExecutionOrchestrator
 from preloop.sync.event_normalizer import attach_trigger_subject
@@ -14,6 +15,31 @@ from preloop.sync.services.event_bus import get_nats_client
 from preloop.models.db.session import get_session_factory
 
 logger = logging.getLogger(__name__)
+
+# Maximum number of matrix cells a single trigger may fan out to. Keeps a
+# runaway matrix from creating unbounded executions in one request; the
+# design-partner use case is a 5x3 grid, so 25 leaves headroom.
+MATRIX_MAX_ENTRIES = 25
+
+
+class FlowDispatchError(Exception):
+    """A flow execution row was durably committed, but the subsequent
+    dispatch (NATS acquisition / worker hand-off) failed.
+
+    Callers that surface HTTP responses should NOT report this as
+    "no execution was created": the execution exists (typically PENDING)
+    and blindly retrying the trigger would create a duplicate.
+    """
+
+    def __init__(
+        self, execution_id: str, execution_status: str, original: Exception
+    ) -> None:
+        self.execution_id = execution_id
+        self.execution_status = execution_status
+        self.original = original
+        super().__init__(
+            f"Execution {execution_id} was created but dispatch failed: {original}"
+        )
 
 
 class FlowTriggerService:
@@ -298,15 +324,47 @@ class FlowTriggerService:
 
         return None
 
-    def _has_execution_for_commit(
+    def find_duplicate_execution(
+        self, flow: Flow, event_data: Dict[str, Any]
+    ) -> Optional[FlowExecution]:
+        """Return a running execution of ``flow`` for the same repo + commit
+        as ``event_data``, or None.
+
+        Used by direct-trigger callers (e.g. the webhook endpoint) to preserve
+        the commit-SHA deduplication that generic event matching
+        (``process_event``) enforces, without silently dropping the event:
+        callers can return the existing execution to the caller instead.
+
+        Scope (parity with ``process_event``): dedup applies only when the
+        payload carries a recognizable commit SHA (see
+        ``_extract_commit_sha``); commit-less payloads are never deduplicated.
+        The check-then-insert is also not atomic — a DB-level guard would be
+        needed to close the race for concurrent identical deliveries.
+        """
+        commit_sha = self._extract_commit_sha(event_data)
+        if not commit_sha:
+            return None
+        repo_key = self._extract_repo_key(event_data)
+        return self._find_running_execution_for_commit(
+            flow.id,
+            commit_sha,
+            str(flow.account_id),
+            repo_key=repo_key,
+        )
+
+    def matches_trigger_config(self, flow: Flow, event_data: Dict[str, Any]) -> bool:
+        """Public wrapper: does ``event_data`` satisfy ``flow.trigger_config``?"""
+        return self._matches_trigger_config(flow, event_data)
+
+    def _find_running_execution_for_commit(
         self,
         flow_id: uuid.UUID,
         commit_sha: str,
         account_id: str,
         repo_key: Optional[str] = None,
-    ) -> bool:
+    ) -> Optional[FlowExecution]:
         """
-        Check if there's already a running execution for this repo + commit.
+        Return a running execution for this repo + commit, if one exists.
 
         Deduplication is scoped to (repo, commit_sha) so that:
         - Same repo + same commit SHA  → blocked (duplicate)
@@ -323,8 +381,8 @@ class FlowTriggerService:
                       duplicates.
 
         Returns:
-            True if there's already a running execution for this
-            repo + commit combination.
+            The already-running execution for this repo + commit
+            combination, or None.
         """
         executions = crud_flow_execution.get_running_by_flow(
             self.db,
@@ -357,9 +415,9 @@ class FlowTriggerService:
                 f"repo {repo_key or '(any)'}, and commit {commit_sha[:8]} "
                 f"(status: {execution.status})"
             )
-            return True
+            return execution
 
-        return False
+        return None
 
     async def _run_orchestrator_with_session(
         self,
@@ -720,8 +778,11 @@ class FlowTriggerService:
                     # This catches duplicate events for the same commit
                     # (e.g., push + PR update when description is edited).
                     if commit_sha and account_id:
-                        if self._has_execution_for_commit(
-                            flow.id, commit_sha, account_id, repo_key=repo_key
+                        if (
+                            self._find_running_execution_for_commit(
+                                flow.id, commit_sha, account_id, repo_key=repo_key
+                            )
+                            is not None
                         ):
                             logger.info(
                                 f"Skipping flow '{flow.name}' ({flow.id}) - "
@@ -904,20 +965,135 @@ class FlowTriggerService:
 
         logger.info(f"Created flow execution: {execution_id}")
 
-        # Get NATS client (needed for local fallback path)
-        nats_client = await get_nats_client()
+        # The execution row is durably committed at this point. Any failure
+        # below (NATS acquisition, worker hand-off) must not be reported as
+        # "no execution created" — wrap it so callers can distinguish.
+        try:
+            # Get NATS client (needed for local fallback path)
+            nats_client = await get_nats_client()
 
-        await self._start_flow_execution(
-            flow=flow,
-            event_data=trigger_details,
-            nats_client=nats_client,
-            precreated_execution=execution,
-        )
+            await self._start_flow_execution(
+                flow=flow,
+                event_data=trigger_details,
+                nats_client=nats_client,
+                precreated_execution=execution,
+            )
+        except Exception as e:
+            raise FlowDispatchError(str(execution_id), execution_status, e) from e
 
         return {
             "id": str(execution_id),
             "status": execution_status,
             "flow_id": flow_id_str,
+        }
+
+    async def trigger_flow_matrix(
+        self,
+        flow_id: uuid.UUID,
+        matrix: List[Dict[str, Any]],
+        test_mode: bool = False,
+        trigger_event_data: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Fan a single trigger out to one execution per matrix entry.
+
+        Each entry may override ``agent_type`` and/or ``ai_model_id`` for its
+        cell (an empty entry runs the flow defaults). All executions share a
+        freshly minted ``batch_id``. All rows are created and committed before
+        any cell is dispatched, so a dispatch failure mid-batch leaves visible
+        PENDING rows rather than silently missing cells.
+
+        Args:
+            flow_id: The flow definition shared by all cells
+            matrix: List of ``{"agent_type"?, "ai_model_id"?}`` overrides
+            test_mode: Whether this is a test/manual trigger
+            trigger_event_data: Optional trigger event data shared by all cells
+
+        Returns:
+            Dict with batch_id, flow_id and per-cell execution references.
+
+        Raises:
+            ValueError: If the flow does not exist or the matrix is empty or
+                exceeds MATRIX_MAX_ENTRIES. (Entry contents are validated at
+                the API layer, where account scoping is known.)
+        """
+        if not matrix:
+            raise ValueError("matrix must contain at least one entry")
+        if len(matrix) > MATRIX_MAX_ENTRIES:
+            raise ValueError(
+                f"matrix supports at most {MATRIX_MAX_ENTRIES} entries, "
+                f"got {len(matrix)}"
+            )
+
+        flow = crud_flow.get(self.db, id=str(flow_id))
+        if not flow:
+            raise ValueError(f"Flow {flow_id} not found")
+
+        from preloop.services.flow_orchestrator import _make_json_serializable
+
+        batch_id = uuid.uuid4()
+        logger.info(
+            "Triggering matrix batch %s for flow '%s' (%s) with %d cells",
+            batch_id,
+            flow.name,
+            flow.id,
+            len(matrix),
+        )
+
+        executions = []
+        cells = []
+        for index, entry in enumerate(matrix):
+            trigger_details: Dict[str, Any] = {}
+            if trigger_event_data:
+                trigger_details.update(trigger_event_data)
+            trigger_details["test_mode"] = test_mode
+            trigger_details = _make_json_serializable(trigger_details)
+            attach_trigger_subject(trigger_details)
+
+            cell: Dict[str, Any] = {"batch_id": str(batch_id), "index": index}
+            if entry.get("agent_type"):
+                cell["agent_type"] = str(entry["agent_type"])
+            if entry.get("ai_model_id"):
+                cell["ai_model_id"] = str(entry["ai_model_id"])
+            trigger_details[MATRIX_OVERRIDES_KEY] = cell
+            cells.append(cell)
+
+            execution_data = FlowExecutionCreate(
+                flow_id=flow_id,
+                status="PENDING",
+                trigger_event_details=trigger_details,
+                batch_id=batch_id,
+            )
+            executions.append(
+                crud_flow_execution.create(self.db, obj_in=execution_data)
+            )
+
+        self.db.commit()
+        for execution in executions:
+            self.db.refresh(execution)
+
+        nats_client = await get_nats_client()
+        for execution in executions:
+            await self._start_flow_execution(
+                flow=flow,
+                event_data=execution.trigger_event_details,
+                nats_client=nats_client,
+                precreated_execution=execution,
+            )
+
+        return {
+            "batch_id": str(batch_id),
+            "flow_id": str(flow_id),
+            "executions": [
+                {
+                    "index": cell["index"],
+                    "id": str(execution.id),
+                    "execution_id": str(execution.id),
+                    "status": execution.status,
+                    "agent_type": cell.get("agent_type"),
+                    "ai_model_id": cell.get("ai_model_id"),
+                }
+                for execution, cell in zip(executions, cells, strict=True)
+            ],
         }
 
     async def _run_orchestrator_without_creation(self, orchestrator):

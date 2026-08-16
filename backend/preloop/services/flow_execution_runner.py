@@ -63,8 +63,12 @@ async def resume_existing_execution(
     if flow is None:
         raise ValueError("Flow not found for resumed execution")
 
+    # Matrix-aware: _get_flow_details() above resolved any per-cell agent_type
+    # override into orchestrator.agent_type; a resumed matrix cell must be
+    # monitored with its own harness, never the flow default.
     agent_executor = create_agent_executor(
-        flow.agent_type, {"agent_config": flow.agent_config or {}}
+        orchestrator.agent_type or flow.agent_type,
+        {"agent_config": flow.agent_config or {}},
     )
     try:
         agent_result = await orchestrator._monitor_agent_execution(
@@ -77,6 +81,7 @@ async def resume_existing_execution(
             error_message=agent_result.get("error_message"),
             actions_taken_summary=agent_result.get("actions_taken"),
             mcp_usage_logs=agent_result.get("mcp_usage_logs"),
+            result=agent_result.get("result"),
             end_time=datetime.now(timezone.utc),
         )
         logger.info(

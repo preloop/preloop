@@ -86,6 +86,11 @@ class CustomCommands(BaseModel):
 
 # Minimum interval between two scheduled runs of the same flow.
 MIN_SCHEDULE_INTERVAL = timedelta(minutes=5)
+# Maximum interval between two scheduled runs of the same flow. Bounds
+# ``IntervalSchedule.every`` so absurd values fail pydantic validation
+# (HTTP 422) instead of overflowing ``timedelta``/datetime arithmetic
+# (OverflowError -> HTTP 500) here or later inside APScheduler.
+MAX_SCHEDULE_INTERVAL = timedelta(days=366)
 # How many consecutive fire times we simulate when checking the interval.
 # The simulation is anchored at the schedule's own next fire time (not a
 # wall-clock horizon), so seasonal crons (e.g. "*/2 * * 1 *", January only)
@@ -234,8 +239,17 @@ class IntervalSchedule(ScheduleBase):
 
     @model_validator(mode="after")
     def validate_min_interval(self) -> "IntervalSchedule":
-        """Enforce the minimum interval between runs."""
-        delta = timedelta(**{self.unit: self.every})
+        """Enforce the minimum and maximum interval between runs."""
+        try:
+            delta = timedelta(**{self.unit: self.every})
+        except OverflowError:
+            delta = None
+        if delta is None or delta > MAX_SCHEDULE_INTERVAL:
+            max_days = MAX_SCHEDULE_INTERVAL.days
+            raise ValueError(
+                f"Interval of {self.every} {self.unit} exceeds the maximum "
+                f"interval of {max_days} days"
+            )
         if delta < MIN_SCHEDULE_INTERVAL:
             minutes = int(MIN_SCHEDULE_INTERVAL.total_seconds() // 60)
             raise ValueError(

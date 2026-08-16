@@ -149,6 +149,22 @@ class TestIntervalScheduleValidation:
         with pytest.raises(ValidationError):
             IntervalSchedule(every=-1, unit="days")
 
+    def test_above_max_interval_rejected(self):
+        with pytest.raises(ValidationError, match="maximum"):
+            IntervalSchedule(every=367, unit="days")
+
+    def test_exactly_max_interval_allowed(self):
+        assert IntervalSchedule(every=366, unit="days").every == 366
+
+    def test_absurd_interval_rejected_without_overflow(self):
+        # timedelta(days=10**12) raises OverflowError, which pydantic does
+        # not convert to a 422; the validator must catch it and raise a
+        # ValueError instead of leaking an HTTP 500.
+        with pytest.raises(ValidationError, match="maximum"):
+            IntervalSchedule(every=1_000_000_000_000, unit="days")
+        with pytest.raises(ValidationError, match="maximum"):
+            IntervalSchedule(every=1_000_000_000_000, unit="minutes")
+
     def test_invalid_unit_rejected(self):
         with pytest.raises(ValidationError, match="unit"):
             IntervalSchedule(every=10, unit="fortnights")

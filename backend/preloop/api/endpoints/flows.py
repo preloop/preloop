@@ -1,7 +1,7 @@
 import uuid
 import secrets
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NoReturn, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
@@ -340,6 +340,90 @@ def read_flow_executions(
     return executions
 
 
+# Terminal execution statuses, mirroring the orchestrator's state machine.
+_TERMINAL_EXECUTION_STATUSES = {
+    "SUCCEEDED",
+    "FAILED",
+    "STOPPED",
+    "TIMEOUT",
+    "CANCELLED",
+}
+
+
+@router.get(
+    "/flows/batches/{batch_id}/executions",
+    response_model=schemas.BatchExecutionsResponse,
+)
+@require_permission("view_flows")
+def read_batch_executions(
+    *,
+    db: Session = Depends(get_db),
+    batch_id: uuid.UUID,
+    current_user: User = Depends(get_current_active_user),
+):
+    """List all executions of one matrix/batch trigger with a rollup.
+
+    The rollup aggregates status counts, tokens, tool calls and estimated
+    cost across the batch so an eval matrix can be observed as a unit.
+    """
+    from preloop.models.models.flow_execution import MATRIX_OVERRIDES_KEY
+
+    executions = crud_flow_execution.get_by_batch(
+        db, batch_id=batch_id, account_id=current_user.account_id
+    )
+    if not executions:
+        raise HTTPException(status_code=404, detail="Batch not found")
+
+    by_status: Dict[str, int] = {}
+    total_tokens = 0
+    total_cost = 0.0
+    total_tool_calls = 0
+    completed = 0
+    items = []
+    for execution in executions:
+        by_status[execution.status] = by_status.get(execution.status, 0) + 1
+        total_tokens += execution.total_tokens or 0
+        total_cost += float(execution.estimated_cost or 0)
+        total_tool_calls += execution.tool_calls_count or 0
+        if execution.status in _TERMINAL_EXECUTION_STATUSES:
+            completed += 1
+        cell = (execution.trigger_event_details or {}).get(MATRIX_OVERRIDES_KEY)
+        item = schemas.BatchExecutionListItem.model_validate(execution)
+        item.flow_name = execution.flow.name if execution.flow else None
+        item.matrix = (
+            {
+                "index": cell.get("index"),
+                "agent_type": cell.get("agent_type"),
+                "ai_model_id": cell.get("ai_model_id"),
+            }
+            if cell
+            else None
+        )
+        items.append(item)
+
+    # Present cells in matrix order (creation order is the fallback for rows
+    # without a recorded index).
+    items.sort(
+        key=lambda i: i.matrix["index"]
+        if i.matrix and i.matrix.get("index") is not None
+        else 1_000_000
+    )
+
+    return schemas.BatchExecutionsResponse(
+        batch_id=batch_id,
+        flow_id=executions[0].flow_id,
+        rollup=schemas.BatchRollup(
+            total=len(executions),
+            by_status=by_status,
+            completed=completed,
+            total_tokens=total_tokens,
+            total_estimated_cost=round(total_cost, 4),
+            total_tool_calls=total_tool_calls,
+        ),
+        executions=items,
+    )
+
+
 @router.get(
     "/flows/executions/{execution_id}", response_model=schemas.FlowExecutionResponse
 )
@@ -377,6 +461,37 @@ def read_flow_execution(
             ]
 
     return execution
+
+
+@router.get("/flows/executions/{execution_id}/result")
+@require_permission("view_flows")
+def get_flow_execution_result(
+    *,
+    db: Session = Depends(get_db),
+    execution_id: uuid.UUID,
+    current_user: User = Depends(get_current_active_user),
+) -> Dict[str, Any]:
+    """Get the structured result artifact reported by a flow execution.
+
+    Eval/observe flows write ``/workspace/result.json`` as their final
+    report; the runner captures it as a first-class execution artifact.
+    Returns 404 if the execution does not exist or reported no result.
+    """
+    execution = crud_flow_execution.get(
+        db=db, id=execution_id, account_id=current_user.account_id
+    )
+    if not execution:
+        raise HTTPException(status_code=404, detail="Flow execution not found")
+    if execution.result is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Flow execution did not report a result artifact",
+        )
+    return {
+        "execution_id": str(execution.id),
+        "status": execution.status,
+        "result": execution.result,
+    }
 
 
 @router.get("/flows/executions/{execution_id}/logs")
@@ -842,6 +957,72 @@ async def send_execution_command(
         raise HTTPException(status_code=500, detail=f"Failed to send command: {str(e)}")
 
 
+def _validate_matrix(
+    db: Session, matrix: Any, account_id: uuid.UUID
+) -> List[Dict[str, Any]]:
+    """Validate a matrix trigger payload; raise HTTP 422 on any bad entry.
+
+    Validation is all-or-nothing: no execution is created unless every entry
+    passes, so a batch never partially materialises from a malformed request.
+    Entry shape (allowed keys, UUID coercion) is enforced by the
+    ``FlowMatrixEntry`` schema; the allowed agent types come straight from the
+    agent factory registry, so both stay in one place.
+    """
+    from pydantic import ValidationError
+
+    from preloop.agents.factory import SUPPORTED_AGENT_TYPES
+    from preloop.models.crud import crud_ai_model
+    from preloop.services.flow_trigger_service import MATRIX_MAX_ENTRIES
+
+    def _reject(detail: str) -> NoReturn:
+        raise HTTPException(status_code=422, detail=detail)
+
+    if not isinstance(matrix, list) or not matrix:
+        _reject("matrix must be a non-empty list of objects")
+    if len(matrix) > MATRIX_MAX_ENTRIES:
+        _reject(f"matrix supports at most {MATRIX_MAX_ENTRIES} entries")
+
+    validated: List[Dict[str, Any]] = []
+    for index, entry in enumerate(matrix):
+        if not isinstance(entry, dict):
+            _reject(f"matrix[{index}] must be an object")
+        try:
+            parsed = schemas.FlowMatrixEntry.model_validate(entry)
+        except ValidationError as exc:
+            unknown = sorted(
+                str(error["loc"][0])
+                for error in exc.errors()
+                if error["type"] == "extra_forbidden"
+            )
+            if unknown:
+                _reject(
+                    f"matrix[{index}] has unsupported keys: {unknown}; "
+                    "allowed keys are 'agent_type' and 'ai_model_id'"
+                )
+            first = exc.errors()[0]
+            field = first["loc"][0] if first["loc"] else "entry"
+            if field == "ai_model_id":
+                _reject(f"matrix[{index}].ai_model_id must be a UUID")
+            _reject(f"matrix[{index}].{field}: {first['msg']}")
+        cell: Dict[str, Any] = {}
+        if parsed.agent_type is not None:
+            if parsed.agent_type.lower() not in SUPPORTED_AGENT_TYPES:
+                _reject(
+                    f"matrix[{index}].agent_type '{parsed.agent_type}' is not "
+                    f"supported; supported types: {sorted(SUPPORTED_AGENT_TYPES)}"
+                )
+            cell["agent_type"] = parsed.agent_type.lower()
+        if parsed.ai_model_id is not None:
+            ai_model = crud_ai_model.get(db, id=str(parsed.ai_model_id))
+            # Same visibility rule as model listing: account-owned or shared
+            # system model (account_id is NULL).
+            if not ai_model or ai_model.account_id not in (None, account_id):
+                _reject(f"matrix[{index}].ai_model_id '{parsed.ai_model_id}' not found")
+            cell["ai_model_id"] = str(parsed.ai_model_id)
+        validated.append(cell)
+    return validated
+
+
 @router.post("/flows/{flow_id}/trigger")
 @require_permission("execute_flows")
 async def trigger_flow_execution(
@@ -854,22 +1035,47 @@ async def trigger_flow_execution(
     """
     Trigger a test execution for a flow.
 
+    The body is free-form trigger event data, except for the reserved key
+    ``matrix``: when present it must be a list of up to 25
+    ``{"agent_type"?, "ai_model_id"?}`` objects and the trigger fans out to
+    one execution per entry, all sharing a ``batch_id`` (an empty object runs
+    the flow defaults). Without ``matrix`` the behaviour is unchanged.
+
     Args:
         flow_id: Flow to trigger
-        trigger_event_data: Optional custom trigger event data for testing template variables
+        trigger_event_data: Optional custom trigger event data for testing
+            template variables, plus the optional reserved ``matrix`` key
 
     Returns:
-        Execution details
+        Execution details, or batch details (``batch_id`` + per-cell
+        ``execution_id``) when a matrix was given
     """
     # Verify flow exists and user has access
     flow = crud_flow.get(db=db, id=flow_id, account_id=current_user.account_id)
     if not flow:
         raise HTTPException(status_code=404, detail="Flow not found")
 
+    # Pop the reserved matrix key so it never leaks into template variables.
+    matrix = None
+    if trigger_event_data and "matrix" in trigger_event_data:
+        matrix = trigger_event_data.pop("matrix")
+
     # Trigger flow execution
     from preloop.services.flow_trigger_service import FlowTriggerService
 
     trigger_service = FlowTriggerService(db)
+
+    if matrix is not None:
+        validated_matrix = _validate_matrix(
+            db, matrix, account_id=current_user.account_id
+        )
+        return await trigger_service.trigger_flow_matrix(
+            flow_id=flow_id,
+            matrix=validated_matrix,
+            test_mode=True,
+            trigger_event_data=trigger_event_data,
+        )
+
     result = await trigger_service.trigger_flow(
         flow_id=flow_id, test_mode=True, trigger_event_data=trigger_event_data
     )
@@ -1189,7 +1395,36 @@ def dismiss_preset_update(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/webhooks/flows/{flow_id}/{webhook_secret}")
+@router.post(
+    "/webhooks/flows/{flow_id}/{webhook_secret}",
+    responses={
+        200: {
+            "description": (
+                "Execution triggered (or deduplicated to an existing running "
+                "execution for the same repo + commit, see 'deduplicated')."
+            )
+        },
+        202: {
+            "description": (
+                "Execution row was created but dispatch failed; poll "
+                "execution_url or retry from the console. Do not re-send "
+                "the webhook."
+            )
+        },
+        422: {
+            "description": (
+                "Payload does not match the flow's trigger_config; no "
+                "execution was created. Also returned for invalid request "
+                "input (e.g. malformed flow_id)."
+            )
+        },
+        500: {
+            "description": (
+                "No execution could be created (failure at/before the insert)."
+            )
+        },
+    },
+)
 async def trigger_flow_via_webhook(
     *,
     db: Session = Depends(get_db),
@@ -1202,6 +1437,18 @@ async def trigger_flow_via_webhook(
 
     This endpoint allows external services to trigger flows without authentication.
     Security is provided by the unguessable webhook_secret in the URL.
+
+    Success responses carry a nested ``execution`` object with the same
+    ``{id, status, flow_id}`` shape as ``POST /flows/{flow_id}/trigger``, plus
+    flat ``execution_id``/``execution_status``/``execution_url`` fields and
+    ``"status": "triggered"`` for backwards compatibility.
+
+    Deduplication: redelivered payloads carrying the same commit SHA as a
+    still-running execution of this flow return that execution with
+    ``"deduplicated": true`` instead of creating a duplicate. Payloads without
+    a recognizable commit SHA are never deduplicated (same scope as generic
+    event matching); commit-less callers that need idempotent redelivery
+    should include a unique ``sha`` field in the payload.
     """
     # Get the flow without account filtering
     flow = crud_flow.get(db=db, id=flow_id)
@@ -1232,8 +1479,17 @@ async def trigger_flow_via_webhook(
         payload = {}
 
     # Trigger flow execution with webhook payload
-    from preloop.services.flow_trigger_service import FlowTriggerService
+    import logging
 
+    from fastapi.responses import JSONResponse
+
+    from preloop.config import settings
+    from preloop.services.flow_trigger_service import (
+        FlowDispatchError,
+        FlowTriggerService,
+    )
+
+    logger = logging.getLogger(__name__)
     trigger_service = FlowTriggerService(db)
 
     # Create event data from webhook payload
@@ -1244,7 +1500,101 @@ async def trigger_flow_via_webhook(
         "account_id": str(flow.account_id),
     }
 
-    # Process the event (will trigger flow execution)
-    await trigger_service.process_event(event_data)
+    def _execution_url(execution_id: str) -> str:
+        # Built from settings.preloop_url; self-hosted deployments where the
+        # console lives on a different origin must set PRELOOP_URL (same
+        # pattern as flow_orchestrator and agents/container).
+        return f"{settings.preloop_url}/console/flows/executions/{execution_id}"
 
-    return {"status": "triggered", "flow_id": str(flow_id)}
+    def _response_body(
+        execution_id: str,
+        execution_status: str,
+        *,
+        status: str = "triggered",
+        deduplicated: bool = False,
+    ) -> Dict[str, Any]:
+        # `execution` mirrors the /flows/{flow_id}/trigger response shape;
+        # the flat execution_* fields and "status": "triggered" are kept for
+        # backwards compatibility with existing webhook callers.
+        return {
+            "status": status,
+            "flow_id": str(flow_id),
+            "deduplicated": deduplicated,
+            "execution": {
+                "id": execution_id,
+                "status": execution_status,
+                "flow_id": str(flow_id),
+            },
+            "execution_id": execution_id,
+            "execution_status": execution_status,
+            "execution_url": _execution_url(execution_id),
+        }
+
+    # Enforce the addressed flow's trigger_config policy explicitly. Unlike
+    # the old generic-matching path (process_event), a mismatch is an
+    # explicit 422 rather than a silent skip that still reports success.
+    if not trigger_service.matches_trigger_config(flow, event_data):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Webhook payload does not match trigger_config for flow "
+                f"{flow_id}. Configured filter: {flow.trigger_config}. "
+                "No execution was created. Adjust the payload or the flow's "
+                "trigger_config."
+            ),
+        )
+
+    # Preserve commit-SHA deduplication for direct triggers: a redelivered
+    # webhook (at-least-once delivery, CI retries) for the same repo + commit
+    # returns the EXISTING execution instead of creating a duplicate — and
+    # never a bare skip.
+    duplicate = trigger_service.find_duplicate_execution(flow, event_data)
+    if duplicate is not None:
+        logger.info(
+            f"Webhook for flow {flow_id} deduplicated to existing execution "
+            f"{duplicate.id} (status {duplicate.status})"
+        )
+        return _response_body(str(duplicate.id), duplicate.status, deduplicated=True)
+
+    # Trigger this specific flow directly. The flow was already resolved and
+    # validated above (id + secret + enabled + webhook source) and its
+    # trigger_config checked, so we must not route through generic event
+    # matching (process_event), which can silently skip the flow or swallow
+    # errors while this endpoint still reports success.
+    try:
+        result = await trigger_service.trigger_flow(
+            flow_id=flow_id,
+            test_mode=False,
+            trigger_event_data=event_data,
+        )
+    except FlowDispatchError as e:
+        # The execution row was committed before dispatch failed: report 202
+        # with the execution id so callers can poll, and do NOT claim that no
+        # execution was created (a blind retry would duplicate it — though
+        # commit-SHA dedup above also guards redelivery).
+        logger.error(
+            f"Webhook trigger for flow {flow_id} created execution "
+            f"{e.execution_id} but dispatch failed: {e.original}",
+            exc_info=True,
+        )
+        body = _response_body(e.execution_id, e.execution_status, status="accepted")
+        body["detail"] = (
+            f"Execution {e.execution_id} was created but could not be "
+            "dispatched yet. It remains queued; poll execution_url or retry "
+            "it from the console. Do not re-send this webhook."
+        )
+        return JSONResponse(status_code=202, content=body)
+    except Exception as e:
+        logger.error(
+            f"Webhook trigger failed to create execution for flow {flow_id}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Webhook received but no execution could be created for "
+                f"flow {flow_id}. Check server logs for details."
+            ),
+        )
+
+    return _response_body(result["id"], result["status"])

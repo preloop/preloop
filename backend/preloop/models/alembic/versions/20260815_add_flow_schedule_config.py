@@ -6,7 +6,7 @@ expression and IANA timezone in this JSON column, e.g.::
     {"cron": "0 6 * * 1-5", "timezone": "Europe/Athens"}
 
 Revision ID: 20260815_flow_schedule_config
-Revises: 20260812_cost_source_reconciled
+Revises: 20260815_flow_exec_batch_id
 Create Date: 2026-08-15
 """
 
@@ -17,7 +17,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "20260815_flow_schedule_config"
-down_revision: Union[str, None] = "20260812_cost_source_reconciled"
+down_revision: Union[str, None] = "20260815_flow_exec_batch_id"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

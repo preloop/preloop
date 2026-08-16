@@ -517,6 +517,7 @@ def test_flow_execution_list_schema_excludes_detail_payloads():
     assert "actions_taken_summary" not in fields
     assert "mcp_usage_logs" not in fields
     assert "execution_logs" not in fields
+    assert "result" not in fields
 
 
 @pytest.mark.asyncio
@@ -647,6 +648,92 @@ async def test_read_flow_execution_not_found(
     with pytest.raises(HTTPException) as exc_info:
         await maybe_await(
             flows.read_flow_execution(
+                db=MagicMock(), execution_id=execution_id, current_user=mock_account
+            )
+        )
+
+    assert exc_info.value.status_code == 404
+    assert "not found" in str(exc_info.value.detail).lower()
+
+
+@pytest.mark.asyncio
+async def test_get_flow_execution_result(mock_account: Account, mocker: MockerFixture):
+    """Tests that the structured result artifact is returned when present."""
+    execution_id = uuid.uuid4()
+    mock_crud_flow_execution = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow_execution",
+        new_callable=MagicMock,
+    )
+
+    execution = MagicMock()
+    execution.id = execution_id
+    execution.status = "SUCCEEDED"
+    execution.result = {
+        "schema": "preloop.eval.result/v1",
+        "status": "pass",
+        "summary": "All checks passed",
+        "metrics": {"latency_ms": 42},
+    }
+    mock_crud_flow_execution.get.return_value = execution
+
+    result = await maybe_await(
+        flows.get_flow_execution_result(
+            db=MagicMock(), execution_id=execution_id, current_user=mock_account
+        )
+    )
+
+    assert result == {
+        "execution_id": str(execution_id),
+        "status": "SUCCEEDED",
+        "result": execution.result,
+    }
+    mock_crud_flow_execution.get.assert_called_once_with(
+        db=mocker.ANY, id=execution_id, account_id=mock_account.account_id
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_flow_execution_result_no_artifact(
+    mock_account: Account, mocker: MockerFixture
+):
+    """Tests that 404 is raised when the execution reported no result."""
+    execution_id = uuid.uuid4()
+    mock_crud_flow_execution = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow_execution",
+        new_callable=MagicMock,
+    )
+
+    execution = MagicMock()
+    execution.id = execution_id
+    execution.result = None
+    mock_crud_flow_execution.get.return_value = execution
+
+    with pytest.raises(HTTPException) as exc_info:
+        await maybe_await(
+            flows.get_flow_execution_result(
+                db=MagicMock(), execution_id=execution_id, current_user=mock_account
+            )
+        )
+
+    assert exc_info.value.status_code == 404
+    assert "result" in str(exc_info.value.detail).lower()
+
+
+@pytest.mark.asyncio
+async def test_get_flow_execution_result_execution_not_found(
+    mock_account: Account, mocker: MockerFixture
+):
+    """Tests that 404 is raised for a non-existent execution."""
+    execution_id = uuid.uuid4()
+    mock_crud_flow_execution = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow_execution",
+        new_callable=MagicMock,
+    )
+    mock_crud_flow_execution.get.return_value = None
+
+    with pytest.raises(HTTPException) as exc_info:
+        await maybe_await(
+            flows.get_flow_execution_result(
                 db=MagicMock(), execution_id=execution_id, current_user=mock_account
             )
         )
@@ -1624,6 +1711,16 @@ def test_preview_request_rejects_invalid_config():
         )
     with pytest.raises(ValidationError):
         schemas.SchedulePreviewRequest(schedule_config={"type": "daily", "at": "24:99"})
+    # Absurd `every` must fail as a pydantic ValidationError (-> 422), not
+    # leak the underlying timedelta OverflowError as an HTTP 500.
+    with pytest.raises(ValidationError, match="maximum"):
+        schemas.SchedulePreviewRequest(
+            schedule_config={
+                "type": "interval",
+                "every": 1_000_000_000_000,
+                "unit": "days",
+            }
+        )
 
 
 def test_preview_request_accepts_legacy_cron_shape():
