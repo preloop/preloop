@@ -1,5 +1,6 @@
+import re
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -7,6 +8,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    TypeAdapter,
     field_serializer,
     field_validator,
     model_validator,
@@ -93,15 +95,27 @@ MIN_SCHEDULE_INTERVAL = timedelta(minutes=5)
 _SCHEDULE_CHECK_MAX_TICKS = 200
 
 
-class ScheduleConfig(BaseModel):
-    """Configuration for schedule (cron) triggers."""
+# Canonical weekday order for weekly schedules (APScheduler abbreviations).
+WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+Weekday = Literal["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+_WEEKDAY_LABELS = {
+    "mon": "Mon",
+    "tue": "Tue",
+    "wed": "Wed",
+    "thu": "Thu",
+    "fri": "Fri",
+    "sat": "Sat",
+    "sun": "Sun",
+}
+_TIME_OF_DAY_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 
-    cron: str = Field(
-        description="5-field crontab expression (minute hour day month day_of_week)"
-    )
+
+class ScheduleBase(BaseModel):
+    """Shared fields/behaviour for all schedule trigger forms."""
+
     timezone: str = Field(
         default="UTC",
-        description="IANA timezone name the cron expression is evaluated in",
+        description="IANA timezone name the schedule is evaluated in",
     )
 
     @field_validator("timezone")
@@ -114,8 +128,58 @@ class ScheduleConfig(BaseModel):
             raise ValueError(f"Unknown IANA timezone: '{v}'")
         return v
 
+    def build_trigger(self):
+        """Build the APScheduler trigger for this schedule form."""
+        raise NotImplementedError
+
+    def describe(self) -> str:
+        """Human-readable one-line description of the schedule."""
+        raise NotImplementedError
+
+    def next_fire_times(self, count: int = 3) -> List[datetime]:
+        """Compute the next ``count`` fire times from now."""
+        try:
+            trigger = self.build_trigger()
+        except ValueError:
+            return []
+        times: List[datetime] = []
+        now = datetime.now(timezone.utc)
+        prev: Optional[datetime] = None
+        for _ in range(count):
+            nxt = trigger.get_next_fire_time(
+                prev, now if prev is None else prev + timedelta(microseconds=1)
+            )
+            if nxt is None:
+                break
+            times.append(nxt)
+            prev = nxt
+        return times
+
+    def next_fire_time(self) -> Optional[datetime]:
+        """Compute the next fire time from now, or None if it never fires."""
+        times = self.next_fire_times(count=1)
+        return times[0] if times else None
+
+
+class CronSchedule(ScheduleBase):
+    """Advanced schedule form: a raw 5-field crontab expression."""
+
+    type: Literal["cron"] = "cron"
+    expr: str = Field(
+        description="5-field crontab expression (minute hour day month day_of_week)"
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_legacy_cron_key(cls, data: Any) -> Any:
+        """Accept the legacy field name ``cron`` as an alias for ``expr``."""
+        if isinstance(data, dict) and "expr" not in data and "cron" in data:
+            data = dict(data)
+            data["expr"] = data.pop("cron")
+        return data
+
     @model_validator(mode="after")
-    def validate_cron(self) -> "ScheduleConfig":
+    def validate_cron(self) -> "CronSchedule":
         """Parse the cron expression and enforce the minimum interval."""
         trigger = self.build_trigger()
         # Simulate successive fire times and reject schedules that would
@@ -135,7 +199,7 @@ class ScheduleConfig(BaseModel):
             if nxt - prev < MIN_SCHEDULE_INTERVAL:
                 minutes = int(MIN_SCHEDULE_INTERVAL.total_seconds() // 60)
                 raise ValueError(
-                    f"Schedule '{self.cron}' fires more often than the minimum "
+                    f"Schedule '{self.expr}' fires more often than the minimum "
                     f"interval of {minutes} minutes "
                     f"(e.g. {prev.isoformat()} -> {nxt.isoformat()})"
                 )
@@ -151,17 +215,173 @@ class ScheduleConfig(BaseModel):
         from apscheduler.triggers.cron import CronTrigger
 
         try:
-            return CronTrigger.from_crontab(self.cron, timezone=self.timezone)
+            return CronTrigger.from_crontab(self.expr, timezone=self.timezone)
         except ValueError as e:
-            raise ValueError(f"Invalid cron expression '{self.cron}': {e}")
+            raise ValueError(f"Invalid cron expression '{self.expr}': {e}")
 
-    def next_fire_time(self) -> Optional[datetime]:
-        """Compute the next fire time from now, or None if it never fires."""
-        try:
-            trigger = self.build_trigger()
-        except ValueError:
-            return None
-        return trigger.get_next_fire_time(None, datetime.now(timezone.utc))
+    def describe(self) -> str:
+        return f"Cron '{self.expr}' ({self.timezone})"
+
+
+class IntervalSchedule(ScheduleBase):
+    """Friendly schedule form: run every N minutes/hours/days."""
+
+    type: Literal["interval"] = "interval"
+    every: int = Field(ge=1, description="Run every N units")
+    unit: Literal["minutes", "hours", "days"] = Field(
+        description="Unit of the interval"
+    )
+
+    @model_validator(mode="after")
+    def validate_min_interval(self) -> "IntervalSchedule":
+        """Enforce the minimum interval between runs."""
+        delta = timedelta(**{self.unit: self.every})
+        if delta < MIN_SCHEDULE_INTERVAL:
+            minutes = int(MIN_SCHEDULE_INTERVAL.total_seconds() // 60)
+            raise ValueError(
+                f"Interval of {self.every} {self.unit} is below the minimum "
+                f"interval of {minutes} minutes"
+            )
+        return self
+
+    def build_trigger(self):
+        """Build an APScheduler IntervalTrigger from this config."""
+        from apscheduler.triggers.interval import IntervalTrigger
+
+        return IntervalTrigger(**{self.unit: self.every}, timezone=self.timezone)
+
+    def describe(self) -> str:
+        unit = self.unit[:-1] if self.every == 1 else self.unit
+        return f"Every {self.every} {unit}"
+
+
+class DailySchedule(ScheduleBase):
+    """Friendly schedule form: run once a day at a fixed local time."""
+
+    type: Literal["daily"] = "daily"
+    at: str = Field(description="Time of day in 24h 'HH:MM' format")
+
+    @field_validator("at")
+    @classmethod
+    def validate_at(cls, v: str) -> str:
+        """Ensure the time of day is a valid 24h HH:MM string."""
+        if not _TIME_OF_DAY_RE.match(v):
+            raise ValueError(f"Invalid time of day '{v}' - expected 24h 'HH:MM'")
+        return v
+
+    def build_trigger(self):
+        """Build an APScheduler CronTrigger firing daily at the given time."""
+        from apscheduler.triggers.cron import CronTrigger
+
+        hour, minute = self.at.split(":")
+        return CronTrigger(hour=int(hour), minute=int(minute), timezone=self.timezone)
+
+    def describe(self) -> str:
+        return f"Daily at {self.at} ({self.timezone})"
+
+
+class WeeklySchedule(ScheduleBase):
+    """Friendly schedule form: run on selected weekdays at a fixed time."""
+
+    type: Literal["weekly"] = "weekly"
+    days: List[Weekday] = Field(
+        min_length=1, description="Weekdays the schedule fires on (mon..sun)"
+    )
+    at: str = Field(description="Time of day in 24h 'HH:MM' format")
+
+    @field_validator("at")
+    @classmethod
+    def validate_at(cls, v: str) -> str:
+        """Ensure the time of day is a valid 24h HH:MM string."""
+        if not _TIME_OF_DAY_RE.match(v):
+            raise ValueError(f"Invalid time of day '{v}' - expected 24h 'HH:MM'")
+        return v
+
+    @field_validator("days")
+    @classmethod
+    def normalize_days(cls, v: List[str]) -> List[str]:
+        """Deduplicate and order days canonically (mon..sun)."""
+        return sorted(set(v), key=WEEKDAYS.index)
+
+    def build_trigger(self):
+        """Build an APScheduler CronTrigger firing weekly on the given days."""
+        from apscheduler.triggers.cron import CronTrigger
+
+        hour, minute = self.at.split(":")
+        return CronTrigger(
+            day_of_week=",".join(self.days),
+            hour=int(hour),
+            minute=int(minute),
+            timezone=self.timezone,
+        )
+
+    def describe(self) -> str:
+        days = ", ".join(_WEEKDAY_LABELS[d] for d in self.days)
+        return f"Weekly on {days} at {self.at} ({self.timezone})"
+
+
+# Discriminated union over all supported schedule forms. The friendly
+# forms (interval/daily/weekly) map onto native APScheduler triggers;
+# cron remains the power option.
+ScheduleConfig = Annotated[
+    Union[CronSchedule, IntervalSchedule, DailySchedule, WeeklySchedule],
+    Field(discriminator="type"),
+]
+
+_schedule_config_adapter: TypeAdapter = TypeAdapter(ScheduleConfig)
+
+
+def _normalize_legacy_schedule_config(value: Any) -> Any:
+    """Map the legacy ``{"cron": ..., "timezone": ...}`` shape to the union.
+
+    Early schedule-trigger rows/payloads had no ``type`` discriminator;
+    they are always cron schedules.
+    """
+    if isinstance(value, dict) and "type" not in value and "cron" in value:
+        value = {
+            "type": "cron",
+            "expr": value["cron"],
+            "timezone": value.get("timezone", "UTC"),
+        }
+    return value
+
+
+def parse_schedule_config(
+    value: Any,
+) -> Union[CronSchedule, IntervalSchedule, DailySchedule, WeeklySchedule]:
+    """Validate a stored/incoming schedule_config value into the union type.
+
+    Raises:
+        pydantic.ValidationError: If the value is not a valid schedule config.
+    """
+    if isinstance(value, ScheduleBase):
+        return value
+    return _schedule_config_adapter.validate_python(
+        _normalize_legacy_schedule_config(value)
+    )
+
+
+class SchedulePreviewRequest(BaseModel):
+    """Request body for previewing a schedule trigger configuration."""
+
+    schedule_config: ScheduleConfig
+
+    @field_validator("schedule_config", mode="before")
+    @classmethod
+    def normalize_schedule_config(cls, v):
+        """Accept the legacy untyped ``{"cron": ...}`` schedule shape."""
+        return _normalize_legacy_schedule_config(v)
+
+
+class SchedulePreviewResponse(BaseModel):
+    """Computed preview of a schedule trigger configuration."""
+
+    type: str
+    description: str
+    timezone: str
+    next_run_times: List[datetime] = Field(
+        description="The next run times (UTC) the schedule would fire at"
+    )
 
 
 class WebhookConfig(BaseModel):
@@ -212,6 +432,12 @@ class FlowBase(BaseModel):
             return None
         return v
 
+    @field_validator("schedule_config", mode="before")
+    @classmethod
+    def normalize_schedule_config(cls, v):
+        """Accept the legacy untyped ``{"cron": ...}`` schedule shape."""
+        return _normalize_legacy_schedule_config(v)
+
 
 class FlowCreate(FlowBase):
     name: str
@@ -248,14 +474,18 @@ class FlowResponse(FlowBase):
     def compute_schedule_state(self) -> "FlowResponse":
         """Expose schedule state (next run etc.) for schedule triggers."""
         if self.trigger_event_source == "schedule" and self.schedule_config:
+            config = self.schedule_config
             active = bool(self.is_enabled)
-            next_run = self.schedule_config.next_fire_time() if active else None
+            next_run = config.next_fire_time() if active else None
             self.schedule_state = {
                 "active": active,
-                "cron": self.schedule_config.cron,
-                "timezone": self.schedule_config.timezone,
+                "type": config.type,
+                "description": config.describe(),
+                "timezone": config.timezone,
                 "next_run_at": next_run.isoformat() if next_run else None,
             }
+            if isinstance(config, CronSchedule):
+                self.schedule_state["cron"] = config.expr
         return self
 
     @field_serializer(

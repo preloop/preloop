@@ -6750,6 +6750,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/flows/schedule/preview:
+    post:
+      tags:
+      - Flows
+      summary: Preview Flow Schedule
+      description: 'Preview a schedule trigger configuration.
+
+
+        Validates the schedule config (invalid configs are rejected with a
+
+        422 by the schema) and returns a human-readable description plus the
+
+        next few run times, for display in the flow editor.'
+      operationId: preview_flow_schedule_api_v1_flows_schedule_preview_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SchedulePreviewRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulePreviewResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
   /api/v1/flows/presets:
     get:
       tags:
@@ -11066,6 +11101,27 @@ components:
       type: object
       title: CreateVersionRequest
       description: Request to create a new policy version.
+    CronSchedule:
+      properties:
+        timezone:
+          type: string
+          title: Timezone
+          description: IANA timezone name the schedule is evaluated in
+          default: UTC
+        type:
+          type: string
+          const: cron
+          title: Type
+          default: cron
+        expr:
+          type: string
+          title: Expr
+          description: 5-field crontab expression (minute hour day month day_of_week)
+      type: object
+      required:
+      - expr
+      title: CronSchedule
+      description: 'Advanced schedule form: a raw 5-field crontab expression.'
     CustomCommands:
       properties:
         enabled:
@@ -11082,6 +11138,27 @@ components:
       type: object
       title: CustomCommands
       description: Configuration for custom commands (admin-only).
+    DailySchedule:
+      properties:
+        timezone:
+          type: string
+          title: Timezone
+          description: IANA timezone name the schedule is evaluated in
+          default: UTC
+        type:
+          type: string
+          const: daily
+          title: Type
+          default: daily
+        at:
+          type: string
+          title: At
+          description: Time of day in 24h 'HH:MM' format
+      type: object
+      required:
+      - at
+      title: DailySchedule
+      description: 'Friendly schedule form: run once a day at a fixed local time.'
     DashboardTelemetryResponse:
       properties:
         active_agents:
@@ -11221,8 +11298,20 @@ components:
           - type: 'null'
         schedule_config:
           anyOf:
-          - $ref: '#/components/schemas/ScheduleConfig'
+          - oneOf:
+            - $ref: '#/components/schemas/CronSchedule'
+            - $ref: '#/components/schemas/IntervalSchedule'
+            - $ref: '#/components/schemas/DailySchedule'
+            - $ref: '#/components/schemas/WeeklySchedule'
+            discriminator:
+              propertyName: type
+              mapping:
+                cron: '#/components/schemas/CronSchedule'
+                daily: '#/components/schemas/DailySchedule'
+                interval: '#/components/schemas/IntervalSchedule'
+                weekly: '#/components/schemas/WeeklySchedule'
           - type: 'null'
+          title: Schedule Config
         prompt_template:
           type: string
           title: Prompt Template
@@ -11670,8 +11759,20 @@ components:
           - type: 'null'
         schedule_config:
           anyOf:
-          - $ref: '#/components/schemas/ScheduleConfig'
+          - oneOf:
+            - $ref: '#/components/schemas/CronSchedule'
+            - $ref: '#/components/schemas/IntervalSchedule'
+            - $ref: '#/components/schemas/DailySchedule'
+            - $ref: '#/components/schemas/WeeklySchedule'
+            discriminator:
+              propertyName: type
+              mapping:
+                cron: '#/components/schemas/CronSchedule'
+                daily: '#/components/schemas/DailySchedule'
+                interval: '#/components/schemas/IntervalSchedule'
+                weekly: '#/components/schemas/WeeklySchedule'
           - type: 'null'
+          title: Schedule Config
         prompt_template:
           anyOf:
           - type: string
@@ -11847,8 +11948,20 @@ components:
           - type: 'null'
         schedule_config:
           anyOf:
-          - $ref: '#/components/schemas/ScheduleConfig'
+          - oneOf:
+            - $ref: '#/components/schemas/CronSchedule'
+            - $ref: '#/components/schemas/IntervalSchedule'
+            - $ref: '#/components/schemas/DailySchedule'
+            - $ref: '#/components/schemas/WeeklySchedule'
+            discriminator:
+              propertyName: type
+              mapping:
+                cron: '#/components/schemas/CronSchedule'
+                daily: '#/components/schemas/DailySchedule'
+                interval: '#/components/schemas/IntervalSchedule'
+                weekly: '#/components/schemas/WeeklySchedule'
           - type: 'null'
+          title: Schedule Config
         prompt_template:
           anyOf:
           - type: string
@@ -12765,6 +12878,37 @@ components:
         budget figures — so gateway-metered and imported spend cannot be
 
         silently mixed.'
+    IntervalSchedule:
+      properties:
+        timezone:
+          type: string
+          title: Timezone
+          description: IANA timezone name the schedule is evaluated in
+          default: UTC
+        type:
+          type: string
+          const: interval
+          title: Type
+          default: interval
+        every:
+          type: integer
+          minimum: 1.0
+          title: Every
+          description: Run every N units
+        unit:
+          type: string
+          enum:
+          - minutes
+          - hours
+          - days
+          title: Unit
+          description: Unit of the interval
+      type: object
+      required:
+      - every
+      - unit
+      title: IntervalSchedule
+      description: 'Friendly schedule form: run every N minutes/hours/days.'
     IssueCreate:
       properties:
         title:
@@ -16424,22 +16568,53 @@ components:
       - action
       title: RuntimeSessionUpdateRequest
       description: Operator-driven updates for one runtime session.
-    ScheduleConfig:
+    SchedulePreviewRequest:
       properties:
-        cron:
+        schedule_config:
+          oneOf:
+          - $ref: '#/components/schemas/CronSchedule'
+          - $ref: '#/components/schemas/IntervalSchedule'
+          - $ref: '#/components/schemas/DailySchedule'
+          - $ref: '#/components/schemas/WeeklySchedule'
+          title: Schedule Config
+          discriminator:
+            propertyName: type
+            mapping:
+              cron: '#/components/schemas/CronSchedule'
+              daily: '#/components/schemas/DailySchedule'
+              interval: '#/components/schemas/IntervalSchedule'
+              weekly: '#/components/schemas/WeeklySchedule'
+      type: object
+      required:
+      - schedule_config
+      title: SchedulePreviewRequest
+      description: Request body for previewing a schedule trigger configuration.
+    SchedulePreviewResponse:
+      properties:
+        type:
           type: string
-          title: Cron
-          description: 5-field crontab expression (minute hour day month day_of_week)
+          title: Type
+        description:
+          type: string
+          title: Description
         timezone:
           type: string
           title: Timezone
-          description: IANA timezone name the cron expression is evaluated in
-          default: UTC
+        next_run_times:
+          items:
+            type: string
+            format: date-time
+          type: array
+          title: Next Run Times
+          description: The next run times (UTC) the schedule would fire at
       type: object
       required:
-      - cron
-      title: ScheduleConfig
-      description: Configuration for schedule (cron) triggers.
+      - type
+      - description
+      - timezone
+      - next_run_times
+      title: SchedulePreviewResponse
+      description: Computed preview of a schedule trigger configuration.
     ScopeType:
       type: string
       enum:
@@ -17789,6 +17964,43 @@ components:
       - webhook_secret
       title: WebhookConfig
       description: Configuration for webhook triggers.
+    WeeklySchedule:
+      properties:
+        timezone:
+          type: string
+          title: Timezone
+          description: IANA timezone name the schedule is evaluated in
+          default: UTC
+        type:
+          type: string
+          const: weekly
+          title: Type
+          default: weekly
+        days:
+          items:
+            type: string
+            enum:
+            - mon
+            - tue
+            - wed
+            - thu
+            - fri
+            - sat
+            - sun
+          type: array
+          minItems: 1
+          title: Days
+          description: Weekdays the schedule fires on (mon..sun)
+        at:
+          type: string
+          title: At
+          description: Time of day in 24h 'HH:MM' format
+      type: object
+      required:
+      - days
+      - at
+      title: WeeklySchedule
+      description: 'Friendly schedule form: run on selected weekdays at a fixed time.'
   securitySchemes:
     bearerAuth:
       type: http

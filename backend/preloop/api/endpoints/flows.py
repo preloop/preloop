@@ -74,8 +74,7 @@ def create_flow(
         if not flow_in.schedule_config:
             raise HTTPException(
                 status_code=400,
-                detail="schedule_config with a cron expression is required "
-                "for schedule triggers",
+                detail="schedule_config is required for schedule triggers",
             )
         flow_in.trigger_event_types = ["schedule"]
 
@@ -176,6 +175,29 @@ def read_flows(
             )
 
     return flows
+
+
+@router.post("/flows/schedule/preview", response_model=schemas.SchedulePreviewResponse)
+@require_permission("view_flows")
+def preview_flow_schedule(
+    *,
+    db: Session = Depends(get_db),
+    preview_in: schemas.SchedulePreviewRequest,
+    current_user: User = Depends(get_current_active_user),
+):
+    """Preview a schedule trigger configuration.
+
+    Validates the schedule config (invalid configs are rejected with a
+    422 by the schema) and returns a human-readable description plus the
+    next few run times, for display in the flow editor.
+    """
+    config = preview_in.schedule_config
+    return schemas.SchedulePreviewResponse(
+        type=config.type,
+        description=config.describe(),
+        timezone=config.timezone,
+        next_run_times=config.next_fire_times(count=3),
+    )
 
 
 @router.get("/flows/presets", response_model=List[schemas.FlowResponse])
@@ -992,8 +1014,7 @@ def update_flow(
         if not effective_schedule:
             raise HTTPException(
                 status_code=400,
-                detail="schedule_config with a cron expression is required "
-                "for schedule triggers",
+                detail="schedule_config is required for schedule triggers",
             )
         if flow_in.trigger_event_source == "schedule":
             flow_in.trigger_event_types = ["schedule"]

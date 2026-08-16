@@ -788,7 +788,14 @@ class FlowTriggerService:
             )
             return "suppressed_disabled"
 
-        schedule_config = flow.schedule_config or {}
+        from preloop.models.schemas.flow import parse_schedule_config
+
+        raw_schedule = flow.schedule_config or {}
+        try:
+            # Normalize legacy {"cron": ...} shapes into the typed union form
+            schedule_config = parse_schedule_config(raw_schedule).model_dump()
+        except Exception:
+            schedule_config = raw_schedule
         scheduled_at = datetime.now(dt_timezone.utc).isoformat()
 
         running = crud_flow_execution.get_running_by_flow(self.db, flow_id=flow.id)
@@ -806,7 +813,7 @@ class FlowTriggerService:
                     "flow_name": flow.name,
                     "reason": "previous_execution_running",
                     "running_execution_ids": [str(e.id) for e in running[:10]],
-                    "cron": schedule_config.get("cron"),
+                    "schedule": schedule_config,
                     "timezone": schedule_config.get("timezone", "UTC"),
                     "scheduled_at": scheduled_at,
                 },
@@ -818,7 +825,7 @@ class FlowTriggerService:
             "type": "schedule",
             "account_id": str(flow.account_id) if flow.account_id else None,
             "payload": {
-                "cron": schedule_config.get("cron"),
+                "schedule": schedule_config,
                 "timezone": schedule_config.get("timezone", "UTC"),
                 "scheduled_at": scheduled_at,
             },

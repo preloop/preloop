@@ -1267,7 +1267,12 @@ async def test_retry_flow_execution_success_cancelled(
 # Schedule (cron) trigger endpoint guards
 # ---------------------------------------------------------------------------
 
-from preloop.models.schemas.flow import ScheduleConfig  # noqa: E402
+from preloop.models.schemas.flow import (  # noqa: E402
+    CronSchedule,
+    DailySchedule,
+    IntervalSchedule,
+    WeeklySchedule,
+)
 
 
 def _schedule_flow_create(**overrides) -> schemas.FlowCreate:
@@ -1278,7 +1283,7 @@ def _schedule_flow_create(**overrides) -> schemas.FlowCreate:
         agent_type="openhands",
         agent_config={},
         trigger_event_source="schedule",
-        schedule_config=ScheduleConfig(cron="0 2 * * *", timezone="UTC"),
+        schedule_config=CronSchedule(expr="0 2 * * *", timezone="UTC"),
     )
     payload.update(overrides)
     return schemas.FlowCreate(**payload)
@@ -1468,7 +1473,7 @@ async def test_update_flow_schedule_config_on_webhook_flow_rejected(
     mock_crud_flow.get.return_value = mock_flow
 
     flow_update = schemas.FlowUpdate(
-        schedule_config=ScheduleConfig(cron="0 2 * * *", timezone="UTC")
+        schedule_config=CronSchedule(expr="0 2 * * *", timezone="UTC")
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -1503,14 +1508,14 @@ async def test_update_flow_switch_to_schedule_forces_event_types(
 
     flow_update = schemas.FlowUpdate(
         trigger_event_source="schedule",
-        schedule_config=ScheduleConfig(cron="*/30 * * * *", timezone="UTC"),
+        schedule_config=CronSchedule(expr="*/30 * * * *", timezone="UTC"),
     )
     mock_crud_flow.update.return_value = schemas.FlowResponse(
         id=flow_id,
         name="Webhook Flow",
         trigger_event_source="schedule",
         trigger_event_types=["schedule"],
-        schedule_config=ScheduleConfig(cron="*/30 * * * *", timezone="UTC"),
+        schedule_config=CronSchedule(expr="*/30 * * * *", timezone="UTC"),
         prompt_template="p",
         created_at=datetime.now(ZoneInfo("UTC")),
         updated_at=datetime.now(ZoneInfo("UTC")),
@@ -1534,3 +1539,96 @@ async def test_update_flow_switch_to_schedule_forces_event_types(
     )
     assert result.schedule_state is not None
     assert result.schedule_state["cron"] == "*/30 * * * *"
+
+
+# ---------------------------------------------------------------------------
+# Schedule preview endpoint
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_preview_schedule_daily(mock_account: Account):
+    """Preview returns a description and the next 3 run times."""
+    preview_in = schemas.SchedulePreviewRequest(
+        schedule_config=DailySchedule(at="06:30", timezone="Europe/Athens")
+    )
+
+    result = await maybe_await(
+        flows.preview_flow_schedule(
+            db=MagicMock(), preview_in=preview_in, current_user=mock_account
+        )
+    )
+
+    assert result.type == "daily"
+    assert result.description == "Daily at 06:30 (Europe/Athens)"
+    assert result.timezone == "Europe/Athens"
+    assert len(result.next_run_times) == 3
+    # Consecutive daily runs are 24h apart (mod DST)
+    gap = result.next_run_times[1] - result.next_run_times[0]
+    assert 23 * 3600 <= gap.total_seconds() <= 25 * 3600
+
+
+@pytest.mark.asyncio
+async def test_preview_schedule_interval(mock_account: Account):
+    preview_in = schemas.SchedulePreviewRequest(
+        schedule_config=IntervalSchedule(every=6, unit="hours")
+    )
+
+    result = await maybe_await(
+        flows.preview_flow_schedule(
+            db=MagicMock(), preview_in=preview_in, current_user=mock_account
+        )
+    )
+
+    assert result.type == "interval"
+    assert result.description == "Every 6 hours"
+    assert len(result.next_run_times) == 3
+    gap = result.next_run_times[1] - result.next_run_times[0]
+    assert gap.total_seconds() == 6 * 3600
+
+
+@pytest.mark.asyncio
+async def test_preview_schedule_weekly_and_cron(mock_account: Account):
+    weekly = await maybe_await(
+        flows.preview_flow_schedule(
+            db=MagicMock(),
+            preview_in=schemas.SchedulePreviewRequest(
+                schedule_config=WeeklySchedule(days=["fri", "mon"], at="09:00")
+            ),
+            current_user=mock_account,
+        )
+    )
+    assert weekly.description == "Weekly on Mon, Fri at 09:00 (UTC)"
+    assert len(weekly.next_run_times) == 3
+
+    cron = await maybe_await(
+        flows.preview_flow_schedule(
+            db=MagicMock(),
+            preview_in=schemas.SchedulePreviewRequest(
+                schedule_config=CronSchedule(expr="0 2 * * *")
+            ),
+            current_user=mock_account,
+        )
+    )
+    assert cron.type == "cron"
+    assert len(cron.next_run_times) == 3
+
+
+def test_preview_request_rejects_invalid_config():
+    """Invalid schedule configs fail schema validation (FastAPI 422 path)."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        schemas.SchedulePreviewRequest(
+            schedule_config={"type": "interval", "every": 1, "unit": "minutes"}
+        )
+    with pytest.raises(ValidationError):
+        schemas.SchedulePreviewRequest(schedule_config={"type": "daily", "at": "24:99"})
+
+
+def test_preview_request_accepts_legacy_cron_shape():
+    req = schemas.SchedulePreviewRequest(
+        schedule_config={"cron": "0 2 * * *", "timezone": "UTC"}
+    )
+    assert req.schedule_config.type == "cron"
+    assert req.schedule_config.expr == "0 2 * * *"

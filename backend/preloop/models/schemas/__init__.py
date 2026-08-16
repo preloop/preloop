@@ -1,4 +1,11 @@
-from .flow import FlowCreate, FlowResponse, FlowUpdate, WebhookConfig
+from .flow import (
+    FlowCreate,
+    FlowResponse,
+    FlowUpdate,
+    SchedulePreviewRequest,
+    SchedulePreviewResponse,
+    WebhookConfig,
+)
 from .flow_execution import (
     FlowExecutionCreate,
     FlowExecutionUpdate,
@@ -36,6 +43,8 @@ __all__ = [
     "FlowCreate",
     "FlowUpdate",
     "FlowResponse",
+    "SchedulePreviewRequest",
+    "SchedulePreviewResponse",
     "FlowExecutionCreate",
     "FlowExecutionUpdate",
     "FlowExecutionResponse",
