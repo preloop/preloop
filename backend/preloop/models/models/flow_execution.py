@@ -14,6 +14,37 @@ from .base import Base
 # layer can project it without models depending on sync.
 TRIGGER_SUBJECT_KEY = "_subject"
 
+# Reserved key under which per-cell matrix overrides are stored inside
+# FlowExecution.trigger_event_details when an execution was created as part of
+# a matrix/batch trigger. Shape:
+# {"batch_id": str, "index": int, "agent_type": str?, "ai_model_id": str?}
+# Keeping the overrides on the execution makes each cell self-describing (the
+# orchestrator applies them without any flow mutation) and lets retries of a
+# single cell keep their overrides for free.
+MATRIX_OVERRIDES_KEY = "_matrix"
+
+
+def resolve_matrix_agent_selection(
+    trigger_event_details: Optional[dict],
+    *,
+    flow_agent_type: Optional[str] = None,
+    flow_ai_model_id: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """Effective ``(agent_type, ai_model_id)`` for one execution.
+
+    Matrix cells persist their overrides under ``MATRIX_OVERRIDES_KEY`` in
+    ``trigger_event_details``. Every code path that (re)builds an agent
+    executor for an execution MUST resolve the agent type through this helper
+    (initial run, resume, monitor, recovery) — otherwise an interrupted matrix
+    cell would be inspected with the flow-default harness, whose session
+    references are not compatible with the cell's actual harness.
+    """
+    overrides = (trigger_event_details or {}).get(MATRIX_OVERRIDES_KEY) or {}
+    return (
+        overrides.get("agent_type") or flow_agent_type,
+        overrides.get("ai_model_id") or flow_ai_model_id,
+    )
+
 
 class FlowExecution(Base):
     __tablename__ = "flow_execution"
@@ -41,6 +72,10 @@ class FlowExecution(Base):
         JSONB, nullable=True
     )  # Structured log of agent actions
     mcp_usage_logs = Column(JSONB, nullable=True)  # Detailed log of MCP tool calls
+    # Structured result artifact reported by the agent (eval/observe runs):
+    # the parsed contents of /workspace/result.json captured by the runner
+    # after the agent finishes. First-class alternative to scraping logs.
+    result = Column(JSONB, nullable=True)
     execution_logs = Column(
         JSONB, nullable=True
     )  # Full execution logs (array of log messages)
@@ -56,6 +91,10 @@ class FlowExecution(Base):
         nullable=True,
         index=True,
     )  # Links to the original execution this is a retry of
+
+    # Batch/matrix fan-out: executions created from one matrix trigger share a
+    # batch_id so the whole batch can be listed and rolled up as a unit.
+    batch_id = Column(UUID(as_uuid=True), nullable=True, index=True)
 
     # Execution metrics
     tool_calls_count = Column(

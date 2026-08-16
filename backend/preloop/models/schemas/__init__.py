@@ -7,11 +7,17 @@ from .flow import (
     WebhookConfig,
 )
 from .flow_execution import (
+    BatchExecutionListItem,
+    BatchExecutionRef,
+    BatchExecutionsResponse,
+    BatchRollup,
+    BatchTriggerResponse,
     FlowExecutionCreate,
     FlowExecutionUpdate,
     FlowExecutionResponse,
     FlowExecutionListResponse,
     FlowExecutionCommand,
+    FlowMatrixEntry,
 )
 from .organization import Organization, OrganizationCreate, OrganizationUpdate
 from .tracker import Tracker, TrackerCreate, TrackerUpdate, TrackerTypeSchema
@@ -40,6 +46,12 @@ from .registration_token import (
 )
 
 __all__ = [
+    "BatchExecutionListItem",
+    "BatchExecutionRef",
+    "BatchExecutionsResponse",
+    "BatchRollup",
+    "BatchTriggerResponse",
+    "FlowMatrixEntry",
     "FlowCreate",
     "FlowUpdate",
     "FlowResponse",

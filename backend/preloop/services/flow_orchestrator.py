@@ -22,6 +22,10 @@ from preloop.models.crud import (
     crud_user,
 )
 from preloop.models.models.flow import Flow
+from preloop.models.models.flow_execution import (
+    MATRIX_OVERRIDES_KEY,
+    resolve_matrix_agent_selection,
+)
 from preloop.models.models.ai_model import AIModel
 from preloop.models.models.runtime_session import RuntimeSession
 from preloop.agents import create_agent_executor, AgentStatus
@@ -111,6 +115,9 @@ class FlowExecutionOrchestrator:
         self.trigger_event_data = trigger_event_data
         self.flow: Optional[Flow] = None
         self.ai_model: Optional[AIModel] = None
+        # Effective agent type: flow.agent_type unless overridden by a matrix
+        # cell (see MATRIX_OVERRIDES_KEY); resolved in _get_flow_details.
+        self.agent_type: Optional[str] = None
         self.execution_log = None
         self.runtime_session: Optional[RuntimeSession] = None
         self.nats_client: Client = nats_client
@@ -697,21 +704,40 @@ class FlowExecutionOrchestrator:
         if not self.flow:
             raise ValueError(f"Flow with id {self.flow_id} not found")
 
-        logger.info(
-            f"Found flow: {self.flow.name} (agent_type: {self.flow.agent_type})"
+        # Apply per-cell matrix overrides (batch fan-out) without mutating the
+        # shared flow row: a matrix trigger stores its cell's agent_type /
+        # ai_model_id inside trigger_event_details under MATRIX_OVERRIDES_KEY.
+        matrix_overrides = (self.trigger_event_data or {}).get(
+            MATRIX_OVERRIDES_KEY
+        ) or {}
+        self.agent_type, effective_ai_model_id = resolve_matrix_agent_selection(
+            self.trigger_event_data,
+            flow_agent_type=self.flow.agent_type,
+            flow_ai_model_id=self.flow.ai_model_id,
         )
+        if matrix_overrides:
+            logger.info(
+                "Matrix overrides for execution (batch %s, cell %s): "
+                "agent_type=%s, ai_model_id=%s",
+                matrix_overrides.get("batch_id"),
+                matrix_overrides.get("index"),
+                matrix_overrides.get("agent_type"),
+                matrix_overrides.get("ai_model_id"),
+            )
+
+        logger.info(f"Found flow: {self.flow.name} (agent_type: {self.agent_type})")
 
         # Get AI model if specified
-        if self.flow.ai_model_id:
+        if effective_ai_model_id:
             ai_model_id_str = (
-                str(self.flow.ai_model_id)
-                if isinstance(self.flow.ai_model_id, uuid.UUID)
-                else self.flow.ai_model_id
+                str(effective_ai_model_id)
+                if isinstance(effective_ai_model_id, uuid.UUID)
+                else effective_ai_model_id
             )
             self.ai_model = crud_ai_model.get(self.db, id=ai_model_id_str)
             if not self.ai_model:
                 logger.warning(
-                    f"AI model {self.flow.ai_model_id} not found for flow {self.flow_id}"
+                    f"AI model {effective_ai_model_id} not found for flow {self.flow_id}"
                 )
             else:
                 logger.info(
@@ -1542,8 +1568,9 @@ class FlowExecutionOrchestrator:
 
     async def _prepare_execution_context(self) -> Dict[str, Any]:
         """Prepare the full execution context for the agent."""
+        effective_agent_type = self.agent_type or self.flow.agent_type
         logger.info(
-            f"Preparing execution context for agent type: {self.flow.agent_type}"
+            f"Preparing execution context for agent type: {effective_agent_type}"
         )
 
         resolved_prompt = await self._resolve_prompt()
@@ -1565,7 +1592,7 @@ class FlowExecutionOrchestrator:
             "flow_name": self.flow.name,  # Used for generating git branch names
             "execution_id": str(self.execution_log.id),
             "prompt": resolved_prompt,
-            "agent_type": self.flow.agent_type,
+            "agent_type": effective_agent_type,
             "agent_config": self.flow.agent_config,
             "allowed_mcp_servers": self.flow.allowed_mcp_servers,
             "allowed_mcp_tools": self.flow.allowed_mcp_tools,
@@ -2043,6 +2070,34 @@ class FlowExecutionOrchestrator:
                     )
             raise
 
+    async def _capture_result_artifact(
+        self, agent_executor: Any, session_reference: str
+    ) -> Optional[Dict[str, Any]]:
+        """Capture the agent's structured result artifact, if any.
+
+        Eval/observe flows write ``/workspace/result.json`` as their final
+        report; executors that support first-class capture expose
+        ``get_result_artifact``. Best-effort: a missing artifact or an
+        executor without support simply yields None.
+        """
+        getter = getattr(agent_executor, "get_result_artifact", None)
+        if not callable(getter):
+            return None
+        try:
+            artifact = await getter(session_reference)
+        except Exception as e:
+            logger.warning(f"Failed to capture result artifact: {e}")
+            return None
+        # Only plain JSON objects are persistable (also guards against mock
+        # executors in tests returning non-dict values).
+        if not isinstance(artifact, dict):
+            return None
+        self.execution_logger.log_milestone(
+            "result_artifact_captured",
+            {"keys": sorted(artifact.keys())[:20]},
+        )
+        return artifact
+
     async def _monitor_agent_execution(
         self, session_reference: str, agent_executor: Any
     ) -> Dict[str, Any]:
@@ -2130,6 +2185,12 @@ class FlowExecutionOrchestrator:
                         ),
                         "actions_taken": self.execution_logger.get_actions_taken(),
                         "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                        # An eval run may have already written result.json
+                        # before the user stopped it; the container is kept
+                        # (AutoRemove=False) so capture still works.
+                        "result": await self._capture_result_artifact(
+                            agent_executor, session_reference
+                        ),
                     }
 
                 # Get status with error handling
@@ -2171,6 +2232,12 @@ class FlowExecutionOrchestrator:
                                 "error_message": f"Monitoring error: {retry_error_message}",
                                 "actions_taken": self.execution_logger.get_actions_taken(),
                                 "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                                # Best-effort: the daemon may be the very
+                                # thing that is failing, but if the artifact
+                                # is reachable we must not lose it.
+                                "result": await self._capture_result_artifact(
+                                    agent_executor, session_reference
+                                ),
                             }
 
                         # Continue polling for transient errors
@@ -2217,6 +2284,11 @@ class FlowExecutionOrchestrator:
                         "error_message": error_message,
                         "actions_taken": self.execution_logger.get_actions_taken(),
                         "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                        # Capture whatever the agent reported before it got
+                        # stuck in the tool loop.
+                        "result": await self._capture_result_artifact(
+                            agent_executor, session_reference
+                        ),
                     }
 
                 if status in (
@@ -2277,6 +2349,12 @@ class FlowExecutionOrchestrator:
                         "error_message": error_message,
                         "actions_taken": self.execution_logger.get_actions_taken(),
                         "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                        # Structured result artifact (/workspace/result.json)
+                        # captured first-class from the workspace — the
+                        # eval/observe contract surface (no log scraping).
+                        "result": await self._capture_result_artifact(
+                            agent_executor, session_reference
+                        ),
                         "exit_code": result.exit_code,
                         # First-pass failure classification made against the
                         # FULL container logs. error_message keeps only the
@@ -2316,6 +2394,11 @@ class FlowExecutionOrchestrator:
                             "error_message": None,
                             "actions_taken": self.execution_logger.get_actions_taken(),
                             "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                            # Container is still alive here (post-exec
+                            # commands); the archive API works either way.
+                            "result": await self._capture_result_artifact(
+                                agent_executor, session_reference
+                            ),
                         }
 
                 # Wait before next poll
@@ -2334,6 +2417,11 @@ class FlowExecutionOrchestrator:
                 "error_message": f"Execution timed out after {max_wait_time} seconds",
                 "actions_taken": self.execution_logger.get_actions_taken(),
                 "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                # A timed-out eval run may still have written result.json;
+                # the stopped container is kept, so the artifact is reachable.
+                "result": await self._capture_result_artifact(
+                    agent_executor, session_reference
+                ),
             }
 
         except Exception as e:
@@ -2350,6 +2438,11 @@ class FlowExecutionOrchestrator:
                 "error_message": f"Monitoring error: {error_message}",
                 "actions_taken": self.execution_logger.get_actions_taken(),
                 "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                # _capture_result_artifact never raises; best-effort capture
+                # so an unexpected monitor error does not lose the artifact.
+                "result": await self._capture_result_artifact(
+                    agent_executor, session_reference
+                ),
             }
         finally:
             # Always cleanup monitoring resources
@@ -2719,6 +2812,7 @@ class FlowExecutionOrchestrator:
                 error_message=agent_result.get("error_message"),
                 actions_taken_summary=agent_result.get("actions_taken"),
                 mcp_usage_logs=agent_result.get("mcp_usage_logs"),
+                result=agent_result.get("result"),
                 end_time=datetime.now(timezone.utc),
                 tool_calls_count=self.tool_calls_count,
                 total_tokens=self.total_tokens,
