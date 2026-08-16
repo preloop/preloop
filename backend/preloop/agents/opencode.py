@@ -566,6 +566,10 @@ echo ""
 echo "=================================================="
 echo "OpenCode CLI exited with code: $OPENCODE_EXIT_CODE"
 echo "=================================================="
+# Wrapper-emitted completion marker: pairs with PRELOOP_AGENT_EXEC_START.
+# The orchestrator treats this marker with exit code 0 as success without
+# requiring any model-printed sentinel.
+echo "PRELOOP_AGENT_EXEC_END:$OPENCODE_EXIT_CODE"
 {post_exec_block}
 # Exit with opencode's exit code
 exit $OPENCODE_EXIT_CODE

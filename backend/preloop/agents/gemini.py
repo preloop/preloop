@@ -507,6 +507,10 @@ echo ""
 echo "=================================================="
 echo "Gemini CLI exited with code: $GEMINI_EXIT_CODE"
 echo "=================================================="
+# Wrapper-emitted completion marker: pairs with PRELOOP_AGENT_EXEC_START.
+# The orchestrator treats this marker with exit code 0 as success without
+# requiring any model-printed sentinel.
+echo "PRELOOP_AGENT_EXEC_END:$GEMINI_EXIT_CODE"
 {post_exec_block}
 # Exit with gemini's exit code
 exit $GEMINI_EXIT_CODE

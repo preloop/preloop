@@ -66,6 +66,14 @@ FLOW_SUCCESS_SENTINEL = "FLOW_EXECUTION_SUCCESS"
 # preventing false positives from the prompt echo that contains the sentinel
 # instruction text.
 AGENT_EXEC_START_MARKER = "PRELOOP_AGENT_EXEC_START"
+
+# Marker printed by the agent wrapper script immediately after the agent CLI
+# exits, suffixed with the CLI's exit code (e.g. "PRELOOP_AGENT_EXEC_END:0").
+# Emitted by the same wrapper code that prints AGENT_EXEC_START_MARKER, so it
+# does not depend on the model following instructions.  Wrapper-end with exit
+# code 0 is a first-class success signal: model output is never required for
+# success.
+AGENT_EXEC_END_MARKER = "PRELOOP_AGENT_EXEC_END"
 MCP_TOOL_LOOP_PATTERN_MAX_LENGTH = 3
 MCP_TOOL_LOOP_MIN_REPETITIONS = 3
 MCP_TOOL_LOOP_SINGLE_CALL_REPETITIONS = 4
@@ -100,6 +108,31 @@ def _exception_message(exc: BaseException) -> str:
     return str(exc) or exc.__class__.__name__
 
 
+def _result_artifact_verdict(artifact: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Interpret a result.json artifact's ``status`` as a success signal.
+
+    Returns ``"success"``, ``"failure"``, or ``None`` when the artifact is
+    absent or carries no recognizable status.  Capture-error wrappers
+    (``{"error": "result_artifact_fetch_failed", ...}``) have no ``status``
+    key and yield None — an infra fetch problem must not flip an otherwise
+    successful run.
+
+    Schema: preloop.eval.result/v1 uses ``pass | fail | error``; common
+    synonyms are accepted defensively.
+    """
+    if not isinstance(artifact, dict):
+        return None
+    status = artifact.get("status")
+    if not isinstance(status, str):
+        return None
+    normalized = status.strip().lower()
+    if normalized in ("pass", "passed", "success", "succeeded", "ok"):
+        return "success"
+    if normalized in ("fail", "failed", "failure", "error"):
+        return "failure"
+    return None
+
+
 class FlowExecutionOrchestrator:
     """Manages the end-to-end lifecycle of a single Flow invocation."""
 
@@ -130,6 +163,9 @@ class FlowExecutionOrchestrator:
         self._agent_exec_started = (
             False  # Set when AGENT_EXEC_START_MARKER seen in logs
         )
+        # Exit code parsed from the wrapper's AGENT_EXEC_END_MARKER line
+        # (None until the marker is seen in logs).
+        self._agent_exec_end_exit_code: Optional[int] = None
         self._user_messages: asyncio.Queue = asyncio.Queue()
 
         # Execution metrics tracked during execution
@@ -1699,9 +1735,34 @@ class FlowExecutionOrchestrator:
                         f"Agent exec start marker seen at log line #{log_count}"
                     )
 
+                # Detect the wrapper-emitted end marker with the CLI's exit
+                # code (e.g. "PRELOOP_AGENT_EXEC_END:0").  Printed by the
+                # wrapper script itself, so it cannot appear in prompt echo
+                # with a valid exit-code suffix and does not depend on model
+                # behavior.
+                stripped_line = log_line.strip()
+                if (
+                    self._agent_exec_started
+                    and self._agent_exec_end_exit_code is None
+                    and stripped_line.startswith(f"{AGENT_EXEC_END_MARKER}:")
+                ):
+                    suffix = stripped_line[len(AGENT_EXEC_END_MARKER) + 1 :]
+                    try:
+                        self._agent_exec_end_exit_code = int(suffix)
+                    except ValueError:
+                        logger.warning(
+                            f"[ExecEnd] Malformed end marker at line #{log_count}: "
+                            f"{stripped_line!r}"
+                        )
+                    else:
+                        logger.info(
+                            f"[ExecEnd] Agent exec end marker seen at line "
+                            f"#{log_count} with exit code "
+                            f"{self._agent_exec_end_exit_code}"
+                        )
+
                 # Detect success sentinel — but ONLY after the agent exec
                 # start marker has been seen (to ignore prompt echo).
-                stripped_line = log_line.strip()
                 if stripped_line == FLOW_SUCCESS_SENTINEL:
                     if not self._agent_exec_started:
                         logger.warning(
@@ -2307,41 +2368,89 @@ class FlowExecutionOrchestrator:
                         {"status": status.value, "exit_code": result.exit_code},
                     )
 
-                    # Sentinel-based status override:
-                    # If the container reports SUCCEEDED (exit code 0) but the
-                    # FLOW_EXECUTION_SUCCESS sentinel was NOT found in logs,
-                    # treat it as FAILED.  This catches agents (e.g. OpenCode)
-                    # that error out but still exit with code 0.
-                    # Guard: only apply the override when the agent-exec-start
-                    # marker was actually seen in logs.  If we never streamed
-                    # real logs (e.g. mocks, or the log stream failed before
-                    # any output), the sentinel's absence is not meaningful.
+                    # Structured result artifact (/workspace/result.json)
+                    # captured first-class from the workspace — the
+                    # eval/observe contract surface (no log scraping).
+                    # Captured BEFORE the status decision so it can act as
+                    # the authoritative success/failure signal (PR #231).
+                    result_artifact = await self._capture_result_artifact(
+                        agent_executor, session_reference
+                    )
+
+                    # Success decision, in order of authority:
+                    # 1. result.json artifact status (pass|fail|error) — the
+                    #    explicit contract surface; a failure status fails
+                    #    the run even on exit code 0.
+                    # 2. Container exit code (result.status from the
+                    #    executor, which already folds in log-based critical
+                    #    error detection).
+                    # 3. The model-printed FLOW_EXECUTION_SUCCESS sentinel is
+                    #    a LEGACY signal only: its absence alone never fails
+                    #    an exit-0 run (models routinely skip printing it,
+                    #    and some prompts never contain the instruction —
+                    #    execution ff1294e1).  The wrapper-emitted
+                    #    PRELOOP_AGENT_EXEC_END:<code> marker confirms clean
+                    #    CLI completion without requiring model output.
                     final_status = result.status.value
                     error_message = result.error_message
 
+                    artifact_verdict = _result_artifact_verdict(result_artifact)
                     if (
-                        result.status == AgentStatus.SUCCEEDED
-                        and self._agent_exec_started
-                        and not self._success_sentinel_seen.is_set()
+                        artifact_verdict == "failure"
+                        and result.status == AgentStatus.SUCCEEDED
                     ):
+                        artifact_status = (result_artifact or {}).get("status")
                         logger.warning(
-                            f"Agent exited with SUCCEEDED status (exit_code={result.exit_code}) "
-                            f"but success sentinel was NOT found in logs. "
+                            f"Agent exited with SUCCEEDED status "
+                            f"(exit_code={result.exit_code}) but result.json "
+                            f"reports status={artifact_status!r}. "
                             f"Overriding status to FAILED."
                         )
                         self.execution_logger.log_milestone(
-                            "sentinel_missing_override",
+                            "result_artifact_failure_override",
                             {
                                 "original_status": result.status.value,
+                                "artifact_status": artifact_status,
                                 "exit_code": result.exit_code,
                             },
                         )
                         final_status = "FAILED"
-                        error_message = (
-                            result.error_message
-                            or "Agent exited with code 0 but did not produce "
-                            "the success sentinel — likely encountered an error."
+                        error_message = result.error_message or (
+                            f"Result artifact reported status "
+                            f"{artifact_status!r} despite exit code 0."
                         )
+                    elif (
+                        result.status == AgentStatus.SUCCEEDED
+                        and self._agent_exec_started
+                        and not self._success_sentinel_seen.is_set()
+                    ):
+                        if self._agent_exec_end_exit_code == 0:
+                            logger.info(
+                                "Success sentinel not printed by the model, "
+                                "but the wrapper end marker confirmed clean "
+                                "CLI exit (code 0) — treating as SUCCEEDED."
+                            )
+                            self.execution_logger.log_milestone(
+                                "agent_exec_end_confirmed_success",
+                                {"exit_code": result.exit_code},
+                            )
+                        else:
+                            # Legacy-only signal missing: warn, do not fail.
+                            logger.warning(
+                                f"Agent exited with SUCCEEDED status "
+                                f"(exit_code={result.exit_code}) but neither "
+                                f"the success sentinel nor the wrapper end "
+                                f"marker was seen in logs. Keeping SUCCEEDED "
+                                f"(sentinel is a legacy signal; its absence "
+                                f"alone is not a failure)."
+                            )
+                            self.execution_logger.log_milestone(
+                                "sentinel_missing_warning",
+                                {
+                                    "original_status": result.status.value,
+                                    "exit_code": result.exit_code,
+                                },
+                            )
 
                     return {
                         "status": final_status,
@@ -2349,12 +2458,7 @@ class FlowExecutionOrchestrator:
                         "error_message": error_message,
                         "actions_taken": self.execution_logger.get_actions_taken(),
                         "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
-                        # Structured result artifact (/workspace/result.json)
-                        # captured first-class from the workspace — the
-                        # eval/observe contract surface (no log scraping).
-                        "result": await self._capture_result_artifact(
-                            agent_executor, session_reference
-                        ),
+                        "result": result_artifact,
                         "exit_code": result.exit_code,
                         # First-pass failure classification made against the
                         # FULL container logs. error_message keeps only the
@@ -2368,21 +2472,26 @@ class FlowExecutionOrchestrator:
                         ),
                     }
 
-                # Check if the success sentinel was seen in logs while
-                # the container is still running (post-exec commands).
-                # The sentinel is only armed after AGENT_EXEC_START_MARKER is
-                # seen, so prompt echoes cannot trigger it.
-                if self._success_sentinel_seen.is_set():
+                # Check if a completion signal was seen in logs while the
+                # container is still running (post-exec commands): either the
+                # legacy model-printed sentinel or the wrapper-emitted end
+                # marker with exit code 0.  Both are only armed after
+                # AGENT_EXEC_START_MARKER, so prompt echoes cannot trigger
+                # them.
+                if (
+                    self._success_sentinel_seen.is_set()
+                    or self._agent_exec_end_exit_code == 0
+                ):
                     if sentinel_seen_at is None:
                         sentinel_seen_at = elapsed
                         logger.info(
-                            f"Success sentinel seen at {elapsed}s, "
+                            f"Completion signal seen at {elapsed}s, "
                             f"allowing {post_sentinel_grace}s grace period"
                         )
                     elif elapsed - sentinel_seen_at >= post_sentinel_grace:
                         logger.info(
                             f"Grace period expired ({post_sentinel_grace}s) "
-                            f"after success sentinel — treating as SUCCEEDED"
+                            f"after completion signal — treating as SUCCEEDED"
                         )
                         self.execution_logger.log_milestone(
                             "sentinel_grace_period_expired",

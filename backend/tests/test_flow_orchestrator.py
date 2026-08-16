@@ -1150,6 +1150,216 @@ class TestFlowExecutionOrchestrator:
             )
             assert persisted.result == artifact
 
+    @staticmethod
+    def _make_streaming_executor(
+        log_lines,
+        *,
+        exit_code=0,
+        result_status=AgentStatus.SUCCEEDED,
+        error_message=None,
+    ):
+        """Build a mock executor that streams real log lines before finishing.
+
+        get_status returns RUNNING on the first poll so the orchestrator's
+        monitor loop yields to the log-streaming task (via the patched
+        asyncio.sleep) and the exec-start/end markers are actually consumed
+        before the terminal status decision is made.
+        """
+        mock_executor = AsyncMock()
+        mock_executor.start = AsyncMock(return_value="session-123")
+
+        # First poll returns RUNNING (so the monitor loop sleeps and yields
+        # to the log-streaming task); every later poll returns the terminal
+        # status.
+        statuses = [AgentStatus.RUNNING]
+        mock_executor.get_status = AsyncMock(
+            side_effect=lambda ref: (statuses.pop(0) if statuses else result_status)
+        )
+        mock_executor.get_result = AsyncMock(
+            return_value=AgentExecutionResult(
+                status=result_status,
+                session_reference="session-123",
+                output_summary="done",
+                error_message=error_message,
+                exit_code=exit_code,
+            )
+        )
+        mock_executor.get_result_artifact = AsyncMock(return_value=None)
+        mock_executor.stop = AsyncMock()
+        mock_executor.cleanup = AsyncMock()
+
+        async def stream_logs(session_ref):
+            for line in log_lines:
+                yield line
+
+        mock_executor.stream_logs = stream_logs
+        return mock_executor
+
+    async def _run_with_streaming_executor(
+        self, db_session, test_flow, mock_nats_client, event_data, mock_executor
+    ):
+        """Run the orchestrator with a yielding fake sleep so the background
+        log-streaming task processes all lines between status polls."""
+        import asyncio as _asyncio
+
+        real_sleep = _asyncio.sleep
+
+        async def yielding_sleep(seconds):
+            await real_sleep(0)
+
+        with (
+            patch(
+                "preloop.services.flow_orchestrator.create_agent_executor",
+                return_value=mock_executor,
+            ),
+            patch(
+                "preloop.services.flow_orchestrator.asyncio.sleep",
+                side_effect=yielding_sleep,
+            ),
+        ):
+            orchestrator = FlowExecutionOrchestrator(
+                db=db_session,
+                flow_id=test_flow.id,
+                trigger_event_data=event_data,
+                nats_client=mock_nats_client,
+            )
+            await orchestrator.run()
+            return orchestrator
+
+    @pytest.mark.asyncio
+    async def test_exit_zero_without_sentinel_succeeds(
+        self,
+        db_session: Session,
+        test_flow: Flow,
+        mock_nats_client,
+        event_data,
+    ):
+        """Exit 0 with NO model-printed sentinel must succeed.
+
+        Regression for execution ff1294e1-8e26-435d-b37f-e3a85a44b310: the
+        PR-reviewer agent completed all work, the CLI exited 0, the runner
+        reported SUCCEEDED — and the platform flipped it to FAILED solely
+        because FLOW_EXECUTION_SUCCESS was never printed.  The sentinel is a
+        legacy signal; its absence alone is a warning, not a failure.
+        """
+        mock_executor = self._make_streaming_executor(
+            [
+                "PRELOOP_AGENT_EXEC_START",
+                "review approved and posted",
+                "OpenCode CLI exited with code: 0",
+                # Note: deliberately NO PRELOOP_AGENT_EXEC_END line either —
+                # the staging wrapper predates the end marker.
+            ],
+            exit_code=0,
+        )
+
+        orchestrator = await self._run_with_streaming_executor(
+            db_session, test_flow, mock_nats_client, event_data, mock_executor
+        )
+
+        assert orchestrator._agent_exec_started is True
+        assert orchestrator._success_sentinel_seen.is_set() is False
+        assert orchestrator.execution_log.status == "SUCCEEDED"
+
+    @pytest.mark.asyncio
+    async def test_exit_zero_with_wrapper_end_marker_succeeds(
+        self,
+        db_session: Session,
+        test_flow: Flow,
+        mock_nats_client,
+        event_data,
+    ):
+        """Wrapper-emitted PRELOOP_AGENT_EXEC_END:0 + exit 0 is success,
+        with no model-printed sentinel required."""
+        mock_executor = self._make_streaming_executor(
+            [
+                "PRELOOP_AGENT_EXEC_START",
+                "agent output without any sentinel",
+                "PRELOOP_AGENT_EXEC_END:0",
+            ],
+            exit_code=0,
+        )
+
+        orchestrator = await self._run_with_streaming_executor(
+            db_session, test_flow, mock_nats_client, event_data, mock_executor
+        )
+
+        assert orchestrator._agent_exec_end_exit_code == 0
+        assert orchestrator.execution_log.status == "SUCCEEDED"
+
+    @pytest.mark.asyncio
+    async def test_nonzero_exit_fails(
+        self,
+        db_session: Session,
+        test_flow: Flow,
+        mock_nats_client,
+        event_data,
+    ):
+        """A non-zero CLI exit still fails the run — leniency about the
+        missing sentinel must not weaken real failure detection."""
+        mock_executor = self._make_streaming_executor(
+            [
+                "PRELOOP_AGENT_EXEC_START",
+                "OpenCode CLI exited with code: 2",
+                "PRELOOP_AGENT_EXEC_END:2",
+            ],
+            exit_code=2,
+            result_status=AgentStatus.FAILED,
+            error_message="Agent execution failed with exit code 2",
+        )
+
+        orchestrator = await self._run_with_streaming_executor(
+            db_session, test_flow, mock_nats_client, event_data, mock_executor
+        )
+
+        assert orchestrator._agent_exec_end_exit_code == 2
+        assert orchestrator.execution_log.status == "FAILED"
+
+    @pytest.mark.asyncio
+    async def test_result_artifact_failure_overrides_exit_zero(
+        self,
+        db_session: Session,
+        test_flow: Flow,
+        mock_nats_client,
+        event_data,
+    ):
+        """result.json with a failure status fails the run even on exit 0.
+
+        The artifact (PR #231) is the explicit contract surface and outranks
+        both the exit code and any log sentinel.
+        """
+        from preloop.models.models.flow_execution import FlowExecution
+
+        artifact = {
+            "schema": "preloop.eval.result/v1",
+            "status": "fail",
+            "summary": "2 of 5 checks failed",
+        }
+        mock_executor = self._make_streaming_executor(
+            [
+                "PRELOOP_AGENT_EXEC_START",
+                "eval run complete",
+                "PRELOOP_AGENT_EXEC_END:0",
+            ],
+            exit_code=0,
+        )
+        mock_executor.get_result_artifact = AsyncMock(return_value=artifact)
+
+        orchestrator = await self._run_with_streaming_executor(
+            db_session, test_flow, mock_nats_client, event_data, mock_executor
+        )
+
+        assert orchestrator.execution_log.status == "FAILED"
+        assert "fail" in (orchestrator.execution_log.error_message or "")
+
+        # The artifact itself must still be persisted alongside the failure.
+        persisted = (
+            db_session.query(FlowExecution)
+            .filter(FlowExecution.id == orchestrator.execution_log.id)
+            .one()
+        )
+        assert persisted.result == artifact
+
     @pytest.mark.asyncio
     async def test_user_stop_command(
         self,

@@ -427,6 +427,10 @@ echo "PRELOOP_AGENT_EXEC_START"
 # Run codex in non-interactive mode with the prompt
 echo "{escaped_prompt}" | codex exec --skip-git-repo-check --model "{model}" --sandbox workspace-write --yolo
 CODEX_EXIT_CODE=$?
+# Wrapper-emitted completion marker: pairs with PRELOOP_AGENT_EXEC_START.
+# The orchestrator treats this marker with exit code 0 as success without
+# requiring any model-printed sentinel.
+echo "PRELOOP_AGENT_EXEC_END:$CODEX_EXIT_CODE"
 {post_exec_block}
 # Exit with codex's exit code
 exit $CODEX_EXIT_CODE
