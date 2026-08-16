@@ -16,6 +16,8 @@ import { getTrackerEventOptions } from '../constants/tracker-event-types';
 import consoleStyles from '../styles/console-styles.css?inline';
 import './add-tracker-modal';
 import './add-ai-model-modal';
+import './schedule-config-editor';
+import { defaultScheduleConfig } from './schedule-config-editor';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/textarea/textarea.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
@@ -122,7 +124,7 @@ export class PreloopFlowForm extends LitElement {
   flow: any = {};
 
   @state()
-  private triggerType: 'webhook' | 'tracker' = 'webhook';
+  private triggerType: 'webhook' | 'tracker' | 'schedule' = 'webhook';
 
   @state()
   private flowExecutionPath: 'ephemeral' | 'persistent' = 'ephemeral';
@@ -355,6 +357,8 @@ export class PreloopFlowForm extends LitElement {
 
     if (source === 'webhook') {
       this.triggerType = 'webhook';
+    } else if (source === 'schedule') {
+      this.triggerType = 'schedule';
     } else if (source) {
       this.triggerType = 'tracker';
     } else if (this.flow?.webhook_config) {
@@ -426,13 +430,21 @@ export class PreloopFlowForm extends LitElement {
     this.requestUpdate();
   }
 
-  private handleTriggerTypeChange(newType: 'webhook' | 'tracker') {
+  private handleTriggerTypeChange(newType: 'webhook' | 'tracker' | 'schedule') {
     this.triggerType = newType;
     if (newType === 'webhook') {
       this.flow.trigger_event_source = 'webhook';
       this.flow.trigger_event_types = ['webhook'];
       this.flow.trigger_organization_id = undefined;
       this.flow.trigger_project_ids = undefined;
+    } else if (newType === 'schedule') {
+      this.flow.trigger_event_source = 'schedule';
+      this.flow.trigger_event_types = ['schedule'];
+      this.flow.trigger_organization_id = undefined;
+      this.flow.trigger_project_ids = undefined;
+      if (!this.flow.schedule_config) {
+        this.flow.schedule_config = defaultScheduleConfig();
+      }
     } else {
       this.flow.trigger_event_source = undefined;
       this.flow.trigger_event_types = undefined;
@@ -581,6 +593,10 @@ export class PreloopFlowForm extends LitElement {
         trigger_event_types: this.flow.trigger_event_types || ['webhook'],
         trigger_organization_id: this.flow.trigger_organization_id || undefined,
         trigger_project_ids: this.flow.trigger_project_ids || undefined,
+        schedule_config:
+          this.triggerType === 'schedule'
+            ? this.flow.schedule_config || defaultScheduleConfig()
+            : undefined,
         git_clone_config: this.flow.git_clone_config || { enabled: false },
         max_iterations: this.flow.max_iterations || undefined,
         max_budget: this.flow.max_budget || undefined,
@@ -927,6 +943,7 @@ export class PreloopFlowForm extends LitElement {
             >
               <sl-radio value="webhook">Webhook</sl-radio>
               <sl-radio value="tracker">Tracker Event</sl-radio>
+              <sl-radio value="schedule">Schedule</sl-radio>
             </sl-radio-group>
           </div>
 
@@ -943,97 +960,114 @@ export class PreloopFlowForm extends LitElement {
                     </p>
                   </div>
                 `
-              : html`
-                  <div class="form-grid">
-                    <div
-                      style="display: flex; flex-direction: column; gap: var(--sl-spacing-2x-small);"
-                    >
-                      <sl-select
-                        label="Tracker"
-                        placeholder="Select tracking source"
-                        .value=${this.flow.trigger_event_source || ''}
-                        @sl-change=${this.handleTrackerChange}
-                        style="margin-bottom: 0;"
+              : this.triggerType === 'schedule'
+                ? html`
+                    <div>
+                      <p
+                        style="color: var(--sl-color-neutral-600); margin-bottom: var(--sl-spacing-medium);"
                       >
-                        ${this.trackers.map(
-                          (t) =>
-                            html`<sl-option .value=${t.id}
-                              >${t.name} (${t.tracker_type})</sl-option
+                        This flow runs automatically on the schedule below.
+                        Pausing the flow suspends the schedule.
+                      </p>
+                      <schedule-config-editor
+                        .value=${this.flow.schedule_config}
+                        @schedule-change=${(e: CustomEvent) => {
+                          this.flow.schedule_config = e.detail.value;
+                        }}
+                      ></schedule-config-editor>
+                    </div>
+                  `
+                : html`
+                    <div class="form-grid">
+                      <div
+                        style="display: flex; flex-direction: column; gap: var(--sl-spacing-2x-small);"
+                      >
+                        <sl-select
+                          label="Tracker"
+                          placeholder="Select tracking source"
+                          .value=${this.flow.trigger_event_source || ''}
+                          @sl-change=${this.handleTrackerChange}
+                          style="margin-bottom: 0;"
+                        >
+                          ${this.trackers.map(
+                            (t) =>
+                              html`<sl-option .value=${t.id}
+                                >${t.name} (${t.tracker_type})</sl-option
+                              >`
+                          )}
+                        </sl-select>
+                        <sl-button
+                          size="small"
+                          variant="text"
+                          @click=${this.openAddTrackerDialog}
+                          style="align-self: flex-start; margin-top: -0.25rem; height: auto; padding: 0;"
+                        >
+                          <sl-icon slot="prefix" name="plus-lg"></sl-icon> Add
+                          New Tracker
+                        </sl-button>
+                      </div>
+
+                      <sl-select
+                        label="Organization"
+                        placeholder="Select organization"
+                        .value=${this.flow.trigger_organization_id || ''}
+                        @sl-change=${this.handleOrganizationChange}
+                        ?disabled=${
+                          this.isPollingOrganizations ||
+                          !this.flow.trigger_event_source
+                        }
+                      >
+                        ${this.organizations.map(
+                          (org) =>
+                            html`<sl-option .value=${org.id}
+                              >${org.name}</sl-option
                             >`
                         )}
                       </sl-select>
-                      <sl-button
-                        size="small"
-                        variant="text"
-                        @click=${this.openAddTrackerDialog}
-                        style="align-self: flex-start; margin-top: -0.25rem; height: auto; padding: 0;"
+
+                      <sl-select
+                        label="Projects (Optional)"
+                        placeholder="All projects"
+                        multiple
+                        clearable
+                        .value=${this.flow.trigger_project_ids || []}
+                        @sl-change=${(e: any) => {
+                          this.flow.trigger_project_ids = e.target.value;
+                        }}
+                        ?disabled=${!this.flow.trigger_organization_id}
                       >
-                        <sl-icon slot="prefix" name="plus-lg"></sl-icon> Add New
-                        Tracker
-                      </sl-button>
-                    </div>
+                        ${this.projects
+                          .filter(
+                            (p) =>
+                              p.organization_id ===
+                              this.flow.trigger_organization_id
+                          )
+                          .map(
+                            (p) =>
+                              html`<sl-option .value=${p.id}
+                                >${p.name || p.identifier || p.key}</sl-option
+                              >`
+                          )}
+                      </sl-select>
 
-                    <sl-select
-                      label="Organization"
-                      placeholder="Select organization"
-                      .value=${this.flow.trigger_organization_id || ''}
-                      @sl-change=${this.handleOrganizationChange}
-                      ?disabled=${
-                        this.isPollingOrganizations ||
-                        !this.flow.trigger_event_source
-                      }
-                    >
-                      ${this.organizations.map(
-                        (org) =>
-                          html`<sl-option .value=${org.id}
-                            >${org.name}</sl-option
-                          >`
-                      )}
-                    </sl-select>
-
-                    <sl-select
-                      label="Projects (Optional)"
-                      placeholder="All projects"
-                      multiple
-                      clearable
-                      .value=${this.flow.trigger_project_ids || []}
-                      @sl-change=${(e: any) => {
-                        this.flow.trigger_project_ids = e.target.value;
-                      }}
-                      ?disabled=${!this.flow.trigger_organization_id}
-                    >
-                      ${this.projects
-                        .filter(
-                          (p) =>
-                            p.organization_id ===
-                            this.flow.trigger_organization_id
-                        )
-                        .map(
-                          (p) =>
-                            html`<sl-option .value=${p.id}
-                              >${p.name || p.identifier || p.key}</sl-option
+                      <sl-select
+                        label="Events"
+                        placeholder="Select trigger event kinds"
+                        multiple
+                        .value=${this.flow.trigger_event_types || []}
+                        @sl-change=${(e: any) => {
+                          this.flow.trigger_event_types = e.target.value;
+                        }}
+                      >
+                        ${this.getEventOptions().map(
+                          (ev) =>
+                            html`<sl-option .value=${ev.value}
+                              >${ev.name}</sl-option
                             >`
                         )}
-                    </sl-select>
-
-                    <sl-select
-                      label="Events"
-                      placeholder="Select trigger event kinds"
-                      multiple
-                      .value=${this.flow.trigger_event_types || []}
-                      @sl-change=${(e: any) => {
-                        this.flow.trigger_event_types = e.target.value;
-                      }}
-                    >
-                      ${this.getEventOptions().map(
-                        (ev) =>
-                          html`<sl-option .value=${ev.value}
-                            >${ev.name}</sl-option
-                          >`
-                      )}
-                    </sl-select>
-                  </div>
-                `
+                      </sl-select>
+                    </div>
+                  `
           }
         </sl-card>
 

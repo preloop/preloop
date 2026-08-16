@@ -19,12 +19,24 @@ import { formatLocalDateTime } from '../../utils/date';
 import { executionDurationText } from '../../utils/execution';
 import consoleStyles from '../../styles/console-styles.css?inline';
 
+interface ScheduleState {
+  active: boolean;
+  type: string;
+  description: string;
+  timezone: string;
+  next_run_at: string | null;
+  cron?: string;
+}
+
 interface Flow {
   id: string;
   name: string;
   description?: string;
   icon?: string;
   account_id?: string;
+  trigger_event_source?: string;
+  is_enabled?: boolean;
+  schedule_state?: ScheduleState | null;
   execution_stats?: {
     total_execs?: number;
     running_execs?: number;
@@ -531,6 +543,7 @@ export class FlowsView extends LitElement {
             <sl-icon name="play-circle"></sl-icon>
             <span>${totalCount} executions</span>
           </div>
+          ${this.renderScheduleStat(flow)}
         </div>
 
         <div slot="footer" class="flow-footer">
@@ -633,6 +646,38 @@ export class FlowsView extends LitElement {
         <sl-button size="small">
           <sl-icon name="arrow-right"></sl-icon>
         </sl-button>
+      </div>
+    `;
+  }
+
+  /**
+   * Next-run/paused indicator for scheduled flows on the flow card.
+   *
+   * Paused flows (schedule suspended) get a warning badge; active
+   * schedules show the next run time in local time.
+   */
+  renderScheduleStat(flow: Flow) {
+    const schedule = flow.schedule_state;
+    if (flow.trigger_event_source !== 'schedule' || !schedule) {
+      return '';
+    }
+    if (!schedule.active) {
+      return html`
+        <div class="stat-item" title=${schedule.description}>
+          <sl-badge variant="warning">Schedule paused</sl-badge>
+        </div>
+      `;
+    }
+    return html`
+      <div class="stat-item" title=${schedule.description}>
+        <sl-icon name="clock"></sl-icon>
+        <span>
+          ${
+            schedule.next_run_at
+              ? html`Next run ${formatLocalDateTime(schedule.next_run_at)}`
+              : 'No upcoming runs'
+          }
+        </span>
       </div>
     `;
   }

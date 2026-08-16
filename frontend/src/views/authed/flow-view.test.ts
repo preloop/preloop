@@ -36,3 +36,48 @@ describe('FlowView model selection', () => {
     );
   });
 });
+
+describe('FlowView trigger summary', () => {
+  function createElement(): any {
+    return document.createElement('flow-view') as FlowView as any;
+  }
+
+  it('describes webhook triggers', () => {
+    const element = createElement();
+    element.flow = { name: 'Test', trigger_event_source: 'webhook' };
+    expect(element.getTriggerSummary()).to.equal('Webhook');
+  });
+
+  it('describes schedule triggers with the backend summary', () => {
+    const element = createElement();
+    element.flow = {
+      name: 'Test',
+      trigger_event_source: 'schedule',
+      schedule_config: {
+        type: 'daily',
+        at: '09:00',
+        timezone: 'Europe/Athens',
+      },
+      schedule_state: {
+        active: true,
+        type: 'daily',
+        description: 'Daily at 09:00 (Europe/Athens)',
+        timezone: 'Europe/Athens',
+        next_run_at: '2026-08-17T06:00:00+00:00',
+      },
+    };
+    expect(element.getTriggerSummary()).to.equal(
+      'Daily at 09:00 (Europe/Athens)'
+    );
+  });
+
+  it('falls back to a generic label when schedule state is missing', () => {
+    const element = createElement();
+    element.flow = {
+      name: 'Test',
+      trigger_event_source: 'schedule',
+      schedule_config: { type: 'daily', at: '09:00', timezone: 'UTC' },
+    };
+    expect(element.getTriggerSummary()).to.equal('Schedule');
+  });
+});
