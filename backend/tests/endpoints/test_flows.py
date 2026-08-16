@@ -1711,6 +1711,16 @@ def test_preview_request_rejects_invalid_config():
         )
     with pytest.raises(ValidationError):
         schemas.SchedulePreviewRequest(schedule_config={"type": "daily", "at": "24:99"})
+    # Absurd `every` must fail as a pydantic ValidationError (-> 422), not
+    # leak the underlying timedelta OverflowError as an HTTP 500.
+    with pytest.raises(ValidationError, match="maximum"):
+        schemas.SchedulePreviewRequest(
+            schedule_config={
+                "type": "interval",
+                "every": 1_000_000_000_000,
+                "unit": "days",
+            }
+        )
 
 
 def test_preview_request_accepts_legacy_cron_shape():

@@ -24,6 +24,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a tick that lands while a previous execution is still running is
   skipped and recorded as a `flow_schedule_tick_skipped` audit event. New
   migration adds the nullable `flow.schedule_config` column.
+- **Friendly schedule forms and schedule preview**: `schedule_config` is now
+  a typed union — besides the raw cron form (`{"type": "cron", "expr": ...}`;
+  the legacy `{"cron": ...}` shape is still accepted), flows can use
+  `{"type": "interval", "every": N, "unit": "minutes"|"hours"|"days"}`,
+  `{"type": "daily", "at": "HH:MM"}`, or
+  `{"type": "weekly", "days": ["mon", ...], "at": "HH:MM"}` (all with an
+  optional IANA `timezone`, default UTC). Intervals are bounded between the
+  5-minute minimum and a 366-day maximum. A new
+  `POST /api/v1/flows/schedule/preview` endpoint (permission-gated like flow
+  reads) validates a config without saving and returns its `type`, a human
+  `description`, and the next few run times; `schedule_state` on flow
+  responses now carries the same `type`/`description` fields.
 - **Provider-reported cost is ingested as authoritative**: when the upstream
   reports the request's actual cost inside the response usage payload
   (OpenRouter usage accounting: `usage.cost` and
