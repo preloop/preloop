@@ -114,14 +114,65 @@ func compareParsed(a, b parsedVersion) int {
 	if !aPre && bPre {
 		return 1
 	}
+	if !aPre && !bPre {
+		return 0
+	}
+	return comparePrerelease(a.pre, b.pre)
+}
+
+func comparePrerelease(a, b string) int {
+	aIDs := strings.Split(a, ".")
+	bIDs := strings.Split(b, ".")
+	n := len(aIDs)
+	if len(bIDs) > n {
+		n = len(bIDs)
+	}
+	for i := 0; i < n; i++ {
+		if i >= len(aIDs) {
+			return -1
+		}
+		if i >= len(bIDs) {
+			return 1
+		}
+		if cmp := comparePrereleaseIdent(aIDs[i], bIDs[i]); cmp != 0 {
+			return cmp
+		}
+	}
+	return 0
+}
+
+func comparePrereleaseIdent(a, b string) int {
+	aNum, aOK := parsePrereleaseInt(a)
+	bNum, bOK := parsePrereleaseInt(b)
+	if aOK && bOK {
+		switch {
+		case aNum < bNum:
+			return -1
+		case aNum > bNum:
+			return 1
+		default:
+			return 0
+		}
+	}
 	switch {
-	case a.pre < b.pre:
+	case a < b:
 		return -1
-	case a.pre > b.pre:
+	case a > b:
 		return 1
 	default:
 		return 0
 	}
+}
+
+func parsePrereleaseInt(s string) (int, bool) {
+	if s == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 // CompareVersions compares [v]X.Y.Z strings (optional prerelease after '-').

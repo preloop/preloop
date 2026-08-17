@@ -74,6 +74,12 @@ func TestCompareVersionsAndUpdateAvailable(t *testing.T) {
 	if got := cmp("0.14.0-rc.1", "0.14.0"); got != -1 {
 		t.Errorf("prerelease < release = %d", got)
 	}
+	if got := cmp("0.14.0-rc.2", "0.14.0-rc.10"); got != -1 {
+		t.Errorf("rc.2 < rc.10 = %d", got)
+	}
+	if got := cmp("0.14.0-rc.10", "0.14.0-rc.2"); got != 1 {
+		t.Errorf("rc.10 > rc.2 = %d", got)
+	}
 	if got := cmp("1.0.0", "0.14.0"); got != 1 {
 		t.Errorf("major newer = %d", got)
 	}
