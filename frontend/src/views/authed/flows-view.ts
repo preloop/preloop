@@ -737,7 +737,11 @@ export class FlowsView extends LitElement {
       this.flows = await getFlows();
     } catch (error) {
       console.error('Failed to delete flow:', error);
-      alert('Failed to delete flow. Please try again.');
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Failed to delete flow. Please try again.';
+      alert(message);
     } finally {
       this.deletingFlowId = null;
     }

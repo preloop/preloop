@@ -1310,6 +1310,29 @@ def delete_flow(
             status_code=403, detail="Cannot delete built-in flow presets"
         )
 
+    # Deleting a flow cascades to its executions (and their logs). If an agent
+    # is still running for one of those executions it would keep streaming
+    # logs for a row that no longer exists (FK violations in the log
+    # persister, orphaned containers). Require executions to be stopped first,
+    # via the existing stop command endpoint, before the flow can be deleted.
+    active_executions = crud_flow_execution.get_running_by_flow(
+        db, flow_id=flow.id, account_id=current_user.account_id
+    )
+    if active_executions:
+        logger.warning(
+            f"Refusing to delete flow {flow_id}: "
+            f"{len(active_executions)} active execution(s)"
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Flow has {len(active_executions)} active execution(s). "
+"Stop the active executions first (use the execution's stop command "
+'endpoint) and retry the delete.'
+                'with {"command": "stop"}) and retry the delete.'
+            ),
+        )
+
     flow_name = flow.name  # capture before delete
     crud_flow.remove(db=db, id=flow_id, account_id=current_user.account_id)
 
