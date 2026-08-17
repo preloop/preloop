@@ -37,7 +37,13 @@ _SYNTHETIC_PROVIDER_PREFIXES = ("openai-compatible/", "custom/", "preloop/")
 
 # Hosts that front a model marketplace whose catalog keys litellm namespaces
 # under a provider prefix (e.g. ``openrouter/deepseek/deepseek-chat``).
-_ENDPOINT_HOST_PREFIXES = (("openrouter.ai", "openrouter"),)
+_ENDPOINT_HOST_PREFIXES = (
+    ("openrouter.ai", "openrouter"),
+    ("dashscope.aliyuncs.com", "dashscope"),
+    ("dashscope-intl.aliyuncs.com", "dashscope"),
+    ("dashscope-us.aliyuncs.com", "dashscope"),
+    ("maas.aliyuncs.com", "dashscope"),
+)
 
 
 def _strip_synthetic_prefix(candidate: str) -> str:
@@ -57,6 +63,18 @@ def _strip_synthetic_prefix(candidate: str) -> str:
         if lowered.startswith(prefix):
             return candidate[len(prefix) :].strip()
     return candidate
+
+
+def _pricing_provider_prefix(provider: str) -> str:
+    """Return the price-catalog namespace for a configured provider.
+
+    Gateway routing maps ``qwen`` to ``openai`` (DashScope compatible-mode).
+    Vendored prices live under ``dashscope/<id>``, so pricing lookup must not
+    reuse the routing prefix.
+    """
+    if provider == "qwen":
+        return "dashscope"
+    return _PROVIDER_PREFIX.get(provider, provider)
 
 
 def _endpoint_prefix(api_endpoint: Optional[str]) -> Optional[str]:
@@ -145,7 +163,7 @@ def _expand_candidate(
         undated = pattern.sub("", stripped)
         if undated != stripped and undated:
             yield undated
-            prefix = _PROVIDER_PREFIX.get(provider, provider)
+            prefix = _pricing_provider_prefix(provider)
             if "/" not in undated:
                 yield f"{prefix}/{undated}"
             break
@@ -510,7 +528,9 @@ def _iter_litellm_model_candidates(ai_model: AIModel) -> Iterable[str]:
 
     if model_identifier:
         candidates.append(model_identifier)
-        prefix = _PROVIDER_PREFIX.get(provider, provider)
+        # Routing maps qwen -> openai (DashScope compatible-mode). Pricing
+        # keys live under dashscope/<id> in the vendored catalog.
+        prefix = _pricing_provider_prefix(provider)
         bare_identifier = _strip_synthetic_prefix(model_identifier)
         if "/" not in bare_identifier and prefix not in _SYNTHETIC_PROVIDER_PREFIXES:
             candidates.append(f"{prefix}/{bare_identifier}")

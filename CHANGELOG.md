@@ -66,6 +66,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Qwen / Model Studio catalog**: the keyless picker now lists current chat
+  models (`qwen3.8-max` first) instead of `qwen-plus` / `qwen-turbo` /
+  `qwen-max` / `qwq-32b-preview`. Live `/models` listing honors a
+  user-supplied DashScope or Model Studio base URL (China Beijing default is
+  unchanged so existing keys keep working) and drops dedicated image, video,
+  audio, and NSFW ids. International list prices were added for the fallback
+  ids. DeepSeek-V4 / GLM 5.2 / Kimi remain their own providers; a Model
+  Studio key that also serves those SKUs will surface them via live listing.
 - **PR Reviewer preset: token-optimised prompt**: the stock Pull Request
   Reviewer preset now bounds every open-ended read that previously let agents
   walk the repository. Project doc reads are capped (agent-instruction files in

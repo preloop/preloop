@@ -13,8 +13,12 @@ from preloop.services.ai_model_provider import (
     MISTRAL_KNOWN_MODELS,
     MOONSHOT_KNOWN_MODELS,
     OPENAI_FALLBACK_MODELS,
+    QWEN_DEFAULT_BASE_URL,
+    QWEN_INTL_BASE_URL,
     QWEN_KNOWN_MODELS,
+    QWEN_US_BASE_URL,
     ZAI_KNOWN_MODELS,
+    _is_qwen_chat_model,
     FALLBACK_ERROR_REASONS,
     MODEL_DISCOVERY_TIMEOUT_SECONDS,
     ModelDiscoveryResult,
@@ -147,7 +151,22 @@ class TestGetAvailableModelsForProvider:
             )
             result = await get_available_models_for_provider("qwen", "test_key")
             assert result.models == ["qwen-plus", "qwen-turbo"]
-            mock_get.assert_called_once_with("test_key")
+            mock_get.assert_called_once_with("test_key", None)
+
+    @pytest.mark.asyncio
+    async def test_get_qwen_models_forwards_endpoint(self):
+        """Intl / US Model Studio hosts must reach the Qwen lister."""
+        with patch("preloop.services.ai_model_provider._get_qwen_models") as mock_get:
+            mock_get.return_value = ModelDiscoveryResult(
+                models=["qwen3.8-max"], source="live"
+            )
+            result = await get_available_models_for_provider(
+                "qwen",
+                "test_key",
+                api_endpoint=QWEN_INTL_BASE_URL,
+            )
+            assert result.models == ["qwen3.8-max"]
+            mock_get.assert_called_once_with("test_key", QWEN_INTL_BASE_URL)
 
     @pytest.mark.asyncio
     async def test_get_deepseek_models(self):
@@ -791,12 +810,9 @@ class TestGetQwenModels:
             # The stale bundled catalog must not leak into a live answer.
             assert "qwq-32b-preview" not in result.models
             mock_client.assert_called_once()
-            # Verify it's using Qwen's base URL
+            # Verify it's using Qwen's China DashScope default
             call_kwargs = mock_client.call_args[1]
-            assert (
-                call_kwargs["base_url"]
-                == "https://dashscope.aliyuncs.com/compatible-mode/v1"
-            )
+            assert call_kwargs["base_url"] == QWEN_DEFAULT_BASE_URL
 
     @pytest.mark.asyncio
     async def test_get_qwen_models_empty_live_list_falls_back(self):
@@ -808,7 +824,7 @@ class TestGetQwenModels:
 
             result = await _get_qwen_models("valid_key")
 
-            assert "qwen-plus" in result.models
+            assert "qwen3.8-max" in result.models
             assert result.source == "fallback"
             assert result.error == "empty_response"
 
@@ -843,8 +859,73 @@ class TestGetQwenModels:
 
             result = await _get_qwen_models("test_key")
             # Should return known models even on network error
-            assert "qwen-plus" in result.models
+            assert "qwen3.8-max" in result.models
             assert result.source == "fallback"
+
+    @pytest.mark.asyncio
+    async def test_get_qwen_models_uses_supplied_intl_endpoint(self):
+        """A Singapore / intl base URL must be queried, not the China default."""
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(
+                return_value=_models_response("qwen3.8-max")
+            )
+            mock_client.return_value = mock_instance
+
+            result = await _get_qwen_models("valid_key", QWEN_INTL_BASE_URL)
+
+            assert result.models == ["qwen3.8-max"]
+            assert result.source == "live"
+            call_kwargs = mock_client.call_args[1]
+            assert call_kwargs["base_url"] == QWEN_INTL_BASE_URL
+
+    @pytest.mark.asyncio
+    async def test_get_qwen_models_rejects_private_endpoint(self):
+        """User-supplied discovery URLs are an SSRF sink and must be validated."""
+        with pytest.raises(ValueError, match="private address"):
+            await _get_qwen_models("valid_key", "http://127.0.0.1/v1")
+
+    @pytest.mark.asyncio
+    async def test_get_qwen_models_rejects_non_aliyun_host(self):
+        """Qwen discovery must not fetch a host outside DashScope / Model Studio."""
+        with pytest.raises(ValueError, match="DashScope or Model Studio"):
+            await _get_qwen_models(
+                "valid_key", "https://evil.example.com/compatible-mode/v1"
+            )
+
+    @pytest.mark.asyncio
+    async def test_get_qwen_models_filters_media_and_nsfw_from_live_list(self):
+        """Dedicated media / NSFW SKUs must not appear in the chat picker."""
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(
+                return_value=_models_response(
+                    "qwen3.8-max",
+                    "wan2.2-t2v",
+                    "qwen-image-plus",
+                    "qwen-vl-max",
+                    "happy-horse-1.1",
+                    "z-image",
+                    "some-nsfw-model",
+                    "deepseek-v4-pro",
+                )
+            )
+            mock_client.return_value = mock_instance
+
+            result = await _get_qwen_models("valid_key")
+
+            assert result.source == "live"
+            assert result.models == ["deepseek-v4-pro", "qwen3.8-max"]
+
+    def test_qwen_fallback_catalog_is_current_chat_models(self):
+        """Keyless picker shows 2026-08 chat models, not the stale 2025 set."""
+        assert QWEN_KNOWN_MODELS[0] == "qwen3.8-max"
+        assert "qwen3.7-max" in QWEN_KNOWN_MODELS
+        assert "qwq-32b-preview" not in QWEN_KNOWN_MODELS
+        assert "qwen-turbo" not in QWEN_KNOWN_MODELS
+        assert _is_qwen_chat_model("qwen3.8-max")
+        assert not _is_qwen_chat_model("wan2.2-t2v")
+        assert not _is_qwen_chat_model("qwen3-vl-plus")
 
 
 class TestGetDeepSeekModels:
@@ -1414,6 +1495,71 @@ class TestDiscoveryEndpointValidation:
         from preloop.services.ai_model_provider import validate_discovery_endpoint
 
         assert validate_discovery_endpoint(endpoint) == endpoint
+
+
+class TestQwenEndpointAllowlist:
+    """Qwen discovery/chat URLs are restricted to DashScope / Model Studio."""
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            QWEN_DEFAULT_BASE_URL,
+            QWEN_INTL_BASE_URL,
+            QWEN_US_BASE_URL,
+            "https://workspace-abc.maas.aliyuncs.com/v1",
+        ],
+    )
+    def test_allowed_dashscope_hosts(self, endpoint):
+        from preloop.services.ai_model_provider import validate_qwen_endpoint
+
+        assert validate_qwen_endpoint(endpoint) == endpoint
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "https://evil.example.com/v1",
+            "https://openrouter.ai/api/v1",
+            "https://dashscope.aliyuncs.com.evil.test/v1",
+            "https://notaliyuncs.com/v1",
+            "https://1.2.3.4/v1",
+        ],
+    )
+    def test_rejects_non_aliyun_host(self, endpoint):
+        from preloop.services.ai_model_provider import validate_qwen_endpoint
+
+        with pytest.raises(ValueError, match="DashScope or Model Studio"):
+            validate_qwen_endpoint(endpoint)
+
+    def test_openai_compatible_still_allows_non_aliyun_host(self):
+        """Other providers must not inherit the Qwen host allowlist."""
+        from preloop.services.ai_model_provider import validate_discovery_endpoint
+
+        endpoint = "https://gateway.example.com/v1"
+        assert validate_discovery_endpoint(endpoint) == endpoint
+
+    def test_crud_persist_rejects_non_aliyun_qwen_host(self):
+        """Saved Qwen chat endpoints use the same DashScope allowlist."""
+        from preloop.models.crud.ai_model import CRUDAIModel
+
+        with pytest.raises(ValueError, match="DashScope or Model Studio"):
+            CRUDAIModel._validate_qwen_api_endpoint(
+                {
+                    "provider_name": "qwen",
+                    "api_endpoint": "https://evil.example.com/v1",
+                }
+            )
+        CRUDAIModel._validate_qwen_api_endpoint(
+            {
+                "provider_name": "qwen",
+                "api_endpoint": QWEN_INTL_BASE_URL,
+            }
+        )
+        CRUDAIModel._validate_qwen_api_endpoint(
+            {
+                "provider_name": "openai",
+                "api_endpoint": "https://evil.example.com/v1",
+            }
+        )
 
 
 class TestOpenAIAuthErrorDoesNotLeakSecrets:
