@@ -85,7 +85,7 @@ _SERIALIZATION_ERRORS = (
 )
 
 HEARTBEAT_TOUCH_INTERVAL = timedelta(seconds=15)
-SUPPORTED_CONTROL_AGENT_KINDS = {"hermes", "openclaw"}
+SUPPORTED_CONTROL_AGENT_KINDS = {"hermes", "openclaw", "claude_code"}
 
 
 @dataclass(frozen=True)
@@ -899,11 +899,11 @@ def _resolve_session_mode(
     account_id: str,
     agent: Any,
     request: AgentControlSendMessageRequest,
-) -> AgentControlSessionMode:
+) -> tuple[AgentControlSessionMode, Optional[models.RuntimeSession]]:
     if request.start_new_session:
-        return "new"
+        return "new", None
     if request.target_session_id is None:
-        return "current"
+        return "current", None
 
     target_session = crud_runtime_session.get_account_session(
         db,
@@ -928,7 +928,24 @@ def _resolve_session_mode(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Target runtime session does not belong to this managed agent",
         )
-    return "existing"
+    return "existing", target_session
+
+
+def _existing_session_identity(
+    target_session: Optional[models.RuntimeSession],
+) -> dict[str, Any]:
+    """Native resume fields for a targeted existing session.
+
+    Clients address sessions by Preloop UUID. Sidecars such as Claude Code
+    resume by ``session_source_id``. Attach the stored identity so plugins
+    do not have to map UUIDs themselves.
+    """
+    if target_session is None:
+        return {}
+    return {
+        "session_source_id": target_session.session_source_id,
+        "session_reference": target_session.session_reference,
+    }
 
 
 def _command_history_session(
@@ -998,26 +1015,28 @@ async def _route_managed_agent_prompt(
             detail="Managed agent does not have an Agent Control plugin configured",
         )
 
-    session_mode = _resolve_session_mode(
+    session_mode, target_session = _resolve_session_mode(
         db,
         account_id=str(current_user.account_id),
         agent=agent,
         request=request,
     )
+    payload: dict[str, Any] = {
+        "text": request.message,
+        "metadata": request.metadata,
+        "input_mode": request.input_mode,
+        "session_mode": session_mode,
+        "target_session_id": str(request.target_session_id)
+        if request.target_session_id
+        else None,
+        "start_new_session": request.start_new_session,
+        "voice": request.voice,
+    }
+    payload.update(_existing_session_identity(target_session))
     envelope = _operator_command_envelope(
         agent,
         name="send_message",
-        payload={
-            "text": request.message,
-            "metadata": request.metadata,
-            "input_mode": request.input_mode,
-            "session_mode": session_mode,
-            "target_session_id": str(request.target_session_id)
-            if request.target_session_id
-            else None,
-            "start_new_session": request.start_new_session,
-            "voice": request.voice,
-        },
+        payload=payload,
     )
     # Persist the command durably BEFORE any delivery attempt so agents that
     # reconnect after downtime can recover missed instructions.
@@ -1124,6 +1143,12 @@ async def _route_managed_agent_prompt(
             history_session.id
             if request.start_new_session and history_session is not None
             else request.target_session_id
+        ),
+        session_source_id=(
+            target_session.session_source_id if target_session is not None else None
+        ),
+        session_reference=(
+            target_session.session_reference if target_session is not None else None
         ),
         session_mode=session_mode,
         subject=subject,

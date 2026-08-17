@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Agent Control for Claude Code (G1) and native session targeting (G2)**:
+  `claude_code` is now a supported Agent Control kind. `control_enabled`
+  still requires sidecar/capability flags, not a blanket true. When a
+  command targets an existing session, the persisted outbound envelope
+  includes that session's `session_source_id` and `session_reference`.
+  Clients keep sending the Preloop `target_session_id` UUID.
 - **Native scheduled (cron) flow triggers**: flows can now run on a schedule
   without an external cron caller hitting the webhook endpoint. Create or
   update a flow with `trigger_event_source: "schedule"` and

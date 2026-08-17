@@ -43,6 +43,22 @@ class AgentControlSendMessageRequest(BaseModel):
     message: str = Field(..., min_length=1)
     metadata: dict[str, Any] = Field(default_factory=dict)
     target_session_id: Optional[UUID] = None
+    session_source_id: Optional[str] = Field(
+        default=None,
+        max_length=255,
+        description=(
+            "Native id of the target runtime session. Clients send "
+            "target_session_id; the server fills this on the outbound envelope."
+        ),
+    )
+    session_reference: Optional[str] = Field(
+        default=None,
+        max_length=255,
+        description=(
+            "Human-readable reference of the target runtime session. Filled "
+            "by the server on the outbound envelope."
+        ),
+    )
     start_new_session: bool = False
     input_mode: AgentControlInputMode = "text"
     voice: dict[str, Any] = Field(default_factory=dict)
@@ -63,6 +79,8 @@ class AgentControlVoiceTranscriptRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     voice: dict[str, Any] = Field(default_factory=dict)
     target_session_id: Optional[UUID] = None
+    session_source_id: Optional[str] = Field(default=None, max_length=255)
+    session_reference: Optional[str] = Field(default=None, max_length=255)
     start_new_session: bool = False
 
 
@@ -73,6 +91,8 @@ class AgentControlCommandResponse(BaseModel):
     managed_agent_id: UUID
     runtime_session_id: Optional[UUID] = None
     target_session_id: Optional[UUID] = None
+    session_source_id: Optional[str] = None
+    session_reference: Optional[str] = None
     session_mode: AgentControlSessionMode
     subject: Optional[str] = None
     local_delivery: bool = False

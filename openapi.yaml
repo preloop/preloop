@@ -9207,6 +9207,16 @@ components:
             format: uuid
           - type: 'null'
           title: Target Session Id
+        session_source_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Source Id
+        session_reference:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Reference
         session_mode:
           type: string
           enum:
@@ -9326,6 +9336,22 @@ components:
             format: uuid
           - type: 'null'
           title: Target Session Id
+        session_source_id:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Session Source Id
+          description: Native id of the target runtime session. Clients send target_session_id;
+            the server fills this on the outbound envelope.
+        session_reference:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Session Reference
+          description: Human-readable reference of the target runtime session. Filled
+            by the server on the outbound envelope.
         start_new_session:
           type: boolean
           title: Start New Session
@@ -9366,6 +9392,18 @@ components:
             format: uuid
           - type: 'null'
           title: Target Session Id
+        session_source_id:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Session Source Id
+        session_reference:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Session Reference
         start_new_session:
           type: boolean
           title: Start New Session
