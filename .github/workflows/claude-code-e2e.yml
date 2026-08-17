@@ -46,7 +46,7 @@ jobs:
       - name: Install latest Claude Agent SDK
         run: |
           npm install @anthropic-ai/claude-agent-sdk@latest
-          node -e "console.log('claude-agent-sdk', require('@anthropic-ai/claude-agent-sdk/package.json').version)"
+          node -e "const fs=require('fs'); const p='node_modules/@anthropic-ai/claude-agent-sdk/package.json'; console.log('claude-agent-sdk', JSON.parse(fs.readFileSync(p,'utf8')).version)"
 
       - name: Build sidecar
         run: npm run build

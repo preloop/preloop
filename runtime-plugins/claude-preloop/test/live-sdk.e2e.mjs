@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
 const live =
@@ -15,6 +16,22 @@ const skipReason =
   "set PRELOOP_LIVE_CLAUDE_SDK=1 and ANTHROPIC_API_KEY to run against Claude Code";
 
 function installedSdkVersion() {
+  const localPkg = path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "..",
+    "node_modules",
+    "@anthropic-ai",
+    "claude-agent-sdk",
+    "package.json",
+  );
+  try {
+    const pkg = JSON.parse(readFileSync(localPkg, "utf8"));
+    if (pkg.name === "@anthropic-ai/claude-agent-sdk") {
+      return pkg.version;
+    }
+  } catch {
+    // fall through to module resolve
+  }
   const require = createRequire(import.meta.url);
   let dir = path.dirname(require.resolve("@anthropic-ai/claude-agent-sdk"));
   for (let i = 0; i < 6; i += 1) {
