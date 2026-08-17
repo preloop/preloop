@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "Update now? [y/N]" when stdin is a TTY and the running binary is
   writable. If the binary cannot be replaced, the CLI stays silent (no
   nag, no sudo hint).
+- **`preloop flow trigger`**: CI-native trigger for an existing flow by id
+  or name. Posts to `POST /api/v1/flows/{flow_id}/trigger`, accepts
+  `--payload JSON` or `--payload -` (stdin), and waits for a terminal
+  status when stdin is not a TTY (override with `--wait=false`). Logs are
+  polled from `GET /api/v1/flows/executions/{id}/logs` and printed to
+  stdout. Non-zero exit on FAILED, STOPPED, or TIMEOUT. `--runner` errors
+  until self-hosted runners land. See `docs/guide/flows/ci-trigger.md`.
 - **Native scheduled (cron) flow triggers**: flows can now run on a schedule
   without an external cron caller hitting the webhook endpoint. Create or
   update a flow with `trigger_event_source: "schedule"` and

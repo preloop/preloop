@@ -117,4 +117,5 @@ func init() {
 	rootCmd.AddCommand(usageCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(updateCmd)
+	rootCmd.AddCommand(flowCmd)
 }
