@@ -27,7 +27,7 @@ import os
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session
 
@@ -108,6 +108,40 @@ def _dedupe_key(
             upstream = _upstream_provider(ai_model, provider_name)
             return f"model|{upstream}|{canonical.strip().lower()}"
     return f"{(provider_name or 'unknown').strip().lower()}|{model_alias.strip()}"
+
+
+def should_notify_unpriced_model(
+    *,
+    usage_accounting_requested: bool,
+    usage_details: Optional[Dict[str, Any]],
+    completion_tokens: int,
+) -> bool:
+    """Return False when an unpriced row should not page admins.
+
+    When we asked OpenRouter for usage accounting and the response has
+    no completion tokens and no ``cost`` / ``cost_details`` fields, the
+    request produced no billable output. The row may stay unpriced; do
+    not ask an admin to add catalog pricing. Prompt plus completion
+    with no cost and no catalog still alerts.
+
+    Args:
+        usage_accounting_requested: True when this request asked
+            OpenRouter for usage accounting.
+        usage_details: Raw provider usage dict from the response.
+        completion_tokens: Completion tokens on the recorded row.
+
+    Returns:
+        True when ``notify_unpriced_model`` should still run.
+    """
+    if not usage_accounting_requested:
+        return True
+    if int(completion_tokens or 0) != 0:
+        return True
+    if isinstance(usage_details, dict) and (
+        "cost" in usage_details or "cost_details" in usage_details
+    ):
+        return True
+    return False
 
 
 def reset_alert_state_for_tests() -> None:

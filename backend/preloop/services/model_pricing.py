@@ -188,9 +188,10 @@ def provider_reported_cost(
     for BYOK, ``cost`` alone otherwise. Without the flag, fall back to the
     magnitude heuristic: sum only when ``cost < upstream_inference_cost``
     (BYOK: a small fee next to the vendor charge); otherwise ``cost`` alone
-    is the total. Zero and negative values mean "not accounted" (the Auto
-    Router's catalog price is literally ``-1``), never a real charge, so
-    they are treated as absent.
+    is the total. An explicit ``usage.cost`` of ``0`` (key present) is a
+    real provider $0 charge. Negative values (the Auto Router catalog
+    sentinel ``-1``) still mean "not accounted" and are treated as absent.
+    A zero ``upstream_inference_cost`` alone is also treated as absent.
 
     Args:
         usage_details: Raw provider usage dict from the response, if any.
@@ -207,13 +208,24 @@ def provider_reported_cost(
             return None
         return float(value) if value > 0 else None
 
+    def _accounted_cost(value: Any) -> Optional[float]:
+        # Explicit 0 is a real $0 charge. Negative is the catalog
+        # sentinel (Auto Router list price is -1), not a charge.
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        if value < 0:
+            return None
+        return float(value)
+
     cost_details = usage_details.get("cost_details")
     upstream_cost = (
         _positive_number(cost_details.get("upstream_inference_cost"))
         if isinstance(cost_details, dict)
         else None
     )
-    gateway_cost = _positive_number(usage_details.get("cost"))
+    gateway_cost = (
+        _accounted_cost(usage_details["cost"]) if "cost" in usage_details else None
+    )
 
     if upstream_cost is None and gateway_cost is None:
         return None

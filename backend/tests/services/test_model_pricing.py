@@ -588,21 +588,61 @@ def test_absent_provider_cost_still_unpriced_for_uncatalogued_model() -> None:
     assert estimate.cost is None
 
 
-def test_zero_or_negative_provider_cost_is_ignored() -> None:
-    """cost=0/-1 mean 'not accounted', never a real $0 charge."""
-    for bogus in (
-        {"cost": 0},
-        {"cost": -1},
-        {"cost_details": {"upstream_inference_cost": 0}},
+def test_explicit_zero_provider_cost_is_accounted() -> None:
+    """usage.cost=0 (key present) is a real provider $0 charge."""
+    for usage_details in (
+        {"prompt_tokens": 10, "completion_tokens": 5, "cost": 0},
+        {"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.0},
+        {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "cost": 0,
+            "cost_details": {
+                "upstream_inference_cost": 0,
+                "upstream_inference_prompt_cost": 0,
+                "upstream_inference_completions_cost": 0,
+            },
+        },
     ):
         estimate = estimate_ai_model_usage_cost_detailed(
             _openrouter_auto_model(),
             prompt_tokens=10,
             completion_tokens=5,
             total_tokens=15,
-            usage_details={"prompt_tokens": 10, "completion_tokens": 5, **bogus},
+            usage_details=usage_details,
         )
-        assert estimate.source == "unpriced", bogus
+        assert estimate.source == "provider", usage_details
+        assert estimate.cost == 0.0, usage_details
+
+
+def test_negative_provider_cost_is_ignored() -> None:
+    """cost=-1 is the catalog sentinel, not an accounted charge."""
+    estimate = estimate_ai_model_usage_cost_detailed(
+        _openrouter_auto_model(),
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        usage_details={"prompt_tokens": 10, "completion_tokens": 5, "cost": -1},
+    )
+    assert estimate.source == "unpriced"
+    assert estimate.cost is None
+
+
+def test_zero_upstream_inference_cost_alone_is_ignored() -> None:
+    """A zero upstream_inference_cost without usage.cost is not accounted."""
+    estimate = estimate_ai_model_usage_cost_detailed(
+        _openrouter_auto_model(),
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        usage_details={
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "cost_details": {"upstream_inference_cost": 0},
+        },
+    )
+    assert estimate.source == "unpriced"
+    assert estimate.cost is None
 
 
 def test_explicit_price_override_still_wins_over_provider_cost() -> None:
