@@ -15,3 +15,11 @@ Runtime plugins are responsible for the agent-side Preloop exposure contract:
 The packages here are intentionally structured so they can be published from
 this repository first, then split into dedicated standalone repositories later
 without changing their package names.
+
+Packages:
+
+- `hermes-preloop`: `preloop-hermes-plugin` (PyPI), in-process Hermes plugin
+- `openclaw-preloop`: `@preloop-ai/openclaw-plugin` (npm), in-process
+  OpenClaw plugin
+- `claude-preloop`: `@preloop-ai/claude-plugin` (npm), sidecar daemon for
+  Claude Code (no in-process plugin API; built on the Claude Agent SDK)
