@@ -15,7 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`runtime-plugins/claude-preloop`) plus Agent Control G1/G2 (`claude_code`
   kind, native `session_source_id` on command envelopes). Approvals stay
   on the existing PreToolUse hook. Config lives in
-  `~/.claude/preloop-control.json`.
+  `~/.claude/preloop-control.json`. Live e2e in
+  `runtime-plugins/claude-preloop/test/live-sdk.e2e.mjs` exercises query,
+  session reuse, interrupt, takeover, and release against the latest
+  Claude Agent SDK (`PRELOOP_LIVE_CLAUDE_SDK=1`).
 - **Agent Control for Claude Code (G1) and native session targeting (G2)**:
   `claude_code` is now a supported Agent Control kind. `control_enabled`
   still requires sidecar/capability flags, not a blanket true. When a

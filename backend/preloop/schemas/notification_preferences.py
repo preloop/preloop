@@ -26,6 +26,14 @@ class NotificationPreferencesBase(BaseModel):
             "request is still pending after one minute"
         ),
     )
+    notify_when_needed: bool = Field(
+        True,
+        description="Push when the agent needs the operator (approvals, ask_user)",
+    )
+    notify_when_finished: bool = Field(
+        True,
+        description="Push when work finishes or stalls",
+    )
 
 
 class NotificationPreferencesUpdate(NotificationPreferencesBase):
@@ -44,6 +52,14 @@ class NotificationPreferencesUpdate(NotificationPreferencesBase):
             "Delay approval email when push is also enabled and the request "
             "is still pending"
         ),
+    )
+    notify_when_needed: Optional[bool] = Field(
+        None,
+        description="Push when the agent needs the operator (approvals, ask_user)",
+    )
+    notify_when_finished: Optional[bool] = Field(
+        None,
+        description="Push when work finishes or stalls",
     )
 
 

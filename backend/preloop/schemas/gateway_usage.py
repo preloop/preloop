@@ -307,6 +307,7 @@ class ManagedAgentSummary(BaseModel):
     supports_existing_session: bool = False
     supports_voice: bool = False
     supports_interrupt: bool = False
+    control_session_mode: str = "offline"
     supported_input_modes: List[str] = Field(default_factory=list)
     supported_output_modes: List[str] = Field(default_factory=list)
 

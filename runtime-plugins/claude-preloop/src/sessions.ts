@@ -1,7 +1,12 @@
+import { execFile } from "node:child_process";
 import os from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 
 import type { ControlConfig } from "./config.js";
+
+const execFileAsync = promisify(execFile);
 
 /**
  * Minimal structural view of the Claude Agent SDK surface the sidecar uses.
@@ -214,6 +219,9 @@ export type SendMessageParams = {
   /** Native Claude session id for SDK `resume` when the envelope has it. */
   resumeSessionId?: string;
   metadata?: Record<string, unknown>;
+  /** Create a git worktree for a phone-started parallel session (G9). */
+  spawnWorktree?: boolean;
+  cwd?: string;
 };
 
 /**
@@ -224,9 +232,9 @@ export type SendMessageParams = {
  * - target names a persisted-but-idle session -> resume it via the SDK;
  * - no target -> start a new session in the configured workspace.
  *
- * Interactive TUI sessions are observed, never steered: they are not in this
- * registry, so a command targeting one resumes it headlessly (honest,
- * documented limitation).
+ * Interactive TUI sessions become steerable after an explicit takeover:
+ * `preloop claude` exits local mode and this manager resumes the same
+ * Claude session id through the Agent SDK.
  */
 export class SessionManager {
   private sessions = new Map<string, OwnedSession>();
@@ -248,9 +256,12 @@ export class SessionManager {
     return undefined;
   }
 
-  private sdkOptions(resumeSessionId?: string): Record<string, unknown> {
+  private sdkOptions(
+    resumeSessionId?: string,
+    cwd?: string,
+  ): Record<string, unknown> {
     const options: Record<string, unknown> = {
-      cwd: this.config.workspace_root ?? os.homedir(),
+      cwd: cwd ?? this.config.workspace_root ?? os.homedir(),
       // Load filesystem settings so the Preloop PreToolUse approval hook
       // installed by `preloop agents onboard --approvals` fires inside owned
       // sessions exactly as it does in the founder's terminal. Approvals are
@@ -266,11 +277,14 @@ export class SessionManager {
     return options;
   }
 
-  private async open(resumeSessionId?: string): Promise<OwnedSession> {
+  private async open(
+    resumeSessionId?: string,
+    cwd?: string,
+  ): Promise<OwnedSession> {
     const session = new OwnedSession(resumeSessionId ?? randomUUID());
     const handle = await this.queryFactory({
       prompt: session.input,
-      options: this.sdkOptions(resumeSessionId),
+      options: this.sdkOptions(resumeSessionId, cwd),
     });
     void session.run(handle).finally(() => {
       this.sessions.delete(session.key);
@@ -288,14 +302,38 @@ export class SessionManager {
       session = this.findBySessionId(resume);
     }
     if (!session) {
+      let cwd = params.cwd;
+      if (params.spawnWorktree) {
+        cwd = await createGitWorktree(
+          cwd ?? this.config.workspace_root ?? process.cwd(),
+        );
+      }
       // Prefer the native Claude session id for SDK resume when present
       // (G2 envelope field). Fall back to the Preloop UUID.
-      session = await this.open(resume);
+      session = await this.open(resume, cwd);
     }
     return session.send(
       params.text,
       this.config.turn_timeout_ms ?? DEFAULT_TURN_TIMEOUT_MS,
     );
+  }
+
+  /** Close owned SDK sessions so a local `claude --resume` can take the TTY. */
+  async release(targetSessionId?: string): Promise<string | undefined> {
+    const session = targetSessionId
+      ? this.findBySessionId(targetSessionId) ?? this.sessions.get(targetSessionId)
+      : this.mostRecentSession();
+    const sessionId = session?.sessionId ?? session?.key;
+    if (session) {
+      try {
+        await session.interrupt();
+      } catch {
+        // already idle
+      }
+      session.close();
+      this.sessions.delete(session.key);
+    }
+    return sessionId;
   }
 
   /** Interrupt an owned session. Observed TUI sessions are not interruptible. */
@@ -335,4 +373,16 @@ export class SessionManager {
     }
     this.sessions.clear();
   }
+}
+
+/** G9: isolate a phone-started session in its own git worktree. */
+export async function createGitWorktree(repoRoot: string): Promise<string> {
+  const dest = path.join(
+    os.tmpdir(),
+    `preloop-claude-${Date.now()}-${randomUUID().slice(0, 8)}`,
+  );
+  await execFileAsync("git", ["worktree", "add", "--detach", dest, "HEAD"], {
+    cwd: repoRoot,
+  });
+  return dest;
 }

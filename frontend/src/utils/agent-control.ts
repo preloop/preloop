@@ -80,6 +80,19 @@ export function getAgentControlState(
   };
 }
 
+export function getAgentControlSessionMode(
+  agent: ManagedAgentSummary | null | undefined
+): 'local' | 'remote' | 'queued' | 'offline' {
+  const raw = (agent?.control_session_mode || '').toLowerCase();
+  if (raw === 'local' || raw === 'remote' || raw === 'queued') {
+    return raw;
+  }
+  if (agent?.control_online) {
+    return 'remote';
+  }
+  return 'offline';
+}
+
 export function formatAgentControlSessionLabel(
   session: RuntimeSessionSummary
 ): string {

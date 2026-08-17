@@ -1,0 +1,63 @@
+# Live e2e against the latest Claude Agent SDK / bundled Claude Code.
+# Unit tests in ci.yml stay fake-SDK. This job installs @latest and runs
+# runtime-plugins/claude-preloop/test/live-sdk.e2e.mjs when ANTHROPIC_API_KEY
+# is present. Same-repo PRs and workflow_dispatch only (no fork secrets).
+
+name: Claude Code e2e
+
+on:
+  pull_request:
+    paths:
+      - "runtime-plugins/claude-preloop/**"
+      - ".github/workflows/claude-code-e2e.yml"
+  push:
+    branches: [main]
+    paths:
+      - "runtime-plugins/claude-preloop/**"
+      - ".github/workflows/claude-code-e2e.yml"
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  live-sdk:
+    name: Latest Claude Agent SDK
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    defaults:
+      run:
+        working-directory: runtime-plugins/claude-preloop
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Install plugin dependencies
+        run: npm ci
+
+      - name: Install latest Claude Agent SDK
+        run: |
+          npm install @anthropic-ai/claude-agent-sdk@latest
+          node -e "console.log('claude-agent-sdk', require('@anthropic-ai/claude-agent-sdk/package.json').version)"
+
+      - name: Build sidecar
+        run: npm run build
+
+      - name: Run live Claude Code e2e
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PRELOOP_LIVE_CLAUDE_SDK: "1"
+        run: |
+          if [ -z "${ANTHROPIC_API_KEY}" ]; then
+            echo "::notice::ANTHROPIC_API_KEY is not set; live Claude Code e2e skipped."
+            exit 0
+          fi
+          node --test test/live-sdk.e2e.mjs

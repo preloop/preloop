@@ -1282,6 +1282,51 @@ export async function sendAgentControlVoiceTranscript(
   );
 }
 
+export async function sendAgentControlTakeover(
+  agentId: string,
+  payload: {
+    target_session_id?: string | null;
+    spawn_worktree?: boolean;
+  } = {}
+): Promise<AgentControlCommandResponse> {
+  const response = await fetchWithAuth(
+    `/api/v1/agents/${agentId}/control/takeover`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }
+  );
+  if (response.ok) {
+    return response.json().catch(() => ({}));
+  }
+  const errorData = await response.json().catch(() => ({}));
+  throw new Error(
+    extractErrorMessage(errorData, 'Failed to take over this session')
+  );
+}
+
+export async function sendAgentControlRelease(
+  agentId: string,
+  payload: { target_session_id?: string | null } = {}
+): Promise<AgentControlCommandResponse> {
+  const response = await fetchWithAuth(
+    `/api/v1/agents/${agentId}/control/release`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }
+  );
+  if (response.ok) {
+    return response.json().catch(() => ({}));
+  }
+  const errorData = await response.json().catch(() => ({}));
+  throw new Error(
+    extractErrorMessage(errorData, 'Failed to release this session')
+  );
+}
+
 export async function getAccountGovernanceDefaults(): Promise<AccountGovernanceDefaultsResponse> {
   const response = await fetchWithAuth('/api/v1/account/governance-defaults');
   if (!response.ok) {

@@ -27,12 +27,15 @@ import {
 } from "./config.js";
 import { QueryFactory, SessionManager, sdkQueryFactory } from "./sessions.js";
 import { SessionActivity, TranscriptObserver } from "./observer.js";
+import { LauncherBridge, OwnershipMode } from "./mode.js";
 
 export { ControlConfig, loadConfig, verifyConfig } from "./config.js";
 export { SessionManager } from "./sessions.js";
 export type { QueryFactory, SdkQueryHandle, SdkMessage, SdkUserMessage } from "./sessions.js";
 export { TranscriptObserver } from "./observer.js";
 export type { SessionActivity } from "./observer.js";
+export { LauncherBridge, defaultSocketPath } from "./mode.js";
+export type { OwnershipMode, IpcMessage } from "./mode.js";
 
 export type OperatorCommand = {
   message_id?: string;
@@ -48,6 +51,8 @@ export type OperatorCommand = {
     session_source_id?: string;
     session_reference?: string;
     runtime_session_id?: string;
+    spawn_worktree?: boolean;
+    cwd?: string;
   };
 };
 
@@ -74,6 +79,7 @@ export class PreloopClaudeSidecar {
   private socket?: WebSocket;
   private sessions?: SessionManager;
   private observer?: TranscriptObserver;
+  private launcher = new LauncherBridge();
   private stopped = false;
   private reconnectAttempts = 0;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
@@ -113,6 +119,11 @@ export class PreloopClaudeSidecar {
       throw new Error("preloop-control is disabled (enabled=false)");
     }
     this.sessions ??= new SessionManager(config, this.queryFactory);
+    this.launcher.setLogger((message) => this.log(message));
+    this.launcher.onLauncherReleased(() => {
+      void this.sessions?.release();
+    });
+    await this.launcher.listen();
     if (config.observer_enabled !== false) {
       this.observer = new TranscriptObserver(
         config.transcript_dir ?? defaultTranscriptDir(),
@@ -135,6 +146,7 @@ export class PreloopClaudeSidecar {
     this.observer = undefined;
     this.sessions?.stop();
     this.sessions = undefined;
+    this.launcher.stop();
     this.socket?.close();
     this.socket = undefined;
   }
@@ -180,9 +192,14 @@ export class PreloopClaudeSidecar {
             text: true,
             voice: true,
             interrupt: true,
+            takeover: true,
+            release: true,
+            worktree: true,
             // Delegated to the PreToolUse permission hook, not the sidecar.
             tool_approval: true,
           },
+          session_mode: this.currentMode(),
+          queued_count: 0,
           runtime_principal_id: config.runtime_principal_id,
           runtime_principal_name: config.runtime_principal_name,
         },
@@ -286,7 +303,7 @@ export class PreloopClaudeSidecar {
 
   /** Execute one operator command envelope. Exposed for tests. */
   async dispatch(command: OperatorCommand): Promise<unknown> {
-    if (command.type !== "command" || command.name !== "send_message") {
+    if (command.type !== "command") {
       return undefined;
     }
     if (!this.sessions) {
@@ -296,23 +313,93 @@ export class PreloopClaudeSidecar {
     const targetSessionId = resolveTargetSessionId(payload);
     const resumeSessionId = resolveResumeSessionId(payload);
 
+    if (command.name === "request_takeover") {
+      return this.takeOver(targetSessionId ?? resumeSessionId);
+    }
+    if (command.name === "release") {
+      return this.releaseToLocal(targetSessionId ?? resumeSessionId);
+    }
+    if (command.name !== "send_message") {
+      return undefined;
+    }
+
     if (payload.interrupt) {
       await this.sessions.interrupt(targetSessionId ?? resumeSessionId);
       return "interrupted";
     }
 
-    // Voice transcripts are delivered as text turns (same as hermes):
-    // operator text is an auditable user turn, never a hidden system prompt.
+    if (this.launcher.mode === "local") {
+      await this.takeOver(targetSessionId ?? resumeSessionId);
+    }
+
     const text = payload.text ?? payload.message ?? "";
     if (!text.trim()) {
       throw new Error("send_message requires non-empty text");
     }
+    const spawnWorktree = Boolean(
+      payload.spawn_worktree ?? payload.metadata?.["spawn_worktree"],
+    );
+    const cwd =
+      typeof payload.cwd === "string"
+        ? payload.cwd
+        : typeof payload.metadata?.["cwd"] === "string"
+          ? String(payload.metadata["cwd"])
+          : undefined;
     return this.sessions.sendMessage({
       text,
       targetSessionId,
       resumeSessionId,
       metadata: payload.metadata,
+      spawnWorktree,
+      cwd,
     });
+  }
+
+  currentMode(): OwnershipMode {
+    if (this.sessions && this.sessions.ownedSessionIds().length > 0) {
+      return "remote";
+    }
+    return this.launcher.mode;
+  }
+
+  async takeOver(sessionId?: string): Promise<string> {
+    const nativeId =
+      sessionId ?? this.launcher.lastSessionId ?? this.sessions?.ownedSessionIds()[0];
+    if (this.launcher.hasLauncher() && this.launcher.mode === "local") {
+      this.launcher.requestSwitch();
+      await waitForCondition(
+        () => this.launcher.mode === "remote" || !this.launcher.hasLauncher(),
+        8_000,
+      );
+    }
+    this.launcher.mode = "remote";
+    this.launcher.lastSessionId = nativeId ?? this.launcher.lastSessionId;
+    this.broadcastMode();
+    return nativeId ? `remote:${nativeId}` : "remote";
+  }
+
+  async releaseToLocal(sessionId?: string): Promise<string> {
+    const released = await this.sessions?.release(sessionId);
+    const nativeId = released ?? sessionId ?? this.launcher.lastSessionId;
+    this.launcher.lastSessionId = nativeId;
+    this.launcher.mode = this.launcher.hasLauncher() ? "local" : "offline";
+    this.launcher.requestRelease();
+    this.broadcastMode();
+    return nativeId ? `local:${nativeId}` : "local";
+  }
+
+  private broadcastMode(): void {
+    this.sendEnvelope({
+      type: "presence",
+      name: "session_mode",
+      message_id: randomUUID(),
+      payload: {
+        session_mode: this.currentMode(),
+        session_id: this.launcher.lastSessionId,
+        owned_session_ids: this.sessions?.ownedSessionIds() ?? [],
+      },
+    });
+    this.launcher.notifyStatus();
   }
 
   private rememberOutcome(
@@ -384,6 +471,7 @@ export class PreloopClaudeSidecar {
         payload: {
           status: "online",
           runtime_principal_id: config.runtime_principal_id,
+          session_mode: this.currentMode(),
         },
       });
     }, HEARTBEAT_INTERVAL_MS);
@@ -451,6 +539,27 @@ function websocketDataToString(data: unknown): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function waitForCondition(
+  predicate: () => boolean,
+  timeoutMs: number,
+): Promise<void> {
+  const started = Date.now();
+  return new Promise((resolve, reject) => {
+    const tick = () => {
+      if (predicate()) {
+        resolve();
+        return;
+      }
+      if (Date.now() - started >= timeoutMs) {
+        reject(new Error("timed out waiting for launcher switch"));
+        return;
+      }
+      setTimeout(tick, 25);
+    };
+    tick();
+  });
 }
 
 function parseArgs(): { command: string; configPath?: string } {

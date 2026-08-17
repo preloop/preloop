@@ -83,6 +83,7 @@ def test_managed_agent_control_fields_merge_runtime_plugin_evidence():
     """A later CLI enrollment must not hide a live runtime control connection."""
     fields = _managed_agent_control_fields(
         {
+            "id": "agent-openclaw",
             "agent_kind": "openclaw",
             "session_source_type": "openclaw",
             "lifecycle_state": "active",
@@ -115,6 +116,7 @@ def test_managed_agent_control_fields_merge_runtime_plugin_evidence():
             },
             "managed_config": {},
         },
+        ws_connected=True,
     )
 
     assert fields["control_state"] == "plugin_connected"
@@ -142,12 +144,14 @@ def test_managed_agent_control_fields_enable_claude_code_with_sidecar_flags():
             },
             "managed_config": {},
         },
+        ws_connected=True,
     )
 
     assert connected["control_enabled"] is True
     assert connected["control_online"] is True
     assert connected["control_state"] == "plugin_connected"
     assert connected["control_capabilities"]
+    assert connected["control_session_mode"] == "remote"
 
     no_sidecar = _managed_agent_control_fields(
         {

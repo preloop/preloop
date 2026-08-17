@@ -394,6 +394,7 @@ export interface ManagedAgentSummary {
   supports_existing_session?: boolean;
   supports_voice?: boolean;
   supports_interrupt?: boolean;
+  control_session_mode?: 'local' | 'remote' | 'queued' | 'offline' | string;
   supported_input_modes?: string[];
   supported_output_modes?: string[];
 }
@@ -404,6 +405,8 @@ export interface AgentControlCommandRequest {
   target_session_id?: string | null;
   session_mode?: 'new' | 'existing' | string;
   start_new_session?: boolean;
+  interrupt?: boolean;
+  spawn_worktree?: boolean;
 }
 
 export interface AgentControlVoiceTranscriptRequest {

@@ -3,6 +3,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
+import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
@@ -16,6 +17,8 @@ import {
   getAccountRuntimeSessionActivityTimeline,
   getRuntimeSessionGatewayEvents,
   sendAgentControlCommand,
+  sendAgentControlRelease,
+  sendAgentControlTakeover,
   sendAgentControlVoiceTranscript,
   transcribeAudio,
 } from '../api';
@@ -28,6 +31,7 @@ import type {
 } from '../types';
 import {
   formatAgentControlSessionLabel,
+  getAgentControlSessionMode,
   getAgentControlState,
 } from '../utils/agent-control';
 import type { ObservedSession } from '../utils/session-observer';
@@ -90,6 +94,9 @@ export class AgentTalkComposer extends LitElement {
   private targetSessionId = '__new__';
 
   @state()
+  private spawnWorktree = false;
+
+  @state()
   private sending = false;
 
   @state()
@@ -135,6 +142,43 @@ export class AgentTalkComposer extends LitElement {
   static styles = css`
     :host {
       display: inline-block;
+    }
+
+    .cockpit-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+      font-size: 13px;
+    }
+
+    .mode-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-weight: 600;
+      font-size: 12px;
+    }
+
+    .mode-badge.remote {
+      color: #26d962;
+      background: rgba(38, 217, 98, 0.15);
+    }
+
+    .mode-badge.local {
+      color: #30c9e8;
+      background: rgba(48, 201, 232, 0.15);
+    }
+
+    .mode-badge.queued {
+      color: #f2a93b;
+      background: rgba(242, 169, 59, 0.15);
+    }
+
+    .mode-badge.offline {
+      color: #ff5d5d;
+      background: rgba(255, 93, 93, 0.15);
     }
   `;
 
@@ -514,6 +558,136 @@ export class AgentTalkComposer extends LitElement {
     }
   }
 
+  private renderCockpitBar(
+    controlState: ReturnType<typeof getAgentControlState>
+  ) {
+    if (!this.agent) {
+      return nothing;
+    }
+    const mode = getAgentControlSessionMode(this.agent);
+    const modeLabel =
+      mode === 'local'
+        ? 'Local'
+        : mode === 'remote'
+          ? 'Remote'
+          : mode === 'queued'
+            ? 'Queued'
+            : 'Offline';
+    const canInterrupt =
+      Boolean(this.agent.supports_interrupt) && mode === 'remote';
+    const canTakeover = controlState.enabled && mode === 'local';
+    const canRelease = controlState.enabled && mode === 'remote';
+    const unmanaged =
+      (this.agent.agent_kind || this.agent.session_source_type) ===
+        'claude_code' && !controlState.enabled;
+    return html`
+      <div class="cockpit-bar">
+        <span class="mode-badge ${mode}">${modeLabel}</span>
+        ${
+          unmanaged
+            ? html`<span
+                >Start with <code>preloop claude</code> to steer this
+                session.</span
+              >`
+            : nothing
+        }
+        ${
+          canTakeover
+            ? html`<sl-button
+                size="small"
+                ?disabled=${this.sending}
+                @click=${() => void this.takeOverSession()}
+                >Take over</sl-button
+              >`
+            : nothing
+        }
+        ${
+          canRelease
+            ? html`<sl-button
+                size="small"
+                ?disabled=${this.sending}
+                @click=${() => void this.releaseSession()}
+                >Release</sl-button
+              >`
+            : nothing
+        }
+        ${
+          canInterrupt
+            ? html`<sl-button
+                size="small"
+                variant="danger"
+                ?disabled=${this.sending}
+                @click=${() => void this.interruptSession()}
+                >Interrupt</sl-button
+              >`
+            : nothing
+        }
+      </div>
+    `;
+  }
+
+  private async takeOverSession(): Promise<void> {
+    if (!this.agent) return;
+    this.sending = true;
+    this.errorMessage = null;
+    try {
+      const targeting = this.getTargeting();
+      await sendAgentControlTakeover(this.agent.id, {
+        target_session_id: targeting.target_session_id,
+        spawn_worktree: targeting.start_new_session && this.spawnWorktree,
+      });
+      this.statusMessage = 'Takeover requested. Session will switch to Remote.';
+    } catch (error) {
+      this.errorMessage =
+        error instanceof Error ? error.message : 'Takeover failed';
+    } finally {
+      this.sending = false;
+    }
+  }
+
+  private async releaseSession(): Promise<void> {
+    if (!this.agent) return;
+    this.sending = true;
+    this.errorMessage = null;
+    try {
+      const targeting = this.getTargeting();
+      await sendAgentControlRelease(this.agent.id, {
+        target_session_id: targeting.target_session_id,
+      });
+      this.statusMessage = 'Released. Local TUI can resume.';
+    } catch (error) {
+      this.errorMessage =
+        error instanceof Error ? error.message : 'Release failed';
+    } finally {
+      this.sending = false;
+    }
+  }
+
+  private async interruptSession(): Promise<void> {
+    if (!this.agent) return;
+    this.sending = true;
+    this.errorMessage = null;
+    try {
+      const targeting = this.getTargeting();
+      await sendAgentControlCommand(this.agent.id, {
+        message: 'interrupt',
+        interrupt: true,
+        target_session_id: targeting.target_session_id,
+        start_new_session: false,
+        metadata: {
+          source: 'preloop_console',
+          requested_from: this.sourceContext,
+        },
+      });
+      this.statusMessage = 'Interrupt sent.';
+    } catch (error) {
+      this.errorMessage =
+        error instanceof Error ? error.message : 'Interrupt failed';
+    } finally {
+      this.sending = false;
+    }
+  }
+
   private getTargeting(): {
     target_session_id: string | null;
     start_new_session: boolean;
@@ -584,6 +758,7 @@ export class AgentTalkComposer extends LitElement {
               target_session_id: targeting.target_session_id,
               session_mode: targeting.session_mode,
               start_new_session: targeting.start_new_session,
+              spawn_worktree: targeting.start_new_session && this.spawnWorktree,
               metadata,
             });
 
@@ -727,7 +902,7 @@ export class AgentTalkComposer extends LitElement {
 
     return html`
       <div class="composer">
-        ${this.renderSessionHistory()}
+        ${this.renderCockpitBar(controlState)} ${this.renderSessionHistory()}
         <div class="message-wrap">
           <sl-textarea
             data-message-input
@@ -813,6 +988,24 @@ export class AgentTalkComposer extends LitElement {
                 `
               )}
             </sl-select>
+            ${
+              this.targetSessionId === '__new__'
+                ? html`
+                    <sl-checkbox
+                      size="small"
+                      ?checked=${this.spawnWorktree}
+                      ?disabled=${!controlState.enabled || this.sending}
+                      @sl-change=${(event: Event) => {
+                        this.spawnWorktree = (
+                          event.target as HTMLInputElement
+                        ).checked;
+                      }}
+                    >
+                      New git worktree
+                    </sl-checkbox>
+                  `
+                : nothing
+            }
             <sl-switch
               size="small"
               ?checked=${this.continuousChat}

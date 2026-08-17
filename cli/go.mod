@@ -5,13 +5,15 @@ go 1.25.0
 toolchain go1.26.5
 
 require (
+	github.com/gorilla/websocket v1.5.3
 	github.com/pelletier/go-toml/v2 v2.1.0
 	github.com/spf13/cobra v1.8.0
 	github.com/spf13/viper v1.18.2
 	github.com/yosuke-furukawa/json5 v0.1.1
 	github.com/zalando/go-keyring v0.2.7
-	golang.org/x/crypto v0.54.0
+	golang.org/x/crypto v0.46.0
 	golang.org/x/sys v0.47.0
+	golang.org/x/term v0.38.0
 	gopkg.in/ini.v1 v1.67.0
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -20,7 +22,6 @@ require (
 	github.com/danieljoos/wincred v1.2.3 // indirect
 	github.com/fsnotify/fsnotify v1.7.0 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
-	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/hashicorp/hcl v1.0.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/magiconair/properties v1.8.7 // indirect
