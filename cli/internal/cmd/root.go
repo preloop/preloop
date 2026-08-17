@@ -58,11 +58,15 @@ suppressed too, as they depend on the check-in response.`,
 		// dump the full usage/flags help after the error message.
 		silenceUsageForRuntimeErrors(cmd)
 
-		// Check for updates on each invocation (cached daily)
-		if err := version.CheckForUpdate(); err != nil {
-			// Silently ignore update check errors
-			if verbose {
-				fmt.Fprintf(os.Stderr, "Warning: failed to check for updates: %v\n", err)
+		// Check for updates on each invocation (cached daily). Skip the
+		// daily prompt on `preloop update` itself so the command owns the
+		// confirmation and we do not ask twice.
+		if cmd.Name() != "update" {
+			if err := version.CheckForUpdate(); err != nil {
+				// Silently ignore update check errors
+				if verbose {
+					fmt.Fprintf(os.Stderr, "Warning: failed to check for updates: %v\n", err)
+				}
 			}
 		}
 	},
@@ -112,4 +116,6 @@ func init() {
 	rootCmd.AddCommand(agentsCmd)
 	rootCmd.AddCommand(usageCmd)
 	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(updateCmd)
+	rootCmd.AddCommand(flowCmd)
 }

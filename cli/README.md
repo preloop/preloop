@@ -183,12 +183,36 @@ Both flags default to `ask`. With `--yes` alone, the CLI skips the main offboard
 - MCP servers are kept if they are still referenced by another managed agent
 - Recently active shared resources are also skipped
 
+### Flows
+
+```bash
+preloop flow trigger <flow-id-or-name>
+preloop flow trigger nightly-review --payload '{"ref":"main"}'
+cat event.json | preloop flow trigger nightly-review --payload -
+preloop flow trigger nightly-review --wait --timeout 30m
+```
+
+In CI (stdin is not a TTY) the command waits by default and streams
+execution logs to stdout. The same logs remain in the console execution
+view. Exit status is non-zero on FAILED, STOPPED, or TIMEOUT. Auth is
+`--token`, `PRELOOP_TOKEN`, or the saved login. See
+[docs/guide/flows/ci-trigger.md](../docs/guide/flows/ci-trigger.md).
+
 ### Version
 
 ```bash
 preloop version                        # Show version info
 preloop version --check                # Check for updates
+preloop update                         # Install the latest CLI release
+preloop update --check                 # Print current vs latest and exit
+preloop update --yes                   # Install without prompting
 ```
+
+`preloop update` downloads the GitHub release asset for this OS/architecture
+(the same URL as `scripts/install-cli.sh`) and replaces the current binary
+in place. The daily update notice asks whether to upgrade when stdin is a
+TTY and the binary is writable; otherwise it stays silent. Version lookup
+is skipped when `PRELOOP_DISABLE_TELEMETRY` is set.
 
 ## Configuration
 
@@ -264,11 +288,14 @@ cli/
 │   │   ├── policy.go        # policy validate/apply/diff/export/list
 │   │   ├── tools.go         # tools list/describe/exec
 │   │   ├── approvals.go     # approvals list/pending/approve/deny
-│   │   └── version.go       # version command
+│   │   ├── version.go       # version command
+│   │   ├── update.go        # update command
+│   │   └── flow.go          # flow trigger
 │   ├── mcpclient/
 │   │   └── client.go        # Minimal MCP HTTP client
 │   └── version/
-│       └── check.go         # Daily version check logic
+│       ├── check.go         # Daily version check logic
+│       └── update.go        # In-place GitHub release installer
 ├── go.mod
 ├── go.sum
 ├── Makefile

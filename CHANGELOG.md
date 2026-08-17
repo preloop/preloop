@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`preloop update`**: download the matching GitHub release asset for this
+  OS/architecture and replace the current binary in place. `--check` prints
+  the latest version and exits; `--yes` / `-y` skips the confirmation
+  prompt. Version lookup honors `PRELOOP_DISABLE_TELEMETRY` the same way
+  `preloop version --check` does. The daily update notice now asks
+  "Update now? [y/N]" when stdin is a TTY and the running binary is
+  writable. If the binary cannot be replaced, the CLI stays silent (no
+  nag, no sudo hint).
+- **`preloop flow trigger`**: CI-native trigger for an existing flow by id
+  or name. Posts to `POST /api/v1/flows/{flow_id}/trigger`, accepts
+  `--payload JSON` or `--payload -` (stdin), and waits for a terminal
+  status when stdin is not a TTY (override with `--wait=false`). Logs are
+  polled from `GET /api/v1/flows/executions/{id}/logs` and printed to
+  stdout. Non-zero exit on FAILED, STOPPED, or TIMEOUT. `--runner` errors
+  until self-hosted runners land. See `docs/guide/flows/ci-trigger.md`.
 - **Matched-rule context on approval requests**: the approval the human
   reviews now records which access rule gated the call (id, name, expression,
   priority, and any lower-priority rules that also matched), snapshotted at
