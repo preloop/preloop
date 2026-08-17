@@ -158,7 +158,7 @@ class TestTransientRetry:
 
         with (
             patch(
-                "preloop.services.flow_orchestrator.create_agent_executor",
+                "preloop.services.flow_orchestrator.create_executor_for_execution",
                 return_value=executor,
             ),
             patch.object(
@@ -207,7 +207,7 @@ class TestTransientRetry:
 
         with (
             patch(
-                "preloop.services.flow_orchestrator.create_agent_executor",
+                "preloop.services.flow_orchestrator.create_executor_for_execution",
                 return_value=executor,
             ),
             patch.object(
@@ -251,7 +251,7 @@ class TestTransientRetry:
 
         with (
             patch(
-                "preloop.services.flow_orchestrator.create_agent_executor",
+                "preloop.services.flow_orchestrator.create_executor_for_execution",
                 return_value=executor,
             ),
             patch.object(
@@ -289,7 +289,7 @@ class TestTransientRetry:
 
         with (
             patch(
-                "preloop.services.flow_orchestrator.create_agent_executor",
+                "preloop.services.flow_orchestrator.create_executor_for_execution",
                 return_value=executor,
             ),
             patch.object(
@@ -328,7 +328,7 @@ class TestTransientRetry:
 
         with (
             patch(
-                "preloop.services.flow_orchestrator.create_agent_executor",
+                "preloop.services.flow_orchestrator.create_executor_for_execution",
                 return_value=executor,
             ),
             patch.object(
@@ -389,7 +389,7 @@ class TestSideEffectSafety:
 
         with (
             patch(
-                "preloop.services.flow_orchestrator.create_agent_executor",
+                "preloop.services.flow_orchestrator.create_executor_for_execution",
                 return_value=executor,
             ),
             patch.object(
@@ -440,7 +440,7 @@ class TestSideEffectSafety:
 
         with (
             patch(
-                "preloop.services.flow_orchestrator.create_agent_executor",
+                "preloop.services.flow_orchestrator.create_executor_for_execution",
                 return_value=executor,
             ),
             patch.object(
@@ -641,7 +641,7 @@ class TestRetryVerdictWiring:
 
         with (
             patch(
-                "preloop.services.flow_orchestrator.create_agent_executor",
+                "preloop.services.flow_orchestrator.create_executor_for_execution",
                 return_value=executor,
             ),
             patch.object(

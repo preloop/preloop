@@ -647,7 +647,7 @@ class TestMonitoringIntegration:
         from preloop.agents.base import AgentStatus, AgentExecutionResult
 
         with patch(
-            "preloop.services.flow_orchestrator.create_agent_executor"
+            "preloop.services.flow_orchestrator.create_executor_for_execution"
         ) as mock_create:
             mock_agent_executor = AsyncMock()
             mock_agent_executor.get_status = AsyncMock(
@@ -695,7 +695,7 @@ class TestMonitoringIntegration:
         from preloop.agents.base import AgentStatus
 
         with patch(
-            "preloop.services.flow_orchestrator.create_agent_executor"
+            "preloop.services.flow_orchestrator.create_executor_for_execution"
         ) as mock_create:
             mock_agent_executor = AsyncMock()
             mock_agent_executor.get_status = AsyncMock(return_value=AgentStatus.RUNNING)

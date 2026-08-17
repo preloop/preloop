@@ -149,7 +149,7 @@ class TestFlowExecutionOrchestrator:
     ):
         """Test complete execution lifecycle ending in success."""
         with patch(
-            "preloop.services.flow_orchestrator.create_agent_executor",
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
             return_value=mock_agent_executor,
         ):
             orchestrator = FlowExecutionOrchestrator(
@@ -234,7 +234,7 @@ class TestFlowExecutionOrchestrator:
         db_session.commit()
 
         with patch(
-            "preloop.services.flow_orchestrator.create_agent_executor",
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
             return_value=mock_agent_executor,
         ):
             orchestrator = FlowExecutionOrchestrator(
@@ -264,7 +264,7 @@ class TestFlowExecutionOrchestrator:
     ):
         """Test nested placeholder resolution."""
         with patch(
-            "preloop.services.flow_orchestrator.create_agent_executor",
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
             return_value=mock_agent_executor,
         ):
             orchestrator = FlowExecutionOrchestrator(
@@ -298,7 +298,7 @@ class TestFlowExecutionOrchestrator:
         }
 
         with patch(
-            "preloop.services.flow_orchestrator.create_agent_executor",
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
             return_value=mock_agent_executor,
         ):
             orchestrator = FlowExecutionOrchestrator(
@@ -326,7 +326,7 @@ class TestFlowExecutionOrchestrator:
     ):
         """Test execution context when no AI model is specified."""
         with patch(
-            "preloop.services.flow_orchestrator.create_agent_executor",
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
             return_value=mock_agent_executor,
         ):
             orchestrator = FlowExecutionOrchestrator(
@@ -365,7 +365,7 @@ class TestFlowExecutionOrchestrator:
     ):
         """Test that NATS updates are published at each stage."""
         with patch(
-            "preloop.services.flow_orchestrator.create_agent_executor",
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
             return_value=mock_agent_executor,
         ):
             orchestrator = FlowExecutionOrchestrator(
@@ -399,7 +399,7 @@ class TestFlowExecutionOrchestrator:
         mock_nats.publish = AsyncMock()
 
         with patch(
-            "preloop.services.flow_orchestrator.create_agent_executor",
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
             return_value=mock_agent_executor,
         ):
             orchestrator = FlowExecutionOrchestrator(
@@ -428,7 +428,7 @@ class TestFlowExecutionOrchestrator:
     ):
         """Test that execution goes through correct lifecycle states."""
         with patch(
-            "preloop.services.flow_orchestrator.create_agent_executor",
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
             return_value=mock_agent_executor,
         ):
             orchestrator = FlowExecutionOrchestrator(
@@ -462,7 +462,7 @@ class TestFlowExecutionOrchestrator:
         db_session.commit()
 
         with patch(
-            "preloop.services.flow_orchestrator.create_agent_executor",
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
             return_value=mock_agent_executor,
         ):
             orchestrator = FlowExecutionOrchestrator(
@@ -494,7 +494,7 @@ class TestFlowExecutionOrchestrator:
         db_session.commit()
 
         with patch(
-            "preloop.services.flow_orchestrator.create_agent_executor",
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
             return_value=mock_agent_executor,
         ):
             orchestrator = FlowExecutionOrchestrator(
@@ -520,7 +520,7 @@ class TestFlowExecutionOrchestrator:
     ):
         """Test that trigger event details are stored in execution log."""
         with patch(
-            "preloop.services.flow_orchestrator.create_agent_executor",
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
             return_value=mock_agent_executor,
         ):
             orchestrator = FlowExecutionOrchestrator(
@@ -595,7 +595,7 @@ class TestFlowExecutionOrchestrator:
         mock_nats.publish = AsyncMock(side_effect=Exception("NATS publish failed"))
 
         with patch(
-            "preloop.services.flow_orchestrator.create_agent_executor",
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
             return_value=mock_agent_executor,
         ):
             orchestrator = FlowExecutionOrchestrator(
@@ -652,7 +652,7 @@ class TestFlowExecutionOrchestrator:
         db_session.commit()
 
         with patch(
-            "preloop.services.flow_orchestrator.create_agent_executor",
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
             return_value=mock_agent_executor,
         ):
             orchestrator = FlowExecutionOrchestrator(
@@ -686,7 +686,7 @@ class TestFlowExecutionOrchestrator:
         db_session.commit()
 
         with patch(
-            "preloop.services.flow_orchestrator.create_agent_executor",
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
             return_value=mock_agent_executor,
         ):
             orchestrator = FlowExecutionOrchestrator(
@@ -721,7 +721,7 @@ class TestFlowExecutionOrchestrator:
         db_session.commit()
 
         with patch(
-            "preloop.services.flow_orchestrator.create_agent_executor",
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
             return_value=mock_agent_executor,
         ):
             orchestrator = FlowExecutionOrchestrator(
@@ -765,7 +765,7 @@ class TestFlowExecutionOrchestrator:
         """Test handling when API token creation raises an error."""
         with (
             patch(
-                "preloop.services.flow_orchestrator.create_agent_executor",
+                "preloop.services.flow_orchestrator.create_executor_for_execution",
                 return_value=mock_agent_executor,
             ),
             patch.object(
@@ -877,7 +877,7 @@ class TestFlowExecutionOrchestrator:
         import uuid
 
         with patch(
-            "preloop.services.flow_orchestrator.create_agent_executor",
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
             return_value=mock_agent_executor,
         ):
             orchestrator = FlowExecutionOrchestrator(
@@ -926,7 +926,7 @@ class TestFlowExecutionOrchestrator:
         mock_executor.start = AsyncMock(side_effect=Exception("Agent start failed"))
 
         with patch(
-            "preloop.services.flow_orchestrator.create_agent_executor",
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
             return_value=mock_executor,
         ):
             orchestrator = FlowExecutionOrchestrator(
@@ -966,7 +966,7 @@ class TestFlowExecutionOrchestrator:
         mock_executor.stream_logs = empty_logs
 
         with patch(
-            "preloop.services.flow_orchestrator.create_agent_executor",
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
             return_value=mock_executor,
         ):
             orchestrator = FlowExecutionOrchestrator(
@@ -1004,7 +1004,7 @@ class TestFlowExecutionOrchestrator:
 
         with (
             patch(
-                "preloop.services.flow_orchestrator.create_agent_executor",
+                "preloop.services.flow_orchestrator.create_executor_for_execution",
                 return_value=mock_executor,
             ),
             patch(
@@ -1061,7 +1061,7 @@ class TestFlowExecutionOrchestrator:
         mock_agent_executor.get_result_artifact = AsyncMock(return_value=artifact)
 
         with patch(
-            "preloop.services.flow_orchestrator.create_agent_executor",
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
             return_value=mock_agent_executor,
         ):
             orchestrator = FlowExecutionOrchestrator(
@@ -1123,7 +1123,7 @@ class TestFlowExecutionOrchestrator:
 
         with (
             patch(
-                "preloop.services.flow_orchestrator.create_agent_executor",
+                "preloop.services.flow_orchestrator.create_executor_for_execution",
                 return_value=mock_executor,
             ),
             patch(
@@ -1179,7 +1179,7 @@ class TestFlowExecutionOrchestrator:
         mock_nats_client.subscribe = mock_subscribe
 
         with patch(
-            "preloop.services.flow_orchestrator.create_agent_executor",
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
             return_value=mock_executor,
         ):
             orchestrator = FlowExecutionOrchestrator(
@@ -1247,7 +1247,7 @@ class TestFlowExecutionOrchestrator:
         mock_nats_client.subscribe = mock_subscribe
 
         with patch(
-            "preloop.services.flow_orchestrator.create_agent_executor",
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
             return_value=mock_executor,
         ):
             orchestrator = FlowExecutionOrchestrator(
@@ -1294,7 +1294,7 @@ class TestFlowExecutionOrchestrator:
         mock_nats.publish = AsyncMock()
 
         with patch(
-            "preloop.services.flow_orchestrator.create_agent_executor",
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
             return_value=mock_agent_executor,
         ):
             orchestrator = FlowExecutionOrchestrator(
@@ -1334,7 +1334,7 @@ class TestFlowExecutionOrchestrator:
 
         with (
             patch(
-                "preloop.services.flow_orchestrator.create_agent_executor",
+                "preloop.services.flow_orchestrator.create_executor_for_execution",
                 return_value=mock_executor,
             ),
             patch(
@@ -1401,7 +1401,7 @@ class TestFlowExecutionOrchestrator:
         )
 
         with patch(
-            "preloop.services.flow_orchestrator.create_agent_executor",
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
             return_value=mock_agent_executor,
         ):
             orchestrator = FlowExecutionOrchestrator(
