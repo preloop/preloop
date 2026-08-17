@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`preloop update`**: download the matching GitHub release asset for this
+  OS/architecture and replace the current binary in place. `--check` prints
+  the latest version and exits; `--yes` / `-y` skips the confirmation
+  prompt. Version lookup honors `PRELOOP_DISABLE_TELEMETRY` the same way
+  `preloop version --check` does. The daily update notice now asks
+  "Update now? [y/N]" when stdin is a TTY and the running binary is
+  writable. If the binary cannot be replaced, the CLI stays silent (no
+  nag, no sudo hint).
 - **Native scheduled (cron) flow triggers**: flows can now run on a schedule
   without an external cron caller hitting the webhook endpoint. Create or
   update a flow with `trigger_event_source: "schedule"` and

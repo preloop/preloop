@@ -188,7 +188,16 @@ Both flags default to `ask`. With `--yes` alone, the CLI skips the main offboard
 ```bash
 preloop version                        # Show version info
 preloop version --check                # Check for updates
+preloop update                         # Install the latest CLI release
+preloop update --check                 # Print current vs latest and exit
+preloop update --yes                   # Install without prompting
 ```
+
+`preloop update` downloads the GitHub release asset for this OS/architecture
+(the same URL as `scripts/install-cli.sh`) and replaces the current binary
+in place. The daily update notice asks whether to upgrade when stdin is a
+TTY and the binary is writable; otherwise it stays silent. Version lookup
+is skipped when `PRELOOP_DISABLE_TELEMETRY` is set.
 
 ## Configuration
 
@@ -264,11 +273,13 @@ cli/
 │   │   ├── policy.go        # policy validate/apply/diff/export/list
 │   │   ├── tools.go         # tools list/describe/exec
 │   │   ├── approvals.go     # approvals list/pending/approve/deny
-│   │   └── version.go       # version command
+│   │   ├── version.go       # version command
+│   │   └── update.go        # update command
 │   ├── mcpclient/
 │   │   └── client.go        # Minimal MCP HTTP client
 │   └── version/
-│       └── check.go         # Daily version check logic
+│       ├── check.go         # Daily version check logic
+│       └── update.go        # In-place GitHub release installer
 ├── go.mod
 ├── go.sum
 ├── Makefile

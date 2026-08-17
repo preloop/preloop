@@ -331,21 +331,6 @@ func fetchLegacyVersionInfo(client *http.Client) (*VersionInfo, error) {
 	return &info, nil
 }
 
-// displayUpdatePrompt shows a message about the available update.
-func displayUpdatePrompt(info *VersionInfo) {
-	fmt.Println()
-	fmt.Println("╭─────────────────────────────────────────────────────────╮")
-	fmt.Printf("│  A new version of preloop is available: %s → %s  │\n", Version, info.LatestVersion)
-	fmt.Println("│                                                         │")
-	if info.DownloadURL != "" {
-		fmt.Printf("│  Download: %-45s │\n", info.DownloadURL)
-	} else {
-		fmt.Println("│  Run 'preloop update' to upgrade                        │")
-	}
-	fmt.Println("╰─────────────────────────────────────────────────────────╯")
-	fmt.Println()
-}
-
 // ForceCheck forces a version check regardless of the last check time.
 // Even a forced check respects the telemetry opt-out: the check-in POST is
 // the telemetry, so there is no way to check without emitting it.
