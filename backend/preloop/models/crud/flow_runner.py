@@ -78,19 +78,6 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
             .first()
         )
 
-
-def runner_matches_pool(row: FlowRunner, pool: str) -> bool:
-    """True when the runner id, name, or a label equals the pool string."""
-    pool_l = (pool or "").strip().lower()
-    if not pool_l:
-        return True
-    labels = [str(label).lower() for label in (row.labels or [])]
-    return (
-        str(row.id).lower() == pool_l
-        or (row.name or "").lower() == pool_l
-        or pool_l in labels
-    )
-
     def counts_for_instance(self, db: Session, *, instance_id: UUID) -> Dict[str, Any]:
         cutoff = datetime.now(timezone.utc) - ONLINE_HEARTBEAT_TTL
         total = (
@@ -167,6 +154,19 @@ def runner_matches_pool(row: FlowRunner, pool: str) -> bool:
         db.commit()
         db.refresh(runner)
         return runner
+
+
+def runner_matches_pool(row: FlowRunner, pool: str) -> bool:
+    """True when the runner id, name, or a label equals the pool string."""
+    pool_l = (pool or "").strip().lower()
+    if not pool_l:
+        return True
+    labels = [str(label).lower() for label in (row.labels or [])]
+    return (
+        str(row.id).lower() == pool_l
+        or (row.name or "").lower() == pool_l
+        or pool_l in labels
+    )
 
 
 crud_flow_runner = CRUDFlowRunner(FlowRunner)

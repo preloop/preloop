@@ -497,11 +497,11 @@ func runRunnerEnable(cmd *cobra.Command, args []string) error {
 	}
 	switch runtime.GOOS {
 	case "darwin":
-		return writeLaunchdPlist(bin)
+		return writeLaunchdPlist(bin, cmd.OutOrStdout())
 	case "linux":
-		return writeSystemdUserUnit(bin)
+		return writeSystemdUserUnit(bin, cmd.OutOrStdout())
 	case "windows":
-		return writeWindowsScheduledTask(bin)
+		return writeWindowsScheduledTask(bin, cmd.OutOrStdout())
 	default:
 		return fmt.Errorf("service install is not implemented on %s; use preloop runner fg", runtime.GOOS)
 	}
@@ -560,7 +560,7 @@ func systemdUserUnitPath() string {
 	return filepath.Join(home, ".config", "systemd", "user", "preloop-runner.service")
 }
 
-func writeLaunchdPlist(bin string) error {
+func writeLaunchdPlist(bin string, out io.Writer) error {
 	path := launchdPlistPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -581,11 +581,11 @@ func writeLaunchdPlist(bin string) error {
 		return err
 	}
 	_ = exec.Command("launchctl", "load", path).Run()
-	fmt.Printf("Installed %s\n", path)
+	fmt.Fprintf(out, "Installed %s\n", path)
 	return nil
 }
 
-func writeSystemdUserUnit(bin string) error {
+func writeSystemdUserUnit(bin string, out io.Writer) error {
 	path := systemdUserUnitPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -607,11 +607,11 @@ WantedBy=default.target
 	}
 	_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
 	_ = exec.Command("systemctl", "--user", "enable", "preloop-runner.service").Run()
-	fmt.Printf("Installed %s\n", path)
+	fmt.Fprintf(out, "Installed %s\n", path)
 	return nil
 }
 
-func writeWindowsScheduledTask(bin string) error {
+func writeWindowsScheduledTask(bin string, out io.Writer) error {
 	cmd := exec.Command(
 		"schtasks",
 		"/Create",
@@ -624,7 +624,7 @@ func writeWindowsScheduledTask(bin string) error {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("schtasks: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
-	fmt.Println("Installed scheduled task PreloopRunner")
+	fmt.Fprintln(out, "Installed scheduled task PreloopRunner")
 	return nil
 }
 

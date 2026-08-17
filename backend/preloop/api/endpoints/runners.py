@@ -160,6 +160,23 @@ def _authenticate_runner(db: Session, runner_id: UUID, token: str) -> FlowRunner
     return row
 
 
+def job_for_runner_replay(pending_job: Dict[str, Any]) -> Dict[str, Any]:
+    """Copy a stored job before attaching it to a WebSocket response.
+
+    Replay jobs omit the short-lived account token by design because secrets
+    are never persisted in ``pending_job``. The live lease push is authoritative.
+    """
+    return dict(pending_job)
+
+
+def _parse_runner_execution_id(value: Any) -> Optional[UUID]:
+    """Parse an untrusted runner execution id without breaking the WS loop."""
+    try:
+        return UUID(str(value))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
 @router.websocket("/runners/{runner_id}/ws")
 async def runner_ws(
     websocket: WebSocket,
@@ -184,7 +201,7 @@ async def runner_ws(
     hello: Dict[str, Any] = {"type": "hello", "runner_id": runner_key}
     db.refresh(runner)
     if runner.pending_job:
-        hello["job"] = runner.pending_job
+        hello["job"] = job_for_runner_replay(runner.pending_job)
     if runner.halt_requested:
         hello["halt"] = True
         if runner.current_execution_id:
@@ -206,7 +223,7 @@ async def runner_ws(
                 db.refresh(runner)
                 reply: Dict[str, Any] = {"type": "ack"}
                 if runner.pending_job:
-                    reply["job"] = runner.pending_job
+                    reply["job"] = job_for_runner_replay(runner.pending_job)
                 if runner.halt_requested:
                     reply["halt"] = True
                     if runner.current_execution_id:
@@ -215,23 +232,28 @@ async def runner_ws(
                 continue
 
             if msg_type == "status":
-                execution_id = raw.get("execution_id")
+                execution_id = _parse_runner_execution_id(raw.get("execution_id"))
+                if execution_id is None or execution_id != runner.current_execution_id:
+                    await websocket.send_json({"type": "ack"})
+                    continue
                 status = str(raw.get("status") or "RUNNING").upper()
                 runner.reported_status = status
-                if execution_id:
-                    execution = crud_flow_execution.get(db, id=execution_id)
-                    if execution:
-                        execution.status = status
-                        db.add(execution)
+                execution = crud_flow_execution.get(db, id=execution_id)
+                if execution:
+                    execution.status = status
+                    db.add(execution)
                 db.add(runner)
                 db.commit()
                 await websocket.send_json({"type": "ack"})
                 continue
 
             if msg_type == "logs":
-                execution_id = raw.get("execution_id")
+                execution_id = _parse_runner_execution_id(raw.get("execution_id"))
                 lines = raw.get("lines") or []
-                if execution_id:
+                if (
+                    execution_id is not None
+                    and execution_id == runner.current_execution_id
+                ):
                     for line in lines:
                         crud_flow_execution_log.append_log(
                             db,
@@ -263,21 +285,23 @@ async def runner_ws(
                 break
 
             if msg_type == "complete":
-                execution_id = raw.get("execution_id")
+                execution_id = _parse_runner_execution_id(raw.get("execution_id"))
+                if execution_id is None or execution_id != runner.current_execution_id:
+                    await websocket.send_json({"type": "ack"})
+                    continue
                 status = str(raw.get("status") or "SUCCEEDED").upper()
                 runner.reported_status = status
                 runner.pending_job = None
                 runner.current_execution_id = None
                 runner.halt_requested = False
                 runner.status = "online"
-                if execution_id:
-                    execution = crud_flow_execution.get(db, id=execution_id)
-                    if execution:
-                        execution.status = status
-                        execution.end_time = datetime.now(timezone.utc)
-                        if raw.get("error"):
-                            execution.error_message = str(raw["error"])
-                        db.add(execution)
+                execution = crud_flow_execution.get(db, id=execution_id)
+                if execution:
+                    execution.status = status
+                    execution.end_time = datetime.now(timezone.utc)
+                    if raw.get("error"):
+                        execution.error_message = str(raw["error"])
+                    db.add(execution)
                 db.add(runner)
                 db.commit()
                 await websocket.send_json({"type": "ack"})

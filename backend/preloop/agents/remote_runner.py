@@ -38,23 +38,16 @@ class RemoteRunnerExecutor(AgentExecutor):
         self.db = db
         self.pool = pool
         self.account_id = account_id
+        self._job_context: Dict[str, Any] = {}
 
     async def start(self, execution_context: Dict[str, Any]) -> str:
         execution_id = UUID(str(execution_context["execution_id"]))
-        payload = {
-            "execution_id": str(execution_id),
-            "flow_id": str(execution_context.get("flow_id")),
-            "agent_type": execution_context.get("agent_type") or self.agent_type,
-            "agent_config": execution_context.get("agent_config") or self.config,
-            "prompt": execution_context.get("prompt"),
-            "model_identifier": execution_context.get("model_identifier"),
-            "model_provider": execution_context.get("model_provider"),
-            "account_api_token": execution_context.get("account_api_token"),
-            "allowed_mcp_servers": execution_context.get("allowed_mcp_servers") or [],
-            "allowed_mcp_tools": execution_context.get("allowed_mcp_tools") or [],
-            "git_clone_config": execution_context.get("git_clone_config"),
-            "custom_commands": execution_context.get("custom_commands"),
-        }
+        payload = self._lease_payload(
+            execution_id=execution_id,
+            flow_id=execution_context.get("flow_id"),
+            prompt=execution_context.get("prompt"),
+            execution_context=execution_context,
+        )
         runner = lease_job(
             self.db,
             account_id=self.account_id,
@@ -116,18 +109,18 @@ class RemoteRunnerExecutor(AgentExecutor):
                 return AgentStatus.FAILED
             # A runner may have come online; try to lease now.
             if execution:
+                payload = self._lease_payload(
+                    execution_id=execution.id,
+                    flow_id=execution.flow_id,
+                    prompt=execution.resolved_input_prompt,
+                    flow=getattr(execution, "flow", None),
+                )
                 runner = lease_job(
                     self.db,
                     account_id=self.account_id,
                     pool=self.pool,
                     execution_id=execution.id,
-                    payload={
-                        "execution_id": str(execution.id),
-                        "flow_id": str(execution.flow_id),
-                        "agent_type": self.agent_type,
-                        "agent_config": self.config,
-                        "prompt": execution.resolved_input_prompt,
-                    },
+                    payload=payload,
                 )
                 if runner:
                     execution.runner_id = runner.id
@@ -136,16 +129,7 @@ class RemoteRunnerExecutor(AgentExecutor):
                     )
                     self.db.add(execution)
                     self.db.commit()
-                    await _push_job(
-                        runner.id,
-                        {
-                            "execution_id": str(execution.id),
-                            "flow_id": str(execution.flow_id),
-                            "agent_type": self.agent_type,
-                            "agent_config": self.config,
-                            "prompt": execution.resolved_input_prompt,
-                        },
-                    )
+                    await _push_job(runner.id, payload)
                     return AgentStatus.STARTING
             return AgentStatus.PENDING
 
@@ -186,6 +170,59 @@ class RemoteRunnerExecutor(AgentExecutor):
 
     async def cleanup(self) -> None:
         return None
+
+    def _lease_payload(
+        self,
+        *,
+        execution_id: UUID,
+        flow_id: Any,
+        prompt: Any,
+        execution_context: Optional[Dict[str, Any]] = None,
+        flow: Any = None,
+    ) -> Dict[str, Any]:
+        """Build one complete payload for initial and delayed runner leases."""
+        context_keys = (
+            "agent_type",
+            "agent_config",
+            "model_identifier",
+            "model_provider",
+            "account_api_token",
+            "allowed_mcp_servers",
+            "allowed_mcp_tools",
+            "git_clone_config",
+            "custom_commands",
+        )
+        if execution_context is not None:
+            self._job_context.update(
+                {key: execution_context.get(key) for key in context_keys}
+            )
+
+        ai_model = getattr(flow, "ai_model", None)
+
+        def cached_or_flow(key: str, default: Any = None) -> Any:
+            cached = self._job_context.get(key)
+            if cached is not None:
+                return cached
+            return getattr(flow, key, default) if flow is not None else default
+
+        return {
+            "execution_id": str(execution_id),
+            "flow_id": str(flow_id),
+            "agent_type": cached_or_flow("agent_type", self.agent_type),
+            "agent_config": cached_or_flow("agent_config", self.config),
+            "prompt": prompt,
+            "model_identifier": self._job_context.get("model_identifier")
+            or getattr(ai_model, "model_identifier", None)
+            or self.config.get("model_identifier"),
+            "model_provider": self._job_context.get("model_provider")
+            or getattr(ai_model, "provider_name", None)
+            or self.config.get("model_provider"),
+            "account_api_token": self._job_context.get("account_api_token"),
+            "allowed_mcp_servers": cached_or_flow("allowed_mcp_servers", []) or [],
+            "allowed_mcp_tools": cached_or_flow("allowed_mcp_tools", []) or [],
+            "git_clone_config": cached_or_flow("git_clone_config"),
+            "custom_commands": cached_or_flow("custom_commands"),
+        }
 
     async def get_logs(
         self, session_reference: str, tail: int | None = None

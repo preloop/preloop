@@ -67,6 +67,12 @@ def test_runner_matches_pool_id_name_or_label() -> None:
     assert not runner_matches_pool(row, "missing")
 
 
+def test_crud_runner_counts_and_heartbeat_methods_are_reachable() -> None:
+    assert hasattr(crud_flow_runner, "counts_for_instance")
+    assert hasattr(crud_flow_runner, "counts_for_account")
+    assert hasattr(crud_flow_runner, "touch_heartbeat")
+
+
 def test_persistable_job_payload_strips_account_api_token() -> None:
     payload = {
         "execution_id": "exec-1",

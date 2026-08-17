@@ -75,9 +75,9 @@ def test_alembic_head_is_reachable_from_base() -> None:
     )
 
 
-def test_flow_runners_revision_chains_onto_schedule_config() -> None:
-    """Self-hosted runners must parent the feat/flow-trigger head."""
+def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
+    """Self-hosted runners must parent the current main migration head."""
     script = _script_directory()
     revision = script.get_revision("20260817_add_flow_runners")
-    assert revision.down_revision == "20260815_flow_schedule_config"
+    assert revision.down_revision == "20260806_approval_rule_ctx"
     assert script.get_heads() == ["20260817_add_flow_runners"]
