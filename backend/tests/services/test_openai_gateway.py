@@ -2,6 +2,7 @@
 
 import json
 import os
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -3108,6 +3109,192 @@ def test_gateway_records_provider_reported_cost_as_authoritative(db_session, tes
     )
     assert spend is not None
     assert float(spend.spend_usd) == pytest.approx(0.00001946)
+
+
+def _openrouter_auto_gateway(db_session, test_user):
+    """Provision Auto Router and return a gateway service for recording tests."""
+    crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "OpenRouter Auto",
+            "provider_name": "openrouter",
+            "model_identifier": "openrouter/auto-beta",
+            "api_endpoint": "https://openrouter.ai/api/v1",
+            "api_key": "sk-or-key",
+            "meta_data": {
+                "gateway": {
+                    "enabled": True,
+                    "model_alias": "openrouter/auto-beta",
+                    "provider_adapter": "preloop",
+                }
+            },
+            "is_default": True,
+        },
+        account_id=test_user.account_id,
+    )
+    return OpenAIGatewayService(
+        db_session, ModelGatewayAuthContext(token="t", user=test_user)
+    )
+
+
+def _auto_beta_chat_response(usage):
+    return {
+        "id": "gen-abc",
+        "created": 1710000000,
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": "routed answer"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": usage,
+    }
+
+
+@contextmanager
+def _patch_gateway_secrets():
+    """Stub credential resolution so recording tests do not need a live key."""
+    creds = SimpleNamespace(
+        credential_type="api_key",
+        value="sk-or-key",
+        backend_type="local_encrypted",
+        payload=None,
+    )
+    secret_service = SimpleNamespace(
+        resolve_ai_model_credentials=lambda *_args, **_kwargs: creds
+    )
+    with (
+        patch(
+            "preloop.services.model_runtime_resolver.get_secret_service",
+            return_value=secret_service,
+        ),
+        patch(
+            "preloop.services.openai_gateway.get_secret_service",
+            return_value=secret_service,
+        ),
+    ):
+        yield
+
+
+def test_gateway_records_explicit_zero_cost_as_provider(db_session, test_user):
+    """usage.cost=0 with accounting on records provider $0 and does not alert."""
+    service = _openrouter_auto_gateway(db_session, test_user)
+    litellm_response = _auto_beta_chat_response(
+        {
+            "prompt_tokens": 100,
+            "completion_tokens": 5,
+            "total_tokens": 105,
+            "cost": 0,
+            "cost_details": {
+                "upstream_inference_cost": 0,
+                "upstream_inference_prompt_cost": 0,
+                "upstream_inference_completions_cost": 0,
+            },
+        }
+    )
+
+    with (
+        _patch_gateway_secrets(),
+        patch(
+            "preloop.services.openai_gateway.litellm.completion",
+            return_value=litellm_response,
+        ),
+        patch("preloop.services.openai_gateway.notify_unpriced_model") as mock_notify,
+    ):
+        service.create_chat_completion(
+            {
+                "model": "openrouter/auto-beta",
+                "messages": [{"role": "user", "content": "Hello"}],
+            }
+        )
+
+    usage_row = (
+        db_session.query(ApiUsage)
+        .filter(ApiUsage.endpoint == "/openai/v1/chat/completions")
+        .order_by(ApiUsage.timestamp.desc())
+        .first()
+    )
+    assert usage_row is not None
+    assert usage_row.cost_source == "provider"
+    assert usage_row.estimated_cost == 0.0
+    mock_notify.assert_not_called()
+
+
+def test_gateway_empty_completion_without_cost_skips_unpriced_alert(
+    db_session, test_user
+):
+    """0 completion and no cost fields: row may stay unpriced, no admin page."""
+    service = _openrouter_auto_gateway(db_session, test_user)
+    litellm_response = _auto_beta_chat_response(
+        {
+            "prompt_tokens": 4800,
+            "completion_tokens": 0,
+            "total_tokens": 4800,
+        }
+    )
+
+    with (
+        _patch_gateway_secrets(),
+        patch(
+            "preloop.services.openai_gateway.litellm.completion",
+            return_value=litellm_response,
+        ),
+        patch("preloop.services.openai_gateway.notify_unpriced_model") as mock_notify,
+    ):
+        service.create_chat_completion(
+            {
+                "model": "openrouter/auto-beta",
+                "messages": [{"role": "user", "content": "Hello"}],
+            }
+        )
+
+    usage_row = (
+        db_session.query(ApiUsage)
+        .filter(ApiUsage.endpoint == "/openai/v1/chat/completions")
+        .order_by(ApiUsage.timestamp.desc())
+        .first()
+    )
+    assert usage_row is not None
+    assert usage_row.cost_source == "unpriced"
+    assert usage_row.completion_tokens == 0
+    mock_notify.assert_not_called()
+
+
+def test_gateway_unpriced_prompt_and_completion_still_alerts(db_session, test_user):
+    """Prompt+completion, no cost, no catalog: still notify admins."""
+    service = _openrouter_auto_gateway(db_session, test_user)
+    litellm_response = _auto_beta_chat_response(
+        {
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120,
+        }
+    )
+
+    with (
+        _patch_gateway_secrets(),
+        patch(
+            "preloop.services.openai_gateway.litellm.completion",
+            return_value=litellm_response,
+        ),
+        patch("preloop.services.openai_gateway.notify_unpriced_model") as mock_notify,
+    ):
+        service.create_chat_completion(
+            {
+                "model": "openrouter/auto-beta",
+                "messages": [{"role": "user", "content": "Hello"}],
+            }
+        )
+
+    usage_row = (
+        db_session.query(ApiUsage)
+        .filter(ApiUsage.endpoint == "/openai/v1/chat/completions")
+        .order_by(ApiUsage.timestamp.desc())
+        .first()
+    )
+    assert usage_row is not None
+    assert usage_row.cost_source == "unpriced"
+    mock_notify.assert_called_once()
 
 
 def test_gateway_without_provider_cost_keeps_catalog_pricing(db_session, test_user):

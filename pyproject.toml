@@ -128,6 +128,7 @@ dev = [
     "playwright>=1.30.0",
     "pytest-playwright>=0.4.0",
     "mcp>=1.0.0",  # MCP client for integration tests
+    "PyYAML>=6.0",  # test_nginx_route_parity imports yaml
 ]
 ai-providers = [
     "anthropic>=0.39.0",  # For Anthropic Claude API key validation

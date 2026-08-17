@@ -765,6 +765,14 @@ export class ToolsView extends LitElement {
       } else if (setupMcp === 'error') {
         this.oauthAlert = 'error';
       }
+      // Arriving from an approval's "Review this rule" link. There is no
+      // per-tool route yet, so narrow the list to that tool instead of
+      // dropping the reviewer into the full catalogue.
+      const tool = hashParams.get('tool');
+      if (tool) {
+        this.filterText = tool;
+        this.activeFilter = 'all';
+      }
       // Clean up the hash
       window.history.replaceState({}, '', window.location.pathname);
     }

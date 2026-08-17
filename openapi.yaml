@@ -9979,6 +9979,12 @@ components:
             format: uuid
           - type: 'null'
           title: Auto Approval Bypass Id
+        rule_context:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Rule Context
         was_bypassed:
           type: boolean
           title: Was Bypassed
