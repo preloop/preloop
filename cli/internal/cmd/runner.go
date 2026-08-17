@@ -222,9 +222,8 @@ func runnerForegroundLoop(state *runnerState, interrupt <-chan os.Signal, out io
 	defer ticker.Stop()
 
 	killRunning := func() {
-		halted.Store(true)
-		if runningCmd != nil && runningCmd.Process != nil {
-			_ = runningCmd.Process.Kill()
+		if !requestJobHalt(halted, runningCmd) {
+			halt = false
 		}
 	}
 
@@ -305,6 +304,9 @@ func beginLeasedJob(
 	if executionID == "" {
 		return fmt.Errorf("job missing execution_id")
 	}
+	if halted != nil {
+		halted.Store(false)
+	}
 	fmt.Fprintf(out, "Leased execution %s\n", executionID)
 	_ = conn.WriteJSON(map[string]any{
 		"type":         "status",
@@ -360,6 +362,23 @@ func beginLeasedJob(
 		done <- waitDockerJob(cmd, executionID, &buf, halted)
 	}()
 	return nil
+}
+
+// requestJobHalt latches halted only when a docker job is actually
+// running. An idle halt, or a halt after the job already finished,
+// clears the latch so a later lease can start.
+func requestJobHalt(halted *atomic.Bool, runningCmd *exec.Cmd) bool {
+	if runningCmd != nil && runningCmd.Process != nil {
+		if halted != nil {
+			halted.Store(true)
+		}
+		_ = runningCmd.Process.Kill()
+		return true
+	}
+	if halted != nil {
+		halted.Store(false)
+	}
+	return false
 }
 
 func waitDockerJob(cmd *exec.Cmd, executionID string, buf *bytes.Buffer, halted *atomic.Bool) leasedJobOutcome {
