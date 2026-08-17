@@ -85,6 +85,13 @@ class ApprovalRequestResponse(ApprovalRequestBase):
     # MUST NOT count them as human approvals in approval-rate stats.
     auto_approved_reason: Optional[str] = None
     auto_approval_bypass_id: Optional[UUID] = None
+    # Why this request exists: the rule that gated the call, snapshotted at
+    # creation time. Optional for backward compatibility: rows created before
+    # this field existed, and approvals raised without rule evaluation (the
+    # request_approval builtin), carry None and surfaces must omit the block
+    # rather than fabricate a reason. Shape is documented in
+    # services/approval_rule_context.py.
+    rule_context: Optional[Dict[str, Any]] = None
 
     @computed_field
     def was_bypassed(self) -> bool:

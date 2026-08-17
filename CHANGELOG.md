@@ -18,6 +18,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   native fields are response-only: request models ignore any
   client-supplied value. `start_new_session` responses also return
   the minted history session's native identity.
+- **`preloop update`**: download the matching GitHub release asset for this
+  OS/architecture and replace the current binary in place. `--check` prints
+  the latest version and exits; `--yes` / `-y` skips the confirmation
+  prompt. Version lookup honors `PRELOOP_DISABLE_TELEMETRY` the same way
+  `preloop version --check` does. The daily update notice now asks
+  "Update now? [y/N]" when stdin is a TTY and the running binary is
+  writable. If the binary cannot be replaced, the CLI stays silent (no
+  nag, no sudo hint).
+- **`preloop flow trigger`**: CI-native trigger for an existing flow by id
+  or name. Posts to `POST /api/v1/flows/{flow_id}/trigger`, accepts
+  `--payload JSON` or `--payload -` (stdin), and waits for a terminal
+  status when stdin is not a TTY (override with `--wait=false`). Logs are
+  polled from `GET /api/v1/flows/executions/{id}/logs` and printed to
+  stdout. Non-zero exit on FAILED, STOPPED, or TIMEOUT. `--runner` errors
+  until self-hosted runners land. See `docs/guide/flows/ci-trigger.md`.
+- **Matched-rule context on approval requests**: the approval the human
+  reviews now records which access rule gated the call (id, name, expression,
+  priority, and any lower-priority rules that also matched), snapshotted at
+  create time so later rule edits cannot rewrite history. The console shows a
+  "Why this needs approval" block with the expression verbatim; list rows and
+  push payloads show the rule name only. Rule-less gates (tool default,
+  evaluation error, agent permission hook) say so plainly instead of
+  inventing an expression. New nullable JSONB `rule_context` column; the
+  API field is optional so historical rows stay blank.
 - **Native scheduled (cron) flow triggers**: flows can now run on a schedule
   without an external cron caller hitting the webhook endpoint. Create or
   update a flow with `trigger_event_source: "schedule"` and
@@ -66,6 +90,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Qwen / Model Studio catalog**: the keyless picker now lists current chat
+  models (`qwen3.8-max` first) instead of `qwen-plus` / `qwen-turbo` /
+  `qwen-max` / `qwq-32b-preview`. Live `/models` listing honors a
+  user-supplied DashScope or Model Studio base URL (China Beijing default is
+  unchanged so existing keys keep working) and drops dedicated image, video,
+  audio, and NSFW ids. International list prices were added for the fallback
+  ids. DeepSeek-V4 / GLM 5.2 / Kimi remain their own providers; a Model
+  Studio key that also serves those SKUs will surface them via live listing.
 - **PR Reviewer preset: token-optimised prompt**: the stock Pull Request
   Reviewer preset now bounds every open-ended read that previously let agents
   walk the repository. Project doc reads are capped (agent-instruction files in
@@ -90,6 +122,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   proportional to the push delta instead of the whole PR.
 
 ### Fixed
+
+- **Unpriced-model admin alert on accounted $0 and empty completions**:
+  when OpenRouter usage accounting was requested, an explicit `usage.cost`
+  of `0` is now recorded as provider $0 (`cost_source=provider`) instead of
+  treated as "not accounted". A response with `completion_tokens == 0` and
+  no `cost` / `cost_details` fields may still land unpriced, but it no
+  longer pages admins to add catalog pricing. `cost: -1` stays the catalog
+  sentinel (not accounted). Prompt plus completion with no cost and no
+  catalog price still alerts.
 
 - **Per-execution cost rollup understated real gateway spend (#209)**:
   `flow_execution.estimated_cost` is written once when the run finishes, but

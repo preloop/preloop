@@ -57,6 +57,7 @@ class NotificationPayloadBuilder:
         agent_reasoning: Optional[str] = None,
         tool_args: Optional[Dict[str, Any]] = None,
         summary: Optional[str] = None,
+        rule_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Build payload for new approval request.
 
@@ -70,6 +71,10 @@ class NotificationPayloadBuilder:
             agent_reasoning: Agent's explanation (truncated to 100 chars).
             tool_args: Tool arguments to show in notification body.
             summary: Plain-language ask shown as the notification body when set.
+            rule_context: Snapshot of the rule that gated the call. Only the
+                rule NAME travels in a push: an expression does not fit and
+                truncating one would misrepresent it. Clients fetch the full
+                context from the API when the request is opened.
 
         Returns:
             APNs payload dictionary.
@@ -184,6 +189,11 @@ class NotificationPayloadBuilder:
         }
         if ask_text:
             custom_data["summary"] = ask_text
+        rule_name = (rule_context or {}).get("rule_name")
+        if rule_name:
+            # Name only. The expression belongs on a surface that can show it
+            # in full; a clipped CEL expression reads as a different rule.
+            custom_data["rule_name"] = str(rule_name)
         if expires_at:
             custom_data["expires_at"] = expires_at.isoformat()
         if is_question:

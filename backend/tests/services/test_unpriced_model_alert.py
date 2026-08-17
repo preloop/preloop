@@ -17,7 +17,10 @@ from unittest.mock import patch
 import pytest
 
 from preloop.services import unpriced_model_alert
-from preloop.services.unpriced_model_alert import notify_unpriced_model
+from preloop.services.unpriced_model_alert import (
+    notify_unpriced_model,
+    should_notify_unpriced_model,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -26,6 +29,62 @@ def _clear_alert_cache():
     unpriced_model_alert.reset_alert_state_for_tests()
     yield
     unpriced_model_alert.reset_alert_state_for_tests()
+
+
+def test_empty_completion_without_cost_fields_suppresses_alert():
+    """Usage accounting on + 0 completion + no cost fields: do not page."""
+    assert (
+        should_notify_unpriced_model(
+            usage_accounting_requested=True,
+            usage_details={"prompt_tokens": 4800, "completion_tokens": 0},
+            completion_tokens=0,
+        )
+        is False
+    )
+    assert (
+        should_notify_unpriced_model(
+            usage_accounting_requested=True,
+            usage_details=None,
+            completion_tokens=0,
+        )
+        is False
+    )
+
+
+def test_prompt_and_completion_without_cost_still_alerts():
+    """Real unpriced spend (prompt+completion, no cost) still pages."""
+    assert (
+        should_notify_unpriced_model(
+            usage_accounting_requested=True,
+            usage_details={"prompt_tokens": 100, "completion_tokens": 20},
+            completion_tokens=20,
+        )
+        is True
+    )
+
+
+def test_empty_completion_without_accounting_still_alerts():
+    """Do not suppress when we did not ask for usage accounting."""
+    assert (
+        should_notify_unpriced_model(
+            usage_accounting_requested=False,
+            usage_details={"prompt_tokens": 4800, "completion_tokens": 0},
+            completion_tokens=0,
+        )
+        is True
+    )
+
+
+def test_empty_completion_with_cost_sentinel_still_alerts():
+    """cost=-1 is present, so this is not the empty-completion skip."""
+    assert (
+        should_notify_unpriced_model(
+            usage_accounting_requested=True,
+            usage_details={"prompt_tokens": 10, "completion_tokens": 0, "cost": -1},
+            completion_tokens=0,
+        )
+        is True
+    )
 
 
 def test_first_unpriced_model_notifies_admins(db_session, test_user):
