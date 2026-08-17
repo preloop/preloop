@@ -82,6 +82,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Unpriced-model admin alert on accounted $0 and empty completions**:
+  when OpenRouter usage accounting was requested, an explicit `usage.cost`
+  of `0` is now recorded as provider $0 (`cost_source=provider`) instead of
+  treated as "not accounted". A response with `completion_tokens == 0` and
+  no `cost` / `cost_details` fields may still land unpriced, but it no
+  longer pages admins to add catalog pricing. `cost: -1` stays the catalog
+  sentinel (not accounted). Prompt plus completion with no cost and no
+  catalog price still alerts.
+
 - **Per-execution cost rollup understated real gateway spend (#209)**:
   `flow_execution.estimated_cost` is written once when the run finishes, but
   most gateway usage rows are priced *later* — the live price lookup and the
