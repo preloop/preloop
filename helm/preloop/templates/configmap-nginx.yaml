@@ -244,6 +244,35 @@ data:
             try_files /resources/$1.html /index.html;
         }
 
+        # Blog index (/blog): prerender-first, same as /vs and /resources.
+        # Exact match, because the generic catch-all below would otherwise
+        # `try_files $uri $uri/` -> see the /blog DIRECTORY -> emit a 301 to
+        # /blog/ instead of serving blog/index.html. Only SaaS builds emit
+        # blog/index.html; self-hosted builds fall through to the SPA, whose
+        # /blog route redirects home.
+        location = /blog {
+            try_files /blog/index.html /index.html;
+        }
+
+        # RSS feed. Exact match so it wins over the /blog/<slug> regex below,
+        # which would otherwise not match "feed.xml" anyway (the dot) but would
+        # leave the feed to the catch-all with the wrong content type.
+        location = /blog/feed.xml {
+            # `types { }` empties the MIME map for this location. Without it
+            # mime.types already maps .xml -> text/xml, that match wins, and
+            # default_type (which only applies when nothing matched) is dead
+            # code. Verified in nginx:alpine: without the empty types block
+            # the feed is served as text/xml.
+            types { }
+            default_type application/rss+xml;
+            try_files /blog/feed.xml =404;
+        }
+
+        # Blog posts (/blog/<slug>): prerender-first, SPA fallback.
+        location ~ ^/blog/([a-z0-9][a-z0-9-]*)/?$ {
+            try_files /blog/$1.html /index.html;
+        }
+
         # Top-level marketing pages: same prerender-first serving as /vs and
         # /resources above. Without these they fell through to the SPA
         # catch-all, so every one of them returned byte-identical home

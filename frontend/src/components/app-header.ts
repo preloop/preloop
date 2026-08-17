@@ -214,6 +214,7 @@ export class AppHeader extends LitElement {
               isSaaS()
                 ? html`
                     <sl-button href="/about" variant="text">About</sl-button>
+                    <sl-button href="/blog" variant="text">Blog</sl-button>
                     <sl-button href="/pricing" variant="text"
                       >Pricing</sl-button
                     >
