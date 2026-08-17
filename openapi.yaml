@@ -11804,6 +11804,10 @@ components:
           - type: string
           - type: 'null'
           title: Runner Pool
+          description: Self-hosted runner pool (id, name, or label). When set, executions
+            lease to a matching `preloop runner` instead of hosted compute. If no
+            matching runner is online the job queues for 15 minutes then FAILS. A
+            trigger-time `--runner` / `_runner` override takes precedence.
       type: object
       required:
       - name
@@ -12290,6 +12294,10 @@ components:
           - type: string
           - type: 'null'
           title: Runner Pool
+          description: Self-hosted runner pool (id, name, or label). When set, executions
+            lease to a matching `preloop runner` instead of hosted compute. If no
+            matching runner is online the job queues for 15 minutes then FAILS. A
+            trigger-time `--runner` / `_runner` override takes precedence.
         id:
           anyOf:
           - type: string
@@ -12493,6 +12501,10 @@ components:
           - type: string
           - type: 'null'
           title: Runner Pool
+          description: Self-hosted runner pool (id, name, or label). When set, executions
+            lease to a matching `preloop runner` instead of hosted compute. If no
+            matching runner is online the job queues for 15 minutes then FAILS. A
+            trigger-time `--runner` / `_runner` override takes precedence.
       type: object
       title: FlowUpdate
     GatewayBudgetSummary:

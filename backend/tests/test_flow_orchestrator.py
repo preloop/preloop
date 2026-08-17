@@ -1744,7 +1744,7 @@ class TestSuccessConfirmationChannels:
         sentinel_seen,
     ):
         with patch(
-            "preloop.services.flow_orchestrator.create_agent_executor",
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
             return_value=executor,
         ):
             orchestrator = FlowExecutionOrchestrator(

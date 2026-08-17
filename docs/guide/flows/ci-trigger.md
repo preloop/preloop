@@ -28,11 +28,22 @@ jobs:
 command yet. Use `--payload -` to pipe a JSON event file from a previous step.
 Omit `--wait` in CI; waiting is the default when stdin is not a TTY.
 
-To pin the run to a self-hosted CLI runner, pass `--runner` with a runner
-id, name, or label. The matching runner must already be online
-(`preloop runner fg --labels local`):
+## `runner_pool` flow config
+
+Set `runner_pool` on the flow (create or update) to a runner id, name, or
+label. Every execution of that flow then leases to a matching
+`preloop runner fg` instead of starting a hosted container.
+
+```json
+{ "runner_pool": "local" }
+```
+
+`preloop flow trigger --runner` (or a `_runner` field on the trigger payload)
+overrides the flow default for that one run. The matching runner must already
+be online:
 
 ```sh
+preloop runner fg --labels local
 preloop flow trigger pull-request-reviewer --runner local --wait
 ```
 
