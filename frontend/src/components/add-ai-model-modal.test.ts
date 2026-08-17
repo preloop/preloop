@@ -742,11 +742,16 @@ describe('AddAIModelModal Qwen regional endpoints', () => {
 
   it('mentions the international and US hosts in the API URL help', async () => {
     element.open = true;
+    await element.updateComplete;
     await (element as any)._handleProviderChange({
       target: { value: 'qwen' },
     } as unknown as Event);
     await element.updateComplete;
-    const help = element.shadowRoot?.textContent || '';
+    const help =
+      element.shadowRoot?.querySelector(
+        'sl-input[label="API URL"] [slot="help-text"]'
+      )?.textContent || '';
+    expect(help).to.contain('dashscope.aliyuncs.com');
     expect(help).to.contain('dashscope-intl.aliyuncs.com');
     expect(help).to.contain('dashscope-us.aliyuncs.com');
   });

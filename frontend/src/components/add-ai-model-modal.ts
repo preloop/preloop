@@ -716,8 +716,9 @@ export class AddAIModelModal extends LitElement {
               this._currentModel.provider_name === 'qwen'
                 ? html`
                     <div slot="help-text">
-                      Default is China (Beijing) DashScope. International
-                      (Singapore):
+                      Default is China (Beijing):
+                      https://dashscope.aliyuncs.com/compatible-mode/v1.
+                      International (Singapore):
                       https://dashscope-intl.aliyuncs.com/compatible-mode/v1.
                       US: https://dashscope-us.aliyuncs.com/compatible-mode/v1.
                       Keys are not interchangeable across regions.

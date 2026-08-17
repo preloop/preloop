@@ -342,6 +342,13 @@ class TestQwenProviderPricing:
         assert "qwen3.8-max" in candidates
         assert "dashscope/qwen3.8-max" in candidates
 
+    def test_dated_qwen_id_expands_to_dashscope_undated(self) -> None:
+        """Date-stamped Qwen ids must undate under dashscope, not openai."""
+        ai_model = AIModel(provider_name="qwen", model_identifier="qwen-plus-20250101")
+        candidates = list(_iter_litellm_model_candidates(ai_model))
+        assert "dashscope/qwen-plus" in candidates
+        assert "openai/qwen-plus" not in candidates
+
     def test_intl_endpoint_still_prices_as_dashscope(self) -> None:
         ai_model = AIModel(
             provider_name="qwen",
