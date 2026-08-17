@@ -87,10 +87,14 @@ or write /workspace/result.json containing {{"status": "success"}}. Without one 
 
 # result.json "status" values that count as an explicit success confirmation
 # (channel 2 — equal in standing to the printed sentinel) or an explicit
-# failure report. Includes the eval contract's "pass"/"fail"/"error"
-# vocabulary (preloop.eval.result/v1) alongside plain "success"/"failure".
-RESULT_ARTIFACT_SUCCESS_STATUSES = frozenset({"success", "succeeded", "pass", "passed"})
-RESULT_ARTIFACT_FAILURE_STATUSES = frozenset({"failure", "failed", "fail", "error"})
+# flow-failure report. Eval vocabulary (preloop.eval.result/v1): "pass" and
+# "fail" are completed-run verdicts (the subject's checks passed or failed);
+# only "error" means the eval itself could not complete. "fail" is therefore
+# a success confirmation for the flow, not a flow-failure signal.
+RESULT_ARTIFACT_SUCCESS_STATUSES = frozenset(
+    {"success", "succeeded", "pass", "passed", "fail"}
+)
+RESULT_ARTIFACT_FAILURE_STATUSES = frozenset({"failure", "failed", "error"})
 
 
 def _result_artifact_confirmation(artifact: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -2390,10 +2394,12 @@ class FlowExecutionOrchestrator:
                         result.status == AgentStatus.SUCCEEDED
                         and artifact_confirmation == "failure"
                     ):
+                        assert result_artifact is not None
+                        artifact_status = result_artifact.get("status")
                         logger.warning(
                             "Agent exited with SUCCEEDED status but result.json "
                             "reports an explicit failure status "
-                            f"({result_artifact.get('status')!r}). "
+                            f"({artifact_status!r}). "
                             "Overriding status to FAILED."
                         )
                         self.execution_logger.log_milestone(
@@ -2401,14 +2407,14 @@ class FlowExecutionOrchestrator:
                             {
                                 "original_status": result.status.value,
                                 "exit_code": result.exit_code,
-                                "artifact_status": result_artifact.get("status"),
+                                "artifact_status": artifact_status,
                                 "sentinel_seen": self._success_sentinel_seen.is_set(),
                             },
                         )
                         final_status = "FAILED"
                         error_message = result.error_message or (
                             "Agent reported an explicit failure in result.json "
-                            f"(status={result_artifact.get('status')!r})."
+                            f"(status={artifact_status!r})."
                         )
                     elif (
                         result.status == AgentStatus.SUCCEEDED
@@ -2452,6 +2458,7 @@ class FlowExecutionOrchestrator:
                     ):
                         # The artifact alone confirmed the run — record it so
                         # operators can see which channel was used.
+                        assert result_artifact is not None
                         self.execution_logger.log_milestone(
                             "result_artifact_confirmed_success",
                             {"artifact_status": result_artifact.get("status")},
@@ -2505,11 +2512,18 @@ class FlowExecutionOrchestrator:
                         if _result_artifact_confirmation(result_artifact) == "failure":
                             # Same invariant as the terminal path: an explicit
                             # failure in result.json wins over the sentinel.
+                            assert result_artifact is not None
+                            artifact_status = result_artifact.get("status")
+                            # Container may still be in post-exec; fetch the
+                            # result so _retry_decision sees exit_code instead
+                            # of treating it as unknown.
+                            result = await agent_executor.get_result(session_reference)
                             self.execution_logger.log_milestone(
                                 "result_artifact_failure_override",
                                 {
-                                    "artifact_status": result_artifact.get("status"),
+                                    "artifact_status": artifact_status,
                                     "sentinel_seen": True,
+                                    "exit_code": result.exit_code,
                                 },
                             )
                             return {
@@ -2517,11 +2531,17 @@ class FlowExecutionOrchestrator:
                                 "error_message": (
                                     "Agent reported an explicit failure in "
                                     "result.json (status="
-                                    f"{result_artifact.get('status')!r})."
+                                    f"{artifact_status!r})."
                                 ),
                                 "actions_taken": self.execution_logger.get_actions_taken(),
                                 "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
                                 "result": result_artifact,
+                                "exit_code": result.exit_code,
+                                "failure_analysis": (
+                                    asdict(result.failure_analysis)
+                                    if result.failure_analysis is not None
+                                    else None
+                                ),
                             }
                         return {
                             "status": "SUCCEEDED",
