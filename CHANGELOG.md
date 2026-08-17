@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Agent Control for Claude Code (G1) and native session targeting (G2)**:
+  `claude_code` is now a supported Agent Control kind. `control_enabled`
+  still requires sidecar/capability flags, not a blanket true. When a
+  command targets an existing session, the persisted outbound envelope
+  includes that session's `session_source_id` and `session_reference`.
+  Clients keep sending the Preloop `target_session_id` UUID. Those
+  native fields are response-only: request models ignore any
+  client-supplied value. `start_new_session` responses also return
+  the minted history session's native identity.
 - **`preloop update`**: download the matching GitHub release asset for this
   OS/architecture and replace the current binary in place. `--check` prints
   the latest version and exits; `--yes` / `-y` skips the confirmation
