@@ -26,6 +26,44 @@ _AGENT_EXECUTOR_REGISTRY: Dict[str, type[AgentExecutor]] = {
 SUPPORTED_AGENT_TYPES = frozenset(_AGENT_EXECUTOR_REGISTRY)
 
 
+def create_executor_for_execution(
+    agent_type: str,
+    config: Dict[str, Any],
+    *,
+    flow: Any = None,
+    execution: Any = None,
+    db: Any = None,
+    execution_context: Dict[str, Any] | None = None,
+) -> AgentExecutor:
+    """Return a remote runner executor when the flow is pinned to a pool."""
+    from preloop.agents.remote_runner import RemoteRunnerExecutor
+    from preloop.services.runner_service import resolve_runner_pool
+
+    pool = None
+    if flow is not None:
+        pool = resolve_runner_pool(flow, execution_context)
+    ref = getattr(execution, "agent_session_reference", None) if execution else None
+    if not pool and isinstance(ref, str) and ref.startswith("runner:"):
+        parts = ref.split(":")
+        pool = parts[2] if len(parts) >= 4 and parts[1] == "queued" else "default"
+    if pool and db is not None:
+        account_id = getattr(flow, "account_id", None) or (execution_context or {}).get(
+            "account_id"
+        )
+        if account_id is None and execution is not None:
+            account_id = getattr(execution, "account_id", None)
+        if account_id is None and flow is not None:
+            account_id = getattr(flow, "account_id", None)
+        return RemoteRunnerExecutor(
+            agent_type,
+            config,
+            db=db,
+            pool=str(pool),
+            account_id=account_id,
+        )
+    return create_agent_executor(agent_type, config)
+
+
 def create_agent_executor(agent_type: str, config: Dict[str, Any]) -> AgentExecutor:
     """
     Create an agent executor based on agent type.

@@ -28,7 +28,10 @@ from preloop.models.models.flow_execution import (
 )
 from preloop.models.models.ai_model import AIModel
 from preloop.models.models.runtime_session import RuntimeSession
-from preloop.agents import create_agent_executor, AgentStatus
+from preloop.agents import (
+    create_executor_for_execution,
+    AgentStatus,
+)
 from preloop.agents.failure_analysis import analyze_agent_failure
 from preloop.config import settings
 from preloop.services.prompt_resolvers import (
@@ -2069,8 +2072,14 @@ class FlowExecutionOrchestrator:
 
         agent_executor = None
         try:
-            # Create agent executor using factory
-            agent_executor = create_agent_executor(agent_type, agent_config)
+            agent_executor = create_executor_for_execution(
+                agent_type,
+                agent_config,
+                flow=self.flow,
+                execution=self.execution_log,
+                db=self.db,
+                execution_context=execution_context,
+            )
 
             # Start the agent
             session_reference = await agent_executor.start(execution_context)

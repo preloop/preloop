@@ -27,3 +27,14 @@ jobs:
 `PRELOOP_TOKEN` is an account API token. OIDC exchange is not part of this
 command yet. Use `--payload -` to pipe a JSON event file from a previous step.
 Omit `--wait` in CI; waiting is the default when stdin is not a TTY.
+
+To pin the run to a self-hosted CLI runner, pass `--runner` with a runner
+id, name, or label. The matching runner must already be online
+(`preloop runner fg --labels local`):
+
+```sh
+preloop flow trigger pull-request-reviewer --runner local --wait
+```
+
+If no matching runner heartbeats within 15 minutes the execution fails.
+There is no fallback onto hosted compute.

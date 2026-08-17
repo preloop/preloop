@@ -194,7 +194,6 @@ class ExecutionRecoveryService:
         # Check if the container/job still exists before trying to monitor
         # This avoids blocking on containers that were cleaned up during deploy
         try:
-            from preloop.agents import create_agent_executor
             from preloop.models.models.flow_execution import (
                 resolve_matrix_agent_selection,
             )
@@ -207,9 +206,18 @@ class ExecutionRecoveryService:
                     execution.trigger_event_details,
                     flow_agent_type=flow.agent_type,
                 )
-                agent_executor = create_agent_executor(
+                from preloop.agents import create_executor_for_execution
+
+                agent_executor = create_executor_for_execution(
                     effective_agent_type,
                     {"agent_config": flow.agent_config or {}},
+                    flow=flow,
+                    execution=execution,
+                    db=db,
+                    execution_context={
+                        "trigger_event_data": execution.trigger_event_details,
+                        "account_id": flow.account_id,
+                    },
                 )
                 try:
                     status = await agent_executor.get_status(

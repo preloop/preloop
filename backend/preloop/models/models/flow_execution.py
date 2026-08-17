@@ -95,6 +95,7 @@ class FlowExecution(Base):
     # Batch/matrix fan-out: executions created from one matrix trigger share a
     # batch_id so the whole batch can be listed and rolled up as a unit.
     batch_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    runner_id = Column(UUID(as_uuid=True), nullable=True, index=True)
 
     # Execution metrics
     tool_calls_count = Column(

@@ -437,6 +437,7 @@ class FlowBase(BaseModel):
     prompt_customized: Optional[bool] = False
     tools_customized: Optional[bool] = False
     preset_update_available: Optional[bool] = False
+    runner_pool: Optional[str] = None
 
     @field_validator("trigger_project_ids", mode="before")
     @classmethod

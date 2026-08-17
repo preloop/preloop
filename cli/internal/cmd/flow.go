@@ -65,7 +65,7 @@ func init() {
 	flowCmd.AddCommand(flowTriggerCmd)
 	flowTriggerCmd.Flags().String("payload", "", "JSON trigger payload, or - to read stdin")
 	flowTriggerCmd.Flags().Bool("wait", false, "stream logs until the execution finishes (default on when stdin is not a TTY)")
-	flowTriggerCmd.Flags().String("runner", "", "pin the execution to a self-hosted runner (not yet available)")
+	flowTriggerCmd.Flags().String("runner", "", "pin the execution to a self-hosted runner id, name, or label")
 	flowTriggerCmd.Flags().Duration("timeout", defaultFlowWaitTimeout, "how long --wait will poll before exiting")
 }
 
@@ -74,10 +74,6 @@ func runFlowTrigger(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(runner) != "" {
-		return fmt.Errorf("self-hosted runner targeting is not available yet; omit --runner")
-	}
-
 	payloadFlag, err := cmd.Flags().GetString("payload")
 	if err != nil {
 		return err
@@ -85,6 +81,12 @@ func runFlowTrigger(cmd *cobra.Command, args []string) error {
 	payload, err := parseTriggerPayload(payloadFlag, os.Stdin)
 	if err != nil {
 		return err
+	}
+	if strings.TrimSpace(runner) != "" {
+		if payload == nil {
+			payload = map[string]any{}
+		}
+		payload["_runner"] = strings.TrimSpace(runner)
 	}
 
 	waitFlag, err := cmd.Flags().GetBool("wait")
