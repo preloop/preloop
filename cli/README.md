@@ -183,6 +183,21 @@ Both flags default to `ask`. With `--yes` alone, the CLI skips the main offboard
 - MCP servers are kept if they are still referenced by another managed agent
 - Recently active shared resources are also skipped
 
+### Flows
+
+```bash
+preloop flow trigger <flow-id-or-name>
+preloop flow trigger nightly-review --payload '{"ref":"main"}'
+cat event.json | preloop flow trigger nightly-review --payload -
+preloop flow trigger nightly-review --wait --timeout 30m
+```
+
+In CI (stdin is not a TTY) the command waits by default and streams
+execution logs to stdout. The same logs remain in the console execution
+view. Exit status is non-zero on FAILED, STOPPED, or TIMEOUT. Auth is
+`--token`, `PRELOOP_TOKEN`, or the saved login. See
+[docs/guide/flows/ci-trigger.md](../docs/guide/flows/ci-trigger.md).
+
 ### Version
 
 ```bash
@@ -274,7 +289,8 @@ cli/
 │   │   ├── tools.go         # tools list/describe/exec
 │   │   ├── approvals.go     # approvals list/pending/approve/deny
 │   │   ├── version.go       # version command
-│   │   └── update.go        # update command
+│   │   ├── update.go        # update command
+│   │   └── flow.go          # flow trigger
 │   ├── mcpclient/
 │   │   └── client.go        # Minimal MCP HTTP client
 │   └── version/
