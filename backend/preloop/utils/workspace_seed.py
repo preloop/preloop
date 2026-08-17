@@ -155,16 +155,11 @@ def parse_workspace_files(
                 "(URLs are not supported)"
             )
         content = "".join(content.split())  # tolerate wrapped base64
-        try:
-            base64.b64decode(content, validate=True)
-        except (binascii.Error, ValueError) as exc:
-            raise WorkspaceSeedError(
-                f"workspace_files[{index}] content_base64 is not valid base64: {exc}"
-            ) from exc
 
-        # Cap the ENCODED size: the base64 text is what is embedded in the
-        # container launch command (K8s Job spec / etcd limit), so that is
-        # the size that matters for the transport.
+        # Cap the ENCODED size BEFORE decoding: the base64 text is what is
+        # embedded in the container launch command (K8s Job spec / etcd
+        # limit), so that is the size that matters for the transport, and
+        # oversized payloads should be rejected without decode work.
         total_bytes += len(content)
         if total_bytes > MAX_TOTAL_SEED_ENCODED_BYTES:
             raise WorkspaceSeedError(
@@ -173,6 +168,12 @@ def parse_workspace_files(
                 "cap (the encoded form is embedded in the container launch "
                 "command); use fewer/smaller files"
             )
+        try:
+            base64.b64decode(content, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise WorkspaceSeedError(
+                f"workspace_files[{index}] content_base64 is not valid base64: {exc}"
+            ) from exc
         files.append(WorkspaceSeedFile(path=path, content_base64=content))
     return files
 
