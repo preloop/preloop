@@ -2669,6 +2669,28 @@ export async function triggerFlowExecution(
   return response.json();
 }
 
+export async function getRunners(): Promise<RunnerRecord[]> {
+  const response = await fetchWithAuth('/api/v1/runners');
+  if (!response.ok) {
+    throw new Error('Failed to fetch runners');
+  }
+  return response.json();
+}
+
+export interface RunnerRecord {
+  id: string;
+  name: string;
+  hostname?: string | null;
+  os?: string | null;
+  arch?: string | null;
+  labels?: string[];
+  status: string;
+  last_heartbeat?: string | null;
+  current_execution_id?: string | null;
+  registered_by_email?: string | null;
+  registered_by_user_id?: string | null;
+}
+
 export async function sendCommandToExecution(
   executionId: string,
   command: string,

@@ -665,6 +665,8 @@ Single WebSocket connection per client with pub/sub message routing:
 
 For detailed architecture on the Flow subsystem, including the Trigger Service, Flow Orchestrator, NATS queue, Agent infrastructure, and data flows, see the [Flows Architecture documentation](https://docs.preloop.ai/flows/architecture).
 
+Flows with a `runner_pool` use `RemoteRunnerExecutor` to lease work to a matching self-hosted runner instead of starting a hosted container. Runners maintain an outbound WebSocket control plane for leases, heartbeats, status, logs, completion, and halt requests; durable lease metadata stays in PostgreSQL so temporary disconnects can recover without persisting short-lived API tokens.
+
 ### Matrix / Batch Fan-Out
 
 One flow definition can drive an agent-harness × model evaluation grid without cloning the flow per combination:

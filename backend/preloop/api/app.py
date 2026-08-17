@@ -56,6 +56,7 @@ from preloop.api.endpoints import (
     embedding as embedding_router,
     webhooks,
     flows,
+    runners,
     ai_models,
     openai_gateway,
     websockets,
@@ -1015,6 +1016,11 @@ def create_app() -> FastAPI:
             prefix="/api/v1",
             tags=["Flows"],
             # dependencies=[Depends(get_current_active_user)],
+        )
+        app.include_router(
+            runners.router,
+            prefix="/api/v1",
+            tags=["Runners"],
         )
 
         # Policies router for policy-as-code YAML import/export

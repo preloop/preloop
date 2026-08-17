@@ -190,6 +190,7 @@ preloop flow trigger <flow-id-or-name>
 preloop flow trigger nightly-review --payload '{"ref":"main"}'
 cat event.json | preloop flow trigger nightly-review --payload -
 preloop flow trigger nightly-review --wait --timeout 30m
+preloop flow trigger nightly-review --runner local
 ```
 
 In CI (stdin is not a TTY) the command waits by default and streams
@@ -213,6 +214,20 @@ preloop update --yes                   # Install without prompting
 in place. The daily update notice asks whether to upgrade when stdin is a
 TTY and the binary is writable; otherwise it stays silent. Version lookup
 is skipped when `PRELOOP_DISABLE_TELEMETRY` is set.
+
+### Self-hosted runner
+
+```bash
+preloop runner fg --labels local     # Foreground: register, heartbeat, lease jobs
+preloop runner enable                # Install launchd / systemd / scheduled task
+preloop runner disable
+preloop runner start|stop|restart|status
+```
+
+`preloop runner fg` opens a durable WebSocket to the configured server,
+leases executions whose runner pool matches this runner's id, name, or
+labels, streams logs, and honors halt. Ctrl-C unregisters. Persist the
+runner id and token in `~/.preloop/runner.json`.
 
 ## Configuration
 
@@ -290,7 +305,8 @@ cli/
 │   │   ├── approvals.go     # approvals list/pending/approve/deny
 │   │   ├── version.go       # version command
 │   │   ├── update.go        # update command
-│   │   └── flow.go          # flow trigger
+│   │   ├── flow.go          # flow trigger
+│   │   └── runner.go        # self-hosted runner daemon
 │   ├── mcpclient/
 │   │   └── client.go        # Minimal MCP HTTP client
 │   └── version/

@@ -28,7 +28,10 @@ from preloop.models.models.flow_execution import (
 )
 from preloop.models.models.ai_model import AIModel
 from preloop.models.models.runtime_session import RuntimeSession
-from preloop.agents import create_agent_executor, AgentStatus
+from preloop.agents import (
+    create_executor_for_execution,
+    AgentStatus,
+)
 from preloop.agents.failure_analysis import analyze_agent_failure
 from preloop.config import settings
 from preloop.services.prompt_resolvers import (
@@ -39,6 +42,7 @@ from preloop.services.prompt_resolvers import (
     AccountResolver,
 )
 from preloop.services.flow_execution_logger import FlowExecutionLogger
+from preloop.services.flow_runtime_token import create_flow_runtime_token
 from preloop.sync.event_normalizer import attach_trigger_subject
 from preloop.services.model_runtime_resolver import resolve_ai_model_runtime
 from preloop.utils.git_credentials import (
@@ -1024,88 +1028,20 @@ class FlowExecutionOrchestrator:
         Returns:
             Tuple of (token_key, token_id) or (None, None) if creation failed
         """
-        from datetime import timedelta
-        from preloop.models.crud import crud_user
-
         try:
-            account = crud_account.get(self.db, id=self.flow.account_id)
-
-            if not account:
-                logger.warning(f"Account {self.flow.account_id} not found")
-                return None, None
-
-            principal_user = None
-            if account.primary_user_id:
-                principal_user = crud_user.get(self.db, id=account.primary_user_id)
-                if principal_user and not principal_user.is_active:
-                    principal_user = None  # Fall back to other active users
-
-            if not principal_user:
-                # Fall back to the first available active user for older accounts that
-                # do not have `primary_user_id` populated yet, or if primary is inactive.
-                users = crud_user.get_by_account(
-                    self.db, account_id=self.flow.account_id
-                )
-                active_users = [u for u in users if u.is_active]
-                if active_users:
-                    principal_user = active_users[0]
-
-            if not principal_user:
-                logger.warning(
-                    f"No active users found for account {self.flow.account_id}, "
-                    f"cannot create API token"
-                )
-                return None, None
-
-            # Create API key that expires in 2 hours
-            expires_at = datetime.now(timezone.utc) + timedelta(hours=2)
             runtime_session = self._sync_runtime_session()
-
-            # Store flow execution context in the token for tool filtering
-            context_data = {
-                "flow_execution_id": str(self.execution_log.id)
-                if self.execution_log
-                else None,
-                "runtime_session_id": (
-                    str(runtime_session.id) if runtime_session is not None else None
-                ),
-                "flow_id": str(self.flow_id),
-                "allowed_mcp_tools": self.flow.allowed_mcp_tools or [],
-                "allowed_mcp_servers": self.flow.allowed_mcp_servers or [],
-                "runtime_principal": {
-                    "type": "flow_execution",
-                    "id": str(self.execution_log.id) if self.execution_log else None,
-                    "name": self.flow.name,
-                    "user_id": str(principal_user.id),
-                    "username": principal_user.username,
-                },
-            }
-
-            api_key, token_key = crud_api_key.create_runtime_key(
+            return create_flow_runtime_token(
                 self.db,
-                name=f"Flow Execution {self.execution_log.id if self.execution_log else 'temp'}",
-                account_id=self.flow.account_id,
-                user_id=principal_user.id,
-                expires_at=expires_at,
-                scopes=["mcp:read", "mcp:write"],
-                context_data=context_data,
+                flow=self.flow,
+                execution_id=self.execution_log.id if self.execution_log else None,
+                runtime_session_id=(
+                    runtime_session.id if runtime_session is not None else None
+                ),
             )
-
-            logger.info(
-                "Created temporary API key record id=%s for flow execution %s "
-                "(principal_user=%s), expires at %s",
-                api_key.id,
-                self.execution_log.id if self.execution_log else None,
-                principal_user.username,
-                expires_at,
-            )
-
-            return token_key, api_key.id
-
-        except Exception as e:
+        except Exception as exc:
             logger.error(
                 "Failed to create temporary API key record: %s",
-                type(e).__name__,
+                type(exc).__name__,
                 exc_info=True,
             )
             self.db.rollback()
@@ -2124,8 +2060,14 @@ class FlowExecutionOrchestrator:
 
         agent_executor = None
         try:
-            # Create agent executor using factory
-            agent_executor = create_agent_executor(agent_type, agent_config)
+            agent_executor = create_executor_for_execution(
+                agent_type,
+                agent_config,
+                flow=self.flow,
+                execution=self.execution_log,
+                db=self.db,
+                execution_context=execution_context,
+            )
 
             # Start the agent
             session_reference = await agent_executor.start(execution_context)

@@ -437,6 +437,16 @@ class FlowBase(BaseModel):
     prompt_customized: Optional[bool] = False
     tools_customized: Optional[bool] = False
     preset_update_available: Optional[bool] = False
+    runner_pool: Optional[str] = Field(
+        default=None,
+        description=(
+            "Self-hosted runner pool (id, name, or label). When set, executions "
+            "lease to a matching `preloop runner` instead of hosted compute. "
+            "If no matching runner is online the job queues for 15 minutes then "
+            "FAILS. A trigger-time `--runner` / `_runner` override takes "
+            "precedence."
+        ),
+    )
 
     @field_validator("trigger_project_ids", mode="before")
     @classmethod

@@ -44,6 +44,7 @@ from .embedding import CRUDEmbeddingModel, CRUDIssueEmbedding
 from .flow import CRUDFlow  # Import CRUDFlow class
 from .flow_execution import CRUDFlowExecution
 from .flow_execution_log import CRUDFlowExecutionLog
+from .flow_runner import CRUDFlowRunner, crud_flow_runner
 from .issue import CRUDIssue
 from .organization import CRUDOrganization  # Removed create_organization import
 from .project import CRUDProject
@@ -210,6 +211,8 @@ __all__ = [
     "CRUDFlow",
     "CRUDFlowExecution",
     "CRUDFlowExecutionLog",
+    "CRUDFlowRunner",
+    "crud_flow_runner",
     "CRUDIssueComplianceResult",
     "CRUDIssueSet",
     "CRUDGatewayUsageSearchDocument",

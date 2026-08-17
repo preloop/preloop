@@ -493,7 +493,7 @@ class TestMatrixOverrideOnRebuiltExecutors:
         executor = AsyncMock()
         executor.get_status.return_value = AgentStatus.RUNNING
         with patch(
-            "preloop.services.execution_monitor.create_agent_executor",
+            "preloop.agents.create_executor_for_execution",
             return_value=executor,
         ) as create_mock:
             await ExecutionMonitor()._check_execution(db_session, execution)
@@ -515,7 +515,7 @@ class TestMatrixOverrideOnRebuiltExecutors:
         # before spawning monitoring tasks, keeping the test self-contained.
         executor.get_status.return_value = AgentStatus.SUCCEEDED
         with patch(
-            "preloop.agents.create_agent_executor", return_value=executor
+            "preloop.agents.create_executor_for_execution", return_value=executor
         ) as create_mock:
             await ExecutionRecoveryService()._resume_execution_monitoring(
                 db_session, execution, nats_client=AsyncMock()

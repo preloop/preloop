@@ -110,6 +110,9 @@ class Flow(Base):
     tools_customized = Column(Boolean, default=False, nullable=False)
     # Flag indicating if a newer preset version is available (for notifications)
     preset_update_available = Column(Boolean, default=False, nullable=False)
+    # When set, executions are leased to a matching self-hosted runner.
+    # No hosted-compute fallback (data-boundary).
+    runner_pool = Column(String(200), nullable=True)
 
     ai_model = relationship("AIModel", back_populates="flows")
     account = relationship("Account", back_populates="flows", foreign_keys=[account_id])

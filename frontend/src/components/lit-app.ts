@@ -45,6 +45,7 @@ import '../views/authed/settings/invitation-management-view';
 import '../views/authed/notification-preferences-view';
 import '../components/settings-tabs';
 import '../views/authed/flows-view';
+import '../views/authed/runners-view';
 import '../views/authed/flow-view';
 import '../views/authed/flow-executions-view';
 import '../views/authed/flow-execution-view';
@@ -525,6 +526,7 @@ export class LitApp extends LitElement {
               { path: ':flowId', component: 'flow-view' },
             ],
           },
+          { path: 'runners', component: 'runners-view' },
           { path: '/runtime-sessions', component: 'runtime-sessions-view' },
           { path: '/agents', component: 'agents-view' },
           { path: '/agents/:agentId', component: 'agent-detail-view' },

@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
-from preloop.agents import create_agent_executor, AgentStatus
+from preloop.agents import AgentStatus
 from preloop.models.db.session import get_db_session as get_db
 from preloop.models.models.flow_execution import (
     FlowExecution,
@@ -158,9 +158,18 @@ class ExecutionMonitor:
                     execution.trigger_event_details,
                     flow_agent_type=flow.agent_type,
                 )
-                agent_executor = create_agent_executor(
+                from preloop.agents import create_executor_for_execution
+
+                agent_executor = create_executor_for_execution(
                     effective_agent_type,
                     {"agent_config": flow.agent_config or {}},
+                    flow=flow,
+                    execution=execution,
+                    db=db,
+                    execution_context={
+                        "trigger_event_data": execution.trigger_event_details,
+                        "account_id": flow.account_id,
+                    },
                 )
             except Exception as e:
                 logger.error(

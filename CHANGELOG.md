@@ -31,8 +31,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--payload JSON` or `--payload -` (stdin), and waits for a terminal
   status when stdin is not a TTY (override with `--wait=false`). Logs are
   polled from `GET /api/v1/flows/executions/{id}/logs` and printed to
-  stdout. Non-zero exit on FAILED, STOPPED, or TIMEOUT. `--runner` errors
-  until self-hosted runners land. See `docs/guide/flows/ci-trigger.md`.
+  stdout. Non-zero exit on FAILED, STOPPED, or TIMEOUT. `--runner` pins
+  the execution to a self-hosted runner id, name, or label. See
+  `docs/guide/flows/ci-trigger.md`.
+- **Self-hosted runners**: `preloop runner fg` registers with the account,
+  keeps a durable WebSocket, heartbeats, leases matching flow jobs, and
+  uploads logs (server republishes to `flow-updates.{id}`).
+  `enable`/`disable`/`start`/`stop`/`restart`/`status` install a launchd
+  plist (Darwin), systemd user unit (Linux), or scheduled task (Windows).
+  Flows may set `runner_pool`; offline matching runners queue for 15
+  minutes then FAIL with no hosted-compute fallback. Console `/console/runners`
+  lists this account's runners. This is the lease path, not a claim that
+  every agent harness already runs identically on the CLI host.
 - **Matched-rule context on approval requests**: the approval the human
   reviews now records which access rule gated the call (id, name, expression,
   priority, and any lower-priority rules that also matched), snapshotted at

@@ -15,17 +15,31 @@ from preloop.services.execution_recovery import (
 )
 
 
-def _make_execution(*, agent_session_reference="sess-ref", status="RUNNING"):
+def _make_execution(
+    *,
+    agent_session_reference="sess-ref",
+    status="RUNNING",
+    runner_pool=None,
+):
     execution = MagicMock()
     execution.id = uuid.uuid4()
     execution.flow_id = uuid.uuid4()
     execution.status = status
     execution.agent_session_reference = agent_session_reference
     execution.trigger_event_details = {}
+    execution.account_id = uuid.uuid4()
     flow = MagicMock()
     flow.agent_type = "openhands"
     flow.agent_config = {}
+    flow.runner_pool = runner_pool
+    flow.account_id = execution.account_id
     execution.flow = flow
+    return execution
+
+
+def _make_leased_execution(*, status="RUNNING"):
+    execution = _make_execution(status=status, runner_pool="local")
+    execution.agent_session_reference = f"runner:{uuid.uuid4()}:{execution.id}"
     return execution
 
 
@@ -177,7 +191,9 @@ async def test_resume_marks_failed_when_container_failed():
     agent_executor.aclose = AsyncMock()
 
     with (
-        patch("preloop.agents.create_agent_executor", return_value=agent_executor),
+        patch(
+            "preloop.agents.create_executor_for_execution", return_value=agent_executor
+        ),
         patch.object(execution_recovery.crud_flow_execution, "update") as update_mock,
     ):
         await svc._resume_execution_monitoring(db, execution, None)
@@ -197,7 +213,9 @@ async def test_resume_marks_succeeded_when_container_succeeded():
     agent_executor.aclose = AsyncMock()
 
     with (
-        patch("preloop.agents.create_agent_executor", return_value=agent_executor),
+        patch(
+            "preloop.agents.create_executor_for_execution", return_value=agent_executor
+        ),
         patch.object(execution_recovery.crud_flow_execution, "update") as update_mock,
     ):
         await svc._resume_execution_monitoring(db, execution, None)
@@ -212,7 +230,7 @@ async def test_resume_marks_failed_when_status_check_raises():
 
     with (
         patch(
-            "preloop.agents.create_agent_executor",
+            "preloop.agents.create_executor_for_execution",
             side_effect=RuntimeError("docker down"),
         ),
         patch.object(execution_recovery.crud_flow_execution, "update") as update_mock,
@@ -236,7 +254,84 @@ async def test_resume_running_container_schedules_monitoring_task():
 
     fake_task = MagicMock()
     with (
-        patch("preloop.agents.create_agent_executor", return_value=agent_executor),
+        patch(
+            "preloop.agents.create_executor_for_execution", return_value=agent_executor
+        ),
+        patch.object(execution_recovery, "FlowExecutionOrchestrator") as orch_cls,
+        patch.object(
+            execution_recovery.asyncio, "create_task", return_value=fake_task
+        ) as create_task_mock,
+    ):
+        await svc._resume_execution_monitoring(db, execution, "nats")
+    orch_cls.assert_called_once()
+    create_task_mock.assert_called_once()
+    assert svc.recovery_tasks == [fake_task]
+
+
+@pytest.mark.asyncio
+async def test_resume_marks_failed_when_remote_runner_failed():
+    svc = ExecutionRecoveryService()
+    db = MagicMock()
+    execution = _make_leased_execution()
+
+    agent_executor = MagicMock()
+    agent_executor.get_status = AsyncMock(return_value=AgentStatus.FAILED)
+    agent_executor.aclose = AsyncMock()
+
+    with (
+        patch(
+            "preloop.agents.create_executor_for_execution",
+            return_value=agent_executor,
+        ) as create_mock,
+        patch.object(execution_recovery.crud_flow_execution, "update") as update_mock,
+    ):
+        await svc._resume_execution_monitoring(db, execution, None)
+    update_mock.assert_called_once()
+    assert update_mock.call_args.kwargs["obj_in"].status == "FAILED"
+    create_mock.assert_called_once()
+    assert create_mock.call_args.kwargs["flow"] is execution.flow
+    assert create_mock.call_args.kwargs["execution"] is execution
+    assert create_mock.call_args.kwargs["db"] is db
+    agent_executor.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_resume_marks_succeeded_when_remote_runner_succeeded():
+    svc = ExecutionRecoveryService()
+    db = MagicMock()
+    execution = _make_leased_execution()
+
+    agent_executor = MagicMock()
+    agent_executor.get_status = AsyncMock(return_value=AgentStatus.SUCCEEDED)
+    agent_executor.aclose = AsyncMock()
+
+    with (
+        patch(
+            "preloop.agents.create_executor_for_execution",
+            return_value=agent_executor,
+        ),
+        patch.object(execution_recovery.crud_flow_execution, "update") as update_mock,
+    ):
+        await svc._resume_execution_monitoring(db, execution, None)
+    assert update_mock.call_args.kwargs["obj_in"].status == "SUCCEEDED"
+
+
+@pytest.mark.asyncio
+async def test_resume_running_remote_runner_schedules_monitoring_task():
+    svc = ExecutionRecoveryService()
+    db = MagicMock()
+    execution = _make_leased_execution()
+
+    agent_executor = MagicMock()
+    agent_executor.get_status = AsyncMock(return_value=AgentStatus.RUNNING)
+    agent_executor.aclose = AsyncMock()
+
+    fake_task = MagicMock()
+    with (
+        patch(
+            "preloop.agents.create_executor_for_execution",
+            return_value=agent_executor,
+        ),
         patch.object(execution_recovery, "FlowExecutionOrchestrator") as orch_cls,
         patch.object(
             execution_recovery.asyncio, "create_task", return_value=fake_task

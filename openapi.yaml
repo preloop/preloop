@@ -7596,6 +7596,117 @@ paths:
             was created. Also returned for invalid request input (e.g. malformed flow_id).
         '500':
           description: No execution could be created (failure at/before the insert).
+  /api/v1/runners/register:
+    post:
+      tags:
+      - Runners
+      summary: Register Runner
+      description: Register a new runner or resume an existing one for this account.
+      operationId: register_runner_api_v1_runners_register_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunnerRegisterRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunnerRegisterResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
+  /api/v1/runners:
+    get:
+      tags:
+      - Runners
+      summary: List Runners
+      operationId: list_runners_api_v1_runners_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: skip
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 0
+          title: Skip
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 100
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RunnerResponse'
+                title: Response List Runners Api V1 Runners Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/runners/fleet-summary:
+    get:
+      tags:
+      - Runners
+      summary: Runner Fleet Summary
+      operationId: runner_fleet_summary_api_v1_runners_fleet_summary_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunnerFleetSummary'
+      security:
+      - bearerAuth: []
+  /api/v1/runners/{runner_id}:
+    get:
+      tags:
+      - Runners
+      summary: Get Runner
+      operationId: get_runner_api_v1_runners__runner_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: runner_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Runner Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunnerResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/policies/validate:
     post:
       tags:
@@ -11688,6 +11799,15 @@ components:
           - type: 'null'
           title: Preset Update Available
           default: false
+        runner_pool:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Runner Pool
+          description: Self-hosted runner pool (id, name, or label). When set, executions
+            lease to a matching `preloop runner` instead of hosted compute. If no
+            matching runner is online the job queues for 15 minutes then FAILS. A
+            trigger-time `--runner` / `_runner` override takes precedence.
       type: object
       required:
       - name
@@ -12169,6 +12289,15 @@ components:
           type: boolean
           title: Preset Update Available
           default: false
+        runner_pool:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Runner Pool
+          description: Self-hosted runner pool (id, name, or label). When set, executions
+            lease to a matching `preloop runner` instead of hosted compute. If no
+            matching runner is online the job queues for 15 minutes then FAILS. A
+            trigger-time `--runner` / `_runner` override takes precedence.
         id:
           anyOf:
           - type: string
@@ -12367,6 +12496,15 @@ components:
           - type: 'null'
           title: Preset Update Available
           default: false
+        runner_pool:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Runner Pool
+          description: Self-hosted runner pool (id, name, or label). When set, executions
+            lease to a matching `preloop runner` instead of hosted compute. If no
+            matching runner is online the job queues for 15 minutes then FAILS. A
+            trigger-time `--runner` / `_runner` override takes precedence.
       type: object
       title: FlowUpdate
     GatewayBudgetSummary:
@@ -15853,6 +15991,238 @@ components:
       - EXCLUDE
       title: RuleType
       description: Enum for rule types.
+    RunnerFleetSummary:
+      properties:
+        runner_count:
+          type: integer
+          title: Runner Count
+        online_runner_count:
+          type: integer
+          title: Online Runner Count
+        last_runner_heartbeat:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Runner Heartbeat
+      type: object
+      required:
+      - runner_count
+      - online_runner_count
+      title: RunnerFleetSummary
+    RunnerRegisterRequest:
+      properties:
+        name:
+          anyOf:
+          - type: string
+            maxLength: 200
+          - type: 'null'
+          title: Name
+        hostname:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Hostname
+        os:
+          anyOf:
+          - type: string
+            maxLength: 30
+          - type: 'null'
+          title: Os
+        arch:
+          anyOf:
+          - type: string
+            maxLength: 30
+          - type: 'null'
+          title: Arch
+        labels:
+          items:
+            type: string
+          type: array
+          title: Labels
+        runner_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Runner Id
+        instance_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Instance Id
+      type: object
+      title: RunnerRegisterRequest
+      description: Register or resume a runner for the logged-in account.
+    RunnerRegisterResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        account_id:
+          type: string
+          format: uuid
+          title: Account Id
+        registered_by_user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Registered By User Id
+        instance_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Instance Id
+        name:
+          type: string
+          title: Name
+        hostname:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Hostname
+        os:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Os
+        arch:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Arch
+        labels:
+          items:
+            type: string
+          type: array
+          title: Labels
+        status:
+          type: string
+          title: Status
+        last_heartbeat:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Heartbeat
+        current_execution_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Current Execution Id
+        registered_by_email:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Registered By Email
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+        token:
+          type: string
+          title: Token
+      type: object
+      required:
+      - id
+      - account_id
+      - name
+      - status
+      - created_at
+      - updated_at
+      - token
+      title: RunnerRegisterResponse
+    RunnerResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        account_id:
+          type: string
+          format: uuid
+          title: Account Id
+        registered_by_user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Registered By User Id
+        instance_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Instance Id
+        name:
+          type: string
+          title: Name
+        hostname:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Hostname
+        os:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Os
+        arch:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Arch
+        labels:
+          items:
+            type: string
+          type: array
+          title: Labels
+        status:
+          type: string
+          title: Status
+        last_heartbeat:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Heartbeat
+        current_execution_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Current Execution Id
+        registered_by_email:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Registered By Email
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+      type: object
+      required:
+      - id
+      - account_id
+      - name
+      - status
+      - created_at
+      - updated_at
+      title: RunnerResponse
     RuntimeSessionActivityItem:
       properties:
         activity_type:

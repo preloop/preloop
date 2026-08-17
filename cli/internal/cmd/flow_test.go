@@ -162,14 +162,48 @@ func TestFlowTriggerPostsAndPrintsID(t *testing.T) {
 	}
 }
 
-func TestFlowTriggerRunnerFlagErrors(t *testing.T) {
-	if err := flowTriggerCmd.Flags().Set("runner", "buildkite"); err != nil {
+func TestFlowTriggerRunnerSetsPayload(t *testing.T) {
+	const flowID = "11111111-2222-4333-8444-555555555555"
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v1/flows":
+			_ = json.NewEncoder(w).Encode([]flowSummaryResponse{
+				{ID: flowID, Name: "Nightly Review"},
+			})
+		case strings.HasSuffix(r.URL.Path, "/trigger"):
+			_ = json.NewDecoder(r.Body).Decode(&gotBody)
+			_ = json.NewEncoder(w).Encode(flowTriggerResult{
+				ID: "exec-r", Status: "PENDING", FlowID: flowID,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	testenv.SetHome(t, t.TempDir())
+	oldToken, oldURL := FlagToken, FlagURL
+	FlagToken, FlagURL = "tok", server.URL
+	t.Cleanup(func() { FlagToken, FlagURL = oldToken, oldURL })
+	if err := flowTriggerCmd.Flags().Set("runner", "local"); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = flowTriggerCmd.Flags().Set("runner", "") })
-	err := runFlowTrigger(flowTriggerCmd, []string{"any"})
-	if err == nil || !strings.Contains(err.Error(), "not available yet") {
-		t.Fatalf("expected runner error, got %v", err)
+	if err := flowTriggerCmd.Flags().Set("wait", "false"); err != nil {
+		t.Fatal(err)
+	}
+	if err := flowTriggerCmd.Flags().Set("payload", ""); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = flowTriggerCmd.Flags().Set("runner", "")
+		_ = flowTriggerCmd.Flags().Set("wait", "false")
+	})
+	flowTriggerCmd.SetOut(io.Discard)
+	if err := runFlowTrigger(flowTriggerCmd, []string{"Nightly Review"}); err != nil {
+		t.Fatalf("runFlowTrigger: %v", err)
+	}
+	if gotBody["_runner"] != "local" {
+		t.Fatalf("payload = %#v", gotBody)
 	}
 }
 

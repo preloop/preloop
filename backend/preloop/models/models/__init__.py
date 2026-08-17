@@ -16,6 +16,7 @@ from .client_version_log import ClientVersionLog
 from .ai_model import AIModel
 from .flow import Flow
 from .flow_execution import FlowExecution
+from .flow_runner import FlowRunner
 from .flow_execution_log import FlowExecutionLog
 from .gateway_usage_search_document import GatewayUsageSearchDocument
 from .webauthn_credential import WebAuthnCredential
@@ -99,6 +100,7 @@ __all__ = [
     "AIModel",
     "Flow",
     "FlowExecution",
+    "FlowRunner",
     "FlowExecutionLog",
     "GatewayUsageSearchDocument",
     "WebAuthnCredential",
