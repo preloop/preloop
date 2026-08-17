@@ -16,6 +16,7 @@ from preloop.services.ai_model_provider import (
     QWEN_DEFAULT_BASE_URL,
     QWEN_INTL_BASE_URL,
     QWEN_KNOWN_MODELS,
+    QWEN_US_BASE_URL,
     ZAI_KNOWN_MODELS,
     _is_qwen_chat_model,
     FALLBACK_ERROR_REASONS,
@@ -885,6 +886,14 @@ class TestGetQwenModels:
             await _get_qwen_models("valid_key", "http://127.0.0.1/v1")
 
     @pytest.mark.asyncio
+    async def test_get_qwen_models_rejects_non_aliyun_host(self):
+        """Qwen discovery must not fetch a host outside DashScope / Model Studio."""
+        with pytest.raises(ValueError, match="DashScope or Model Studio"):
+            await _get_qwen_models(
+                "valid_key", "https://evil.example.com/compatible-mode/v1"
+            )
+
+    @pytest.mark.asyncio
     async def test_get_qwen_models_filters_media_and_nsfw_from_live_list(self):
         """Dedicated media / NSFW SKUs must not appear in the chat picker."""
         with patch("openai.AsyncOpenAI") as mock_client:
@@ -1486,6 +1495,71 @@ class TestDiscoveryEndpointValidation:
         from preloop.services.ai_model_provider import validate_discovery_endpoint
 
         assert validate_discovery_endpoint(endpoint) == endpoint
+
+
+class TestQwenEndpointAllowlist:
+    """Qwen discovery/chat URLs are restricted to DashScope / Model Studio."""
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            QWEN_DEFAULT_BASE_URL,
+            QWEN_INTL_BASE_URL,
+            QWEN_US_BASE_URL,
+            "https://workspace-abc.maas.aliyuncs.com/v1",
+        ],
+    )
+    def test_allowed_dashscope_hosts(self, endpoint):
+        from preloop.services.ai_model_provider import validate_qwen_endpoint
+
+        assert validate_qwen_endpoint(endpoint) == endpoint
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "https://evil.example.com/v1",
+            "https://openrouter.ai/api/v1",
+            "https://dashscope.aliyuncs.com.evil.test/v1",
+            "https://notaliyuncs.com/v1",
+            "https://1.2.3.4/v1",
+        ],
+    )
+    def test_rejects_non_aliyun_host(self, endpoint):
+        from preloop.services.ai_model_provider import validate_qwen_endpoint
+
+        with pytest.raises(ValueError, match="DashScope or Model Studio"):
+            validate_qwen_endpoint(endpoint)
+
+    def test_openai_compatible_still_allows_non_aliyun_host(self):
+        """Other providers must not inherit the Qwen host allowlist."""
+        from preloop.services.ai_model_provider import validate_discovery_endpoint
+
+        endpoint = "https://gateway.example.com/v1"
+        assert validate_discovery_endpoint(endpoint) == endpoint
+
+    def test_crud_persist_rejects_non_aliyun_qwen_host(self):
+        """Saved Qwen chat endpoints use the same DashScope allowlist."""
+        from preloop.models.crud.ai_model import CRUDAIModel
+
+        with pytest.raises(ValueError, match="DashScope or Model Studio"):
+            CRUDAIModel._validate_qwen_api_endpoint(
+                {
+                    "provider_name": "qwen",
+                    "api_endpoint": "https://evil.example.com/v1",
+                }
+            )
+        CRUDAIModel._validate_qwen_api_endpoint(
+            {
+                "provider_name": "qwen",
+                "api_endpoint": QWEN_INTL_BASE_URL,
+            }
+        )
+        CRUDAIModel._validate_qwen_api_endpoint(
+            {
+                "provider_name": "openai",
+                "api_endpoint": "https://evil.example.com/v1",
+            }
+        )
 
 
 class TestOpenAIAuthErrorDoesNotLeakSecrets:

@@ -294,6 +294,47 @@ def validate_discovery_endpoint(api_endpoint: str) -> str:
     return raw
 
 
+# Regional DashScope hosts shown in the add-provider UI, plus workspace
+# Model Studio hosts under *.maas.aliyuncs.com. Both sit under *.aliyuncs.com.
+QWEN_ALLOWED_HOSTS = frozenset(
+    {
+        "dashscope.aliyuncs.com",
+        "dashscope-intl.aliyuncs.com",
+        "dashscope-us.aliyuncs.com",
+    }
+)
+QWEN_ALLOWED_HOST_SUFFIXES = (".aliyuncs.com", ".maas.aliyuncs.com")
+
+
+def _is_qwen_allowed_host(host: str) -> bool:
+    """Return True if host is a DashScope / Model Studio hostname."""
+    hostname = (host or "").strip().lower().rstrip(".")
+    if not hostname:
+        return False
+    if hostname in QWEN_ALLOWED_HOSTS:
+        return True
+    return any(hostname.endswith(suffix) for suffix in QWEN_ALLOWED_HOST_SUFFIXES)
+
+
+def validate_qwen_endpoint(api_endpoint: str) -> str:
+    """Validate a Qwen discovery or chat endpoint, or raise ValueError.
+
+    Applies the shared SSRF guard, then restricts the host to known
+    DashScope / Model Studio names (``*.aliyuncs.com``, including the
+    Beijing / Singapore / US hosts in the UI and workspace
+    ``*.maas.aliyuncs.com`` endpoints). Other providers keep using
+    ``validate_discovery_endpoint`` alone.
+    """
+    raw = validate_discovery_endpoint(api_endpoint)
+    host = (urlsplit(raw).hostname or "").strip()
+    if not _is_qwen_allowed_host(host):
+        raise ProviderValidationError(
+            "Qwen api_endpoint must be a DashScope or Model Studio host "
+            "(*.aliyuncs.com)"
+        )
+    return raw
+
+
 async def _get_openai_compatible_models(
     api_endpoint: str, api_key: Optional[str] = None
 ) -> ModelDiscoveryResult:
@@ -870,11 +911,12 @@ async def _get_qwen_models(
     Default base URL is the China (Beijing) DashScope compatible-mode host so
     existing keys keep working. A caller-supplied endpoint (Singapore intl,
     US Virginia, or a workspace-specific ``*.maas.aliyuncs.com`` host) is
-    used instead after SSRF validation. Region keys are not interchangeable.
+    used instead after DashScope host allowlisting. Region keys are not
+    interchangeable.
     """
     raw = (api_endpoint or "").strip()
     if raw:
-        base_url = validate_discovery_endpoint(raw).rstrip("/")
+        base_url = validate_qwen_endpoint(raw).rstrip("/")
     else:
         base_url = QWEN_DEFAULT_BASE_URL
 
