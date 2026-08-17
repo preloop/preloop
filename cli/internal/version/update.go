@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -53,6 +54,110 @@ var applyUpdateFn = ApplyUpdate
 // NormalizeVersion strips a leading "v" so "v0.14.0" and "0.14.0" compare equal.
 func NormalizeVersion(v string) string {
 	return strings.TrimPrefix(strings.TrimSpace(v), "v")
+}
+
+// parsedVersion is a numeric X.Y.Z with an optional prerelease suffix.
+type parsedVersion struct {
+	parts []int
+	pre   string
+}
+
+func parseSemver(v string) (parsedVersion, bool) {
+	s := strings.TrimSpace(v)
+	s = strings.TrimPrefix(s, "v")
+	s = strings.TrimPrefix(s, "V")
+	if s == "" || s == "dev" {
+		return parsedVersion{}, false
+	}
+	core, pre, _ := strings.Cut(s, "-")
+	core, _, _ = strings.Cut(core, "+")
+	pre, _, _ = strings.Cut(pre, "+")
+	fields := strings.Split(core, ".")
+	if len(fields) == 0 || len(fields) > 4 {
+		return parsedVersion{}, false
+	}
+	parts := make([]int, len(fields))
+	for i, field := range fields {
+		n, err := strconv.Atoi(field)
+		if err != nil || n < 0 {
+			return parsedVersion{}, false
+		}
+		parts[i] = n
+	}
+	return parsedVersion{parts: parts, pre: pre}, true
+}
+
+func compareParsed(a, b parsedVersion) int {
+	n := len(a.parts)
+	if len(b.parts) > n {
+		n = len(b.parts)
+	}
+	for i := 0; i < n; i++ {
+		av, bv := 0, 0
+		if i < len(a.parts) {
+			av = a.parts[i]
+		}
+		if i < len(b.parts) {
+			bv = b.parts[i]
+		}
+		if av < bv {
+			return -1
+		}
+		if av > bv {
+			return 1
+		}
+	}
+	aPre, bPre := a.pre != "", b.pre != ""
+	if aPre && !bPre {
+		return -1
+	}
+	if !aPre && bPre {
+		return 1
+	}
+	switch {
+	case a.pre < b.pre:
+		return -1
+	case a.pre > b.pre:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// CompareVersions compares [v]X.Y.Z strings (optional prerelease after '-').
+// Returns -1 if a < b, 0 if a == b, 1 if a > b. ok is false when either
+// side is not a parseable version (for example "dev").
+func CompareVersions(a, b string) (cmp int, ok bool) {
+	pa, oka := parseSemver(a)
+	pb, okb := parseSemver(b)
+	if !oka || !okb {
+		return 0, false
+	}
+	return compareParsed(pa, pb), true
+}
+
+// UpdateAvailable reports whether latest is a newer release than current.
+// A local build that is already newer than latest, or an unparseable
+// version such as "dev", is not treated as an available update.
+func UpdateAvailable(current, latest string) bool {
+	if strings.TrimSpace(latest) == "" {
+		return false
+	}
+	cmp, ok := CompareVersions(current, latest)
+	return ok && cmp < 0
+}
+
+// StdinIsTerminal reports whether stdin is a TTY. Overridable in tests
+// via OverrideStdinIsTerminalForTest.
+func StdinIsTerminal() bool {
+	return stdinIsTerminal()
+}
+
+// OverrideStdinIsTerminalForTest swaps TTY detection. Tests only.
+func OverrideStdinIsTerminalForTest(fn func() bool) func() {
+	prev := stdinIsTerminal
+	stdinIsTerminal = fn
+	return func() { stdinIsTerminal = prev }
 }
 
 // ReleaseTag returns the GitHub release tag for a version string.
@@ -140,7 +245,7 @@ func ApplyUpdate(ctx context.Context, ver, destPath string) error {
 	if err != nil {
 		return err
 	}
-	if err := verifyOptionalChecksum(ctx, ver, runtime.GOOS, runtime.GOARCH, body); err != nil {
+	if err := verifyChecksum(ctx, ver, runtime.GOOS, runtime.GOARCH, body); err != nil {
 		return err
 	}
 	return ReplaceBinary(destPath, body)
@@ -175,6 +280,10 @@ func ReplaceBinary(destPath string, newBytes []byte) error {
 	if err := tmp.Chmod(mode); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("chmod temp binary: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync temp binary: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp binary: %w", err)
@@ -232,35 +341,31 @@ func downloadReleaseAsset(ctx context.Context, ver, goos, goarch string) ([]byte
 	return body, nil
 }
 
-func verifyOptionalChecksum(ctx context.Context, ver, goos, goarch string, body []byte) error {
+func verifyChecksum(ctx context.Context, ver, goos, goarch string, body []byte) error {
 	url := ChecksumsURL(ver)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil
+		return fmt.Errorf("build checksum request: %w", err)
 	}
 	SetClientIdentityHeaders(req.Header)
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Fprintln(promptWriter, "Warning: could not download SHA256SUMS; continuing without verification.")
-		return nil
+		return fmt.Errorf("download SHA256SUMS: %w", err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintln(promptWriter, "Warning: could not download SHA256SUMS; continuing without verification.")
-		return nil
+		return fmt.Errorf("download SHA256SUMS: HTTP %d", resp.StatusCode)
 	}
 	sums, err := io.ReadAll(resp.Body)
 	if err != nil {
-		fmt.Fprintln(promptWriter, "Warning: could not read SHA256SUMS; continuing without verification.")
-		return nil
+		return fmt.Errorf("read SHA256SUMS: %w", err)
 	}
 
 	asset := ReleaseAssetName(goos, goarch)
 	expected := checksumForAsset(string(sums), asset)
 	if expected == "" {
-		fmt.Fprintf(promptWriter, "Warning: could not find a SHA256 checksum for %s; continuing without verification.\n", asset)
-		return nil
+		return fmt.Errorf("SHA256SUMS has no entry for %s", asset)
 	}
 	sum := sha256.Sum256(body)
 	actual := hex.EncodeToString(sum[:])
@@ -292,8 +397,8 @@ func defaultStdinIsTerminal() bool {
 	return stat.Mode()&os.ModeCharDevice != 0
 }
 
-// promptUpdateYes prints "Update now? [y/N]" and returns whether the user accepted.
-func promptUpdateYes() bool {
+// PromptUpdateYes prints "Update now? [y/N]" and returns whether the user accepted.
+func PromptUpdateYes() bool {
 	fmt.Fprint(promptWriter, "Update now? [y/N] ")
 	scanner := bufio.NewScanner(promptReader)
 	if !scanner.Scan() {
@@ -323,7 +428,7 @@ func displayUpdatePrompt(info *VersionInfo) {
 	fmt.Fprintln(promptWriter, "╰─────────────────────────────────────────────────────────╯")
 	fmt.Fprintln(promptWriter)
 
-	if !promptUpdateYes() {
+	if !PromptUpdateYes() {
 		return
 	}
 	fmt.Fprintf(promptWriter, "Updating to %s...\n", info.LatestVersion)

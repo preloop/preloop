@@ -122,8 +122,7 @@ func CheckForUpdate() error {
 		_ = err
 	}
 
-	// Compare versions
-	if info.LatestVersion != "" && info.LatestVersion != Version && Version != "dev" {
+	if UpdateAvailable(Version, info.LatestVersion) {
 		displayUpdatePrompt(info)
 	}
 
