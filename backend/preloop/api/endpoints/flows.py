@@ -1327,8 +1327,8 @@ def delete_flow(
             status_code=409,
             detail=(
                 f"Flow has {len(active_executions)} active execution(s). "
-"Stop the active executions first (use the execution's stop command "
-'endpoint) and retry the delete.'
+                "Stop the active executions first (use the execution's stop command "
+                "endpoint) and retry the delete."
                 'with {"command": "stop"}) and retry the delete.'
             ),
         )
