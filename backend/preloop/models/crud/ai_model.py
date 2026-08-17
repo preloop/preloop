@@ -36,6 +36,35 @@ class CRUDAIModel(CRUDBase[AIModel]):
         return normalized
 
     @staticmethod
+    def _validate_qwen_api_endpoint(
+        obj_data: Dict[str, Any],
+        existing: Optional[AIModel] = None,
+    ) -> None:
+        """Reject a Qwen chat endpoint outside DashScope / Model Studio."""
+        provider = (
+            str(
+                obj_data.get("provider_name")
+                or (existing.provider_name if existing is not None else "")
+                or ""
+            )
+            .strip()
+            .lower()
+        )
+        if provider != "qwen":
+            return
+        if "api_endpoint" in obj_data:
+            endpoint = obj_data.get("api_endpoint")
+        elif existing is not None:
+            endpoint = existing.api_endpoint
+        else:
+            return
+        if not isinstance(endpoint, str) or not endpoint.strip():
+            return
+        from preloop.services.ai_model_provider import validate_qwen_endpoint
+
+        validate_qwen_endpoint(endpoint)
+
+    @staticmethod
     def _apply_secret_reference_fields(
         db: Session,
         *,
@@ -204,6 +233,7 @@ class CRUDAIModel(CRUDBase[AIModel]):
                 and commit themselves.
         """
         obj_data = self._normalize_model_kind_fields(dict(obj_in))
+        self._validate_qwen_api_endpoint(obj_data)
         if obj_in.get("is_default"):
             for existing_model in (
                 db.query(self.model)
@@ -326,6 +356,7 @@ class CRUDAIModel(CRUDBase[AIModel]):
     ) -> AIModel:
         """Update an AIModel. If setting a model as default, ensure others are not."""
         obj_data = self._normalize_model_kind_fields(dict(obj_in))
+        self._validate_qwen_api_endpoint(obj_data, existing=db_obj)
         target_model_kind = (obj_data.get("meta_data") or {}).get(
             "service_kind"
         ) or db_obj.model_kind

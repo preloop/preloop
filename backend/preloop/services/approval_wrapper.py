@@ -78,11 +78,7 @@ def with_approval(tool_func: Callable) -> Callable:
                 # Evaluate workflow rules (ToolAccessRule) to determine action
                 # This checks allow/deny/require_approval rules with conditions
 
-                (
-                    action,
-                    approval_workflow_id,
-                    rule_description,
-                ) = await evaluate_policy_async(
+                policy_decision = await evaluate_policy_async(
                     db=db,
                     tool_name=tool_name,
                     tool_args=kwargs,
@@ -91,6 +87,7 @@ def with_approval(tool_func: Callable) -> Callable:
                     user_id=getattr(user_context, "user_id", None),
                     execution_id=getattr(user_context, "execution_id", None),
                 )
+                action, approval_workflow_id, rule_description = policy_decision
 
                 logger.info(
                     f"Policy evaluation for tool '{tool_name}': "
@@ -161,6 +158,10 @@ def with_approval(tool_func: Callable) -> Callable:
                         tool_args=kwargs,  # Use kwargs as tool arguments
                         agent_reasoning=None,
                         execution_id=None,
+                        # getattr: a patched evaluator may return a plain
+                        # tuple, and a missing snapshot must read as
+                        # "not recorded" rather than raise here.
+                        rule_context=getattr(policy_decision, "rule_context", None),
                     )
 
                     notification_channel = (

@@ -534,7 +534,9 @@ func conversionEventName() string {
 	return "Login"
 }
 
-func stdinIsTerminal() bool {
+var stdinIsTerminal = defaultStdinIsTerminal
+
+func defaultStdinIsTerminal() bool {
 	stat, err := os.Stdin.Stat()
 	if err != nil {
 		return false

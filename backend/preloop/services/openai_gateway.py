@@ -86,7 +86,10 @@ from preloop.services.upstream_errors import (
     classify_upstream_error,
 )
 from preloop.services.model_price_catalog import schedule_price_lookup
-from preloop.services.unpriced_model_alert import notify_unpriced_model
+from preloop.services.unpriced_model_alert import (
+    notify_unpriced_model,
+    should_notify_unpriced_model,
+)
 from preloop.services.rate_limit_telemetry import (
     RateLimitSnapshot,
     classify_rate_limit_subtype,
@@ -6230,17 +6233,28 @@ class OpenAIGatewayService:
             # Tell an admin the catalog is missing this model. Deduplicated
             # per (model_alias, provider) via a persisted marker, so hot-path
             # traffic yields one actionable alert, not one per request.
-            try:
-                notify_unpriced_model(
-                    self.db,
-                    account_id=str(self.auth_context.user.account_id),
-                    model_alias=model_alias,
-                    provider_name=ai_model.provider_name,
-                    total_tokens=int(total_tokens or 0),
-                    ai_model=ai_model,
-                )
-            except Exception:  # noqa: BLE001 - never break recording
-                logger.debug("Unpriced-model admin alert failed", exc_info=True)
+            # Skip when usage accounting was on and the response has no
+            # completion and no cost fields (empty routed completion).
+            usage_accounting_requested = (
+                _is_openrouter_upstream(ai_model)
+                and _openrouter_usage_accounting_enabled()
+            )
+            if should_notify_unpriced_model(
+                usage_accounting_requested=usage_accounting_requested,
+                usage_details=usage_details,
+                completion_tokens=int(completion_tokens or 0),
+            ):
+                try:
+                    notify_unpriced_model(
+                        self.db,
+                        account_id=str(self.auth_context.user.account_id),
+                        model_alias=model_alias,
+                        provider_name=ai_model.provider_name,
+                        total_tokens=int(total_tokens or 0),
+                        ai_model=ai_model,
+                    )
+                except Exception:  # noqa: BLE001 - never break recording
+                    logger.debug("Unpriced-model admin alert failed", exc_info=True)
 
         log_model_gateway_request(
             self.db,

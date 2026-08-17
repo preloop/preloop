@@ -10,6 +10,7 @@ import {
   withoutApprovalMetadata,
 } from '../../utils/approval-identity';
 import '../../components/question-answer-panel';
+import '../../components/approval-rule-context-block';
 import type { QuestionAnswerDetail } from '../../components/question-answer-panel';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -596,6 +597,18 @@ export class ApprovalView extends AuthedElement {
           </div>
         </div>
 
+        ${
+          this.approvalRequest.rule_context
+            ? html`
+                <div class="content-section">
+                  <approval-rule-context-block
+                    .ruleContext=${this.approvalRequest.rule_context}
+                    .toolName=${this.approvalRequest.tool_name}
+                  ></approval-rule-context-block>
+                </div>
+              `
+            : ''
+        }
         ${
           this.approvalRequest.agent_reasoning
             ? html`

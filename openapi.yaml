@@ -9207,6 +9207,16 @@ components:
             format: uuid
           - type: 'null'
           title: Target Session Id
+        session_source_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Source Id
+        session_reference:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Reference
         session_mode:
           type: string
           enum:
@@ -9979,6 +9989,12 @@ components:
             format: uuid
           - type: 'null'
           title: Auto Approval Bypass Id
+        rule_context:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Rule Context
         was_bypassed:
           type: boolean
           title: Was Bypassed
