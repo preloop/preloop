@@ -9,7 +9,11 @@ from typing import Dict, List, Optional, Set, Tuple
 from fastapi import WebSocket
 from nats.aio.client import Client
 from nats.aio.msg import Msg
-from sqlalchemy.exc import OperationalError, TimeoutError as SQLAlchemyTimeoutError
+from sqlalchemy.exc import (
+    IntegrityError,
+    OperationalError,
+    TimeoutError as SQLAlchemyTimeoutError,
+)
 
 from preloop.sync.services.event_bus import get_task_publisher
 from preloop.models.db.session import get_db_session as get_db
@@ -36,6 +40,46 @@ LOG_PERSIST_BASE_BACKOFF_SECONDS = 0.5
 # reached) and dropped/failed connections. Anything else is a real bug and is
 # not retried.
 _RETRYABLE_DB_ERRORS = (SQLAlchemyTimeoutError, OperationalError)
+
+# PostgreSQL SQLSTATE for foreign_key_violation. Logs can legitimately arrive
+# for an execution row that no longer exists (e.g. the flow was deleted while
+# an agent was still shutting down); those inserts fail this FK and must not
+# be retried or escalated as data-loss alerts.
+_FK_VIOLATION_PGCODE = "23503"
+
+
+def _is_execution_fk_violation(exc: BaseException) -> bool:
+    """Return True if ``exc`` is a foreign-key violation on a log insert."""
+    if not isinstance(exc, IntegrityError):
+        return False
+    return getattr(exc.orig, "pgcode", None) == _FK_VIOLATION_PGCODE
+
+
+def _strip_orphaned_logs(
+    batch: List[Tuple[str, dict]],
+) -> Tuple[List[Tuple[str, dict]], Dict[str, int]]:
+    """Split a batch into entries with a live execution row and orphans.
+
+    Checks execution existence once via the CRUD layer. Returns the surviving
+    entries and a ``{execution_id: dropped_count}`` map for the orphans.
+    """
+    from preloop.models.crud import crud_flow_execution
+
+    ids = {execution_id for execution_id, _ in batch}
+    db = next(get_db())
+    try:
+        existing = crud_flow_execution.existing_ids(db, list(ids))
+    finally:
+        db.close()
+
+    surviving: List[Tuple[str, dict]] = []
+    orphaned: Dict[str, int] = {}
+    for execution_id, log_data in batch:
+        if execution_id in existing:
+            surviving.append((execution_id, log_data))
+        else:
+            orphaned[execution_id] = orphaned.get(execution_id, 0) + 1
+    return surviving, orphaned
 
 
 def get_log_queue() -> asyncio.Queue:
@@ -88,15 +132,20 @@ def _sync_batch_insert_logs(batch: list) -> bool:
         batch: Sequence of ``(execution_id, log_data)`` pairs.
 
     Returns:
-        True if the batch was persisted, False if it was dropped.
+        True if the batch was persisted (entries for since-deleted executions
+        are dropped by design and still count as handled), False if data was
+        dropped due to an unexpected error.
     """
     if not batch:
         return True
 
     last_error: Optional[BaseException] = None
+    attempts_made = 0
+    fk_checked = False
 
     with _log_persist_semaphore:
         for attempt in range(1, LOG_PERSIST_MAX_ATTEMPTS + 1):
+            attempts_made = attempt
             try:
                 _write_log_batch(batch)
                 if attempt > 1:
@@ -122,6 +171,38 @@ def _sync_batch_insert_logs(batch: list) -> bool:
                     exc,
                 )
                 time.sleep(backoff)
+            except IntegrityError as exc:
+                last_error = exc
+                # An FK violation usually means logs arrived for an execution
+                # row that no longer exists (e.g. flow deleted while the agent
+                # was shutting down). That is a known-orphan situation, not
+                # data loss: check existence ONCE, drop the orphans with a
+                # single structured warning, and persist whatever remains.
+                if not _is_execution_fk_violation(exc) or fk_checked:
+                    break
+                fk_checked = True
+                try:
+                    batch, orphaned = _strip_orphaned_logs(batch)
+                except Exception as check_error:
+                    last_error = check_error
+                    break
+                if not orphaned:
+                    # FK violation but every execution exists: not the orphan
+                    # case — fall through to the loud drop path.
+                    break
+                logger.warning(
+                    "Dropping %d log(s) for execution(s) no longer in "
+                    "flow_execution (deleted while logs were in flight): %s",
+                    sum(orphaned.values()),
+                    ", ".join(
+                        f"{execution_id} ({count} log(s))"
+                        for execution_id, count in sorted(orphaned.items())
+                    ),
+                )
+                if not batch:
+                    return True
+                # Retry immediately with the surviving entries only.
+                continue
             except Exception as exc:  # non-retryable: fail fast
                 last_error = exc
                 logger.error(
@@ -136,16 +217,16 @@ def _sync_batch_insert_logs(batch: list) -> bool:
     logger.error(
         "Dropping batch of %d logs after %d attempt(s): %s",
         len(batch),
-        LOG_PERSIST_MAX_ATTEMPTS,
+        attempts_made,
         last_error,
-        exc_info=True,
+        exc_info=last_error,
     )
     try:
         notify_admins(
             subject="[Preloop Alert] NATS Log Persistence Failed",
             message=(
                 f"A batch of {len(batch)} logs failed to persist to the database "
-                f"after {LOG_PERSIST_MAX_ATTEMPTS} attempts and were dropped. "
+                f"after {attempts_made} attempt(s) and were dropped. "
                 f"Error: {last_error}"
             ),
         )

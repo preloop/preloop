@@ -2465,7 +2465,9 @@ export async function deleteFlow(flowId: string) {
     method: 'DELETE',
   });
   if (!response.ok) {
-    throw new Error('Failed to delete flow');
+    // Surface the server's reason (e.g. 409: stop active executions first).
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.detail || 'Failed to delete flow');
   }
 }
 

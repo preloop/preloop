@@ -188,6 +188,11 @@ async def test_delete_flow(mock_account: Account, mocker: MockerFixture):
         "preloop.api.endpoints.flows.crud_flow",
         new_callable=MagicMock,
     )
+    mock_crud_flow_execution = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow_execution",
+        new_callable=MagicMock,
+    )
+    mock_crud_flow_execution.get_running_by_flow.return_value = []
     mock_flow = MagicMock()
     mock_crud_flow.get.return_value = mock_flow
 
@@ -202,6 +207,53 @@ async def test_delete_flow(mock_account: Account, mocker: MockerFixture):
     )
     mock_crud_flow.remove.assert_called_once_with(
         db=mocker.ANY, id=flow_id, account_id=mock_account.account_id
+    )
+
+
+@pytest.mark.asyncio
+async def test_delete_flow_with_active_execution_conflict(
+    mock_account: Account, mocker: MockerFixture
+):
+    """Deleting a flow with a running execution is refused with 409.
+
+    A flow delete cascades to its executions and their logs. If an agent is
+    still running, its log stream would reference a deleted execution row
+    (foreign key violations in the log persister), so deletion must be
+    refused until the executions are stopped.
+    """
+    # Arrange
+    flow_id = uuid.uuid4()
+    mock_crud_flow = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow",
+        new_callable=MagicMock,
+    )
+    mock_crud_flow_execution = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow_execution",
+        new_callable=MagicMock,
+    )
+    running_execution = MagicMock()
+    running_execution.status = "RUNNING"
+    mock_crud_flow_execution.get_running_by_flow.return_value = [running_execution]
+    mock_flow = MagicMock()
+    mock_flow.is_preset = False
+    mock_crud_flow.get.return_value = mock_flow
+
+    # Act / Assert
+    with pytest.raises(HTTPException) as exc_info:
+        await maybe_await(
+            flows.delete_flow(
+                db=MagicMock(), flow_id=flow_id, current_user=mock_account
+            )
+        )
+
+    assert exc_info.value.status_code == 409
+    assert "active execution" in exc_info.value.detail
+    assert "stop" in exc_info.value.detail.lower()
+    # The flow must NOT have been removed.
+    mock_crud_flow.remove.assert_not_called()
+    # The guard checks the account-scoped running executions of this flow.
+    mock_crud_flow_execution.get_running_by_flow.assert_called_once_with(
+        mocker.ANY, flow_id=mock_flow.id, account_id=mock_account.account_id
     )
 
 

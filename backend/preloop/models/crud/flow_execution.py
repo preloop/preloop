@@ -112,6 +112,35 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             query = query.join(Flow).filter(Flow.account_id == account_id)
         return query.first()
 
+    def existing_ids(self, db: Session, ids: List[Any]) -> set:
+        """Return the subset of ``ids`` that exist as flow execution rows.
+
+        Used by the log persister to distinguish logs for a since-deleted
+        execution (drop quietly) from real persistence failures. Ids that are
+        not valid UUIDs cannot exist and are simply excluded from the result.
+
+        Args:
+            db: Database session.
+            ids: Candidate execution ids (str or UUID).
+
+        Returns:
+            Set of canonical string forms of the ids that exist.
+        """
+        candidates: dict[uuid.UUID, str] = {}
+        for raw_id in ids:
+            try:
+                candidates[uuid.UUID(str(raw_id))] = str(raw_id)
+            except (ValueError, AttributeError, TypeError):
+                continue
+        if not candidates:
+            return set()
+        rows = (
+            db.query(FlowExecution.id)
+            .filter(FlowExecution.id.in_(list(candidates)))
+            .all()
+        )
+        return {candidates[row[0]] for row in rows}
+
     def create(self, db: Session, obj_in: FlowExecutionCreate) -> FlowExecution:
         """Create a new flow execution (synchronous)."""
         db_obj = FlowExecution(**obj_in.model_dump())

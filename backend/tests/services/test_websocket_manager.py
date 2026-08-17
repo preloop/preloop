@@ -6,7 +6,11 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from sqlalchemy.exc import OperationalError, TimeoutError as SQLAlchemyTimeoutError
+from sqlalchemy.exc import (
+    IntegrityError,
+    OperationalError,
+    TimeoutError as SQLAlchemyTimeoutError,
+)
 
 from preloop.services.websocket_manager import (
     LOG_PERSIST_MAX_ATTEMPTS,
@@ -19,6 +23,17 @@ from preloop.services.websocket_manager import (
 )
 
 pytestmark = pytest.mark.asyncio
+
+
+def _fk_violation() -> IntegrityError:
+    """Build the error shape SQLAlchemy raises for a Postgres FK violation."""
+    orig = MagicMock()
+    orig.pgcode = "23503"  # foreign_key_violation
+    return IntegrityError(
+        "INSERT INTO flow_execution_log ...",
+        {},
+        orig,
+    )
 
 
 class TestPersistExecutionLog:
@@ -223,6 +238,132 @@ class TestSyncBatchInsertLogsRetry:
         """An empty batch must not check out a connection at all."""
         assert _sync_batch_insert_logs([]) is True
         assert not mock_get_db.called
+
+    @patch("preloop.services.websocket_manager.notify_admins")
+    @patch("preloop.services.websocket_manager.get_db")
+    @patch("preloop.services.websocket_manager.logger")
+    @patch("preloop.models.crud.crud_flow_execution.existing_ids")
+    @patch("preloop.models.crud.crud_flow_execution.append_log")
+    def test_fk_violation_for_deleted_execution_drops_quietly(
+        self, mock_append, mock_existing, mock_logger, mock_get_db, mock_notify
+    ):
+        """Logs for a since-deleted execution are dropped with ONE warning.
+
+        Incident shape: a flow delete cascades away the execution row while
+        the agent still streams logs. The resulting FK violation must not be
+        retried blindly or raise a data-loss admin alert — existence is
+        checked once and the orphans are dropped with a single structured
+        warning naming the execution id.
+        """
+        execution_id = str(uuid.uuid4())
+        mock_db = MagicMock()
+        mock_get_db.side_effect = lambda: iter([mock_db])
+        mock_append.side_effect = _fk_violation()
+        mock_existing.return_value = set()  # execution row is gone
+
+        result = _sync_batch_insert_logs(
+            [(execution_id, {"type": "agent_log_line", "message": "hi"})]
+        )
+
+        # Handled by design: not reported as a dropped-data failure.
+        assert result is True
+        # Insert attempted once — no blind 3x retry of a doomed statement.
+        assert mock_append.call_count == 1
+        # Existence checked exactly once.
+        mock_existing.assert_called_once()
+        # A single structured warning names the execution id...
+        assert mock_logger.warning.call_count == 1
+        warning_args = mock_logger.warning.call_args.args
+        rendered = warning_args[0] % tuple(warning_args[1:])
+        assert execution_id in rendered
+        # ...and there is no error spam or admin alert for a known orphan.
+        assert not mock_logger.error.called
+        assert not mock_notify.called
+
+    @patch("preloop.services.websocket_manager.notify_admins")
+    @patch("preloop.services.websocket_manager.get_db")
+    @patch("preloop.services.websocket_manager.logger")
+    @patch("preloop.models.crud.crud_flow_execution.existing_ids")
+    @patch("preloop.models.crud.crud_flow_execution.append_log")
+    def test_fk_violation_mixed_batch_persists_survivors(
+        self, mock_append, mock_existing, mock_logger, mock_get_db, mock_notify
+    ):
+        """Orphaned entries are stripped; the rest of the batch is persisted."""
+        live_id = str(uuid.uuid4())
+        orphan_id = str(uuid.uuid4())
+        mock_db = MagicMock()
+        mock_get_db.side_effect = lambda: iter([mock_db])
+        # First write attempt fails on the orphan; retry succeeds.
+        mock_append.side_effect = [_fk_violation(), None]
+        mock_existing.return_value = {live_id}
+
+        result = _sync_batch_insert_logs(
+            [
+                (orphan_id, {"message": "orphan line"}),
+                (live_id, {"message": "live line"}),
+            ]
+        )
+
+        assert result is True
+        # Retry only wrote the surviving entry.
+        last_call = mock_append.call_args_list[-1]
+        assert last_call.kwargs["execution_id"] == live_id
+        assert mock_db.commit.called
+        # Single warning for the orphan, no alert.
+        assert mock_logger.warning.call_count == 1
+        assert not mock_notify.called
+
+    @patch("preloop.services.websocket_manager.notify_admins")
+    @patch("preloop.services.websocket_manager.get_db")
+    @patch("preloop.services.websocket_manager.logger")
+    @patch("preloop.models.crud.crud_flow_execution.existing_ids")
+    @patch("preloop.models.crud.crud_flow_execution.append_log")
+    def test_fk_violation_with_live_executions_is_loud(
+        self, mock_append, mock_existing, mock_logger, mock_get_db, mock_notify
+    ):
+        """An FK violation while every execution exists is NOT the orphan case."""
+        execution_id = str(uuid.uuid4())
+        mock_db = MagicMock()
+        mock_get_db.side_effect = lambda: iter([mock_db])
+        mock_append.side_effect = _fk_violation()
+        mock_existing.return_value = {execution_id}  # rows all exist
+
+        result = _sync_batch_insert_logs([(execution_id, {"message": "hi"})])
+
+        assert result is False
+        assert mock_notify.called
+        # The drop message reports the real attempt count, not a fixed "3".
+        error_args = mock_logger.error.call_args.args
+        assert error_args[2] == 1  # attempts made
+
+    @patch("preloop.services.websocket_manager.notify_admins")
+    @patch("preloop.services.websocket_manager.get_db")
+    @patch("preloop.models.crud.crud_flow_execution.existing_ids")
+    @patch("preloop.models.crud.crud_flow_execution.append_log")
+    def test_fk_violation_existence_checked_only_once(
+        self, mock_append, mock_existing, mock_get_db, mock_notify
+    ):
+        """A second FK violation (delete raced the recheck) cannot loop."""
+        live_id = str(uuid.uuid4())
+        orphan_id = str(uuid.uuid4())
+        mock_db = MagicMock()
+        mock_get_db.side_effect = lambda: iter([mock_db])
+        # Survivor hits an FK violation again on the retry.
+        mock_append.side_effect = [_fk_violation(), _fk_violation()]
+        mock_existing.return_value = {live_id}
+
+        result = _sync_batch_insert_logs(
+            [
+                (orphan_id, {"message": "orphan"}),
+                (live_id, {"message": "raced"}),
+            ]
+        )
+
+        # Falls through to the loud drop path instead of re-checking forever.
+        assert result is False
+        assert mock_existing.call_count == 1
+        assert mock_append.call_count == 2
+        assert mock_notify.called
 
     def test_semaphore_bounds_log_persistence_concurrency(self):
         """Background log writes are capped so they cannot drain the pool."""
