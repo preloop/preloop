@@ -14,6 +14,7 @@ from preloop.models.crud import (
     crud_runtime_session,
     crud_runtime_session_activity,
 )
+from preloop.schemas.agent_control import AgentControlSendMessageRequest
 
 
 def _issue_runtime_token(client, *, session_source_id: str = "openclaw-live"):
@@ -768,15 +769,22 @@ def test_agent_control_existing_session_envelope_includes_native_ids(
     mock_nats.publish = AsyncMock()
     mock_get_nats_client.return_value = mock_nats
 
+    request_json = {
+        "message": "Resume the ended investigation",
+        "target_session_id": str(native_session.id),
+        "session_source_id": "client-must-not-win",
+        "session_reference": "client-supplied-ref",
+        "metadata": {"source": "ios"},
+    }
+    parsed = AgentControlSendMessageRequest.model_validate(request_json)
+    assert "session_source_id" not in AgentControlSendMessageRequest.model_fields
+    assert "session_reference" not in AgentControlSendMessageRequest.model_fields
+    assert "session_source_id" not in parsed.model_dump()
+    assert "session_reference" not in parsed.model_dump()
+
     response = client.post(
         f"/api/v1/agents/{managed_agent.id}/control/commands",
-        json={
-            "message": "Resume the ended investigation",
-            "target_session_id": str(native_session.id),
-            "session_source_id": "client-must-not-win",
-            "session_reference": "client-supplied-ref",
-            "metadata": {"source": "ios"},
-        },
+        json=request_json,
     )
 
     assert response.status_code == 202
@@ -839,6 +847,16 @@ def test_agent_control_prompt_can_request_new_session(
     assert body["session_mode"] == "new"
     assert body["target_session_id"] is not None
     assert body["target_session_id"] != body["runtime_session_id"]
+    history_session = crud_runtime_session.get_account_session(
+        db_session,
+        account_id=str(test_user.account_id),
+        runtime_session_id=body["target_session_id"],
+    )
+    assert history_session is not None
+    assert body["session_source_id"] == history_session.session_source_id
+    assert body["session_reference"] == history_session.session_reference
+    assert history_session.session_source_id.startswith("openclaw-new-session-")
+    assert history_session.session_reference == "Agent Control new session"
     payload = body["command_envelope"]["payload"]
     assert payload["session_mode"] == "new"
     assert payload["start_new_session"] is True

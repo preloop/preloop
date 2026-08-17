@@ -1135,6 +1135,9 @@ async def _route_managed_agent_prompt(
             else None,
         )
     )
+    identity_session = target_session
+    if identity_session is None and request.start_new_session:
+        identity_session = history_session
     return AgentControlCommandResponse(
         command_id=envelope.message_id,
         managed_agent_id=agent.id,
@@ -1145,10 +1148,10 @@ async def _route_managed_agent_prompt(
             else request.target_session_id
         ),
         session_source_id=(
-            target_session.session_source_id if target_session is not None else None
+            identity_session.session_source_id if identity_session is not None else None
         ),
         session_reference=(
-            target_session.session_reference if target_session is not None else None
+            identity_session.session_reference if identity_session is not None else None
         ),
         session_mode=session_mode,
         subject=subject,
