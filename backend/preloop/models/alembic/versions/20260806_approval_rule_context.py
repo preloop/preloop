@@ -8,7 +8,7 @@ row legitimately have no rule context, and surfaces omit the block rather than
 fabricate one.
 
 Revision ID: 20260806_approval_rule_ctx
-Revises: 20260806_ai_model_updated_at
+Revises: 20260815_flow_schedule_config
 Create Date: 2026-08-06
 """
 
@@ -19,7 +19,7 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
 revision: str = "20260806_approval_rule_ctx"
-down_revision: Union[str, None] = "20260806_ai_model_updated_at"
+down_revision: Union[str, None] = "20260815_flow_schedule_config"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 # Alembic reads these module globals by name; keep a local reference so static

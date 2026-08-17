@@ -375,6 +375,183 @@ def _evaluate_rule_candidates(
     return None
 
 
+def _evaluate_loaded_access_rules(
+    *,
+    rules: list[Any],
+    tool_config: Any,
+    tool_name: str,
+    tool_args: Dict[str, Any],
+    context: Dict[str, Any],
+    account_id: uuid.UUID,
+    user_id: Optional[uuid.UUID],
+    execution_id: Optional[uuid.UUID],
+    default_workflow_id_for_account: Optional[Any] = None,
+    correlation_id: Optional[str] = None,
+    extra_details: Optional[Dict[str, Any]] = None,
+) -> PolicyDecision:
+    """Evaluate already-loaded ToolAccessRule rows.
+
+    Shared by the sync and async evaluators so match order, fail-closed,
+    and the legacy no-rules path cannot drift. Callers keep their own I/O.
+    """
+    logger.info(
+        f"Policy evaluation for '{tool_name}': found {len(rules)} access rules, "
+        f"tool_config.approval_workflow_id={tool_config.approval_workflow_id}"
+    )
+
+    if not rules:
+        if tool_config.approval_workflow_id:
+            logger.warning(
+                f"LEGACY PATH: tool '{tool_name}' has approval_workflow_id="
+                f"{tool_config.approval_workflow_id} but no access rules. "
+                f"ALL calls will require approval regardless of arguments. "
+                f"Add access rules with conditions to enable conditional approval."
+            )
+            _log_policy_decision_async(
+                account_id=account_id,
+                tool_name=tool_name,
+                action="require_approval",
+                rule_description="Tool has approval workflow configured (legacy mode)",
+                tool_args=tool_args,
+                user_id=user_id,
+                execution_id=execution_id,
+                correlation_id=correlation_id,
+                extra_details=extra_details,
+            )
+            return PolicyDecision(
+                "require_approval",
+                tool_config.approval_workflow_id,
+                "Tool has approval workflow configured (legacy mode)",
+                build_rule_context(
+                    source=SOURCE_TOOL_DEFAULT_WORKFLOW,
+                    decision="require_approval",
+                    rule_name="Tool default policy",
+                    tool_configuration_id=tool_config.id,
+                ),
+            )
+        _log_policy_decision_async(
+            account_id=account_id,
+            tool_name=tool_name,
+            action="allow",
+            rule_description="No access rules defined",
+            tool_args=tool_args,
+            user_id=user_id,
+            execution_id=execution_id,
+            correlation_id=correlation_id,
+            extra_details=extra_details,
+        )
+        return PolicyDecision("allow", None, "No access rules defined")
+
+    for index, rule in enumerate(rules):
+        try:
+            logger.info(
+                f"Evaluating rule {rule.id} (priority={rule.priority}, "
+                f"action={rule.action}): condition_type={rule.condition_type}, "
+                f"expression={rule.condition_expression!r}, args={tool_args}"
+            )
+            matches = _evaluate_rule_condition(
+                expression=rule.condition_expression,
+                condition_type=rule.condition_type,
+                tool_args=tool_args,
+                context=context,
+            )
+            logger.info(f"Rule {rule.id} evaluated: matches={matches}")
+
+            if matches:
+                logger.info(
+                    f"Rule matched: {rule.description or rule.condition_expression} "
+                    f"-> action={rule.action}"
+                )
+
+                approval_workflow_id = None
+                if rule.action == "require_approval":
+                    approval_workflow_id = (
+                        rule.approval_workflow_id
+                        or tool_config.approval_workflow_id
+                        or default_workflow_id_for_account
+                    )
+
+                rule_desc = (
+                    rule.description or f"Rule matched: {rule.condition_expression}"
+                )
+
+                _log_policy_decision_async(
+                    account_id=account_id,
+                    tool_name=tool_name,
+                    action=rule.action,
+                    rule_description=rule_desc,
+                    condition_matched=rule.condition_expression,
+                    tool_args=tool_args,
+                    user_id=user_id,
+                    execution_id=execution_id,
+                    correlation_id=correlation_id,
+                    extra_details=extra_details,
+                )
+
+                rule_context = _matched_rule_context(
+                    rule,
+                    rules=rules,
+                    index=index,
+                    tool_config=tool_config,
+                    tool_args=tool_args,
+                    context=context,
+                )
+
+                return PolicyDecision(
+                    rule.action,
+                    approval_workflow_id,
+                    rule_desc,
+                    rule_context,
+                )
+
+        except Exception as e:
+            logger.error(
+                f"Error evaluating rule {rule.id}: {e}. "
+                f"Failing closed with require_approval for security."
+            )
+            error_desc = f"Rule evaluation error: {e} (failing closed)"
+            _log_policy_decision_async(
+                account_id=account_id,
+                tool_name=tool_name,
+                action="require_approval",
+                rule_description=error_desc,
+                condition_matched=rule.condition_expression,
+                tool_args=tool_args,
+                user_id=user_id,
+                execution_id=execution_id,
+                correlation_id=correlation_id,
+                extra_details=extra_details,
+            )
+            return PolicyDecision(
+                "require_approval",
+                tool_config.approval_workflow_id or default_workflow_id_for_account,
+                error_desc,
+                build_rule_context(
+                    source=SOURCE_RULE_EVALUATION_ERROR,
+                    decision="require_approval",
+                    rule_id=rule.id,
+                    rule_name=rule.description,
+                    expression=rule.condition_expression,
+                    expression_type=rule.condition_type,
+                    priority=rule.priority,
+                    tool_configuration_id=tool_config.id,
+                ),
+            )
+
+    _log_policy_decision_async(
+        account_id=account_id,
+        tool_name=tool_name,
+        action="allow",
+        rule_description="No rules matched (default allow)",
+        tool_args=tool_args,
+        user_id=user_id,
+        execution_id=execution_id,
+        correlation_id=correlation_id,
+        extra_details=extra_details,
+    )
+    return PolicyDecision("allow", None, "No rules matched (default allow)")
+
+
 def evaluate_policy(
     db: Session,
     tool_name: str,
@@ -514,167 +691,17 @@ def evaluate_policy(
         enabled_only=True,
     )
 
-    logger.info(
-        f"Policy evaluation for '{tool_name}': found {len(rules)} access rules, "
-        f"tool_config.approval_workflow_id={tool_config.approval_workflow_id}"
-    )
-
-    if not rules:
-        # No rules defined, check for legacy approval_workflow_id on tool config
-        if tool_config.approval_workflow_id:
-            # Legacy behavior: tool has approval workflow but no rules
-            logger.warning(
-                f"LEGACY PATH: tool '{tool_name}' has approval_workflow_id="
-                f"{tool_config.approval_workflow_id} but no access rules. "
-                f"ALL calls will require approval regardless of arguments. "
-                f"Add access rules with conditions to enable conditional approval."
-            )
-            _log_policy_decision_async(
-                account_id=account_id,
-                tool_name=tool_name,
-                action="require_approval",
-                rule_description="Tool has approval workflow configured (legacy mode)",
-                tool_args=tool_args,
-                user_id=user_id,
-                execution_id=execution_id,
-            )
-            return PolicyDecision(
-                "require_approval",
-                tool_config.approval_workflow_id,
-                "Tool has approval workflow configured (legacy mode)",
-                build_rule_context(
-                    source=SOURCE_TOOL_DEFAULT_WORKFLOW,
-                    decision="require_approval",
-                    rule_name="Tool default policy",
-                    tool_configuration_id=tool_config.id,
-                ),
-            )
-        _log_policy_decision_async(
-            account_id=account_id,
-            tool_name=tool_name,
-            action="allow",
-            rule_description="No access rules defined",
-            tool_args=tool_args,
-            user_id=user_id,
-            execution_id=execution_id,
-        )
-        return PolicyDecision("allow", None, "No access rules defined")
-
-    # Evaluate rules in priority order
-    for index, rule in enumerate(rules):
-        try:
-            logger.info(
-                f"Evaluating rule {rule.id} (priority={rule.priority}, "
-                f"action={rule.action}): condition_type={rule.condition_type}, "
-                f"expression={rule.condition_expression!r}, args={tool_args}"
-            )
-            matches = _evaluate_rule_condition(
-                expression=rule.condition_expression,
-                condition_type=rule.condition_type,
-                tool_args=tool_args,
-                context=context,
-            )
-            logger.info(f"Rule {rule.id} evaluated: matches={matches}")
-
-            if matches:
-                logger.info(
-                    f"Rule matched: {rule.description or rule.condition_expression} "
-                    f"-> action={rule.action}"
-                )
-
-                # Determine approval workflow ID for require_approval action
-                approval_workflow_id = None
-                if rule.action == "require_approval":
-                    # Prefer the rule-level policy; fall back to tool config
-                    # default; finally fall back to the account default so a
-                    # ``require_approval`` rule never silently auto-approves.
-                    approval_workflow_id = (
-                        rule.approval_workflow_id
-                        or tool_config.approval_workflow_id
-                        or default_workflow_id_for_account
-                    )
-
-                rule_desc = (
-                    rule.description or f"Rule matched: {rule.condition_expression}"
-                )
-
-                # Log the policy decision (fire-and-forget)
-                _log_policy_decision_async(
-                    account_id=account_id,
-                    tool_name=tool_name,
-                    action=rule.action,
-                    rule_description=rule_desc,
-                    condition_matched=rule.condition_expression,
-                    tool_args=tool_args,
-                    user_id=user_id,
-                    execution_id=execution_id,
-                )
-
-                rule_context = _matched_rule_context(
-                    rule,
-                    rules=rules,
-                    index=index,
-                    tool_config=tool_config,
-                    tool_args=tool_args,
-                    context=context,
-                )
-
-                return PolicyDecision(
-                    rule.action,
-                    approval_workflow_id,
-                    rule_desc,
-                    rule_context,
-                )
-
-        except Exception as e:
-            # SECURITY: Fail closed on evaluation errors
-            # Rather than skipping to the next rule (which could lead to default-allow),
-            # we require approval when rule evaluation fails. This ensures that:
-            # 1. Malformed rules don't silently get bypassed
-            # 2. Unexpected errors don't result in unauthorized access
-            # 3. The action is conservative (require human review) rather than permissive
-            logger.error(
-                f"Error evaluating rule {rule.id}: {e}. "
-                f"Failing closed with require_approval for security."
-            )
-            error_desc = f"Rule evaluation error: {e} (failing closed)"
-            _log_policy_decision_async(
-                account_id=account_id,
-                tool_name=tool_name,
-                action="require_approval",
-                rule_description=error_desc,
-                condition_matched=rule.condition_expression,
-                tool_args=tool_args,
-                user_id=user_id,
-                execution_id=execution_id,
-            )
-            return PolicyDecision(
-                "require_approval",
-                tool_config.approval_workflow_id or default_workflow_id_for_account,
-                error_desc,
-                build_rule_context(
-                    source=SOURCE_RULE_EVALUATION_ERROR,
-                    decision="require_approval",
-                    rule_id=rule.id,
-                    rule_name=rule.description,
-                    expression=rule.condition_expression,
-                    expression_type=rule.condition_type,
-                    priority=rule.priority,
-                    tool_configuration_id=tool_config.id,
-                ),
-            )
-
-    # No rules matched, default allow
-    _log_policy_decision_async(
-        account_id=account_id,
+    return _evaluate_loaded_access_rules(
+        rules=rules,
+        tool_config=tool_config,
         tool_name=tool_name,
-        action="allow",
-        rule_description="No rules matched (default allow)",
         tool_args=tool_args,
+        context=context,
+        account_id=account_id,
         user_id=user_id,
         execution_id=execution_id,
+        default_workflow_id_for_account=default_workflow_id_for_account,
     )
-    return PolicyDecision("allow", None, "No rules matched (default allow)")
 
 
 def _evaluate_rule_condition(
@@ -1112,151 +1139,16 @@ async def evaluate_policy_async(
         enabled_only=True,
     )
 
-    if not rules:
-        # No rules defined, check for legacy approval_workflow_id on tool config
-        if tool_config.approval_workflow_id:
-            _log_policy_decision_async(
-                account_id=account_id,
-                tool_name=tool_name,
-                action="require_approval",
-                rule_description="Tool has approval workflow configured (legacy mode)",
-                tool_args=tool_args,
-                user_id=user_id,
-                execution_id=execution_id,
-                correlation_id=correlation_id,
-                extra_details=extra_details,
-            )
-            return PolicyDecision(
-                "require_approval",
-                tool_config.approval_workflow_id,
-                "Tool has approval workflow configured (legacy mode)",
-                build_rule_context(
-                    source=SOURCE_TOOL_DEFAULT_WORKFLOW,
-                    decision="require_approval",
-                    rule_name="Tool default policy",
-                    tool_configuration_id=tool_config.id,
-                ),
-            )
-        _log_policy_decision_async(
-            account_id=account_id,
-            tool_name=tool_name,
-            action="allow",
-            rule_description="No access rules defined",
-            tool_args=tool_args,
-            user_id=user_id,
-            execution_id=execution_id,
-            correlation_id=correlation_id,
-            extra_details=extra_details,
-        )
-        return PolicyDecision("allow", None, "No access rules defined")
-
-    # Evaluate rules in priority order
-    for index, rule in enumerate(rules):
-        try:
-            matches = _evaluate_rule_condition(
-                expression=rule.condition_expression,
-                condition_type=rule.condition_type,
-                tool_args=tool_args,
-                context=context,
-            )
-
-            if matches:
-                logger.info(
-                    f"Rule matched: {rule.description or rule.condition_expression} "
-                    f"-> action={rule.action}"
-                )
-
-                approval_workflow_id = None
-                if rule.action == "require_approval":
-                    # Prefer the rule's own approval_workflow_id; fall back to
-                    # the tool config's legacy approval_workflow_id; finally fall
-                    # back to the account's default workflow so a bare
-                    # ``require_approval`` rule never silently auto-approves.
-                    approval_workflow_id = (
-                        rule.approval_workflow_id
-                        or tool_config.approval_workflow_id
-                        or default_workflow_id_for_account
-                    )
-
-                rule_desc = (
-                    rule.description or f"Rule matched: {rule.condition_expression}"
-                )
-
-                # Log the policy decision (fire-and-forget)
-                _log_policy_decision_async(
-                    account_id=account_id,
-                    tool_name=tool_name,
-                    action=rule.action,
-                    rule_description=rule_desc,
-                    condition_matched=rule.condition_expression,
-                    tool_args=tool_args,
-                    user_id=user_id,
-                    execution_id=execution_id,
-                    correlation_id=correlation_id,
-                    extra_details=extra_details,
-                )
-
-                rule_context = _matched_rule_context(
-                    rule,
-                    rules=rules,
-                    index=index,
-                    tool_config=tool_config,
-                    tool_args=tool_args,
-                    context=context,
-                )
-
-                return PolicyDecision(
-                    rule.action,
-                    approval_workflow_id,
-                    rule_desc,
-                    rule_context,
-                )
-
-        except Exception as e:
-            # SECURITY: Fail closed on evaluation errors
-            logger.error(
-                f"Error evaluating rule {rule.id}: {e}. "
-                f"Failing closed with require_approval for security."
-            )
-            error_desc = f"Rule evaluation error: {e} (failing closed)"
-            _log_policy_decision_async(
-                account_id=account_id,
-                tool_name=tool_name,
-                action="require_approval",
-                rule_description=error_desc,
-                condition_matched=rule.condition_expression,
-                tool_args=tool_args,
-                user_id=user_id,
-                execution_id=execution_id,
-                correlation_id=correlation_id,
-                extra_details=extra_details,
-            )
-            return PolicyDecision(
-                "require_approval",
-                tool_config.approval_workflow_id or default_workflow_id_for_account,
-                error_desc,
-                build_rule_context(
-                    source=SOURCE_RULE_EVALUATION_ERROR,
-                    decision="require_approval",
-                    rule_id=rule.id,
-                    rule_name=rule.description,
-                    expression=rule.condition_expression,
-                    expression_type=rule.condition_type,
-                    priority=rule.priority,
-                    tool_configuration_id=tool_config.id,
-                ),
-            )
-
-    # No rules matched, default allow
-    _log_policy_decision_async(
-        account_id=account_id,
+    return _evaluate_loaded_access_rules(
+        rules=rules,
+        tool_config=tool_config,
         tool_name=tool_name,
-        action="allow",
-        rule_description="No rules matched (default allow)",
         tool_args=tool_args,
+        context=context,
+        account_id=account_id,
         user_id=user_id,
         execution_id=execution_id,
+        default_workflow_id_for_account=default_workflow_id_for_account,
         correlation_id=correlation_id,
         extra_details=extra_details,
     )
-    return PolicyDecision("allow", None, "No rules matched (default allow)")
