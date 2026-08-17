@@ -213,7 +213,7 @@ def build_request_cache_accounting(row: Any) -> RequestCacheAccounting:
         cache_creation_tokens=creation,
         cache_miss_tokens=miss,
         cache_miss_source=miss_source,
-        has_cache_data=read is not None or creation is not None,
+        has_cache_data=read is not None or creation is not None or miss is not None,
         usage_source=getattr(row, "usage_source", None),
     )
 

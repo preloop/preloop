@@ -89,6 +89,20 @@ class TestRequestAccounting:
         assert accounting.cache_miss_tokens == 220
         assert accounting.cache_miss_source == CACHE_MISS_SOURCE_REPORTED
 
+    def test_reported_miss_alone_is_cache_data(self):
+        """A miss-only report is cache data, even with no read or write."""
+        accounting = build_request_cache_accounting(
+            _row(
+                prompt_tokens=500,
+                meta_data={"usage_details": {"prompt_cache_miss_tokens": 500}},
+            )
+        )
+        assert accounting.cache_read_tokens is None
+        assert accounting.cache_creation_tokens is None
+        assert accounting.cache_miss_tokens == 500
+        assert accounting.cache_miss_source == CACHE_MISS_SOURCE_REPORTED
+        assert accounting.has_cache_data is True
+
     def test_legacy_row_falls_back_to_usage_details(self):
         """Rows written before the columns existed still read out correctly."""
         accounting = build_request_cache_accounting(
@@ -172,6 +186,23 @@ class TestSessionSummary:
         assert summary.cached_prompt_tokens == 800
         assert summary.uncached_prompt_tokens == 200
         assert summary.cache_hit_ratio == 0.8
+
+    def test_miss_only_report_is_not_without_cache_data(self):
+        """A reported miss with no read/write is covered, not a blind row."""
+        summary = summarize_session_cache(
+            [
+                _row(
+                    prompt_tokens=500,
+                    meta_data={"usage_details": {"prompt_cache_miss_tokens": 500}},
+                )
+            ]
+        )
+        assert summary.requests_total == 1
+        assert summary.requests_with_cache_data == 1
+        assert summary.requests_without_cache_data == 0
+        assert summary.covered_prompt_tokens == 500
+        assert summary.uncovered_prompt_tokens == 0
+        assert summary.uncached_prompt_tokens == 500
 
     def test_write_tokens_none_when_no_provider_reports_writes(self):
         """No write concept is not the same claim as zero rewritten tokens."""
