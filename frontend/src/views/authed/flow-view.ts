@@ -13,6 +13,7 @@ import {
   getAllTools,
   getMCPServers,
   getAccountAgents,
+  previewFlowSchedule,
 } from '../../api';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import { parseUTCDate, formatLocalDateTime } from '../../utils/date';
@@ -66,6 +67,15 @@ interface WebhookConfig {
   webhook_secret: string;
 }
 
+interface ScheduleState {
+  active: boolean;
+  type: string;
+  description: string;
+  timezone: string;
+  next_run_at: string | null;
+  cron?: string;
+}
+
 interface Flow {
   id?: string;
   name: string;
@@ -79,6 +89,8 @@ interface Flow {
   trigger_project_ids?: string[];
   trigger_config?: any;
   webhook_config?: WebhookConfig;
+  schedule_config?: any;
+  schedule_state?: ScheduleState | null;
   ai_model_id?: string;
   prompt_template?: string;
   allowed_mcp_servers?: string[];
@@ -238,7 +250,11 @@ export class FlowView extends LitElement {
   private isAdmin = false;
 
   @state()
-  private triggerType: 'webhook' | 'tracker' = 'webhook';
+  private triggerType: 'webhook' | 'tracker' | 'schedule' = 'webhook';
+
+  /** Next run times (ISO strings) for schedule-triggered flows. */
+  @state()
+  private scheduleNextRuns: string[] = [];
 
   @state()
   private isPollingOrganizations = false;
@@ -307,7 +323,13 @@ export class FlowView extends LitElement {
       this.flow = await getFlow(this.flowId);
 
       this.triggerType =
-        this.flow.trigger_event_source === 'webhook' ? 'webhook' : 'tracker';
+        this.flow.trigger_event_source === 'webhook'
+          ? 'webhook'
+          : this.flow.trigger_event_source === 'schedule'
+            ? 'schedule'
+            : 'tracker';
+
+      void this.loadScheduleNextRuns();
 
       const allExecutions = await import('../../api').then((m) =>
         m.getFlowExecutions({ flowId: this.flowId, limit: 10 })
@@ -626,13 +648,7 @@ export class FlowView extends LitElement {
               }
 
               <strong>Trigger:</strong>
-              <span>
-                ${
-                  this.flow.trigger_event_source === 'webhook'
-                    ? 'Webhook'
-                    : `${this.getTrackerName(this.flow.trigger_event_source)} - ${this.flow.trigger_event_types?.join(', ') || 'No events'}`
-                }
-              </span>
+              <span>${this.getTriggerSummary()}</span>
 
               ${
                 this.flow.trigger_organization_id
@@ -701,6 +717,7 @@ ${this.flow.prompt_template}</pre>
                 `
               : ''
           }
+          ${this.renderScheduleCard()}
           ${
             this.flow.trigger_event_source === 'webhook' &&
             this.flow.webhook_config
@@ -917,6 +934,124 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
     `;
   }
 
+  /** One-line trigger summary for the flow details grid. */
+  getTriggerSummary(): string {
+    if (this.flow.trigger_event_source === 'webhook') {
+      return 'Webhook';
+    }
+    if (this.flow.trigger_event_source === 'schedule') {
+      return this.flow.schedule_state?.description || 'Schedule';
+    }
+    return `${this.getTrackerName(this.flow.trigger_event_source)} - ${
+      this.flow.trigger_event_types?.join(', ') || 'No events'
+    }`;
+  }
+
+  /** Fetch the next few run times for a schedule-triggered flow. */
+  private async loadScheduleNextRuns() {
+    if (
+      this.flow?.trigger_event_source !== 'schedule' ||
+      !this.flow.schedule_config
+    ) {
+      this.scheduleNextRuns = [];
+      return;
+    }
+    try {
+      const preview = await previewFlowSchedule(this.flow.schedule_config);
+      this.scheduleNextRuns = preview.next_run_times.slice(0, 3);
+    } catch (error) {
+      console.error('Failed to preview flow schedule:', error);
+      this.scheduleNextRuns = [];
+    }
+  }
+
+  /**
+   * Schedule summary card for schedule-triggered flows: human-readable
+   * cadence, paused state (paused flow = schedule suspended), the next
+   * runs, and the status of the most recent run.
+   */
+  renderScheduleCard() {
+    if (
+      this.flow.trigger_event_source !== 'schedule' ||
+      !this.flow.schedule_config
+    ) {
+      return '';
+    }
+    const schedule = this.flow.schedule_state;
+    const paused = !this.flow.is_enabled;
+    const lastRun = this.recentExecutions[0];
+    return html`
+      <sl-card>
+        <div slot="header">
+          <sl-icon name="clock"></sl-icon>
+          Schedule
+        </div>
+        <div
+          style="display: grid; grid-template-columns: 150px 1fr; gap: var(--sl-spacing-medium);"
+        >
+          <strong>Runs:</strong>
+          <span>${schedule?.description || 'Schedule'}</span>
+
+          <strong>Status:</strong>
+          <span>
+            ${
+              paused
+                ? html`
+                    <sl-badge variant="warning">Paused</sl-badge>
+                    <span
+                      style="color: var(--sl-color-neutral-600); margin-left: var(--sl-spacing-x-small);"
+                    >
+                      Schedule suspended — enable the flow to resume runs.
+                    </span>
+                  `
+                : html`<sl-badge variant="success">Active</sl-badge>`
+            }
+          </span>
+
+          ${
+            !paused
+              ? html`
+                  <strong>Next runs:</strong>
+                  <span>
+                    ${
+                      this.scheduleNextRuns.length > 0
+                        ? html`
+                            <ol
+                              style="margin: 0; padding-left: 1.25rem; display: flex; flex-direction: column; gap: var(--sl-spacing-2x-small);"
+                            >
+                              ${this.scheduleNextRuns.map(
+                                (t) => html`<li>${formatLocalDateTime(t)}</li>`
+                              )}
+                            </ol>
+                          `
+                        : 'No upcoming runs'
+                    }
+                  </span>
+                `
+              : ''
+          }
+          ${
+            lastRun
+              ? html`
+                  <strong>Last run:</strong>
+                  <span>
+                    <sl-badge variant=${this.getStatusVariant(lastRun.status)}>
+                      ${lastRun.status}
+                    </sl-badge>
+                    <span
+                      style="color: var(--sl-color-neutral-600); margin-left: var(--sl-spacing-x-small);"
+                    >
+                      ${formatLocalDateTime(lastRun.start_time)}
+                    </span>
+                  </span>
+                `
+              : ''
+          }
+        </div>
+      </sl-card>
+    `;
+  }
+
   getStatusVariant(status: string) {
     switch (status) {
       case 'SUCCEEDED':
@@ -973,14 +1108,16 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
       // Toggle the enabled state
       const newEnabledState = !this.flow.is_enabled;
 
-      // Update the flow on the backend
-      await updateFlow(this.flowId, {
+      // Update the flow on the backend; use the response so computed
+      // fields (e.g. schedule_state for scheduled flows) stay fresh.
+      const updated = await updateFlow(this.flowId, {
         is_enabled: newEnabledState,
       });
 
       // Update local state
       this.flow = {
         ...this.flow,
+        ...(updated && typeof updated === 'object' ? updated : {}),
         is_enabled: newEnabledState,
       };
 
@@ -1165,6 +1302,7 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
       'trigger_project_ids',
       'trigger_config',
       'webhook_config',
+      'schedule_config',
       'ai_model_id',
       'agent_type',
       'git_clone_config',

@@ -9,7 +9,10 @@ from sqlalchemy.orm import Session
 
 from preloop.agents import create_agent_executor, AgentStatus
 from preloop.models.db.session import get_db_session as get_db
-from preloop.models.models.flow_execution import FlowExecution
+from preloop.models.models.flow_execution import (
+    FlowExecution,
+    resolve_matrix_agent_selection,
+)
 from preloop.models.crud import crud_flow, crud_flow_execution
 
 logger = logging.getLogger(__name__)
@@ -146,10 +149,18 @@ class ExecutionMonitor:
                 )
                 return
 
-            # Create agent executor to check status
+            # Create agent executor to check status. Matrix cells override the
+            # flow's agent_type per execution; resolving through the shared
+            # helper keeps the status check on the harness that actually runs
+            # this cell (a foreign executor would mis-read the session).
             try:
+                effective_agent_type, _ = resolve_matrix_agent_selection(
+                    execution.trigger_event_details,
+                    flow_agent_type=flow.agent_type,
+                )
                 agent_executor = create_agent_executor(
-                    flow.agent_type, {"agent_config": flow.agent_config or {}}
+                    effective_agent_type,
+                    {"agent_config": flow.agent_config or {}},
                 )
             except Exception as e:
                 logger.error(

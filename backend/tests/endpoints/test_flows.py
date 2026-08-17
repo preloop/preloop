@@ -1348,3 +1348,384 @@ async def test_retry_flow_execution_success_cancelled(
     # Verify trigger_event_data is preserved from original execution
     call_kwargs = mock_trigger_service.trigger_flow.call_args.kwargs
     assert call_kwargs["trigger_event_data"] == mock_execution.trigger_event_details
+
+
+# ---------------------------------------------------------------------------
+# Schedule (cron) trigger endpoint guards
+# ---------------------------------------------------------------------------
+
+from preloop.models.schemas.flow import (  # noqa: E402
+    CronSchedule,
+    DailySchedule,
+    IntervalSchedule,
+    WeeklySchedule,
+)
+
+
+def _schedule_flow_create(**overrides) -> schemas.FlowCreate:
+    """Build a FlowCreate payload for a schedule-triggered flow."""
+    payload = dict(
+        name="Nightly Scan",
+        prompt_template="Run the nightly scan",
+        agent_type="openhands",
+        agent_config={},
+        trigger_event_source="schedule",
+        schedule_config=CronSchedule(expr="0 2 * * *", timezone="UTC"),
+    )
+    payload.update(overrides)
+    return schemas.FlowCreate(**payload)
+
+
+def _mock_crud_flow_no_conflicts(mocker: MockerFixture) -> MagicMock:
+    mock_crud_flow = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow", new_callable=MagicMock
+    )
+    mock_crud_flow.get_by_name_and_account.return_value = None
+    mock_crud_flow.get_global_preset_by_name.return_value = None
+    return mock_crud_flow
+
+
+@pytest.mark.asyncio
+async def test_create_schedule_flow_without_config_rejected(
+    mock_account: Account, mocker: MockerFixture
+):
+    """trigger_event_source='schedule' without schedule_config is a 400."""
+    _mock_crud_flow_no_conflicts(mocker)
+    flow_in = _schedule_flow_create(schedule_config=None)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await maybe_await(
+            flows.create_flow(
+                db=MagicMock(), flow_in=flow_in, current_user=mock_account
+            )
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "schedule_config" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_create_flow_with_schedule_config_defaults_source(
+    mock_account: Account, mocker: MockerFixture
+):
+    """schedule_config alone implies a schedule trigger (like webhook does).
+
+    The source is defaulted, trigger_event_types is forced to ['schedule'],
+    no webhook secret is generated, and the response carries schedule_state.
+    """
+    mock_crud_flow = _mock_crud_flow_no_conflicts(mocker)
+    flow_in = _schedule_flow_create(
+        trigger_event_source=None, trigger_event_types=["schedule"]
+    )
+
+    def fake_create(db, flow_in, account_id):
+        return schemas.FlowResponse(
+            **flow_in.model_dump(),
+            id=uuid.uuid4(),
+            created_at=datetime.now(ZoneInfo("UTC")),
+            updated_at=datetime.now(ZoneInfo("UTC")),
+        )
+
+    mock_crud_flow.create.side_effect = fake_create
+
+    result = await maybe_await(
+        flows.create_flow(db=MagicMock(), flow_in=flow_in, current_user=mock_account)
+    )
+
+    assert flow_in.trigger_event_source == "schedule"
+    assert flow_in.trigger_event_types == ["schedule"]
+    assert flow_in.webhook_config is None
+    assert result.schedule_state is not None
+    assert result.schedule_state["active"] is True
+    assert result.schedule_state["cron"] == "0 2 * * *"
+    assert result.schedule_state["timezone"] == "UTC"
+    assert result.schedule_state["next_run_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_create_flow_forces_schedule_event_types(
+    mock_account: Account, mocker: MockerFixture
+):
+    """Client-supplied trigger_event_types are overridden for schedules."""
+    mock_crud_flow = _mock_crud_flow_no_conflicts(mocker)
+    flow_in = _schedule_flow_create(trigger_event_types=["pull_request_created"])
+    mock_crud_flow.create.return_value = schemas.FlowResponse(
+        **flow_in.model_dump(exclude={"trigger_event_types"}),
+        trigger_event_types=["schedule"],
+        id=uuid.uuid4(),
+        created_at=datetime.now(ZoneInfo("UTC")),
+        updated_at=datetime.now(ZoneInfo("UTC")),
+    )
+
+    await maybe_await(
+        flows.create_flow(db=MagicMock(), flow_in=flow_in, current_user=mock_account)
+    )
+
+    assert flow_in.trigger_event_types == ["schedule"]
+    mock_crud_flow.create.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_create_flow_schedule_config_with_other_source_rejected(
+    mock_account: Account, mocker: MockerFixture
+):
+    """schedule_config on a non-schedule trigger source is a 400, not inert."""
+    _mock_crud_flow_no_conflicts(mocker)
+    flow_in = _schedule_flow_create(
+        trigger_event_source="github", trigger_event_types=["commit_to_main"]
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await maybe_await(
+            flows.create_flow(
+                db=MagicMock(), flow_in=flow_in, current_user=mock_account
+            )
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "trigger_event_source" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_update_schedule_flow_cannot_clear_config(
+    mock_account: Account, mocker: MockerFixture
+):
+    """Explicitly clearing schedule_config on a schedule flow is a 400."""
+    mock_crud_flow = _mock_crud_flow_no_conflicts(mocker)
+    mock_flow = MagicMock()
+    mock_flow.name = "Nightly Scan"
+    mock_flow.trigger_event_source = "schedule"
+    mock_flow.schedule_config = {"cron": "0 2 * * *", "timezone": "UTC"}
+    mock_flow.source_preset_id = None
+    mock_crud_flow.get.return_value = mock_flow
+
+    flow_update = schemas.FlowUpdate(schedule_config=None)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await maybe_await(
+            flows.update_flow(
+                db=MagicMock(),
+                flow_id=uuid.uuid4(),
+                flow_in=flow_update,
+                current_user=mock_account,
+            )
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "schedule_config" in exc_info.value.detail
+    mock_crud_flow.update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_flow_to_schedule_source_requires_config(
+    mock_account: Account, mocker: MockerFixture
+):
+    """Switching a flow to schedule without a stored/sent config is a 400."""
+    mock_crud_flow = _mock_crud_flow_no_conflicts(mocker)
+    mock_flow = MagicMock()
+    mock_flow.name = "Webhook Flow"
+    mock_flow.trigger_event_source = "webhook"
+    mock_flow.schedule_config = None
+    mock_flow.source_preset_id = None
+    mock_crud_flow.get.return_value = mock_flow
+
+    flow_update = schemas.FlowUpdate(trigger_event_source="schedule")
+
+    with pytest.raises(HTTPException) as exc_info:
+        await maybe_await(
+            flows.update_flow(
+                db=MagicMock(),
+                flow_id=uuid.uuid4(),
+                flow_in=flow_update,
+                current_user=mock_account,
+            )
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "schedule_config" in exc_info.value.detail
+    mock_crud_flow.update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_flow_schedule_config_on_webhook_flow_rejected(
+    mock_account: Account, mocker: MockerFixture
+):
+    """Sending schedule_config to a webhook flow (source unchanged) is a 400."""
+    mock_crud_flow = _mock_crud_flow_no_conflicts(mocker)
+    mock_flow = MagicMock()
+    mock_flow.name = "Webhook Flow"
+    mock_flow.trigger_event_source = "webhook"
+    mock_flow.schedule_config = None
+    mock_flow.source_preset_id = None
+    mock_crud_flow.get.return_value = mock_flow
+
+    flow_update = schemas.FlowUpdate(
+        schedule_config=CronSchedule(expr="0 2 * * *", timezone="UTC")
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await maybe_await(
+            flows.update_flow(
+                db=MagicMock(),
+                flow_id=uuid.uuid4(),
+                flow_in=flow_update,
+                current_user=mock_account,
+            )
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "trigger_event_source" in exc_info.value.detail
+    mock_crud_flow.update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_flow_switch_to_schedule_forces_event_types(
+    mock_account: Account, mocker: MockerFixture
+):
+    """Switching source to schedule with a config forces trigger_event_types."""
+    mock_crud_flow = _mock_crud_flow_no_conflicts(mocker)
+    flow_id = uuid.uuid4()
+    mock_flow = MagicMock()
+    mock_flow.name = "Webhook Flow"
+    mock_flow.trigger_event_source = "webhook"
+    mock_flow.schedule_config = None
+    mock_flow.source_preset_id = None
+    mock_flow.is_enabled = True
+    mock_crud_flow.get.return_value = mock_flow
+
+    flow_update = schemas.FlowUpdate(
+        trigger_event_source="schedule",
+        schedule_config=CronSchedule(expr="*/30 * * * *", timezone="UTC"),
+    )
+    mock_crud_flow.update.return_value = schemas.FlowResponse(
+        id=flow_id,
+        name="Webhook Flow",
+        trigger_event_source="schedule",
+        trigger_event_types=["schedule"],
+        schedule_config=CronSchedule(expr="*/30 * * * *", timezone="UTC"),
+        prompt_template="p",
+        created_at=datetime.now(ZoneInfo("UTC")),
+        updated_at=datetime.now(ZoneInfo("UTC")),
+    )
+
+    result = await maybe_await(
+        flows.update_flow(
+            db=MagicMock(),
+            flow_id=flow_id,
+            flow_in=flow_update,
+            current_user=mock_account,
+        )
+    )
+
+    assert flow_update.trigger_event_types == ["schedule"]
+    mock_crud_flow.update.assert_called_once_with(
+        db=mocker.ANY,
+        db_obj=mock_flow,
+        flow_in=flow_update,
+        account_id=mock_account.account_id,
+    )
+    assert result.schedule_state is not None
+    assert result.schedule_state["cron"] == "*/30 * * * *"
+
+
+# ---------------------------------------------------------------------------
+# Schedule preview endpoint
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_preview_schedule_daily(mock_account: Account):
+    """Preview returns a description and the next 3 run times."""
+    preview_in = schemas.SchedulePreviewRequest(
+        schedule_config=DailySchedule(at="06:30", timezone="Europe/Athens")
+    )
+
+    result = await maybe_await(
+        flows.preview_flow_schedule(
+            db=MagicMock(), preview_in=preview_in, current_user=mock_account
+        )
+    )
+
+    assert result.type == "daily"
+    assert result.description == "Daily at 06:30 (Europe/Athens)"
+    assert result.timezone == "Europe/Athens"
+    assert len(result.next_run_times) == 3
+    # Consecutive daily runs are 24h apart (mod DST)
+    gap = result.next_run_times[1] - result.next_run_times[0]
+    assert 23 * 3600 <= gap.total_seconds() <= 25 * 3600
+
+
+@pytest.mark.asyncio
+async def test_preview_schedule_interval(mock_account: Account):
+    preview_in = schemas.SchedulePreviewRequest(
+        schedule_config=IntervalSchedule(every=6, unit="hours")
+    )
+
+    result = await maybe_await(
+        flows.preview_flow_schedule(
+            db=MagicMock(), preview_in=preview_in, current_user=mock_account
+        )
+    )
+
+    assert result.type == "interval"
+    assert result.description == "Every 6 hours"
+    assert len(result.next_run_times) == 3
+    gap = result.next_run_times[1] - result.next_run_times[0]
+    assert gap.total_seconds() == 6 * 3600
+
+
+@pytest.mark.asyncio
+async def test_preview_schedule_weekly_and_cron(mock_account: Account):
+    weekly = await maybe_await(
+        flows.preview_flow_schedule(
+            db=MagicMock(),
+            preview_in=schemas.SchedulePreviewRequest(
+                schedule_config=WeeklySchedule(days=["fri", "mon"], at="09:00")
+            ),
+            current_user=mock_account,
+        )
+    )
+    assert weekly.description == "Weekly on Mon, Fri at 09:00 (UTC)"
+    assert len(weekly.next_run_times) == 3
+
+    cron = await maybe_await(
+        flows.preview_flow_schedule(
+            db=MagicMock(),
+            preview_in=schemas.SchedulePreviewRequest(
+                schedule_config=CronSchedule(expr="0 2 * * *")
+            ),
+            current_user=mock_account,
+        )
+    )
+    assert cron.type == "cron"
+    assert len(cron.next_run_times) == 3
+
+
+def test_preview_request_rejects_invalid_config():
+    """Invalid schedule configs fail schema validation (FastAPI 422 path)."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        schemas.SchedulePreviewRequest(
+            schedule_config={"type": "interval", "every": 1, "unit": "minutes"}
+        )
+    with pytest.raises(ValidationError):
+        schemas.SchedulePreviewRequest(schedule_config={"type": "daily", "at": "24:99"})
+    # Absurd `every` must fail as a pydantic ValidationError (-> 422), not
+    # leak the underlying timedelta OverflowError as an HTTP 500.
+    with pytest.raises(ValidationError, match="maximum"):
+        schemas.SchedulePreviewRequest(
+            schedule_config={
+                "type": "interval",
+                "every": 1_000_000_000_000,
+                "unit": "days",
+            }
+        )
+
+
+def test_preview_request_accepts_legacy_cron_shape():
+    req = schemas.SchedulePreviewRequest(
+        schedule_config={"cron": "0 2 * * *", "timezone": "UTC"}
+    )
+    assert req.schedule_config.type == "cron"
+    assert req.schedule_config.expr == "0 2 * * *"
