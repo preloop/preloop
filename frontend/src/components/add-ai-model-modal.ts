@@ -711,7 +711,21 @@ export class AddAIModelModal extends LitElement {
               this.requestUpdate();
             }}
             ?disabled=${this._isSubmitting}
-          ></sl-input>
+          >
+            ${
+              this._currentModel.provider_name === 'qwen'
+                ? html`
+                    <div slot="help-text">
+                      Default is China (Beijing) DashScope. International
+                      (Singapore):
+                      https://dashscope-intl.aliyuncs.com/compatible-mode/v1.
+                      US: https://dashscope-us.aliyuncs.com/compatible-mode/v1.
+                      Keys are not interchangeable across regions.
+                    </div>
+                  `
+                : ''
+            }
+          </sl-input>
           <sl-input
             class="full-width"
             type="password"

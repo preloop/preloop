@@ -222,7 +222,7 @@ async def get_available_models_for_provider(
     elif provider == "google":
         return await _get_google_models(api_key)
     elif provider == "qwen":
-        return await _get_qwen_models(api_key)
+        return await _get_qwen_models(api_key, api_endpoint)
     elif provider == "deepseek":
         return await _get_deepseek_models(api_key)
     elif provider == "moonshot":
@@ -747,12 +747,30 @@ async def _get_catalog_provider_models(
     return _live(live_models)
 
 
-# Fallback catalog used when no Qwen key is available to list the live set.
+# China (Beijing) DashScope compatible-mode host. Existing keys target this
+# URL; do not rename or replace it. International and US Model Studio hosts
+# are accepted via the stored api_endpoint (keys are per-region).
+QWEN_DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+QWEN_INTL_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+QWEN_US_BASE_URL = "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
+
+# Fallback catalog used when no Qwen / Model Studio key is available.
+# Provenance: Alibaba Cloud Model Studio text-generation list and the
+# qwen3.8-max product page (fetched 2026-08-17). Chat/completions only:
+# image, video, TTS, NSFW, Happy Horse, and Z-Image are excluded.
+# ORDER MATTERS: qwen3.8-max first (the headline model as of 2026-08-03).
+# Every id here is priced in services/data/model_prices.json under
+# dashscope/<id> (pinned by tests/services/test_model_pricing.py).
 QWEN_KNOWN_MODELS = [
+    "qwen3.8-max",
+    "qwen3.7-max",
+    "qwen3.7-plus",
+    "qwen3.6-flash",
+    "qwen3.5-plus",
+    "qwen3-max",
+    "qwen3-coder-plus",
     "qwen-plus",
-    "qwen-turbo",
-    "qwen-max",
-    "qwq-32b-preview",
+    "qwen-flash",
 ]
 
 # Fallback catalog used when no DeepSeek key is available to list the live set.
@@ -804,14 +822,79 @@ MISTRAL_KNOWN_MODELS = [
 ]
 
 
-async def _get_qwen_models(api_key: Optional[str] = None) -> ModelDiscoveryResult:
-    """Return Qwen models, live from the API when a key is supplied."""
-    return await _get_catalog_provider_models(
+def _is_qwen_chat_model(model_id: str) -> bool:
+    """Keep chat/completions SKUs; drop dedicated media, audio, and NSFW ids.
+
+    Multimodal chat flagships (``qwen3.8-max``) stay. Dedicated Wan video,
+    Qwen-Image, Qwen-VL product lines, audio/TTS, Happy Horse, Z-Image, and
+    any id carrying ``nsfw`` are excluded from the picker.
+    """
+    lowered = (model_id or "").strip().lower()
+    if not lowered:
+        return False
+    blocked_prefixes = (
+        "wan",
+        "happy-horse",
+        "z-image",
+        "qwen-image",
+        "qwen-vl",
+        "qwen-audio",
+        "qwen-tts",
+        "qwen-omni",
+        "qwen2.5-omni",
+        "qwen2.5-vl",
+        "qvq-",
+    )
+    blocked_substrings = (
+        "nsfw",
+        "-tts",
+        "-asr",
+        "-stt",
+        "-embedding",
+        "-rerank",
+        "-vl-",
+    )
+    if any(lowered.startswith(prefix) for prefix in blocked_prefixes):
+        return False
+    if any(token in lowered for token in blocked_substrings):
+        return False
+    return True
+
+
+async def _get_qwen_models(
+    api_key: Optional[str] = None,
+    api_endpoint: Optional[str] = None,
+) -> ModelDiscoveryResult:
+    """Return Qwen / Model Studio models, live when a key is supplied.
+
+    Default base URL is the China (Beijing) DashScope compatible-mode host so
+    existing keys keep working. A caller-supplied endpoint (Singapore intl,
+    US Virginia, or a workspace-specific ``*.maas.aliyuncs.com`` host) is
+    used instead after SSRF validation. Region keys are not interchangeable.
+    """
+    raw = (api_endpoint or "").strip()
+    if raw:
+        base_url = validate_discovery_endpoint(raw).rstrip("/")
+    else:
+        base_url = QWEN_DEFAULT_BASE_URL
+
+    result = await _get_catalog_provider_models(
         provider_label="Qwen",
-        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        base_url=base_url,
         known_models=QWEN_KNOWN_MODELS,
         api_key=api_key,
     )
+    if result.source != "live":
+        return result
+
+    filtered = [model_id for model_id in result.models if _is_qwen_chat_model(model_id)]
+    if not filtered:
+        logger.info(
+            "Qwen live list had no chat models after media/NSFW filter, "
+            "using bundled catalog"
+        )
+        return _fallback(QWEN_KNOWN_MODELS, ERROR_EMPTY_RESPONSE)
+    return _live(filtered)
 
 
 async def _get_deepseek_models(api_key: Optional[str] = None) -> ModelDiscoveryResult:

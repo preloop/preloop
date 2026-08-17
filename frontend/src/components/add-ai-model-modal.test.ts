@@ -714,6 +714,44 @@ describe('AddAIModelModal new BYOK providers', () => {
   });
 });
 
+describe('AddAIModelModal Qwen regional endpoints', () => {
+  let element: AddAIModelModal;
+  let sandbox: SinonSandbox;
+
+  beforeEach(async () => {
+    localStorage.setItem('accessToken', 'test-access-token');
+    localStorage.setItem('refreshToken', 'test-refresh-token');
+    sandbox = sinon.createSandbox();
+    sandbox.stub(window, 'fetch').resolves(new Response(JSON.stringify([])));
+    element = await fixture(html`<add-ai-model-modal></add-ai-model-modal>`);
+  });
+
+  afterEach(() => {
+    sandbox.restore();
+    localStorage.clear();
+  });
+
+  it('prefills the China DashScope URL and does not rename it', async () => {
+    await (element as any)._handleProviderChange({
+      target: { value: 'qwen' },
+    } as unknown as Event);
+    expect((element as any)._currentModel.api_endpoint).to.equal(
+      'https://dashscope.aliyuncs.com/compatible-mode/v1'
+    );
+  });
+
+  it('mentions the international and US hosts in the API URL help', async () => {
+    element.open = true;
+    await (element as any)._handleProviderChange({
+      target: { value: 'qwen' },
+    } as unknown as Event);
+    await element.updateComplete;
+    const help = element.shadowRoot?.textContent || '';
+    expect(help).to.contain('dashscope-intl.aliyuncs.com');
+    expect(help).to.contain('dashscope-us.aliyuncs.com');
+  });
+});
+
 /**
  * Editing a model must never echo stored credential bookkeeping back to the
  * server. The API returns credential_type / credentials_* fields on reads;

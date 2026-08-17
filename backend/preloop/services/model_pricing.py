@@ -37,7 +37,13 @@ _SYNTHETIC_PROVIDER_PREFIXES = ("openai-compatible/", "custom/", "preloop/")
 
 # Hosts that front a model marketplace whose catalog keys litellm namespaces
 # under a provider prefix (e.g. ``openrouter/deepseek/deepseek-chat``).
-_ENDPOINT_HOST_PREFIXES = (("openrouter.ai", "openrouter"),)
+_ENDPOINT_HOST_PREFIXES = (
+    ("openrouter.ai", "openrouter"),
+    ("dashscope.aliyuncs.com", "dashscope"),
+    ("dashscope-intl.aliyuncs.com", "dashscope"),
+    ("dashscope-us.aliyuncs.com", "dashscope"),
+    ("maas.aliyuncs.com", "dashscope"),
+)
 
 
 def _strip_synthetic_prefix(candidate: str) -> str:
@@ -498,7 +504,13 @@ def _iter_litellm_model_candidates(ai_model: AIModel) -> Iterable[str]:
 
     if model_identifier:
         candidates.append(model_identifier)
-        prefix = _PROVIDER_PREFIX.get(provider, provider)
+        # Routing maps qwen -> openai (DashScope compatible-mode). Pricing
+        # keys live under dashscope/<id> in the vendored catalog.
+        prefix = (
+            "dashscope"
+            if provider == "qwen"
+            else _PROVIDER_PREFIX.get(provider, provider)
+        )
         bare_identifier = _strip_synthetic_prefix(model_identifier)
         if "/" not in bare_identifier and prefix not in _SYNTHETIC_PROVIDER_PREFIXES:
             candidates.append(f"{prefix}/{bare_identifier}")
