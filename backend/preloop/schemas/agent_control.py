@@ -73,6 +73,8 @@ class AgentControlCommandResponse(BaseModel):
     managed_agent_id: UUID
     runtime_session_id: Optional[UUID] = None
     target_session_id: Optional[UUID] = None
+    session_source_id: Optional[str] = None
+    session_reference: Optional[str] = None
     session_mode: AgentControlSessionMode
     subject: Optional[str] = None
     local_delivery: bool = False

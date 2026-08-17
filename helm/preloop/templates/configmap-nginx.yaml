@@ -303,10 +303,11 @@ data:
             add_header Expires "0";
         }
 
-        # Health check endpoint
+        # Health check endpoint. `default_type` (not `add_header Content-Type`,
+        # which is dead code after `return`) sets the response MIME type.
         location /health {
             access_log off;
+            default_type text/plain;
             return 200 "healthy\n";
-            add_header Content-Type text/plain;
         }
     }

@@ -15,7 +15,21 @@ export type SessionObserverScope =
   | 'ai_model'
   | 'audit';
 
-export type SessionReplayMode = 'timeline' | 'chat' | 'replay' | 'optimize';
+// 'conversation' is the chat-style transcript (<session-chat-view>): only
+// top-level prompts/responses expanded, everything else collapsed.
+// 'timeline' is the original turn/delta transcript, 'chat' its talk-dialog
+// variant; both keep rendering through <session-replay-panel>.
+export type SessionReplayMode =
+  'conversation' | 'timeline' | 'chat' | 'replay' | 'optimize';
+
+/**
+ * Event dispatched by transcript views to ask <preloop-session-observer> for
+ * the next (earlier) page of gateway events. Dispatch sites use this constant;
+ * Lit template `@event=` listener bindings must stay literal, so the observer's
+ * templates repeat the string — keep them in sync with this.
+ */
+export const SESSION_EVENTS_PAGE_REQUESTED_EVENT =
+  'session-events-page-requested';
 
 export interface ObservedSession {
   id: string;

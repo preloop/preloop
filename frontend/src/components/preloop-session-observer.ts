@@ -37,6 +37,7 @@ import type {
   RuntimeSessionOptimizationAppliedAction,
   RuntimeSessionOptimizationResponse,
   RuntimeSessionActivityItem,
+  RuntimeSessionCacheSummary,
   RuntimeSessionRequestItem,
   RuntimeSessionSummary,
 } from '../types';
@@ -53,6 +54,7 @@ import {
   normalizeObservedSessions,
 } from '../utils/session-observer';
 import { reducedMotionStyles } from '../styles/reduced-motion';
+import './session-chat-view';
 import './session-list-panel';
 import './session-replay-panel';
 import './session-request-timeline';
@@ -224,6 +226,11 @@ export class PreloopSessionObserver extends LitElement {
 
   @state()
   private requestFailedCount: Record<string, number> = {};
+
+  // Whole-session prompt-cache rollup per session id. Sent with every requests
+  // page (it covers the session, not the page), so the latest response wins.
+  @state()
+  private requestCacheSummary: Record<string, RuntimeSessionCacheSummary> = {};
 
   @state()
   private budgetDialogSession: ObservedSession | null = null;
@@ -686,7 +693,9 @@ export class PreloopSessionObserver extends LitElement {
           },
         };
       }
-      if (this.followLive) {
+      if (this.followLive && this.replayMode !== 'conversation') {
+        // Newest-first modes pin to the top. The conversation view is
+        // oldest-first and pins itself to the bottom via its followLive prop.
         this.updateComplete.then(() => {
           const content = this.renderRoot.querySelector('.content');
           content?.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1015,6 +1024,12 @@ export class PreloopSessionObserver extends LitElement {
         ...this.requestFailedCount,
         [sessionId]: response.failed_count,
       };
+      if (response.cache_summary) {
+        this.requestCacheSummary = {
+          ...this.requestCacheSummary,
+          [sessionId]: response.cache_summary,
+        };
+      }
     } catch (error) {
       console.error('Failed to load session requests:', error);
       this.error =
@@ -1472,6 +1487,7 @@ export class PreloopSessionObserver extends LitElement {
       label: string;
       icon: string | null;
     }> = [
+      { mode: 'conversation', label: 'Chat', icon: 'chat-left-text' },
       { mode: 'timeline', label: 'Transcript', icon: 'list-ul' },
       { mode: 'replay', label: 'Replay', icon: 'play-circle' },
     ];
@@ -1487,7 +1503,9 @@ export class PreloopSessionObserver extends LitElement {
   private replayModeFromUrl(): SessionReplayMode | null {
     if (!this.syncModeToUrl) return null;
     const raw = new URLSearchParams(window.location.search).get('replay');
-    if (raw === 'timeline' || raw === 'replay') return raw;
+    if (raw === 'conversation' || raw === 'timeline' || raw === 'replay') {
+      return raw;
+    }
     if (raw === 'optimize' && this.enabledFeatures.optimization) return raw;
     return null;
   }
@@ -1595,6 +1613,38 @@ export class PreloopSessionObserver extends LitElement {
       return 'No sessions yet for this agent. Its first gateway call will appear here live.';
     }
     return 'Select a session to follow it live or replay it.';
+  }
+
+  /**
+   * Chat-style transcript (P1 of the transcript redesign): only top-level
+   * user prompts and final agent responses expanded; tool calls/results,
+   * system and injected segments collapsed. Rendered ALONGSIDE the replay
+   * panel (which is hidden, not unmounted, in this mode) so switching tabs
+   * never loses the panel's expand/replay/optimize state.
+   */
+  private renderConversationView() {
+    if (!this.activeSession) {
+      return html`<div class="empty">${this.replayEmptyText}</div>`;
+    }
+    return html`
+      <session-chat-view
+        .events=${this.activeEvents}
+        .activity=${this.activeActivity}
+        .loading=${
+          this.activeSessionId !== null &&
+          this.loadingSessionId === this.activeSessionId
+        }
+        .hasMoreEvents=${this.activeEventPage?.hasMore ?? false}
+        .loadingMoreEvents=${
+          this.loadingMoreEventsForSessionId === this.activeSessionId
+        }
+        .followLive=${this.followLive}
+        @session-events-page-requested=${() =>
+          this.activeSessionId
+            ? this.loadMoreEvents(this.activeSessionId)
+            : undefined}
+      ></session-chat-view>
+    `;
   }
 
   private renderToolbar() {
@@ -1747,6 +1797,11 @@ export class PreloopSessionObserver extends LitElement {
                       : 0
                   }
                   .failedOnly=${this.requestsFailedOnly}
+                  .cacheSummary=${
+                    this.activeSessionId
+                      ? this.requestCacheSummary[this.activeSessionId]
+                      : undefined
+                  }
                   .loading=${
                     this.loadingRequestsForSessionId === this.activeSessionId
                   }
@@ -1821,7 +1876,13 @@ export class PreloopSessionObserver extends LitElement {
               `
             : nothing
         }
+        ${
+          this.replayMode === 'conversation'
+            ? this.renderConversationView()
+            : nothing
+        }
         <session-replay-panel
+          style=${this.replayMode === 'conversation' ? 'display: none;' : ''}
           .session=${this.activeSession}
           .emptyText=${this.replayEmptyText}
           .events=${this.activeEvents}

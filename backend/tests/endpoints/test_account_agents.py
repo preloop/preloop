@@ -123,6 +123,74 @@ def test_managed_agent_control_fields_merge_runtime_plugin_evidence():
     assert fields["control_capabilities"]
 
 
+def test_managed_agent_control_fields_enable_claude_code_with_sidecar_flags():
+    """claude_code is a supported kind; control_enabled still needs sidecar flags."""
+    connected = _managed_agent_control_fields(
+        {
+            "agent_kind": "claude_code",
+            "session_source_type": "claude_code",
+            "lifecycle_state": "active",
+            "runtime_session_id": "runtime-claude",
+            "ended_at": None,
+        },
+        {
+            "validation_result": {
+                "control_channel_configured": True,
+                "control_plugin_verified": True,
+                "control_ws_url_ok": True,
+                "control_bearer_token_ok": True,
+            },
+            "managed_config": {},
+        },
+    )
+
+    assert connected["control_enabled"] is True
+    assert connected["control_online"] is True
+    assert connected["control_state"] == "plugin_connected"
+    assert connected["control_capabilities"]
+
+    no_sidecar = _managed_agent_control_fields(
+        {
+            "agent_kind": "claude_code",
+            "session_source_type": "claude_code",
+            "lifecycle_state": "active",
+            "runtime_session_id": "runtime-claude",
+            "ended_at": None,
+        },
+        None,
+    )
+
+    assert no_sidecar["control_enabled"] is False
+    assert no_sidecar["control_online"] is False
+    assert no_sidecar["control_state"] == "unsupported"
+    assert no_sidecar["control_capabilities"] == []
+
+
+def test_managed_agent_control_fields_keep_unknown_kinds_unsupported():
+    """Sidecar flags must not enable Agent Control for an unsupported kind."""
+    fields = _managed_agent_control_fields(
+        {
+            "agent_kind": "cursor",
+            "session_source_type": "cursor",
+            "lifecycle_state": "active",
+            "runtime_session_id": "runtime-cursor",
+            "ended_at": None,
+        },
+        {
+            "validation_result": {
+                "control_channel_configured": True,
+                "control_plugin_verified": True,
+                "control_ws_url_ok": True,
+                "control_bearer_token_ok": True,
+            },
+            "managed_config": {},
+        },
+    )
+
+    assert fields["control_enabled"] is False
+    assert fields["control_state"] == "unsupported"
+
+
 def test_onboarding_flags_downgrade_failed_live_gateway_to_mcp_only():
     """Failed gateway validation must not leave the UI showing fully onboarded."""
     mcp_configured, gateway_configured, state = _managed_agent_onboarding_flags(

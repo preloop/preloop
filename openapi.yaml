@@ -9318,6 +9318,16 @@ components:
             format: uuid
           - type: 'null'
           title: Target Session Id
+        session_source_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Source Id
+        session_reference:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Reference
         session_mode:
           type: string
           enum:
@@ -16303,6 +16313,152 @@ components:
       type: object
       title: RuntimeSessionActivityListResponse
       description: List of activity items for a runtime session.
+    RuntimeSessionCacheModelGroup:
+      properties:
+        model_alias:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Alias
+        provider_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Name
+        requests:
+          type: integer
+          title: Requests
+          default: 0
+        cache_read_tokens:
+          type: integer
+          title: Cache Read Tokens
+          default: 0
+        cache_creation_tokens:
+          type: integer
+          title: Cache Creation Tokens
+          default: 0
+        prompt_tokens:
+          type: integer
+          title: Prompt Tokens
+          default: 0
+        requests_with_unknown_prompt_tokens:
+          type: integer
+          title: Requests With Unknown Prompt Tokens
+          default: 0
+        write_reported:
+          type: boolean
+          title: Write Reported
+          default: false
+      type: object
+      title: RuntimeSessionCacheModelGroup
+      description: 'Per-(model, provider) breakdown inside the session cache rollup.
+
+
+        ``requests_with_unknown_prompt_tokens`` counts this group''s rows whose
+
+        provider reported no prompt total; their tokens are excluded from
+
+        ``prompt_tokens`` rather than counted as zero.'
+    RuntimeSessionCacheSummary:
+      properties:
+        requests_total:
+          type: integer
+          title: Requests Total
+          default: 0
+        requests_with_cache_data:
+          type: integer
+          title: Requests With Cache Data
+          default: 0
+        requests_without_cache_data:
+          type: integer
+          title: Requests Without Cache Data
+          default: 0
+        covered_prompt_tokens:
+          type: integer
+          title: Covered Prompt Tokens
+          default: 0
+        uncovered_prompt_tokens:
+          type: integer
+          title: Uncovered Prompt Tokens
+          default: 0
+        cached_prompt_tokens:
+          type: integer
+          title: Cached Prompt Tokens
+          default: 0
+        uncached_prompt_tokens:
+          type: integer
+          title: Uncached Prompt Tokens
+          default: 0
+        cache_write_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Cache Write Tokens
+        cache_hit_ratio:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Cache Hit Ratio
+        estimated_cache_savings_usd:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Estimated Cache Savings Usd
+        savings_basis:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Savings Basis
+        savings_omitted_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Savings Omitted Reason
+        requests_with_unknown_prompt_tokens:
+          type: integer
+          title: Requests With Unknown Prompt Tokens
+          default: 0
+        models:
+          items:
+            $ref: '#/components/schemas/RuntimeSessionCacheModelGroup'
+          type: array
+          title: Models
+      type: object
+      title: RuntimeSessionCacheSummary
+      description: 'Whole-session prompt-cache rollup.
+
+
+        The ratio''s denominator is the *covered* traffic only: requests whose
+
+        provider actually reported a cache split. ``uncovered_prompt_tokens`` is
+
+        surfaced next to it so the UI can state coverage instead of folding blind
+
+        rows in as misses. ``requests_with_unknown_prompt_tokens`` counts rows
+
+        whose provider reported no prompt total at all; their tokens are excluded
+
+        from both sums rather than counted as zero.
+
+
+        ``cache_write_tokens`` is ``None`` when no provider in this session has a
+
+        billable cache-write concept at all (OpenAI, Gemini, DeepSeek), which is
+
+        not the same statement as zero rewritten tokens.
+
+
+        ``estimated_cache_savings_usd`` is computed only from explicit catalog
+
+        input AND cache-read prices — never a multiplier-based approximation.
+
+        ``savings_basis`` is ``catalog_exact`` when every model that contributed
+
+        cache reads was priced, ``catalog_exact_partial`` when the figure is a
+
+        lower bound covering only the priced models. When no contributing model is
+
+        priced the figure is ``None`` and ``savings_omitted_reason`` says why.'
     RuntimeSessionInteractionSummary:
       properties:
         event_id:
@@ -16787,6 +16943,55 @@ components:
       - n_runs
       title: RuntimeSessionReplayResponse
       description: 'Outcome of a replay: the exact input delta plus the banded end-to-end.'
+    RuntimeSessionRequestCache:
+      properties:
+        cache_read_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Cache Read Tokens
+        cache_creation_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Cache Creation Tokens
+        cache_miss_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Cache Miss Tokens
+        cache_miss_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cache Miss Source
+        has_cache_data:
+          type: boolean
+          title: Has Cache Data
+          default: false
+        usage_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Usage Source
+      type: object
+      title: RuntimeSessionRequestCache
+      description: 'Prompt-cache accounting for one gateway request.
+
+
+        Every token field is ``Optional`` on purpose: ``None`` means *the provider
+
+        did not report this*, and clients MUST render it as "not reported" rather
+
+        than as zero. A ``0`` here is a real, provider-reported zero.
+
+
+        ``cache_miss_source`` distinguishes a miss count the provider sent us
+
+        (``reported`` — today only DeepSeek''s ``prompt_cache_miss_tokens``) from
+        one
+
+        we derived arithmetically as ``prompt - read - write`` (``derived``).'
     RuntimeSessionRequestItem:
       properties:
         id:
@@ -16860,6 +17065,8 @@ components:
           type: integer
           title: Tools Total Schema Tokens
           default: 0
+        cache:
+          $ref: '#/components/schemas/RuntimeSessionRequestCache'
       type: object
       required:
       - id
@@ -16897,7 +17104,11 @@ components:
           type: boolean
           title: Has More
           default: false
+        cache_summary:
+          $ref: '#/components/schemas/RuntimeSessionCacheSummary'
       type: object
+      required:
+      - cache_summary
       title: RuntimeSessionRequestListResponse
       description: Paginated per-request rows for one runtime session.
     RuntimeSessionRequestTool:

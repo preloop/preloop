@@ -1,6 +1,8 @@
 """CRUD operations for ApiUsage model."""
 
 from datetime import datetime, timedelta, timezone
+import logging
+from types import SimpleNamespace
 import uuid
 from typing import Any, Dict, List, Optional, Sequence, Union
 from sqlalchemy import Float, String, and_, case, cast, func, or_
@@ -15,6 +17,8 @@ from ..models.runtime_session import RuntimeSession
 from ..models.user import User
 from ...utils.jsonb_sanitize import sanitize_for_jsonb
 from .base import CRUDBase
+
+logger = logging.getLogger(__name__)
 
 # Known ``meta_data.purpose`` tags for internal model-gateway usage rows.
 GATEWAY_USAGE_PURPOSES = frozenset(
@@ -1861,6 +1865,82 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             .offset(offset)
             .all()
         )
+
+    # Hard cap on cache-rollup rows per session. Even a very long-lived agent
+    # session stays well under this; the cap only guards against a pathological
+    # session flooding the API pod's memory. Hitting it is logged because the
+    # resulting summary silently under-counts the session.
+    SESSION_CACHE_ROWS_LIMIT = 50_000
+
+    def list_session_cache_rows(
+        self,
+        db: Session,
+        *,
+        account_id: Union[uuid.UUID, str],
+        runtime_session_id: Union[uuid.UUID, str],
+    ) -> List[SimpleNamespace]:
+        """List the cache-accounting columns for every request in a session.
+
+        Deliberately column-projected rather than a full ORM load: the session
+        cache rollup covers ALL requests (it must not change as the UI pages),
+        and full rows carry ``meta_data`` with capped-but-still-large request
+        and response bodies. Only ``meta_data['usage_details']`` is pulled from
+        the JSONB, which is the sole part cache accounting reads.
+
+        Rows are capped at :attr:`SESSION_CACHE_ROWS_LIMIT` as a memory guard;
+        exceeding it logs a warning because the rollup then under-counts.
+
+        Args:
+            db: Database session.
+            account_id: Owning account id.
+            runtime_session_id: Runtime session to summarize.
+
+        Returns:
+            Lightweight namespaces shaped like ``ApiUsage`` rows for the fields
+            :mod:`preloop.services.cache_accounting` consumes.
+        """
+        rows = (
+            db.query(
+                self.model.prompt_tokens,
+                self.model.cache_read_tokens,
+                self.model.cache_creation_tokens,
+                self.model.model_alias,
+                self.model.provider_name,
+                self.model.usage_source,
+                self.model.meta_data["usage_details"].label("usage_details"),
+            )
+            .filter(
+                exclude_replay_usage_condition(),
+                self.model.action_type == "model_gateway",
+                self.model.account_id == account_id,
+                self.model.runtime_session_id == runtime_session_id,
+            )
+            .limit(self.SESSION_CACHE_ROWS_LIMIT + 1)
+            .all()
+        )
+        if len(rows) > self.SESSION_CACHE_ROWS_LIMIT:
+            rows = rows[: self.SESSION_CACHE_ROWS_LIMIT]
+            logger.warning(
+                "Session cache rollup truncated at %d rows for runtime session "
+                "%s (account %s); the cache summary under-counts this session.",
+                self.SESSION_CACHE_ROWS_LIMIT,
+                runtime_session_id,
+                account_id,
+            )
+        return [
+            SimpleNamespace(
+                prompt_tokens=row.prompt_tokens,
+                cache_read_tokens=row.cache_read_tokens,
+                cache_creation_tokens=row.cache_creation_tokens,
+                model_alias=row.model_alias,
+                provider_name=row.provider_name,
+                usage_source=row.usage_source,
+                meta_data={"usage_details": row.usage_details}
+                if row.usage_details is not None
+                else None,
+            )
+            for row in rows
+        ]
 
     def count_session_request_rows(
         self,

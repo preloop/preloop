@@ -549,7 +549,13 @@ export interface RuntimeSessionUpdateRequest {
 }
 
 export interface RuntimeSessionActivityItem {
-  activity_type: 'model_interaction' | 'tool_call' | string;
+  activity_type:
+    | 'model_interaction'
+    | 'tool_call'
+    | 'session_started'
+    | 'session_ended'
+    | 'agent_control_message'
+    | string;
   timestamp: string;
   title: string;
   summary: string | null;
@@ -580,6 +586,23 @@ export interface RuntimeSessionRequestTool {
   stripped: boolean;
 }
 
+/**
+ * Prompt-cache accounting for one gateway request.
+ *
+ * `null` on any token field means the provider did NOT report that number.
+ * It must be rendered as "not reported", never as zero — a `0` here is a real
+ * provider-reported zero and carries the opposite meaning.
+ */
+export interface RuntimeSessionRequestCache {
+  cache_read_tokens: number | null;
+  cache_creation_tokens: number | null;
+  cache_miss_tokens: number | null;
+  /** 'reported' = provider sent a miss count; 'derived' = prompt - read - write. */
+  cache_miss_source: 'reported' | 'derived' | null;
+  has_cache_data: boolean;
+  usage_source: string | null;
+}
+
 export interface RuntimeSessionRequestItem {
   id: string;
   timestamp: string | null;
@@ -596,6 +619,48 @@ export interface RuntimeSessionRequestItem {
   endpoint: string | null;
   tools: RuntimeSessionRequestTool[];
   tools_total_schema_tokens: number;
+  cache?: RuntimeSessionRequestCache;
+}
+
+/**
+ * Whole-session prompt-cache rollup.
+ *
+ * The hit ratio covers only requests whose provider reported a cache split;
+ * `uncovered_prompt_tokens` is the traffic excluded from that denominator.
+ * `cache_write_tokens` is null when no provider in the session has a billable
+ * cache-write concept at all. `estimated_cache_savings_usd` is null unless the
+ * price catalog supports an exact figure, with `savings_omitted_reason` set.
+ */
+export interface RuntimeSessionCacheModelGroup {
+  model_alias: string | null;
+  provider_name: string | null;
+  requests: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  prompt_tokens: number;
+  /** Rows whose provider reported no prompt total; excluded from
+   *  `prompt_tokens` rather than counted as zero. */
+  requests_with_unknown_prompt_tokens?: number;
+  write_reported: boolean;
+}
+
+export interface RuntimeSessionCacheSummary {
+  requests_total: number;
+  requests_with_cache_data: number;
+  requests_without_cache_data: number;
+  covered_prompt_tokens: number;
+  uncovered_prompt_tokens: number;
+  cached_prompt_tokens: number;
+  uncached_prompt_tokens: number;
+  cache_write_tokens: number | null;
+  cache_hit_ratio: number | null;
+  estimated_cache_savings_usd: number | null;
+  /** 'catalog_exact' | 'catalog_exact_partial' (lower bound) | null. */
+  savings_basis: string | null;
+  savings_omitted_reason: string | null;
+  /** Covered requests whose provider reported no prompt total at all. */
+  requests_with_unknown_prompt_tokens?: number;
+  models?: RuntimeSessionCacheModelGroup[];
 }
 
 export interface RuntimeSessionRequestListResponse {
@@ -606,6 +671,7 @@ export interface RuntimeSessionRequestListResponse {
   offset: number;
   next_offset: number | null;
   has_more: boolean;
+  cache_summary?: RuntimeSessionCacheSummary;
 }
 
 export interface RuntimeSessionSummaryInsight {

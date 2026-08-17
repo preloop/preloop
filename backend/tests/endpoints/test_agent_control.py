@@ -8,11 +8,13 @@ import pytest
 from starlette.websockets import WebSocketDisconnect
 
 from preloop.models.crud import (
+    crud_agent_control_command,
     crud_managed_agent,
     crud_managed_agent_enrollment,
     crud_runtime_session,
     crud_runtime_session_activity,
 )
+from preloop.schemas.agent_control import AgentControlSendMessageRequest
 
 
 def _issue_runtime_token(client, *, session_source_id: str = "openclaw-live"):
@@ -695,7 +697,11 @@ def test_agent_control_prompt_targets_existing_session(
     payload = body["command_envelope"]["payload"]
     assert payload["session_mode"] == "existing"
     assert payload["target_session_id"] == str(runtime_session.id)
+    assert payload["session_source_id"] == runtime_session.session_source_id
+    assert payload["session_reference"] == runtime_session.session_reference
     assert payload["start_new_session"] is False
+    assert body["session_source_id"] == runtime_session.session_source_id
+    assert body["session_reference"] == runtime_session.session_reference
 
     activity = crud_runtime_session_activity.list_for_runtime_session(
         db_session,
@@ -709,6 +715,99 @@ def test_agent_control_prompt_targets_existing_session(
     assert command_activity[0].summary == "Continue the current task"
     assert command_activity[0].metadata_["session_mode"] == "existing"
     assert command_activity[0].metadata_["target_session_id"] == str(runtime_session.id)
+
+
+@patch("preloop.api.endpoints.agent_control.get_nats_client")
+def test_agent_control_existing_session_envelope_includes_native_ids(
+    mock_get_nats_client,
+    client,
+    db_session,
+    test_user,
+):
+    """Existing-session commands persist the target's native resume identity.
+
+    Clients keep sending the Preloop runtime-session UUID. The sidecar
+    resumes by session_source_id, so the outbound envelope must carry that
+    native id (and session_reference) even when they differ from the
+    managed agent's durable source id.
+    """
+    token_response = client.post(
+        "/api/v1/auth/runtime-sessions/token",
+        json={
+            "session_source_type": "claude_code",
+            "session_source_id": "claude-principal-host",
+            "session_reference": "/tmp/claude.json",
+            "runtime_principal_name": "Claude Code",
+        },
+    )
+    assert token_response.status_code == 201
+    managed_agent = crud_managed_agent.get_by_source(
+        db_session,
+        account_id=str(test_user.account_id),
+        session_source_type="claude_code",
+        session_source_id="claude-principal-host",
+    )
+    assert managed_agent is not None
+    _mark_agent_control_configured(db_session, test_user, managed_agent)
+
+    native_session = crud_runtime_session.upsert_by_source(
+        db_session,
+        account_id=test_user.account_id,
+        session_source_type="claude_code",
+        session_source_id="ses_native_abc123",
+        session_reference="resume:ses_native_abc123",
+        runtime_principal_type="claude_code",
+        runtime_principal_id="claude-principal-host",
+        runtime_principal_name="Claude Code",
+        started_at=datetime.now(UTC),
+        last_activity_at=datetime.now(UTC),
+    )
+    db_session.commit()
+
+    mock_nats = MagicMock()
+    mock_nats.is_connected = True
+    mock_nats.publish = AsyncMock()
+    mock_get_nats_client.return_value = mock_nats
+
+    request_json = {
+        "message": "Resume the ended investigation",
+        "target_session_id": str(native_session.id),
+        "session_source_id": "client-must-not-win",
+        "session_reference": "client-supplied-ref",
+        "metadata": {"source": "ios"},
+    }
+    parsed = AgentControlSendMessageRequest.model_validate(request_json)
+    assert "session_source_id" not in AgentControlSendMessageRequest.model_fields
+    assert "session_reference" not in AgentControlSendMessageRequest.model_fields
+    assert "session_source_id" not in parsed.model_dump()
+    assert "session_reference" not in parsed.model_dump()
+
+    response = client.post(
+        f"/api/v1/agents/{managed_agent.id}/control/commands",
+        json=request_json,
+    )
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["session_mode"] == "existing"
+    assert body["target_session_id"] == str(native_session.id)
+    assert body["session_source_id"] == "ses_native_abc123"
+    assert body["session_reference"] == "resume:ses_native_abc123"
+    payload = body["command_envelope"]["payload"]
+    assert payload["target_session_id"] == str(native_session.id)
+    assert payload["session_source_id"] == "ses_native_abc123"
+    assert payload["session_reference"] == "resume:ses_native_abc123"
+
+    record = crud_agent_control_command.get_by_command_id(
+        db_session,
+        account_id=test_user.account_id,
+        command_id=body["command_id"],
+    )
+    assert record is not None
+    persisted = record.envelope["payload"]
+    assert persisted["target_session_id"] == str(native_session.id)
+    assert persisted["session_source_id"] == "ses_native_abc123"
+    assert persisted["session_reference"] == "resume:ses_native_abc123"
 
 
 @patch("preloop.api.endpoints.agent_control.get_nats_client")
@@ -748,6 +847,16 @@ def test_agent_control_prompt_can_request_new_session(
     assert body["session_mode"] == "new"
     assert body["target_session_id"] is not None
     assert body["target_session_id"] != body["runtime_session_id"]
+    history_session = crud_runtime_session.get_account_session(
+        db_session,
+        account_id=str(test_user.account_id),
+        runtime_session_id=body["target_session_id"],
+    )
+    assert history_session is not None
+    assert body["session_source_id"] == history_session.session_source_id
+    assert body["session_reference"] == history_session.session_reference
+    assert history_session.session_source_id.startswith("openclaw-new-session-")
+    assert history_session.session_reference == "Agent Control new session"
     payload = body["command_envelope"]["payload"]
     assert payload["session_mode"] == "new"
     assert payload["start_new_session"] is True

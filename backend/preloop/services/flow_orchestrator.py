@@ -85,9 +85,58 @@ MCP_TOOL_LOOP_DUPLICATE_WINDOW_SECONDS = 0.5
 FLOW_SUCCESS_INSTRUCTION = f"""
 
 ---
-IMPORTANT: When you have successfully completed your task, you MUST print the following marker on a line by itself: {FLOW_SUCCESS_SENTINEL}
-Do not include any other text on the same line as the marker. This signals successful completion.
+IMPORTANT: When you have successfully completed your task, you MUST confirm success in one of two ways: print the following marker on a line by itself (no other text on that line): {FLOW_SUCCESS_SENTINEL}
+or write /workspace/result.json with a recognized completion status. Statuses such as "success", "pass", and "fail" confirm completion. Preserve any richer structured report instead of replacing it with a bare status object. Without one of these confirmations the run is marked FAILED.
 ---"""
+
+FLOW_EVAL_SUCCESS_INSTRUCTION = """
+
+---
+IMPORTANT: Your existing structured /workspace/result.json report is the flow confirmation channel. Preserve its schema and all rich report fields; do not overwrite it with a bare status object. The `pass` and `fail` verdicts confirm that the flow completed. An `error` verdict means the evaluation could not complete. Do not print sentinel markers.
+---"""
+
+
+def _success_instruction_for_prompt(prompt: str) -> str:
+    """Select the completion instruction matching the prompt's result contract."""
+    normalized_prompt = prompt.lower()
+    if (
+        "preloop.eval.result/v1" in normalized_prompt
+        or "do not print sentinel markers" in normalized_prompt
+    ):
+        return FLOW_EVAL_SUCCESS_INSTRUCTION
+    return FLOW_SUCCESS_INSTRUCTION
+
+
+# result.json "status" values that count as an explicit success confirmation
+# (channel 2 — equal in standing to the printed sentinel) or an explicit
+# flow-failure report. Eval vocabulary (preloop.eval.result/v1): "pass" and
+# "fail" are completed-run verdicts (the subject's checks passed or failed);
+# only "error" means the eval itself could not complete. "fail" is therefore
+# a success confirmation for the flow, not a flow-failure signal.
+RESULT_ARTIFACT_SUCCESS_STATUSES = frozenset(
+    {"success", "succeeded", "pass", "passed", "fail"}
+)
+RESULT_ARTIFACT_FAILURE_STATUSES = frozenset({"failure", "failed", "error"})
+
+
+def _result_artifact_confirmation(artifact: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Classify a result.json artifact as an explicit completion verdict.
+
+    Returns ``"success"`` or ``"failure"`` when the artifact carries an
+    explicit ``status`` verdict, else ``None`` (no artifact, no status field,
+    or an unrecognised value — none of which is a confirmation).
+    """
+    if not isinstance(artifact, dict):
+        return None
+    status = artifact.get("status")
+    if not isinstance(status, str):
+        return None
+    normalized = status.strip().lower()
+    if normalized in RESULT_ARTIFACT_SUCCESS_STATUSES:
+        return "success"
+    if normalized in RESULT_ARTIFACT_FAILURE_STATUSES:
+        return "failure"
+    return None
 
 
 def _make_json_serializable(obj: Any) -> Any:
@@ -831,8 +880,14 @@ class FlowExecutionOrchestrator:
                         f"No resolver found for prefix '{prefix}' and simple resolution failed for {{{{{placeholder}}}}}"
                     )
 
-        # Append the success sentinel instruction so the agent can signal completion
-        resolved_prompt = resolved_prompt + FLOW_SUCCESS_INSTRUCTION
+        # Append the success-confirmation instruction so the agent can signal
+        # completion. MUST stay at the very END of the prompt (recency): after
+        # multi-million-token runs the model is far more likely to honor the
+        # last instruction it saw (see execution ff1294e1 — work done, marker
+        # forgotten). Nothing may be appended after this.
+        resolved_prompt = resolved_prompt + _success_instruction_for_prompt(
+            resolved_prompt
+        )
 
         logger.info("Prompt resolution complete")
         return resolved_prompt
@@ -2270,11 +2325,26 @@ class FlowExecutionOrchestrator:
                         {"status": status.value, "exit_code": result.exit_code},
                     )
 
-                    # Sentinel-based status override:
-                    # If the container reports SUCCEEDED (exit code 0) but the
-                    # FLOW_EXECUTION_SUCCESS sentinel was NOT found in logs,
-                    # treat it as FAILED.  This catches agents (e.g. OpenCode)
-                    # that error out but still exit with code 0.
+                    # Structured result artifact (/workspace/result.json)
+                    # captured first-class from the workspace — the
+                    # eval/observe contract surface (no log scraping). Fetched
+                    # BEFORE the status decision: it is confirmation channel 2.
+                    result_artifact = await self._capture_result_artifact(
+                        agent_executor, session_reference
+                    )
+                    artifact_confirmation = _result_artifact_confirmation(
+                        result_artifact
+                    )
+
+                    # Positive-confirmation contract (fail-closed):
+                    # Exit code 0 is NEVER sufficient for success — agent CLIs
+                    # exit 0 even when the agent died mid-task. A run reported
+                    # SUCCEEDED by the container must be explicitly confirmed
+                    # through one of two channels, either of which suffices:
+                    #   1. the FLOW_EXECUTION_SUCCESS sentinel printed in logs
+                    #   2. a result.json artifact with a success status
+                    # An explicit failure status in result.json wins over
+                    # everything, including a printed sentinel.
                     # Guard: only apply the override when the agent-exec-start
                     # marker was actually seen in logs.  If we never streamed
                     # real logs (e.g. mocks, or the log stream failed before
@@ -2284,26 +2354,76 @@ class FlowExecutionOrchestrator:
 
                     if (
                         result.status == AgentStatus.SUCCEEDED
-                        and self._agent_exec_started
-                        and not self._success_sentinel_seen.is_set()
+                        and artifact_confirmation == "failure"
                     ):
+                        assert result_artifact is not None
+                        artifact_status = result_artifact.get("status")
                         logger.warning(
-                            f"Agent exited with SUCCEEDED status (exit_code={result.exit_code}) "
-                            f"but success sentinel was NOT found in logs. "
-                            f"Overriding status to FAILED."
+                            "Agent exited with SUCCEEDED status but result.json "
+                            "reports an explicit failure status "
+                            f"({artifact_status!r}). "
+                            "Overriding status to FAILED."
                         )
                         self.execution_logger.log_milestone(
-                            "sentinel_missing_override",
+                            "result_artifact_failure_override",
                             {
                                 "original_status": result.status.value,
                                 "exit_code": result.exit_code,
+                                "artifact_status": artifact_status,
+                                "sentinel_seen": self._success_sentinel_seen.is_set(),
                             },
                         )
                         final_status = "FAILED"
-                        error_message = (
-                            result.error_message
-                            or "Agent exited with code 0 but did not produce "
-                            "the success sentinel — likely encountered an error."
+                        error_message = result.error_message or (
+                            "Agent reported an explicit failure in result.json "
+                            f"(status={artifact_status!r})."
+                        )
+                    elif (
+                        result.status == AgentStatus.SUCCEEDED
+                        and self._agent_exec_started
+                        and not self._success_sentinel_seen.is_set()
+                        and artifact_confirmation != "success"
+                    ):
+                        logger.warning(
+                            f"Agent exited with SUCCEEDED status (exit_code={result.exit_code}) "
+                            f"but neither success-confirmation channel was used "
+                            f"(no sentinel in logs, no result.json success status). "
+                            f"Overriding status to FAILED."
+                        )
+                        self.execution_logger.log_milestone(
+                            "success_confirmation_missing",
+                            {
+                                "original_status": result.status.value,
+                                "exit_code": result.exit_code,
+                                "sentinel_seen": False,
+                                "artifact_confirmation": artifact_confirmation,
+                            },
+                        )
+                        final_status = "FAILED"
+                        # When no error heuristics fired (result.error_message
+                        # is empty), say explicitly that the run failed ONLY
+                        # for missing confirmation, and name both channels —
+                        # operators must be able to tell this class apart from
+                        # real failures at a glance.
+                        error_message = result.error_message or (
+                            "Agent exited with code 0 but did not confirm "
+                            "success on either channel: the "
+                            f"{FLOW_SUCCESS_SENTINEL} sentinel was not printed "
+                            'and no result.json with {"status": "success"} was '
+                            "written. The work may have completed without "
+                            "confirmation, or the agent died mid-task."
+                        )
+                    elif (
+                        result.status == AgentStatus.SUCCEEDED
+                        and not self._success_sentinel_seen.is_set()
+                        and artifact_confirmation == "success"
+                    ):
+                        # The artifact alone confirmed the run — record it so
+                        # operators can see which channel was used.
+                        assert result_artifact is not None
+                        self.execution_logger.log_milestone(
+                            "result_artifact_confirmed_success",
+                            {"artifact_status": result_artifact.get("status")},
                         )
 
                     return {
@@ -2312,12 +2432,7 @@ class FlowExecutionOrchestrator:
                         "error_message": error_message,
                         "actions_taken": self.execution_logger.get_actions_taken(),
                         "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
-                        # Structured result artifact (/workspace/result.json)
-                        # captured first-class from the workspace — the
-                        # eval/observe contract surface (no log scraping).
-                        "result": await self._capture_result_artifact(
-                            agent_executor, session_reference
-                        ),
+                        "result": result_artifact,
                         "exit_code": result.exit_code,
                         # First-pass failure classification made against the
                         # FULL container logs. error_message keeps only the
@@ -2351,17 +2466,52 @@ class FlowExecutionOrchestrator:
                             "sentinel_grace_period_expired",
                             {"sentinel_seen_at": sentinel_seen_at, "elapsed": elapsed},
                         )
+                        # Container is still alive here (post-exec
+                        # commands); the archive API works either way.
+                        result_artifact = await self._capture_result_artifact(
+                            agent_executor, session_reference
+                        )
+                        if _result_artifact_confirmation(result_artifact) == "failure":
+                            # Same invariant as the terminal path: an explicit
+                            # failure in result.json wins over the sentinel.
+                            assert result_artifact is not None
+                            artifact_status = result_artifact.get("status")
+                            # Container may still be in post-exec; fetch the
+                            # result so _retry_decision sees exit_code instead
+                            # of treating it as unknown.
+                            result = await agent_executor.get_result(session_reference)
+                            self.execution_logger.log_milestone(
+                                "result_artifact_failure_override",
+                                {
+                                    "artifact_status": artifact_status,
+                                    "sentinel_seen": True,
+                                    "exit_code": result.exit_code,
+                                },
+                            )
+                            return {
+                                "status": "FAILED",
+                                "error_message": (
+                                    "Agent reported an explicit failure in "
+                                    "result.json (status="
+                                    f"{artifact_status!r})."
+                                ),
+                                "actions_taken": self.execution_logger.get_actions_taken(),
+                                "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                                "result": result_artifact,
+                                "exit_code": result.exit_code,
+                                "failure_analysis": (
+                                    asdict(result.failure_analysis)
+                                    if result.failure_analysis is not None
+                                    else None
+                                ),
+                            }
                         return {
                             "status": "SUCCEEDED",
                             "output_summary": self.execution_logger.get_agent_output_summary(),
                             "error_message": None,
                             "actions_taken": self.execution_logger.get_actions_taken(),
                             "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
-                            # Container is still alive here (post-exec
-                            # commands); the archive API works either way.
-                            "result": await self._capture_result_artifact(
-                                agent_executor, session_reference
-                            ),
+                            "result": result_artifact,
                         }
 
                 # Wait before next poll

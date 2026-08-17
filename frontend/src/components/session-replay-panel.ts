@@ -28,6 +28,7 @@ import type {
   SessionReplayMode,
 } from '../utils/session-observer';
 import {
+  SESSION_EVENTS_PAGE_REQUESTED_EVENT,
   formatCost,
   formatNumber,
   getGatewayEventPreviewMessages,
@@ -1645,7 +1646,7 @@ export class SessionReplayPanel extends LitElement {
   private requestMoreEvents(): void {
     if (!this.hasMoreEvents || this.loadingMoreEvents) return;
     this.dispatchEvent(
-      new CustomEvent('session-events-page-requested', {
+      new CustomEvent(SESSION_EVENTS_PAGE_REQUESTED_EVENT, {
         bubbles: true,
         composed: true,
       })

@@ -1,12 +1,17 @@
 """Tests for FlowExecutionOrchestrator."""
 
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+from preloop.services.flow_orchestrator import (
+    FLOW_EVAL_SUCCESS_INSTRUCTION,
+    FLOW_SUCCESS_INSTRUCTION,
+    FlowExecutionOrchestrator,
+    _result_artifact_confirmation,
+)
 from preloop.agents.base import AgentStatus, AgentExecutionResult
 from preloop.models.models import Flow, Account
 from preloop.models.models.user import User
@@ -252,6 +257,60 @@ class TestFlowExecutionOrchestrator:
             assert resolved_prompt.startswith("Commit: Fixed bug #123")
             # Verify the success sentinel instruction is appended
             assert "FLOW_EXECUTION_SUCCESS" in resolved_prompt
+            assert resolved_prompt.endswith(FLOW_SUCCESS_INSTRUCTION)
+
+    @pytest.mark.asyncio
+    async def test_prompt_resolution_normal_uses_sentinel_instruction(self):
+        """Test normal prompts retain both confirmation channels."""
+        orchestrator = FlowExecutionOrchestrator(
+            db=MagicMock(spec=Session),
+            flow_id=uuid4(),
+            trigger_event_data={},
+            nats_client=MagicMock(),
+        )
+        orchestrator.flow = MagicMock(prompt_template="Complete the requested task.")
+
+        resolved_prompt = await orchestrator._resolve_prompt()
+
+        assert resolved_prompt.endswith(FLOW_SUCCESS_INSTRUCTION)
+        assert "FLOW_EXECUTION_SUCCESS" in resolved_prompt
+        assert "/workspace/result.json" in resolved_prompt
+        assert '"pass"' in resolved_prompt
+        assert '"fail"' in resolved_prompt
+
+    @pytest.mark.parametrize(
+        "eval_contract",
+        [
+            "Required shape: preloop.eval.result/v1",
+            "Do NOT print sentinel markers or paste JSON into chat output.",
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_prompt_resolution_eval_uses_result_artifact_instruction(
+        self,
+        eval_contract: str,
+    ):
+        """Test eval prompts preserve their structured result contract."""
+        orchestrator = FlowExecutionOrchestrator(
+            db=MagicMock(spec=Session),
+            flow_id=uuid4(),
+            trigger_event_data={},
+            nats_client=MagicMock(),
+        )
+        orchestrator.flow = MagicMock(
+            prompt_template=(
+                "Evaluate the subject and write a rich report.\n" + eval_contract
+            )
+        )
+
+        resolved_prompt = await orchestrator._resolve_prompt()
+
+        assert resolved_prompt.endswith(FLOW_EVAL_SUCCESS_INSTRUCTION)
+        assert "FLOW_EXECUTION_SUCCESS" not in resolved_prompt
+        assert '{"status": "success"}' not in resolved_prompt
+        assert "/workspace/result.json" in resolved_prompt
+        assert "`pass` and `fail`" in resolved_prompt
+        assert "`error`" in resolved_prompt
 
     @pytest.mark.asyncio
     async def test_prompt_resolution_nested(
@@ -1619,3 +1678,330 @@ class TestWorkspaceSeedValidation:
         execution_context = await orchestrator._prepare_execution_context()
         seeded = execution_context["trigger_event_data"]["payload"]["workspace_files"]
         assert seeded[0]["path"] == "fixtures/input.json"
+
+
+def _confirmation_executor(
+    *,
+    status=AgentStatus.SUCCEEDED,
+    monitor_status=None,
+    exit_code=0,
+    error_message=None,
+    artifact=None,
+    failure_analysis=None,
+):
+    """Mock executor for exercising the success-confirmation contract.
+
+    Streams no logs, so tests set ``_agent_exec_started`` /
+    ``_success_sentinel_seen`` on the orchestrator directly to simulate
+    what the log stream would have detected.
+
+    ``monitor_status`` overrides ``get_status`` so the grace-period path
+    can keep the container "running" while ``get_result`` still returns
+    a finished ``status``.
+    """
+    executor = AsyncMock()
+    executor.start = AsyncMock(return_value="session-confirmation-123")
+    executor.get_status = AsyncMock(return_value=monitor_status or status)
+    executor.get_result = AsyncMock(
+        return_value=AgentExecutionResult(
+            status=status,
+            session_reference="session-confirmation-123",
+            output_summary="agent finished",
+            error_message=error_message,
+            exit_code=exit_code,
+            failure_analysis=failure_analysis,
+        )
+    )
+    executor.stop = AsyncMock()
+    executor.cleanup = AsyncMock()
+    executor.get_result_artifact = AsyncMock(return_value=artifact)
+
+    async def empty_logs(session_ref):
+        if False:  # pragma: no cover - makes this an async generator
+            yield
+
+    executor.stream_logs = empty_logs
+    return executor
+
+
+class TestSuccessConfirmationChannels:
+    """Fail-closed positive-confirmation contract (two redundant channels).
+
+    Exit code 0 is NEVER sufficient for success (agent CLIs exit 0 even when
+    the agent died mid-task). Success requires an explicit act by the agent:
+    the printed sentinel OR a result.json with a success status. An explicit
+    failure status in result.json wins over everything.
+    """
+
+    async def _run(
+        self,
+        db_session,
+        test_flow,
+        mock_nats_client,
+        event_data,
+        executor,
+        *,
+        sentinel_seen,
+    ):
+        with patch(
+            "preloop.services.flow_orchestrator.create_agent_executor",
+            return_value=executor,
+        ):
+            orchestrator = FlowExecutionOrchestrator(
+                db=db_session,
+                flow_id=test_flow.id,
+                trigger_event_data=event_data,
+                nats_client=mock_nats_client,
+            )
+            # Simulate real log streaming: the agent-exec-start marker was
+            # seen, so the confirmation contract is armed.
+            orchestrator._agent_exec_started = True
+            if sentinel_seen:
+                orchestrator._success_sentinel_seen.set()
+            await orchestrator.run()
+            return orchestrator
+
+    @pytest.mark.asyncio
+    async def test_exit_zero_without_any_confirmation_fails(
+        self, db_session: Session, test_flow: Flow, mock_nats_client, event_data
+    ):
+        """Contract regression guard: exit 0 + neither channel -> FAILED."""
+        executor = _confirmation_executor()
+        orchestrator = await self._run(
+            db_session,
+            test_flow,
+            mock_nats_client,
+            event_data,
+            executor,
+            sentinel_seen=False,
+        )
+
+        assert orchestrator.execution_log.status == "FAILED"
+        # The diagnostic must make this failure class recognizable at a
+        # glance and name BOTH confirmation channels.
+        error_message = orchestrator.execution_log.error_message
+        assert "FLOW_EXECUTION_SUCCESS" in error_message
+        assert "result.json" in error_message
+
+    @pytest.mark.asyncio
+    async def test_exit_zero_with_sentinel_succeeds(
+        self, db_session: Session, test_flow: Flow, mock_nats_client, event_data
+    ):
+        """Channel 1: the printed sentinel confirms success."""
+        executor = _confirmation_executor()
+        orchestrator = await self._run(
+            db_session,
+            test_flow,
+            mock_nats_client,
+            event_data,
+            executor,
+            sentinel_seen=True,
+        )
+
+        assert orchestrator.execution_log.status == "SUCCEEDED"
+
+    @pytest.mark.asyncio
+    async def test_exit_zero_with_result_artifact_success_succeeds(
+        self, db_session: Session, test_flow: Flow, mock_nats_client, event_data
+    ):
+        """Channel 2: result.json with a success status confirms success."""
+        artifact = {"status": "success", "review_action": "approve"}
+        executor = _confirmation_executor(artifact=artifact)
+        orchestrator = await self._run(
+            db_session,
+            test_flow,
+            mock_nats_client,
+            event_data,
+            executor,
+            sentinel_seen=False,
+        )
+
+        assert orchestrator.execution_log.status == "SUCCEEDED"
+        assert orchestrator.execution_log.result == artifact
+
+    @pytest.mark.asyncio
+    async def test_result_artifact_failure_wins_over_sentinel(
+        self, db_session: Session, test_flow: Flow, mock_nats_client, event_data
+    ):
+        """An explicit failure report in result.json beats a printed sentinel."""
+        artifact = {"status": "failure", "reason": "could not submit review"}
+        executor = _confirmation_executor(artifact=artifact)
+        orchestrator = await self._run(
+            db_session,
+            test_flow,
+            mock_nats_client,
+            event_data,
+            executor,
+            sentinel_seen=True,
+        )
+
+        assert orchestrator.execution_log.status == "FAILED"
+        assert "result.json" in orchestrator.execution_log.error_message
+        assert orchestrator.execution_log.result == artifact
+
+    @pytest.mark.asyncio
+    async def test_nonzero_exit_fails_despite_confirmations(
+        self, db_session: Session, test_flow: Flow, mock_nats_client, event_data
+    ):
+        """A nonzero exit is a failure even if both channels claim success."""
+        from preloop.agents.failure_analysis import AgentFailureAnalysis
+
+        executor = _confirmation_executor(
+            status=AgentStatus.FAILED,
+            exit_code=1,
+            error_message="Agent process exited with code 1",
+            artifact={"status": "success"},
+            failure_analysis=AgentFailureAnalysis(
+                message="Agent process exited with code 1", transient=False
+            ),
+        )
+        orchestrator = await self._run(
+            db_session,
+            test_flow,
+            mock_nats_client,
+            event_data,
+            executor,
+            sentinel_seen=True,
+        )
+
+        assert orchestrator.execution_log.status == "FAILED"
+
+    def _monitor_orchestrator(self, mock_nats_client, event_data, *, sentinel_seen):
+        """Orchestrator stub for calling ``_monitor_agent_execution`` directly."""
+        from unittest.mock import MagicMock
+
+        orchestrator = FlowExecutionOrchestrator(
+            db=MagicMock(),
+            flow_id=uuid4(),
+            trigger_event_data=event_data,
+            nats_client=mock_nats_client,
+        )
+        orchestrator._agent_exec_started = True
+        if sentinel_seen:
+            orchestrator._success_sentinel_seen.set()
+        orchestrator.execution_log = type("ExecutionLogStub", (), {"id": uuid4()})()
+        # Main added a DB-backed tool-loop probe; this stub has no session.
+        orchestrator._sync_runtime_tool_activity_metrics = AsyncMock(return_value=None)
+        return orchestrator
+
+    @pytest.mark.asyncio
+    async def test_eval_fail_verdict_does_not_fail_the_flow(
+        self, mock_nats_client, event_data
+    ):
+        """Eval ``status: fail`` is a completed verdict, not a flow failure.
+
+        Per 003-observe-eval.yaml, fail means the subject's checks failed
+        but the eval ran to completion. Channel 2 therefore confirms the
+        flow succeeded.
+        """
+        artifact = {
+            "schema": "preloop.eval.result/v1",
+            "status": "fail",
+            "summary": "subject checks failed",
+        }
+        orchestrator = self._monitor_orchestrator(
+            mock_nats_client, event_data, sentinel_seen=False
+        )
+        result = await orchestrator._monitor_agent_execution(
+            "session-confirmation-123",
+            _confirmation_executor(artifact=artifact),
+        )
+
+        assert result["status"] == "SUCCEEDED"
+        assert result["result"] == artifact
+
+    @pytest.mark.asyncio
+    async def test_result_artifact_error_overrides_to_failed(
+        self, mock_nats_client, event_data
+    ):
+        """Eval ``status: error`` means the run itself could not complete."""
+        artifact = {
+            "schema": "preloop.eval.result/v1",
+            "status": "error",
+            "summary": "eval aborted",
+        }
+        orchestrator = self._monitor_orchestrator(
+            mock_nats_client, event_data, sentinel_seen=True
+        )
+        result = await orchestrator._monitor_agent_execution(
+            "session-confirmation-123",
+            _confirmation_executor(artifact=artifact),
+        )
+
+        assert result["status"] == "FAILED"
+        assert "result.json" in result["error_message"]
+        assert result["result"] == artifact
+
+    @pytest.mark.asyncio
+    async def test_result_artifact_failed_overrides_to_failed(
+        self, mock_nats_client, event_data
+    ):
+        """Plain ``failed`` remains an explicit flow-failure confirmation."""
+        artifact = {"status": "failed", "reason": "could not submit review"}
+        orchestrator = self._monitor_orchestrator(
+            mock_nats_client, event_data, sentinel_seen=True
+        )
+        result = await orchestrator._monitor_agent_execution(
+            "session-confirmation-123",
+            _confirmation_executor(artifact=artifact),
+        )
+
+        assert result["status"] == "FAILED"
+        assert "result.json" in result["error_message"]
+        assert result["result"] == artifact
+
+    @pytest.mark.asyncio
+    async def test_grace_period_failure_override_includes_exit_code(
+        self, mock_nats_client, event_data
+    ):
+        """Grace-period failure override must carry exit_code for retries."""
+        from preloop.agents.failure_analysis import AgentFailureAnalysis
+
+        artifact = {"status": "error", "summary": "eval aborted after sentinel"}
+        analysis = AgentFailureAnalysis(
+            message="eval aborted after sentinel", transient=False
+        )
+        executor = _confirmation_executor(
+            status=AgentStatus.SUCCEEDED,
+            monitor_status=AgentStatus.RUNNING,
+            exit_code=0,
+            artifact=artifact,
+            failure_analysis=analysis,
+        )
+        orchestrator = self._monitor_orchestrator(
+            mock_nats_client, event_data, sentinel_seen=True
+        )
+
+        with patch(
+            "preloop.services.flow_orchestrator.asyncio.sleep",
+            new_callable=AsyncMock,
+        ):
+            result = await orchestrator._monitor_agent_execution(
+                "session-confirmation-123", executor
+            )
+
+        assert result["status"] == "FAILED"
+        assert result["exit_code"] == 0
+        assert result["failure_analysis"] is not None
+        assert result["failure_analysis"]["transient"] is False
+        assert result["result"] == artifact
+        assert orchestrator._retry_decision(result) is not None
+
+
+class TestResultArtifactConfirmation:
+    """Eval ``fail`` is a verdict; only error/failed/failure fail the flow."""
+
+    def test_fail_is_success_confirmation(self):
+        assert _result_artifact_confirmation({"status": "fail"}) == "success"
+
+    def test_error_is_failure_confirmation(self):
+        assert _result_artifact_confirmation({"status": "error"}) == "failure"
+
+    def test_failed_is_failure_confirmation(self):
+        assert _result_artifact_confirmation({"status": "failed"}) == "failure"
+
+    def test_failure_is_failure_confirmation(self):
+        assert _result_artifact_confirmation({"status": "failure"}) == "failure"
+
+    def test_pass_is_success_confirmation(self):
+        assert _result_artifact_confirmation({"status": "pass"}) == "success"
