@@ -2,13 +2,18 @@
 
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 from uuid import uuid4
 
-from preloop.models.crud.flow_runner import runner_matches_pool
+import pytest
+
+from preloop.models.crud.flow_runner import crud_flow_runner, runner_matches_pool
 from preloop.services.runner_service import (
     DEFAULT_QUEUE_TIMEOUT,
     hash_runner_token,
+    lease_job,
     mark_queued_or_fail,
+    persistable_job_payload,
     resolve_runner_pool,
 )
 
@@ -60,3 +65,100 @@ def test_runner_matches_pool_id_name_or_label() -> None:
     assert runner_matches_pool(row, "office mac")
     assert runner_matches_pool(row, "GPU")
     assert not runner_matches_pool(row, "missing")
+
+
+def test_persistable_job_payload_strips_account_api_token() -> None:
+    payload = {
+        "execution_id": "exec-1",
+        "prompt": "do work",
+        "account_api_token": "live-secret",
+    }
+    stored = persistable_job_payload(payload)
+    assert "account_api_token" not in stored
+    assert stored["prompt"] == "do work"
+    assert payload["account_api_token"] == "live-secret"
+
+
+def test_lease_job_claims_row_and_does_not_persist_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = SimpleNamespace(
+        id=uuid4(),
+        status="online",
+        pending_job=None,
+        current_execution_id=None,
+        halt_requested=False,
+        reported_status=None,
+    )
+    claimed: list = []
+
+    monkeypatch.setattr(
+        crud_flow_runner,
+        "find_matching",
+        lambda db, **kwargs: [runner],
+    )
+
+    def _claim_idle(db, *, runner_id):
+        claimed.append(runner_id)
+        return runner
+
+    monkeypatch.setattr(crud_flow_runner, "claim_idle", _claim_idle)
+
+    db = MagicMock()
+    execution_id = uuid4()
+    result = lease_job(
+        db,
+        account_id=uuid4(),
+        pool="local",
+        execution_id=execution_id,
+        payload={
+            "execution_id": str(execution_id),
+            "account_api_token": "live-secret",
+            "prompt": "do work",
+        },
+    )
+    assert result is runner
+    assert claimed == [runner.id]
+    assert runner.pending_job is not None
+    assert "account_api_token" not in runner.pending_job
+    assert runner.pending_job["prompt"] == "do work"
+    assert runner.status == "busy"
+    assert runner.current_execution_id == execution_id
+    db.commit.assert_called()
+
+
+def test_lease_job_skips_locked_runner_and_claims_next(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    locked = SimpleNamespace(id=uuid4(), status="online", pending_job=None)
+    next_runner = SimpleNamespace(
+        id=uuid4(),
+        status="online",
+        pending_job=None,
+        current_execution_id=None,
+        halt_requested=False,
+        reported_status=None,
+    )
+
+    monkeypatch.setattr(
+        crud_flow_runner,
+        "find_matching",
+        lambda db, **kwargs: [locked, next_runner],
+    )
+
+    def _claim_idle(db, *, runner_id):
+        if runner_id == locked.id:
+            return None
+        return next_runner
+
+    monkeypatch.setattr(crud_flow_runner, "claim_idle", _claim_idle)
+
+    result = lease_job(
+        MagicMock(),
+        account_id=uuid4(),
+        pool="local",
+        execution_id=uuid4(),
+        payload={"prompt": "do work"},
+    )
+    assert result is next_runner
+    assert next_runner.status == "busy"

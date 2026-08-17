@@ -46,6 +46,21 @@ def resolve_runner_pool(
     return None
 
 
+_PERSISTED_SECRET_KEYS = ("account_api_token",)
+
+
+def persistable_job_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Copy a lease payload without credentials that must not hit JSONB.
+
+    The live WebSocket push still receives the original payload, including
+    ``account_api_token``, for that lease only.
+    """
+    stored = dict(payload)
+    for key in _PERSISTED_SECRET_KEYS:
+        stored.pop(key, None)
+    return stored
+
+
 def lease_job(
     db: Session,
     *,
@@ -54,23 +69,32 @@ def lease_job(
     execution_id: UUID,
     payload: Dict[str, Any],
 ) -> Optional[FlowRunner]:
-    """Assign a pending job to one matching online runner. None if queued."""
+    """Assign a pending job to one matching online runner. None if queued.
+
+    Candidates are re-fetched with ``SELECT ... FOR UPDATE SKIP LOCKED`` so
+    two concurrent leases cannot persist ``pending_job`` on the same row.
+    Credentials are stripped from the stored payload; the caller still holds
+    the original dict for the in-memory WebSocket push.
+    """
     matches = crud_flow_runner.find_matching(
         db, account_id=account_id, pool=pool, online_only=True
     )
     idle = [row for row in matches if row.status == "online" and not row.pending_job]
-    if not idle:
-        return None
-    runner = idle[0]
-    runner.pending_job = payload
-    runner.current_execution_id = execution_id
-    runner.status = "busy"
-    runner.halt_requested = False
-    runner.reported_status = "PENDING"
-    db.add(runner)
-    db.commit()
-    db.refresh(runner)
-    return runner
+    stored = persistable_job_payload(payload)
+    for candidate in idle:
+        runner = crud_flow_runner.claim_idle(db, runner_id=candidate.id)
+        if runner is None:
+            continue
+        runner.pending_job = stored
+        runner.current_execution_id = execution_id
+        runner.status = "busy"
+        runner.halt_requested = False
+        runner.reported_status = "PENDING"
+        db.add(runner)
+        db.commit()
+        db.refresh(runner)
+        return runner
+    return None
 
 
 def mark_queued_or_fail(

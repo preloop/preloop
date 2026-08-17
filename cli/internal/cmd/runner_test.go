@@ -23,15 +23,31 @@ func TestRunnerWebsocketURL(t *testing.T) {
 	FlagURL = "http://localhost:8000"
 	FlagToken = "tok"
 	t.Cleanup(func() { FlagToken, FlagURL = oldToken, oldURL })
-	got, err := runnerWebsocketURL("rid", "secret")
+	got, err := runnerWebsocketURL("rid")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(got, "ws://localhost:8000/api/v1/runners/rid/ws") {
 		t.Fatalf("url = %s", got)
 	}
-	if !strings.Contains(got, "token=secret") {
-		t.Fatalf("missing token: %s", got)
+	if strings.Contains(got, "token=") {
+		t.Fatalf("token must not be in query: %s", got)
+	}
+}
+
+func TestLeasedJobFailureReason(t *testing.T) {
+	if got := leasedJobFailureReason(map[string]any{}, true); got == "" {
+		t.Fatal("empty job should fail")
+	}
+	if got := leasedJobFailureReason(map[string]any{
+		"agent_config": map[string]any{"image": "preloop/agent:dev"},
+	}, false); !strings.Contains(got, "docker") {
+		t.Fatalf("missing docker = %q", got)
+	}
+	if got := leasedJobFailureReason(map[string]any{
+		"agent_config": map[string]any{"image": "preloop/agent:dev"},
+	}, true); got != "" {
+		t.Fatalf("runnable job = %q", got)
 	}
 }
 
@@ -113,6 +129,14 @@ func TestRunnerFgLeasesJob(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
+		if r.URL.Query().Get("token") != "" {
+			http.Error(w, "token must not be in query", http.StatusBadRequest)
+			return
+		}
+		if r.Header.Get("X-Runner-Token") != "runner-token" {
+			http.Error(w, "missing x-runner-token", http.StatusUnauthorized)
+			return
+		}
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			return
@@ -128,6 +152,9 @@ func TestRunnerFgLeasesJob(t *testing.T) {
 				return
 			}
 			if msg["type"] == "complete" && msg["execution_id"] == "exec-1" {
+				if msg["status"] != "FAILED" {
+					return
+				}
 				completed.Store(true)
 				return
 			}

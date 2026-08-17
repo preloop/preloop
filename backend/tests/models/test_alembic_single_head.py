@@ -73,3 +73,11 @@ def test_alembic_head_is_reachable_from_base() -> None:
         "Revisions are not reachable from the single head "
         f"{head!r}: {orphans}. They are detached from the migration graph."
     )
+
+
+def test_flow_runners_revision_chains_onto_schedule_config() -> None:
+    """Self-hosted runners must parent the feat/flow-trigger head."""
+    script = _script_directory()
+    revision = script.get_revision("20260817_add_flow_runners")
+    assert revision.down_revision == "20260815_flow_schedule_config"
+    assert script.get_heads() == ["20260817_add_flow_runners"]

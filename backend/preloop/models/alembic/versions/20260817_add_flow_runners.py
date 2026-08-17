@@ -1,7 +1,7 @@
 """Add flow_runner table and runner_pool / runner_id columns.
 
 Revision ID: 20260817_add_flow_runners
-Revises: 20260219_rename_approval_policy
+Revises: 20260815_flow_schedule_config
 Create Date: 2026-08-17
 """
 
@@ -13,7 +13,7 @@ from sqlalchemy.dialects import postgresql
 
 
 revision: str = "20260817_add_flow_runners"
-down_revision: Union[str, None] = "20260219_rename_approval_policy"
+down_revision: Union[str, None] = "20260815_flow_schedule_config"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -61,6 +61,23 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
             return rows
         return [row for row in rows if runner_matches_pool(row, pool)]
 
+    def claim_idle(self, db: Session, *, runner_id: UUID) -> Optional[FlowRunner]:
+        """Lock one idle runner so concurrent leases cannot double-claim it.
+
+        ``SKIP LOCKED`` lets the caller try the next match when another
+        worker already holds this row.
+        """
+        return (
+            db.query(FlowRunner)
+            .filter(
+                FlowRunner.id == runner_id,
+                FlowRunner.status == "online",
+                FlowRunner.pending_job.is_(None),
+            )
+            .with_for_update(skip_locked=True)
+            .first()
+        )
+
 
 def runner_matches_pool(row: FlowRunner, pool: str) -> bool:
     """True when the runner id, name, or a label equals the pool string."""

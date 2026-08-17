@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -175,13 +177,21 @@ func loadOrRegisterRunner(client *api.Client, name, hostname string, labels []st
 	return state, nil
 }
 
+type leasedJobOutcome struct {
+	executionID string
+	status      string
+	errMsg      string
+	lines       []string
+}
+
 func runnerForegroundLoop(state *runnerState, interrupt <-chan os.Signal, out io.Writer) error {
-	wsURL, err := runnerWebsocketURL(state.ID, state.Token)
+	wsURL, err := runnerWebsocketURL(state.ID)
 	if err != nil {
 		return err
 	}
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, http.Header{
-		"User-Agent": []string{"preloop-cli-runner"},
+		"User-Agent":     []string{"preloop-cli-runner"},
+		"X-Runner-Token": []string{state.Token},
 	})
 	if err != nil {
 		return fmt.Errorf("runner websocket: %w", err)
@@ -204,13 +214,25 @@ func runnerForegroundLoop(state *runnerState, interrupt <-chan os.Signal, out io
 	}()
 
 	halt := false
+	halted := &atomic.Bool{}
+	var runningCmd *exec.Cmd
+	var runningExecID string
+	var jobDone <-chan leasedJobOutcome
 	ticker := time.NewTicker(runnerHeartbeatEvery)
 	defer ticker.Stop()
+
+	killRunning := func() {
+		halted.Store(true)
+		if runningCmd != nil && runningCmd.Process != nil {
+			_ = runningCmd.Process.Kill()
+		}
+	}
 
 	for {
 		select {
 		case <-interrupt:
 			fmt.Fprintf(out, "Unregistering...\n")
+			killRunning()
 			_ = conn.WriteJSON(map[string]any{"type": "unregister"})
 			return nil
 		case <-ticker.C:
@@ -222,6 +244,25 @@ func runnerForegroundLoop(state *runnerState, interrupt <-chan os.Signal, out io
 				return nil
 			}
 			return fmt.Errorf("runner read: %w", err)
+		case outcome := <-jobDone:
+			if len(outcome.lines) > 0 {
+				_ = conn.WriteJSON(map[string]any{
+					"type":         "logs",
+					"execution_id": outcome.executionID,
+					"lines":        outcome.lines,
+				})
+			}
+			_ = conn.WriteJSON(map[string]any{
+				"type":         "complete",
+				"execution_id": outcome.executionID,
+				"status":       outcome.status,
+				"error":        outcome.errMsg,
+			})
+			runningCmd = nil
+			runningExecID = ""
+			jobDone = nil
+			halt = false
+			halted.Store(false)
 		case msg := <-incoming:
 			if msg.Error != "" {
 				return fmt.Errorf("runner server: %s", msg.Error)
@@ -229,20 +270,37 @@ func runnerForegroundLoop(state *runnerState, interrupt <-chan os.Signal, out io
 			if msg.Halt || msg.Type == "halt" {
 				halt = true
 				fmt.Fprintf(out, "Halt received for %s\n", msg.HaltExecutionID)
+				killRunning()
 				continue
 			}
 			if msg.Job == nil {
 				continue
 			}
-			if err := runLeasedJob(conn, msg.Job, halt, out); err != nil {
+			if runningExecID != "" {
+				fmt.Fprintf(out, "Ignoring job while %s is running\n", runningExecID)
+				continue
+			}
+			if err := beginLeasedJob(conn, msg.Job, halt, out, &runningCmd, &runningExecID, &jobDone, halted); err != nil {
 				fmt.Fprintf(out, "Job error: %v\n", err)
+				runningCmd = nil
+				runningExecID = ""
+				jobDone = nil
 			}
 			halt = false
 		}
 	}
 }
 
-func runLeasedJob(conn *websocket.Conn, job map[string]any, alreadyHalted bool, out io.Writer) error {
+func beginLeasedJob(
+	conn *websocket.Conn,
+	job map[string]any,
+	alreadyHalted bool,
+	out io.Writer,
+	runningCmd **exec.Cmd,
+	runningExecID *string,
+	jobDone *<-chan leasedJobOutcome,
+	halted *atomic.Bool,
+) error {
 	executionID, _ := job["execution_id"].(string)
 	if executionID == "" {
 		return fmt.Errorf("job missing execution_id")
@@ -267,43 +325,71 @@ func runLeasedJob(conn *websocket.Conn, job map[string]any, alreadyHalted bool, 
 	}
 
 	image := runnerImageFromJob(job)
-	if image != "" && dockerAvailable() {
-		cmd := exec.Command("docker", "run", "--rm", image)
-		output, err := cmd.CombinedOutput()
-		line := strings.TrimSpace(string(output))
-		if line != "" {
-			_ = conn.WriteJSON(map[string]any{
-				"type":         "logs",
-				"execution_id": executionID,
-				"lines":        strings.Split(line, "\n"),
-			})
-		}
-		status := "SUCCEEDED"
-		errMsg := ""
-		if err != nil {
-			status = "FAILED"
-			errMsg = err.Error()
-		}
+	dockerOK := image != "" && dockerAvailable()
+	if reason := leasedJobFailureReason(job, dockerOK); reason != "" {
+		_ = conn.WriteJSON(map[string]any{
+			"type":         "logs",
+			"execution_id": executionID,
+			"lines":        []string{reason},
+		})
 		return conn.WriteJSON(map[string]any{
 			"type":         "complete",
 			"execution_id": executionID,
-			"status":       status,
-			"error":        errMsg,
+			"status":       "FAILED",
+			"error":        reason,
 		})
 	}
 
-	_ = conn.WriteJSON(map[string]any{
-		"type":         "logs",
-		"execution_id": executionID,
-		"lines": []string{
-			"job leased; no agent image in payload (or docker missing). Completing lease.",
-		},
-	})
-	return conn.WriteJSON(map[string]any{
-		"type":         "complete",
-		"execution_id": executionID,
-		"status":       "SUCCEEDED",
-	})
+	cmd := exec.Command("docker", "run", "--rm", image)
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	if err := cmd.Start(); err != nil {
+		return conn.WriteJSON(map[string]any{
+			"type":         "complete",
+			"execution_id": executionID,
+			"status":       "FAILED",
+			"error":        err.Error(),
+		})
+	}
+	*runningCmd = cmd
+	*runningExecID = executionID
+	done := make(chan leasedJobOutcome, 1)
+	*jobDone = done
+	go func() {
+		done <- waitDockerJob(cmd, executionID, &buf, halted)
+	}()
+	return nil
+}
+
+func waitDockerJob(cmd *exec.Cmd, executionID string, buf *bytes.Buffer, halted *atomic.Bool) leasedJobOutcome {
+	err := cmd.Wait()
+	lines := splitNonEmptyLines(buf.String())
+	if err != nil {
+		if halted != nil && halted.Load() {
+			return leasedJobOutcome{executionID: executionID, status: "STOPPED", lines: lines}
+		}
+		return leasedJobOutcome{executionID: executionID, status: "FAILED", errMsg: err.Error(), lines: lines}
+	}
+	return leasedJobOutcome{executionID: executionID, status: "SUCCEEDED", lines: lines}
+}
+
+func splitNonEmptyLines(output string) []string {
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" {
+		return nil
+	}
+	return strings.Split(trimmed, "\n")
+}
+
+func leasedJobFailureReason(job map[string]any, dockerOK bool) string {
+	if runnerImageFromJob(job) == "" {
+		return "no agent image in payload"
+	}
+	if !dockerOK {
+		return "docker is not available"
+	}
+	return ""
 }
 
 func runnerImageFromJob(job map[string]any) string {
@@ -325,7 +411,7 @@ func dockerAvailable() bool {
 	return cmd.Run() == nil
 }
 
-func runnerWebsocketURL(runnerID, token string) (string, error) {
+func runnerWebsocketURL(runnerID string) (string, error) {
 	cfg, err := config.Resolve(FlagToken, FlagURL)
 	if err != nil {
 		return "", err
@@ -342,9 +428,7 @@ func runnerWebsocketURL(runnerID, token string) (string, error) {
 		u.Scheme = "ws"
 	}
 	u.Path = "/api/v1/runners/" + runnerID + "/ws"
-	q := u.Query()
-	q.Set("token", token)
-	u.RawQuery = q.Encode()
+	u.RawQuery = ""
 	return u.String(), nil
 }
 
