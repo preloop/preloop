@@ -87,8 +87,11 @@ _GENERIC_LABELS = {
 _ARGS_REFERENCE = re.compile(r"\bargs\.([A-Za-z_][A-Za-z0-9_]*)")
 
 #: Bare leading identifier for the shorthand form users may write in rules
-#: ("amount > 300" instead of "args.amount > 300").
+#: ("amount > 300" instead of "args.amount > 300"). Boolean literals are
+#: catch-alls (``_evaluate_simple_condition`` accepts bare ``true``/``false``)
+#: and are not argument names.
 _BARE_REFERENCE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\b")
+_BOOLEAN_LITERALS = frozenset({"true", "false"})
 
 
 def referenced_args(expression: Optional[str]) -> List[str]:
@@ -106,7 +109,7 @@ def referenced_args(expression: Optional[str]) -> List[str]:
             names.append(name)
     if not names:
         bare = _BARE_REFERENCE.match(expression)
-        if bare:
+        if bare and bare.group(1).lower() not in _BOOLEAN_LITERALS:
             names.append(bare.group(1))
     return names
 

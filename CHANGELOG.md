@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Matched-rule context on approval requests**: the approval the human
+  reviews now records which access rule gated the call (id, name, expression,
+  priority, and any lower-priority rules that also matched), snapshotted at
+  create time so later rule edits cannot rewrite history. The console shows a
+  "Why this needs approval" block with the expression verbatim; list rows and
+  push payloads show the rule name only. Rule-less gates (tool default,
+  evaluation error, agent permission hook) say so plainly instead of
+  inventing an expression. New nullable JSONB `rule_context` column; the
+  API field is optional so historical rows stay blank.
 - **Native scheduled (cron) flow triggers**: flows can now run on a schedule
   without an external cron caller hitting the webhook endpoint. Create or
   update a flow with `trigger_event_source: "schedule"` and

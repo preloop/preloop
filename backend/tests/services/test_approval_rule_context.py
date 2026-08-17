@@ -80,6 +80,19 @@ def test_build_omits_absent_fields_entirely():
     assert None not in context.values()
 
 
+def test_build_omits_referenced_args_for_catchall_boolean_literals():
+    """A catch-all ``true`` inspects no argument; do not render \"Checks true\"."""
+    context = build_rule_context(
+        source=SOURCE_TOOL_ACCESS_RULE,
+        decision="require_approval",
+        rule_name="Always ask",
+        expression="true",
+        expression_type="simple",
+    )
+    assert context["expression"] == "true"
+    assert "referenced_args" not in context
+
+
 def test_build_states_default_gating_plainly_without_a_rule():
     """No rule fired: say what actually gated the call, do not invent a rule."""
     context = build_rule_context(
@@ -152,6 +165,10 @@ def test_no_also_matched_key_when_nothing_else_matched():
         ("args.amount == 1000 && args.currency == 'EUR'", ["amount", "currency"]),
         ("args.amount > 1 || args.amount < 5", ["amount"]),  # deduped, ordered
         ("amount > 300", ["amount"]),  # bare shorthand form users write
+        ("true", []),  # catch-all literal, not an argument named "true"
+        ("false", []),
+        ("TRUE", []),
+        ("  False", []),
         ("", []),
         (None, []),
     ],
