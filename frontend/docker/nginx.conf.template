@@ -229,8 +229,11 @@ server {
         try_files /whatis-mcp.html =404;
     }
 
+    # EU AI Act readiness page. Prerendered only for brands that ship the
+    # content, so fall back to the SPA (as the Helm config does) instead of
+    # 404ing self-hosted builds that do not emit the file.
     location = /ai-act-readiness {
-        try_files /ai-act-readiness.html =404;
+        try_files /ai-act-readiness.html /index.html;
     }
 
     location = /robots.txt {
@@ -293,10 +296,11 @@ server {
         add_header Expires "0";
     }
 
-    # Health check endpoint
+    # Health check endpoint. `default_type` (not `add_header Content-Type`,
+    # which is dead code after `return`) sets the response MIME type.
     location /health {
         access_log off;
+        default_type text/plain;
         return 200 "healthy\n";
-        add_header Content-Type text/plain;
     }
 }

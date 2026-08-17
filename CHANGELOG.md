@@ -393,6 +393,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   claiming to still be running. Both timestamps were already returned by the
   API, so this is a console-only change.
 
+- **Chat-style session transcript ("Conversation" view)**: the session observer
+  now reconstructs a chat-shaped transcript from the captured gateway events
+  and activity rows. Only top-level user prompts and final agent responses are
+  expanded; tool calls, tool results, system prompts, injected harness segments
+  (system reminders, compaction summaries, Preloop question notices) and
+  intermediate agent output are collapsed into expandable step groups.
+  Tool results are detected exactly from the raw request body structure when it
+  was captured; otherwise the view discloses how many requests lacked structure
+  instead of guessing.
+
+- **Per-request and per-session prompt-cache accounting**: the session request
+  timeline now reports each request's cache read/write/miss tokens (`null`
+  means "not reported by the provider", never zero; misses are labelled
+  `reported` or `derived`) and a whole-session rollup with hit ratio over
+  covered requests, coverage disclosure, a per-model breakdown, and estimated
+  cache savings computed only from exact catalog prices (`catalog_exact`, or
+  `catalog_exact_partial` as a lower bound in mixed-model sessions; omitted
+  with a stated reason otherwise). Replay-validation traffic is excluded.
+
+- **Nginx route parity test**: `backend/tests/test_nginx_route_parity.py`
+  asserts that every prerendered marketing route resolves to prerendered HTML
+  in BOTH the docker nginx template and the production Helm ConfigMap by
+  implementing nginx location-matching precedence, preventing the recurring
+  "works locally, serves the SPA homepage in production" drift. Also adds the
+  missing `/ai-act-readiness` route to the docker template.
+
 - **Admin alert for unpriceable models**: the gateway now notifies admins the
   first time a `(model_alias, provider)` pair proves unpriceable, including the
   account and token volume, so missing pricing is noticed instead of silently

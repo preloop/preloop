@@ -612,6 +612,26 @@ class RuntimeSessionRequestTool(BaseModel):
     stripped: bool = False
 
 
+class RuntimeSessionRequestCache(BaseModel):
+    """Prompt-cache accounting for one gateway request.
+
+    Every token field is ``Optional`` on purpose: ``None`` means *the provider
+    did not report this*, and clients MUST render it as "not reported" rather
+    than as zero. A ``0`` here is a real, provider-reported zero.
+
+    ``cache_miss_source`` distinguishes a miss count the provider sent us
+    (``reported`` — today only DeepSeek's ``prompt_cache_miss_tokens``) from one
+    we derived arithmetically as ``prompt - read - write`` (``derived``).
+    """
+
+    cache_read_tokens: Optional[int] = None
+    cache_creation_tokens: Optional[int] = None
+    cache_miss_tokens: Optional[int] = None
+    cache_miss_source: Optional[str] = None
+    has_cache_data: bool = False
+    usage_source: Optional[str] = None
+
+
 class RuntimeSessionRequestItem(BaseModel):
     """One per-request gateway usage row for the unified session timeline."""
 
@@ -636,6 +656,65 @@ class RuntimeSessionRequestItem(BaseModel):
     endpoint: Optional[str] = None
     tools: List[RuntimeSessionRequestTool] = Field(default_factory=list)
     tools_total_schema_tokens: int = 0
+    cache: RuntimeSessionRequestCache = Field(
+        default_factory=RuntimeSessionRequestCache
+    )
+
+
+class RuntimeSessionCacheModelGroup(BaseModel):
+    """Per-(model, provider) breakdown inside the session cache rollup.
+
+    ``requests_with_unknown_prompt_tokens`` counts this group's rows whose
+    provider reported no prompt total; their tokens are excluded from
+    ``prompt_tokens`` rather than counted as zero.
+    """
+
+    model_alias: Optional[str] = None
+    provider_name: Optional[str] = None
+    requests: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+    prompt_tokens: int = 0
+    requests_with_unknown_prompt_tokens: int = 0
+    write_reported: bool = False
+
+
+class RuntimeSessionCacheSummary(BaseModel):
+    """Whole-session prompt-cache rollup.
+
+    The ratio's denominator is the *covered* traffic only: requests whose
+    provider actually reported a cache split. ``uncovered_prompt_tokens`` is
+    surfaced next to it so the UI can state coverage instead of folding blind
+    rows in as misses. ``requests_with_unknown_prompt_tokens`` counts rows
+    whose provider reported no prompt total at all; their tokens are excluded
+    from both sums rather than counted as zero.
+
+    ``cache_write_tokens`` is ``None`` when no provider in this session has a
+    billable cache-write concept at all (OpenAI, Gemini, DeepSeek), which is
+    not the same statement as zero rewritten tokens.
+
+    ``estimated_cache_savings_usd`` is computed only from explicit catalog
+    input AND cache-read prices — never a multiplier-based approximation.
+    ``savings_basis`` is ``catalog_exact`` when every model that contributed
+    cache reads was priced, ``catalog_exact_partial`` when the figure is a
+    lower bound covering only the priced models. When no contributing model is
+    priced the figure is ``None`` and ``savings_omitted_reason`` says why.
+    """
+
+    requests_total: int = 0
+    requests_with_cache_data: int = 0
+    requests_without_cache_data: int = 0
+    covered_prompt_tokens: int = 0
+    uncovered_prompt_tokens: int = 0
+    cached_prompt_tokens: int = 0
+    uncached_prompt_tokens: int = 0
+    cache_write_tokens: Optional[int] = None
+    cache_hit_ratio: Optional[float] = None
+    estimated_cache_savings_usd: Optional[float] = None
+    savings_basis: Optional[str] = None
+    savings_omitted_reason: Optional[str] = None
+    requests_with_unknown_prompt_tokens: int = 0
+    models: List[RuntimeSessionCacheModelGroup] = Field(default_factory=list)
 
 
 class RuntimeSessionRequestListResponse(BaseModel):
@@ -648,6 +727,11 @@ class RuntimeSessionRequestListResponse(BaseModel):
     offset: int = 0
     next_offset: Optional[int] = None
     has_more: bool = False
+    # Rollup over the whole session, not just the returned page, so the summary
+    # does not change as the user pages through requests. Required on purpose:
+    # a defaulted zeroed-out summary would silently mask an endpoint that
+    # forgot to compute it.
+    cache_summary: RuntimeSessionCacheSummary
 
 
 class RuntimeSessionSummaryInsight(BaseModel):
