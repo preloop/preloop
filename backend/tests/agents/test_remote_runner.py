@@ -84,17 +84,34 @@ async def test_queued_status_fails_after_timeout(
 
 
 @pytest.mark.asyncio
-async def test_queued_status_releases_complete_payload(
+async def test_fresh_queued_executor_reconstructs_complete_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     execution_id = uuid4()
     flow_id = uuid4()
+    account_id = uuid4()
+    flow = SimpleNamespace(
+        id=flow_id,
+        name="Self-hosted review",
+        runner_pool="local",
+        account_id=account_id,
+        agent_type="codex",
+        agent_config={"image": "preloop/codex:latest"},
+        allowed_mcp_servers=["github"],
+        allowed_mcp_tools=[{"server": "github", "tool": "get_issue"}],
+        git_clone_config={"repositories": [{"url": "example/repo"}]},
+        custom_commands={"enabled": True, "commands": ["make test"]},
+        ai_model=SimpleNamespace(
+            model_identifier="gpt-5.4",
+            provider_name="openai",
+        ),
+    )
     execution = SimpleNamespace(
         id=execution_id,
         flow_id=flow_id,
-        flow=None,
+        flow=flow,
         runner_id=None,
-        agent_session_reference=None,
+        agent_session_reference=f"runner:queued:local:{execution_id}",
         start_time=datetime.now(timezone.utc),
         status="PENDING",
         error_message=None,
@@ -110,8 +127,6 @@ async def test_queued_status_releases_complete_payload(
     def fake_lease(*args: Any, **kwargs: Any) -> Any:
         payload = dict(kwargs["payload"])
         leased_payloads.append(payload)
-        if len(leased_payloads) == 1:
-            return None
         runner.pending_job = persistable_job_payload(payload)
         return runner
 
@@ -125,44 +140,35 @@ async def test_queued_status_releases_complete_payload(
         "preloop.agents.remote_runner.crud_flow_execution.get",
         lambda *args, **kwargs: execution,
     )
-
-    context = {
-        "execution_id": str(execution_id),
-        "flow_id": str(flow_id),
-        "agent_type": "codex",
-        "agent_config": {"image": "preloop/codex:latest"},
-        "prompt": "do work",
-        "model_identifier": "gpt-5.4",
-        "model_provider": "openai",
-        "account_api_token": "live-secret",
-        "allowed_mcp_servers": ["github"],
-        "allowed_mcp_tools": [{"server": "github", "tool": "get_issue"}],
-        "git_clone_config": {"repositories": [{"url": "example/repo"}]},
-        "custom_commands": {"enabled": True, "commands": ["make test"]},
-    }
-    executor = RemoteRunnerExecutor(
-        "codex",
-        context["agent_config"],
-        db=MagicMock(),
-        pool="local",
-        account_id=uuid4(),
+    monkeypatch.setattr(
+        "preloop.agents.remote_runner.create_flow_runtime_token",
+        lambda *args, **kwargs: ("fresh-runtime-token", uuid4()),
     )
 
-    ref = await executor.start(context)
-    status = await executor.get_status(ref)
+    executor = create_executor_for_execution(
+        "codex",
+        {"agent_config": flow.agent_config},
+        flow=flow,
+        execution=execution,
+        db=MagicMock(),
+        execution_context=None,
+    )
+    assert isinstance(executor, RemoteRunnerExecutor)
+
+    status = await executor.get_status(execution.agent_session_reference)
 
     assert status == AgentStatus.STARTING
-    delayed_payload = leased_payloads[1]
-    for key in (
-        "model_identifier",
-        "model_provider",
-        "allowed_mcp_servers",
-        "allowed_mcp_tools",
-        "git_clone_config",
-        "custom_commands",
-    ):
-        assert delayed_payload[key] == context[key]
-    assert delayed_payload["account_api_token"] == "live-secret"
+    assert len(leased_payloads) == 1
+    delayed_payload = leased_payloads[0]
+    assert delayed_payload["agent_config"] == flow.agent_config
+    assert delayed_payload["prompt"] == execution.resolved_input_prompt
+    assert delayed_payload["model_identifier"] == flow.ai_model.model_identifier
+    assert delayed_payload["model_provider"] == flow.ai_model.provider_name
+    assert delayed_payload["allowed_mcp_servers"] == flow.allowed_mcp_servers
+    assert delayed_payload["allowed_mcp_tools"] == flow.allowed_mcp_tools
+    assert delayed_payload["git_clone_config"] == flow.git_clone_config
+    assert delayed_payload["custom_commands"] == flow.custom_commands
+    assert delayed_payload["account_api_token"] == "fresh-runtime-token"
     assert pushed_payloads == [delayed_payload]
     assert "account_api_token" not in runner.pending_job
 

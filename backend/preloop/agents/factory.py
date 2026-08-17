@@ -54,12 +54,23 @@ def create_executor_for_execution(
             account_id = getattr(execution, "account_id", None)
         if account_id is None and flow is not None:
             account_id = getattr(flow, "account_id", None)
+        remote_config = (
+            getattr(flow, "agent_config", None) if flow is not None else None
+        )
+        if remote_config is None:
+            remote_config = config
+            if set(config) == {"agent_config"} and isinstance(
+                config["agent_config"], dict
+            ):
+                remote_config = config["agent_config"]
         return RemoteRunnerExecutor(
             agent_type,
-            config,
+            remote_config,
             db=db,
             pool=str(pool),
             account_id=account_id,
+            flow=flow,
+            execution=execution,
         )
     return create_agent_executor(agent_type, config)
 

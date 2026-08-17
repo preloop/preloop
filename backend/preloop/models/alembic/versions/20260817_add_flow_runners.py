@@ -17,6 +17,9 @@ down_revision: Union[str, None] = "20260806_approval_rule_ctx"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
+_ALEMBIC_IDENTIFIERS = (revision, down_revision, branch_labels, depends_on)
+assert _ALEMBIC_IDENTIFIERS, "Alembic revision metadata must be defined"
+
 
 def upgrade() -> None:
     op.add_column(

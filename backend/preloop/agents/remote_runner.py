@@ -9,8 +9,9 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from preloop.models.crud import crud_flow_execution, crud_flow_execution_log
+from preloop.models.crud import crud_flow, crud_flow_execution, crud_flow_execution_log
 from preloop.models.crud.flow_runner import crud_flow_runner
+from preloop.services.flow_runtime_token import create_flow_runtime_token
 from preloop.services.runner_service import (
     DEFAULT_QUEUE_TIMEOUT,
     lease_job,
@@ -33,12 +34,15 @@ class RemoteRunnerExecutor(AgentExecutor):
         db: Session,
         pool: str,
         account_id: UUID,
+        flow: Any = None,
+        execution: Any = None,
     ):
         super().__init__(agent_type, config)
         self.db = db
         self.pool = pool
         self.account_id = account_id
-        self._job_context: Dict[str, Any] = {}
+        self.flow = flow
+        self.execution = execution
 
     async def start(self, execution_context: Dict[str, Any]) -> str:
         execution_id = UUID(str(execution_context["execution_id"]))
@@ -87,7 +91,9 @@ class RemoteRunnerExecutor(AgentExecutor):
     async def get_status(self, session_reference: str) -> AgentStatus:
         execution_id = _execution_id_from_ref(session_reference)
         if session_reference.startswith("runner:queued:"):
-            execution = crud_flow_execution.get(self.db, id=execution_id)
+            execution = (
+                crud_flow_execution.get(self.db, id=execution_id) or self.execution
+            )
             started = (
                 execution.start_time
                 if execution and execution.start_time
@@ -109,12 +115,25 @@ class RemoteRunnerExecutor(AgentExecutor):
                 return AgentStatus.FAILED
             # A runner may have come online; try to lease now.
             if execution:
+                flow = self._flow_for_execution(execution)
                 payload = self._lease_payload(
                     execution_id=execution.id,
                     flow_id=execution.flow_id,
                     prompt=execution.resolved_input_prompt,
-                    flow=getattr(execution, "flow", None),
+                    flow=flow,
                 )
+                if flow is not None:
+                    token, _ = create_flow_runtime_token(
+                        self.db,
+                        flow=flow,
+                        execution_id=execution.id,
+                    )
+                    payload["account_api_token"] = token
+                    if not token:
+                        logger.warning(
+                            "Could not create temporary API key record for account %s",
+                            getattr(flow, "account_id", self.account_id),
+                        )
                 runner = lease_job(
                     self.db,
                     account_id=self.account_id,
@@ -181,48 +200,66 @@ class RemoteRunnerExecutor(AgentExecutor):
         flow: Any = None,
     ) -> Dict[str, Any]:
         """Build one complete payload for initial and delayed runner leases."""
-        context_keys = (
-            "agent_type",
-            "agent_config",
-            "model_identifier",
-            "model_provider",
-            "account_api_token",
-            "allowed_mcp_servers",
-            "allowed_mcp_tools",
-            "git_clone_config",
-            "custom_commands",
-        )
-        if execution_context is not None:
-            self._job_context.update(
-                {key: execution_context.get(key) for key in context_keys}
-            )
+        context = execution_context or {}
+        flow = flow or self.flow
+        try:
+            ai_model = getattr(flow, "ai_model", None)
+        except Exception:
+            ai_model = None
 
-        ai_model = getattr(flow, "ai_model", None)
+        agent_config = context.get("agent_config")
+        if agent_config is None and flow is not None:
+            agent_config = getattr(flow, "agent_config", None)
+        if agent_config is None:
+            agent_config = self.config
+        if (
+            isinstance(agent_config, dict)
+            and set(agent_config) == {"agent_config"}
+            and isinstance(agent_config["agent_config"], dict)
+        ):
+            agent_config = agent_config["agent_config"]
 
-        def cached_or_flow(key: str, default: Any = None) -> Any:
-            cached = self._job_context.get(key)
-            if cached is not None:
-                return cached
+        def context_or_flow(key: str, default: Any = None) -> Any:
+            value = context.get(key)
+            if value is not None:
+                return value
             return getattr(flow, key, default) if flow is not None else default
 
         return {
             "execution_id": str(execution_id),
             "flow_id": str(flow_id),
-            "agent_type": cached_or_flow("agent_type", self.agent_type),
-            "agent_config": cached_or_flow("agent_config", self.config),
+            "agent_type": context.get("agent_type")
+            or self.agent_type
+            or context_or_flow("agent_type"),
+            "agent_config": agent_config,
             "prompt": prompt,
-            "model_identifier": self._job_context.get("model_identifier")
+            "model_identifier": context.get("model_identifier")
             or getattr(ai_model, "model_identifier", None)
             or self.config.get("model_identifier"),
-            "model_provider": self._job_context.get("model_provider")
+            "model_provider": context.get("model_provider")
             or getattr(ai_model, "provider_name", None)
             or self.config.get("model_provider"),
-            "account_api_token": self._job_context.get("account_api_token"),
-            "allowed_mcp_servers": cached_or_flow("allowed_mcp_servers", []) or [],
-            "allowed_mcp_tools": cached_or_flow("allowed_mcp_tools", []) or [],
-            "git_clone_config": cached_or_flow("git_clone_config"),
-            "custom_commands": cached_or_flow("custom_commands"),
+            "account_api_token": context.get("account_api_token"),
+            "allowed_mcp_servers": context_or_flow("allowed_mcp_servers", []) or [],
+            "allowed_mcp_tools": context_or_flow("allowed_mcp_tools", []) or [],
+            "git_clone_config": context_or_flow("git_clone_config"),
+            "custom_commands": context_or_flow("custom_commands"),
         }
+
+    def _flow_for_execution(self, execution: Any) -> Any:
+        """Resolve the flow without depending on a loaded ORM relationship."""
+        if self.flow is not None:
+            return self.flow
+        try:
+            flow = getattr(execution, "flow", None)
+        except Exception:
+            flow = None
+        if flow is None:
+            flow_id = getattr(execution, "flow_id", None)
+            if flow_id is not None:
+                flow = crud_flow.get(self.db, id=flow_id)
+        self.flow = flow
+        return flow
 
     async def get_logs(
         self, session_reference: str, tail: int | None = None
