@@ -122,18 +122,6 @@ class RemoteRunnerExecutor(AgentExecutor):
                     prompt=execution.resolved_input_prompt,
                     flow=flow,
                 )
-                if flow is not None:
-                    token, _ = create_flow_runtime_token(
-                        self.db,
-                        flow=flow,
-                        execution_id=execution.id,
-                    )
-                    payload["account_api_token"] = token
-                    if not token:
-                        logger.warning(
-                            "Could not create temporary API key record for account %s",
-                            getattr(flow, "account_id", self.account_id),
-                        )
                 runner = lease_job(
                     self.db,
                     account_id=self.account_id,
@@ -142,6 +130,19 @@ class RemoteRunnerExecutor(AgentExecutor):
                     payload=payload,
                 )
                 if runner:
+                    if flow is not None:
+                        token, _ = create_flow_runtime_token(
+                            self.db,
+                            flow=flow,
+                            execution_id=execution.id,
+                        )
+                        payload["account_api_token"] = token
+                        if not token:
+                            logger.warning(
+                                "Could not create temporary API key record "
+                                "for account %s",
+                                getattr(flow, "account_id", self.account_id),
+                            )
                     execution.runner_id = runner.id
                     execution.agent_session_reference = (
                         f"runner:{runner.id}:{execution.id}"

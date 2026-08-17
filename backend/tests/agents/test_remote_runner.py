@@ -168,8 +168,11 @@ async def test_fresh_queued_executor_reconstructs_complete_payload(
     assert delayed_payload["allowed_mcp_tools"] == flow.allowed_mcp_tools
     assert delayed_payload["git_clone_config"] == flow.git_clone_config
     assert delayed_payload["custom_commands"] == flow.custom_commands
-    assert delayed_payload["account_api_token"] == "fresh-runtime-token"
-    assert pushed_payloads == [delayed_payload]
+    assert delayed_payload.get("account_api_token") is None
+    assert len(pushed_payloads) == 1
+    pushed_payload = pushed_payloads[0]
+    assert pushed_payload["account_api_token"] == "fresh-runtime-token"
+    assert pushed_payload["agent_config"] == flow.agent_config
     assert "account_api_token" not in runner.pending_job
 
 
