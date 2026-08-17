@@ -89,6 +89,34 @@ class TriggerEventResolver(PromptResolver):
 
         return normalized
 
+    @staticmethod
+    def _redact_workspace_files(event_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Replace inline ``workspace_files`` blobs in full-event dumps.
+
+        Those files are materialized under ``/workspace`` before the agent
+        starts; embedding their base64 into the prompt is exactly what the
+        feature exists to avoid. Applied to every resolution (full-event and
+        payload embeds alike); paths and other entry fields still resolve.
+        """
+        payload = event_data.get("payload")
+        if not isinstance(payload, dict):
+            return event_data
+        files = payload.get("workspace_files")
+        if not isinstance(files, list):
+            return event_data
+        redacted_files = []
+        for entry in files:
+            if isinstance(entry, dict) and isinstance(entry.get("content_base64"), str):
+                entry = dict(entry)
+                entry["content_base64"] = (
+                    f"<{len(entry['content_base64'])} base64 chars "
+                    "omitted; file is written under /workspace>"
+                )
+            redacted_files.append(entry)
+        # event_data is already a deep copy made by _normalize_event_data.
+        payload["workspace_files"] = redacted_files
+        return event_data
+
     async def resolve(self, path: str, context: ResolverContext) -> Optional[str]:
         """
         Resolve trigger event placeholders.
@@ -105,8 +133,11 @@ class TriggerEventResolver(PromptResolver):
             self.logger.warning("No trigger event data available")
             return None
 
-        # Normalize event data to provide consistent structure
-        normalized_data = self._normalize_event_data(context.trigger_event_data)
+        # Normalize event data to provide consistent structure, then strip
+        # inline workspace_files blobs so they cannot be embedded in prompts.
+        normalized_data = self._redact_workspace_files(
+            self._normalize_event_data(context.trigger_event_data)
+        )
 
         # If no path specified, return entire event as JSON
         if not path or path.strip() == "":

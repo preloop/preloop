@@ -12,6 +12,7 @@ from preloop.models.schemas.flow_execution import FlowExecutionCreate
 from .flow_orchestrator import FlowExecutionOrchestrator
 from preloop.sync.event_normalizer import attach_trigger_subject
 from preloop.sync.services.event_bus import get_nats_client
+from preloop.utils.workspace_seed import attach_workspace_file_paths
 from preloop.models.db.session import get_session_factory
 
 logger = logging.getLogger(__name__)
@@ -469,6 +470,7 @@ class FlowTriggerService:
             if test_mode:
                 trigger_details["test_mode"] = True
             attach_trigger_subject(trigger_details)
+            attach_workspace_file_paths(trigger_details)
             execution_data = FlowExecutionCreate(
                 flow_id=flow.id
                 if isinstance(flow.id, uuid.UUID)
@@ -948,6 +950,7 @@ class FlowTriggerService:
 
         trigger_details = _make_json_serializable(trigger_details)
         attach_trigger_subject(trigger_details)
+        attach_workspace_file_paths(trigger_details)
 
         execution_data = FlowExecutionCreate(
             flow_id=flow_id,

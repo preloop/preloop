@@ -197,3 +197,56 @@ class TestTriggerEventResolver:
         # Verify nested structures are preserved
         assert parsed["payload"]["object_attributes"]["title"] == "Add new feature"
         assert len(parsed["payload"]["labels"]) == 2
+
+
+class TestWorkspaceFilesRedaction:
+    """workspace_files blobs must never be embedded into prompts."""
+
+    @pytest.mark.asyncio
+    async def test_full_event_dump_redacts_content(self):
+        """{{trigger_event}} omits inline file contents but keeps paths."""
+        import base64
+        import json
+
+        resolver = TriggerEventResolver()
+        content = base64.b64encode(b"fixture-bytes" * 100).decode("ascii")
+        context = ResolverContext(
+            db=MagicMock(),
+            trigger_event_data={
+                "source": "webhook",
+                "payload": {
+                    "run": "smoke-1",
+                    "workspace_files": [
+                        {"path": "fixtures/input.json", "content_base64": content}
+                    ],
+                },
+            },
+            flow_id="flow-1",
+            execution_id="exec-1",
+        )
+
+        result = await resolver.resolve("", context)
+        assert content not in result
+        parsed = json.loads(result)
+        entry = parsed["payload"]["workspace_files"][0]
+        assert entry["path"] == "fixtures/input.json"
+        assert "omitted" in entry["content_base64"]
+        # The rest of the payload still resolves normally.
+        assert parsed["payload"]["run"] == "smoke-1"
+
+    @pytest.mark.asyncio
+    async def test_payload_fields_still_resolve(self):
+        """Deep paths next to workspace_files are unaffected."""
+        resolver = TriggerEventResolver()
+        context = ResolverContext(
+            db=MagicMock(),
+            trigger_event_data={
+                "payload": {
+                    "run": "smoke-1",
+                    "workspace_files": [{"path": "a.txt", "content_base64": "eA=="}],
+                }
+            },
+            flow_id="flow-1",
+            execution_id="exec-1",
+        )
+        assert await resolver.resolve("payload.run", context) == "smoke-1"
