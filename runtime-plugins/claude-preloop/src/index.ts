@@ -15,6 +15,8 @@
 
 import { randomUUID } from "node:crypto";
 
+import WebSocket from "ws";
+
 import {
   ControlConfig,
   PROTOCOL,
@@ -26,7 +28,7 @@ import {
 import { QueryFactory, SessionManager, sdkQueryFactory } from "./sessions.js";
 import { SessionActivity, TranscriptObserver } from "./observer.js";
 
-export { ControlConfig, loadConfig, verifyConfig, defaultConfigPath } from "./config.js";
+export { ControlConfig, loadConfig, verifyConfig } from "./config.js";
 export { SessionManager } from "./sessions.js";
 export type { QueryFactory, SdkQueryHandle, SdkMessage, SdkUserMessage } from "./sessions.js";
 export { TranscriptObserver } from "./observer.js";
@@ -43,10 +45,16 @@ export type OperatorCommand = {
     metadata?: Record<string, unknown>;
     interrupt?: boolean;
     target_session_id?: string;
+    session_source_id?: string;
     session_reference?: string;
     runtime_session_id?: string;
   };
 };
+
+/** Headers the Agent Control WS already accepts (Authorization: Bearer). */
+export function controlAuthHeaders(token: string): { Authorization: string } {
+  return { Authorization: `Bearer ${token}` };
+}
 
 /** Reconnect backoff bounds and heartbeat cadence (mirror the other plugins). */
 const RECONNECT_BASE_DELAY_MS = 2_000;
@@ -131,18 +139,16 @@ export class PreloopClaudeSidecar {
     }
     const config = this.controlConfig!;
     const wsUrl = new URL(config.control_ws_url!);
-    // Node's global WebSocket has no header option, so the durable bearer
-    // token is passed as a query param. The backend accepts this form.
-    // KNOWN LIMITATION: although wss encrypts the URL in transit, query
-    // params can surface in server access logs and intermediate proxy logs.
-    // Moving to the `ws` npm package (custom headers via the HTTP upgrade)
-    // would keep the token out of the URL at the cost of a runtime
-    // dependency; revisit before production hardening.
-    wsUrl.searchParams.set("token", config.bearer_token!);
+    // Node's global WebSocket cannot set headers. The `ws` package can, so
+    // the durable bearer token is sent as Authorization: Bearer on the HTTP
+    // upgrade. That is the scheme Agent Control already prefers; the token
+    // stays out of the URL and out of access-log query strings.
 
     let socket: WebSocket;
     try {
-      socket = new WebSocket(wsUrl);
+      socket = new WebSocket(wsUrl, {
+        headers: controlAuthHeaders(config.bearer_token!),
+      });
     } catch (error) {
       this.log(
         `Preloop Agent Control connect failed: ${errorMessage(error)}`,
@@ -152,7 +158,7 @@ export class PreloopClaudeSidecar {
     }
     this.socket = socket;
 
-    socket.addEventListener("open", () => {
+    socket.on("open", () => {
       this.reconnectAttempts = 0;
       this.sendEnvelope({
         type: "presence",
@@ -178,18 +184,18 @@ export class PreloopClaudeSidecar {
       this.startHeartbeat(config);
     });
 
-    socket.addEventListener("message", (event) => {
-      void this.handleFrame(socket, String(event.data));
+    socket.on("message", (data) => {
+      void this.handleFrame(socket, websocketDataToString(data));
     });
 
-    socket.addEventListener("close", () => {
+    socket.on("close", () => {
       this.stopHeartbeat();
       if (this.socket === socket) {
         this.socket = undefined;
       }
       this.scheduleReconnect();
     });
-    socket.addEventListener("error", () => {
+    socket.on("error", () => {
       // 'error' is followed by 'close'; log and let close drive reconnect.
       this.log("Preloop Agent Control websocket error");
     });
@@ -262,9 +268,10 @@ export class PreloopClaudeSidecar {
     }
     const payload = command.payload ?? {};
     const targetSessionId = resolveTargetSessionId(payload);
+    const resumeSessionId = resolveResumeSessionId(payload);
 
     if (payload.interrupt) {
-      await this.sessions.interrupt(targetSessionId);
+      await this.sessions.interrupt(targetSessionId ?? resumeSessionId);
       return "interrupted";
     }
 
@@ -277,6 +284,7 @@ export class PreloopClaudeSidecar {
     return this.sessions.sendMessage({
       text,
       targetSessionId,
+      resumeSessionId,
       metadata: payload.metadata,
     });
   }
@@ -374,6 +382,39 @@ export function resolveTargetSessionId(
     }
   }
   return undefined;
+}
+
+/** Native Claude session id for Agent SDK resume, when the envelope has it. */
+export function resolveResumeSessionId(
+  payload: NonNullable<OperatorCommand["payload"]>,
+): string | undefined {
+  const metadata = payload.metadata ?? {};
+  for (const candidate of [
+    payload.session_source_id,
+    metadata["session_source_id"],
+    resolveTargetSessionId(payload),
+  ]) {
+    if (typeof candidate === "string" && candidate.trim() !== "") {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function websocketDataToString(data: unknown): string {
+  if (typeof data === "string") {
+    return data;
+  }
+  if (Buffer.isBuffer(data)) {
+    return data.toString("utf8");
+  }
+  if (Array.isArray(data) && data.every((part) => Buffer.isBuffer(part))) {
+    return Buffer.concat(data).toString("utf8");
+  }
+  if (data instanceof ArrayBuffer) {
+    return Buffer.from(data).toString("utf8");
+  }
+  return String(data);
 }
 
 function errorMessage(error: unknown): string {

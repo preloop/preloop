@@ -98,6 +98,19 @@ test("targeting an unknown session resumes it via the SDK", async () => {
   manager.stop();
 });
 
+test("session_source_id is preferred for SDK resume over the Preloop UUID", async () => {
+  const { manager, state } = makeManager();
+  const reply = await manager.sendMessage({
+    text: "resume native",
+    targetSessionId: "preloop-uuid-1",
+    resumeSessionId: "claude-session-abc",
+  });
+  assert.equal(reply, "echo: resume native");
+  assert.equal(state.opened.length, 1);
+  assert.equal(state.opened[0].options.resume, "claude-session-abc");
+  manager.stop();
+});
+
 test("interrupt targets the owned session", async () => {
   const { manager, state } = makeManager();
   await manager.sendMessage({ text: "busy work" });

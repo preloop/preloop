@@ -4,7 +4,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { PreloopClaudeSidecar, resolveTargetSessionId } from "../dist/index.js";
+import {
+  PreloopClaudeSidecar,
+  controlAuthHeaders,
+  resolveResumeSessionId,
+  resolveTargetSessionId,
+} from "../dist/index.js";
 
 const baseConfig = {
   enabled: true,
@@ -131,4 +136,47 @@ test("resolveTargetSessionId checks payload then metadata keys", () => {
   );
   assert.equal(resolveTargetSessionId({ metadata: {} }), undefined);
   assert.equal(resolveTargetSessionId({ target_session_id: "  " }), undefined);
+});
+
+test("resolveResumeSessionId prefers session_source_id when present", () => {
+  assert.equal(
+    resolveResumeSessionId({
+      target_session_id: "preloop-uuid",
+      session_source_id: "claude-native",
+    }),
+    "claude-native",
+  );
+  assert.equal(
+    resolveResumeSessionId({ target_session_id: "preloop-uuid" }),
+    "preloop-uuid",
+  );
+  assert.equal(
+    resolveResumeSessionId({
+      metadata: { session_source_id: "from-meta" },
+    }),
+    "from-meta",
+  );
+});
+
+test("controlAuthHeaders uses Authorization Bearer, not a query token", () => {
+  const headers = controlAuthHeaders("agt_secret");
+  assert.equal(headers.Authorization, "Bearer agt_secret");
+});
+
+test("stop() clears sessions so a later dispatch recreates the manager", async () => {
+  const { sidecar, state } = makeSidecar();
+  await sidecar.dispatch({
+    type: "command",
+    name: "send_message",
+    payload: { text: "first" },
+  });
+  sidecar.stop();
+  const result = await sidecar.dispatch({
+    type: "command",
+    name: "send_message",
+    payload: { text: "after-stop" },
+  });
+  assert.equal(result, "ok: after-stop");
+  assert.deepEqual(state.texts, ["first", "after-stop"]);
+  sidecar.stop();
 });

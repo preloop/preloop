@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { TranscriptObserver } from "../dist/observer.js";
+import { TranscriptObserver, alignTailBuffer } from "../dist/observer.js";
 
 function makeTree() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "claude-projects-"));
@@ -95,6 +95,55 @@ test("a missing root directory is tolerated", () => {
   );
   observer.scanOnce();
   assert.equal(events.length, 0);
+  observer.stop();
+});
+
+test("alignTailBuffer skips a mid-character / mid-line cut", () => {
+  const prefix = Buffer.from("x");
+  const continuation = Buffer.from([0x80]);
+  const rest = Buffer.from('\n{"sessionId":"ok","type":"assistant"}\n');
+  const aligned = alignTailBuffer(
+    Buffer.concat([prefix, continuation, rest]),
+    true,
+  );
+  assert.equal(
+    aligned.toString("utf8").trim(),
+    '{"sessionId":"ok","type":"assistant"}',
+  );
+});
+
+test("a 64KB tail that starts mid UTF-8 still finds the last record", () => {
+  const { root, project } = makeTree();
+  const transcript = path.join(project, "utf8-tail.jsonl");
+  const empty = JSON.stringify({
+    sessionId: "utf8-ok",
+    type: "assistant",
+    text: "",
+  });
+  const need = 64 * 1024 - 2 - (empty.length + 1);
+  const lastLine =
+    JSON.stringify({
+      sessionId: "utf8-ok",
+      type: "assistant",
+      text: "x".repeat(need),
+    }) + "\n";
+  const pad = Buffer.alloc(8, 0x61);
+  fs.writeFileSync(
+    transcript,
+    Buffer.concat([
+      pad,
+      Buffer.from("é", "utf8"),
+      Buffer.from("\n"),
+      Buffer.from(lastLine),
+    ]),
+  );
+
+  const events = [];
+  const observer = new TranscriptObserver(root, (event) => events.push(event));
+  observer.scanOnce();
+  assert.equal(events.length, 1);
+  assert.equal(events[0].session_id, "utf8-ok");
+  assert.equal(events[0].last_role, "assistant");
   observer.stop();
 });
 

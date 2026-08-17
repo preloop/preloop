@@ -23,10 +23,9 @@ const DEFAULT_POLL_MS = 5_000;
 const INITIAL_IDLE_CUTOFF_MS = 15 * 60 * 1000;
 /**
  * Read at most this many trailing bytes when summarizing a transcript.
- * The fixed-offset read can split a multi-byte UTF-8 character (or a JSON
- * line) at the window boundary; the backwards line walk below tolerates the
- * resulting parse failure and settles on the newest complete record, at
- * worst skipping a partial record at the very start of the window.
+ * The window is then aligned to a newline / valid UTF-8 start so a
+ * multi-byte character at the cut cannot produce a replacement character
+ * that would hide the first complete record in the window.
  */
 const TAIL_BYTES = 64 * 1024;
 
@@ -143,9 +142,13 @@ function readLastJsonRecord(
   }
   try {
     const length = Math.min(size, TAIL_BYTES);
-    const buffer = Buffer.alloc(length);
-    fs.readSync(fd, buffer, 0, length, size - length);
-    const lines = buffer.toString("utf8").split("\n");
+    const start = size - length;
+    // Peek one byte before the window so we know if we started mid-line.
+    const prefix = start > 0 ? 1 : 0;
+    const buffer = Buffer.alloc(length + prefix);
+    fs.readSync(fd, buffer, 0, length + prefix, start - prefix);
+    const slice = alignTailBuffer(buffer, prefix > 0);
+    const lines = slice.toString("utf8").split("\n");
     for (let i = lines.length - 1; i >= 0; i -= 1) {
       const line = lines[i].trim();
       if (!line) continue;
@@ -161,4 +164,20 @@ function readLastJsonRecord(
   } finally {
     fs.closeSync(fd);
   }
+}
+
+/** Align a trailing read to a newline and a valid UTF-8 character start. */
+export function alignTailBuffer(buffer: Buffer, hasPrefix: boolean): Buffer {
+  let offset = hasPrefix ? 1 : 0;
+  const startedMidLine = hasPrefix && buffer[0] !== 0x0a;
+  while (offset < buffer.length && (buffer[offset] & 0xc0) === 0x80) {
+    offset += 1;
+  }
+  if (startedMidLine) {
+    const newline = buffer.indexOf(0x0a, offset);
+    if (newline !== -1) {
+      offset = newline + 1;
+    }
+  }
+  return buffer.subarray(offset);
 }

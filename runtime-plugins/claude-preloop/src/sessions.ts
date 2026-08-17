@@ -210,6 +210,8 @@ class OwnedSession {
 export type SendMessageParams = {
   text: string;
   targetSessionId?: string;
+  /** Native Claude session id for SDK `resume` when the envelope has it. */
+  resumeSessionId?: string;
   metadata?: Record<string, unknown>;
 };
 
@@ -279,10 +281,15 @@ export class SessionManager {
   /** Deliver an operator message; returns the assistant reply text. */
   async sendMessage(params: SendMessageParams): Promise<string> {
     const target = params.targetSessionId;
+    const resume = params.resumeSessionId ?? target;
     let session = target ? this.findBySessionId(target) : undefined;
+    if (!session && resume && resume !== target) {
+      session = this.findBySessionId(resume);
+    }
     if (!session) {
-      // Resume the persisted session when targeted, else a fresh session.
-      session = await this.open(target);
+      // Prefer the native Claude session id for SDK resume when present
+      // (G2 envelope field). Fall back to the Preloop UUID.
+      session = await this.open(resume);
     }
     return session.send(
       params.text,
