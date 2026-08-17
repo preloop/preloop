@@ -71,6 +71,17 @@ _rule_workflow_id_var: ContextVar[Optional[str]] = ContextVar(
     "_rule_workflow_id_var", default=None
 )
 
+# Context variable carrying the matched-rule snapshot from _call_tool()'s
+# policy evaluation through to require_approval(), which persists it on the
+# approval request. Without this the approver sees the tool and the arguments
+# but not WHICH rule demanded approval, so a boundary case is indistinguishable
+# from a mid-band one. Set in the same places as _rule_workflow_id_var and
+# cleared on every non-approval path so a stale rule can never be attributed
+# to a later call.
+_rule_context_var: ContextVar[Optional[dict]] = ContextVar(
+    "_rule_context_var", default=None
+)
+
 # Context variable to pass a unique correlation_id from _call_tool() through
 # to all audit-logging helpers (policy_evaluator, approval_helper, tool execution).
 # Every audit log entry from the same tool invocation shares this ID so the
@@ -1117,7 +1128,7 @@ async def {internal_name}({params_str}) -> str:
             from preloop.services.policy_evaluator import evaluate_policy_async
 
             async with get_async_db_session() as db:
-                action, approval_workflow_id, reason = await evaluate_policy_async(
+                _policy_decision = await evaluate_policy_async(
                     db=db,
                     tool_name=name,
                     tool_args=arguments,
@@ -1144,6 +1155,8 @@ async def {internal_name}({params_str}) -> str:
                     },
                 )
 
+            action, approval_workflow_id, reason = _policy_decision
+
             logger.info(
                 f"Policy evaluation for '{name}': action={action}, "
                 f"workflow_id={approval_workflow_id}, reason={reason}"
@@ -1158,6 +1171,12 @@ async def {internal_name}({params_str}) -> str:
                 )
 
             if action == "require_approval":
+                # Carry the matched rule through to require_approval() so it
+                # lands on the approval row. getattr because tests (and any
+                # future caller) may patch the evaluator with a plain tuple;
+                # a missing snapshot must read as "not recorded", never raise
+                # on the enforcement path.
+                _rule_context_var.set(getattr(_policy_decision, "rule_context", None))
                 if approval_workflow_id:
                     # Store the workflow_id so require_approval() in the tool
                     # wrapper picks it up instead of relying on the legacy
@@ -1170,6 +1189,7 @@ async def {internal_name}({params_str}) -> str:
                     # tool through, otherwise an explicit ``require_approval``
                     # rule would behave like ``allow``.
                     _rule_workflow_id_var.set(None)
+                    _rule_context_var.set(None)
                     logger.error(
                         f"Tool '{name}' matched require_approval rule but no "
                         "approval workflow is configured (rule, tool config, "
@@ -1190,6 +1210,7 @@ async def {internal_name}({params_str}) -> str:
                     )
             else:
                 _rule_workflow_id_var.set(None)
+                _rule_context_var.set(None)
 
         except Exception as e:
             logger.error(
@@ -1203,6 +1224,7 @@ async def {internal_name}({params_str}) -> str:
             # infrastructure error. Block the call and surface a ret600able
             # error to the agent.
             _rule_workflow_id_var.set(None)
+            _rule_context_var.set(None)
             return ToolResult(
                 content=[
                     TextContent(
@@ -1257,6 +1279,7 @@ async def {internal_name}({params_str}) -> str:
 
             # Clean up context vars after execution
             _rule_workflow_id_var.set(None)
+            _rule_context_var.set(None)
             _correlation_id_var.set(None)
 
             # ── Audit: log tool execution ───────────────────────────────
@@ -1606,6 +1629,7 @@ def create_user_context_from_scope(scope: dict) -> Optional[UserContext]:
 # out of ``__all__`` so ``import *`` stays a public-API surface only.
 _CONTEXT_VAR_EXPORTS = (
     _rule_workflow_id_var,
+    _rule_context_var,
     _correlation_id_var,
     _justification_var,
     _bypass_approval_var,

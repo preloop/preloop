@@ -105,6 +105,7 @@ async def require_approval(
     correlation_id: Optional[str] = None,
     justification: Optional[str] = None,
     return_comment_on_approve: bool = False,
+    rule_context: Optional[dict] = None,
 ) -> Tuple[bool, str]:
     """Check if tool requires approval and wait for decision with streaming.
 
@@ -125,6 +126,14 @@ async def require_approval(
         justification: Optional justification text provided by the agent explaining
                       why this tool is being called. Injected by DynamicFastMCP when
                       justification_mode is configured on the tool.
+        rule_context: Snapshot of the policy rule that demanded this approval
+                      (see services/approval_rule_context.py). When omitted,
+                      falls back to whatever DynamicFastMCP's central policy
+                      evaluation stored in ``_rule_context_var``, and finally to
+                      the rule this function matches itself in the legacy
+                      inline path below. None means no rule was evaluated (e.g.
+                      the request_approval builtin) and surfaces omit the
+                      explanation rather than invent one.
 
     Returns:
         Tuple of (approved: bool, error_message: str)
@@ -154,6 +163,23 @@ async def require_approval(
             get_tool_config_by_name_and_source_async,
         )
         from preloop.models.crud.approval_workflow import get_approval_workflow_async
+        from preloop.services.approval_rule_context import (
+            SOURCE_TOOL_ACCESS_RULE,
+            SOURCE_TOOL_DEFAULT_WORKFLOW,
+            build_rule_context,
+        )
+
+        # DynamicFastMCP's central policy evaluation runs before the tool
+        # wrapper and already knows which rule fired; prefer that over
+        # anything we rediscover here, and never overwrite an explicit
+        # argument.
+        if rule_context is None:
+            try:
+                from preloop.services.dynamic_fastmcp import _rule_context_var
+
+                rule_context = _rule_context_var.get(None)
+            except Exception:  # pragma: no cover - contextvar lookup is optional
+                rule_context = None
 
         logger.info(
             f"Checking approval requirement for {tool_source} tool '{tool_name}' "
@@ -302,6 +328,21 @@ async def require_approval(
                         return (False, f"Tool '{tool_name}' is denied by access rule")
                     elif rule.action == "require_approval":
                         matched_require_approval = True
+                        # Record WHICH rule gated the call. Only when the
+                        # central evaluator did not already hand us one: it
+                        # sees the same rules with more context (subject
+                        # scoping, also-matched rules) and is authoritative.
+                        if rule_context is None:
+                            rule_context = build_rule_context(
+                                source=SOURCE_TOOL_ACCESS_RULE,
+                                decision="require_approval",
+                                rule_id=rule.id,
+                                rule_name=rule.description,
+                                expression=rule.condition_expression,
+                                expression_type=rule.condition_type,
+                                priority=rule.priority,
+                                tool_configuration_id=config.id,
+                            )
                         break  # Proceed to approval flow below
 
                 # If access rules exist but none matched, default to allow.
@@ -312,6 +353,18 @@ async def require_approval(
                         f"access rules exist but none matched — default allow"
                     )
                     return (True, "")
+
+                if not access_rules and rule_context is None:
+                    # No rules exist at all: the tool config itself pins an
+                    # approval workflow, so every call is gated whatever the
+                    # arguments are. Say that plainly rather than leaving the
+                    # approver to guess which rule they cannot find.
+                    rule_context = build_rule_context(
+                        source=SOURCE_TOOL_DEFAULT_WORKFLOW,
+                        decision="require_approval",
+                        rule_name="Tool default policy",
+                        tool_configuration_id=config.id,
+                    )
 
                 # Get approval workflow from tool configuration
                 workflow = await get_approval_workflow_async(
@@ -349,6 +402,7 @@ async def require_approval(
                     tool_args=arguments,
                     agent_reasoning=justification,
                     execution_id=None,
+                    rule_context=rule_context,
                 )
 
                 # Derive notification channel from approval_type

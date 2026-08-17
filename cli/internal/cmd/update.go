@@ -45,7 +45,6 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	current := version.NormalizeVersion(version.Version)
 	latest := version.NormalizeVersion(info.LatestVersion)
 	fmt.Printf("preloop %s\n", version.Version)
 	if latest == "" {
@@ -53,8 +52,12 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("latest %s\n", info.LatestVersion)
 
-	if current == latest {
-		fmt.Println("up to date")
+	if !version.UpdateAvailable(version.Version, info.LatestVersion) {
+		if cmp, ok := version.CompareVersions(version.Version, info.LatestVersion); ok && cmp > 0 {
+			fmt.Println("newer than latest release")
+		} else {
+			fmt.Println("up to date")
+		}
 		return nil
 	}
 
@@ -72,17 +75,10 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 	}
 
 	if !autoYes {
-		if !stdinIsTerminal() {
+		if !version.StdinIsTerminal() {
 			return fmt.Errorf("refusing to update without --yes when stdin is not a TTY")
 		}
-		fmt.Print("Update now? [y/N] ")
-		var answer string
-		if _, scanErr := fmt.Scanln(&answer); scanErr != nil {
-			return nil
-		}
-		switch answer {
-		case "y", "Y", "yes", "YES", "Yes":
-		default:
+		if !version.PromptUpdateYes() {
 			fmt.Println("Update cancelled")
 			return nil
 		}

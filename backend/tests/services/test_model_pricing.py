@@ -329,6 +329,71 @@ class TestNewProviderPricing:
             )
 
 
+class TestQwenProviderPricing:
+    """Qwen / Model Studio fallback ids must resolve to dashscope catalog prices.
+
+    International USD list prices from Model Studio docs (fetched 2026-08-17).
+    Plus/flash families are tiered; we store the lower published tier.
+    """
+
+    def test_candidates_include_dashscope_prefix(self) -> None:
+        ai_model = AIModel(provider_name="qwen", model_identifier="qwen3.8-max")
+        candidates = list(_iter_litellm_model_candidates(ai_model))
+        assert "qwen3.8-max" in candidates
+        assert "dashscope/qwen3.8-max" in candidates
+
+    def test_dated_qwen_id_expands_to_dashscope_undated(self) -> None:
+        """Date-stamped Qwen ids must undate under dashscope, not openai."""
+        ai_model = AIModel(provider_name="qwen", model_identifier="qwen-plus-20250101")
+        candidates = list(_iter_litellm_model_candidates(ai_model))
+        assert "dashscope/qwen-plus" in candidates
+        assert "openai/qwen-plus" not in candidates
+
+    def test_intl_endpoint_still_prices_as_dashscope(self) -> None:
+        ai_model = AIModel(
+            provider_name="qwen",
+            model_identifier="qwen3.8-max",
+            api_endpoint="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        )
+        candidates = list(_iter_litellm_model_candidates(ai_model))
+        assert "dashscope/qwen3.8-max" in candidates
+
+    def test_bundled_table_prices_every_qwen_fallback_id(self) -> None:
+        from preloop.services.ai_model_provider import QWEN_KNOWN_MODELS
+
+        prices = json.loads(CATALOG_PATH.read_text())
+        for model_id in QWEN_KNOWN_MODELS:
+            key = f"dashscope/{model_id}"
+            assert key in prices, f"{key} missing from model_prices.json"
+            entry = prices[key]
+            assert entry["litellm_provider"] == "dashscope"
+            assert entry["mode"] == "chat"
+            assert entry["input_cost_per_token"] > 0
+            assert entry["output_cost_per_token"] > 0
+
+    def test_qwen38_max_list_prices_in_bundled_table(self) -> None:
+        """modelstudio.alibabacloud.com launch card (2026-08-03): $2 / $6 per 1M."""
+        prices = json.loads(CATALOG_PATH.read_text())
+        entry = prices["dashscope/qwen3.8-max"]
+        assert entry["input_cost_per_token"] == 2e-06
+        assert entry["output_cost_per_token"] == 6e-06
+        assert entry["max_input_tokens"] == 991808
+        assert entry["max_output_tokens"] == 131072
+
+    def test_qwen38_max_cost_resolves_through_estimator(self) -> None:
+        load_catalog(force=True)
+        ai_model = AIModel(provider_name="qwen", model_identifier="qwen3.8-max")
+        estimate = estimate_ai_model_usage_cost_detailed(
+            ai_model,
+            prompt_tokens=1_000_000,
+            completion_tokens=1_000_000,
+            total_tokens=2_000_000,
+        )
+        assert estimate.source == "catalog"
+        # 1M input at $2/M plus 1M output at $6/M.
+        assert estimate.cost == pytest.approx(8.0, rel=1e-6)
+
+
 def test_model_price_override_serializes_adjustment_terms() -> None:
     """Persisted overrides should expose all adjustment terms to estimators."""
     override = ModelPriceOverride(
@@ -588,21 +653,61 @@ def test_absent_provider_cost_still_unpriced_for_uncatalogued_model() -> None:
     assert estimate.cost is None
 
 
-def test_zero_or_negative_provider_cost_is_ignored() -> None:
-    """cost=0/-1 mean 'not accounted', never a real $0 charge."""
-    for bogus in (
-        {"cost": 0},
-        {"cost": -1},
-        {"cost_details": {"upstream_inference_cost": 0}},
+def test_explicit_zero_provider_cost_is_accounted() -> None:
+    """usage.cost=0 (key present) is a real provider $0 charge."""
+    for usage_details in (
+        {"prompt_tokens": 10, "completion_tokens": 5, "cost": 0},
+        {"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.0},
+        {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "cost": 0,
+            "cost_details": {
+                "upstream_inference_cost": 0,
+                "upstream_inference_prompt_cost": 0,
+                "upstream_inference_completions_cost": 0,
+            },
+        },
     ):
         estimate = estimate_ai_model_usage_cost_detailed(
             _openrouter_auto_model(),
             prompt_tokens=10,
             completion_tokens=5,
             total_tokens=15,
-            usage_details={"prompt_tokens": 10, "completion_tokens": 5, **bogus},
+            usage_details=usage_details,
         )
-        assert estimate.source == "unpriced", bogus
+        assert estimate.source == "provider", usage_details
+        assert estimate.cost == 0.0, usage_details
+
+
+def test_negative_provider_cost_is_ignored() -> None:
+    """cost=-1 is the catalog sentinel, not an accounted charge."""
+    estimate = estimate_ai_model_usage_cost_detailed(
+        _openrouter_auto_model(),
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        usage_details={"prompt_tokens": 10, "completion_tokens": 5, "cost": -1},
+    )
+    assert estimate.source == "unpriced"
+    assert estimate.cost is None
+
+
+def test_zero_upstream_inference_cost_alone_is_ignored() -> None:
+    """A zero upstream_inference_cost without usage.cost is not accounted."""
+    estimate = estimate_ai_model_usage_cost_detailed(
+        _openrouter_auto_model(),
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        usage_details={
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "cost_details": {"upstream_inference_cost": 0},
+        },
+    )
+    assert estimate.source == "unpriced"
+    assert estimate.cost is None
 
 
 def test_explicit_price_override_still_wins_over_provider_cost() -> None:

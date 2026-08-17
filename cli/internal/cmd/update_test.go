@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -138,9 +140,8 @@ func TestUpdateRequiresYesWhenNotTTY(t *testing.T) {
 		return dest, nil
 	})
 	t.Cleanup(restore)
-	oldTerm := stdinIsTerminal
-	stdinIsTerminal = func() bool { return false }
-	t.Cleanup(func() { stdinIsTerminal = oldTerm })
+	restoreTerm := version.OverrideStdinIsTerminalForTest(func() bool { return false })
+	t.Cleanup(restoreTerm)
 
 	_, err := captureUpdateStdout(t, func() error {
 		return runUpdate(updateCmd, nil)
@@ -159,12 +160,17 @@ func TestUpdateYesReplacesBinary(t *testing.T) {
 
 	asset := version.ReleaseAssetName(runtime.GOOS, runtime.GOARCH)
 	payload := []byte("brand-new-cli")
+	sum := sha256.Sum256(payload)
+	checksums := hex.EncodeToString(sum[:]) + "  " + asset + "\n"
 	dl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/"+asset) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/"+asset):
 			_, _ = w.Write(payload)
-			return
+		case strings.HasSuffix(r.URL.Path, "/SHA256SUMS"):
+			_, _ = w.Write([]byte(checksums))
+		default:
+			http.NotFound(w, r)
 		}
-		http.NotFound(w, r)
 	}))
 	t.Cleanup(dl.Close)
 	oldBase := version.ReleaseDownloadBase
@@ -199,5 +205,29 @@ func TestUpdateYesReplacesBinary(t *testing.T) {
 	}
 	if !strings.Contains(out, "Updated to 9.9.9") {
 		t.Fatalf("missing success line, got %q", out)
+	}
+}
+
+func TestUpdateCheckNewerThanLatest(t *testing.T) {
+	resetUpdateFlags(t)
+	oldVersion := version.Version
+	version.Version = "9.9.9"
+	t.Cleanup(func() { version.Version = oldVersion })
+	withVersionCheckServer(t, "1.2.3")
+	if err := updateCmd.Flags().Set("check", "true"); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := captureUpdateStdout(t, func() error {
+		return runUpdate(updateCmd, nil)
+	})
+	if err != nil {
+		t.Fatalf("runUpdate --check: %v", err)
+	}
+	if strings.Contains(out, "update available") {
+		t.Fatalf("newer local build must not offer an update, got %q", out)
+	}
+	if !strings.Contains(out, "newer than latest release") {
+		t.Fatalf("expected newer-than-latest line, got %q", out)
 	}
 }

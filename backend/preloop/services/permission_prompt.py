@@ -297,6 +297,10 @@ async def evaluate_permission_prompt(
 
     # 2) No reusable request — raise a fresh approval through the shared
     #    agent-permission machinery.
+    from preloop.services.approval_rule_context import (
+        SOURCE_AGENT_PERMISSION_HOOK,
+        build_rule_context,
+    )
     from preloop.services.approval_service import ApprovalService
 
     async with get_async_db_session() as db:
@@ -332,6 +336,13 @@ async def evaluate_permission_prompt(
                 models.AutoApprovedReason.NATIVE_TOOL_APPROVALS_OFF
                 if approvals_off
                 else None
+            ),
+            # The agent's own permission prompt escalated this; no Preloop
+            # access rule was evaluated. State that plainly.
+            rule_context=build_rule_context(
+                source=SOURCE_AGENT_PERMISSION_HOOK,
+                decision="require_approval",
+                rule_name="Agent permission prompt",
             ),
         )
         request_id = str(approval.id)

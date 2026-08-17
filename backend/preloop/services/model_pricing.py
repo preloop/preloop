@@ -37,7 +37,13 @@ _SYNTHETIC_PROVIDER_PREFIXES = ("openai-compatible/", "custom/", "preloop/")
 
 # Hosts that front a model marketplace whose catalog keys litellm namespaces
 # under a provider prefix (e.g. ``openrouter/deepseek/deepseek-chat``).
-_ENDPOINT_HOST_PREFIXES = (("openrouter.ai", "openrouter"),)
+_ENDPOINT_HOST_PREFIXES = (
+    ("openrouter.ai", "openrouter"),
+    ("dashscope.aliyuncs.com", "dashscope"),
+    ("dashscope-intl.aliyuncs.com", "dashscope"),
+    ("dashscope-us.aliyuncs.com", "dashscope"),
+    ("maas.aliyuncs.com", "dashscope"),
+)
 
 
 def _strip_synthetic_prefix(candidate: str) -> str:
@@ -57,6 +63,18 @@ def _strip_synthetic_prefix(candidate: str) -> str:
         if lowered.startswith(prefix):
             return candidate[len(prefix) :].strip()
     return candidate
+
+
+def _pricing_provider_prefix(provider: str) -> str:
+    """Return the price-catalog namespace for a configured provider.
+
+    Gateway routing maps ``qwen`` to ``openai`` (DashScope compatible-mode).
+    Vendored prices live under ``dashscope/<id>``, so pricing lookup must not
+    reuse the routing prefix.
+    """
+    if provider == "qwen":
+        return "dashscope"
+    return _PROVIDER_PREFIX.get(provider, provider)
 
 
 def _endpoint_prefix(api_endpoint: Optional[str]) -> Optional[str]:
@@ -145,7 +163,7 @@ def _expand_candidate(
         undated = pattern.sub("", stripped)
         if undated != stripped and undated:
             yield undated
-            prefix = _PROVIDER_PREFIX.get(provider, provider)
+            prefix = _pricing_provider_prefix(provider)
             if "/" not in undated:
                 yield f"{prefix}/{undated}"
             break
@@ -188,9 +206,10 @@ def provider_reported_cost(
     for BYOK, ``cost`` alone otherwise. Without the flag, fall back to the
     magnitude heuristic: sum only when ``cost < upstream_inference_cost``
     (BYOK: a small fee next to the vendor charge); otherwise ``cost`` alone
-    is the total. Zero and negative values mean "not accounted" (the Auto
-    Router's catalog price is literally ``-1``), never a real charge, so
-    they are treated as absent.
+    is the total. An explicit ``usage.cost`` of ``0`` (key present) is a
+    real provider $0 charge. Negative values (the Auto Router catalog
+    sentinel ``-1``) still mean "not accounted" and are treated as absent.
+    A zero ``upstream_inference_cost`` alone is also treated as absent.
 
     Args:
         usage_details: Raw provider usage dict from the response, if any.
@@ -207,13 +226,24 @@ def provider_reported_cost(
             return None
         return float(value) if value > 0 else None
 
+    def _accounted_cost(value: Any) -> Optional[float]:
+        # Explicit 0 is a real $0 charge. Negative is the catalog
+        # sentinel (Auto Router list price is -1), not a charge.
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        if value < 0:
+            return None
+        return float(value)
+
     cost_details = usage_details.get("cost_details")
     upstream_cost = (
         _positive_number(cost_details.get("upstream_inference_cost"))
         if isinstance(cost_details, dict)
         else None
     )
-    gateway_cost = _positive_number(usage_details.get("cost"))
+    gateway_cost = (
+        _accounted_cost(usage_details["cost"]) if "cost" in usage_details else None
+    )
 
     if upstream_cost is None and gateway_cost is None:
         return None
@@ -498,7 +528,9 @@ def _iter_litellm_model_candidates(ai_model: AIModel) -> Iterable[str]:
 
     if model_identifier:
         candidates.append(model_identifier)
-        prefix = _PROVIDER_PREFIX.get(provider, provider)
+        # Routing maps qwen -> openai (DashScope compatible-mode). Pricing
+        # keys live under dashscope/<id> in the vendored catalog.
+        prefix = _pricing_provider_prefix(provider)
         bare_identifier = _strip_synthetic_prefix(model_identifier)
         if "/" not in bare_identifier and prefix not in _SYNTHETIC_PROVIDER_PREFIXES:
             candidates.append(f"{prefix}/{bare_identifier}")

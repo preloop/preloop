@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -270,6 +271,93 @@ func TestWaitForExecutionSucceeds(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "ok") {
 		t.Fatalf("output = %q", out.String())
+	}
+}
+
+func TestWaitForExecutionDrainsHasMoreBeforeTerminal(t *testing.T) {
+	var skips []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/logs") {
+			skips = append(skips, r.URL.Query().Get("skip"))
+			switch r.URL.Query().Get("skip") {
+			case "0":
+				_ = json.NewEncoder(w).Encode(flowLogsResponse{
+					Source:  "database",
+					HasMore: true,
+					Logs: []flowLogEntry{
+						{Payload: map[string]any{"line": "page-one"}},
+						{Payload: map[string]any{"line": "page-one-b"}},
+					},
+				})
+			case "2":
+				_ = json.NewEncoder(w).Encode(flowLogsResponse{
+					Source:  "database",
+					HasMore: false,
+					Logs: []flowLogEntry{
+						{Payload: map[string]any{"line": "error: boom"}},
+					},
+				})
+			default:
+				t.Errorf("unexpected skip=%q", r.URL.Query().Get("skip"))
+				_ = json.NewEncoder(w).Encode(flowLogsResponse{Source: "database"})
+			}
+			return
+		}
+		_ = json.NewEncoder(w).Encode(flowExecutionStatus{ID: "exec-4", Status: "FAILED"})
+	}))
+	defer server.Close()
+
+	oldSleep := flowSleep
+	flowSleep = func(time.Duration) {}
+	t.Cleanup(func() { flowSleep = oldSleep })
+
+	var out bytes.Buffer
+	err := waitForExecution(api.NewClientWithToken(server.URL, "tok"), "exec-4", time.Minute, &out)
+	if err == nil || !strings.Contains(err.Error(), "FAILED") {
+		t.Fatalf("expected FAILED, got %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "page-one") || !strings.Contains(got, "error: boom") {
+		t.Fatalf("dropped tail logs: %q", got)
+	}
+	if len(skips) < 2 || skips[0] != "0" || skips[1] != "2" {
+		t.Fatalf("expected skip=0 then skip=2, got %#v", skips)
+	}
+}
+
+func TestResolveFlowIDPaginatesList(t *testing.T) {
+	const lateID = "33333333-2222-4333-8444-555555555555"
+	pages := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/flows" {
+			http.NotFound(w, r)
+			return
+		}
+		pages++
+		skip := r.URL.Query().Get("skip")
+		if skip == "0" {
+			first := make([]flowSummaryResponse, flowListPageSize)
+			for i := range first {
+				first[i] = flowSummaryResponse{
+					ID:   fmt.Sprintf("11111111-2222-4333-8444-%012d", i),
+					Name: fmt.Sprintf("flow-%d", i),
+				}
+			}
+			_ = json.NewEncoder(w).Encode(first)
+			return
+		}
+		_ = json.NewEncoder(w).Encode([]flowSummaryResponse{
+			{ID: lateID, Name: "Late Flow"},
+		})
+	}))
+	defer server.Close()
+
+	got, err := resolveFlowID(api.NewClientWithToken(server.URL, "tok"), "Late Flow")
+	if err != nil || got != lateID {
+		t.Fatalf("paginated name resolve: %q %v", got, err)
+	}
+	if pages < 2 {
+		t.Fatalf("expected a second list page, got %d", pages)
 	}
 }
 

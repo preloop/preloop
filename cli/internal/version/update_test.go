@@ -49,6 +49,64 @@ func TestNormalizeVersionAndReleaseURLs(t *testing.T) {
 	}
 }
 
+func TestCompareVersionsAndUpdateAvailable(t *testing.T) {
+	cmp := func(a, b string) int {
+		t.Helper()
+		got, ok := CompareVersions(a, b)
+		if !ok {
+			t.Fatalf("CompareVersions(%q, %q) unparseable", a, b)
+		}
+		return got
+	}
+
+	if got := cmp("0.14.0", "0.14.0"); got != 0 {
+		t.Errorf("equal = %d", got)
+	}
+	if got := cmp("v0.14.0", "0.14.0"); got != 0 {
+		t.Errorf("v-prefix equal = %d", got)
+	}
+	if got := cmp("0.14.0", "0.14.1"); got != -1 {
+		t.Errorf("patch older = %d", got)
+	}
+	if got := cmp("0.15.0", "0.14.9"); got != 1 {
+		t.Errorf("minor newer = %d", got)
+	}
+	if got := cmp("0.14.0-rc.1", "0.14.0"); got != -1 {
+		t.Errorf("prerelease < release = %d", got)
+	}
+	if got := cmp("0.14.0-rc.2", "0.14.0-rc.10"); got != -1 {
+		t.Errorf("rc.2 < rc.10 = %d", got)
+	}
+	if got := cmp("0.14.0-rc.10", "0.14.0-rc.2"); got != 1 {
+		t.Errorf("rc.10 > rc.2 = %d", got)
+	}
+	if got := cmp("1.0.0", "0.14.0"); got != 1 {
+		t.Errorf("major newer = %d", got)
+	}
+
+	if _, ok := CompareVersions("dev", "0.14.0"); ok {
+		t.Fatal("dev must be unparseable")
+	}
+	if UpdateAvailable("0.14.0", "0.14.0") {
+		t.Fatal("equal is not an update")
+	}
+	if UpdateAvailable("0.15.0", "0.14.0") {
+		t.Fatal("newer local build must not offer an update")
+	}
+	if UpdateAvailable("dev", "0.14.0") {
+		t.Fatal("dev must not offer an update")
+	}
+	if UpdateAvailable("0.14.0", "") {
+		t.Fatal("empty latest is not an update")
+	}
+	if !UpdateAvailable("0.14.0", "0.14.1") {
+		t.Fatal("expected update 0.14.0 -> 0.14.1")
+	}
+	if !UpdateAvailable("v0.13.9", "0.14.0") {
+		t.Fatal("expected update v0.13.9 -> 0.14.0")
+	}
+}
+
 func TestChecksumForAsset(t *testing.T) {
 	sums := "abc123  preloop-darwin-arm64\ndef456 *preloop-linux-amd64\n"
 	if got := checksumForAsset(sums, "preloop-darwin-arm64"); got != "abc123" {
@@ -105,12 +163,24 @@ func TestCanReplaceBinary(t *testing.T) {
 		t.Fatal("expected writable binary to be replaceable")
 	}
 
-	readonly := filepath.Join(dir, "readonly")
-	if err := os.WriteFile(readonly, []byte("x"), 0o444); err != nil {
+	if os.Geteuid() == 0 {
+		t.Log("skipping 0o444 assertion: permission bits are not enforced as root")
+	} else {
+		readonly := filepath.Join(dir, "readonly")
+		if err := os.WriteFile(readonly, []byte("x"), 0o444); err != nil {
+			t.Fatal(err)
+		}
+		if CanReplaceBinary(readonly) {
+			t.Fatal("expected read-only binary not to be replaceable")
+		}
+	}
+
+	dirPath := filepath.Join(dir, "not-a-binary")
+	if err := os.Mkdir(dirPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if CanReplaceBinary(readonly) {
-		t.Fatal("expected read-only binary not to be replaceable")
+	if CanReplaceBinary(dirPath) {
+		t.Fatal("directory must not be replaceable")
 	}
 
 	if CanReplaceBinary(filepath.Join(dir, "missing")) {
@@ -161,6 +231,69 @@ func TestApplyUpdateDownloadsMatchingAsset(t *testing.T) {
 	}
 }
 
+func TestApplyUpdateFailsWhenChecksumsUnavailable(t *testing.T) {
+	asset := ReleaseAssetName(runtime.GOOS, runtime.GOARCH)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/"+asset) {
+			_, _ = w.Write([]byte("updated-cli-bytes"))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	oldBase := ReleaseDownloadBase
+	ReleaseDownloadBase = server.URL
+	defer func() { ReleaseDownloadBase = oldBase }()
+
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "preloop")
+	if err := os.WriteFile(dest, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err := ApplyUpdate(context.Background(), "9.9.9", dest)
+	if err == nil || !strings.Contains(err.Error(), "SHA256SUMS") {
+		t.Fatalf("expected fail-closed checksum error, got %v", err)
+	}
+	got, readErr := os.ReadFile(dest)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != "old" {
+		t.Fatalf("binary must be unchanged when checksums are missing, got %q", got)
+	}
+}
+
+func TestApplyUpdateFailsWhenChecksumEntryMissing(t *testing.T) {
+	asset := ReleaseAssetName(runtime.GOOS, runtime.GOARCH)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/SHA256SUMS") {
+			_, _ = w.Write([]byte("abc123  some-other-asset\n"))
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/"+asset) {
+			_, _ = w.Write([]byte("updated-cli-bytes"))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	oldBase := ReleaseDownloadBase
+	ReleaseDownloadBase = server.URL
+	defer func() { ReleaseDownloadBase = oldBase }()
+
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "preloop")
+	if err := os.WriteFile(dest, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err := ApplyUpdate(context.Background(), "9.9.9", dest)
+	if err == nil || !strings.Contains(err.Error(), "no entry") {
+		t.Fatalf("expected missing checksum entry error, got %v", err)
+	}
+}
+
 func TestApplyUpdateRejectsChecksumMismatch(t *testing.T) {
 	asset := ReleaseAssetName(runtime.GOOS, runtime.GOARCH)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -189,15 +322,14 @@ func TestApplyUpdateRejectsChecksumMismatch(t *testing.T) {
 
 func TestDisplayUpdatePromptSilentWhenNotWritable(t *testing.T) {
 	dir := t.TempDir()
-	readonly := filepath.Join(dir, "preloop")
-	if err := os.WriteFile(readonly, []byte("x"), 0o444); err != nil {
-		t.Fatal(err)
-	}
+	// A missing path is a reliable "cannot replace" signal, including as
+	// root (mode bits are not enforced for uid 0).
+	missing := filepath.Join(dir, "missing-preloop")
 	oldExec := executablePath
 	oldTerm := stdinIsTerminal
 	oldWriter := promptWriter
 	var out bytes.Buffer
-	executablePath = func() (string, error) { return readonly, nil }
+	executablePath = func() (string, error) { return missing, nil }
 	stdinIsTerminal = func() bool { return true }
 	promptWriter = &out
 	defer func() {

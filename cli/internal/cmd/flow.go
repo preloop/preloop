@@ -19,6 +19,10 @@ const (
 	defaultFlowWaitTimeout = 60 * time.Minute
 	flowPollInitial        = time.Second
 	flowPollMax            = 5 * time.Second
+	flowLogPageSize        = 500
+	flowLogMaxPages        = 100
+	flowListPageSize       = 1000
+	flowListMaxPages       = 10
 )
 
 var uuidPattern = regexp.MustCompile(
@@ -191,8 +195,16 @@ func resolveFlowID(client *api.Client, nameOrID string) (string, error) {
 	}
 
 	var flows []flowSummaryResponse
-	if err := client.Get(flowsPath+"?limit=1000", &flows); err != nil {
-		return "", fmt.Errorf("failed to list flows: %w", err)
+	for page := 0; page < flowListMaxPages; page++ {
+		var batch []flowSummaryResponse
+		path := fmt.Sprintf("%s?skip=%d&limit=%d", flowsPath, page*flowListPageSize, flowListPageSize)
+		if err := client.Get(path, &batch); err != nil {
+			return "", fmt.Errorf("failed to list flows: %w", err)
+		}
+		flows = append(flows, batch...)
+		if len(batch) < flowListPageSize {
+			break
+		}
 	}
 	var matches []flowSummaryResponse
 	for _, flow := range flows {
@@ -242,6 +254,24 @@ func newLogLines(source string, alreadyPrinted int, entries []flowLogEntry) []st
 	return lines
 }
 
+func drainExecutionLogs(client *api.Client, executionID string, printed int, out io.Writer) (int, error) {
+	for page := 0; page < flowLogMaxPages; page++ {
+		var logs flowLogsResponse
+		path := fmt.Sprintf("/api/v1/flows/executions/%s/logs?skip=%d&limit=%d", executionID, printed, flowLogPageSize)
+		if err := client.Get(path, &logs); err != nil {
+			return printed, fmt.Errorf("failed to read execution logs: %w", err)
+		}
+		for _, line := range newLogLines(logs.Source, printed, logs.Logs) {
+			fmt.Fprintln(out, line)
+			printed++
+		}
+		if !logs.HasMore {
+			return printed, nil
+		}
+	}
+	return printed, nil
+}
+
 func waitForExecution(client *api.Client, executionID string, timeout time.Duration, out io.Writer) error {
 	deadline := flowNow().Add(timeout)
 	printed := 0
@@ -253,15 +283,11 @@ func waitForExecution(client *api.Client, executionID string, timeout time.Durat
 			return fmt.Errorf("failed to read execution: %w", err)
 		}
 
-		var logs flowLogsResponse
-		path := fmt.Sprintf("/api/v1/flows/executions/%s/logs?skip=%d&limit=500", executionID, printed)
-		if err := client.Get(path, &logs); err != nil {
-			return fmt.Errorf("failed to read execution logs: %w", err)
+		nextPrinted, err := drainExecutionLogs(client, executionID, printed, out)
+		if err != nil {
+			return err
 		}
-		for _, line := range newLogLines(logs.Source, printed, logs.Logs) {
-			fmt.Fprintln(out, line)
-			printed++
-		}
+		printed = nextPrinted
 
 		status := strings.ToUpper(strings.TrimSpace(exec.Status))
 		if status == "SUCCEEDED" {
