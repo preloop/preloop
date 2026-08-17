@@ -82,8 +82,26 @@ FLOW_SUCCESS_INSTRUCTION = f"""
 
 ---
 IMPORTANT: When you have successfully completed your task, you MUST confirm success in one of two ways: print the following marker on a line by itself (no other text on that line): {FLOW_SUCCESS_SENTINEL}
-or write /workspace/result.json containing {{"status": "success"}}. Without one of these confirmations the run is marked FAILED.
+or write /workspace/result.json with a recognized completion status. Statuses such as "success", "pass", and "fail" confirm completion. Preserve any richer structured report instead of replacing it with a bare status object. Without one of these confirmations the run is marked FAILED.
 ---"""
+
+FLOW_EVAL_SUCCESS_INSTRUCTION = """
+
+---
+IMPORTANT: Your existing structured /workspace/result.json report is the flow confirmation channel. Preserve its schema and all rich report fields; do not overwrite it with a bare status object. The `pass` and `fail` verdicts confirm that the flow completed. An `error` verdict means the evaluation could not complete. Do not print sentinel markers.
+---"""
+
+
+def _success_instruction_for_prompt(prompt: str) -> str:
+    """Select the completion instruction matching the prompt's result contract."""
+    normalized_prompt = prompt.lower()
+    if (
+        "preloop.eval.result/v1" in normalized_prompt
+        or "do not print sentinel markers" in normalized_prompt
+    ):
+        return FLOW_EVAL_SUCCESS_INSTRUCTION
+    return FLOW_SUCCESS_INSTRUCTION
+
 
 # result.json "status" values that count as an explicit success confirmation
 # (channel 2 — equal in standing to the printed sentinel) or an explicit
@@ -863,7 +881,9 @@ class FlowExecutionOrchestrator:
         # multi-million-token runs the model is far more likely to honor the
         # last instruction it saw (see execution ff1294e1 — work done, marker
         # forgotten). Nothing may be appended after this.
-        resolved_prompt = resolved_prompt + FLOW_SUCCESS_INSTRUCTION
+        resolved_prompt = resolved_prompt + _success_instruction_for_prompt(
+            resolved_prompt
+        )
 
         logger.info("Prompt resolution complete")
         return resolved_prompt

@@ -1,12 +1,14 @@
 """Tests for FlowExecutionOrchestrator."""
 
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
 from preloop.services.flow_orchestrator import (
+    FLOW_EVAL_SUCCESS_INSTRUCTION,
+    FLOW_SUCCESS_INSTRUCTION,
     FlowExecutionOrchestrator,
     _result_artifact_confirmation,
 )
@@ -255,6 +257,60 @@ class TestFlowExecutionOrchestrator:
             assert resolved_prompt.startswith("Commit: Fixed bug #123")
             # Verify the success sentinel instruction is appended
             assert "FLOW_EXECUTION_SUCCESS" in resolved_prompt
+            assert resolved_prompt.endswith(FLOW_SUCCESS_INSTRUCTION)
+
+    @pytest.mark.asyncio
+    async def test_prompt_resolution_normal_uses_sentinel_instruction(self):
+        """Test normal prompts retain both confirmation channels."""
+        orchestrator = FlowExecutionOrchestrator(
+            db=MagicMock(spec=Session),
+            flow_id=uuid4(),
+            trigger_event_data={},
+            nats_client=MagicMock(),
+        )
+        orchestrator.flow = MagicMock(prompt_template="Complete the requested task.")
+
+        resolved_prompt = await orchestrator._resolve_prompt()
+
+        assert resolved_prompt.endswith(FLOW_SUCCESS_INSTRUCTION)
+        assert "FLOW_EXECUTION_SUCCESS" in resolved_prompt
+        assert "/workspace/result.json" in resolved_prompt
+        assert '"pass"' in resolved_prompt
+        assert '"fail"' in resolved_prompt
+
+    @pytest.mark.parametrize(
+        "eval_contract",
+        [
+            "Required shape: preloop.eval.result/v1",
+            "Do NOT print sentinel markers or paste JSON into chat output.",
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_prompt_resolution_eval_uses_result_artifact_instruction(
+        self,
+        eval_contract: str,
+    ):
+        """Test eval prompts preserve their structured result contract."""
+        orchestrator = FlowExecutionOrchestrator(
+            db=MagicMock(spec=Session),
+            flow_id=uuid4(),
+            trigger_event_data={},
+            nats_client=MagicMock(),
+        )
+        orchestrator.flow = MagicMock(
+            prompt_template=(
+                "Evaluate the subject and write a rich report.\n" + eval_contract
+            )
+        )
+
+        resolved_prompt = await orchestrator._resolve_prompt()
+
+        assert resolved_prompt.endswith(FLOW_EVAL_SUCCESS_INSTRUCTION)
+        assert "FLOW_EXECUTION_SUCCESS" not in resolved_prompt
+        assert '{"status": "success"}' not in resolved_prompt
+        assert "/workspace/result.json" in resolved_prompt
+        assert "`pass` and `fail`" in resolved_prompt
+        assert "`error`" in resolved_prompt
 
     @pytest.mark.asyncio
     async def test_prompt_resolution_nested(
