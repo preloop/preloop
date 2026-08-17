@@ -749,6 +749,23 @@ prompt_template: |
 
   Only remove the reaction; the review was already submitted in Phase 4.
 
+  **Step 8.2: Record Completion (MANDATORY FINAL ACT)**
+
+  As your very last action, write /workspace/result.json — this file is how
+  Preloop confirms the review completed. It must be valid JSON, a single
+  top-level object:
+
+  {
+    "status": "success",
+    "risk_level": "low" | "medium" | "high",
+    "findings_count": <total issues reported in this review>,
+    "review_action": "approve" | "request_changes" | "comment"
+  }
+
+  Use "status": "success" only if the review was submitted (Step 4.4). If you
+  could not complete the review, write "status": "failure" instead and add a
+  "reason" field.
+
   ═══════════════════════════════════════════════════════════
   CRITICAL GUIDELINES
   ═══════════════════════════════════════════════════════════
