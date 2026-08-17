@@ -142,6 +142,21 @@ class ApprovalRequest(Base):
         comment="Agent's reasoning for the tool call",
     )
 
+    # Why this request exists: the matched ToolAccessRule (id, name, condition
+    # expression, priority) or, when no rule fired, a plain statement of the
+    # gating that did. Snapshotted at creation time rather than recomputed at
+    # read time, so editing or deleting a rule later cannot rewrite the reason
+    # a past approval was asked for. NULL for approvals raised without rule
+    # evaluation (the request_approval builtin) and for rows created before
+    # this column existed; surfaces omit the block rather than guess.
+    # Shape is built by services/approval_rule_context.py.
+    rule_context: Mapped[Optional[dict]] = mapped_column(
+        JSONB,
+        nullable=True,
+        default=None,
+        comment="Snapshot of the policy rule that required this approval",
+    )
+
     summary: Mapped[Optional[str]] = mapped_column(
         Text,
         nullable=True,
