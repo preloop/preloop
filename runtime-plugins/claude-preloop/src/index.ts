@@ -63,6 +63,11 @@ const HEARTBEAT_INTERVAL_MS = 30_000;
 /** Bound on the message_id dedupe memory. */
 const DEDUPE_CAPACITY = 1_000;
 
+type StoredCommandOutcome = {
+  name: "command_result" | "command_error";
+  payload: Record<string, unknown>;
+};
+
 export class PreloopClaudeSidecar {
   readonly runtime = RUNTIME;
   private controlConfig?: ControlConfig;
@@ -73,7 +78,8 @@ export class PreloopClaudeSidecar {
   private reconnectAttempts = 0;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
-  private seenMessageIds = new Set<string>();
+  private commandOutcomes = new Map<string, StoredCommandOutcome>();
+  private inFlightMessageIds = new Set<string>();
   private logger: (message: string) => void = () => {};
 
   constructor(
@@ -201,7 +207,8 @@ export class PreloopClaudeSidecar {
     });
   }
 
-  private async handleFrame(socket: WebSocket, data: string): Promise<void> {
+  /** Process one inbound control frame. Exposed for tests. */
+  async handleFrame(socket: WebSocket, data: string): Promise<void> {
     let command: OperatorCommand;
     try {
       command = JSON.parse(data) as OperatorCommand;
@@ -216,45 +223,64 @@ export class PreloopClaudeSidecar {
       });
       return;
     }
-    // Redelivered commands (reconnect replay) must not run twice; the
-    // persisted-command contract says dedupe on message_id and re-ack.
-    if (command.message_id && this.seenMessageIds.has(command.message_id)) {
+    // Redelivered commands (reconnect replay) must not run twice. Dedupe
+    // only after a terminal success/error, and replay that stored outcome
+    // instead of a bare "duplicate" so a failed command is never silently
+    // converted into already-handled.
+    if (command.message_id && this.commandOutcomes.has(command.message_id)) {
+      const outcome = this.commandOutcomes.get(command.message_id)!;
       this.sendOn(socket, {
         type: "status",
-        name: "command_ack",
+        name: outcome.name,
         message_id: command.message_id,
-        payload: {
-          command_id: command.message_id,
-          status: "duplicate",
-        },
+        payload: outcome.payload,
       });
       return;
     }
-    this.rememberMessageId(command.message_id);
+    if (command.message_id && this.inFlightMessageIds.has(command.message_id)) {
+      return;
+    }
+    if (command.message_id) {
+      this.inFlightMessageIds.add(command.message_id);
+    }
     try {
       const result = await this.dispatch(command);
+      const payload = {
+        command_id: command.message_id,
+        status: "completed",
+        result,
+        reply_text: typeof result === "string" ? result : "",
+      };
+      this.rememberOutcome(command.message_id, {
+        name: "command_result",
+        payload,
+      });
       this.sendOn(socket, {
         type: "status",
         name: "command_result",
         message_id: command.message_id,
-        payload: {
-          command_id: command.message_id,
-          status: "completed",
-          result,
-          reply_text: typeof result === "string" ? result : "",
-        },
+        payload,
       });
     } catch (error) {
+      const payload = {
+        command_id: command.message_id,
+        status: "failed",
+        error: errorMessage(error),
+      };
+      this.rememberOutcome(command.message_id, {
+        name: "command_error",
+        payload,
+      });
       this.sendOn(socket, {
         type: "status",
         name: "command_error",
         message_id: command.message_id,
-        payload: {
-          command_id: command.message_id,
-          status: "failed",
-          error: errorMessage(error),
-        },
+        payload,
       });
+    } finally {
+      if (command.message_id) {
+        this.inFlightMessageIds.delete(command.message_id);
+      }
     }
   }
 
@@ -289,15 +315,18 @@ export class PreloopClaudeSidecar {
     });
   }
 
-  private rememberMessageId(messageId?: string): void {
+  private rememberOutcome(
+    messageId: string | undefined,
+    outcome: StoredCommandOutcome,
+  ): void {
     if (!messageId) {
       return;
     }
-    this.seenMessageIds.add(messageId);
-    if (this.seenMessageIds.size > DEDUPE_CAPACITY) {
-      const oldest = this.seenMessageIds.values().next().value;
+    this.commandOutcomes.set(messageId, outcome);
+    if (this.commandOutcomes.size > DEDUPE_CAPACITY) {
+      const oldest = this.commandOutcomes.keys().next().value;
       if (oldest !== undefined) {
-        this.seenMessageIds.delete(oldest);
+        this.commandOutcomes.delete(oldest);
       }
     }
   }
@@ -324,6 +353,9 @@ export class PreloopClaudeSidecar {
   }
 
   private sendOn(socket: WebSocket, envelope: Record<string, unknown>): void {
+    if (socket.readyState !== socket.OPEN) {
+      return;
+    }
     socket.send(JSON.stringify(envelope));
   }
 

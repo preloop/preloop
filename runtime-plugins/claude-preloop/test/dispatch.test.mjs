@@ -163,6 +163,78 @@ test("controlAuthHeaders uses Authorization Bearer, not a query token", () => {
   assert.equal(headers.Authorization, "Bearer agt_secret");
 });
 
+function fakeSocket({ open = true } = {}) {
+  const sent = [];
+  return {
+    sent,
+    OPEN: 1,
+    readyState: open ? 1 : 3,
+    send(data) {
+      if (!open) {
+        throw new Error("WebSocket is not open: readyState 3 (CLOSED)");
+      }
+      sent.push(JSON.parse(data));
+    },
+  };
+}
+
+test("sendOn is a no-op when the socket is not OPEN", async () => {
+  const { sidecar } = makeSidecar();
+  const socket = fakeSocket({ open: false });
+  await sidecar.handleFrame(
+    socket,
+    JSON.stringify({
+      type: "command",
+      name: "send_message",
+      message_id: "closed-1",
+      payload: { text: "should not throw" },
+    }),
+  );
+  assert.deepEqual(socket.sent, []);
+  sidecar.stop();
+});
+
+test("replay of a failed command resends the error, not a bare duplicate", async () => {
+  const { sidecar, state } = makeSidecar();
+  const socket = fakeSocket();
+  const failed = JSON.stringify({
+    type: "command",
+    name: "send_message",
+    message_id: "fail-1",
+    payload: { text: "   " },
+  });
+  await sidecar.handleFrame(socket, failed);
+  assert.equal(socket.sent.length, 1);
+  assert.equal(socket.sent[0].name, "command_error");
+  assert.match(socket.sent[0].payload.error, /non-empty text/);
+  await sidecar.handleFrame(socket, failed);
+  assert.equal(socket.sent.length, 2);
+  assert.equal(socket.sent[1].name, "command_error");
+  assert.match(socket.sent[1].payload.error, /non-empty text/);
+  assert.notEqual(socket.sent[1].payload.status, "duplicate");
+  assert.deepEqual(state.texts, []);
+  sidecar.stop();
+});
+
+test("replay of a completed command resends the stored result", async () => {
+  const { sidecar, state } = makeSidecar();
+  const socket = fakeSocket();
+  const completed = JSON.stringify({
+    type: "command",
+    name: "send_message",
+    message_id: "ok-1",
+    payload: { text: "once" },
+  });
+  await sidecar.handleFrame(socket, completed);
+  await sidecar.handleFrame(socket, completed);
+  assert.equal(socket.sent.length, 2);
+  assert.equal(socket.sent[0].name, "command_result");
+  assert.equal(socket.sent[1].name, "command_result");
+  assert.equal(socket.sent[1].payload.result, "ok: once");
+  assert.deepEqual(state.texts, ["once"]);
+  sidecar.stop();
+});
+
 test("stop() clears sessions so a later dispatch recreates the manager", async () => {
   const { sidecar, state } = makeSidecar();
   await sidecar.dispatch({

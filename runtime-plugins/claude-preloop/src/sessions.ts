@@ -145,19 +145,20 @@ class OwnedSession {
     }
   }
 
-  /** Resolve the oldest unsettled waiter, dropping timed-out ones in order
-   * so replies stay aligned with their originating turns. */
+  /** Consume exactly one result per waiter in FIFO order. If the front
+   * waiter already timed out, drop this reply so a later waiter cannot
+   * receive the previous turn's text. */
   private settleNextWaiter(reply: string): void {
-    while (this.turnWaiters.length > 0) {
-      const waiter = this.turnWaiters.shift()!;
-      if (waiter.settled) {
-        continue;
-      }
-      waiter.settled = true;
-      clearTimeout(waiter.timer);
-      waiter.resolve(reply);
+    const waiter = this.turnWaiters.shift();
+    if (!waiter) {
       return;
     }
+    if (waiter.settled) {
+      return;
+    }
+    waiter.settled = true;
+    clearTimeout(waiter.timer);
+    waiter.resolve(reply);
   }
 
   isLive(): boolean {
