@@ -127,7 +127,7 @@ dev = [
     "httpx>=0.24.1",
     "playwright>=1.30.0",
     "pytest-playwright>=0.4.0",
-    "mcp>=1.0.0",  # MCP client for integration tests
+    "mcp>=1.0.0,<2",  # MCP client for integration tests; v2 dropped streamablehttp_client
     "PyYAML>=6.0",  # test_nginx_route_parity imports yaml
 ]
 ai-providers = [
