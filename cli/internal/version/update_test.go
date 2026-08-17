@@ -68,6 +68,13 @@ func TestReplaceBinaryPreservesMode(t *testing.T) {
 	if err := os.WriteFile(dest, []byte("old-binary"), 0o750); err != nil {
 		t.Fatal(err)
 	}
+	// NTFS does not store Unix 0750; Stat after WriteFile is the mode
+	// ReplaceBinary can actually preserve on this OS.
+	before, err := os.Stat(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantMode := before.Mode().Perm()
 
 	if err := ReplaceBinary(dest, []byte("new-binary")); err != nil {
 		t.Fatalf("ReplaceBinary: %v", err)
@@ -83,8 +90,8 @@ func TestReplaceBinaryPreservesMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o750 {
-		t.Errorf("mode = %o, want 0750", info.Mode().Perm())
+	if info.Mode().Perm() != wantMode {
+		t.Errorf("mode = %o, want %o (OS-stored mode of the original file)", info.Mode().Perm(), wantMode)
 	}
 }
 
