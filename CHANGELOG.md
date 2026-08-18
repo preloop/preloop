@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "Update now? [y/N]" when stdin is a TTY and the running binary is
   writable. If the binary cannot be replaced, the CLI stays silent (no
   nag, no sudo hint).
+- **Gateway overhead script**: `scripts/measure_gateway_overhead.py`
+  (Python 3 stdlib) times streaming TTFB and time-to-close through the
+  gateway versus an optional same-model direct upstream. Keys stay in
+  the environment. See the script docstring for the env vars.
 - **`preloop flow trigger`**: CI-native trigger for an existing flow by id
   or name. Posts to `POST /api/v1/flows/{flow_id}/trigger`, accepts
   `--payload JSON` or `--payload -` (stdin), and waits for a terminal
@@ -100,6 +104,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Model gateway stream close**: the gateway now yields the terminal SSE
+  event (`message_stop` / `[DONE]`) before writing the usage row, so
+  bookkeeping no longer holds the last event on the client-visible stream.
+- **OSS TLS proxy skips the console hop for the model gateway**:
+  `/openai/`, `/anthropic/`, and `/gemini/` now proxy straight to the
+  gateway container instead of hairpinning through console nginx. Re-run
+  `scripts/measure_gateway_overhead.py` against a public install to
+  confirm the TTFB delta.
 - **Qwen / Model Studio catalog**: the keyless picker now lists current chat
   models (`qwen3.8-max` first) instead of `qwen-plus` / `qwen-turbo` /
   `qwen-max` / `qwq-32b-preview`. Live `/models` listing honors a

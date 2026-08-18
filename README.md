@@ -275,6 +275,20 @@ curl -fsSL https://preloop.ai/install/oss | \
 
 `preloop.example.com` must already resolve to the machine, and ports 80/443 must be free. Certificates are only requested for public DNS names — `localhost`, bare IPs and `.local` hosts are left on plain HTTP. Useful knobs: `PRELOOP_TLS_STAGING=1` (rehearse against the Let's Encrypt staging CA), `PRELOOP_SKIP_TLS=1` (keep the https URL but terminate TLS yourself, e.g. behind a load balancer), `PRELOOP_SKIP_SMTP=1` (never prompt for email).
 
+On a public TLS install, `/openai/`, `/anthropic/`, and `/gemini/` go from the edge proxy straight to the gateway. To measure the hop your agents actually see:
+
+```bash
+export PRELOOP_DISABLE_TELEMETRY=true
+export PRELOOP_BASE_URL=https://preloop.example.com
+export PRELOOP_API_KEY=...          # a gateway-capable API key
+export PRELOOP_MODEL=...            # the alias the gateway expects
+# optional same-model pair (bypass Preloop):
+# export DIRECT_BASE_URL=... DIRECT_API_KEY=... DIRECT_MODEL=...
+python3 scripts/measure_gateway_overhead.py --n 30 --json /tmp/gateway-overhead.json
+```
+
+The script is stdlib only. It prints p50/p95 time-to-first-SSE-byte and time-to-stream-close for the gateway path, and the delta when `DIRECT_*` is set.
+
 **Email is not optional in practice**: approval requests, invitations and password resets are delivered by email, so an instance without SMTP cannot notify approvers. Everything the installer writes lives in `~/.preloop-oss/.env` — edit it and run `docker compose up -d` to change any setting later.
 
 **Passkeys (WebAuthn)**: passkey sign-in is enabled by default; set `PASSKEYS_ENABLED=false` to turn it off. Behind a proxy or on a non-standard domain setup, pin the relying party and origin explicitly with `WEBAUTHN_RP_ID` (the registrable domain, e.g. `preloop.example.com`) and `WEBAUTHN_ORIGIN` (e.g. `https://preloop.example.com`); by default both are derived from the request. `WEBAUTHN_CHALLENGE_RATE_LIMIT` (default `30`) caps challenge requests per IP per minute.

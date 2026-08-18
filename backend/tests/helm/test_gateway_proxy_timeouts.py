@@ -115,6 +115,26 @@ def _read_nginx_config(path: Path, is_configmap: bool) -> str:
     return _nginx_config_from_configmap(text) if is_configmap else text
 
 
+@pytest.mark.parametrize("location", GATEWAY_LOCATIONS)
+def test_install_oss_tls_proxy_sends_gateway_routes_direct(location: str) -> None:
+    """The OSS TLS edge proxy must not hairpin /openai through the console.
+
+    A 2026-08-18 co-located bench showed ~70ms extra TTFB when public nginx
+    sent every path to console nginx, which then proxied to the gateway.
+    Helm and the console nginx template already skip that hop; the installer
+    TLS overlay must match.
+    """
+    text = (REPO_ROOT / "scripts" / "install-oss.sh").read_text()
+    marker = f"location {location} {{"
+    assert marker in text, f"install-oss.sh missing `{marker}`"
+    body = _location_body(text, location)
+    assert "proxy_pass http://gateway:8000;" in body
+    assert re.search(r"^\s*proxy_buffering\s+off\s*;", body, re.MULTILINE)
+    assert _directive_seconds(body, "proxy_read_timeout") >= (
+        MIN_STREAMING_TIMEOUT_SECONDS
+    )
+
+
 @pytest.mark.parametrize("config_path,is_configmap", _gateway_nginx_configs())
 @pytest.mark.parametrize("location", GATEWAY_LOCATIONS)
 def test_gateway_location_survives_a_slow_first_token(
