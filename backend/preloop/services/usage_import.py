@@ -31,7 +31,7 @@ from sqlalchemy.orm import Session
 
 from preloop.models.crud import crud_api_usage, crud_managed_agent
 from preloop.models.models.managed_agent import ManagedAgent
-from preloop.schemas.usage_import import UsageImportEvent
+from preloop.schemas.usage_import import UsageImportEvent, UsageIngestRecord
 
 logger = logging.getLogger(__name__)
 
@@ -219,6 +219,91 @@ def ingest_events(
             imported += 1
     db.commit()
     return imported, skipped
+
+
+def push_record_fingerprint(*, source: str, external_id: str) -> str:
+    """Compute the dedupe fingerprint for one pushed usage record.
+
+    Pushed records are identified by (account, source, external_id): the
+    caller supplies a stable source-side id, so a harness retrying a batch
+    after a network timeout cannot double-count spend. The ``ingest|``
+    prefix keeps this namespace disjoint from the content-hash fingerprints
+    of the CSV/JSON import path, which share the same unique index.
+    """
+    payload = f"ingest|{source}|{external_id}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def ingest_push_records(
+    db: Session,
+    *,
+    account_id: str,
+    user_id: Optional[str],
+    agent: ManagedAgent,
+    records: List[UsageIngestRecord],
+    source: str,
+) -> List[bool]:
+    """Write pushed usage records into the cost ledger, deduplicated.
+
+    Reuses the imported-usage normalization chokepoint
+    (:meth:`~preloop.models.crud.api_usage.CRUDApiUsage.log_imported_usage_event`):
+    rows land as ``action_type='imported_usage'`` / ``usage_source='imported'``,
+    ``total_tokens`` derives from input+output only, and cache-read tokens
+    stay in their own column — never summed into totals or charged spend.
+
+    Args:
+        db: Database session.
+        account_id: Owning account id.
+        user_id: Pushing user's id, for audit.
+        agent: Managed agent the records are attributed to.
+        records: Pushed usage records.
+        source: Origin label (e.g. ``cursor``); scopes the dedupe key.
+
+    Returns:
+        Per-record flags, ``True`` when the record was skipped as a
+        duplicate of (source, external_id). Committed once at the end.
+    """
+    deduplicated: List[bool] = []
+    for record in records:
+        timestamp = record.timestamp
+        if timestamp.tzinfo is not None:
+            timestamp = timestamp.astimezone(timezone.utc).replace(tzinfo=None)
+        meta: Dict[str, Any] = {
+            "managed_agent_id": str(agent.id),
+            "external_id": record.external_id,
+        }
+        if record.conversation_id:
+            meta["conversation_id"] = record.conversation_id
+        if record.parent_conversation_id:
+            meta["parent_conversation_id"] = record.parent_conversation_id
+        if record.metadata:
+            for key, value in record.metadata.items():
+                meta.setdefault(key, value)
+        row = crud_api_usage.log_imported_usage_event(
+            db,
+            account_id=account_id,
+            user_id=user_id,
+            timestamp=timestamp,
+            model_alias=record.model,
+            source=source,
+            prompt_tokens=record.input_tokens,
+            completion_tokens=record.output_tokens,
+            cache_read_tokens=record.cache_read_tokens,
+            cost_usd=(
+                float(record.charged_cost) if record.charged_cost is not None else None
+            ),
+            runtime_principal_type=agent.session_source_type,
+            runtime_principal_id=agent.session_source_id,
+            runtime_principal_name=agent.display_name,
+            import_fingerprint=push_record_fingerprint(
+                source=source, external_id=record.external_id
+            ),
+            meta_data=meta,
+            commit=False,
+        )
+        deduplicated.append(row is None)
+    db.commit()
+    return deduplicated
 
 
 # ---------------------------------------------------------------------------

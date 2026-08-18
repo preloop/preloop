@@ -6330,6 +6330,52 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/usage/ingest:
+    post:
+      tags:
+      - Usage Import
+      - Usage Import
+      summary: Ingest Usage Records
+      description: 'Push a batch of external usage records into the cost ledger.
+
+
+        The continuous-push evolution of ``POST /usage/import``: a harness
+
+        posts sanitized spend records as they occur instead of batch CSV.
+
+        Each record is identified by (source, external_id) per account, so
+
+        replaying a batch — e.g. a retry after a network timeout — returns
+
+        200 with the replayed records flagged ``deduplicated`` and never
+
+        double-counts spend. Records carry ``conversation_id`` /
+
+        ``parent_conversation_id`` so subagent workers billed on separate
+
+        conversations can be rolled up under their parent thread.'
+      operationId: ingest_usage_records_api_v1_usage_ingest_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UsageIngestRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageIngestResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
   /api/v1/usage/import/csv:
     post:
       tags:
@@ -18805,6 +18851,174 @@ components:
       type: object
       title: UsageImportResponse
       description: Result of an ingest request.
+    UsageIngestRecord:
+      properties:
+        external_id:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: External Id
+          description: Source-side record/turn id; dedupe key with `source`.
+        conversation_id:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Conversation Id
+        parent_conversation_id:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Parent Conversation Id
+          description: Conversation this record's conversation was spawned from (e.g.
+            a subagent worker's parent thread), for cost rollup.
+        timestamp:
+          type: string
+          format: date-time
+          title: Timestamp
+        model:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Model
+        charged_cost:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Charged Cost
+          description: Amount the source vendor charged, in USD. The billing truth;
+            never derived from tokens.
+        input_tokens:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Input Tokens
+        output_tokens:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Output Tokens
+        cache_read_tokens:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Cache Read Tokens
+          description: Cache-read tokens, reported distinctly; never summed into charged
+            spend or total tokens.
+        metadata:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Metadata
+      type: object
+      required:
+      - external_id
+      - timestamp
+      - model
+      title: UsageIngestRecord
+      description: 'One usage record pushed continuously by an external harness.
+
+
+        Unlike ``UsageImportEvent`` (batch CSV/JSON import, content-hash
+
+        dedupe), a pushed record carries a caller-supplied ``external_id`` so
+
+        replays after network timeouts are idempotent, plus conversation ids so
+
+        subagent workers billed on separate conversations can be rolled up
+
+        under their parent thread in Cost analytics.'
+    UsageIngestRecordResult:
+      properties:
+        external_id:
+          type: string
+          title: External Id
+        deduplicated:
+          type: boolean
+          title: Deduplicated
+          default: false
+      type: object
+      required:
+      - external_id
+      title: UsageIngestRecordResult
+      description: Per-record outcome of a push-ingest request.
+    UsageIngestRequest:
+      properties:
+        records:
+          items:
+            $ref: '#/components/schemas/UsageIngestRecord'
+          type: array
+          maxItems: 1000
+          minItems: 1
+          title: Records
+        agent_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Agent Id
+          description: Managed agent to attribute the records to. When omitted, the
+            account's single managed agent whose kind matches `source` is used if
+            exactly resolvable.
+        source:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Source
+          description: Origin label stored on each row (e.g. 'cursor').
+      type: object
+      required:
+      - records
+      - source
+      title: UsageIngestRequest
+      description: Batch of pushed usage records to ingest.
+    UsageIngestResponse:
+      properties:
+        source:
+          type: string
+          title: Source
+        agent_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Agent Id
+        agent_display_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Display Name
+        accepted:
+          type: integer
+          title: Accepted
+          default: 0
+        deduplicated:
+          type: integer
+          title: Deduplicated
+          default: 0
+        results:
+          items:
+            $ref: '#/components/schemas/UsageIngestRecordResult'
+          type: array
+          title: Results
+      type: object
+      required:
+      - source
+      title: UsageIngestResponse
+      description: 'Result of a push-ingest request.
+
+
+        Replays return 200 with the replayed records flagged
+
+        ``deduplicated`` — spend is never double-counted.'
     ValidationError:
       properties:
         loc:

@@ -26,11 +26,15 @@ from preloop.schemas.usage_import import (
     UsageImportCsvResponse,
     UsageImportRequest,
     UsageImportResponse,
+    UsageIngestRecordResult,
+    UsageIngestRequest,
+    UsageIngestResponse,
 )
 from preloop.services.usage_import import (
     MAX_CSV_BYTES,
     UsageImportError,
     ingest_events,
+    ingest_push_records,
     parse_cursor_usage_csv,
     resolve_target_agent,
 )
@@ -97,6 +101,68 @@ def import_usage_events(
         agent_id=UUID(str(agent.id)),
         agent_display_name=agent.display_name,
         source=payload.source,
+    )
+
+
+@router.post("/ingest", response_model=UsageIngestResponse)
+@require_permission("import_usage")
+def ingest_usage_records(
+    payload: UsageIngestRequest,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_active_user),
+) -> UsageIngestResponse:
+    """Push a batch of external usage records into the cost ledger.
+
+    The continuous-push evolution of ``POST /usage/import``: a harness
+    posts sanitized spend records as they occur instead of batch CSV.
+    Each record is identified by (source, external_id) per account, so
+    replaying a batch — e.g. a retry after a network timeout — returns
+    200 with the replayed records flagged ``deduplicated`` and never
+    double-counts spend. Records carry ``conversation_id`` /
+    ``parent_conversation_id`` so subagent workers billed on separate
+    conversations can be rolled up under their parent thread.
+    """
+    get_account_or_404(db, current_user)
+    try:
+        agent = resolve_target_agent(
+            db,
+            account_id=str(current_user.account_id),
+            agent_id=str(payload.agent_id) if payload.agent_id else None,
+            default_agent_kind=payload.source,
+        )
+        flags = ingest_push_records(
+            db,
+            account_id=str(current_user.account_id),
+            user_id=str(current_user.id),
+            agent=agent,
+            records=payload.records,
+            source=payload.source,
+        )
+    except UsageImportError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    results = [
+        UsageIngestRecordResult(
+            external_id=record.external_id, deduplicated=deduplicated
+        )
+        for record, deduplicated in zip(payload.records, flags, strict=True)
+    ]
+    accepted = sum(1 for flag in flags if not flag)
+    logger.info(
+        "Ingested %d usage records (%d deduplicated) for agent %s "
+        "(source=%s, account=%s)",
+        accepted,
+        len(flags) - accepted,
+        agent.id,
+        payload.source,
+        current_user.account_id,
+    )
+    return UsageIngestResponse(
+        source=payload.source,
+        agent_id=UUID(str(agent.id)),
+        agent_display_name=agent.display_name,
+        accepted=accepted,
+        deduplicated=len(flags) - accepted,
+        results=results,
     )
 
 
