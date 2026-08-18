@@ -37,11 +37,9 @@ import logging
 import os
 import sys
 
-from preloop.models.crud.account import CRUDAccount
 from preloop.models.crud.ai_model import ai_model as crud_ai_model
 from preloop.models.crud.user import CRUDUser
 from preloop.models.db.session import get_db_session
-from preloop.models.models.account import Account
 from preloop.models.models.user import User
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -62,9 +60,9 @@ def _resolve_account_id(db) -> str:
     The credential-mint endpoint anchors the agent to the same account. So the
     seeded model must live under the SAME account the admin login resolves to.
 
-    Prefer the ``User`` row's ``account_id`` (matches the login principal); fall
-    back to the ``Account`` looked up by email for INIT_TEST_DATA setups where
-    the admin is provisioned as an Account.
+    Prefer the ``User`` row's ``account_id`` (matches the login principal).
+    Email and username live on ``User`` now; ``CRUDAccount`` no longer
+    exposes ``get_by_email``.
 
     Raises:
         RuntimeError: If no admin principal can be found.
@@ -75,11 +73,6 @@ def _resolve_account_id(db) -> str:
     )
     if user is not None and getattr(user, "account_id", None):
         return str(user.account_id)
-
-    crud_account = CRUDAccount(Account)
-    account = crud_account.get_by_email(db, email=ADMIN_EMAIL)
-    if account is not None:
-        return str(account.id)
 
     raise RuntimeError(
         f"No admin principal found (username={ADMIN_USERNAME!r}, "

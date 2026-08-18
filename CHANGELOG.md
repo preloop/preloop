@@ -133,6 +133,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **GitLab CI against MCP Python SDK v2 and CLI telemetry**: integration
+  jobs now pin `mcp>=1.0.0,<2` (`pip install mcp` was pulling v2, which
+  removed `streamablehttp_client`). CLI unit tests disable adoption
+  telemetry so `preloop login --token` does not POST `/api/v1/events/batch`
+  at hermetic httptest servers. The frontend e2e seeder looks up the admin
+  account through ``User`` CRUD; ``CRUDAccount.get_by_email`` is gone.
+
 - **Unpriced-model admin alert on accounted $0 and empty completions**:
   when OpenRouter usage accounting was requested, an explicit `usage.cost`
   of `0` is now recorded as provider $0 (`cost_source=provider`) instead of

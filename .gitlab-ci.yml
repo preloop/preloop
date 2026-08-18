@@ -432,6 +432,9 @@ test:unit:cli:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   variables:
     CGO_ENABLED: "1"
+    # Match GitHub CLI CI and EE GitLab. Login tests POST events/batch
+    # unless telemetry is off.
+    PRELOOP_DISABLE_TELEMETRY: "true"
 
 # Install script + e2e-rig pure-python logic. The installer's shell helpers
 # (architecture detection, the already-signed-in check) and the rig helpers
@@ -791,7 +794,7 @@ test:integration:ui:
   extends: .test:integration:template
   image: python:3.12-alpine
   before_script:
-    - pip install pytest httpx certifi dotenv mcp
+    - pip install pytest httpx certifi dotenv "mcp>=1.0.0,<2"
     - cd backend
 
 test:integration:api:github:
@@ -812,7 +815,7 @@ test:integration:api:jira:
 test:integration:api:mcp:
   extends: .test:integration:api:template
   before_script:
-    - pip install pytest pytest-asyncio httpx certifi dotenv mcp
+    - pip install pytest pytest-asyncio httpx certifi dotenv "mcp>=1.0.0,<2"
     - cd backend
   script:
     - pytest --confcutdir=tests/integration tests/integration/test_mcp.py -v -s
@@ -820,7 +823,7 @@ test:integration:api:mcp:
 test:integration:api:hermes:
   extends: .test:integration:api:template
   before_script:
-    - pip install pytest pytest-asyncio httpx certifi dotenv mcp
+    - pip install pytest pytest-asyncio httpx certifi dotenv "mcp>=1.0.0,<2"
     - cd backend
   script:
     - pytest --confcutdir=tests/integration tests/integration/test_hermes_onboarding.py -v -s
