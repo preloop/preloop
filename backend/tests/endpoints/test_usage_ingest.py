@@ -78,8 +78,8 @@ class TestIngestRecords:
         assert body["agent_id"] == str(agent.id)
         assert body["source"] == "cursor"
         assert body["results"] == [
-            {"external_id": "turn-1", "deduplicated": False},
-            {"external_id": "turn-2", "deduplicated": False},
+            {"external_id": "turn-1", "deduplicated": False, "conflict": False},
+            {"external_id": "turn-2", "deduplicated": False, "conflict": False},
         ]
 
         rows = (
@@ -91,8 +91,10 @@ class TestIngestRecords:
         by_ext = {row.meta_data["external_id"]: row for row in rows}
         worker = by_ext["turn-2"]
         assert worker.usage_source == "imported"
-        assert worker.meta_data["conversation_id"] == "conv-w1"
-        assert worker.meta_data["parent_conversation_id"] == "conv-parent"
+        assert worker.conversation_id == "conv-w1"
+        assert worker.parent_conversation_id == "conv-parent"
+        assert worker.cost_basis == "estimated"
+        assert worker.meta_data["event_type"] == "usage"
 
     def test_replay_returns_200_with_deduplicated_flag(
         self, client, db_session, test_user
@@ -111,7 +113,10 @@ class TestIngestRecords:
         body = second.json()
         assert body["accepted"] == 0
         assert body["deduplicated"] == 1
-        assert body["results"] == [{"external_id": "turn-1", "deduplicated": True}]
+        assert body["conflicts"] == 0
+        assert body["results"] == [
+            {"external_id": "turn-1", "deduplicated": True, "conflict": False}
+        ]
 
         total_cost = (
             db_session.query(func.sum(ApiUsage.estimated_cost))
@@ -238,14 +243,13 @@ class TestIngestRecords:
         assert client.post(INGEST_URL, json=_payload(records)).json()["accepted"] == 4
 
         thread = func.coalesce(
-            ApiUsage.meta_data["parent_conversation_id"].astext,
-            ApiUsage.meta_data["conversation_id"].astext,
+            ApiUsage.parent_conversation_id, ApiUsage.conversation_id
         )
         rollup = (
             db_session.query(
                 thread.label("thread"),
                 func.sum(ApiUsage.estimated_cost).label("charged"),
-                func.count(distinct(ApiUsage.meta_data["conversation_id"].astext))
+                func.count(distinct(ApiUsage.conversation_id))
                 .cast(Integer)
                 .label("worker_count"),
             )
@@ -324,3 +328,183 @@ class TestIngestRecords:
 
         assert response.status_code == 422
         assert "metadata" in response.text
+
+    def test_conflicting_replay_is_flagged_first_write_wins(
+        self, client, db_session, test_user
+    ):
+        """A replay with a different payload gets conflict=true, not a 409.
+
+        Shippers must be retry-dumb: the batch still returns 200 with the
+        record deduplicated, the stored row is unchanged (first write
+        wins), and the per-item conflict marker plus the top-level count
+        tell the operator the source re-emitted the id with new data.
+        """
+        _make_cursor_agent(db_session, test_user.account_id)
+        db_session.commit()
+
+        first = client.post(INGEST_URL, json=_payload([_record(external_id="turn-1")]))
+        conflicting = client.post(
+            INGEST_URL,
+            json=_payload([_record(external_id="turn-1", charged_cost="9.99")]),
+        )
+
+        assert first.status_code == 200
+        assert conflicting.status_code == 200
+        body = conflicting.json()
+        assert body["accepted"] == 0
+        assert body["deduplicated"] == 1
+        assert body["conflicts"] == 1
+        assert body["results"] == [
+            {"external_id": "turn-1", "deduplicated": True, "conflict": True}
+        ]
+
+        # First write wins: the stored charge is the original one.
+        row = (
+            db_session.query(ApiUsage)
+            .filter(ApiUsage.action_type == "imported_usage")
+            .one()
+        )
+        assert abs(row.estimated_cost - 0.42) < 1e-9
+
+    def test_lifecycle_events_count_fanout_without_spend(
+        self, client, db_session, test_user
+    ):
+        """Hook-shaped lifecycle events land cost-free and count fan-out."""
+        _make_cursor_agent(db_session, test_user.account_id)
+        db_session.commit()
+
+        base = {
+            "timestamp": (datetime.now(UTC) - timedelta(minutes=5)).isoformat(),
+            "parent_conversation_id": "conv-parent",
+        }
+        records = [
+            {
+                **base,
+                "external_id": f"gen-start-{i}",
+                "event_type": "subagent_start",
+                "conversation_id": f"conv-worker-{i}",
+            }
+            for i in range(3)
+        ]
+        records.append(
+            {
+                **base,
+                "external_id": "gen-compaction",
+                "event_type": "compaction",
+                "conversation_id": "conv-parent",
+            }
+        )
+        response = client.post(INGEST_URL, json=_payload(records))
+
+        assert response.status_code == 200
+        assert response.json()["accepted"] == 4
+
+        rows = (
+            db_session.query(ApiUsage)
+            .filter(ApiUsage.action_type == "imported_usage")
+            .all()
+        )
+        assert all(row.estimated_cost is None for row in rows)
+        assert all(row.model_alias is None for row in rows)
+
+        # Near-real-time fan-out: subagent_start count per parent thread.
+        fanout = (
+            db_session.query(func.count(ApiUsage.id))
+            .filter(
+                ApiUsage.account_id == test_user.account_id,
+                ApiUsage.action_type == "imported_usage",
+                ApiUsage.parent_conversation_id == "conv-parent",
+                ApiUsage.meta_data["event_type"].astext == "subagent_start",
+            )
+            .scalar()
+        )
+        assert fanout == 3
+
+        # Lifecycle events never contribute charged spend.
+        summary = client.get(COST_SUMMARY_URL).json()
+        imported = summary["imported_usage"]
+        assert imported["imported_cost"] == 0
+        assert imported["event_count"] == 4
+
+    def test_usage_event_requires_model(self, client, db_session, test_user):
+        """event_type='usage' (the default) still requires a model name."""
+        _make_cursor_agent(db_session, test_user.account_id)
+        db_session.commit()
+
+        response = client.post(INGEST_URL, json=_payload([_record(model=None)]))
+
+        assert response.status_code == 422
+        assert "model" in response.text
+
+    def test_growth_tripwire_counts_are_stored(self, client, db_session, test_user):
+        """message_count / tool_call_count land in first-class columns."""
+        _make_cursor_agent(db_session, test_user.account_id)
+        db_session.commit()
+
+        records = [_record(external_id="turn-1", message_count=41, tool_call_count=7)]
+        assert client.post(INGEST_URL, json=_payload(records)).status_code == 200
+
+        row = (
+            db_session.query(ApiUsage)
+            .filter(ApiUsage.action_type == "imported_usage")
+            .one()
+        )
+        assert row.message_count == 41
+        assert row.tool_call_count == 7
+
+    def test_reconciled_supersedes_estimated_in_cost_summary(
+        self, client, db_session, test_user
+    ):
+        """Reconciled billing rows replace estimates for the same scope.
+
+        conv-1 has two hook-derived estimates ($2.00 + $0.30) and one
+        reconciled billing-export record ($1.80): only the reconciled
+        dollars count. conv-2 has an un-reconciled estimate ($0.50): it
+        keeps counting. Estimated and reconciled dollars are never summed
+        for the same conversation; event/token totals still include all
+        rows (billing exports rarely carry tokens).
+        """
+        _make_cursor_agent(db_session, test_user.account_id)
+        db_session.commit()
+
+        records = [
+            _record(
+                external_id="turn-a",
+                conversation_id="conv-1",
+                charged_cost="2.00",
+                input_tokens=1000,
+                output_tokens=200,
+            ),
+            _record(
+                external_id="turn-b",
+                conversation_id="conv-1",
+                charged_cost="0.30",
+                input_tokens=300,
+                output_tokens=100,
+            ),
+            _record(
+                external_id="billing-conv-1",
+                conversation_id="conv-1",
+                charged_cost="1.80",
+                cost_basis="reconciled",
+                input_tokens=None,
+                output_tokens=None,
+                cache_read_tokens=None,
+            ),
+            _record(
+                external_id="turn-c",
+                conversation_id="conv-2",
+                charged_cost="0.50",
+                input_tokens=100,
+                output_tokens=50,
+            ),
+        ]
+        assert client.post(INGEST_URL, json=_payload(records)).json()["accepted"] == 4
+
+        summary = client.get(COST_SUMMARY_URL).json()
+        imported = summary["imported_usage"]
+        # 1.80 (reconciled, conv-1) + 0.50 (estimated, conv-2). NOT 4.60.
+        assert abs(imported["imported_cost"] - 2.30) < 1e-9
+        # Event and token truth stays with all rows.
+        assert imported["event_count"] == 4
+        assert imported["total_tokens"] == 1750

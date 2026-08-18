@@ -135,6 +135,21 @@ class ApiUsage(Base):
     runtime_principal_name: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True
     )
+    # Source-side conversation attribution for imported usage (issue #123
+    # push API): subagent workers billed on separate conversation ids roll
+    # up under parent_conversation_id in Cost analytics.
+    conversation_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    parent_conversation_id: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True
+    )
+    # Growth tripwires reported by the source; never derived from tokens.
+    message_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    tool_call_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # estimated (hook/transcript-derived) | reconciled (billing export).
+    # Reconciled rows supersede estimated rows with the same
+    # (account, provider_name, conversation_id) in imported-cost sums; NULL
+    # (legacy/CSV) rows never participate in supersession.
+    cost_basis: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     meta_data: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     timestamp: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False, index=True
@@ -171,6 +186,10 @@ class ApiUsage(Base):
             "('provider', 'estimated', 'partial', 'imported')",
             name="ck_api_usage_usage_source",
         ),
+        CheckConstraint(
+            "cost_basis IS NULL OR cost_basis IN ('estimated', 'reconciled')",
+            name="ck_api_usage_cost_basis",
+        ),
         Index(
             "ix_api_usage_account_action_ts",
             "account_id",
@@ -203,6 +222,25 @@ class ApiUsage(Base):
             text("(meta_data->>'import_fingerprint')"),
             unique=True,
             postgresql_where=text("action_type = 'imported_usage'"),
+        ),
+        # Worker->parent conversation rollup for imported usage: partial
+        # indexes scoped to imported rows keep the gateway hot path
+        # unaffected while making per-thread aggregation indexable.
+        Index(
+            "ix_api_usage_imported_conversation",
+            "account_id",
+            "conversation_id",
+            postgresql_where=text(
+                "action_type = 'imported_usage' AND conversation_id IS NOT NULL"
+            ),
+        ),
+        Index(
+            "ix_api_usage_imported_parent_conv",
+            "account_id",
+            "parent_conversation_id",
+            postgresql_where=text(
+                "action_type = 'imported_usage' AND parent_conversation_id IS NOT NULL"
+            ),
         ),
     )
 

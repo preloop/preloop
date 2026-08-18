@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -25,6 +25,26 @@ MAX_INGEST_RECORDS_PER_REQUEST = 1000
 
 #: Hard cap on the serialized size of one record's ``metadata`` object.
 MAX_INGEST_METADATA_BYTES = 8 * 1024
+
+#: Hook-shaped lifecycle event types accepted alongside plain usage
+#: records. Lifecycle events may carry zero token/cost data; they exist so
+#: analytics can count fan-out (e.g. ``subagent_start`` per
+#: ``parent_conversation_id``) in near-real-time.
+IngestEventType = Literal[
+    "session_start",
+    "session_end",
+    "subagent_start",
+    "subagent_stop",
+    "response",
+    "compaction",
+    "usage",
+]
+
+#: How the record's charged_cost was determined. Reconciled records
+#: (billing export) supersede estimated records (hook/transcript-derived)
+#: with the same (source, conversation_id) scope in cost summaries — the
+#: two are never summed together.
+IngestCostBasis = Literal["estimated", "reconciled"]
 
 
 class UsageImportEvent(BaseModel):
@@ -149,13 +169,35 @@ class UsageIngestRecord(BaseModel):
         ),
     )
     timestamp: datetime
-    model: str = Field(..., min_length=1, max_length=255)
+    event_type: IngestEventType = Field(
+        default="usage",
+        description=(
+            "Hook-shaped lifecycle marker. 'usage' (default) requires a "
+            "model and at least one measurement; lifecycle events "
+            "(session/subagent start/stop, response, compaction) may carry "
+            "zero token/cost data and no model."
+        ),
+    )
+    model: Optional[str] = Field(
+        default=None,
+        max_length=255,
+        description="Source-reported model name. Required for event_type='usage'.",
+    )
     charged_cost: Optional[Decimal] = Field(
         default=None,
         ge=0,
         description=(
             "Amount the source vendor charged, in USD. The billing truth; "
             "never derived from tokens."
+        ),
+    )
+    cost_basis: IngestCostBasis = Field(
+        default="estimated",
+        description=(
+            "'estimated' (hook/transcript-derived) or 'reconciled' (billing "
+            "export). Reconciled records supersede estimated records with "
+            "the same (source, conversation_id) in cost summaries; the two "
+            "are never summed together."
         ),
     )
     input_tokens: Optional[int] = Field(default=None, ge=0)
@@ -167,6 +209,16 @@ class UsageIngestRecord(BaseModel):
             "Cache-read tokens, reported distinctly; never summed into "
             "charged spend or total tokens."
         ),
+    )
+    message_count: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Messages in the conversation so far (growth tripwire).",
+    )
+    tool_call_count: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Tool calls in the conversation so far (growth tripwire).",
     )
     metadata: Optional[Dict[str, Any]] = None
 
@@ -203,9 +255,26 @@ class UsageIngestRecord(BaseModel):
             )
         return value
 
+    @field_validator("model")
+    @classmethod
+    def strip_model(cls, value: Optional[str]) -> Optional[str]:
+        """Normalize the model name; empty strings collapse to None."""
+        if value is None:
+            return None
+        return value.strip() or None
+
     @model_validator(mode="after")
-    def validate_measurement_present(self) -> "UsageIngestRecord":
-        """Require at least one measurable quantity (tokens or money)."""
+    def validate_usage_event_shape(self) -> "UsageIngestRecord":
+        """Require model + a measurable quantity for plain usage records.
+
+        Lifecycle events (``event_type != 'usage'``) may carry zero
+        token/cost data and no model — they exist so analytics can count
+        fan-out in near-real-time.
+        """
+        if self.event_type != "usage":
+            return self
+        if self.model is None:
+            raise ValueError("Usage records must carry a model name")
         has_measurement = any(
             value is not None
             for value in (
@@ -256,13 +325,23 @@ class UsageIngestRecordResult(BaseModel):
 
     external_id: str
     deduplicated: bool = False
+    conflict: bool = Field(
+        default=False,
+        description=(
+            "True when a deduplicated replay carried a DIFFERENT payload "
+            "than the stored record (first write wins; the batch still "
+            "returns 200 so shippers can retry blindly)."
+        ),
+    )
 
 
 class UsageIngestResponse(BaseModel):
     """Result of a push-ingest request.
 
     Replays return 200 with the replayed records flagged
-    ``deduplicated`` — spend is never double-counted.
+    ``deduplicated`` — spend is never double-counted. Replays whose
+    payload differs from the stored record are additionally flagged
+    ``conflict`` (first write wins; never a 409).
     """
 
     source: str
@@ -270,6 +349,7 @@ class UsageIngestResponse(BaseModel):
     agent_display_name: Optional[str] = None
     accepted: int = 0
     deduplicated: int = 0
+    conflicts: int = 0
     results: List[UsageIngestRecordResult] = Field(default_factory=list)
 
 

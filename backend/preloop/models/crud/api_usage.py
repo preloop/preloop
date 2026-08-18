@@ -5,9 +5,9 @@ import logging
 from types import SimpleNamespace
 import uuid
 from typing import Any, Dict, List, Optional, Sequence, Union
-from sqlalchemy import Float, String, and_, case, cast, func, or_
+from sqlalchemy import Float, String, and_, case, cast, func, or_, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from ..models.api_usage import ApiUsage
 from ..models.flow import Flow
@@ -2313,6 +2313,25 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         )
         return exists is not None
 
+    def get_imported_row_by_fingerprint(
+        self, db: Session, *, account_id: str, import_fingerprint: str
+    ) -> Optional[ApiUsage]:
+        """Return the account's imported row with this fingerprint, if any.
+
+        Used by the push-ingest path to flag conflicting replays: the
+        stored row's ``meta_data.ingest_content_hash`` is compared with the
+        incoming record's payload hash (first write wins either way).
+        """
+        return (
+            db.query(ApiUsage)
+            .filter(
+                ApiUsage.account_id == account_id,
+                ApiUsage.action_type == self.IMPORTED_USAGE_ACTION_TYPE,
+                ApiUsage.meta_data["import_fingerprint"].astext == import_fingerprint,
+            )
+            .first()
+        )
+
     def log_imported_usage_event(
         self,
         db: Session,
@@ -2320,7 +2339,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         account_id: str,
         user_id: Optional[str] = None,
         timestamp: datetime,
-        model_alias: str,
+        model_alias: Optional[str],
         source: str,
         prompt_tokens: Optional[int] = None,
         completion_tokens: Optional[int] = None,
@@ -2328,6 +2347,11 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         cache_read_tokens: Optional[int] = None,
         cache_creation_tokens: Optional[int] = None,
         cost_usd: Optional[float] = None,
+        cost_basis: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        parent_conversation_id: Optional[str] = None,
+        message_count: Optional[int] = None,
+        tool_call_count: Optional[int] = None,
         runtime_principal_type: Optional[str] = None,
         runtime_principal_id: Optional[str] = None,
         runtime_principal_name: Optional[str] = None,
@@ -2342,7 +2366,8 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             account_id: Owning account id.
             user_id: Importing user's id, for audit.
             timestamp: When the usage occurred at the source vendor.
-            model_alias: Source-reported model name (e.g. ``composer``).
+            model_alias: Source-reported model name (e.g. ``composer``);
+                NULL for lifecycle events pushed without one.
             source: Origin label (e.g. ``cursor``); stored in
                 ``meta_data.import_source``.
             prompt_tokens: Input tokens reported by the source.
@@ -2353,6 +2378,15 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             cache_creation_tokens: Cache-write tokens reported by the source.
             cost_usd: Amount the source vendor charged, in USD. Stored in
                 ``estimated_cost`` with ``cost_source='imported'``.
+            cost_basis: ``estimated`` or ``reconciled``; reconciled rows
+                supersede estimated rows with the same (account, source,
+                conversation_id) in imported-cost sums. NULL rows never
+                participate in supersession.
+            conversation_id: Source-side conversation the record belongs to.
+            parent_conversation_id: Conversation it was spawned from, for
+                worker->parent rollup.
+            message_count: Conversation message count (growth tripwire).
+            tool_call_count: Conversation tool-call count (growth tripwire).
             runtime_principal_type: Managed-agent principal type attribution.
             runtime_principal_id: Managed-agent principal id attribution.
             runtime_principal_name: Managed-agent display name attribution.
@@ -2401,6 +2435,11 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             estimated_cost=cost_usd,
             currency="USD" if cost_usd is not None else None,
             cost_source="imported" if cost_usd is not None else None,
+            cost_basis=cost_basis,
+            conversation_id=conversation_id,
+            parent_conversation_id=parent_conversation_id,
+            message_count=message_count,
+            tool_call_count=tool_call_count,
             usage_source="imported",
             runtime_principal_type=runtime_principal_type,
             runtime_principal_id=runtime_principal_id,
@@ -2424,6 +2463,42 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             db.refresh(db_obj)
         return db_obj
 
+    def _imported_cost_sum(self):
+        """SUM of imported cost with reconciled-over-estimated precedence.
+
+        A ``cost_basis='reconciled'`` row (billing export) supersedes ALL
+        ``cost_basis='estimated'`` rows (hook/transcript-derived) with the
+        same (account, provider_name, conversation_id): superseded rows
+        contribute $0, so the two bases are never summed for one scope.
+        Supersession deliberately ignores the query time-window — billing
+        exports are coarser-grained than hooks, and window-matching would
+        silently double-count. Rows without a conversation_id or with a
+        NULL cost_basis (legacy/CSV imports) never participate.
+        """
+        reconciled = aliased(ApiUsage)
+        superseded = and_(
+            ApiUsage.cost_basis == "estimated",
+            ApiUsage.conversation_id.isnot(None),
+            select(reconciled.id)
+            .where(
+                reconciled.account_id == ApiUsage.account_id,
+                reconciled.action_type == self.IMPORTED_USAGE_ACTION_TYPE,
+                reconciled.cost_basis == "reconciled",
+                reconciled.provider_name == ApiUsage.provider_name,
+                reconciled.conversation_id == ApiUsage.conversation_id,
+            )
+            .exists(),
+        )
+        return func.coalesce(
+            func.sum(
+                case(
+                    (superseded, 0.0),
+                    else_=func.coalesce(ApiUsage.estimated_cost, 0.0),
+                )
+            ),
+            0.0,
+        )
+
     def get_imported_usage_summary(
         self,
         db: Session,
@@ -2435,6 +2510,9 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         source: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Aggregate imported usage totals for an account in a window.
+
+        ``imported_cost`` applies reconciled-over-estimated precedence (see
+        :meth:`_imported_cost_sum`); event/token totals count all rows.
 
         Args:
             db: Database session.
@@ -2450,9 +2528,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         query = db.query(
             func.count(ApiUsage.id).label("event_count"),
             func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
-            func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
-                "imported_cost"
-            ),
+            self._imported_cost_sum().label("imported_cost"),
         ).filter(
             ApiUsage.action_type == self.IMPORTED_USAGE_ACTION_TYPE,
             ApiUsage.account_id == account_id,
@@ -2483,6 +2559,9 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
     ) -> List[Dict[str, Any]]:
         """Group imported usage by source-reported model.
 
+        ``imported_cost`` applies reconciled-over-estimated precedence (see
+        :meth:`_imported_cost_sum`); event/token totals count all rows.
+
         Args:
             db: Database session.
             account_id: Account whose imported usage is aggregated.
@@ -2501,9 +2580,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             import_source.label("source"),
             func.count(ApiUsage.id).label("request_count"),
             func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
-            func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
-                "imported_cost"
-            ),
+            self._imported_cost_sum().label("imported_cost"),
             func.max(ApiUsage.timestamp).label("last_event_at"),
         ).filter(
             ApiUsage.action_type == self.IMPORTED_USAGE_ACTION_TYPE,
