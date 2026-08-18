@@ -360,7 +360,10 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             account_id: Account scope.
             start: Window start (inclusive).
             end: Window end (exclusive).
-            only_unpriced: Restrict to rows without a stored cost.
+            only_unpriced: Restrict to rows without a resolved cost: NULL
+                ``estimated_cost`` (however tagged) plus rows explicitly
+                tagged ``cost_source='unpriced'`` that carry a stray numeric
+                cost (legacy $0 writes), so those anomalies heal too.
             batch_size: Rows fetched per query.
 
         Yields:
@@ -375,7 +378,12 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 ApiUsage.timestamp < end,
             )
             if only_unpriced:
-                query = query.filter(ApiUsage.estimated_cost.is_(None))
+                query = query.filter(
+                    or_(
+                        ApiUsage.estimated_cost.is_(None),
+                        ApiUsage.cost_source == "unpriced",
+                    )
+                )
             if last_id is not None:
                 query = query.filter(ApiUsage.id > last_id)
             batch = query.order_by(ApiUsage.id).limit(batch_size).all()
@@ -397,9 +405,11 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         """Yield unpriced gateway rows for one provider, keyset-paginated.
 
         Deliberately narrower than :meth:`iter_gateway_rows_for_repricing`:
-        only rows explicitly tagged ``cost_source='unpriced'`` for the given
-        provider are eligible, so a ledger backfill can never touch rows the
-        catalog (or the provider itself) already priced.
+        only rows explicitly tagged ``cost_source='unpriced'`` — plus legacy
+        rows recorded before provenance existed (``cost_source IS NULL`` with
+        a NULL cost, i.e. before the 20260712 accuracy-columns migration) —
+        are eligible for the given provider, so a ledger backfill can never
+        touch rows the catalog (or the provider itself) already priced.
 
         Args:
             db: Database session.
@@ -418,7 +428,13 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 ApiUsage.account_id == account_id,
                 ApiUsage.action_type == "model_gateway",
                 ApiUsage.provider_name == provider_name,
-                ApiUsage.cost_source == "unpriced",
+                or_(
+                    ApiUsage.cost_source == "unpriced",
+                    and_(
+                        ApiUsage.cost_source.is_(None),
+                        ApiUsage.estimated_cost.is_(None),
+                    ),
+                ),
                 ApiUsage.timestamp >= start,
                 ApiUsage.timestamp < end,
             )

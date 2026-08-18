@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import List, Optional
 from uuid import UUID
 
@@ -277,15 +277,75 @@ class RepriceRequest(BaseModel):
 
 
 class RepriceResponse(BaseModel):
-    """Result of a repricing run (or async submission)."""
+    """Result of a repricing run (or async submission).
+
+    The counters are ``None`` — not ``0`` — when the run was dispatched to a
+    background worker (``submitted_async=True``): nothing has been scanned in
+    this request, so reporting zeros would be indistinguishable from "the
+    window really contained no rows" (the exact confusion behind "reprice
+    examined 0 rows" on large windows).
+    """
 
     submitted_async: bool = False
-    rows_examined: int = 0
-    rows_updated: int = 0
-    rows_skipped: int = 0
-    cost_before: float = 0.0
-    cost_after: float = 0.0
+    rows_examined: Optional[int] = None
+    rows_updated: Optional[int] = None
+    rows_skipped: Optional[int] = None
+    cost_before: Optional[float] = None
+    cost_after: Optional[float] = None
     dry_run: bool = False
+
+
+class LedgerBackfillBucket(BaseModel):
+    """One (day x model family) allocation bucket of a ledger backfill."""
+
+    day: date
+    family: str
+    ledger_total: float
+    row_count: int
+    allocated_total: float
+    ledger_models: List[str] = Field(default_factory=list)
+
+
+class LedgerBackfillResidual(BaseModel):
+    """Ledger spend with no eligible usage rows to receive it."""
+
+    day: date
+    family: str
+    amount_usd: float
+
+
+class LedgerBackfillUnmatched(BaseModel):
+    """Unpriced usage rows whose family had no ledger spend that day."""
+
+    day: date
+    family: str
+    row_count: int
+
+
+class LedgerBackfillResponse(BaseModel):
+    """Outcome (or dry-run preview) of a provider daily-ledger backfill.
+
+    ``rows_updated`` is ``None`` on a dry run — nothing was written, which is
+    different from "wrote 0 rows". ``other_residual_usd`` is the export's
+    "Other" bucket inside the window: the provider does not say which models
+    it covers, so that spend is reported but never allocated and the matching
+    rows stay unpriced.
+    """
+
+    dry_run: bool = True
+    provider: str
+    start: date
+    end: date
+    ledger_entries: int = 0
+    eligible_rows: int = 0
+    rows_to_reconcile: int = 0
+    total_allocated: float = 0.0
+    rows_updated: Optional[int] = None
+    other_residual_usd: float = 0.0
+    buckets: List[LedgerBackfillBucket] = Field(default_factory=list)
+    unallocated_ledger: List[LedgerBackfillResidual] = Field(default_factory=list)
+    unmatched_rows: List[LedgerBackfillUnmatched] = Field(default_factory=list)
+    skipped_csv_rows: List[str] = Field(default_factory=list)
 
 
 class CostHealthCheck(BaseModel):

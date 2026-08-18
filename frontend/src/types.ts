@@ -1036,11 +1036,13 @@ export interface CostReconciliationResponse {
 
 export interface RepriceResponse {
   submitted_async: boolean;
-  rows_examined: number;
-  rows_updated: number;
-  rows_skipped: number;
-  cost_before: number;
-  cost_after: number;
+  // Null when submitted_async: nothing was scanned in-request, which is
+  // different from "the window contained 0 rows".
+  rows_examined: number | null;
+  rows_updated: number | null;
+  rows_skipped: number | null;
+  cost_before: number | null;
+  cost_after: number | null;
   dry_run: boolean;
 }
 

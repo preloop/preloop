@@ -12,16 +12,28 @@ Defaults to a DRY RUN: it prints, per day and model family, the ledger
 total, our eligible row count and the allocation sum, plus the per-flow-
 execution cost deltas — and writes nothing until ``--apply`` is passed.
 
-The OpenRouter key is read from the OPENROUTER_ACTIVITY_KEY environment
-variable, never from code or the database. Note the activity endpoint
-requires a management/provisioning key and only serves the last 30
-completed UTC days.
+Two ledger sources:
+
+- API mode (default): the OpenRouter key is read from the
+  OPENROUTER_ACTIVITY_KEY environment variable, never from code or the
+  database. Note the activity endpoint requires a management/provisioning
+  key and only serves the last 30 completed UTC days.
+- CSV mode (``--csv``): an OpenRouter Activity -> Explore daily export
+  (columns ``date__day,model,total_usage``), e.g. provided by the account
+  owner. Needs no API key and has no horizon limit. The export's "Other"
+  bucket names no model, so its spend is reported as a residual and never
+  allocated; matching rows stay unpriced.
 
 Usage:
     OPENROUTER_ACTIVITY_KEY=... python scripts/backfill_openrouter_ledger.py \\
         --account-id <uuid> --start 2026-08-04 --end 2026-08-11
 
-    # After reviewing the dry-run output:
+    # From a provider-side Explore export instead of the API:
+    python scripts/backfill_openrouter_ledger.py \\
+        --account-id <uuid> --start 2026-08-04 --end 2026-08-18 \\
+        --csv /path/to/explore_export.csv
+
+    # After reviewing the dry-run output, add --apply to either form:
     OPENROUTER_ACTIVITY_KEY=... python scripts/backfill_openrouter_ledger.py \\
         --account-id <uuid> --start 2026-08-04 --end 2026-08-11 --apply
 
@@ -46,6 +58,7 @@ from preloop.services.ledger_backfill import (
     apply_ledger_backfill,
     fetch_openrouter_activity,
     load_unpriced_rows,
+    parse_explorer_csv,
     plan_ledger_allocation,
 )
 
@@ -77,25 +90,47 @@ def _parse_day(value: str, label: str) -> date:
     default=False,
     help="Persist the allocation. Without this the run is a dry run.",
 )
-def main(account_id: str, start_str: str, end_str: str, apply_changes: bool) -> None:
+@click.option(
+    "--csv",
+    "csv_path",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help=(
+        "Use an OpenRouter Activity -> Explore daily export "
+        "(date__day,model,total_usage) as the ledger instead of calling the "
+        "activity API. No API key needed and no 30-day horizon: the export "
+        "carries its own history. The 'Other' bucket is reported as an "
+        "unallocatable residual, never distributed."
+    ),
+)
+def main(
+    account_id: str,
+    start_str: str,
+    end_str: str,
+    apply_changes: bool,
+    csv_path: str | None,
+) -> None:
     """Reconcile unpriced OpenRouter usage against the provider's daily ledger."""
     start = _parse_day(start_str, "start")
     end = _parse_day(end_str, "end")
     if end < start:
         raise click.UsageError("--end must not be before --start.")
-    if (end - start).days > 31:
-        raise click.UsageError(
-            "Window exceeds 31 days; the activity ledger only serves the "
-            "last 30 completed UTC days."
-        )
     today_utc = datetime.now(timezone.utc).date()
-    oldest_served = today_utc - timedelta(days=30)
-    if start < oldest_served:
-        raise click.UsageError(
-            f"--start {start.isoformat()} is older than the activity "
-            f"ledger's horizon ({oldest_served.isoformat()}: the API serves "
-            "only the last 30 completed UTC days). Narrow the window."
-        )
+    if csv_path is None:
+        # API mode only: the activity endpoint serves a rolling 30-day window.
+        if (end - start).days > 31:
+            raise click.UsageError(
+                "Window exceeds 31 days; the activity ledger only serves the "
+                "last 30 completed UTC days. Use --csv for older history."
+            )
+        oldest_served = today_utc - timedelta(days=30)
+        if start < oldest_served:
+            raise click.UsageError(
+                f"--start {start.isoformat()} is older than the activity "
+                f"ledger's horizon ({oldest_served.isoformat()}: the API serves "
+                "only the last 30 completed UTC days). Narrow the window or "
+                "pass an Explore export via --csv."
+            )
     if end >= today_utc:
         click.echo(
             f"Note: {end.isoformat()} is not a completed UTC day yet; its "
@@ -103,17 +138,44 @@ def main(account_id: str, start_str: str, end_str: str, apply_changes: bool) -> 
             "safe to re-run later (only still-unpriced rows are touched)."
         )
 
-    api_key = os.environ.get("OPENROUTER_ACTIVITY_KEY", "").strip()
-    if not api_key:
-        raise click.UsageError(
-            "Set OPENROUTER_ACTIVITY_KEY to the OpenRouter key to query the "
-            "activity ledger with (a management/provisioning key)."
+    if csv_path is not None:
+        with open(csv_path, encoding="utf-8-sig") as handle:
+            explorer = parse_explorer_csv(handle.read())
+        for reason in explorer.skipped:
+            click.echo(f"Skipped CSV row: {reason}")
+        in_window = [e for e in explorer.entries if start <= e.day <= end]
+        outside = len(explorer.entries) - len(in_window)
+        if outside:
+            click.echo(
+                f"Ignoring {outside} ledger row(s) outside "
+                f"{start.isoformat()}..{end.isoformat()}."
+            )
+        other_in_window = sum(
+            usd for day, usd in explorer.other_by_day if start <= day <= end
         )
+        if other_in_window > 0:
+            click.echo(
+                f"'Other' bucket in window: ${other_in_window:.6f} — the export "
+                "does not say which models this covers, so it is left "
+                "unallocated (matching rows stay unpriced)."
+            )
+        ledger_entries = in_window
+        click.echo(f"Ledger rows from CSV: {len(ledger_entries)}")
+    else:
+        api_key = os.environ.get("OPENROUTER_ACTIVITY_KEY", "").strip()
+        if not api_key:
+            raise click.UsageError(
+                "Set OPENROUTER_ACTIVITY_KEY to the OpenRouter key to query "
+                "the activity ledger with (a management/provisioning key), or "
+                "pass an Explore export via --csv."
+            )
 
-    days = [start + timedelta(days=offset) for offset in range((end - start).days + 1)]
-    click.echo(f"Fetching OpenRouter activity for {len(days)} day(s)…")
-    ledger_entries = fetch_openrouter_activity(api_key, days)
-    click.echo(f"Ledger rows: {len(ledger_entries)}")
+        days = [
+            start + timedelta(days=offset) for offset in range((end - start).days + 1)
+        ]
+        click.echo(f"Fetching OpenRouter activity for {len(days)} day(s)…")
+        ledger_entries = fetch_openrouter_activity(api_key, days)
+        click.echo(f"Ledger rows: {len(ledger_entries)}")
 
     db = next(get_db_session())
     try:

@@ -6292,6 +6292,101 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/cost/reprice:
+    post:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: Reprice Account Gateway Usage
+      description: 'Re-price historical gateway usage synchronously and report real
+        counts.
+
+
+        Unlike the billing plugin''s ``/billing/cost/reprice`` (which dispatches
+
+        windows over 7 days to a background worker and acknowledges with empty
+
+        counters), this endpoint always scans in-request — keyset-paginated, so
+
+        an operator backfilling weeks of history gets actual examined/updated
+
+        numbers instead of an ambiguous async ack. Budget-spend buckets are never
+
+        rewritten; provider-side actuals (``provider``/``reconciled``/
+
+        ``imported``) and ``subscription`` rows are never touched.'
+      operationId: reprice_account_gateway_usage_api_v1_cost_reprice_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RepriceRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RepriceResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
+  /api/v1/cost/ledger-backfill/csv:
+    post:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: Backfill From Provider Ledger Csv
+      description: 'Reconcile unpriced gateway rows against a provider daily-usage
+        export.
+
+
+        Distributes each (day x model) ledger total across this account''s
+
+        still-unpriced gateway rows for that day — pro-rata by tokens, equal
+
+        split when the bucket recorded no tokens — and tags them
+
+        ``cost_source=''reconciled''`` so provider actuals never mix with catalog
+
+        estimates. Only rows without a resolved cost are ever touched, which
+
+        also makes re-running the same export idempotent. The export''s "Other"
+
+        bucket is reported as an unallocatable residual, never distributed.
+
+
+        Defaults to a dry run that returns the full allocation plan; pass
+
+        ``apply=true`` to persist it.'
+      operationId: backfill_from_provider_ledger_csv_api_v1_cost_ledger_backfill_csv_post
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_backfill_from_provider_ledger_csv_api_v1_cost_ledger_backfill_csv_post'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LedgerBackfillResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
   /api/v1/usage/import:
     post:
       tags:
@@ -11071,6 +11166,41 @@ components:
       - by_status
       title: BatchRollup
       description: Aggregate metrics over the executions of one batch.
+    Body_backfill_from_provider_ledger_csv_api_v1_cost_ledger_backfill_csv_post:
+      properties:
+        file:
+          type: string
+          contentMediaType: application/octet-stream
+          title: File
+          description: 'OpenRouter Activity -> Explore daily export (columns: date__day,
+            model, total_usage)'
+        provider:
+          type: string
+          title: Provider
+          default: openrouter
+        start:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Start
+          description: 'First UTC day (inclusive); default: CSV min.'
+        end:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: End
+          description: 'Last UTC day (inclusive); default: CSV max.'
+        apply:
+          type: boolean
+          title: Apply
+          description: Persist the allocation. Default is a dry run.
+          default: false
+      type: object
+      required:
+      - file
+      title: Body_backfill_from_provider_ledger_csv_api_v1_cost_ledger_backfill_csv_post
     Body_diff_policy_api_v1_policies_diff_post:
       properties:
         file:
@@ -13623,6 +13753,156 @@ components:
       type: object
       title: IssueUpdate
       description: Model for updating an issue.
+    LedgerBackfillBucket:
+      properties:
+        day:
+          type: string
+          format: date
+          title: Day
+        family:
+          type: string
+          title: Family
+        ledger_total:
+          type: number
+          title: Ledger Total
+        row_count:
+          type: integer
+          title: Row Count
+        allocated_total:
+          type: number
+          title: Allocated Total
+        ledger_models:
+          items:
+            type: string
+          type: array
+          title: Ledger Models
+      type: object
+      required:
+      - day
+      - family
+      - ledger_total
+      - row_count
+      - allocated_total
+      title: LedgerBackfillBucket
+      description: One (day x model family) allocation bucket of a ledger backfill.
+    LedgerBackfillResidual:
+      properties:
+        day:
+          type: string
+          format: date
+          title: Day
+        family:
+          type: string
+          title: Family
+        amount_usd:
+          type: number
+          title: Amount Usd
+      type: object
+      required:
+      - day
+      - family
+      - amount_usd
+      title: LedgerBackfillResidual
+      description: Ledger spend with no eligible usage rows to receive it.
+    LedgerBackfillResponse:
+      properties:
+        dry_run:
+          type: boolean
+          title: Dry Run
+          default: true
+        provider:
+          type: string
+          title: Provider
+        start:
+          type: string
+          format: date
+          title: Start
+        end:
+          type: string
+          format: date
+          title: End
+        ledger_entries:
+          type: integer
+          title: Ledger Entries
+          default: 0
+        eligible_rows:
+          type: integer
+          title: Eligible Rows
+          default: 0
+        rows_to_reconcile:
+          type: integer
+          title: Rows To Reconcile
+          default: 0
+        total_allocated:
+          type: number
+          title: Total Allocated
+          default: 0.0
+        rows_updated:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Rows Updated
+        other_residual_usd:
+          type: number
+          title: Other Residual Usd
+          default: 0.0
+        buckets:
+          items:
+            $ref: '#/components/schemas/LedgerBackfillBucket'
+          type: array
+          title: Buckets
+        unallocated_ledger:
+          items:
+            $ref: '#/components/schemas/LedgerBackfillResidual'
+          type: array
+          title: Unallocated Ledger
+        unmatched_rows:
+          items:
+            $ref: '#/components/schemas/LedgerBackfillUnmatched'
+          type: array
+          title: Unmatched Rows
+        skipped_csv_rows:
+          items:
+            type: string
+          type: array
+          title: Skipped Csv Rows
+      type: object
+      required:
+      - provider
+      - start
+      - end
+      title: LedgerBackfillResponse
+      description: 'Outcome (or dry-run preview) of a provider daily-ledger backfill.
+
+
+        ``rows_updated`` is ``None`` on a dry run — nothing was written, which is
+
+        different from "wrote 0 rows". ``other_residual_usd`` is the export''s
+
+        "Other" bucket inside the window: the provider does not say which models
+
+        it covers, so that spend is reported but never allocated and the matching
+
+        rows stay unpriced.'
+    LedgerBackfillUnmatched:
+      properties:
+        day:
+          type: string
+          format: date
+          title: Day
+        family:
+          type: string
+          title: Family
+        row_count:
+          type: integer
+          title: Row Count
+      type: object
+      required:
+      - day
+      - family
+      - row_count
+      title: LedgerBackfillUnmatched
+      description: Unpriced usage rows whose family had no ledger spend that day.
     LoginRequest:
       properties:
         username:
@@ -15955,6 +16235,79 @@ components:
       - challenge_token
       title: RegistrationVerifyRequest
       description: Authenticator response for the registration ceremony.
+    RepriceRequest:
+      properties:
+        start_date:
+          type: string
+          format: date-time
+          title: Start Date
+        end_date:
+          type: string
+          format: date-time
+          title: End Date
+        only_unpriced:
+          type: boolean
+          title: Only Unpriced
+          default: true
+        dry_run:
+          type: boolean
+          title: Dry Run
+          default: false
+      type: object
+      required:
+      - start_date
+      - end_date
+      title: RepriceRequest
+      description: Request body for re-pricing historical gateway usage.
+    RepriceResponse:
+      properties:
+        submitted_async:
+          type: boolean
+          title: Submitted Async
+          default: false
+        rows_examined:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Rows Examined
+        rows_updated:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Rows Updated
+        rows_skipped:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Rows Skipped
+        cost_before:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Cost Before
+        cost_after:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Cost After
+        dry_run:
+          type: boolean
+          title: Dry Run
+          default: false
+      type: object
+      title: RepriceResponse
+      description: 'Result of a repricing run (or async submission).
+
+
+        The counters are ``None`` — not ``0`` — when the run was dispatched to a
+
+        background worker (``submitted_async=True``): nothing has been scanned in
+
+        this request, so reporting zeros would be indistinguishable from "the
+
+        window really contained no rows" (the exact confusion behind "reprice
+
+        examined 0 rows" on large windows).'
     RollbackRequest:
       properties:
         preview_only:
