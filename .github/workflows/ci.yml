@@ -64,6 +64,16 @@ jobs:
       - name: Run ruff
         run: ruff check .
 
+  helm-lint:
+    name: Helm Chart Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # helm is preinstalled on ubuntu-latest runners
+      - name: Helm render checks (chart lint + CNPG backup wiring)
+        run: sh scripts/helm-render-check.sh
+
   test-backend:
     name: Backend Tests
     runs-on: ubuntu-latest

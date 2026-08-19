@@ -1,0 +1,32 @@
+# Staging backup profile — apply on top of the normal staging values/flags:
+#   helm upgrade --install preloop ./helm/preloop -n preloop-staging \
+#     <existing flags...> -f helm/preloop/values-backup-staging.yaml
+#
+# Prerequisite (once per namespace): an S3(-compatible) credentials secret:
+#   kubectl create secret generic preloop-db-backup-s3 -n preloop-staging \
+#     --from-literal=ACCESS_KEY_ID=<key> \
+#     --from-literal=SECRET_ACCESS_KEY=<secret>
+#
+# Replace bucket/endpoint with the real values before use.
+database:
+  cnpg:
+    backup:
+      enabled: true
+      destinationPath: "s3://preloop-backups/cnpg/preloop-staging"
+      endpointURL: ""
+      # Shorter retention than prod — staging data is disposable
+      retentionPolicy: "7d"
+      walCompression: "gzip"
+      dataCompression: "gzip"
+      s3Credentials:
+        secretName: "preloop-db-backup-s3"
+        accessKeyIdKey: "ACCESS_KEY_ID"
+        secretAccessKeyKey: "SECRET_ACCESS_KEY"
+      scheduled:
+        enabled: true
+        # Daily base backup at 03:00 UTC (offset from prod to spread load
+        # on shared object storage)
+        schedule: "0 0 3 * * *"
+        immediate: true
+        suspend: false
+        backupOwnerReference: self

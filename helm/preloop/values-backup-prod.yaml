@@ -1,0 +1,33 @@
+# Production backup profile — apply on top of the normal prod values/flags:
+#   helm upgrade --install preloop ./helm/preloop -n preloop-prod \
+#     <existing flags...> -f helm/preloop/values-backup-prod.yaml
+#
+# Prerequisite (once per namespace): an S3(-compatible) credentials secret:
+#   kubectl create secret generic preloop-db-backup-s3 -n preloop-prod \
+#     --from-literal=ACCESS_KEY_ID=<key> \
+#     --from-literal=SECRET_ACCESS_KEY=<secret>
+#
+# Replace bucket/endpoint with the real values before use.
+database:
+  cnpg:
+    backup:
+      enabled: true
+      # Keep the CNPG archive under a dedicated prefix, separate from the
+      # legacy pg_dump uploads (s3://$S3_BUCKET/db/...)
+      destinationPath: "s3://preloop-backups/cnpg/preloop-prod"
+      # Set for S3-compatible stores (MinIO/R2/Ceph); leave empty for AWS S3
+      endpointURL: ""
+      retentionPolicy: "30d"
+      walCompression: "gzip"
+      dataCompression: "gzip"
+      s3Credentials:
+        secretName: "preloop-db-backup-s3"
+        accessKeyIdKey: "ACCESS_KEY_ID"
+        secretAccessKeyKey: "SECRET_ACCESS_KEY"
+      scheduled:
+        enabled: true
+        # Daily base backup at 02:00 UTC (low-traffic window)
+        schedule: "0 0 2 * * *"
+        immediate: true
+        suspend: false
+        backupOwnerReference: self

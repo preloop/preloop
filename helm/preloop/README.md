@@ -348,6 +348,133 @@ LIMIT 10;
 SELECT pg_stat_statements_reset();
 ```
 
+### Continuous Backups (CNPG WAL archiving + scheduled base backups)
+
+The chart can configure CloudNativePG continuous backups to any S3-compatible
+object store. Enabling `database.cnpg.backup.enabled`:
+
+- turns on **continuous WAL archiving** on the Cluster (recovery point is
+  typically under 5 minutes — no need for deploy-time `pg_dump` backups), and
+- creates a **`ScheduledBackup`** CR for periodic base backups (bounds WAL
+  replay time on restore and anchors the retention policy).
+
+**1. Create the credentials secret** (once per namespace):
+
+```bash
+kubectl create secret generic preloop-db-backup-s3 -n <namespace> \
+  --from-literal=ACCESS_KEY_ID=<access-key> \
+  --from-literal=SECRET_ACCESS_KEY=<secret-key>
+```
+
+**2. Enable via values** (see `values-backup-prod.yaml` /
+`values-backup-staging.yaml` for complete profiles):
+
+```yaml
+database:
+  cnpg:
+    backup:
+      enabled: true
+      destinationPath: "s3://my-bucket/cnpg/my-cluster"  # required
+      endpointURL: ""       # set for MinIO/R2/Ceph; empty for AWS S3
+      retentionPolicy: "30d"
+      s3Credentials:
+        secretName: "preloop-db-backup-s3"
+      scheduled:
+        enabled: true
+        schedule: "0 0 2 * * *"  # CNPG cron: SIX fields, seconds first
+        immediate: true          # take a base backup right away
+```
+
+Notes:
+
+- The CNPG cron `schedule` has **six** fields (`seconds minutes hours
+  day-of-month month day-of-week`), unlike standard Kubernetes CronJobs.
+- Enabling backups on a running cluster is a configuration reload, not a
+  restart (CNPG always runs with `archive_mode=on`).
+- Each cluster must own a **unique** `destinationPath`+`serverName`
+  combination. Never point two live clusters at the same path.
+
+**Verify** after enabling:
+
+```bash
+# WAL archiving healthy? (continuousArchiving condition should be True)
+kubectl -n <ns> get cluster <cluster-name> \
+  -o jsonpath='{.status.conditions[?(@.type=="ContinuousArchiving")]}'
+
+# First base backup completed?
+kubectl -n <ns> get backups
+kubectl -n <ns> get scheduledbackup
+```
+
+You can also trigger an on-demand base backup at any time (e.g. before a
+risky migration) without touching the deploy pipeline:
+
+```bash
+kubectl -n <ns> create -f - <<'EOF'
+apiVersion: postgresql.cnpg.io/v1
+kind: Backup
+metadata:
+  generateName: preloop-db-ondemand-
+spec:
+  cluster:
+    name: <cluster-name>  # e.g. preloop-db
+EOF
+```
+
+#### Restore procedure
+
+Restores bootstrap a **new** Cluster from the object store (optionally to a
+point in time), they do not restore in place:
+
+1. Create a recovery manifest (adjust names, storage and credentials to match
+   the environment; the `externalClusters.serverName` must match the name the
+   backups were written under — by default the old cluster's name):
+
+   ```yaml
+   apiVersion: postgresql.cnpg.io/v1
+   kind: Cluster
+   metadata:
+     name: preloop-db-restore
+   spec:
+     instances: 1
+     storage:
+       size: 10Gi  # >= original
+     superuserSecret:
+       name: preloop-db-superuser
+     enableSuperuserAccess: true
+     bootstrap:
+       recovery:
+         source: origin
+         # Optional point-in-time recovery:
+         # recoveryTarget:
+         #   targetTime: "2026-08-19 10:00:00+00"
+     externalClusters:
+       - name: origin
+         barmanObjectStore:
+           destinationPath: "s3://my-bucket/cnpg/my-cluster"
+           # endpointURL: "https://..."  # if S3-compatible
+           serverName: preloop-db  # folder the backups were written under
+           s3Credentials:
+             accessKeyId:
+               name: preloop-db-backup-s3
+               key: ACCESS_KEY_ID
+             secretAccessKey:
+               name: preloop-db-backup-s3
+               key: SECRET_ACCESS_KEY
+           wal:
+             compression: gzip
+   ```
+
+2. `kubectl apply -n <ns> -f restore.yaml` and wait for the cluster to become
+   `Cluster in healthy state` (`kubectl -n <ns> get cluster preloop-db-restore -w`).
+3. Validate the data (connect via `kubectl -n <ns> exec -it preloop-db-restore-1 -- psql`).
+4. Cut over: either repoint the application `database.host` at the restored
+   cluster's `-rw` service, or (cleaner) redeploy the chart with
+   `database.cnpg.name=preloop-db-restore` **and** a fresh
+   `backup.serverName`/`destinationPath` so the restored cluster archives to
+   a new location instead of overwriting the archive it recovered from.
+5. Decommission the old cluster only after the new one is verified.
+
 ## Upgrading the Chart
 
 ### To 1.0.0
