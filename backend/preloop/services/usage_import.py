@@ -22,6 +22,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -31,7 +32,11 @@ from sqlalchemy.orm import Session
 
 from preloop.models.crud import crud_api_usage, crud_managed_agent
 from preloop.models.models.managed_agent import ManagedAgent
-from preloop.schemas.usage_import import UsageImportEvent
+from preloop.schemas.usage_import import (
+    UsageImportEvent,
+    UsageIngestRecord,
+    UsageIngestRecordResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -219,6 +224,150 @@ def ingest_events(
             imported += 1
     db.commit()
     return imported, skipped
+
+
+def push_record_fingerprint(*, source: str, external_id: str) -> str:
+    """Compute the dedupe fingerprint for one pushed usage record.
+
+    Pushed records are identified by (account, source, external_id): the
+    caller supplies a stable source-side id, so a harness retrying a batch
+    after a network timeout cannot double-count spend. The ``ingest|``
+    prefix keeps this namespace disjoint from the content-hash fingerprints
+    of the CSV/JSON import path, which share the same unique index.
+    """
+    payload = f"ingest|{source}|{external_id}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def push_record_content_hash(record: UsageIngestRecord) -> str:
+    """Compute the canonical payload hash of one pushed usage record.
+
+    Stored as ``meta_data.ingest_content_hash`` so a replay of the same
+    (source, external_id) with a DIFFERENT payload can be flagged
+    ``conflict`` in the response. First write still wins — the marker is a
+    heuristic for the shipper's operator, never a rejection.
+    """
+    canonical = json.dumps(
+        record.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def ingest_push_records(
+    db: Session,
+    *,
+    account_id: str,
+    user_id: Optional[str],
+    agent: ManagedAgent,
+    records: List[UsageIngestRecord],
+    source: str,
+) -> List[UsageIngestRecordResult]:
+    """Write pushed usage records into the cost ledger, deduplicated.
+
+    Reuses the imported-usage normalization chokepoint
+    (:meth:`~preloop.models.crud.api_usage.CRUDApiUsage.log_imported_usage_event`):
+    rows land as ``action_type='imported_usage'`` / ``usage_source='imported'``,
+    ``total_tokens`` derives from input+output only, and cache-read tokens
+    stay in their own column — never summed into totals or charged spend.
+    Conversation ids, message/tool counts, and cost_basis land in their
+    first-class columns; lifecycle events (``event_type != 'usage'``) land
+    as zero-cost rows unless explicitly priced.
+
+    Args:
+        db: Database session.
+        account_id: Owning account id.
+        user_id: Pushing user's id, for audit.
+        agent: Managed agent the records are attributed to.
+        records: Pushed usage records.
+        source: Origin label (e.g. ``cursor``); scopes the dedupe key.
+
+    Returns:
+        Per-record results: ``deduplicated`` when the (source, external_id)
+        was already stored, plus ``conflict`` when the replayed payload
+        differs from the stored one (first write wins either way).
+        Committed once at the end.
+    """
+    fingerprints = [
+        push_record_fingerprint(source=source, external_id=record.external_id)
+        for record in records
+    ]
+    existing_by_fp = crud_api_usage.get_imported_rows_by_fingerprints(
+        db, account_id=account_id, fingerprints=fingerprints
+    )
+    ingest_endpoint = f"/usage/ingest/{source}"
+    results: List[UsageIngestRecordResult] = []
+    for record, fingerprint in zip(records, fingerprints, strict=True):
+        content_hash = push_record_content_hash(record)
+        existing = existing_by_fp.get(fingerprint)
+        if existing is None:
+            timestamp = record.timestamp
+            if timestamp.tzinfo is not None:
+                timestamp = timestamp.astimezone(timezone.utc).replace(tzinfo=None)
+            meta: Dict[str, Any] = {
+                "managed_agent_id": str(agent.id),
+                "external_id": record.external_id,
+                "event_type": record.event_type,
+                "ingest_content_hash": content_hash,
+            }
+            if record.metadata:
+                for key, value in record.metadata.items():
+                    meta.setdefault(key, value)
+            row = crud_api_usage.log_imported_usage_event(
+                db,
+                account_id=account_id,
+                user_id=user_id,
+                timestamp=timestamp,
+                model_alias=record.model,
+                source=source,
+                prompt_tokens=record.input_tokens,
+                completion_tokens=record.output_tokens,
+                cache_read_tokens=record.cache_read_tokens,
+                cost_usd=(
+                    # estimated_cost is a Float column; Decimal is request-only.
+                    float(record.charged_cost)
+                    if record.charged_cost is not None
+                    else None
+                ),
+                cost_basis=record.cost_basis,
+                conversation_id=record.conversation_id,
+                parent_conversation_id=record.parent_conversation_id,
+                message_count=record.message_count,
+                tool_call_count=record.tool_call_count,
+                runtime_principal_type=agent.session_source_type,
+                runtime_principal_id=agent.session_source_id,
+                runtime_principal_name=agent.display_name,
+                import_fingerprint=fingerprint,
+                meta_data=meta,
+                endpoint=ingest_endpoint,
+                skip_fingerprint_lookup=True,
+                commit=False,
+            )
+            if row is not None:
+                existing_by_fp[fingerprint] = row
+                results.append(UsageIngestRecordResult(external_id=record.external_id))
+                continue
+            # A concurrent request landed this fingerprint between the
+            # existence check and the insert; re-read it for the conflict
+            # comparison below.
+            existing = crud_api_usage.get_imported_row_by_fingerprint(
+                db, account_id=account_id, import_fingerprint=fingerprint
+            )
+        stored_hash = (
+            (existing.meta_data or {}).get("ingest_content_hash")
+            if existing is not None
+            else None
+        )
+        results.append(
+            UsageIngestRecordResult(
+                external_id=record.external_id,
+                deduplicated=True,
+                # Rows written before content hashing (or by the CSV path)
+                # have no stored hash and are non-comparable: no conflict.
+                conflict=bool(stored_hash and stored_hash != content_hash),
+            )
+        )
+    db.commit()
+    return results
 
 
 # ---------------------------------------------------------------------------

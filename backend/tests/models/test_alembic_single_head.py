@@ -76,8 +76,10 @@ def test_alembic_head_is_reachable_from_base() -> None:
 
 
 def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
-    """Self-hosted runners must parent the current main migration head."""
+    """Self-hosted runners parent the previous main head; ingest is current."""
     script = _script_directory()
-    revision = script.get_revision("20260817_add_flow_runners")
-    assert revision.down_revision == "20260806_approval_rule_ctx"
-    assert script.get_heads() == ["20260817_add_flow_runners"]
+    runners = script.get_revision("20260817_add_flow_runners")
+    assert runners.down_revision == "20260806_approval_rule_ctx"
+    ingest = script.get_revision("20260818_usage_ingest_conv")
+    assert ingest.down_revision == "20260817_add_flow_runners"
+    assert script.get_heads() == ["20260818_usage_ingest_conv"]
