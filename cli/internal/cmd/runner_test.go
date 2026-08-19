@@ -406,18 +406,34 @@ func TestRunnerJobEnvStripsCredentialShapedAgentConfig(t *testing.T) {
 		"execution_id": "exec-1",
 		"agent_config": map[string]any{
 			"image":          "preloop/agent:dev",
+			"max_tokens":     128,
+			"token_limit":    4096,
 			"api_key":        "provider-secret",
 			"token":          "also-secret",
 			"openai_api_key": "sk-test",
+			"provider": map[string]any{
+				"api_key": "nested-secret",
+				"model":   "gpt-4",
+			},
 		},
 	}
 	env := runnerJobEnv(job, "https://review.preloop.ai")
-	if !strings.Contains(env["AGENT_CONFIG"], `"image":"preloop/agent:dev"`) {
-		t.Fatalf("AGENT_CONFIG = %q", env["AGENT_CONFIG"])
+	got := env["AGENT_CONFIG"]
+	if !strings.Contains(got, `"image":"preloop/agent:dev"`) {
+		t.Fatalf("AGENT_CONFIG = %q", got)
 	}
-	for _, leaked := range []string{"provider-secret", "also-secret", "sk-test", "api_key", "token"} {
-		if strings.Contains(env["AGENT_CONFIG"], leaked) {
-			t.Fatalf("credential leaked into AGENT_CONFIG: %s in %q", leaked, env["AGENT_CONFIG"])
+	if !strings.Contains(got, `"max_tokens":128`) {
+		t.Fatalf("max_tokens should survive sanitization: %q", got)
+	}
+	if !strings.Contains(got, `"token_limit":4096`) {
+		t.Fatalf("token_limit should survive sanitization: %q", got)
+	}
+	if !strings.Contains(got, `"model":"gpt-4"`) {
+		t.Fatalf("nested non-secret should survive: %q", got)
+	}
+	for _, leaked := range []string{"provider-secret", "also-secret", "sk-test", "nested-secret"} {
+		if strings.Contains(got, leaked) {
+			t.Fatalf("credential leaked into AGENT_CONFIG: %s in %q", leaked, got)
 		}
 	}
 }

@@ -479,19 +479,29 @@ func runnerJobEnv(job map[string]any, apiURL string) map[string]string {
 func sanitizeAgentConfig(cfg map[string]any) map[string]any {
 	out := make(map[string]any, len(cfg))
 	for key, value := range cfg {
-		lower := strings.ToLower(key)
-		if strings.Contains(lower, "token") ||
-			strings.Contains(lower, "secret") ||
-			strings.Contains(lower, "password") ||
-			strings.Contains(lower, "credential") ||
-			strings.HasSuffix(lower, "_key") ||
-			lower == "api_key" ||
-			lower == "apikey" {
+		if isAgentConfigSecretKey(key) {
+			continue
+		}
+		if nested, ok := value.(map[string]any); ok {
+			out[key] = sanitizeAgentConfig(nested)
 			continue
 		}
 		out[key] = value
 	}
 	return out
+}
+
+func isAgentConfigSecretKey(key string) bool {
+	switch strings.ToLower(key) {
+	case "api_key", "apikey", "api_token", "access_token", "secret", "password", "token":
+		return true
+	default:
+		lower := strings.ToLower(key)
+		return strings.HasSuffix(lower, "_api_key") ||
+			strings.HasSuffix(lower, "_access_token") ||
+			strings.HasSuffix(lower, "_password") ||
+			strings.HasSuffix(lower, "_secret")
+	}
 }
 
 // dockerRunArgs passes env keys with bare -e flags so values are read
