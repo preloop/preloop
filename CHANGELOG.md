@@ -109,9 +109,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bookkeeping no longer holds the last event on the client-visible stream.
   A client that disconnects after that terminal event is recorded as 200
   with captured usage, not 499/partial.
-- **OSS TLS proxy skips the console hop for the model gateway**:
-  `/openai/`, `/anthropic/`, and `/gemini/` now proxy straight to the
-  gateway container instead of hairpinning through console nginx. Re-run
+- **OSS TLS proxy and Helm ingress skip the console hop for the model
+  gateway**: `/openai`, `/anthropic`, and `/gemini` now proxy straight to
+  the gateway instead of hairpinning through console nginx. Helm does
+  this with a second Ingress on the same host so SSE buffering can stay
+  off on those prefixes without changing `/`. Usage accounting is
+  unchanged: the gateway process still writes the request row. Re-run
   `scripts/measure_gateway_overhead.py` against a public install to
   confirm the TTFB delta.
 - **Qwen / Model Studio catalog**: the keyless picker now lists current chat
