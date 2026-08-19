@@ -2332,6 +2332,37 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             .first()
         )
 
+    def get_imported_rows_by_fingerprints(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        fingerprints: Sequence[str],
+    ) -> Dict[str, ApiUsage]:
+        """Return imported rows keyed by fingerprint for a batch lookup.
+
+        Used by push-ingest to replace per-record existence SELECTs with one
+        ``IN`` query. Missing fingerprints are omitted from the result.
+        """
+        unique = list(dict.fromkeys(fp for fp in fingerprints if fp))
+        if not unique:
+            return {}
+        rows = (
+            db.query(ApiUsage)
+            .filter(
+                ApiUsage.account_id == account_id,
+                ApiUsage.action_type == self.IMPORTED_USAGE_ACTION_TYPE,
+                ApiUsage.meta_data["import_fingerprint"].astext.in_(unique),
+            )
+            .all()
+        )
+        found: Dict[str, ApiUsage] = {}
+        for row in rows:
+            fingerprint = (row.meta_data or {}).get("import_fingerprint")
+            if isinstance(fingerprint, str):
+                found[fingerprint] = row
+        return found
+
     def log_imported_usage_event(
         self,
         db: Session,
@@ -2357,6 +2388,8 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         runtime_principal_name: Optional[str] = None,
         import_fingerprint: Optional[str] = None,
         meta_data: Optional[Dict[str, Any]] = None,
+        endpoint: Optional[str] = None,
+        skip_fingerprint_lookup: bool = False,
         commit: bool = True,
     ) -> Optional[ApiUsage]:
         """Record one imported usage event in the cost ledger.
@@ -2397,13 +2430,23 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 index ``ix_api_usage_imported_fingerprint_uniq``, so two
                 concurrent imports of the same event cannot both land.
             meta_data: Extra keys merged into the stored ``meta_data``.
+            endpoint: Ledger endpoint label. Defaults to
+                ``/usage/import/{source}`` (CSV/JSON import). Push-ingest
+                passes ``/usage/ingest/{source}``.
+            skip_fingerprint_lookup: When True, skip the fast-path SELECT
+                (the caller already bulk-loaded existing fingerprints). The
+                unique index remains the concurrent-insert guard.
             commit: When False, flush only so callers can batch commits.
 
         Returns:
             The created row, or ``None`` when skipped as a duplicate.
         """
-        if import_fingerprint and self._imported_fingerprint_exists(
-            db, account_id=account_id, import_fingerprint=import_fingerprint
+        if (
+            import_fingerprint
+            and not skip_fingerprint_lookup
+            and self._imported_fingerprint_exists(
+                db, account_id=account_id, import_fingerprint=import_fingerprint
+            )
         ):
             return None
 
@@ -2420,7 +2463,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         db_obj = ApiUsage(
             user_id=user_id,
             account_id=account_id,
-            endpoint=f"/usage/import/{source}",
+            endpoint=endpoint or f"/usage/import/{source}",
             method="POST",
             status_code=200,
             duration=0.0,
@@ -2463,17 +2506,18 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             db.refresh(db_obj)
         return db_obj
 
-    def _imported_cost_sum(self):
+    def _imported_cost_sum(self, *, start_date: datetime, end_date: datetime):
         """SUM of imported cost with reconciled-over-estimated precedence.
 
         A ``cost_basis='reconciled'`` row (billing export) supersedes ALL
         ``cost_basis='estimated'`` rows (hook/transcript-derived) with the
-        same (account, provider_name, conversation_id): superseded rows
-        contribute $0, so the two bases are never summed for one scope.
-        Supersession deliberately ignores the query time-window — billing
-        exports are coarser-grained than hooks, and window-matching would
-        silently double-count. Rows without a conversation_id or with a
-        NULL cost_basis (legacy/CSV imports) never participate.
+        same (account, provider_name, conversation_id) **in the queried
+        window**: superseded rows contribute $0, so the two bases are never
+        summed for one scope. The EXISTS is bounded to
+        ``start_date <= timestamp < end_date`` so a reconciled row outside
+        the window cannot zero in-window estimates while contributing $0
+        itself. Rows without a conversation_id or with a NULL cost_basis
+        (legacy/CSV imports) never participate.
         """
         reconciled = aliased(ApiUsage)
         superseded = and_(
@@ -2486,6 +2530,8 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 reconciled.cost_basis == "reconciled",
                 reconciled.provider_name == ApiUsage.provider_name,
                 reconciled.conversation_id == ApiUsage.conversation_id,
+                reconciled.timestamp >= start_date,
+                reconciled.timestamp < end_date,
             )
             .exists(),
         )
@@ -2513,6 +2559,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
 
         ``imported_cost`` applies reconciled-over-estimated precedence (see
         :meth:`_imported_cost_sum`); event/token totals count all rows.
+        Supersession is bounded to this same window.
 
         Args:
             db: Database session.
@@ -2528,7 +2575,9 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         query = db.query(
             func.count(ApiUsage.id).label("event_count"),
             func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
-            self._imported_cost_sum().label("imported_cost"),
+            self._imported_cost_sum(start_date=start_date, end_date=end_date).label(
+                "imported_cost"
+            ),
         ).filter(
             ApiUsage.action_type == self.IMPORTED_USAGE_ACTION_TYPE,
             ApiUsage.account_id == account_id,
@@ -2561,6 +2610,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
 
         ``imported_cost`` applies reconciled-over-estimated precedence (see
         :meth:`_imported_cost_sum`); event/token totals count all rows.
+        Supersession is bounded to this same window.
 
         Args:
             db: Database session.
@@ -2580,7 +2630,9 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             import_source.label("source"),
             func.count(ApiUsage.id).label("request_count"),
             func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
-            self._imported_cost_sum().label("imported_cost"),
+            self._imported_cost_sum(start_date=start_date, end_date=end_date).label(
+                "imported_cost"
+            ),
             func.max(ApiUsage.timestamp).label("last_event_at"),
         ).filter(
             ApiUsage.action_type == self.IMPORTED_USAGE_ACTION_TYPE,

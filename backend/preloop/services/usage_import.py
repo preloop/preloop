@@ -287,15 +287,18 @@ def ingest_push_records(
         differs from the stored one (first write wins either way).
         Committed once at the end.
     """
+    fingerprints = [
+        push_record_fingerprint(source=source, external_id=record.external_id)
+        for record in records
+    ]
+    existing_by_fp = crud_api_usage.get_imported_rows_by_fingerprints(
+        db, account_id=account_id, fingerprints=fingerprints
+    )
+    ingest_endpoint = f"/usage/ingest/{source}"
     results: List[UsageIngestRecordResult] = []
-    for record in records:
-        fingerprint = push_record_fingerprint(
-            source=source, external_id=record.external_id
-        )
+    for record, fingerprint in zip(records, fingerprints, strict=True):
         content_hash = push_record_content_hash(record)
-        existing = crud_api_usage.get_imported_row_by_fingerprint(
-            db, account_id=account_id, import_fingerprint=fingerprint
-        )
+        existing = existing_by_fp.get(fingerprint)
         if existing is None:
             timestamp = record.timestamp
             if timestamp.tzinfo is not None:
@@ -320,6 +323,7 @@ def ingest_push_records(
                 completion_tokens=record.output_tokens,
                 cache_read_tokens=record.cache_read_tokens,
                 cost_usd=(
+                    # estimated_cost is a Float column; Decimal is request-only.
                     float(record.charged_cost)
                     if record.charged_cost is not None
                     else None
@@ -334,9 +338,12 @@ def ingest_push_records(
                 runtime_principal_name=agent.display_name,
                 import_fingerprint=fingerprint,
                 meta_data=meta,
+                endpoint=ingest_endpoint,
+                skip_fingerprint_lookup=True,
                 commit=False,
             )
             if row is not None:
+                existing_by_fp[fingerprint] = row
                 results.append(UsageIngestRecordResult(external_id=record.external_id))
                 continue
             # A concurrent request landed this fingerprint between the

@@ -95,6 +95,7 @@ class TestIngestRecords:
         assert worker.parent_conversation_id == "conv-parent"
         assert worker.cost_basis == "estimated"
         assert worker.meta_data["event_type"] == "usage"
+        assert worker.endpoint == "/usage/ingest/cursor"
 
     def test_replay_returns_200_with_deduplicated_flag(
         self, client, db_session, test_user

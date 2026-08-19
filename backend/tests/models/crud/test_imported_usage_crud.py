@@ -64,6 +64,7 @@ def test_log_imported_usage_event_writes_labeled_ledger_row(
     assert row.provider_name == "cursor"
     assert row.runtime_principal_id == "cursor-ws-1"
     assert row.meta_data["import_source"] == "cursor"
+    assert row.endpoint == "/usage/import/cursor"
     assert row.meta_data["import_fingerprint"] == "fp-write-1"
     assert row.meta_data["source_kind"] == "Usage-based"
 
@@ -305,3 +306,47 @@ def test_gateway_aggregations_are_blind_to_imported_rows(
     assert gateway["request_count"] == 0
     assert gateway["estimated_cost"] == 0.0
     assert gateway["total_tokens"] == 0
+
+
+def test_out_of_window_reconciled_does_not_zero_in_window_estimates(
+    db_session, create_account
+):
+    """A later billing export must not hide spend that fell in this window."""
+    account = create_account()
+    window_start = datetime(2026, 8, 1, tzinfo=timezone.utc).replace(tzinfo=None)
+    window_end = datetime(2026, 8, 8, tzinfo=timezone.utc).replace(tzinfo=None)
+
+    _log_imported(
+        db_session,
+        account_id=account.id,
+        timestamp=datetime(2026, 8, 3, tzinfo=timezone.utc).replace(tzinfo=None),
+        cost_usd=2.00,
+        cost_basis="estimated",
+        conversation_id="conv-1",
+        import_fingerprint="fp-est-aug",
+    )
+    _log_imported(
+        db_session,
+        account_id=account.id,
+        timestamp=datetime(2026, 8, 10, tzinfo=timezone.utc).replace(tzinfo=None),
+        cost_usd=1.80,
+        cost_basis="reconciled",
+        conversation_id="conv-1",
+        import_fingerprint="fp-rec-aug",
+    )
+
+    in_window = crud_api_usage.get_imported_usage_summary(
+        db_session,
+        account_id=str(account.id),
+        start_date=window_start,
+        end_date=window_end,
+    )
+    later = crud_api_usage.get_imported_usage_summary(
+        db_session,
+        account_id=str(account.id),
+        start_date=window_end,
+        end_date=datetime(2026, 8, 15, tzinfo=timezone.utc).replace(tzinfo=None),
+    )
+
+    assert abs(in_window["imported_cost"] - 2.00) < 1e-9
+    assert abs(later["imported_cost"] - 1.80) < 1e-9

@@ -188,7 +188,8 @@ class UsageIngestRecord(BaseModel):
         ge=0,
         description=(
             "Amount the source vendor charged, in USD. The billing truth; "
-            "never derived from tokens."
+            "never derived from tokens. Stored as a float on the ledger "
+            "(estimated_cost is a Float column), matching the CSV import path."
         ),
     )
     cost_basis: IngestCostBasis = Field(
