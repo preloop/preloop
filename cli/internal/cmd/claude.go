@@ -208,14 +208,29 @@ func waitForAnyKeyOrRelease(incoming <-chan claudeIPCMessage, signals <-chan os.
 		state, err := term.MakeRaw(fd)
 		if err == nil {
 			old = state
-			defer func() { _ = term.Restore(fd, old) }()
 		}
 	}
 	key := make(chan struct{}, 1)
+	readerDone := make(chan struct{})
 	go func() {
+		defer close(readerDone)
 		var b [1]byte
 		_, _ = os.Stdin.Read(b[:])
-		key <- struct{}{}
+		select {
+		case key <- struct{}{}:
+		default:
+		}
+	}()
+	defer func() {
+		cancelStdinRead(fd)
+		select {
+		case <-readerDone:
+		case <-time.After(100 * time.Millisecond):
+		}
+		restoreStdinRead(fd)
+		if old != nil {
+			_ = term.Restore(fd, old)
+		}
 	}()
 	for {
 		select {

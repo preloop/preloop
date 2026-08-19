@@ -198,6 +198,48 @@ def test_managed_agent_control_online_uses_persisted_last_seen():
     assert fields["control_session_mode"] == "local"
 
 
+def test_managed_agent_control_online_ignores_enrollment_last_seen():
+    """Token mint stamps last_seen_at; that is not a sidecar heartbeat."""
+    fields = _managed_agent_control_fields(
+        {
+            "id": "agent-from-db",
+            "agent_kind": "claude_code",
+            "session_source_type": "claude_code",
+            "lifecycle_state": "active",
+            "runtime_session_id": "runtime-claude",
+            "ended_at": None,
+            "last_seen_at": datetime.now(UTC) - timedelta(seconds=10),
+        },
+        {
+            "validation_result": {
+                "control_channel_configured": True,
+                "control_plugin_verified": True,
+                "control_ws_url_ok": True,
+                "control_bearer_token_ok": True,
+            },
+            "managed_config": {},
+        },
+    )
+
+    assert fields["control_online"] is False
+    assert fields["control_session_mode"] == "offline"
+
+
+def test_managed_agent_summary_coerces_null_session_mode():
+    from preloop.schemas.gateway_usage import ManagedAgentSummary
+
+    summary = ManagedAgentSummary(
+        id="agent-1",
+        display_name="Claude",
+        session_source_type="claude_code",
+        session_source_id="src",
+        enrolled_via="cli",
+        last_seen_at=datetime.now(UTC),
+        control_session_mode=None,
+    )
+    assert summary.control_session_mode == "offline"
+
+
 def test_managed_agent_control_fields_keep_unknown_kinds_unsupported():
     """Sidecar flags must not enable Agent Control for an unsupported kind."""
     fields = _managed_agent_control_fields(

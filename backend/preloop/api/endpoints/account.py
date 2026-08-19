@@ -638,10 +638,14 @@ def _managed_agent_control_fields(
             snapshot = {}
         ws_connected = bool(snapshot.get("online"))
         if not ws_connected:
-            # Sidecar heartbeats persist last_seen_at. Use that so a REST
-            # worker that did not accept the WebSocket still reports online.
+            # Sidecar heartbeats persist last_seen_at *and* session mode.
+            # Enrollment and gateway usage also stamp last_seen_at, so recency
+            # alone would mark a freshly onboarded agent online. Require a
+            # persisted sidecar mode so a REST worker that did not accept the
+            # WebSocket can still report online.
+            persisted_mode = summary.get("control_session_mode")
             seen = summary.get("last_seen_at")
-            if seen is not None:
+            if persisted_mode in {"local", "remote", "queued"} and seen is not None:
                 if getattr(seen, "tzinfo", None) is None:
                     seen = seen.replace(tzinfo=UTC)
                 try:

@@ -1154,7 +1154,8 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             "is_active_now": is_active_now,
             "activity_status": activity_status,
             "last_seen_at": row.last_seen_at,
-            "control_session_mode": getattr(row, "control_session_mode", None),
+            "control_session_mode": getattr(row, "control_session_mode", None)
+            or "offline",
             "started_at": row.started_at,
             "last_activity_at": row.last_activity_at,
             "ended_at": row.ended_at,
