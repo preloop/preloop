@@ -26,12 +26,14 @@ echo "$out" | grep -q "kind: ScheduledBackup" || fail "ScheduledBackup missing (
 echo "$out" | grep -q "barmanObjectStore" || fail "barmanObjectStore missing (prod profile)"
 echo "$out" | grep -q 'retentionPolicy: "30d"' || fail "prod retention wrong"
 echo "$out" | grep -q 'schedule: "0 0 2 \* \* \*"' || fail "prod schedule wrong"
+echo "$out" | grep -q "backupOwnerReference: none" || fail "prod backupOwnerReference should be none"
 
 echo "==> staging profile: backup + ScheduledBackup ON"
 out=$(helm template t "$CHART" -f "$CHART/values-backup-staging.yaml")
 echo "$out" | grep -q "kind: ScheduledBackup" || fail "ScheduledBackup missing (staging profile)"
 echo "$out" | grep -q 'retentionPolicy: "7d"' || fail "staging retention wrong"
 echo "$out" | grep -q 'schedule: "0 0 3 \* \* \*"' || fail "staging schedule wrong"
+echo "$out" | grep -q "backupOwnerReference: none" || fail "staging backupOwnerReference should be none"
 
 echo "==> backup.enabled without destinationPath must fail fast"
 if helm template t "$CHART" --set database.cnpg.backup.enabled=true >/dev/null 2>&1; then

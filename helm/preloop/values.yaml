@@ -434,8 +434,11 @@ database:
         # Take a first base backup as soon as the ScheduledBackup is created
         immediate: true
         suspend: false
-        # Owner of Backup objects created by the schedule: none|self|cluster
-        backupOwnerReference: self
+        # Owner of Backup objects created by the schedule: none|self|cluster.
+        # Default none: deleting/recreating the ScheduledBackup (helm upgrade
+        # with scheduled.enabled=false, or helm uninstall) must not garbage-
+        # collect the base backups. `self` would cascade-delete them.
+        backupOwnerReference: none
     # Slow query logging - enable to monitor query performance
     logging:
       enabled: false  # Set to true to enable slow query logging

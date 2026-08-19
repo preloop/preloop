@@ -30,4 +30,4 @@ database:
         schedule: "0 0 2 * * *"
         immediate: true
         suspend: false
-        backupOwnerReference: self
+        backupOwnerReference: none

@@ -17,7 +17,7 @@ metadata:
 spec:
   # CNPG cron format: SIX fields, seconds first ("sec min hour dom mon dow")
   schedule: {{ $backup.scheduled.schedule | quote }}
-  backupOwnerReference: {{ $backup.scheduled.backupOwnerReference | default "self" }}
+  backupOwnerReference: {{ $backup.scheduled.backupOwnerReference | default "none" }}
   immediate: {{ $backup.scheduled.immediate | default false }}
   suspend: {{ $backup.scheduled.suspend | default false }}
   cluster:

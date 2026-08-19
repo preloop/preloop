@@ -383,6 +383,10 @@ database:
         enabled: true
         schedule: "0 0 2 * * *"  # CNPG cron: SIX fields, seconds first
         immediate: true          # take a base backup right away
+        # none: base backups survive ScheduledBackup deletion (helm
+        # upgrade with scheduled.enabled=false, helm uninstall). self
+        # would garbage-collect every backup the schedule created.
+        backupOwnerReference: none
 ```
 
 Notes:
@@ -393,6 +397,10 @@ Notes:
   restart (CNPG always runs with `archive_mode=on`).
 - Each cluster must own a **unique** `destinationPath`+`serverName`
   combination. Never point two live clusters at the same path.
+- `backupOwnerReference` defaults to `none` so base backups are not
+  garbage-collected when the `ScheduledBackup` is removed (a helm
+  upgrade that sets `scheduled.enabled=false`, or `helm uninstall`).
+  Set `self` only if you want that cascade.
 
 **Verify** after enabling:
 
