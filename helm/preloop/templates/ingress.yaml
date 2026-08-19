@@ -1,6 +1,7 @@
 {{- if .Values.ingress.enabled -}}
 {{- $fullName := include "preloop.fullname" . -}}
 {{- $svcPort := 80 -}}
+{{- $proxy := .Values.gateway.proxy | default dict }}
 {{- if and .Values.ingress.className (not (semverCompare ">=1.18-0" .Capabilities.KubeVersion.GitVersion)) }}
   {{- if not (hasKey .Values.ingress.annotations "kubernetes.io/ingress.class") }}
   {{- $_ := set .Values.ingress.annotations "kubernetes.io/ingress.class" .Values.ingress.className}}
@@ -19,22 +20,20 @@ metadata:
   labels:
     {{- include "preloop.labels" . | nindent 4 }}
   {{- /*
-    The ingress is the outermost of the two proxies in front of the model
-    gateway, and it enforces its own timeouts independently of the console
-    nginx config. Its defaults are 60s, which is shorter than a streaming
-    model response can legitimately take to produce its first token, so a
-    long-running generation is terminated here with a 504 before the
-    application is ever aware of it. These annotations carry the same budget
-    the console nginx uses (see `gateway.proxy` in values.yaml) so that a
-    default install is correct without extra flags — a chart that fixed only
-    the inner proxy would still fail at 60s.
+    The ingress is the outermost proxy in front of the model gateway, and it
+    enforces its own timeouts independently of the console nginx config. Its
+    defaults are 60s, which is shorter than a streaming model response can
+    legitimately take to produce its first token, so a long-running generation
+    is terminated here with a 504 before the application is ever aware of it.
+    These annotations carry the same budget the console nginx uses (see
+    `gateway.proxy` in values.yaml) so that a default install is correct
+    without extra flags.
 
     The controller runs with `allow-snippet-annotations: false` in many
     deployments, so this must use the first-class annotations rather than a
     configuration snippet. Operator-supplied `ingress.annotations` are merged
     last and therefore win.
   */}}
-  {{- $proxy := .Values.gateway.proxy | default dict }}
   {{- $annotations := dict
         "nginx.ingress.kubernetes.io/proxy-read-timeout" $proxy.readTimeout
         "nginx.ingress.kubernetes.io/proxy-send-timeout" $proxy.sendTimeout
@@ -80,6 +79,82 @@ spec:
                   number: {{ $svcPort }}
               {{- else }}
               serviceName: {{ $fullName }}-console
+              servicePort: {{ $svcPort }}
+              {{- end }}
+          {{- end }}
+    {{- end }}
+---
+{{ if semverCompare ">=1.19-0" .Capabilities.KubeVersion.GitVersion -}}
+apiVersion: networking.k8s.io/v1
+{{- else if semverCompare ">=1.14-0" .Capabilities.KubeVersion.GitVersion -}}
+apiVersion: networking.k8s.io/v1beta1
+{{- else -}}
+apiVersion: extensions/v1beta1
+{{- end }}
+kind: Ingress
+metadata:
+  name: {{ $fullName }}-gateway
+  labels:
+    {{- include "preloop.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+  {{- /*
+    Streaming model traffic used to hairpin through console nginx
+    (ingress → console → gateway). That extra hop is only a proxy; usage
+    accounting still happens in the gateway process. Sending /openai,
+    /anthropic, and /gemini to the gateway Service from this Ingress drops
+    the hop without changing bookkeeping.
+
+    A second Ingress is required because nginx-ingress annotations apply
+    to every path on the object. proxy-buffering must be off for SSE, but
+    must not be forced onto `/` (the SPA and /api). Timeouts stay the same
+    `gateway.proxy` budget so a slow first token still cannot 504 at 60s.
+  */}}
+  {{- $gatewayAnnotations := dict
+        "nginx.ingress.kubernetes.io/proxy-read-timeout" $proxy.readTimeout
+        "nginx.ingress.kubernetes.io/proxy-send-timeout" $proxy.sendTimeout
+        "nginx.ingress.kubernetes.io/proxy-connect-timeout" $proxy.connectTimeout
+        "nginx.ingress.kubernetes.io/proxy-body-size" $proxy.bodySize
+        "nginx.ingress.kubernetes.io/proxy-buffering" "off" }}
+  {{- $gatewayAnnotations = merge (deepCopy (.Values.ingress.annotations | default dict)) $gatewayAnnotations }}
+  {{- /* cert-manager must issue once, from the console Ingress. Duplicating
+       the issuer annotation on this object races the same TLS secret. */}}
+  {{- range $cmKey := tuple "cert-manager.io/cluster-issuer" "cert-manager.io/issuer" "cert-manager.io/issuer-kind" "cert-manager.io/issuer-group" }}
+  {{- $_ := unset $gatewayAnnotations $cmKey }}
+  {{- end }}
+  {{- $gatewayRendered := dict }}
+  {{- range $key, $value := $gatewayAnnotations }}
+  {{- if not (kindIs "invalid" $value) }}
+  {{- $_ := set $gatewayRendered $key (toString $value) }}
+  {{- end }}
+  {{- end }}
+  {{- with $gatewayRendered }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if and .Values.ingress.className (semverCompare ">=1.18-0" .Capabilities.KubeVersion.GitVersion) }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls }}
+  tls:
+    {{- toYaml .Values.ingress.tls | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range $path := tuple "/openai" "/anthropic" "/gemini" }}
+          - path: {{ $path }}
+            pathType: Prefix
+            backend:
+              {{- if semverCompare ">=1.19-0" $.Capabilities.KubeVersion.GitVersion }}
+              service:
+                name: {{ $fullName }}-gateway
+                port:
+                  number: {{ $svcPort }}
+              {{- else }}
+              serviceName: {{ $fullName }}-gateway
               servicePort: {{ $svcPort }}
               {{- end }}
           {{- end }}

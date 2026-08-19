@@ -6292,6 +6292,101 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/cost/reprice:
+    post:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: Reprice Account Gateway Usage
+      description: 'Re-price historical gateway usage synchronously and report real
+        counts.
+
+
+        Unlike the billing plugin''s ``/billing/cost/reprice`` (which dispatches
+
+        windows over 7 days to a background worker and acknowledges with empty
+
+        counters), this endpoint always scans in-request — keyset-paginated, so
+
+        an operator backfilling weeks of history gets actual examined/updated
+
+        numbers instead of an ambiguous async ack. Budget-spend buckets are never
+
+        rewritten; provider-side actuals (``provider``/``reconciled``/
+
+        ``imported``) and ``subscription`` rows are never touched.'
+      operationId: reprice_account_gateway_usage_api_v1_cost_reprice_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RepriceRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RepriceResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
+  /api/v1/cost/ledger-backfill/csv:
+    post:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: Backfill From Provider Ledger Csv
+      description: 'Reconcile unpriced gateway rows against a provider daily-usage
+        export.
+
+
+        Distributes each (day x model) ledger total across this account''s
+
+        still-unpriced gateway rows for that day — pro-rata by tokens, equal
+
+        split when the bucket recorded no tokens — and tags them
+
+        ``cost_source=''reconciled''`` so provider actuals never mix with catalog
+
+        estimates. Only rows without a resolved cost are ever touched, which
+
+        also makes re-running the same export idempotent. The export''s "Other"
+
+        bucket is reported as an unallocatable residual, never distributed.
+
+
+        Defaults to a dry run that returns the full allocation plan; pass
+
+        ``apply=true`` to persist it.'
+      operationId: backfill_from_provider_ledger_csv_api_v1_cost_ledger_backfill_csv_post
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_backfill_from_provider_ledger_csv_api_v1_cost_ledger_backfill_csv_post'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LedgerBackfillResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
   /api/v1/usage/import:
     post:
       tags:
@@ -6322,6 +6417,68 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/UsageImportResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
+  /api/v1/usage/ingest:
+    post:
+      tags:
+      - Usage Import
+      - Usage Import
+      summary: Ingest Usage Records
+      description: 'Push a batch of external usage records into the cost ledger.
+
+
+        The continuous-push evolution of ``POST /usage/import``: a harness
+
+        posts sanitized spend records — or hook-shaped lifecycle events
+
+        (``event_type``) — as they occur instead of batch CSV. Each record is
+
+        identified by (source, external_id) per account, so replaying a batch
+
+        — e.g. a retry after a network timeout — returns 200 with the
+
+        replayed records flagged ``deduplicated`` and never double-counts
+
+        spend; a replay whose payload differs from the stored record is
+
+        additionally flagged ``conflict`` (first write wins, never a 409).
+
+        Records carry ``conversation_id`` / ``parent_conversation_id`` so
+
+        subagent workers billed on separate conversations can be rolled up
+
+        under their parent thread, and ``cost_basis`` so reconciled
+
+        billing-export records supersede hook-derived estimates in cost
+
+        summaries. Attribution precedence: explicit ``agent_id`` (must belong
+
+        to the account) wins; otherwise the account''s single managed agent
+
+        whose kind equals ``source`` is used, and zero or multiple candidates
+
+        is a 422.'
+      operationId: ingest_usage_records_api_v1_usage_ingest_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UsageIngestRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageIngestResponse'
         '422':
           description: Validation Error
           content:
@@ -11178,6 +11335,41 @@ components:
       - by_status
       title: BatchRollup
       description: Aggregate metrics over the executions of one batch.
+    Body_backfill_from_provider_ledger_csv_api_v1_cost_ledger_backfill_csv_post:
+      properties:
+        file:
+          type: string
+          contentMediaType: application/octet-stream
+          title: File
+          description: 'OpenRouter Activity -> Explore daily export (columns: date__day,
+            model, total_usage)'
+        provider:
+          type: string
+          title: Provider
+          default: openrouter
+        start:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Start
+          description: 'First UTC day (inclusive); default: CSV min.'
+        end:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: End
+          description: 'Last UTC day (inclusive); default: CSV max.'
+        apply:
+          type: boolean
+          title: Apply
+          description: Persist the allocation. Default is a dry run.
+          default: false
+      type: object
+      required:
+      - file
+      title: Body_backfill_from_provider_ledger_csv_api_v1_cost_ledger_backfill_csv_post
     Body_diff_policy_api_v1_policies_diff_post:
       properties:
         file:
@@ -13730,6 +13922,156 @@ components:
       type: object
       title: IssueUpdate
       description: Model for updating an issue.
+    LedgerBackfillBucket:
+      properties:
+        day:
+          type: string
+          format: date
+          title: Day
+        family:
+          type: string
+          title: Family
+        ledger_total:
+          type: number
+          title: Ledger Total
+        row_count:
+          type: integer
+          title: Row Count
+        allocated_total:
+          type: number
+          title: Allocated Total
+        ledger_models:
+          items:
+            type: string
+          type: array
+          title: Ledger Models
+      type: object
+      required:
+      - day
+      - family
+      - ledger_total
+      - row_count
+      - allocated_total
+      title: LedgerBackfillBucket
+      description: One (day x model family) allocation bucket of a ledger backfill.
+    LedgerBackfillResidual:
+      properties:
+        day:
+          type: string
+          format: date
+          title: Day
+        family:
+          type: string
+          title: Family
+        amount_usd:
+          type: number
+          title: Amount Usd
+      type: object
+      required:
+      - day
+      - family
+      - amount_usd
+      title: LedgerBackfillResidual
+      description: Ledger spend with no eligible usage rows to receive it.
+    LedgerBackfillResponse:
+      properties:
+        dry_run:
+          type: boolean
+          title: Dry Run
+          default: true
+        provider:
+          type: string
+          title: Provider
+        start:
+          type: string
+          format: date
+          title: Start
+        end:
+          type: string
+          format: date
+          title: End
+        ledger_entries:
+          type: integer
+          title: Ledger Entries
+          default: 0
+        eligible_rows:
+          type: integer
+          title: Eligible Rows
+          default: 0
+        rows_to_reconcile:
+          type: integer
+          title: Rows To Reconcile
+          default: 0
+        total_allocated:
+          type: number
+          title: Total Allocated
+          default: 0.0
+        rows_updated:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Rows Updated
+        other_residual_usd:
+          type: number
+          title: Other Residual Usd
+          default: 0.0
+        buckets:
+          items:
+            $ref: '#/components/schemas/LedgerBackfillBucket'
+          type: array
+          title: Buckets
+        unallocated_ledger:
+          items:
+            $ref: '#/components/schemas/LedgerBackfillResidual'
+          type: array
+          title: Unallocated Ledger
+        unmatched_rows:
+          items:
+            $ref: '#/components/schemas/LedgerBackfillUnmatched'
+          type: array
+          title: Unmatched Rows
+        skipped_csv_rows:
+          items:
+            type: string
+          type: array
+          title: Skipped Csv Rows
+      type: object
+      required:
+      - provider
+      - start
+      - end
+      title: LedgerBackfillResponse
+      description: 'Outcome (or dry-run preview) of a provider daily-ledger backfill.
+
+
+        ``rows_updated`` is ``None`` on a dry run — nothing was written, which is
+
+        different from "wrote 0 rows". ``other_residual_usd`` is the export''s
+
+        "Other" bucket inside the window: the provider does not say which models
+
+        it covers, so that spend is reported but never allocated and the matching
+
+        rows stay unpriced.'
+    LedgerBackfillUnmatched:
+      properties:
+        day:
+          type: string
+          format: date
+          title: Day
+        family:
+          type: string
+          title: Family
+        row_count:
+          type: integer
+          title: Row Count
+      type: object
+      required:
+      - day
+      - family
+      - row_count
+      title: LedgerBackfillUnmatched
+      description: Unpriced usage rows whose family had no ledger spend that day.
     LoginRequest:
       properties:
         username:
@@ -16088,6 +16430,79 @@ components:
       - challenge_token
       title: RegistrationVerifyRequest
       description: Authenticator response for the registration ceremony.
+    RepriceRequest:
+      properties:
+        start_date:
+          type: string
+          format: date-time
+          title: Start Date
+        end_date:
+          type: string
+          format: date-time
+          title: End Date
+        only_unpriced:
+          type: boolean
+          title: Only Unpriced
+          default: true
+        dry_run:
+          type: boolean
+          title: Dry Run
+          default: false
+      type: object
+      required:
+      - start_date
+      - end_date
+      title: RepriceRequest
+      description: Request body for re-pricing historical gateway usage.
+    RepriceResponse:
+      properties:
+        submitted_async:
+          type: boolean
+          title: Submitted Async
+          default: false
+        rows_examined:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Rows Examined
+        rows_updated:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Rows Updated
+        rows_skipped:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Rows Skipped
+        cost_before:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Cost Before
+        cost_after:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Cost After
+        dry_run:
+          type: boolean
+          title: Dry Run
+          default: false
+      type: object
+      title: RepriceResponse
+      description: 'Result of a repricing run (or async submission).
+
+
+        The counters are ``None`` — not ``0`` — when the run was dispatched to a
+
+        background worker (``submitted_async=True``): nothing has been scanned in
+
+        this request, so reporting zeros would be indistinguishable from "the
+
+        window really contained no rows" (the exact confusion behind "reprice
+
+        examined 0 rows" on large windows).'
     RollbackRequest:
       properties:
         preview_only:
@@ -18938,6 +19353,232 @@ components:
       type: object
       title: UsageImportResponse
       description: Result of an ingest request.
+    UsageIngestRecord:
+      properties:
+        external_id:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: External Id
+          description: Source-side record/turn id; dedupe key with `source`.
+        conversation_id:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Conversation Id
+        parent_conversation_id:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Parent Conversation Id
+          description: Conversation this record's conversation was spawned from (e.g.
+            a subagent worker's parent thread), for cost rollup.
+        timestamp:
+          type: string
+          format: date-time
+          title: Timestamp
+        event_type:
+          type: string
+          enum:
+          - session_start
+          - session_end
+          - subagent_start
+          - subagent_stop
+          - response
+          - compaction
+          - usage
+          title: Event Type
+          description: Hook-shaped lifecycle marker. 'usage' (default) requires a
+            model and at least one measurement; lifecycle events (session/subagent
+            start/stop, response, compaction) may carry zero token/cost data and no
+            model.
+          default: usage
+        model:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Model
+          description: Source-reported model name. Required for event_type='usage'.
+        charged_cost:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Charged Cost
+          description: Amount the source vendor charged, in USD. The billing truth;
+            never derived from tokens. Stored as a float on the ledger (estimated_cost
+            is a Float column), matching the CSV import path.
+        cost_basis:
+          type: string
+          enum:
+          - estimated
+          - reconciled
+          title: Cost Basis
+          description: '''estimated'' (hook/transcript-derived) or ''reconciled''
+            (billing export). Reconciled records supersede estimated records with
+            the same (source, conversation_id) in cost summaries; the two are never
+            summed together.'
+          default: estimated
+        input_tokens:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Input Tokens
+        output_tokens:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Output Tokens
+        cache_read_tokens:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Cache Read Tokens
+          description: Cache-read tokens, reported distinctly; never summed into charged
+            spend or total tokens.
+        message_count:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Message Count
+          description: Messages in the conversation so far (growth tripwire).
+        tool_call_count:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Tool Call Count
+          description: Tool calls in the conversation so far (growth tripwire).
+        metadata:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Metadata
+      type: object
+      required:
+      - external_id
+      - timestamp
+      title: UsageIngestRecord
+      description: 'One usage record pushed continuously by an external harness.
+
+
+        Unlike ``UsageImportEvent`` (batch CSV/JSON import, content-hash
+
+        dedupe), a pushed record carries a caller-supplied ``external_id`` so
+
+        replays after network timeouts are idempotent, plus conversation ids so
+
+        subagent workers billed on separate conversations can be rolled up
+
+        under their parent thread in Cost analytics.'
+    UsageIngestRecordResult:
+      properties:
+        external_id:
+          type: string
+          title: External Id
+        deduplicated:
+          type: boolean
+          title: Deduplicated
+          default: false
+        conflict:
+          type: boolean
+          title: Conflict
+          description: True when a deduplicated replay carried a DIFFERENT payload
+            than the stored record (first write wins; the batch still returns 200
+            so shippers can retry blindly).
+          default: false
+      type: object
+      required:
+      - external_id
+      title: UsageIngestRecordResult
+      description: Per-record outcome of a push-ingest request.
+    UsageIngestRequest:
+      properties:
+        records:
+          items:
+            $ref: '#/components/schemas/UsageIngestRecord'
+          type: array
+          maxItems: 1000
+          minItems: 1
+          title: Records
+        agent_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Agent Id
+          description: Managed agent to attribute the records to. When omitted, the
+            account's single managed agent whose kind matches `source` is used if
+            exactly resolvable.
+        source:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Source
+          description: Origin label stored on each row (e.g. 'cursor').
+      type: object
+      required:
+      - records
+      - source
+      title: UsageIngestRequest
+      description: Batch of pushed usage records to ingest.
+    UsageIngestResponse:
+      properties:
+        source:
+          type: string
+          title: Source
+        agent_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Agent Id
+        agent_display_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Display Name
+        accepted:
+          type: integer
+          title: Accepted
+          default: 0
+        deduplicated:
+          type: integer
+          title: Deduplicated
+          default: 0
+        conflicts:
+          type: integer
+          title: Conflicts
+          default: 0
+        results:
+          items:
+            $ref: '#/components/schemas/UsageIngestRecordResult'
+          type: array
+          title: Results
+      type: object
+      required:
+      - source
+      title: UsageIngestResponse
+      description: 'Result of a push-ingest request.
+
+
+        Replays return 200 with the replayed records flagged
+
+        ``deduplicated`` — spend is never double-counted. Replays whose
+
+        payload differs from the stored record are additionally flagged
+
+        ``conflict`` (first write wins; never a 409).'
     ValidationError:
       properties:
         loc:

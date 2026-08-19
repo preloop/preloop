@@ -19,6 +19,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `runtime-plugins/claude-preloop/test/live-sdk.e2e.mjs` exercises query,
   session reuse, interrupt, takeover, and release against the latest
   Claude Agent SDK (`PRELOOP_LIVE_CLAUDE_SDK=1`).
+- **Provider daily-ledger CSV backfill**: `POST /api/v1/cost/ledger-backfill/csv`
+  (permission `manage_budgets`) and `scripts/backfill_openrouter_ledger.py
+  --csv` accept an OpenRouter Activity → Explore daily export
+  (`date__day,model,total_usage`) and distribute each (day × model) total
+  across that account's still-unpriced gateway rows for the day — pro-rata
+  by tokens, equal split when the bucket recorded no tokens. Display names
+  are matched to recorded aliases via a shared family key; the export's
+  "Other" bucket names no model, so its spend is reported as a residual and
+  never allocated. Allocated rows are tagged `cost_source='reconciled'`
+  (never mixed with estimates), re-runs are idempotent (only still-unpriced
+  rows are ever written), and the default is a dry run that returns the full
+  allocation plan. CSV mode needs no management API key and has no 30-day
+  activity-endpoint horizon.
+- **Synchronous reprice endpoint**: `POST /api/v1/cost/reprice` (permission
+  `manage_budgets`) scans the requested window in-request — keyset-paginated,
+  up to 92 days — and returns real examined/updated counters, avoiding the
+  billing plugin's 7-day async cliff whose acknowledgement serialized as
+  "examined 0 rows".
+
+### Fixed
+
+- **Reprice row selection**: `only_unpriced` repricing now also examines rows
+  tagged `cost_source='unpriced'` that carry a stray stored cost (legacy $0
+  writes), and the ledger backfill additionally admits legacy rows recorded
+  before cost provenance existed (`cost_source IS NULL` with a NULL cost).
+- **Estimates can no longer overwrite actuals**: repricing (bulk and
+  single-row) refuses to touch `provider`, `reconciled`, and `imported`
+  cost sources even with `only_unpriced=false` — provider-reported and
+  ledger-reconciled figures are never replaced by catalog estimates.
+- **Async reprice acknowledgements**: `RepriceResponse` counters are `null`
+  (not `0`) when the run was dispatched to a background worker, so an async
+  submission is no longer indistinguishable from "the window contained no
+  rows".
+- **Ledger CSV parser rejects non-finite totals**: `nan` / `inf` in
+  `total_usage` are skipped like negatives, so they cannot land in
+  `estimated_cost`.
+
 - **Agent Control for Claude Code (G1) and native session targeting (G2)**:
   `claude_code` is now a supported Agent Control kind. `control_enabled`
   still requires sidecar/capability flags, not a blanket true. When a
@@ -40,6 +77,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "Update now? [y/N]" when stdin is a TTY and the running binary is
   writable. If the binary cannot be replaced, the CLI stays silent (no
   nag, no sudo hint).
+- **Gateway overhead script**: `scripts/measure_gateway_overhead.py`
+  (Python 3 stdlib) times streaming TTFB and time-to-close through the
+  gateway versus an optional same-model direct upstream. Keys stay in
+  the environment. See the script docstring for the env vars.
 - **`preloop flow trigger`**: CI-native trigger for an existing flow by id
   or name. Posts to `POST /api/v1/flows/{flow_id}/trigger`, accepts
   `--payload JSON` or `--payload -` (stdin), and waits for a terminal
@@ -114,6 +155,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Model gateway stream close**: the gateway now yields the terminal SSE
+  event (`message_stop` / `[DONE]`) before writing the usage row, so
+  bookkeeping no longer holds the last event on the client-visible stream.
+  A client that disconnects after that terminal event is recorded as 200
+  with captured usage, not 499/partial.
+- **OSS TLS proxy and Helm ingress skip the console hop for the model
+  gateway**: `/openai`, `/anthropic`, and `/gemini` now proxy straight to
+  the gateway instead of hairpinning through console nginx. Helm does
+  this with a second Ingress on the same host so SSE buffering can stay
+  off on those prefixes without changing `/`. Usage accounting is
+  unchanged: the gateway process still writes the request row. Re-run
+  `scripts/measure_gateway_overhead.py` against a public install to
+  confirm the TTFB delta.
 - **Qwen / Model Studio catalog**: the keyless picker now lists current chat
   models (`qwen3.8-max` first) instead of `qwen-plus` / `qwen-turbo` /
   `qwen-max` / `qwq-32b-preview`. Live `/models` listing honors a
@@ -146,6 +200,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   proportional to the push delta instead of the whole PR.
 
 ### Fixed
+
+- **GitLab CI against MCP Python SDK v2 and CLI telemetry**: integration
+  jobs now pin `mcp>=1.0.0,<2` (`pip install mcp` was pulling v2, which
+  removed `streamablehttp_client`). CLI unit tests disable adoption
+  telemetry so `preloop login --token` does not POST `/api/v1/events/batch`
+  at hermetic httptest servers. The frontend e2e seeder looks up the admin
+  account through ``User`` CRUD; ``CRUDAccount.get_by_email`` is gone.
 
 - **Unpriced-model admin alert on accounted $0 and empty completions**:
   when OpenRouter usage accounting was requested, an explicit `usage.cost`

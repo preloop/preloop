@@ -5,9 +5,9 @@ import logging
 from types import SimpleNamespace
 import uuid
 from typing import Any, Dict, List, Optional, Sequence, Union
-from sqlalchemy import Float, String, and_, case, cast, func, or_
+from sqlalchemy import Float, String, and_, case, cast, func, or_, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from ..models.api_usage import ApiUsage
 from ..models.flow import Flow
@@ -360,7 +360,10 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             account_id: Account scope.
             start: Window start (inclusive).
             end: Window end (exclusive).
-            only_unpriced: Restrict to rows without a stored cost.
+            only_unpriced: Restrict to rows without a resolved cost: NULL
+                ``estimated_cost`` (however tagged) plus rows explicitly
+                tagged ``cost_source='unpriced'`` that carry a stray numeric
+                cost (legacy $0 writes), so those anomalies heal too.
             batch_size: Rows fetched per query.
 
         Yields:
@@ -375,7 +378,12 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 ApiUsage.timestamp < end,
             )
             if only_unpriced:
-                query = query.filter(ApiUsage.estimated_cost.is_(None))
+                query = query.filter(
+                    or_(
+                        ApiUsage.estimated_cost.is_(None),
+                        ApiUsage.cost_source == "unpriced",
+                    )
+                )
             if last_id is not None:
                 query = query.filter(ApiUsage.id > last_id)
             batch = query.order_by(ApiUsage.id).limit(batch_size).all()
@@ -397,9 +405,11 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         """Yield unpriced gateway rows for one provider, keyset-paginated.
 
         Deliberately narrower than :meth:`iter_gateway_rows_for_repricing`:
-        only rows explicitly tagged ``cost_source='unpriced'`` for the given
-        provider are eligible, so a ledger backfill can never touch rows the
-        catalog (or the provider itself) already priced.
+        only rows explicitly tagged ``cost_source='unpriced'`` — plus legacy
+        rows recorded before provenance existed (``cost_source IS NULL`` with
+        a NULL cost, i.e. before the 20260712 accuracy-columns migration) —
+        are eligible for the given provider, so a ledger backfill can never
+        touch rows the catalog (or the provider itself) already priced.
 
         Args:
             db: Database session.
@@ -418,7 +428,13 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 ApiUsage.account_id == account_id,
                 ApiUsage.action_type == "model_gateway",
                 ApiUsage.provider_name == provider_name,
-                ApiUsage.cost_source == "unpriced",
+                or_(
+                    ApiUsage.cost_source == "unpriced",
+                    and_(
+                        ApiUsage.cost_source.is_(None),
+                        ApiUsage.estimated_cost.is_(None),
+                    ),
+                ),
                 ApiUsage.timestamp >= start,
                 ApiUsage.timestamp < end,
             )
@@ -2313,6 +2329,56 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         )
         return exists is not None
 
+    def get_imported_row_by_fingerprint(
+        self, db: Session, *, account_id: str, import_fingerprint: str
+    ) -> Optional[ApiUsage]:
+        """Return the account's imported row with this fingerprint, if any.
+
+        Used by the push-ingest path to flag conflicting replays: the
+        stored row's ``meta_data.ingest_content_hash`` is compared with the
+        incoming record's payload hash (first write wins either way).
+        """
+        return (
+            db.query(ApiUsage)
+            .filter(
+                ApiUsage.account_id == account_id,
+                ApiUsage.action_type == self.IMPORTED_USAGE_ACTION_TYPE,
+                ApiUsage.meta_data["import_fingerprint"].astext == import_fingerprint,
+            )
+            .first()
+        )
+
+    def get_imported_rows_by_fingerprints(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        fingerprints: Sequence[str],
+    ) -> Dict[str, ApiUsage]:
+        """Return imported rows keyed by fingerprint for a batch lookup.
+
+        Used by push-ingest to replace per-record existence SELECTs with one
+        ``IN`` query. Missing fingerprints are omitted from the result.
+        """
+        unique = list(dict.fromkeys(fp for fp in fingerprints if fp))
+        if not unique:
+            return {}
+        rows = (
+            db.query(ApiUsage)
+            .filter(
+                ApiUsage.account_id == account_id,
+                ApiUsage.action_type == self.IMPORTED_USAGE_ACTION_TYPE,
+                ApiUsage.meta_data["import_fingerprint"].astext.in_(unique),
+            )
+            .all()
+        )
+        found: Dict[str, ApiUsage] = {}
+        for row in rows:
+            fingerprint = (row.meta_data or {}).get("import_fingerprint")
+            if isinstance(fingerprint, str):
+                found[fingerprint] = row
+        return found
+
     def log_imported_usage_event(
         self,
         db: Session,
@@ -2320,7 +2386,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         account_id: str,
         user_id: Optional[str] = None,
         timestamp: datetime,
-        model_alias: str,
+        model_alias: Optional[str],
         source: str,
         prompt_tokens: Optional[int] = None,
         completion_tokens: Optional[int] = None,
@@ -2328,11 +2394,18 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         cache_read_tokens: Optional[int] = None,
         cache_creation_tokens: Optional[int] = None,
         cost_usd: Optional[float] = None,
+        cost_basis: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        parent_conversation_id: Optional[str] = None,
+        message_count: Optional[int] = None,
+        tool_call_count: Optional[int] = None,
         runtime_principal_type: Optional[str] = None,
         runtime_principal_id: Optional[str] = None,
         runtime_principal_name: Optional[str] = None,
         import_fingerprint: Optional[str] = None,
         meta_data: Optional[Dict[str, Any]] = None,
+        endpoint: Optional[str] = None,
+        skip_fingerprint_lookup: bool = False,
         commit: bool = True,
     ) -> Optional[ApiUsage]:
         """Record one imported usage event in the cost ledger.
@@ -2342,7 +2415,8 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             account_id: Owning account id.
             user_id: Importing user's id, for audit.
             timestamp: When the usage occurred at the source vendor.
-            model_alias: Source-reported model name (e.g. ``composer``).
+            model_alias: Source-reported model name (e.g. ``composer``);
+                NULL for lifecycle events pushed without one.
             source: Origin label (e.g. ``cursor``); stored in
                 ``meta_data.import_source``.
             prompt_tokens: Input tokens reported by the source.
@@ -2353,6 +2427,15 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             cache_creation_tokens: Cache-write tokens reported by the source.
             cost_usd: Amount the source vendor charged, in USD. Stored in
                 ``estimated_cost`` with ``cost_source='imported'``.
+            cost_basis: ``estimated`` or ``reconciled``; reconciled rows
+                supersede estimated rows with the same (account, source,
+                conversation_id) in imported-cost sums. NULL rows never
+                participate in supersession.
+            conversation_id: Source-side conversation the record belongs to.
+            parent_conversation_id: Conversation it was spawned from, for
+                worker->parent rollup.
+            message_count: Conversation message count (growth tripwire).
+            tool_call_count: Conversation tool-call count (growth tripwire).
             runtime_principal_type: Managed-agent principal type attribution.
             runtime_principal_id: Managed-agent principal id attribution.
             runtime_principal_name: Managed-agent display name attribution.
@@ -2363,13 +2446,23 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 index ``ix_api_usage_imported_fingerprint_uniq``, so two
                 concurrent imports of the same event cannot both land.
             meta_data: Extra keys merged into the stored ``meta_data``.
+            endpoint: Ledger endpoint label. Defaults to
+                ``/usage/import/{source}`` (CSV/JSON import). Push-ingest
+                passes ``/usage/ingest/{source}``.
+            skip_fingerprint_lookup: When True, skip the fast-path SELECT
+                (the caller already bulk-loaded existing fingerprints). The
+                unique index remains the concurrent-insert guard.
             commit: When False, flush only so callers can batch commits.
 
         Returns:
             The created row, or ``None`` when skipped as a duplicate.
         """
-        if import_fingerprint and self._imported_fingerprint_exists(
-            db, account_id=account_id, import_fingerprint=import_fingerprint
+        if (
+            import_fingerprint
+            and not skip_fingerprint_lookup
+            and self._imported_fingerprint_exists(
+                db, account_id=account_id, import_fingerprint=import_fingerprint
+            )
         ):
             return None
 
@@ -2386,7 +2479,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         db_obj = ApiUsage(
             user_id=user_id,
             account_id=account_id,
-            endpoint=f"/usage/import/{source}",
+            endpoint=endpoint or f"/usage/import/{source}",
             method="POST",
             status_code=200,
             duration=0.0,
@@ -2401,6 +2494,11 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             estimated_cost=cost_usd,
             currency="USD" if cost_usd is not None else None,
             cost_source="imported" if cost_usd is not None else None,
+            cost_basis=cost_basis,
+            conversation_id=conversation_id,
+            parent_conversation_id=parent_conversation_id,
+            message_count=message_count,
+            tool_call_count=tool_call_count,
             usage_source="imported",
             runtime_principal_type=runtime_principal_type,
             runtime_principal_id=runtime_principal_id,
@@ -2424,6 +2522,45 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             db.refresh(db_obj)
         return db_obj
 
+    def _imported_cost_sum(self, *, start_date: datetime, end_date: datetime):
+        """SUM of imported cost with reconciled-over-estimated precedence.
+
+        A ``cost_basis='reconciled'`` row (billing export) supersedes ALL
+        ``cost_basis='estimated'`` rows (hook/transcript-derived) with the
+        same (account, provider_name, conversation_id) **in the queried
+        window**: superseded rows contribute $0, so the two bases are never
+        summed for one scope. The EXISTS is bounded to
+        ``start_date <= timestamp < end_date`` so a reconciled row outside
+        the window cannot zero in-window estimates while contributing $0
+        itself. Rows without a conversation_id or with a NULL cost_basis
+        (legacy/CSV imports) never participate.
+        """
+        reconciled = aliased(ApiUsage)
+        superseded = and_(
+            ApiUsage.cost_basis == "estimated",
+            ApiUsage.conversation_id.isnot(None),
+            select(reconciled.id)
+            .where(
+                reconciled.account_id == ApiUsage.account_id,
+                reconciled.action_type == self.IMPORTED_USAGE_ACTION_TYPE,
+                reconciled.cost_basis == "reconciled",
+                reconciled.provider_name == ApiUsage.provider_name,
+                reconciled.conversation_id == ApiUsage.conversation_id,
+                reconciled.timestamp >= start_date,
+                reconciled.timestamp < end_date,
+            )
+            .exists(),
+        )
+        return func.coalesce(
+            func.sum(
+                case(
+                    (superseded, 0.0),
+                    else_=func.coalesce(ApiUsage.estimated_cost, 0.0),
+                )
+            ),
+            0.0,
+        )
+
     def get_imported_usage_summary(
         self,
         db: Session,
@@ -2435,6 +2572,10 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         source: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Aggregate imported usage totals for an account in a window.
+
+        ``imported_cost`` applies reconciled-over-estimated precedence (see
+        :meth:`_imported_cost_sum`); event/token totals count all rows.
+        Supersession is bounded to this same window.
 
         Args:
             db: Database session.
@@ -2450,7 +2591,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         query = db.query(
             func.count(ApiUsage.id).label("event_count"),
             func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
-            func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
+            self._imported_cost_sum(start_date=start_date, end_date=end_date).label(
                 "imported_cost"
             ),
         ).filter(
@@ -2483,6 +2624,10 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
     ) -> List[Dict[str, Any]]:
         """Group imported usage by source-reported model.
 
+        ``imported_cost`` applies reconciled-over-estimated precedence (see
+        :meth:`_imported_cost_sum`); event/token totals count all rows.
+        Supersession is bounded to this same window.
+
         Args:
             db: Database session.
             account_id: Account whose imported usage is aggregated.
@@ -2501,7 +2646,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             import_source.label("source"),
             func.count(ApiUsage.id).label("request_count"),
             func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
-            func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
+            self._imported_cost_sum(start_date=start_date, end_date=end_date).label(
                 "imported_cost"
             ),
             func.max(ApiUsage.timestamp).label("last_event_at"),
