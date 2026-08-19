@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import atexit
+import asyncio
 import hashlib
 import json
 import logging
@@ -9,6 +11,7 @@ import os
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from itertools import chain
@@ -131,6 +134,97 @@ ANTHROPIC_OAUTH_PASSTHROUGH_BASE_URL = "https://api.anthropic.com"
 ANTHROPIC_OAUTH_BETA_FLAG = "oauth-2025-04-20"
 ANTHROPIC_DEFAULT_API_VERSION = "2023-06-01"
 _ANTHROPIC_PASSTHROUGH_TIMEOUT_SECONDS = 600
+
+# Best-effort "request started" NATS publish must not sit on the TTFB path
+# when the caller has no running loop (sync StreamingResponse / tests).
+# Matches the billing plugin entitlements notify pattern: create_task when
+# a loop exists, otherwise a single-worker executor. wait=False so an
+# in-flight publish cannot block interpreter exit. Cap pending work and
+# drop-on-full: started events are telemetry, not billing.
+_GATEWAY_STARTED_EMIT_MAX_PENDING = 32
+_GATEWAY_STARTED_EMIT_PENDING = 0
+_GATEWAY_STARTED_EMIT_PENDING_LOCK = threading.Lock()
+_GATEWAY_STARTED_EMIT_EXECUTOR = ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="gateway-started-emit"
+)
+atexit.register(_GATEWAY_STARTED_EMIT_EXECUTOR.shutdown, wait=False)
+
+# Process-level Anthropic OAuth passthrough client. A fresh httpx.Client
+# per request pays a new TLS handshake; reuse keeps the connection warm.
+_ANTHROPIC_PASSTHROUGH_CLIENT: Optional[httpx.Client] = None
+_ANTHROPIC_PASSTHROUGH_CLIENT_LOCK = threading.Lock()
+
+
+def _anthropic_passthrough_http_client() -> httpx.Client:
+    """Return the process-level Anthropic passthrough httpx client."""
+    global _ANTHROPIC_PASSTHROUGH_CLIENT
+    client = _ANTHROPIC_PASSTHROUGH_CLIENT
+    if client is not None and not client.is_closed:
+        return client
+    with _ANTHROPIC_PASSTHROUGH_CLIENT_LOCK:
+        client = _ANTHROPIC_PASSTHROUGH_CLIENT
+        if client is None or client.is_closed:
+            client = httpx.Client(
+                timeout=_ANTHROPIC_PASSTHROUGH_TIMEOUT_SECONDS,
+                limits=httpx.Limits(
+                    max_keepalive_connections=20,
+                    max_connections=40,
+                ),
+            )
+            _ANTHROPIC_PASSTHROUGH_CLIENT = client
+        return client
+
+
+def _close_anthropic_passthrough_http_client() -> None:
+    """Close the process-level passthrough client (interpreter exit)."""
+    global _ANTHROPIC_PASSTHROUGH_CLIENT
+    with _ANTHROPIC_PASSTHROUGH_CLIENT_LOCK:
+        client = _ANTHROPIC_PASSTHROUGH_CLIENT
+        _ANTHROPIC_PASSTHROUGH_CLIENT = None
+        if client is not None and not client.is_closed:
+            client.close()
+
+
+atexit.register(_close_anthropic_passthrough_http_client)
+
+
+def _emit_account_event_nonblocking(event: Dict[str, Any]) -> None:
+    """Publish an account realtime event without blocking TTFB on NATS.
+
+    ``emit_account_event`` is already create_task when a loop is running.
+    The sync fallback uses ``run_async`` and waits for the publish. Started
+    events are telemetry: queue that sync path on a worker instead.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        _submit_gateway_started_emit(event)
+        return
+    emit_account_event(event)
+
+
+def _submit_gateway_started_emit(event: Dict[str, Any]) -> None:
+    """Queue a started-event publish, dropping it if the worker is backed up."""
+    global _GATEWAY_STARTED_EMIT_PENDING
+    with _GATEWAY_STARTED_EMIT_PENDING_LOCK:
+        if _GATEWAY_STARTED_EMIT_PENDING >= _GATEWAY_STARTED_EMIT_MAX_PENDING:
+            logger.debug("Dropping gateway request-started event; emit queue full")
+            return
+        _GATEWAY_STARTED_EMIT_PENDING += 1
+
+    def _run() -> None:
+        global _GATEWAY_STARTED_EMIT_PENDING
+        try:
+            emit_account_event(event)
+        finally:
+            with _GATEWAY_STARTED_EMIT_PENDING_LOCK:
+                _GATEWAY_STARTED_EMIT_PENDING -= 1
+
+    try:
+        _GATEWAY_STARTED_EMIT_EXECUTOR.submit(_run)
+    except RuntimeError:
+        with _GATEWAY_STARTED_EMIT_PENDING_LOCK:
+            _GATEWAY_STARTED_EMIT_PENDING -= 1
 
 
 def _supports_ambient_provider_credentials(ai_model: AIModel) -> bool:
@@ -686,15 +780,12 @@ class OpenAIGatewayService:
     ) -> None:
         from datetime import datetime, timezone
         from preloop.services.model_gateway_events import build_account_event
-        from preloop.services.account_realtime import (
-            emit_account_event,
-            ACCOUNT_TOPIC_GATEWAY_ACTIVITY,
-        )
+        from preloop.services.account_realtime import ACCOUNT_TOPIC_GATEWAY_ACTIVITY
 
         runtime_session_id = self._resolve_runtime_session()
         managed_agent_id = self._resolve_managed_agent_id()
 
-        emit_account_event(
+        _emit_account_event_nonblocking(
             build_account_event(
                 account_id=str(self.auth_context.user.account_id),
                 topic=ACCOUNT_TOPIC_GATEWAY_ACTIVITY,
@@ -1232,6 +1323,7 @@ class OpenAIGatewayService:
             emitted_text_start = False
             emitted_text_stop = False
             recorded = False
+            terminal_sent = False
             tool_call_states: Dict[int, Dict[str, Any]] = {}
             content_index = 0
 
@@ -1460,6 +1552,15 @@ class OpenAIGatewayService:
                         },
                     },
                 )
+                # Terminal event first so usage bookkeeping cannot hold
+                # message_stop on the client-visible stream. Mark complete
+                # before the yield so a client close at message_stop records
+                # 200 with captured usage, not 499/partial.
+                terminal_sent = True
+                yield self._anthropic_sse_event(
+                    "message_stop",
+                    {"type": "message_stop"},
+                )
                 self._record_gateway_request(
                     endpoint="/anthropic/v1/messages",
                     method="POST",
@@ -1479,10 +1580,6 @@ class OpenAIGatewayService:
                     accumulated_output_text="".join(assistant_parts),
                 )
                 recorded = True
-                yield self._anthropic_sse_event(
-                    "message_stop",
-                    {"type": "message_stop"},
-                )
             except Exception as exc:
                 gateway_error = self._stream_error("anthropic", exc)
                 if not recorded:
@@ -1528,6 +1625,7 @@ class OpenAIGatewayService:
                         usage_details=final_usage_details or final_usage,
                         budget_result=budget_result,
                         accumulated_output_text="".join(assistant_parts),
+                        stream_completed=terminal_sent,
                     )
 
         return self._observe_stream(
@@ -1642,6 +1740,7 @@ class OpenAIGatewayService:
             response_id: Optional[str] = None
             created_at: Optional[int] = None
             recorded = False
+            terminal_sent = False
             tool_call_states: Dict[int, Dict[str, Any]] = {}
             try:
                 for chunk in upstream_stream:
@@ -1738,6 +1837,12 @@ class OpenAIGatewayService:
                     ],
                     "usage": final_usage,
                 }
+                # Terminal event first so usage bookkeeping cannot hold
+                # [DONE] on the client-visible stream. Mark complete before
+                # the yield so a client close at [DONE] records 200 with
+                # captured usage, not 499/partial.
+                terminal_sent = True
+                yield self._sse_done()
                 self._record_gateway_request(
                     endpoint="/openai/v1/chat/completions",
                     method="POST",
@@ -1756,7 +1861,6 @@ class OpenAIGatewayService:
                     accumulated_output_text="".join(assistant_parts),
                 )
                 recorded = True
-                yield self._sse_done()
             except Exception as exc:
                 gateway_error = self._stream_error("openai", exc)
                 if not recorded:
@@ -1804,6 +1908,7 @@ class OpenAIGatewayService:
                         usage_details=final_usage_details or final_usage,
                         budget_result=budget_result,
                         accumulated_output_text="".join(assistant_parts),
+                        stream_completed=terminal_sent,
                     )
 
         return self._observe_stream(
@@ -1902,6 +2007,7 @@ class OpenAIGatewayService:
             final_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
             final_usage_details: Dict[str, Any] = {}
             recorded = False
+            terminal_sent = False
             text_output_index: Optional[int] = None
             output_items: List[Dict[str, Any]] = []
             tool_call_states: Dict[int, Dict[str, Any]] = {}
@@ -2154,6 +2260,12 @@ class OpenAIGatewayService:
                         "response": response_payload,
                     }
                 )
+                # Terminal event first so usage bookkeeping cannot hold
+                # [DONE] on the client-visible stream. Mark complete before
+                # the yield so a client close at [DONE] records 200 with
+                # captured usage, not 499/partial.
+                terminal_sent = True
+                yield self._sse_done()
                 self._record_gateway_request(
                     endpoint="/openai/v1/responses",
                     method="POST",
@@ -2172,7 +2284,6 @@ class OpenAIGatewayService:
                     accumulated_output_text="".join(assistant_parts),
                 )
                 recorded = True
-                yield self._sse_done()
             except Exception as exc:
                 gateway_error = self._stream_error("openai", exc)
                 if not recorded:
@@ -2218,6 +2329,7 @@ class OpenAIGatewayService:
                         usage_details=final_usage_details or final_usage,
                         budget_result=budget_result,
                         accumulated_output_text="".join(assistant_parts),
+                        stream_completed=terminal_sent,
                     )
 
         return self._observe_stream(
@@ -3326,6 +3438,8 @@ class OpenAIGatewayService:
                 None,
             )
             text_output_index = output_items.index(text_item) if text_item else None
+            recorded = False
+            terminal_sent = False
             try:
                 yield self._sse_event(
                     {
@@ -3401,6 +3515,12 @@ class OpenAIGatewayService:
                         "response": response_payload,
                     }
                 )
+                # Terminal event first so usage bookkeeping cannot hold
+                # [DONE] on the client-visible stream. Mark complete before
+                # the yield so a client close at [DONE] records 200 with
+                # captured usage, not 499/partial.
+                terminal_sent = True
+                yield "data: [DONE]\n\n"
                 self._record_gateway_request(
                     endpoint="/openai/v1/responses",
                     method="POST",
@@ -3414,24 +3534,26 @@ class OpenAIGatewayService:
                     budget_result=budget_result,
                     request_payload=payload,
                 )
-                yield "data: [DONE]\n\n"
+                recorded = True
             except Exception as exc:
                 gateway_error = self._stream_error("openai", exc)
-                self._record_gateway_request(
-                    endpoint="/openai/v1/responses",
-                    method="POST",
-                    status_code=gateway_error.status_code,
-                    duration=time.perf_counter() - started_at,
-                    ai_model=ai_model,
-                    requested_model=payload.get("model"),
-                    response_payload=None,
-                    upstream_response=None,
-                    endpoint_kind="responses_stream",
-                    budget_result=budget_result,
-                    error_detail=gateway_error.message,
-                    error_class=gateway_error.error_class,
-                    request_payload=payload,
-                )
+                if not recorded:
+                    self._record_gateway_request(
+                        endpoint="/openai/v1/responses",
+                        method="POST",
+                        status_code=gateway_error.status_code,
+                        duration=time.perf_counter() - started_at,
+                        ai_model=ai_model,
+                        requested_model=payload.get("model"),
+                        response_payload=None,
+                        upstream_response=None,
+                        endpoint_kind="responses_stream",
+                        budget_result=budget_result,
+                        error_detail=gateway_error.message,
+                        error_class=gateway_error.error_class,
+                        request_payload=payload,
+                    )
+                    recorded = True
                 # Status 200 is already on the wire; emit an SSE error event
                 # + [DONE] instead of truncating silently (#109, #117).
                 logger.warning(
@@ -3444,6 +3566,19 @@ class OpenAIGatewayService:
                 )
                 yield self._responses_stream_error_event(exc)
                 yield "data: [DONE]\n\n"
+            finally:
+                if not recorded:
+                    self._record_stream_abort(
+                        endpoint="/openai/v1/responses",
+                        endpoint_kind="responses_stream",
+                        started_at=started_at,
+                        ai_model=ai_model,
+                        payload=payload,
+                        usage_details=response_payload.get("usage"),
+                        budget_result=budget_result,
+                        accumulated_output_text=assistant_text,
+                        stream_completed=terminal_sent,
+                    )
 
         return self._observe_stream(
             event_stream(),
@@ -3506,6 +3641,9 @@ class OpenAIGatewayService:
 
         def event_stream() -> Iterator[str]:
             recorded = False
+            terminal_sent = False
+            assistant_text = ""
+            usage: Dict[str, Any] = {}
             try:
                 response_id = response_dict.get("id", f"chatcmpl_{int(time.time())}")
                 created_at = int(response_dict.get("created", time.time()))
@@ -3619,6 +3757,12 @@ class OpenAIGatewayService:
                     ],
                     "usage": usage,
                 }
+                # Terminal event first so usage bookkeeping cannot hold
+                # [DONE] on the client-visible stream. Mark complete before
+                # the yield so a client close at [DONE] records 200 with
+                # captured usage, not 499/partial.
+                terminal_sent = True
+                yield self._sse_done()
                 self._record_gateway_request(
                     endpoint="/openai/v1/chat/completions",
                     method="POST",
@@ -3633,7 +3777,6 @@ class OpenAIGatewayService:
                     request_payload=payload,
                 )
                 recorded = True
-                yield self._sse_done()
             except Exception as exc:
                 gateway_error = self._stream_error("openai", exc)
                 if not recorded:
@@ -3652,6 +3795,7 @@ class OpenAIGatewayService:
                         error_class=gateway_error.error_class,
                         request_payload=payload,
                     )
+                    recorded = True
                 # Status 200 is already on the wire; emit an SSE error event
                 # + [DONE] instead of truncating silently (#109, #117).
                 logger.warning(
@@ -3664,6 +3808,19 @@ class OpenAIGatewayService:
                 )
                 yield self._openai_stream_error_event(exc)
                 yield self._sse_done()
+            finally:
+                if not recorded:
+                    self._record_stream_abort(
+                        endpoint="/openai/v1/chat/completions",
+                        endpoint_kind="chat_completions_stream",
+                        started_at=started_at,
+                        ai_model=ai_model,
+                        payload=payload,
+                        usage_details=usage,
+                        budget_result=budget_result,
+                        accumulated_output_text=assistant_text,
+                        stream_completed=terminal_sent,
+                    )
 
         return self._observe_stream(
             event_stream(),
@@ -4073,11 +4230,10 @@ class OpenAIGatewayService:
             ModelGatewayAPIError: On transport failure or upstream >=400.
         """
         try:
-            response = httpx.post(
+            response = _anthropic_passthrough_http_client().post(
                 url,
                 headers=headers,
                 json=body,
-                timeout=_ANTHROPIC_PASSTHROUGH_TIMEOUT_SECONDS,
             )
         except httpx.HTTPError as exc:
             raise ModelGatewayAPIError(
@@ -4085,28 +4241,33 @@ class OpenAIGatewayService:
                 status_code=502,
                 message=f"Gateway upstream error: {exc}",
             ) from exc
-        # Anthropic sends ratelimit headers on successes too; that success
-        # signal is the subscription headroom observation (#136).
-        self._capture_rate_limit_headers(response.headers)
-        if response.status_code >= 400:
-            raise self._anthropic_passthrough_upstream_error(
-                response.status_code, response.text
-            )
         try:
-            response_payload = response.json()
-        except ValueError as exc:
-            raise ModelGatewayAPIError(
-                provider="anthropic",
-                status_code=502,
-                message="Gateway upstream error: invalid JSON from upstream",
-            ) from exc
-        if not isinstance(response_payload, dict):
-            raise ModelGatewayAPIError(
-                provider="anthropic",
-                status_code=502,
-                message="Gateway upstream error: unexpected upstream response shape",
-            )
-        return response_payload
+            # Anthropic sends ratelimit headers on successes too; that success
+            # signal is the subscription headroom observation (#136).
+            self._capture_rate_limit_headers(response.headers)
+            if response.status_code >= 400:
+                raise self._anthropic_passthrough_upstream_error(
+                    response.status_code, response.text
+                )
+            try:
+                response_payload = response.json()
+            except ValueError as exc:
+                raise ModelGatewayAPIError(
+                    provider="anthropic",
+                    status_code=502,
+                    message="Gateway upstream error: invalid JSON from upstream",
+                ) from exc
+            if not isinstance(response_payload, dict):
+                raise ModelGatewayAPIError(
+                    provider="anthropic",
+                    status_code=502,
+                    message=(
+                        "Gateway upstream error: unexpected upstream response shape"
+                    ),
+                )
+            return response_payload
+        finally:
+            response.close()
 
     def _open_anthropic_oauth_passthrough_stream(
         self, *, url: str, headers: Dict[str, str], body: Dict[str, Any]
@@ -4118,17 +4279,17 @@ class OpenAIGatewayService:
         gateway errors (and get recorded) instead of dying mid-stream.
 
         Returns:
-            Tuple of (client, response); the caller owns closing both.
+            Tuple of (shared client, response). Close the response after
+            use; the client is process-level and must stay open.
 
         Raises:
             ModelGatewayAPIError: On transport failure or upstream >=400.
         """
-        client = httpx.Client(timeout=_ANTHROPIC_PASSTHROUGH_TIMEOUT_SECONDS)
+        client = _anthropic_passthrough_http_client()
         try:
             request = client.build_request("POST", url, headers=headers, json=body)
             response = client.send(request, stream=True)
         except httpx.HTTPError as exc:
-            client.close()
             raise ModelGatewayAPIError(
                 provider="anthropic",
                 status_code=502,
@@ -4142,7 +4303,6 @@ class OpenAIGatewayService:
                 body_text = ""
             finally:
                 response.close()
-                client.close()
             raise self._anthropic_passthrough_upstream_error(
                 response.status_code, body_text
             )
@@ -4207,6 +4367,8 @@ class OpenAIGatewayService:
                     and isinstance(delta.get("text"), str)
                 ):
                     state["text_parts"].append(delta["text"])
+            elif event_type == "message_stop":
+                state["saw_stop"] = True
 
         def event_stream() -> Iterator[str]:
             state: Dict[str, Any] = {
@@ -4214,20 +4376,26 @@ class OpenAIGatewayService:
                 "stop_reason": None,
                 "usage": {},
                 "text_parts": [],
+                "saw_stop": False,
             }
             buffer = ""
             recorded = False
+            terminal_sent = False
             try:
                 for chunk in upstream_response.iter_text():
                     if not chunk:
                         continue
-                    yield chunk
                     buffer += chunk
                     while "\n" in buffer:
                         line, buffer = buffer.split("\n", 1)
                         _consume_sse_line(line, state)
+                    if state["saw_stop"]:
+                        terminal_sent = True
+                    yield chunk
                 if buffer:
                     _consume_sse_line(buffer, state)
+                    if state["saw_stop"]:
+                        terminal_sent = True
 
                 response_id = state["response_id"] or f"msg_{int(time.time())}"
                 normalized_usage = self._normalize_usage(
@@ -4306,13 +4474,16 @@ class OpenAIGatewayService:
                         usage_details=state["usage"],
                         budget_result=budget_result,
                         accumulated_output_text="".join(state["text_parts"]),
+                        stream_completed=terminal_sent,
                     )
                 upstream_response.close()
-                upstream_client.close()
+                # Shared process-level client: do not close.
 
-        # The upstream HTTP response and client are closed in the generator's
-        # finally, which never runs for a stream nobody consumed — hand them to
-        # the observer so an abandoned passthrough does not leak a connection.
+        # The upstream HTTP response is closed in the generator's finally,
+        # which never runs for a stream nobody consumed — hand it to the
+        # observer so an abandoned passthrough does not leak a connection.
+        # The httpx client is process-level and must not be closed here.
+        _ = upstream_client
         return self._observe_stream(
             event_stream(),
             endpoint="/anthropic/v1/messages",
@@ -4321,7 +4492,7 @@ class OpenAIGatewayService:
             ai_model=ai_model,
             payload=payload,
             budget_result=budget_result,
-            closes=(upstream_response, upstream_client),
+            closes=(upstream_response,),
         )
 
     def _build_completion_kwargs(
@@ -5727,16 +5898,45 @@ class OpenAIGatewayService:
         usage_details: Optional[Dict[str, Any]],
         budget_result: Optional[BudgetCheckResult],
         accumulated_output_text: Optional[str] = None,
+        stream_completed: bool = False,
     ) -> None:
-        """Best-effort usage record when a streaming client disconnects early.
+        """Best-effort usage record when a streaming client disconnects.
 
         Called from a ``finally`` during GeneratorExit, so it must never raise —
-        a failure here would replace a clean disconnect with an error. Status
-        499 ("client closed request") flags the partial record. Usage captured
-        so far is recorded as ``partial``; when no usage chunk arrived yet the
-        record path falls back to a local token estimate over the request and
-        accumulated output text.
+        a failure here would replace a clean disconnect with an error.
+
+        If the terminal SSE event already went out (``stream_completed``), the
+        stream finished successfully: record status 200 with captured usage.
+        499/partial would mark completed spend as client-cancelled. Mid-stream
+        disconnects still use 499 and ``usage_source="partial"``.
         """
+        if stream_completed:
+            try:
+                self._record_gateway_request(
+                    endpoint=endpoint,
+                    method="POST",
+                    status_code=200,
+                    duration=time.perf_counter() - started_at,
+                    ai_model=ai_model,
+                    requested_model=payload.get("model"),
+                    response_payload=None,
+                    upstream_response={"usage": usage_details}
+                    if isinstance(usage_details, dict)
+                    else None,
+                    endpoint_kind=endpoint_kind,
+                    budget_result=budget_result,
+                    request_payload=payload,
+                    accumulated_output_text=accumulated_output_text,
+                )
+            except (
+                Exception
+            ) as exc:  # pragma: no cover - defensive; never break teardown
+                self._rollback_activity_recording(
+                    exc,
+                    context="gateway usage recording after completed stream disconnect",
+                )
+            return
+
         has_partial_usage = isinstance(usage_details, dict) and any(
             usage_details.get(key)
             for key in (

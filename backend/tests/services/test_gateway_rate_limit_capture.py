@@ -71,6 +71,14 @@ def _oauth_credentials():
     )
 
 
+def _patch_passthrough_http_client(client: MagicMock):
+    """Passthrough uses a process-level client, not module-level httpx.post."""
+    return patch(
+        "preloop.services.openai_gateway._anthropic_passthrough_http_client",
+        return_value=client,
+    )
+
+
 def _claude_code_payload():
     return {
         "model": "anthropic/claude-sonnet-4-5",
@@ -114,14 +122,14 @@ def test_passthrough_429_records_rate_limit_telemetry(db_session, test_user):
         }
     )
 
+    upstream_client = MagicMock()
+    upstream_client.post.return_value = upstream_response
+
     with (
         patch(
             "preloop.services.openai_gateway.get_secret_service"
         ) as mock_secret_service,
-        patch(
-            "preloop.services.openai_gateway.httpx.post",
-            return_value=upstream_response,
-        ),
+        _patch_passthrough_http_client(upstream_client),
     ):
         mock_secret_service.return_value.resolve_ai_model_credentials.return_value = (
             _oauth_credentials()
@@ -170,14 +178,14 @@ def test_passthrough_success_records_headroom_snapshot(db_session, test_user):
         "usage": {"input_tokens": 3, "output_tokens": 2},
     }
 
+    upstream_client = MagicMock()
+    upstream_client.post.return_value = upstream_response
+
     with (
         patch(
             "preloop.services.openai_gateway.get_secret_service"
         ) as mock_secret_service,
-        patch(
-            "preloop.services.openai_gateway.httpx.post",
-            return_value=upstream_response,
-        ),
+        _patch_passthrough_http_client(upstream_client),
     ):
         mock_secret_service.return_value.resolve_ai_model_credentials.return_value = (
             _oauth_credentials()

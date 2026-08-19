@@ -240,7 +240,11 @@ environment:
 
 ### Ingress Configuration
 
-To enable ingress, set `ingress.enabled=true` and configure the ingress hosts:
+To enable ingress, set `ingress.enabled=true` and configure the ingress hosts.
+The chart renders two Ingress objects on that host: one sending `/` to the
+console Service, and one sending `/openai`, `/anthropic`, and `/gemini` to
+the gateway Service so streaming model traffic does not hairpin through
+console nginx.
 
 ```yaml
 ingress:
