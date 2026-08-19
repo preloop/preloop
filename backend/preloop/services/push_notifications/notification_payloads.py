@@ -3,6 +3,8 @@
 from typing import Dict, Any, Optional
 from datetime import datetime
 
+from preloop.models.schemas.approval_request import classify_approval_risk
+
 
 class NotificationPayloadBuilder:
     """Builder for APNs notification payloads.
@@ -125,6 +127,7 @@ class NotificationPayloadBuilder:
         # each id back to the label in `question_options`. iOS shows at most 4
         # actions, so cap at 4 options; beyond that the client falls back to
         # opening the app / inline text answer.
+        risk_level = classify_approval_risk(tool_name, args)
         category = "APPROVAL_REQUEST"
         if is_question:
             option_count = len(question_options)
@@ -132,6 +135,8 @@ class NotificationPayloadBuilder:
                 category = f"QUESTION_{option_count}_OPTIONS"
             else:
                 category = "QUESTION_REQUEST"
+        elif risk_level == "low":
+            category = "LOW_RISK_APPROVAL"
 
         # Format tool name nicely
         tool_display = tool_name.replace("_", " ").title()
@@ -186,6 +191,7 @@ class NotificationPayloadBuilder:
             "approval_request_id": request_id,
             "tool_name": tool_name,
             "priority": priority,
+            "risk_level": risk_level,
         }
         if ask_text:
             custom_data["summary"] = ask_text

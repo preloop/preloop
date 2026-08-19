@@ -34,6 +34,48 @@ from preloop.services.ai_approval_service import get_ai_approval_service
 
 logger = logging.getLogger(__name__)
 
+_LOCAL_PRESENCE_WINDOW = timedelta(seconds=20)
+
+
+def _operator_present_at_machine(db, approval_request: ApprovalRequest) -> bool:
+    """True only when the operator is at the local TTY.
+
+    Sidecar WebSocket heartbeats stamp ``last_seen_at`` in both local and
+    remote mode, so recency alone is not presence. Skip the approval push
+    only when the last advertised session mode is ``local`` *and* that
+    heartbeat is inside a 20s window. Unknown or remote mode fail open:
+    send the push rather than hide an approval from a phone/web operator.
+    """
+    agent_id = getattr(approval_request, "managed_agent_id", None)
+    if agent_id is None:
+        return False
+    from preloop.models.crud import crud_managed_agent
+
+    agent = crud_managed_agent.get(db, id=agent_id)
+    if agent is None:
+        return False
+    mode = getattr(agent, "control_session_mode", None)
+    if mode != "local":
+        snapshot: dict = {}
+        try:
+            from preloop.api.endpoints.agent_control import agent_control_snapshot
+
+            snapshot = agent_control_snapshot(str(agent_id))
+        except (ImportError, AttributeError, RuntimeError):
+            snapshot = {}
+        if snapshot.get("session_mode") != "local":
+            return False
+    seen = getattr(agent, "last_seen_at", None)
+    if seen is None:
+        return False
+    if seen.tzinfo is None:
+        from datetime import UTC as _UTC
+
+        seen = seen.replace(tzinfo=_UTC)
+    from datetime import UTC
+
+    return datetime.now(UTC) - seen <= _LOCAL_PRESENCE_WINDOW
+
 
 def _get_audit_service():
     """Get the audit service instance (lazy import to avoid circular deps)."""
@@ -2499,6 +2541,8 @@ class ApprovalService:
                     prefs = notification_preferences.get_by_user(sync_db, user_id)
                     if not prefs or not prefs.enable_mobile_push:
                         continue
+                    if getattr(prefs, "notify_when_needed", True) is False:
+                        continue
 
                     ios_tokens = prefs.get_device_tokens(platform="ios")
                     if ios_tokens:
@@ -2509,6 +2553,14 @@ class ApprovalService:
                     if android_tokens:
                         for token in android_tokens:
                             android_tokens_list.append((user_id, token))
+
+                if _operator_present_at_machine(sync_db, approval_request):
+                    logger.info(
+                        "Skipping approval push for %s: operator is present "
+                        "at the machine",
+                        approval_request.id,
+                    )
+                    return approver_user_ids, [], []
 
                 return approver_user_ids, ios_tokens_list, android_tokens_list
             finally:

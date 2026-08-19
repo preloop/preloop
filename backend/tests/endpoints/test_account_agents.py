@@ -1,6 +1,6 @@
 """Endpoint tests for managed-agent registry surfaces."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -83,6 +83,7 @@ def test_managed_agent_control_fields_merge_runtime_plugin_evidence():
     """A later CLI enrollment must not hide a live runtime control connection."""
     fields = _managed_agent_control_fields(
         {
+            "id": "agent-openclaw",
             "agent_kind": "openclaw",
             "session_source_type": "openclaw",
             "lifecycle_state": "active",
@@ -115,6 +116,7 @@ def test_managed_agent_control_fields_merge_runtime_plugin_evidence():
             },
             "managed_config": {},
         },
+        ws_connected=True,
     )
 
     assert fields["control_state"] == "plugin_connected"
@@ -142,12 +144,14 @@ def test_managed_agent_control_fields_enable_claude_code_with_sidecar_flags():
             },
             "managed_config": {},
         },
+        ws_connected=True,
     )
 
     assert connected["control_enabled"] is True
     assert connected["control_online"] is True
     assert connected["control_state"] == "plugin_connected"
     assert connected["control_capabilities"]
+    assert connected["control_session_mode"] == "remote"
 
     no_sidecar = _managed_agent_control_fields(
         {
@@ -164,6 +168,76 @@ def test_managed_agent_control_fields_enable_claude_code_with_sidecar_flags():
     assert no_sidecar["control_online"] is False
     assert no_sidecar["control_state"] == "unsupported"
     assert no_sidecar["control_capabilities"] == []
+
+
+def test_managed_agent_control_online_uses_persisted_last_seen():
+    """REST on another worker still reports online from the sidecar heartbeat."""
+    fields = _managed_agent_control_fields(
+        {
+            "id": "agent-from-db",
+            "agent_kind": "claude_code",
+            "session_source_type": "claude_code",
+            "lifecycle_state": "active",
+            "runtime_session_id": "runtime-claude",
+            "ended_at": None,
+            "last_seen_at": datetime.now(UTC) - timedelta(seconds=10),
+            "control_session_mode": "local",
+        },
+        {
+            "validation_result": {
+                "control_channel_configured": True,
+                "control_plugin_verified": True,
+                "control_ws_url_ok": True,
+                "control_bearer_token_ok": True,
+            },
+            "managed_config": {},
+        },
+    )
+
+    assert fields["control_online"] is True
+    assert fields["control_session_mode"] == "local"
+
+
+def test_managed_agent_control_online_ignores_enrollment_last_seen():
+    """Token mint stamps last_seen_at; that is not a sidecar heartbeat."""
+    fields = _managed_agent_control_fields(
+        {
+            "id": "agent-from-db",
+            "agent_kind": "claude_code",
+            "session_source_type": "claude_code",
+            "lifecycle_state": "active",
+            "runtime_session_id": "runtime-claude",
+            "ended_at": None,
+            "last_seen_at": datetime.now(UTC) - timedelta(seconds=10),
+        },
+        {
+            "validation_result": {
+                "control_channel_configured": True,
+                "control_plugin_verified": True,
+                "control_ws_url_ok": True,
+                "control_bearer_token_ok": True,
+            },
+            "managed_config": {},
+        },
+    )
+
+    assert fields["control_online"] is False
+    assert fields["control_session_mode"] == "offline"
+
+
+def test_managed_agent_summary_coerces_null_session_mode():
+    from preloop.schemas.gateway_usage import ManagedAgentSummary
+
+    summary = ManagedAgentSummary(
+        id="agent-1",
+        display_name="Claude",
+        session_source_type="claude_code",
+        session_source_id="src",
+        enrolled_via="cli",
+        last_seen_at=datetime.now(UTC),
+        control_session_mode=None,
+    )
+    assert summary.control_session_mode == "offline"
 
 
 def test_managed_agent_control_fields_keep_unknown_kinds_unsupported():

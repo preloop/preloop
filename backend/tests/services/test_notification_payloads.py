@@ -33,6 +33,18 @@ class TestNewApprovalRequestPayload:
         assert payload["approval_request_id"] == "123e4567-e89b-12d3-a456-426614174000"
         assert payload["tool_name"] == "create_issue"
         assert payload["priority"] == "medium"
+        assert payload["risk_level"] == "danger"
+        assert payload["aps"]["category"] == "APPROVAL_REQUEST"
+
+    def test_low_risk_read_uses_low_risk_category(self):
+        payload = NotificationPayloadBuilder.new_approval_request(
+            request_id="read-id",
+            tool_name="read",
+            tool_args={"path": "README.md"},
+        )
+        assert payload["risk_level"] == "low"
+        assert payload["aps"]["category"] == "LOW_RISK_APPROVAL"
+        assert payload["data"]["risk_level"] == "low"
 
     def test_summary_becomes_notification_body(self):
         """Plain-language summary is the primary body; tool name is subtitle."""

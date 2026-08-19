@@ -86,6 +86,14 @@ class NotificationPreferences(Base):
         ),
     )
 
+    notify_when_needed: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default="true",
+        comment="Push when the agent needs the operator (approvals, ask_user)",
+    )
+
     # Timestamps
     created_at: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True),

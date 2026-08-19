@@ -233,6 +233,14 @@ jobs:
         working-directory: runtime-plugins/openclaw-preloop
         run: npm test
 
+      - name: Install Claude plugin dependencies
+        working-directory: runtime-plugins/claude-preloop
+        run: npm ci
+
+      - name: Run Claude plugin tests
+        working-directory: runtime-plugins/claude-preloop
+        run: npm test
+
   # ==========================================================================
   # CLI (Windows)
   # ==========================================================================

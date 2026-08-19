@@ -307,8 +307,16 @@ class ManagedAgentSummary(BaseModel):
     supports_existing_session: bool = False
     supports_voice: bool = False
     supports_interrupt: bool = False
+    control_session_mode: str = "offline"
     supported_input_modes: List[str] = Field(default_factory=list)
     supported_output_modes: List[str] = Field(default_factory=list)
+
+    @field_validator("control_session_mode", mode="before")
+    @classmethod
+    def _offline_if_unset(cls, value: object) -> object:
+        if value is None or value == "":
+            return "offline"
+        return value
 
 
 class ManagedAgentUsageAggregate(BaseModel):

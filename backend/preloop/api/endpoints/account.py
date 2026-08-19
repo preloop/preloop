@@ -607,6 +607,8 @@ def _managed_agent_control_fields(
     summary: dict,
     latest_enrollment: Optional[dict],
     control_enrollment: Optional[dict] = None,
+    *,
+    ws_connected: Optional[bool] = None,
 ) -> dict:
     """Expose Agent Control only after an explicit runtime control enrollment."""
     agent_kind = str(
@@ -625,11 +627,32 @@ def _managed_agent_control_fields(
     control_enabled = bool(
         summary.get("lifecycle_state") == "active" and control_configured
     )
-    control_online = bool(
-        control_enabled
-        and summary.get("runtime_session_id")
-        and summary.get("ended_at") is None
-    )
+    snapshot: dict = {}
+    agent_id = str(summary.get("id") or "")
+    if ws_connected is None and agent_id:
+        try:
+            from preloop.api.endpoints.agent_control import agent_control_snapshot
+
+            snapshot = agent_control_snapshot(agent_id)
+        except (ImportError, AttributeError, RuntimeError):
+            snapshot = {}
+        ws_connected = bool(snapshot.get("online"))
+        if not ws_connected:
+            # Sidecar heartbeats persist last_seen_at *and* session mode.
+            # Enrollment and gateway usage also stamp last_seen_at, so recency
+            # alone would mark a freshly onboarded agent online. Require a
+            # persisted sidecar mode so a REST worker that did not accept the
+            # WebSocket can still report online.
+            persisted_mode = summary.get("control_session_mode")
+            seen = summary.get("last_seen_at")
+            if persisted_mode in {"local", "remote", "queued"} and seen is not None:
+                if getattr(seen, "tzinfo", None) is None:
+                    seen = seen.replace(tzinfo=UTC)
+                try:
+                    ws_connected = datetime.now(UTC) - seen <= timedelta(seconds=45)
+                except TypeError:
+                    ws_connected = False
+    control_online = bool(control_enabled and ws_connected)
     if control_online:
         control_state = AGENT_CONTROL_STATE_PLUGIN_CONNECTED
     elif control_enabled:
@@ -638,18 +661,31 @@ def _managed_agent_control_fields(
         control_state = AGENT_CONTROL_STATE_INSTALL_PENDING
     else:
         control_state = AGENT_CONTROL_STATE_UNSUPPORTED
+    supports_interrupt = bool(control_enabled and snapshot.get("supports_interrupt"))
+    if snapshot.get("online"):
+        session_mode = str(snapshot.get("session_mode") or "")
+    else:
+        session_mode = str(summary.get("control_session_mode") or "")
+    if not control_online:
+        session_mode = "offline"
+    elif session_mode not in {"local", "remote", "queued"}:
+        session_mode = "remote"
+    capabilities = list(AGENT_CONTROL_CAPABILITIES) if control_enabled else []
+    if control_enabled:
+        capabilities.extend(["request_takeover", "release"])
+    if supports_interrupt and "interrupt" not in capabilities:
+        capabilities.append("interrupt")
     return {
         "control_feature_name": "Agent Control",
-        "control_capabilities": (
-            list(AGENT_CONTROL_CAPABILITIES) if control_enabled else []
-        ),
+        "control_capabilities": capabilities,
         "control_state": control_state,
         "control_enabled": control_enabled,
         "control_online": control_online,
         "supports_new_session": control_enabled,
         "supports_existing_session": control_enabled,
         "supports_voice": control_enabled,
-        "supports_interrupt": False,
+        "supports_interrupt": supports_interrupt,
+        "control_session_mode": session_mode,
         "supported_input_modes": (
             list(AGENT_CONTROL_INPUT_MODES) if control_enabled else []
         ),

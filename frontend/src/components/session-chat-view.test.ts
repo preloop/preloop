@@ -206,6 +206,24 @@ describe('session-chat-view', () => {
     expect(operator!.textContent).to.contain('please also run lint');
   });
 
+  it('renders a queue chip on pending operator messages', async () => {
+    const activity = [
+      activityItem({
+        activity_type: 'agent_control_message',
+        timestamp: '2026-08-06T10:02:00Z',
+        title: 'Operator message',
+        summary: 'take over from the phone',
+        status: 'queued',
+      }),
+    ];
+    const el = await fixture<SessionChatView>(
+      html`<session-chat-view .activity=${activity}></session-chat-view>`
+    );
+    const chip = el.shadowRoot!.querySelector('.queue-chip');
+    expect(chip).to.exist;
+    expect(chip!.textContent).to.contain('Queued');
+  });
+
   it('renders session lifecycle markers as dividers', async () => {
     const events = [
       previewEvent('e1', '2026-08-06T10:01:00Z', [

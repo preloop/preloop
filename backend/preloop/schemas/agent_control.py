@@ -46,6 +46,8 @@ class AgentControlSendMessageRequest(BaseModel):
     start_new_session: bool = False
     input_mode: AgentControlInputMode = "text"
     voice: dict[str, Any] = Field(default_factory=dict)
+    spawn_worktree: bool = False
+    interrupt: bool = False
 
     @model_validator(mode="after")
     def validate_session_target(self) -> "AgentControlSendMessageRequest":
@@ -64,6 +66,23 @@ class AgentControlVoiceTranscriptRequest(BaseModel):
     voice: dict[str, Any] = Field(default_factory=dict)
     target_session_id: Optional[UUID] = None
     start_new_session: bool = False
+
+
+class AgentControlSessionActionRequest(BaseModel):
+    """Takeover or release a Claude Code (or other) session."""
+
+    target_session_id: Optional[UUID] = None
+    start_new_session: bool = False
+    spawn_worktree: bool = False
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_session_target(self) -> "AgentControlSessionActionRequest":
+        if self.start_new_session and self.target_session_id is not None:
+            raise ValueError(
+                "Use either start_new_session or target_session_id, not both"
+            )
+        return self
 
 
 class AgentControlCommandResponse(BaseModel):

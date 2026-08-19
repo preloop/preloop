@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Happy-class Claude Code control**: `preloop claude` owns the process
+  (native TUI locally, Agent SDK when phone/web/watch takes over, any-key
+  or Release returns to the TUI). Sidecar `@preloop-ai/claude-plugin`
+  (`runtime-plugins/claude-preloop`) plus Agent Control G1/G2 (`claude_code`
+  kind, native `session_source_id` on command envelopes). Approvals stay
+  on the existing PreToolUse hook. Config lives in
+  `~/.claude/preloop-control.json`. Live e2e in
+  `runtime-plugins/claude-preloop/test/live-sdk.e2e.mjs` exercises query,
+  session reuse, interrupt, takeover, and release against the latest
+  Claude Agent SDK (`PRELOOP_LIVE_CLAUDE_SDK=1`).
 - **Provider daily-ledger CSV backfill**: `POST /api/v1/cost/ledger-backfill/csv`
   (permission `manage_budgets`) and `scripts/backfill_openrouter_ledger.py
   --csv` accept an OpenRouter Activity → Explore daily export
@@ -55,6 +65,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   native fields are response-only: request models ignore any
   client-supplied value. `start_new_session` responses also return
   the minted history session's native identity.
+- **Claude Code Agent Control sidecar** (`@preloop-ai/claude-plugin`,
+  `runtime-plugins/claude-preloop`): steer sidecar-owned Claude Code sessions
+  (send_message, resume, interrupt, takeover, release) over the
+  `preloop.agent_control.v1` WebSocket via the Claude Agent SDK.
 - **`preloop update`**: download the matching GitHub release asset for this
   OS/architecture and replace the current binary in place. `--check` prints
   the latest version and exits; `--yes` / `-y` skips the confirmation

@@ -8498,6 +8498,77 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/agents/{agent_id}/control/takeover:
+    post:
+      tags:
+      - Agent Control
+      summary: Request Managed Agent Takeover
+      description: Ask the sidecar to switch a local TUI session into remote SDK mode.
+      operationId: request_managed_agent_takeover_api_v1_agents__agent_id__control_takeover_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Agent Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentControlSessionActionRequest'
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentControlCommandResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/agents/{agent_id}/control/release:
+    post:
+      tags:
+      - Agent Control
+      summary: Release Managed Agent Session
+      description: Release a remote SDK session back to the local `preloop claude`
+        TUI.
+      operationId: release_managed_agent_session_api_v1_agents__agent_id__control_release_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Agent Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentControlSessionActionRequest'
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentControlCommandResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/agents/permission-check:
     post:
       tags:
@@ -9619,11 +9690,42 @@ components:
           additionalProperties: true
           type: object
           title: Voice
+        spawn_worktree:
+          type: boolean
+          title: Spawn Worktree
+          default: false
+        interrupt:
+          type: boolean
+          title: Interrupt
+          default: false
       type: object
       required:
       - message
       title: AgentControlSendMessageRequest
       description: Operator request for routing a prompt to an online managed agent.
+    AgentControlSessionActionRequest:
+      properties:
+        target_session_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Target Session Id
+        start_new_session:
+          type: boolean
+          title: Start New Session
+          default: false
+        spawn_worktree:
+          type: boolean
+          title: Spawn Worktree
+          default: false
+        metadata:
+          additionalProperties: true
+          type: object
+          title: Metadata
+      type: object
+      title: AgentControlSessionActionRequest
+      description: Takeover or release a Claude Code (or other) session.
     AgentControlVoiceTranscriptRequest:
       properties:
         transcript:
@@ -10263,6 +10365,14 @@ components:
             type: object
           - type: 'null'
           title: Rule Context
+        risk_level:
+          type: string
+          title: Risk Level
+          description: 'danger for destructive/spend tools, otherwise low.
+
+
+            Unknown is treated as danger so notification actions stay fail-closed.'
+          readOnly: true
         was_bypassed:
           type: boolean
           title: Was Bypassed
@@ -10323,6 +10433,7 @@ components:
       - approver_comment
       - webhook_posted_at
       - webhook_error
+      - risk_level
       - was_bypassed
       - decided_by_human
       - approval_policy_id
@@ -15042,6 +15153,10 @@ components:
           type: boolean
           title: Supports Interrupt
           default: false
+        control_session_mode:
+          type: string
+          title: Control Session Mode
+          default: offline
         supported_input_modes:
           items:
             type: string
@@ -15261,6 +15376,11 @@ components:
           description: When True and push is enabled, delay approval email until the
             request is still pending after one minute
           default: true
+        notify_when_needed:
+          type: boolean
+          title: Notify When Needed
+          description: Push when the agent needs the operator (approvals, ask_user)
+          default: true
         id:
           type: string
           format: uuid
@@ -15320,6 +15440,12 @@ components:
           title: Stagger Email
           description: Delay approval email when push is also enabled and the request
             is still pending
+        notify_when_needed:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Notify When Needed
+          description: Push when the agent needs the operator (approvals, ask_user)
       type: object
       title: NotificationPreferencesUpdate
       description: Schema for updating notification preferences.
