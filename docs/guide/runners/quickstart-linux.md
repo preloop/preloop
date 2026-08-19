@@ -112,6 +112,15 @@ and `PRELOOP_URL`. Values are passed through the process environment,
 not argv, so they don't appear in `ps`. Container stdout/stderr is
 shipped back and shows up in the console execution view.
 
+`PRELOOP_API_TOKEN` is a **flow-execution token**, not the partner
+account's long-lived key. It is scoped to that execution (`mcp:read` /
+`mcp:write`), expires in about two hours, and is deactivated when the
+execution completes, fails, or is halted. Root on the runner host can
+still `docker inspect` the running container and read it for that
+window. `AGENT_CONFIG` is the flow's agent settings (image, type); the
+runner strips credential-shaped keys before injecting it. Model and MCP
+credentials stay on the control plane and are used through that token.
+
 ## Troubleshooting
 
 | Symptom | Fix |

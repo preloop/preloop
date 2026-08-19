@@ -343,7 +343,23 @@ func beginLeasedJob(
 		})
 	}
 
-	env := runnerJobEnv(job, runnerControlPlaneURL())
+	apiURL, err := runnerControlPlaneURL()
+	if err != nil {
+		reason := "PRELOOP_URL could not be resolved: " + err.Error()
+		_ = conn.WriteJSON(map[string]any{
+			"type":         "logs",
+			"execution_id": executionID,
+			"lines":        []string{reason},
+		})
+		return conn.WriteJSON(map[string]any{
+			"type":         "complete",
+			"execution_id": executionID,
+			"status":       "FAILED",
+			"error":        reason,
+		})
+	}
+
+	env := runnerJobEnv(job, apiURL)
 	cmd := exec.Command("docker", dockerRunArgs(image, env)...)
 	cmd.Env = append(os.Environ(), formatJobEnv(env)...)
 	var buf bytes.Buffer
@@ -450,11 +466,32 @@ func runnerJobEnv(job map[string]any, apiURL string) map[string]string {
 		env["PRELOOP_URL"] = apiURL
 	}
 	if cfg, ok := job["agent_config"].(map[string]any); ok && len(cfg) > 0 {
-		if data, err := json.Marshal(cfg); err == nil {
-			env["AGENT_CONFIG"] = string(data)
+		sanitized := sanitizeAgentConfig(cfg)
+		if len(sanitized) > 0 {
+			if data, err := json.Marshal(sanitized); err == nil {
+				env["AGENT_CONFIG"] = string(data)
+			}
 		}
 	}
 	return env
+}
+
+func sanitizeAgentConfig(cfg map[string]any) map[string]any {
+	out := make(map[string]any, len(cfg))
+	for key, value := range cfg {
+		lower := strings.ToLower(key)
+		if strings.Contains(lower, "token") ||
+			strings.Contains(lower, "secret") ||
+			strings.Contains(lower, "password") ||
+			strings.Contains(lower, "credential") ||
+			strings.HasSuffix(lower, "_key") ||
+			lower == "api_key" ||
+			lower == "apikey" {
+			continue
+		}
+		out[key] = value
+	}
+	return out
 }
 
 // dockerRunArgs passes env keys with bare -e flags so values are read
@@ -481,12 +518,16 @@ func formatJobEnv(env map[string]string) []string {
 	return pairs
 }
 
-func runnerControlPlaneURL() string {
+func runnerControlPlaneURL() (string, error) {
 	cfg, err := config.Resolve(FlagToken, FlagURL)
 	if err != nil {
-		return ""
+		return "", err
 	}
-	return strings.TrimRight(cfg.APIURL, "/")
+	apiURL := strings.TrimRight(cfg.APIURL, "/")
+	if apiURL == "" {
+		return "", fmt.Errorf("PRELOOP_URL is empty")
+	}
+	return apiURL, nil
 }
 
 func dockerAvailable() bool {

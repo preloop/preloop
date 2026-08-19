@@ -96,9 +96,12 @@ success, non-zero on FAILED/STOPPED/TIMEOUT.
 
 - One job at a time per runner; extra leases are declined while a job
   runs.
-- The agent container needs its model credentials via the flow's agent
-  config / MCP gateway; the runner passes `PRELOOP_API_TOKEN` +
-  `PRELOOP_URL` through, it does not inject provider API keys itself.
+- The agent container needs its model credentials via the control-plane
+  MCP gateway. The runner passes `PRELOOP_API_TOKEN` + `PRELOOP_URL`
+  through; it does not inject provider API keys. The token is
+  flow-scoped, lasts about two hours, and is deactivated when the
+  execution ends. Root on the host can still read it from the running
+  container until then.
 - No `git_clone_config` / `custom_commands` execution on the runner
   host yet — those run inside the agent image if it supports them.
 - Runner-side workspace caching is not implemented; every job is a

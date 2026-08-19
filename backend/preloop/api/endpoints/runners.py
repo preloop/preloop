@@ -14,7 +14,12 @@ from sqlalchemy.orm import Session
 
 from preloop.api.auth import get_current_active_user
 from preloop.models import schemas
-from preloop.models.crud import crud_flow_execution, crud_flow_execution_log, crud_user
+from preloop.models.crud import (
+    crud_api_key,
+    crud_flow_execution,
+    crud_flow_execution_log,
+    crud_user,
+)
 from preloop.models.crud.flow_runner import crud_flow_runner
 from preloop.models.db.session import get_db_session as get_db
 from preloop.models.models.flow_runner import FlowRunner
@@ -302,6 +307,12 @@ async def runner_ws(
                     if raw.get("error"):
                         execution.error_message = str(raw["error"])
                     db.add(execution)
+                    crud_api_key.deactivate_runtime_keys_for_flow_execution(
+                        db,
+                        account_id=runner.account_id,
+                        execution_id=execution_id,
+                        commit=False,
+                    )
                 db.add(runner)
                 db.commit()
                 await websocket.send_json({"type": "ack"})

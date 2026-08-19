@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -397,5 +398,43 @@ func TestRunnerCommandsExist(t *testing.T) {
 		if !names[want] {
 			t.Fatalf("missing runner %s", want)
 		}
+	}
+}
+
+func TestRunnerJobEnvStripsCredentialShapedAgentConfig(t *testing.T) {
+	job := map[string]any{
+		"execution_id": "exec-1",
+		"agent_config": map[string]any{
+			"image":          "preloop/agent:dev",
+			"api_key":        "provider-secret",
+			"token":          "also-secret",
+			"openai_api_key": "sk-test",
+		},
+	}
+	env := runnerJobEnv(job, "https://review.preloop.ai")
+	if !strings.Contains(env["AGENT_CONFIG"], `"image":"preloop/agent:dev"`) {
+		t.Fatalf("AGENT_CONFIG = %q", env["AGENT_CONFIG"])
+	}
+	for _, leaked := range []string{"provider-secret", "also-secret", "sk-test", "api_key", "token"} {
+		if strings.Contains(env["AGENT_CONFIG"], leaked) {
+			t.Fatalf("credential leaked into AGENT_CONFIG: %s in %q", leaked, env["AGENT_CONFIG"])
+		}
+	}
+}
+
+func TestRunnerControlPlaneURLFailsClosedOnBadConfig(t *testing.T) {
+	home := testenv.SetTempHome(t)
+	cfgDir := filepath.Join(home, ".preloop")
+	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), []byte(":\n  - not: yaml: ["), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldToken, oldURL := FlagToken, FlagURL
+	FlagToken, FlagURL = "", ""
+	t.Cleanup(func() { FlagToken, FlagURL = oldToken, oldURL })
+	if _, err := runnerControlPlaneURL(); err == nil {
+		t.Fatal("expected resolve failure")
 	}
 }

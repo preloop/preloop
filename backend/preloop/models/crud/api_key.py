@@ -323,6 +323,42 @@ class CRUDApiKey(CRUDBase[ApiKey]):
             db.flush()
         return deactivated
 
+    def deactivate_runtime_keys_for_flow_execution(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        execution_id: Any,
+        commit: bool = True,
+    ) -> List[ApiKey]:
+        """Deactivate runtime-scoped API keys bound to one flow execution."""
+        key_objs = (
+            db.query(ApiKey)
+            .filter(
+                ApiKey.account_id == account_id,
+                ApiKey.is_active.is_(True),
+                ApiKey.context_data.op("->>")("flow_execution_id") == str(execution_id),
+            )
+            .all()
+        )
+
+        deactivated: List[ApiKey] = []
+        for key_obj in key_objs:
+            key_obj.is_active = False
+            db.add(key_obj)
+            deactivated.append(key_obj)
+
+        if not deactivated:
+            return deactivated
+
+        if commit:
+            db.commit()
+            for key_obj in deactivated:
+                db.refresh(key_obj)
+        else:
+            db.flush()
+        return deactivated
+
     def deactivate_runtime_keys_for_managed_agent(
         self,
         db: Session,
