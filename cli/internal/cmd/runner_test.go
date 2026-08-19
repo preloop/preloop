@@ -63,6 +63,77 @@ func TestRunnerImageFromJob(t *testing.T) {
 	}
 }
 
+func TestRunnerJobEnvMatchesHostedContract(t *testing.T) {
+	job := map[string]any{
+		"execution_id":      "exec-1",
+		"flow_id":           "flow-1",
+		"prompt":            "review the PR",
+		"model_identifier":  "claude-sonnet-4-5",
+		"model_provider":    "anthropic",
+		"account_api_token": "secret-token",
+		"agent_config":      map[string]any{"image": "preloop/agent:dev"},
+	}
+	env := runnerJobEnv(job, "https://review.preloop.ai")
+	want := map[string]string{
+		"EXECUTION_ID":      "exec-1",
+		"FLOW_ID":           "flow-1",
+		"AGENT_PROMPT":      "review the PR",
+		"AI_MODEL":          "claude-sonnet-4-5",
+		"AI_MODEL_PROVIDER": "anthropic",
+		"PRELOOP_API_TOKEN": "secret-token",
+		"PRELOOP_URL":       "https://review.preloop.ai",
+		"AGENT_CONFIG":      `{"image":"preloop/agent:dev"}`,
+	}
+	if len(env) != len(want) {
+		t.Fatalf("env = %v, want %v", env, want)
+	}
+	for key, value := range want {
+		if env[key] != value {
+			t.Fatalf("env[%s] = %q, want %q", key, env[key], value)
+		}
+	}
+}
+
+func TestRunnerJobEnvSkipsMissingFields(t *testing.T) {
+	env := runnerJobEnv(map[string]any{"execution_id": "exec-1"}, "")
+	if len(env) != 1 || env["EXECUTION_ID"] != "exec-1" {
+		t.Fatalf("env = %v", env)
+	}
+}
+
+func TestDockerRunArgsUsesBareEnvFlags(t *testing.T) {
+	args := dockerRunArgs("preloop/agent:dev", map[string]string{
+		"PRELOOP_API_TOKEN": "secret-token",
+		"EXECUTION_ID":      "exec-1",
+	})
+	want := []string{
+		"run", "--rm",
+		"-e", "EXECUTION_ID",
+		"-e", "PRELOOP_API_TOKEN",
+		"preloop/agent:dev",
+	}
+	if len(args) != len(want) {
+		t.Fatalf("args = %v, want %v", args, want)
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Fatalf("args[%d] = %q, want %q", i, args[i], want[i])
+		}
+	}
+	for _, arg := range args {
+		if strings.Contains(arg, "secret-token") {
+			t.Fatalf("secret leaked into argv: %v", args)
+		}
+	}
+}
+
+func TestFormatJobEnv(t *testing.T) {
+	pairs := formatJobEnv(map[string]string{"B": "2", "A": "1"})
+	if len(pairs) != 2 || pairs[0] != "A=1" || pairs[1] != "B=2" {
+		t.Fatalf("pairs = %v", pairs)
+	}
+}
+
 func TestRunnerStateRoundTrip(t *testing.T) {
 	testenv.SetTempHome(t)
 	state := &runnerState{ID: "abc", Token: "tok", Name: "box"}
