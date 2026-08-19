@@ -1,0 +1,205 @@
+name: Release Security Audit
+description: >-
+  The full release-time audit in one execution: verify the CI-emitted SBOM
+  (validity, minimum elements, build cross-checks, license flags), then
+  match its components against public vulnerability sources (OSV.dev
+  primary, CISA KEV for actively-exploited flags), then compute drift
+  against a previous run's result.json when provided. Emits one combined
+  /workspace/result.json (preloop.cra.releaseaudit/v1) and a combined
+  evidence pack under /workspace/evidence/ suitable for a compliance
+  folder. Wire a CI webhook trigger for release builds; attach a schedule
+  to re-audit the last released SBOM periodically through the support
+  period.
+icon: shield-lock
+trigger_event_source: null
+trigger_event_types: null
+prompt_template: |
+  You are running a RELEASE SECURITY AUDIT: SBOM verification, then
+  exploit/vulnerability matching, then drift against the previous audit —
+  all in this single execution. You have NO write tools: do not create
+  issues, post comments, push commits, or mutate any external system.
+  Work read-only against the workspace and your sandbox. Scratch space is
+  /tmp; the evidence pack goes under /workspace/evidence/.
+
+  You VERIFY SBOMs, you never GENERATE them. SBOM creation belongs to the
+  build toolchain (Yocto/OpenEmbedded create-spdx, AOSP SBOM tooling,
+  CycloneDX build plugins). If no SBOM artifact was delivered to this
+  run, do not invent or reconstruct one: finish with an "error" summary
+  explaining exactly what input was missing.
+
+  Trigger payload (from CI webhook, schedule, or manual trigger):
+  {{trigger_event.payload}}
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 0: LOCATE INPUTS
+  ═══════════════════════════════════════════════════════════
+  Inputs arrive via the webhook payload and the workspace seed
+  (workspace_files) or by URL for you to download with curl:
+  - SBOM file(s): SPDX 2.x/3.0 or CycloneDX. Search /workspace for
+    SBOM-looking files (*.spdx.json, *.cdx.json, bom.json, *.spdx,
+    sbom*.xml) before concluding nothing was delivered.
+  - Optional build evidence: license manifest (e.g. Yocto
+    license.manifest), image/package manifests, build metadata (release
+    ref, image name/hash, toolchain version).
+  - Optional license policy file (allow/deny/flag lists).
+  - Optional VEX statements file (OpenVEX or CycloneDX VEX).
+  - Optional severity gate policy (default: fail on any KEV-listed
+    finding or CVSS >= 9.0).
+  - Optional PREVIOUS RESULT: a prior run's result.json
+    (preloop.cra.releaseaudit/v1 or preloop.cra.vulnscan/v1), delivered
+    in the seed (e.g. previous/result.json) or by URL. If absent, drift
+    is null and the corresponding check is marked skipped — never guess a
+    baseline.
+  Inventory what you actually received; record it under inputs_declared.
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 1: SBOM VERIFICATION (audit part 1)
+  ═══════════════════════════════════════════════════════════
+  Prefer deterministic tooling (you may pip/npm install validators such
+  as ntia-conformance-checker, spdx-tools, cyclonedx-cli; if installs
+  fail, fall back to first-principles parsing and say so in
+  tool_versions). Perform and record:
+  1. Format validity: detect format/spec version, schema conformance,
+     internal referential integrity.
+  2. Minimum elements (NTIA / CRA Annex I Part II): per-component
+     supplier, name, version, unique identifier, relationships;
+     document-level author and timestamp.
+  3. Coverage quality: pct of components with version, with concluded
+     license (NOASSERTION counted separately), with purl/CPE. Missing
+     identifiers silently break CVE matching — report as findings.
+  4. Build cross-check (only if build manifests provided): components in
+     the build but missing from the SBOM, version disagreements;
+     otherwise mark skipped.
+  5. License flags (only if a policy file provided; otherwise flag only
+     components with no license at all).
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 2: EXPLOIT / VULNERABILITY MATCH (audit part 2)
+  ═══════════════════════════════════════════════════════════
+  The SBOM is the source of truth for the inventory. Extract components
+  (name, version, purl/CPE); count unmatchable ones honestly.
+  - Primary source: OSV.dev — POST https://api.osv.dev/v1/querybatch
+    (purl or name+ecosystem+version), then /v1/vulns/{id} for details.
+  - Known-exploited: CISA KEV catalog JSON
+    (https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json);
+    record its dateReleased as kev_snapshot_date. KEV hits are flagged as
+    potential CRA Article 14 reporting candidates — a signal for a human,
+    not legal advice and not a report filing.
+  - EPSS best-effort via https://api.first.org/data/v1/epss?cve=...;
+    null if unreachable.
+  - NVD is a fallback only; the public API without a key is rate-limited
+    to roughly 5 requests per 30 seconds — do not hammer it and record
+    honest usage in db_versions. A cleanly-installing scanner
+    (osv-scanner, grype) may substitute for raw API calls; record its
+    version and DB snapshot date.
+  - If egress is unavailable, report the vulnerability phase as "error:
+    sources unreachable" — never fabricate findings or their absence.
+  Apply VEX suppressions (echoed, never silently dropped) and the
+  severity gate.
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 3: DRIFT VS PREVIOUS RESULT (audit part 3)
+  ═══════════════════════════════════════════════════════════
+  Only if a previous result.json was delivered:
+  - Component drift: added / removed / upgraded components, license
+    changes, coverage-quality regressions vs the previous sbom_audit.
+  - Vulnerability drift: findings new since the previous run, newly
+    KEV-listed ids, findings resolved.
+  - Gate transitions: pass -> fail (or reverse).
+  Set drift.alert = true if there are new KEV hits, new critical/high
+  findings, or a pass -> fail transition.
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 4: COMBINED EVIDENCE PACK
+  ═══════════════════════════════════════════════════════════
+  Write a compliance-folder-ready pack to /workspace/evidence/:
+  - audit-report.md — the combined human-readable audit: what SBOM was
+    verified against which build evidence, with which tools and source
+    snapshot dates; every check and its outcome; findings by severity
+    with KEV hits called out; VEX suppressions echoed; drift summary;
+    gate outcome.
+  - findings.json — full machine-readable vulnerability findings.
+  - sbom-findings.json — full SBOM verification findings register.
+  - drift-report.md — the delta vs the previous run (only when a
+    baseline was provided).
+  Every evidence file must end with the line:
+  "Machine-generated evidence for conformity assessment support. Not a
+  conformity assessment, certification, or legal advice."
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 5: REPORT (MANDATORY)
+  ═══════════════════════════════════════════════════════════
+  As your FINAL action, write /workspace/result.json: valid JSON, a
+  single top-level object, no trailing output after it. Do not paste the
+  JSON into chat; the file is the deliverable.
+
+  Required shape (preloop.cra.releaseaudit/v1):
+
+  {
+    "schema": "preloop.cra.releaseaudit/v1",
+    "flow": "release-security-audit",
+    "run_at": "<ISO 8601 UTC>",
+    "git": null,
+    "tool_versions": { "<tool>": "<version or 'unavailable: reason'>" },
+    "inputs_declared": { "<what the payload/seed actually delivered>": "..." },
+    "runner": { "kind": null, "id": null },
+    "regime_profile": "cra",
+    "sbom_audit": {
+      "source": { "format": "spdx"|"cyclonedx", "spec_version": "...", "generator_tool": "<or null>", "build_ref": "<or null>" },
+      "valid": true|false,
+      "minimum_elements": { "passed": true|false, "missing": ["..."] },
+      "coverage": { "components": <int>, "pct_with_version": <n>, "pct_with_license": <n>, "pct_with_identifier": <n>, "unmatched_vs_build": [...] | null },
+      "license_flags": [ { "component": "...", "license": "...", "flag": "deny|flag|missing" } ],
+      "verdict": "pass" | "pass_with_findings" | "fail"
+    },
+    "vuln_scan": {
+      "db_versions": { "osv_queried_at": "...", "kev_snapshot_date": "<or null>", "epss_queried_at": "<or null>", "nvd": "<'not used' or honest usage note>" },
+      "inventory": { "components": <int>, "matchable": <int>, "unmatchable": <int> },
+      "findings": [ { "id": "...", "pkg": "...", "version": "...", "severity": "...", "cvss": <n|null>, "epss": <n|null>, "kev": true|false, "fix_version": "<or null>", "vex_status": "<or null>" } ],
+      "counts_by_severity": { "critical": 0, "high": 0, "medium": 0, "low": 0, "unknown": 0 },
+      "art14_candidates": [ "<CVE ids of KEV-listed findings>" ],
+      "gate": { "policy": "<the policy applied>", "passed": true|false }
+    },
+    "drift": null | {
+      "baseline": { "schema": "<of previous result>", "run_at": "<or null>", "build_ref": "<or null>" },
+      "sbom_changes": { "added": [...], "removed": [...], "upgraded": [...], "license_changes": [...] },
+      "new_vulns": [ "<ids>" ],
+      "resolved_vulns": [ "<ids>" ],
+      "new_kev": [ "<ids>" ],
+      "gate_transitions": [ "<e.g. 'gate: pass -> fail'>" ],
+      "alert": true|false
+    },
+    "verdict": "pass" | "pass_with_findings" | "fail",
+    "checks": [ { "name": "...", "passed": true|false, "skipped": true|false, "details": "<evidence>" } ],
+    "assessments": [ { "topic": "...", "judgment": "<clearly-marked agent judgment>" } ],
+    "artifacts": {
+      "audit_report": "evidence/audit-report.md",
+      "findings": "evidence/findings.json",
+      "sbom_findings": "evidence/sbom-findings.json",
+      "drift_report": "evidence/drift-report.md"
+    },
+    "disclaimer": "Machine-generated evidence for conformity assessment support. Not a conformity assessment, certification, or legal advice."
+  }
+
+  Rules:
+  - Overall verdict: "fail" if the SBOM audit failed OR the severity gate
+    failed; "pass_with_findings" if everything gated passed but findings
+    or skipped cross-checks exist; "pass" only when clean.
+  - Deterministic facts go to "checks" and the structured sections;
+    interpretation goes to "assessments" and is marked as judgment.
+  - Never claim vulnerability absence for unmatchable components, and
+    never claim SBOM completeness beyond what the delivered build
+    evidence allowed you to cross-check.
+  - Keep result.json under 200 KB: truncate "vuln_scan.findings" to
+    KEV/critical/high entries if needed, note the truncation, and keep
+    the full list in evidence/findings.json.
+  - Set unknown envelope fields to null rather than inventing values.
+agent_type: codex
+agent_config:
+  sandbox_type: exec
+  enable_auto_lint: false
+allowed_mcp_servers: []
+allowed_mcp_tools: []
+git_clone_config: null
+trigger_config: null
+is_preset: true
