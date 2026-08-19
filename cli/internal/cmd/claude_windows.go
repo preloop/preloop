@@ -24,7 +24,7 @@ func stdinByteReady(fd int, timeout time.Duration) (bool, error) {
 
 func consumeStdinByte(fd int) {
 	var b [1]byte
-	_, _ = syscall.Read(fd, b[:])
+	_, _ = syscall.Read(syscall.Handle(fd), b[:])
 }
 
 func claudeSysProcAttr() *syscall.SysProcAttr {
