@@ -14,6 +14,13 @@ import (
 
 var procPeekNamedPipe = windows.NewLazySystemDLL("kernel32.dll").NewProc("PeekNamedPipe")
 
+// stdinHeld keeps a byte that the EOF probe consumed if data arrived
+// between PeekNamedPipe and the non-blocking ReadFile.
+var stdinHeld struct {
+	has bool
+	b   byte
+}
+
 func peekPipeAvail(handle windows.Handle) (uint32, error) {
 	var avail uint32
 	r1, _, err := procPeekNamedPipe.Call(
@@ -31,6 +38,30 @@ func peekPipeAvail(handle windows.Handle) (uint32, error) {
 		return 0, syscall.EINVAL
 	}
 	return avail, nil
+}
+
+func pipeEOF(handle windows.Handle) bool {
+	// PeekNamedPipe reports a closed write end as success with avail==0,
+	// not ERROR_BROKEN_PIPE. A non-blocking 1-byte read distinguishes EOF
+	// from an empty live pipe (Unix poll surfaces POLLHUP the same way).
+	nowait := uint32(windows.PIPE_NOWAIT)
+	if err := windows.SetNamedPipeHandleState(handle, &nowait, nil, nil); err != nil {
+		return false
+	}
+	defer func() {
+		wait := uint32(windows.PIPE_WAIT)
+		_ = windows.SetNamedPipeHandleState(handle, &wait, nil, nil)
+	}()
+	var n uint32
+	var buf [1]byte
+	err := windows.ReadFile(handle, buf[:], &n, nil)
+	if n > 0 {
+		stdinHeld.has = true
+		stdinHeld.b = buf[0]
+		return true
+	}
+	return errors.Is(err, windows.ERROR_BROKEN_PIPE) ||
+		errors.Is(err, windows.ERROR_PIPE_NOT_CONNECTED)
 }
 
 func stdinByteReady(fd int, timeout time.Duration) (bool, error) {
@@ -59,12 +90,16 @@ func stdinByteReady(fd int, timeout time.Duration) (bool, error) {
 	for {
 		avail, err := peekPipeAvail(handle)
 		if err != nil {
-			if errors.Is(err, windows.ERROR_BROKEN_PIPE) {
+			if errors.Is(err, windows.ERROR_BROKEN_PIPE) ||
+				errors.Is(err, windows.ERROR_PIPE_NOT_CONNECTED) {
 				return true, nil
 			}
 			return false, err
 		}
 		if avail > 0 {
+			return true, nil
+		}
+		if pipeEOF(handle) {
 			return true, nil
 		}
 		if !infinite && !time.Now().Before(deadline) {
@@ -75,6 +110,10 @@ func stdinByteReady(fd int, timeout time.Duration) (bool, error) {
 }
 
 func consumeStdinByte(fd int) {
+	if stdinHeld.has {
+		stdinHeld.has = false
+		return
+	}
 	var b [1]byte
 	_, _ = syscall.Read(syscall.Handle(fd), b[:])
 }

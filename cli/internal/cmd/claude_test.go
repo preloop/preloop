@@ -93,6 +93,24 @@ func TestStdinByteReadyOnPipe(t *testing.T) {
 	}
 }
 
+func TestStdinByteReadyOnClosedPipe(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ready, err := stdinByteReady(int(r.Fd()), 50*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ready {
+		t.Fatal("closed write end should look ready (EOF / hangup)")
+	}
+}
+
 func TestWaitForStdinOrReleaseReturnsOnReleaseWithoutStealing(t *testing.T) {
 	r, w, err := os.Pipe()
 	if err != nil {
