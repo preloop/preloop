@@ -28,7 +28,10 @@ by the provider itself are untouched.
 
 from __future__ import annotations
 
+import csv
+import io
 import logging
+import math
 import re
 import uuid
 from collections import defaultdict
@@ -84,6 +87,29 @@ def alias_family(name: Optional[str]) -> Optional[str]:
     return family or None
 
 
+def display_name_family(name: Optional[str]) -> Optional[str]:
+    """Reduce a provider-UI model display name to the shared family key.
+
+    The Activity -> Explore export names models for humans ("Acme Z9 Mini
+    0731"), while our usage rows record slugs
+    ("openrouter/acme/acme-z9-mini-0731"). Matching rule: collapse
+    whitespace to single hyphens, lowercase, then apply the same
+    prefix/variant/date normalization :func:`alias_family` applies to slugs,
+    so both sides land on one comparable key ("acme-z9-mini-0731").
+
+    Args:
+        name: A display name from the Explore export (or a raw slug, which
+            passes through :func:`alias_family` unchanged).
+
+    Returns:
+        The normalized family key, or None for empty input.
+    """
+    if not isinstance(name, str) or not name.strip():
+        return None
+    slugified = "-".join(name.strip().lower().split())
+    return alias_family(slugified)
+
+
 @dataclass(frozen=True)
 class LedgerEntry:
     """One (day, model) aggregate from the provider's activity ledger."""
@@ -91,6 +117,100 @@ class LedgerEntry:
     day: date
     model: str
     usage_usd: float
+
+
+#: Column headers of the OpenRouter Activity -> Explore daily export.
+EXPLORER_COLUMNS = ("date__day", "model", "total_usage")
+
+#: The export's aggregate bucket for long-tail models. It names no model, so
+#: its spend can only be reported as an unallocatable residual — inventing a
+#: split for it would assign money to rows the provider never priced.
+EXPLORER_OTHER_LABEL = "other"
+
+
+@dataclass
+class ExplorerLedger:
+    """A parsed Activity -> Explore export, ready for allocation."""
+
+    entries: List[LedgerEntry] = field(default_factory=list)
+    #: "Other"-bucket spend per day: reported as residual, never allocated.
+    other_by_day: List[Tuple[date, float]] = field(default_factory=list)
+    #: Human-readable reasons for rows the parser refused (dry-run report).
+    skipped: List[str] = field(default_factory=list)
+
+    @property
+    def other_total(self) -> float:
+        """Total USD in the export's "Other" bucket (left unpriced)."""
+        return sum(usd for _, usd in self.other_by_day)
+
+
+def parse_explorer_csv(text: str) -> ExplorerLedger:
+    """Parse an OpenRouter Activity -> Explore daily usage export.
+
+    Expected columns (extra columns are ignored): ``date__day`` (YYYY-MM-DD),
+    ``model`` (display name), ``total_usage`` (USD). Malformed rows are
+    collected in :attr:`ExplorerLedger.skipped` rather than aborting the
+    import, so the operator sees exactly what a run would and would not use.
+
+    Args:
+        text: The CSV file content (a UTF-8 BOM is tolerated).
+
+    Returns:
+        The parsed ledger, with "Other" rows split out as residual.
+
+    Raises:
+        ValueError: When the header does not contain the expected columns.
+    """
+    reader = csv.DictReader(io.StringIO(text.lstrip("\ufeff")))
+    header = [name.strip().lower() for name in reader.fieldnames or []]
+    missing = [column for column in EXPLORER_COLUMNS if column not in header]
+    if missing:
+        raise ValueError(
+            "Not an OpenRouter Explore export: missing column(s) "
+            f"{', '.join(missing)} (expected {', '.join(EXPLORER_COLUMNS)})"
+        )
+
+    ledger = ExplorerLedger()
+    for line_number, raw in enumerate(reader, start=2):
+        row = {
+            (key or "").strip().lower(): (value or "").strip()
+            for key, value in raw.items()
+            if key is not None
+        }
+        if not any(row.values()):
+            continue
+        try:
+            day = date.fromisoformat(row["date__day"])
+        except ValueError:
+            ledger.skipped.append(
+                f"line {line_number}: bad date__day {row['date__day']!r}"
+            )
+            continue
+        try:
+            usage_usd = float(row["total_usage"])
+        except ValueError:
+            ledger.skipped.append(
+                f"line {line_number}: bad total_usage {row['total_usage']!r}"
+            )
+            continue
+        if not math.isfinite(usage_usd):
+            ledger.skipped.append(
+                f"line {line_number}: non-finite total_usage {row['total_usage']!r}"
+            )
+            continue
+        if usage_usd < 0:
+            ledger.skipped.append(f"line {line_number}: negative total_usage")
+            continue
+        model_name = row["model"]
+        if model_name.lower() == EXPLORER_OTHER_LABEL:
+            ledger.other_by_day.append((day, usage_usd))
+            continue
+        family = display_name_family(model_name)
+        if family is None:
+            ledger.skipped.append(f"line {line_number}: empty model name")
+            continue
+        ledger.entries.append(LedgerEntry(day=day, model=family, usage_usd=usage_usd))
+    return ledger
 
 
 @dataclass(frozen=True)
@@ -386,6 +506,20 @@ def load_unpriced_rows(
     return rows
 
 
+def _row_is_still_unpriced(row) -> bool:
+    """True when a usage row is still eligible to receive a ledger share.
+
+    Mirrors :meth:`crud_api_usage.iter_unpriced_provider_rows` eligibility:
+    explicitly tagged ``unpriced``, or a legacy row from before cost
+    provenance existed (NULL ``cost_source`` AND NULL cost). Anything else —
+    catalog/override estimates, provider actuals, an earlier reconciliation —
+    must never be overwritten by an allocation.
+    """
+    if row.cost_source == "unpriced":
+        return True
+    return row.cost_source is None and row.estimated_cost is None
+
+
 def apply_ledger_backfill(db: Session, plan: BackfillPlan) -> int:
     """Write a plan's allocations and refresh affected execution rollups.
 
@@ -406,7 +540,7 @@ def apply_ledger_backfill(db: Session, plan: BackfillPlan) -> int:
     touched_executions = set()
     for allocation in plan.allocations:
         row = crud_api_usage.get(db, id=allocation.api_usage_id)
-        if row is None or row.cost_source != "unpriced":
+        if row is None or not _row_is_still_unpriced(row):
             logger.info("Skipping row %s: no longer unpriced", allocation.api_usage_id)
             continue
         crud_api_usage.update_cost_fields(

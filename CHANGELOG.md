@@ -9,6 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Provider daily-ledger CSV backfill**: `POST /api/v1/cost/ledger-backfill/csv`
+  (permission `manage_budgets`) and `scripts/backfill_openrouter_ledger.py
+  --csv` accept an OpenRouter Activity → Explore daily export
+  (`date__day,model,total_usage`) and distribute each (day × model) total
+  across that account's still-unpriced gateway rows for the day — pro-rata
+  by tokens, equal split when the bucket recorded no tokens. Display names
+  are matched to recorded aliases via a shared family key; the export's
+  "Other" bucket names no model, so its spend is reported as a residual and
+  never allocated. Allocated rows are tagged `cost_source='reconciled'`
+  (never mixed with estimates), re-runs are idempotent (only still-unpriced
+  rows are ever written), and the default is a dry run that returns the full
+  allocation plan. CSV mode needs no management API key and has no 30-day
+  activity-endpoint horizon.
+- **Synchronous reprice endpoint**: `POST /api/v1/cost/reprice` (permission
+  `manage_budgets`) scans the requested window in-request — keyset-paginated,
+  up to 92 days — and returns real examined/updated counters, avoiding the
+  billing plugin's 7-day async cliff whose acknowledgement serialized as
+  "examined 0 rows".
+
+### Fixed
+
+- **Reprice row selection**: `only_unpriced` repricing now also examines rows
+  tagged `cost_source='unpriced'` that carry a stray stored cost (legacy $0
+  writes), and the ledger backfill additionally admits legacy rows recorded
+  before cost provenance existed (`cost_source IS NULL` with a NULL cost).
+- **Estimates can no longer overwrite actuals**: repricing (bulk and
+  single-row) refuses to touch `provider`, `reconciled`, and `imported`
+  cost sources even with `only_unpriced=false` — provider-reported and
+  ledger-reconciled figures are never replaced by catalog estimates.
+- **Async reprice acknowledgements**: `RepriceResponse` counters are `null`
+  (not `0`) when the run was dispatched to a background worker, so an async
+  submission is no longer indistinguishable from "the window contained no
+  rows".
+- **Ledger CSV parser rejects non-finite totals**: `nan` / `inf` in
+  `total_usage` are skipped like negatives, so they cannot land in
+  `estimated_cost`.
+
 - **Agent Control for Claude Code (G1) and native session targeting (G2)**:
   `claude_code` is now a supported Agent Control kind. `control_enabled`
   still requires sidecar/capability flags, not a blanket true. When a
