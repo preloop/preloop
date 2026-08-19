@@ -95,9 +95,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `enable`/`disable`/`start`/`stop`/`restart`/`status` install a launchd
   plist (Darwin), systemd user unit (Linux), or scheduled task (Windows).
   Flows may set `runner_pool`; offline matching runners queue for 15
-  minutes then FAIL with no hosted-compute fallback. Console `/console/runners`
-  lists this account's runners. This is the lease path, not a claim that
-  every agent harness already runs identically on the CLI host.
+  minutes then FAIL with no hosted-compute fallback. Console
+  `/console/settings/runners` lists this account's runners. This is the
+  lease path, not a claim that every agent harness already runs
+  identically on the CLI host.
 - **Matched-rule context on approval requests**: the approval the human
   reviews now records which access rule gated the call (id, name, expression,
   priority, and any lower-priority rules that also matched), snapshotted at

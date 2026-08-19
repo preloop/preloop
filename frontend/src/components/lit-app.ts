@@ -526,7 +526,12 @@ export class LitApp extends LitElement {
               { path: ':flowId', component: 'flow-view' },
             ],
           },
-          { path: 'runners', component: 'runners-view' },
+          {
+            path: 'runners',
+            action: (_context, commands) => {
+              return commands.redirect('/console/settings/runners');
+            },
+          },
           { path: '/runtime-sessions', component: 'runtime-sessions-view' },
           { path: '/agents', component: 'agents-view' },
           { path: '/agents/:agentId', component: 'agent-detail-view' },
@@ -544,6 +549,7 @@ export class LitApp extends LitElement {
           { path: 'settings/profile', component: 'profile-view' },
           { path: 'settings/security', component: 'security-view' },
           { path: 'settings/api-keys', component: 'api-keys-view' },
+          { path: 'settings/runners', component: 'runners-view' },
           {
             path: 'settings/api-keys/:keyId',
             component: 'api-key-view',

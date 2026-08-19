@@ -33,7 +33,7 @@ import '../../components/permission-denied';
 const NAV_PERMISSIONS: Record<string, string[]> = {
   '/console/agents': ['view_agents'],
   '/console/flows': ['view_flows'],
-  '/console/runners': ['view_flows'],
+  '/console/settings/runners': ['view_flows'],
   '/console/tools': ['view_tools', 'view_policies'],
   '/console/trackers': ['view_trackers'],
   '/console/ai-models': ['view_ai_models'],
@@ -590,15 +590,6 @@ export class ConsoleShell extends LitElement {
                 `
               )}
               ${this._renderNavLink(
-                '/console/runners',
-                html`
-                  <sl-menu-item>
-                    <sl-icon name="hdd-network" slot="prefix"></sl-icon>
-                    <span class="sidebar-label">Runners</span>
-                  </sl-menu-item>
-                `
-              )}
-              ${this._renderNavLink(
                 '/console/tools',
                 html`
                   <sl-menu-item>
@@ -708,6 +699,10 @@ export class ConsoleShell extends LitElement {
                   ${this._renderNavLink(
                     '/console/settings/api-keys',
                     html`<sl-menu-item>API Keys</sl-menu-item>`
+                  )}
+                  ${this._renderNavLink(
+                    '/console/settings/runners',
+                    html`<sl-menu-item>Runners</sl-menu-item>`
                   )}
                 </sl-menu>
               </sl-details>
