@@ -166,18 +166,47 @@ def _authenticate_runner(db: Session, runner_id: UUID, token: str) -> FlowRunner
     return row
 
 
+def runner_needs_lease_token(runner: Any) -> bool:
+    """True while a persisted lease has not yet started on the runner.
+
+    Production is multi-replica: ``push_job_to_runner`` only hits the
+    socket if this process holds ``_live``, so an already-online idle
+    runner usually first sees a brand-new lease on the next 15s
+    heartbeat. Mint a token for that unstarted lease (``reported_status``
+    is ``None`` or ``PENDING``). Skip once the runner is mid-execution or
+    terminal so heartbeats do not churn keys.
+    """
+    status = str(getattr(runner, "reported_status", None) or "").strip().upper()
+    return status in {"", "PENDING"}
+
+
+def job_for_heartbeat_ack(
+    db: Session,
+    runner: Any,
+) -> Optional[Dict[str, Any]]:
+    """Job copy for a heartbeat ack; mints only while the lease is unstarted."""
+    pending_job = getattr(runner, "pending_job", None)
+    if not pending_job:
+        return None
+    return job_for_runner_replay(
+        db,
+        pending_job=pending_job,
+        mint_token=runner_needs_lease_token(runner),
+    )
+
+
 def job_for_runner_replay(
     db: Session,
     *,
     pending_job: Dict[str, Any],
     mint_token: bool = False,
 ) -> Dict[str, Any]:
-    """Copy a stored job; mint a token only for reconnect hello.
+    """Copy a stored job; mint a token when the caller still needs one.
 
-    Secrets are never persisted in ``pending_job``. Heartbeats also attach
-    this copy so a missed hello can still see the job, but they must not
-    mint: the CLI heartbeats every 15s while ``pending_job`` is set, and
-    discards the payload once the lease is running.
+    Secrets are never persisted in ``pending_job``. Hello always mints so
+    a reconnect can start the lease. Heartbeats mint only while the
+    runner has not yet reported a running or terminal status; see
+    ``job_for_heartbeat_ack``.
     """
     job = dict(pending_job)
     if not mint_token:
@@ -254,10 +283,9 @@ async def runner_ws(
                 crud_flow_runner.touch_heartbeat(db, runner, status=status)
                 db.refresh(runner)
                 reply: Dict[str, Any] = {"type": "ack"}
-                if runner.pending_job:
-                    reply["job"] = job_for_runner_replay(
-                        db, pending_job=runner.pending_job, mint_token=False
-                    )
+                heartbeat_job = job_for_heartbeat_ack(db, runner)
+                if heartbeat_job is not None:
+                    reply["job"] = heartbeat_job
                 if runner.halt_requested:
                     reply["halt"] = True
                     if runner.current_execution_id:
