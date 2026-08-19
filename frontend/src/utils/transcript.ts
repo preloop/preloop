@@ -60,6 +60,7 @@ export interface TranscriptMessageItem {
   redacted?: boolean;
   truncated?: boolean;
   failed?: boolean;
+  queued?: boolean;
 }
 
 export interface TranscriptStepGroupItem {
@@ -529,6 +530,7 @@ export function buildConversation(
         typeof metadata.role === 'string' && metadata.role.trim()
           ? metadata.role
           : 'operator';
+      const status = (item.status || '').toLowerCase();
       atoms.push({
         type: 'message',
         order: order++,
@@ -540,6 +542,7 @@ export function buildConversation(
           text: item.summary || item.title || '',
           timestamp: item.timestamp || null,
           event: null,
+          queued: status === 'queued' || status === 'pending',
         },
       });
       continue;

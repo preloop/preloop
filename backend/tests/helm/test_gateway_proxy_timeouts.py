@@ -6,10 +6,11 @@ for well over a minute before the first token appears, and nginx's default
 ``proxy_read_timeout`` is 60s — so a route without an explicit override kills
 the connection and hands the client a 504 that never reaches the application.
 
-Both proxy layers in front of the gateway (the console nginx and the ingress)
-default to 60s, so both need the override; fixing one still leaves the other
-at 60s. These tests exist so a future edit that drops either one fails CI
-instead of shipping.
+Helm ingress sends those prefixes to the gateway Service. Console nginx still
+proxies them for callers that hit the console Service directly. Both of those
+proxies default to 60s, so both need the override; fixing one still leaves
+the other at 60s for the traffic that still uses it. These tests exist so a
+future edit that drops either one fails CI instead of shipping.
 """
 
 from __future__ import annotations
@@ -115,6 +116,26 @@ def _read_nginx_config(path: Path, is_configmap: bool) -> str:
     return _nginx_config_from_configmap(text) if is_configmap else text
 
 
+@pytest.mark.parametrize("location", GATEWAY_LOCATIONS)
+def test_install_oss_tls_proxy_sends_gateway_routes_direct(location: str) -> None:
+    """The OSS TLS edge proxy must not hairpin /openai through the console.
+
+    A 2026-08-18 co-located bench showed ~70ms extra TTFB when public nginx
+    sent every path to console nginx, which then proxied to the gateway.
+    Helm ingress and this installer overlay both skip that hop; console
+    nginx still proxies the prefixes for in-cluster callers.
+    """
+    text = (REPO_ROOT / "scripts" / "install-oss.sh").read_text()
+    marker = f"location {location} {{"
+    assert marker in text, f"install-oss.sh missing `{marker}`"
+    body = _location_body(text, location)
+    assert "proxy_pass http://gateway:8000;" in body
+    assert re.search(r"^\s*proxy_buffering\s+off\s*;", body, re.MULTILINE)
+    assert _directive_seconds(body, "proxy_read_timeout") >= (
+        MIN_STREAMING_TIMEOUT_SECONDS
+    )
+
+
 @pytest.mark.parametrize("config_path,is_configmap", _gateway_nginx_configs())
 @pytest.mark.parametrize("location", GATEWAY_LOCATIONS)
 def test_gateway_location_survives_a_slow_first_token(
@@ -146,7 +167,7 @@ def test_gateway_location_streams_tokens_through(
 
 
 def test_ingress_annotations_match_the_console_timeout() -> None:
-    """The ingress is the second 60s proxy in front of the gateway."""
+    """The console Ingress still carries the streaming timeout budget."""
     values = load_values()
     read_timeout = resolve_values_path(values, "gateway.proxy.readTimeout")
     send_timeout = resolve_values_path(values, "gateway.proxy.sendTimeout")
@@ -158,7 +179,7 @@ def test_ingress_annotations_match_the_console_timeout() -> None:
         MIN_STREAMING_TIMEOUT_SECONDS
     )
 
-    rendered = _render_ingress()
+    rendered = _render_console_ingress()
     annotations = rendered["metadata"]["annotations"]
     assert annotations["nginx.ingress.kubernetes.io/proxy-read-timeout"] == str(
         read_timeout
@@ -170,7 +191,7 @@ def test_ingress_annotations_match_the_console_timeout() -> None:
 
 def test_ingress_annotations_stay_overridable() -> None:
     """An operator's own annotation value must win over the chart default."""
-    rendered = _render_ingress(
+    rendered = _render_console_ingress(
         overrides=[
             "ingress.annotations.nginx\\.ingress\\.kubernetes\\.io/proxy-read-timeout=1200"
         ]
@@ -182,13 +203,75 @@ def test_ingress_annotations_stay_overridable() -> None:
     assert "cert-manager.io/cluster-issuer" in annotations
 
 
-def _render_ingress(overrides: List[str] | None = None) -> Dict:
-    """Render the ingress template with the chart's default values."""
+def test_ingress_sends_gateway_prefixes_to_gateway_service() -> None:
+    """Public /openai traffic must not hairpin through the console Service."""
+    gateway = _render_gateway_ingress()
+    assert gateway["metadata"]["name"] == "preloop-gateway"
+    paths = {
+        item["path"]: item["backend"]["service"]["name"]
+        for item in gateway["spec"]["rules"][0]["http"]["paths"]
+    }
+    assert paths == {
+        "/openai": "preloop-gateway",
+        "/anthropic": "preloop-gateway",
+        "/gemini": "preloop-gateway",
+    }
+
+    console_paths = {
+        item["path"]
+        for item in _render_console_ingress()["spec"]["rules"][0]["http"]["paths"]
+    }
+    assert "/openai" not in console_paths
+    assert "/anthropic" not in console_paths
+    assert "/gemini" not in console_paths
+
+
+def test_gateway_ingress_disables_buffering_and_keeps_timeouts() -> None:
+    """SSE must not buffer at ingress once console nginx is no longer in path."""
+    values = load_values()
+    read_timeout = str(resolve_values_path(values, "gateway.proxy.readTimeout"))
+    gateway = _render_gateway_ingress()
+    annotations = gateway["metadata"]["annotations"]
+    assert annotations["nginx.ingress.kubernetes.io/proxy-buffering"] == "off"
+    assert annotations["nginx.ingress.kubernetes.io/proxy-read-timeout"] == read_timeout
+    assert "cert-manager.io/cluster-issuer" not in annotations
+    console = _render_console_ingress()
+    assert (
+        "nginx.ingress.kubernetes.io/proxy-buffering"
+        not in console["metadata"]["annotations"]
+    )
+    assert "cert-manager.io/cluster-issuer" in console["metadata"]["annotations"]
+
+
+def _render_ingress_docs(overrides: List[str] | None = None) -> List[Dict]:
+    """Render every Ingress document in the chart template."""
     rendered = helm_template(
         "templates/ingress.yaml",
         ["ingress.enabled=true", *(overrides or [])],
     )
-    return yaml.safe_load(rendered)
+    return [doc for doc in yaml.safe_load_all(rendered) if doc]
+
+
+def _render_console_ingress(overrides: List[str] | None = None) -> Dict:
+    """Render the console Ingress (first document, name without -gateway)."""
+    docs = _render_ingress_docs(overrides)
+    console = next(
+        doc
+        for doc in docs
+        if doc["kind"] == "Ingress" and not doc["metadata"]["name"].endswith("-gateway")
+    )
+    return console
+
+
+def _render_gateway_ingress(overrides: List[str] | None = None) -> Dict:
+    """Render the gateway Ingress that owns /openai /anthropic /gemini."""
+    docs = _render_ingress_docs(overrides)
+    gateway = next(
+        doc
+        for doc in docs
+        if doc["kind"] == "Ingress" and doc["metadata"]["name"].endswith("-gateway")
+    )
+    return gateway
 
 
 @pytest.mark.parametrize("location", GATEWAY_LOCATIONS)

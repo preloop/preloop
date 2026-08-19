@@ -1,0 +1,50 @@
+{
+  "name": "@preloop-ai/claude-plugin",
+  "version": "0.1.0",
+  "description": "Preloop Agent Control sidecar for Claude Code",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "verify": "node dist/index.js verify",
+    "test": "npm run build && node --test",
+    "test:e2e": "npm run build && PRELOOP_LIVE_CLAUDE_SDK=1 node --test test/live-sdk.e2e.mjs"
+  },
+  "keywords": [
+    "preloop",
+    "claude-code",
+    "agent-control",
+    "tool-approval",
+    "autonomous-agents"
+  ],
+  "bin": {
+    "preloop-claude-plugin": "dist/index.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.220",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.19",
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/preloop/preloop.git",
+    "directory": "runtime-plugins/claude-preloop"
+  },
+  "homepage": "https://preloop.ai",
+  "bugs": {
+    "url": "https://github.com/preloop/preloop/issues"
+  }
+}

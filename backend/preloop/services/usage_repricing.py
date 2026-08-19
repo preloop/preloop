@@ -10,7 +10,12 @@ account overrides. It exists to:
 
 Budget-spend buckets are deliberately NOT rewritten: spend was charged at
 request time and repricing is analytics-only. Rows priced as ``subscription``
-are skipped — their $0 cost is correct by construction.
+are skipped — their $0 cost is correct by construction. Rows whose cost came
+from the provider itself are equally off-limits: ``provider`` (the upstream
+reported the request's actual cost), ``reconciled`` (backfilled from the
+provider's daily activity ledger) and ``imported`` (external spend ingested
+as-is) are actuals, and a catalog ESTIMATE must never overwrite an actual —
+not even on a full ``only_unpriced=False`` recompute.
 """
 
 from __future__ import annotations
@@ -34,6 +39,12 @@ from preloop.services.pricing_overrides import resolve_pricing_override
 
 logger = logging.getLogger(__name__)
 
+#: Cost sources a catalog estimate must never overwrite. ``subscription`` is
+#: correct-by-construction $0; the rest are provider-side actuals.
+PROTECTED_COST_SOURCES = frozenset(
+    {"subscription", "provider", "reconciled", "imported"}
+)
+
 
 @dataclass
 class RepriceResult:
@@ -55,8 +66,9 @@ def reprice_single_row(
     """Re-price one gateway usage row against current prices/overrides.
 
     Used by the live price lookup to fix the row that triggered it. Follows
-    the same rules as the bulk path: subscription rows are left alone and
-    budget spend is never rewritten.
+    the same rules as the bulk path: rows with a protected cost source
+    (subscription $0s and provider-side actuals) are left alone and budget
+    spend is never rewritten.
 
     Args:
         db: Database session.
@@ -66,7 +78,9 @@ def reprice_single_row(
         True when the row was updated with a new cost/source.
     """
     row = crud_api_usage.get(db, id=api_usage_id)
-    if row is None or row.cost_source == "subscription" or not row.ai_model_id:
+    if row is None or row.cost_source in PROTECTED_COST_SOURCES:
+        return False
+    if not row.ai_model_id:
         return False
     ai_model = crud_ai_model.get(db, id=str(row.ai_model_id))
     if ai_model is None or row.account_id is None:
@@ -166,9 +180,12 @@ def reprice_gateway_usage(
         account_id: Account whose rows are repriced.
         start: Window start (inclusive).
         end: Window end (exclusive).
-        only_unpriced: When True (default), only rows with NULL cost are
-            touched; when False every row is recomputed against current
-            pricing (retroactive override application).
+        only_unpriced: When True (default), only rows without a resolved
+            cost are touched (NULL cost, or tagged ``unpriced`` with a stray
+            stored cost); when False every non-protected row is recomputed
+            against current pricing (retroactive override application).
+            Rows whose ``cost_source`` is in :data:`PROTECTED_COST_SOURCES`
+            are never rewritten in either mode.
         dry_run: Compute and report without persisting.
         batch_size: Rows fetched per query page.
 
@@ -195,7 +212,7 @@ def reprice_gateway_usage(
         result.rows_examined += 1
         result.cost_before += float(row.estimated_cost or 0.0)
 
-        if row.cost_source == "subscription":
+        if row.cost_source in PROTECTED_COST_SOURCES:
             result.rows_skipped += 1
             result.cost_after += float(row.estimated_cost or 0.0)
             continue

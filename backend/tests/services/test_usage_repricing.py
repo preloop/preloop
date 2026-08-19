@@ -436,3 +436,114 @@ def test_reprice_single_row_does_not_double_count_credits_shape(db_session, test
     db_session.refresh(row)
     assert row.cost_source == "provider"
     assert row.estimated_cost == pytest.approx(0.000001979964)
+
+
+def test_reprice_examines_zero_cost_rows_tagged_unpriced(db_session, test_user):
+    """A row tagged 'unpriced' but carrying a stray $0 cost (legacy write) is
+    selected by only_unpriced and healed — previously invisible because the
+    filter matched NULL costs only."""
+    ai_model = _create_model(
+        db_session,
+        test_user,
+        pricing={"input_price_per_1k": 0.01, "output_price_per_1k": 0.02},
+    )
+    row = crud_api_usage.log_gateway_request(
+        db_session,
+        endpoint="/openai/v1/chat/completions",
+        method="POST",
+        status_code=200,
+        duration=0.4,
+        account_id=str(test_user.account_id),
+        user_id=str(test_user.id),
+        ai_model_id=str(ai_model.id),
+        model_alias="openai/gpt-5",
+        provider_name="openai",
+        prompt_tokens=1000,
+        completion_tokens=100,
+        total_tokens=1100,
+        estimated_cost=0.0,
+        cost_source="unpriced",
+    )
+    start, end = _window()
+
+    result = reprice_gateway_usage(
+        db_session, account_id=test_user.account_id, start=start, end=end
+    )
+
+    assert result.rows_examined == 1
+    assert result.rows_updated == 1
+    db_session.refresh(row)
+    assert row.estimated_cost == 0.012
+    assert row.cost_source == "model_config"
+
+
+@pytest.mark.parametrize("source", ["provider", "reconciled", "imported"])
+def test_reprice_never_overwrites_provider_side_actuals(db_session, test_user, source):
+    """provider/reconciled/imported costs are actuals; even a full
+    only_unpriced=False recompute must not replace them with estimates."""
+    ai_model = _create_model(
+        db_session,
+        test_user,
+        pricing={"input_price_per_1k": 0.01, "output_price_per_1k": 0.02},
+    )
+    row = crud_api_usage.log_gateway_request(
+        db_session,
+        endpoint="/openai/v1/chat/completions",
+        method="POST",
+        status_code=200,
+        duration=0.4,
+        account_id=str(test_user.account_id),
+        user_id=str(test_user.id),
+        ai_model_id=str(ai_model.id),
+        model_alias="openai/gpt-5",
+        provider_name="openai",
+        prompt_tokens=1000,
+        completion_tokens=100,
+        total_tokens=1100,
+        estimated_cost=0.5,
+        cost_source=source,
+    )
+    start, end = _window()
+
+    result = reprice_gateway_usage(
+        db_session,
+        account_id=test_user.account_id,
+        start=start,
+        end=end,
+        only_unpriced=False,
+    )
+
+    assert result.rows_skipped >= 1
+    db_session.refresh(row)
+    assert row.estimated_cost == 0.5
+    assert row.cost_source == source
+
+
+@pytest.mark.parametrize("source", ["provider", "reconciled", "imported"])
+def test_reprice_single_row_refuses_protected_sources(db_session, test_user, source):
+    """The single-row heal path honors the same protection as the bulk pass."""
+    ai_model = _create_model(
+        db_session, test_user, pricing={"input_price_per_1k": 0.01}
+    )
+    row = crud_api_usage.log_gateway_request(
+        db_session,
+        endpoint="/openai/v1/chat/completions",
+        method="POST",
+        status_code=200,
+        duration=0.4,
+        account_id=str(test_user.account_id),
+        user_id=str(test_user.id),
+        ai_model_id=str(ai_model.id),
+        model_alias="openai/gpt-5",
+        provider_name="openai",
+        prompt_tokens=1000,
+        completion_tokens=100,
+        total_tokens=1100,
+        estimated_cost=0.5,
+        cost_source=source,
+    )
+
+    assert usage_repricing.reprice_single_row(db_session, api_usage_id=row.id) is False
+    db_session.refresh(row)
+    assert row.estimated_cost == 0.5
+    assert row.cost_source == source

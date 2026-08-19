@@ -192,13 +192,16 @@ healthMonitor:
 # Gateway resources
 gateway:
   # Proxy settings applied to the model-gateway routes (/openai, /anthropic,
-  # /gemini) at BOTH proxy layers in front of the gateway: the console nginx
-  # and the ingress. These routes relay streaming LLM responses, where the
-  # upstream model can spend minutes reasoning over a large prompt before the
-  # first token exists — nginx's 60s default read timeout is a ceiling on how
-  # long a model is allowed to think, and hitting it returns a 504 the
-  # application never sees. Both layers default to 60s, so both are set here;
-  # raising only one leaves the other cutting the stream.
+  # /gemini) at every proxy in front of the gateway. Helm ingress sends those
+  # prefixes to the gateway Service (skipping console nginx). Console nginx
+  # still proxies the same prefixes for callers that hit the console Service
+  # directly, and the OSS installer TLS overlay does the same at the edge.
+  # These routes relay streaming LLM responses, where the upstream model can
+  # spend minutes reasoning over a large prompt before the first token exists.
+  # nginx's 60s default read timeout is a ceiling on how long a model is
+  # allowed to think, and hitting it returns a 504 the application never sees.
+  # Every remaining proxy layer defaults to 60s, so all of them are set here;
+  # raising only one leaves another cutting the stream.
   proxy:
     # Seconds. Generous rather than exact: the cost of waiting is an idle
     # connection, the cost of being short is a failed request plus whatever
@@ -399,16 +402,43 @@ database:
     # Monitoring - expose PostgreSQL metrics to Prometheus via PodMonitor
     monitoring:
       enablePodMonitor: false  # Set to true if Prometheus is deployed
-    # Continuous backup to object storage (WAL archiving + base backups)
+    # Continuous backup to object storage (WAL archiving + base backups).
+    # Enabling this turns on continuous WAL archiving on the Cluster and
+    # (via scheduled.enabled) a ScheduledBackup CR for periodic base backups.
+    # This replaces any deploy-time pg_dump: recovery point is determined by
+    # WAL archiving (typically < 5 min), not by deploy frequency.
     backup:
-      enabled: false  # Set to true in production
+      enabled: false  # Set to true in production and staging
       destinationPath: ""  # e.g. s3://bucket/cnpg/preloop-prod
+      # Endpoint for S3-compatible object stores (MinIO, R2, Ceph, ...).
+      # Leave empty for AWS S3.
+      endpointURL: ""
+      # Folder name inside destinationPath. Defaults to the cluster name.
+      # Must be changed (or destinationPath moved) when bootstrapping a new
+      # cluster that recovers from an existing backup, so the new cluster
+      # does not overwrite the archive it is restoring from.
+      serverName: ""
       retentionPolicy: "30d"
       walCompression: "gzip"
+      dataCompression: "gzip"  # Compression for base backup data files
       s3Credentials:
         secretName: ""  # K8s secret containing ACCESS_KEY_ID and SECRET_ACCESS_KEY
         accessKeyIdKey: "ACCESS_KEY_ID"
         secretAccessKeyKey: "SECRET_ACCESS_KEY"
+      # Scheduled base backups (CNPG ScheduledBackup CR)
+      scheduled:
+        enabled: true  # Effective only when backup.enabled is true
+        # CNPG cron format has SIX fields (seconds first):
+        # "sec min hour day month weekday" — default: daily at 02:00 UTC
+        schedule: "0 0 2 * * *"
+        # Take a first base backup as soon as the ScheduledBackup is created
+        immediate: true
+        suspend: false
+        # Owner of Backup objects created by the schedule: none|self|cluster.
+        # Default none: deleting/recreating the ScheduledBackup (helm upgrade
+        # with scheduled.enabled=false, or helm uninstall) must not garbage-
+        # collect the base backups. `self` would cascade-delete them.
+        backupOwnerReference: none
     # Slow query logging - enable to monitor query performance
     logging:
       enabled: false  # Set to true to enable slow query logging

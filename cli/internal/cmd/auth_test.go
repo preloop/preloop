@@ -292,6 +292,13 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 
+	// GitHub CLI CI sets this; GitLab OSS did not. Successful login posts
+	// /api/v1/events/batch unless telemetry is off, which fails hermetic
+	// httptest servers that only expect the user-info path.
+	if err := os.Setenv("PRELOOP_DISABLE_TELEMETRY", "true"); err != nil {
+		panic(err)
+	}
+
 	// Scrub ambient agent/model env vars so upstream-resolution tests see a
 	// hermetic environment. When the test suite itself runs inside a managed
 	// agent session (e.g. Preloop-managed Claude Code exporting

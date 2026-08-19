@@ -26,11 +26,14 @@ from preloop.schemas.usage_import import (
     UsageImportCsvResponse,
     UsageImportRequest,
     UsageImportResponse,
+    UsageIngestRequest,
+    UsageIngestResponse,
 )
 from preloop.services.usage_import import (
     MAX_CSV_BYTES,
     UsageImportError,
     ingest_events,
+    ingest_push_records,
     parse_cursor_usage_csv,
     resolve_target_agent,
 )
@@ -97,6 +100,73 @@ def import_usage_events(
         agent_id=UUID(str(agent.id)),
         agent_display_name=agent.display_name,
         source=payload.source,
+    )
+
+
+@router.post("/ingest", response_model=UsageIngestResponse)
+@require_permission("import_usage")
+def ingest_usage_records(
+    payload: UsageIngestRequest,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_active_user),
+) -> UsageIngestResponse:
+    """Push a batch of external usage records into the cost ledger.
+
+    The continuous-push evolution of ``POST /usage/import``: a harness
+    posts sanitized spend records — or hook-shaped lifecycle events
+    (``event_type``) — as they occur instead of batch CSV. Each record is
+    identified by (source, external_id) per account, so replaying a batch
+    — e.g. a retry after a network timeout — returns 200 with the
+    replayed records flagged ``deduplicated`` and never double-counts
+    spend; a replay whose payload differs from the stored record is
+    additionally flagged ``conflict`` (first write wins, never a 409).
+    Records carry ``conversation_id`` / ``parent_conversation_id`` so
+    subagent workers billed on separate conversations can be rolled up
+    under their parent thread, and ``cost_basis`` so reconciled
+    billing-export records supersede hook-derived estimates in cost
+    summaries. Attribution precedence: explicit ``agent_id`` (must belong
+    to the account) wins; otherwise the account's single managed agent
+    whose kind equals ``source`` is used, and zero or multiple candidates
+    is a 422.
+    """
+    get_account_or_404(db, current_user)
+    try:
+        agent = resolve_target_agent(
+            db,
+            account_id=str(current_user.account_id),
+            agent_id=str(payload.agent_id) if payload.agent_id else None,
+            default_agent_kind=payload.source,
+        )
+        results = ingest_push_records(
+            db,
+            account_id=str(current_user.account_id),
+            user_id=str(current_user.id),
+            agent=agent,
+            records=payload.records,
+            source=payload.source,
+        )
+    except UsageImportError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    accepted = sum(1 for result in results if not result.deduplicated)
+    conflicts = sum(1 for result in results if result.conflict)
+    logger.info(
+        "Ingested %d usage records (%d deduplicated, %d conflicts) for "
+        "agent %s (source=%s, account=%s)",
+        accepted,
+        len(results) - accepted,
+        conflicts,
+        agent.id,
+        payload.source,
+        current_user.account_id,
+    )
+    return UsageIngestResponse(
+        source=payload.source,
+        agent_id=UUID(str(agent.id)),
+        agent_display_name=agent.display_name,
+        accepted=accepted,
+        deduplicated=len(results) - accepted,
+        conflicts=conflicts,
+        results=results,
     )
 
 

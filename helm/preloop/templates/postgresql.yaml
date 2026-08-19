@@ -95,22 +95,34 @@ spec:
     disableDefaultQueries: false
 
   {{- if .Values.database.cnpg.backup.enabled }}
-  # Continuous backup to object storage
+  {{- $backup := .Values.database.cnpg.backup }}
+  {{- if not $backup.destinationPath }}
+  {{- fail "database.cnpg.backup.destinationPath is required when database.cnpg.backup.enabled is true" }}
+  {{- end }}
+  # Continuous backup to object storage (WAL archiving + base backups)
   backup:
     barmanObjectStore:
-      destinationPath: {{ .Values.database.cnpg.backup.destinationPath }}
-      {{- if .Values.database.cnpg.backup.s3Credentials }}
+      destinationPath: {{ $backup.destinationPath }}
+      {{- with $backup.endpointURL }}
+      endpointURL: {{ . }}
+      {{- end }}
+      {{- with $backup.serverName }}
+      serverName: {{ . }}
+      {{- end }}
+      {{- if and $backup.s3Credentials $backup.s3Credentials.secretName }}
       s3Credentials:
         accessKeyId:
-          name: {{ .Values.database.cnpg.backup.s3Credentials.secretName }}
-          key: {{ .Values.database.cnpg.backup.s3Credentials.accessKeyIdKey | default "ACCESS_KEY_ID" }}
+          name: {{ $backup.s3Credentials.secretName }}
+          key: {{ $backup.s3Credentials.accessKeyIdKey | default "ACCESS_KEY_ID" }}
         secretAccessKey:
-          name: {{ .Values.database.cnpg.backup.s3Credentials.secretName }}
-          key: {{ .Values.database.cnpg.backup.s3Credentials.secretAccessKeyKey | default "SECRET_ACCESS_KEY" }}
+          name: {{ $backup.s3Credentials.secretName }}
+          key: {{ $backup.s3Credentials.secretAccessKeyKey | default "SECRET_ACCESS_KEY" }}
       {{- end }}
       wal:
-        compression: {{ .Values.database.cnpg.backup.walCompression | default "gzip" }}
-    retentionPolicy: {{ .Values.database.cnpg.backup.retentionPolicy | default "30d" | quote }}
+        compression: {{ $backup.walCompression | default "gzip" }}
+      data:
+        compression: {{ $backup.dataCompression | default "gzip" }}
+    retentionPolicy: {{ $backup.retentionPolicy | default "30d" | quote }}
   {{- end }}
 
   # Storage configuration

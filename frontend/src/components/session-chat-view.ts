@@ -146,6 +146,16 @@ export class SessionChatView extends LitElement {
       border-color: var(--sl-color-danger-300);
     }
 
+    .queue-chip {
+      background: rgba(242, 169, 59, 0.15);
+      border: 1px solid #f2a93b;
+      border-radius: 999px;
+      color: #f2a93b;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 1px 8px;
+    }
+
     .bubble-meta {
       align-items: center;
       color: var(--sl-color-neutral-600);
@@ -371,6 +381,9 @@ export class SessionChatView extends LitElement {
             }
           </span>
           <span>${this.formatTime(item.timestamp)}</span>
+          ${
+            item.queued ? html`<span class="queue-chip">Queued</span>` : nothing
+          }
           ${
             item.redacted
               ? html`<sl-badge variant="warning" pill>Redacted</sl-badge>`

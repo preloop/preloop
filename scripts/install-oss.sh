@@ -21,9 +21,11 @@ INSTALL_DIR="${INSTALL_DIR:-${HOME}/.preloop-oss}"
 # the terminal; the happy path prints a few curated lines and this path.
 LOG_FILE="${INSTALL_DIR}/install.log"
 
-# Public base URL this instance is reached at. Everything (console, API, MCP,
-# gateway) is served through one origin: the console container reverse-proxies
-# /api, /mcp, /openai, /anthropic and /gemini to the backend services.
+# Public base URL this instance is reached at. Console, API and MCP share one
+# origin: the TLS proxy (or the console nginx on plain HTTP) reverse-proxies
+# /api and /mcp. Model-gateway routes (/openai, /anthropic, /gemini) go
+# straight to the gateway container so streaming TTFB does not pay an extra
+# hop through the console.
 #
 #   PRELOOP_URL=https://preloop.example.com  -> public deploy, TLS via certbot
 #   PRELOOP_URL=http://localhost:3000        -> local (default)
@@ -580,6 +582,59 @@ caa_forbids_letsencrypt() {
   return 0
 }
 
+# Nginx locations that terminate /openai /anthropic /gemini on the gateway
+# container (port 8000 on the compose network). Used by both the HTTP bootstrap
+# config and the HTTPS config so streaming traffic never hairpins through the
+# console. proxy_buffering must stay off (SSE).
+gateway_proxy_locations() {
+  cat <<'GATE'
+    location ^~ /openai/ {
+        proxy_pass http://gateway:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 10s;
+        proxy_send_timeout 3600s;
+        proxy_read_timeout 3600s;
+        proxy_buffering off;
+        proxy_cache off;
+        client_max_body_size 32m;
+    }
+
+    location ^~ /anthropic/ {
+        proxy_pass http://gateway:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 10s;
+        proxy_send_timeout 3600s;
+        proxy_read_timeout 3600s;
+        proxy_buffering off;
+        proxy_cache off;
+        client_max_body_size 32m;
+    }
+
+    location ^~ /gemini/ {
+        proxy_pass http://gateway:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 10s;
+        proxy_send_timeout 3600s;
+        proxy_read_timeout 3600s;
+        proxy_buffering off;
+        proxy_cache off;
+        client_max_body_size 32m;
+    }
+GATE
+}
+
 write_tls_assets() {
   host="$1"
   mkdir -p "${INSTALL_DIR}/tls" "${INSTALL_DIR}/certbot/www" "${INSTALL_DIR}/certbot/conf"
@@ -594,6 +649,8 @@ server {
     location ^~ /.well-known/acme-challenge/ {
         root /var/www/certbot;
     }
+
+$(gateway_proxy_locations)
 
     location / {
         proxy_pass http://console:80;
@@ -637,6 +694,10 @@ server {
     ssl_session_timeout 1d;
 
     # Streaming (SSE) and WebSocket traffic must not be buffered or cut short.
+    # Gateway routes are listed first so /openai /anthropic /gemini skip the
+    # console hop (measured extra TTFB on the hairpin path).
+$(gateway_proxy_locations)
+
     location / {
         proxy_pass http://console:80;
         proxy_http_version 1.1;
@@ -663,6 +724,7 @@ services:
     restart: unless-stopped
     depends_on:
       - console
+      - gateway
     ports:
       - "80:80"
       - "443:443"

@@ -3948,7 +3948,7 @@ func buildOpenClawManagedMCPEnrollmentPlan(
 
 func supportsAgentControlChannel(agent AgentConfig) bool {
 	switch strings.ToLower(strings.TrimSpace(agent.Name)) {
-	case "openclaw", hermesSourceType:
+	case "openclaw", hermesSourceType, "claude code":
 		return true
 	default:
 		return false
@@ -4045,6 +4045,15 @@ func applyManagedAgentControlConfig(
 		runtimeSession,
 	)
 	applyAgentControlConfigToDocument(plan.Agent, plan.ManagedDocument, control)
+	if runtimeSessionSourceTypeForAgent(plan.Agent.Name) == "claude_code" {
+		if err := writeClaudePreloopControlFile(control); err != nil {
+			return plan, err
+		}
+		plan.Notes = append(
+			plan.Notes,
+			"Claude Code Agent Control config written to ~/.claude/preloop-control.json. Run `preloop claude` instead of `claude` for remote steer.",
+		)
+	}
 	plan.ManagedControlWSURL = lookupString(control, "control_ws_url")
 	plan.Notes = append(
 		plan.Notes,
@@ -4072,8 +4081,41 @@ func applyAgentControlConfigToDocument(
 		ensureOpenClawPluginAllowlisted(doc)
 		return
 	}
+	if runtimeSessionSourceTypeForAgent(agent.Name) == "claude_code" {
+		// Claude Code settings.json is reserved for Claude's own schema.
+		// Control lives in ~/.claude/preloop-control.json (written separately).
+		return
+	}
 	preloop := ensureObjectPath(doc, "preloop")
 	preloop["control"] = control
+}
+
+func writeClaudePreloopControlFile(control map[string]interface{}) error {
+	path := claudeControlConfigPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	payload := map[string]interface{}{"control": control}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o600)
+}
+
+func readClaudePreloopControlFile() (map[string]interface{}, bool) {
+	data, err := os.ReadFile(claudeControlConfigPath())
+	if err != nil {
+		return nil, false
+	}
+	var document map[string]interface{}
+	if err := json.Unmarshal(data, &document); err != nil {
+		return nil, false
+	}
+	if control, ok := asObjectMap(document["control"]); ok {
+		return control, true
+	}
+	return asObjectMap(document)
 }
 
 // ensureOpenClawPluginAllowlisted makes OpenClaw's plugin trust gate
@@ -4244,6 +4286,9 @@ func agentControlConfigFromDocument(
 		}
 		return nil, false
 	}
+	if runtimeSessionSourceTypeForAgent(agent.Name) == "claude_code" {
+		return readClaudePreloopControlFile()
+	}
 	preloop, ok := asObjectMap(doc["preloop"])
 	if !ok {
 		return nil, false
@@ -4258,6 +4303,8 @@ func agentControlPluginPackageName(agent AgentConfig) string {
 		return "preloop-hermes-plugin"
 	case "openclaw":
 		return "@preloop-ai/openclaw-plugin"
+	case "claude_code":
+		return "@preloop-ai/claude-plugin"
 	default:
 		return ""
 	}
@@ -4270,6 +4317,8 @@ func agentControlPluginVerifyCommand(agent AgentConfig) string {
 		return "preloop-hermes-plugin"
 	case "openclaw":
 		return "preloop-openclaw-plugin"
+	case "claude_code":
+		return "preloop-claude-plugin"
 	default:
 		return ""
 	}
@@ -4281,6 +4330,8 @@ func agentControlPluginInstallerCommand(agent AgentConfig) string {
 		return "hermes"
 	case "openclaw":
 		return "openclaw"
+	case "claude_code":
+		return "npm"
 	default:
 		return ""
 	}
@@ -4342,6 +4393,8 @@ func agentControlPluginSourceDirName(agent AgentConfig) string {
 		return "hermes-preloop"
 	case "openclaw":
 		return "openclaw-preloop"
+	case "claude_code":
+		return "claude-preloop"
 	default:
 		return ""
 	}
@@ -4380,6 +4433,12 @@ func installAgentControlRuntimePlugin(agent AgentConfig, writer io.Writer) map[s
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	args := []string{"plugins", "install", installTarget}
+	if runtimeSessionSourceTypeForAgent(agent.Name) == "claude_code" {
+		cancel()
+		ctx, cancel = context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+		args = []string{"install", "-g", installTarget}
+	}
 	output, err := exec.CommandContext(ctx, installerPath, args...).CombinedOutput()
 	result["control_plugin_install_status"] = "install_attempted"
 	result["control_plugin_install_target"] = installTarget
@@ -4644,14 +4703,18 @@ func verifyAgentControlRuntimePlugin(agent AgentConfig) map[string]interface{} {
 		return mergeStringMaps(result, managedAgentControlSidecarVerification(agent))
 	}
 	result["control_plugin_installed"] = true
-	if strings.TrimSpace(agent.ConfigPath) == "" {
+	configPath := agent.ConfigPath
+	if runtimeSessionSourceTypeForAgent(agent.Name) == "claude_code" {
+		configPath = claudeControlConfigPath()
+	}
+	if strings.TrimSpace(configPath) == "" {
 		result["control_plugin_verification"] = "installed_config_path_missing"
 		return result
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, path, "verify", "--config", agent.ConfigPath).CombinedOutput()
+	output, err := exec.CommandContext(ctx, path, "verify", "--config", configPath).CombinedOutput()
 	if err != nil {
 		message := strings.TrimSpace(string(output))
 		if message == "" {
@@ -4863,6 +4926,8 @@ func managedAgentControlSidecarRuntime(agent AgentConfig) string {
 		return "hermes"
 	case "openclaw":
 		return "openclaw"
+	case "claude_code":
+		return "claude_code"
 	default:
 		return ""
 	}
