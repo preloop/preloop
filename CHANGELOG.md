@@ -42,6 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (not `0`) when the run was dispatched to a background worker, so an async
   submission is no longer indistinguishable from "the window contained no
   rows".
+- **Ledger CSV parser rejects non-finite totals**: `nan` / `inf` in
+  `total_usage` are skipped like negatives, so they cannot land in
+  `estimated_cost`.
 
 - **Agent Control for Claude Code (G1) and native session targeting (G2)**:
   `claude_code` is now a supported Agent Control kind. `control_enabled`

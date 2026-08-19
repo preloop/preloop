@@ -31,6 +31,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import math
 import re
 import uuid
 from collections import defaultdict
@@ -190,6 +191,11 @@ def parse_explorer_csv(text: str) -> ExplorerLedger:
         except ValueError:
             ledger.skipped.append(
                 f"line {line_number}: bad total_usage {row['total_usage']!r}"
+            )
+            continue
+        if not math.isfinite(usage_usd):
+            ledger.skipped.append(
+                f"line {line_number}: non-finite total_usage {row['total_usage']!r}"
             )
             continue
         if usage_usd < 0:

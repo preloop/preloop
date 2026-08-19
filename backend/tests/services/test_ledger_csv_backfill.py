@@ -105,14 +105,18 @@ def test_parse_explorer_csv_collects_malformed_rows_instead_of_aborting():
         "not-a-date,Acme Z9,0.10\n"
         "2026-08-05,Acme Z9,not-a-number\n"
         "2026-08-05,Acme Z9,-0.10\n"
+        "2026-08-05,Acme Z9,nan\n"
+        "2026-08-05,Acme Z9,inf\n"
         "2026-08-05,Acme Z9,0.10\n"
     )
     ledger = parse_explorer_csv(text)
     assert len(ledger.entries) == 1
-    assert len(ledger.skipped) == 3
+    assert len(ledger.skipped) == 5
     assert "line 2" in ledger.skipped[0]
     assert "line 3" in ledger.skipped[1]
     assert "negative" in ledger.skipped[2]
+    assert "non-finite" in ledger.skipped[3]
+    assert "non-finite" in ledger.skipped[4]
 
 
 def test_parsed_entries_allocate_against_display_named_rows():
