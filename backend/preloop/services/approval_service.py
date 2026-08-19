@@ -38,7 +38,14 @@ _LOCAL_PRESENCE_WINDOW = timedelta(seconds=20)
 
 
 def _operator_present_at_machine(db, approval_request: ApprovalRequest) -> bool:
-    """True when the managed agent was seen in the last 20s (local TTY)."""
+    """True only when the operator is at the local TTY.
+
+    Sidecar WebSocket heartbeats stamp ``last_seen_at`` in both local and
+    remote mode, so recency alone is not presence. Skip the approval push
+    only when the last advertised session mode is ``local`` *and* that
+    heartbeat is inside a 20s window. Unknown or remote mode fail open:
+    send the push rather than hide an approval from a phone/web operator.
+    """
     agent_id = getattr(approval_request, "managed_agent_id", None)
     if agent_id is None:
         return False
@@ -47,6 +54,17 @@ def _operator_present_at_machine(db, approval_request: ApprovalRequest) -> bool:
     agent = crud_managed_agent.get(db, id=agent_id)
     if agent is None:
         return False
+    mode = getattr(agent, "control_session_mode", None)
+    if mode != "local":
+        snapshot: dict = {}
+        try:
+            from preloop.api.endpoints.agent_control import agent_control_snapshot
+
+            snapshot = agent_control_snapshot(str(agent_id))
+        except (ImportError, AttributeError, RuntimeError):
+            snapshot = {}
+        if snapshot.get("session_mode") != "local":
+            return False
     seen = getattr(agent, "last_seen_at", None)
     if seen is None:
         return False

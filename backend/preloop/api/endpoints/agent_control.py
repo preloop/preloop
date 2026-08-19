@@ -359,6 +359,7 @@ def _touch_presence(
     context: RuntimeBearerAuthContext,
     *,
     observed_at: datetime,
+    session_mode: Optional[str] = None,
     commit: bool = True,
 ) -> None:
     crud_runtime_session.touch_activity(
@@ -376,6 +377,7 @@ def _touch_presence(
         session_source_id=context.managed_agent.session_source_id,
         runtime_session_id=context.runtime_session.id,
         observed_at=observed_at,
+        control_session_mode=session_mode,
         commit=False,
     )
     if commit:
@@ -871,7 +873,15 @@ async def managed_agent_control_websocket(
                 break
 
             try:
-                _touch_presence(db, context, observed_at=datetime.now(UTC))
+                inbound_mode = inbound.payload.get("session_mode")
+                if inbound_mode not in {"local", "remote", "queued"}:
+                    inbound_mode = None
+                _touch_presence(
+                    db,
+                    context,
+                    observed_at=datetime.now(UTC),
+                    session_mode=inbound_mode,
+                )
                 _mark_control_verified_from_capabilities(db, context, inbound)
                 if inbound.type in {"presence", "heartbeat", "status"}:
                     agent_control_manager.record_presence(
@@ -1295,6 +1305,7 @@ async def _route_session_action(
         message=name,
         metadata={**request.metadata, "command": name},
         target_session_id=request.target_session_id,
+        start_new_session=request.start_new_session,
         spawn_worktree=request.spawn_worktree,
     )
     agent = crud_managed_agent.get_for_account(

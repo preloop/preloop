@@ -74,6 +74,9 @@ class ManagedAgent(Base):
     lifecycle_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     lifecycle_updated_at: Mapped[datetime] = mapped_column(nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(nullable=False)
+    control_session_mode: Mapped[Optional[str]] = mapped_column(
+        String(16), nullable=True
+    )
 
     account: Mapped["Account"] = relationship(
         "Account", back_populates="managed_agents"

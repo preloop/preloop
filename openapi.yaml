@@ -9711,6 +9711,10 @@ components:
             format: uuid
           - type: 'null'
           title: Target Session Id
+        start_new_session:
+          type: boolean
+          title: Start New Session
+          default: false
         spawn_worktree:
           type: boolean
           title: Spawn Worktree
@@ -15377,11 +15381,6 @@ components:
           title: Notify When Needed
           description: Push when the agent needs the operator (approvals, ask_user)
           default: true
-        notify_when_finished:
-          type: boolean
-          title: Notify When Finished
-          description: Push when work finishes or stalls
-          default: true
         id:
           type: string
           format: uuid
@@ -15447,12 +15446,6 @@ components:
           - type: 'null'
           title: Notify When Needed
           description: Push when the agent needs the operator (approvals, ask_user)
-        notify_when_finished:
-          anyOf:
-          - type: boolean
-          - type: 'null'
-          title: Notify When Finished
-          description: Push when work finishes or stalls
       type: object
       title: NotificationPreferencesUpdate
       description: Schema for updating notification preferences.

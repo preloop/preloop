@@ -44,3 +44,13 @@ func TestClaudeIPCRoundTrip(t *testing.T) {
 		t.Fatalf("unexpected %+v", msg)
 	}
 }
+
+func TestXmlEscapeAttr(t *testing.T) {
+	got := xmlEscapeAttr(`/tmp/Preloop & Co/preloop`)
+	if !strings.Contains(got, "&amp;") {
+		t.Fatalf("expected XML escape, got %q", got)
+	}
+	if strings.Contains(got, " & ") {
+		t.Fatalf("raw ampersand survived: %q", got)
+	}
+}

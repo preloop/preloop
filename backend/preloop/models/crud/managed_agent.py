@@ -458,6 +458,7 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         session_source_id: str,
         runtime_session_id: Optional[Any] = None,
         observed_at: datetime,
+        control_session_mode: Optional[str] = None,
         commit: bool = False,
     ) -> Optional[ManagedAgent]:
         """Update last-seen timestamp for one durable managed agent."""
@@ -472,6 +473,8 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         if db_obj.lifecycle_state != "active":
             return db_obj
         db_obj.last_seen_at = observed_at
+        if control_session_mode in {"local", "remote", "queued"}:
+            db_obj.control_session_mode = control_session_mode
         if runtime_session_id is not None:
             db_obj.runtime_session_id = runtime_session_id
         db.add(db_obj)
@@ -1151,6 +1154,7 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             "is_active_now": is_active_now,
             "activity_status": activity_status,
             "last_seen_at": row.last_seen_at,
+            "control_session_mode": getattr(row, "control_session_mode", None),
             "started_at": row.started_at,
             "last_activity_at": row.last_activity_at,
             "ended_at": row.ended_at,

@@ -138,7 +138,7 @@ func runClaudeLauncher(cmd *cobra.Command, args []string) error {
 
 		select {
 		case <-signals:
-			_ = terminateProcess(child)
+			_ = terminateProcess(child, childDone)
 			return nil
 		case waitErr := <-childDone:
 			if waitErr != nil && !isExpectedClaudeExit(waitErr) {
@@ -148,7 +148,7 @@ func runClaudeLauncher(cmd *cobra.Command, args []string) error {
 		case msg := <-incoming:
 			switch msg.Type {
 			case "switch":
-				_ = terminateProcess(child)
+				_ = terminateProcess(child, childDone)
 				_ = writeClaudeIPC(conn, claudeIPCMessage{Type: "switched", SessionID: sessionID})
 				mode = "remote"
 				if msg.SessionID != "" {
@@ -159,7 +159,7 @@ func runClaudeLauncher(cmd *cobra.Command, args []string) error {
 				_ = writeClaudeIPC(conn, claudeIPCMessage{Type: "release", SessionID: sessionID})
 				mode = "local"
 			case "release":
-				_ = terminateProcess(child)
+				_ = terminateProcess(child, childDone)
 				if msg.SessionID != "" {
 					sessionID = msg.SessionID
 				}
@@ -202,22 +202,17 @@ func startClaudeTUI(extra []string, resumeSessionID string) (*exec.Cmd, error) {
 }
 
 func waitForAnyKeyOrRelease(incoming <-chan claudeIPCMessage, signals <-chan os.Signal) {
+	fd := int(os.Stdin.Fd())
+	var old *term.State
+	if term.IsTerminal(fd) {
+		state, err := term.MakeRaw(fd)
+		if err == nil {
+			old = state
+			defer func() { _ = term.Restore(fd, old) }()
+		}
+	}
 	key := make(chan struct{}, 1)
 	go func() {
-		if !term.IsTerminal(int(os.Stdin.Fd())) {
-			var b [1]byte
-			_, _ = os.Stdin.Read(b[:])
-			key <- struct{}{}
-			return
-		}
-		old, err := term.MakeRaw(int(os.Stdin.Fd()))
-		if err != nil {
-			var b [1]byte
-			_, _ = os.Stdin.Read(b[:])
-			key <- struct{}{}
-			return
-		}
-		defer func() { _ = term.Restore(int(os.Stdin.Fd()), old) }()
 		var b [1]byte
 		_, _ = os.Stdin.Read(b[:])
 		key <- struct{}{}
@@ -274,11 +269,11 @@ func readClaudeIPC(conn net.Conn, out chan<- claudeIPCMessage) {
 	}
 }
 
-func terminateProcess(cmd *exec.Cmd) error {
+func terminateProcess(cmd *exec.Cmd, wait <-chan error) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil
 	}
-	return terminateClaudeProcess(cmd)
+	return terminateClaudeProcess(cmd, wait)
 }
 
 func isExpectedClaudeExit(err error) bool {
@@ -413,11 +408,23 @@ func runClaudeSidecarForeground(cmd *cobra.Command, args []string) error {
 	return child.Run()
 }
 
+func xmlEscapeAttr(value string) string {
+	replacer := strings.NewReplacer(
+		"&", "&amp;",
+		"<", "&lt;",
+		">", "&gt;",
+		`"`, "&quot;",
+		"'", "&apos;",
+	)
+	return replacer.Replace(value)
+}
+
 func writeClaudeSidecarLaunchd(bin string, out io.Writer) error {
 	path := claudeSidecarLaunchdPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
+	escaped := xmlEscapeAttr(bin)
 	body := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -429,7 +436,7 @@ func writeClaudeSidecarLaunchd(bin string, out io.Writer) error {
   <key>KeepAlive</key><true/>
 </dict>
 </plist>
-`, bin)
+`, escaped)
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		return err
 	}
@@ -443,6 +450,7 @@ func writeClaudeSidecarSystemd(bin string, out io.Writer) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
+	quoted, _ := json.Marshal(bin)
 	body := fmt.Sprintf(`[Unit]
 Description=Preloop Claude Code Agent Control sidecar
 After=network-online.target
@@ -454,7 +462,7 @@ RestartSec=5
 
 [Install]
 WantedBy=default.target
-`, bin)
+`, string(quoted))
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		return err
 	}

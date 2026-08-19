@@ -634,6 +634,7 @@ export class AgentTalkComposer extends LitElement {
       const targeting = this.getTargeting();
       await sendAgentControlTakeover(this.agent.id, {
         target_session_id: targeting.target_session_id,
+        start_new_session: targeting.start_new_session,
         spawn_worktree: targeting.start_new_session && this.spawnWorktree,
       });
       this.statusMessage = 'Takeover requested. Session will switch to Remote.';

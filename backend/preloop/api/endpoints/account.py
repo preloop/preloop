@@ -637,6 +637,17 @@ def _managed_agent_control_fields(
         except (ImportError, AttributeError, RuntimeError):
             snapshot = {}
         ws_connected = bool(snapshot.get("online"))
+        if not ws_connected:
+            # Sidecar heartbeats persist last_seen_at. Use that so a REST
+            # worker that did not accept the WebSocket still reports online.
+            seen = summary.get("last_seen_at")
+            if seen is not None:
+                if getattr(seen, "tzinfo", None) is None:
+                    seen = seen.replace(tzinfo=UTC)
+                try:
+                    ws_connected = datetime.now(UTC) - seen <= timedelta(seconds=45)
+                except TypeError:
+                    ws_connected = False
     control_online = bool(control_enabled and ws_connected)
     if control_online:
         control_state = AGENT_CONTROL_STATE_PLUGIN_CONNECTED
@@ -647,7 +658,10 @@ def _managed_agent_control_fields(
     else:
         control_state = AGENT_CONTROL_STATE_UNSUPPORTED
     supports_interrupt = bool(control_enabled and snapshot.get("supports_interrupt"))
-    session_mode = str(snapshot.get("session_mode") or "")
+    if snapshot.get("online"):
+        session_mode = str(snapshot.get("session_mode") or "")
+    else:
+        session_mode = str(summary.get("control_session_mode") or "")
     if not control_online:
         session_mode = "offline"
     elif session_mode not in {"local", "remote", "queued"}:

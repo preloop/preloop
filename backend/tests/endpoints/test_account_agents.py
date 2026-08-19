@@ -1,6 +1,6 @@
 """Endpoint tests for managed-agent registry surfaces."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -168,6 +168,34 @@ def test_managed_agent_control_fields_enable_claude_code_with_sidecar_flags():
     assert no_sidecar["control_online"] is False
     assert no_sidecar["control_state"] == "unsupported"
     assert no_sidecar["control_capabilities"] == []
+
+
+def test_managed_agent_control_online_uses_persisted_last_seen():
+    """REST on another worker still reports online from the sidecar heartbeat."""
+    fields = _managed_agent_control_fields(
+        {
+            "id": "agent-from-db",
+            "agent_kind": "claude_code",
+            "session_source_type": "claude_code",
+            "lifecycle_state": "active",
+            "runtime_session_id": "runtime-claude",
+            "ended_at": None,
+            "last_seen_at": datetime.now(UTC) - timedelta(seconds=10),
+            "control_session_mode": "local",
+        },
+        {
+            "validation_result": {
+                "control_channel_configured": True,
+                "control_plugin_verified": True,
+                "control_ws_url_ok": True,
+                "control_bearer_token_ok": True,
+            },
+            "managed_config": {},
+        },
+    )
+
+    assert fields["control_online"] is True
+    assert fields["control_session_mode"] == "local"
 
 
 def test_managed_agent_control_fields_keep_unknown_kinds_unsupported():

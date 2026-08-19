@@ -928,3 +928,39 @@ def test_agent_control_voice_transcript_alias_routes_prompt(
     assert payload["input_mode"] == "voice_transcript"
     assert payload["voice"] == {"locale": "en-US", "duration_ms": 2500}
     assert payload["metadata"] == {"device": "watch"}
+
+
+@patch("preloop.api.endpoints.agent_control.get_nats_client")
+def test_agent_control_takeover_honors_start_new_session(
+    mock_get_nats_client,
+    client,
+    db_session,
+    test_user,
+):
+    """Worktree takeover must mint a new session, not attach to current."""
+    _issue_runtime_token(client, session_source_id="openclaw-takeover-new")
+    managed_agent = crud_managed_agent.get_by_source(
+        db_session,
+        account_id=str(test_user.account_id),
+        session_source_type="openclaw",
+        session_source_id="openclaw-takeover-new",
+    )
+    assert managed_agent is not None
+    _mark_agent_control_configured(db_session, test_user, managed_agent)
+
+    mock_nats = MagicMock()
+    mock_nats.is_connected = True
+    mock_nats.publish = AsyncMock()
+    mock_get_nats_client.return_value = mock_nats
+
+    response = client.post(
+        f"/api/v1/agents/{managed_agent.id}/control/takeover",
+        json={"start_new_session": True, "spawn_worktree": True},
+    )
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["session_mode"] == "new"
+    payload = body["command_envelope"]["payload"]
+    assert payload["session_mode"] == "new"
+    assert payload["spawn_worktree"] is True

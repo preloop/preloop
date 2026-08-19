@@ -1286,6 +1286,7 @@ export async function sendAgentControlTakeover(
   agentId: string,
   payload: {
     target_session_id?: string | null;
+    start_new_session?: boolean;
     spawn_worktree?: boolean;
   } = {}
 ): Promise<AgentControlCommandResponse> {
