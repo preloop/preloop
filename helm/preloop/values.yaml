@@ -402,16 +402,43 @@ database:
     # Monitoring - expose PostgreSQL metrics to Prometheus via PodMonitor
     monitoring:
       enablePodMonitor: false  # Set to true if Prometheus is deployed
-    # Continuous backup to object storage (WAL archiving + base backups)
+    # Continuous backup to object storage (WAL archiving + base backups).
+    # Enabling this turns on continuous WAL archiving on the Cluster and
+    # (via scheduled.enabled) a ScheduledBackup CR for periodic base backups.
+    # This replaces any deploy-time pg_dump: recovery point is determined by
+    # WAL archiving (typically < 5 min), not by deploy frequency.
     backup:
-      enabled: false  # Set to true in production
+      enabled: false  # Set to true in production and staging
       destinationPath: ""  # e.g. s3://bucket/cnpg/preloop-prod
+      # Endpoint for S3-compatible object stores (MinIO, R2, Ceph, ...).
+      # Leave empty for AWS S3.
+      endpointURL: ""
+      # Folder name inside destinationPath. Defaults to the cluster name.
+      # Must be changed (or destinationPath moved) when bootstrapping a new
+      # cluster that recovers from an existing backup, so the new cluster
+      # does not overwrite the archive it is restoring from.
+      serverName: ""
       retentionPolicy: "30d"
       walCompression: "gzip"
+      dataCompression: "gzip"  # Compression for base backup data files
       s3Credentials:
         secretName: ""  # K8s secret containing ACCESS_KEY_ID and SECRET_ACCESS_KEY
         accessKeyIdKey: "ACCESS_KEY_ID"
         secretAccessKeyKey: "SECRET_ACCESS_KEY"
+      # Scheduled base backups (CNPG ScheduledBackup CR)
+      scheduled:
+        enabled: true  # Effective only when backup.enabled is true
+        # CNPG cron format has SIX fields (seconds first):
+        # "sec min hour day month weekday" — default: daily at 02:00 UTC
+        schedule: "0 0 2 * * *"
+        # Take a first base backup as soon as the ScheduledBackup is created
+        immediate: true
+        suspend: false
+        # Owner of Backup objects created by the schedule: none|self|cluster.
+        # Default none: deleting/recreating the ScheduledBackup (helm upgrade
+        # with scheduled.enabled=false, or helm uninstall) must not garbage-
+        # collect the base backups. `self` would cascade-delete them.
+        backupOwnerReference: none
     # Slow query logging - enable to monitor query performance
     logging:
       enabled: false  # Set to true to enable slow query logging
