@@ -16,6 +16,7 @@ from preloop.api.auth import get_current_active_user
 from preloop.models import schemas
 from preloop.models.crud import (
     crud_api_key,
+    crud_flow,
     crud_flow_execution,
     crud_flow_execution_log,
     crud_user,
@@ -165,13 +166,33 @@ def _authenticate_runner(db: Session, runner_id: UUID, token: str) -> FlowRunner
     return row
 
 
-def job_for_runner_replay(pending_job: Dict[str, Any]) -> Dict[str, Any]:
-    """Copy a stored job before attaching it to a WebSocket response.
+def job_for_runner_replay(
+    db: Session,
+    *,
+    pending_job: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Copy a stored job and attach a fresh flow-scoped token.
 
-    Replay jobs omit the short-lived account token by design because secrets
-    are never persisted in ``pending_job``. The live lease push is authoritative.
+    Secrets are never persisted in ``pending_job``. A runner that reconnects
+    mid-lease (hello / heartbeat replay) still needs ``PRELOOP_API_TOKEN``,
+    so mint the same two-hour execution token the live push would have sent.
     """
-    return dict(pending_job)
+    job = dict(pending_job)
+    execution_id = _parse_runner_execution_id(job.get("execution_id"))
+    if execution_id is None:
+        return job
+    execution = crud_flow_execution.get(db, id=execution_id)
+    if execution is None or getattr(execution, "flow_id", None) is None:
+        return job
+    flow = crud_flow.get(db, id=execution.flow_id)
+    if flow is None:
+        return job
+    from preloop.services.flow_runtime_token import create_flow_runtime_token
+
+    token, _ = create_flow_runtime_token(db, flow=flow, execution_id=execution.id)
+    if token:
+        job["account_api_token"] = token
+    return job
 
 
 def _parse_runner_execution_id(value: Any) -> Optional[UUID]:
@@ -206,7 +227,7 @@ async def runner_ws(
     hello: Dict[str, Any] = {"type": "hello", "runner_id": runner_key}
     db.refresh(runner)
     if runner.pending_job:
-        hello["job"] = job_for_runner_replay(runner.pending_job)
+        hello["job"] = job_for_runner_replay(db, pending_job=runner.pending_job)
     if runner.halt_requested:
         hello["halt"] = True
         if runner.current_execution_id:
@@ -228,7 +249,9 @@ async def runner_ws(
                 db.refresh(runner)
                 reply: Dict[str, Any] = {"type": "ack"}
                 if runner.pending_job:
-                    reply["job"] = job_for_runner_replay(runner.pending_job)
+                    reply["job"] = job_for_runner_replay(
+                        db, pending_job=runner.pending_job
+                    )
                 if runner.halt_requested:
                     reply["halt"] = True
                     if runner.current_execution_id:
