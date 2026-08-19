@@ -170,14 +170,18 @@ def job_for_runner_replay(
     db: Session,
     *,
     pending_job: Dict[str, Any],
+    mint_token: bool = False,
 ) -> Dict[str, Any]:
-    """Copy a stored job and attach a fresh flow-scoped token.
+    """Copy a stored job; mint a token only for reconnect hello.
 
-    Secrets are never persisted in ``pending_job``. A runner that reconnects
-    mid-lease (hello / heartbeat replay) still needs ``PRELOOP_API_TOKEN``,
-    so mint the same two-hour execution token the live push would have sent.
+    Secrets are never persisted in ``pending_job``. Heartbeats also attach
+    this copy so a missed hello can still see the job, but they must not
+    mint: the CLI heartbeats every 15s while ``pending_job`` is set, and
+    discards the payload once the lease is running.
     """
     job = dict(pending_job)
+    if not mint_token:
+        return job
     execution_id = _parse_runner_execution_id(job.get("execution_id"))
     if execution_id is None:
         return job
@@ -227,7 +231,9 @@ async def runner_ws(
     hello: Dict[str, Any] = {"type": "hello", "runner_id": runner_key}
     db.refresh(runner)
     if runner.pending_job:
-        hello["job"] = job_for_runner_replay(db, pending_job=runner.pending_job)
+        hello["job"] = job_for_runner_replay(
+            db, pending_job=runner.pending_job, mint_token=True
+        )
     if runner.halt_requested:
         hello["halt"] = True
         if runner.current_execution_id:
@@ -250,7 +256,7 @@ async def runner_ws(
                 reply: Dict[str, Any] = {"type": "ack"}
                 if runner.pending_job:
                     reply["job"] = job_for_runner_replay(
-                        db, pending_job=runner.pending_job
+                        db, pending_job=runner.pending_job, mint_token=False
                     )
                 if runner.halt_requested:
                     reply["halt"] = True
