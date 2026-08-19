@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSupportsAgentControlChannelIncludesClaudeCode(t *testing.T) {
@@ -52,5 +54,105 @@ func TestXmlEscapeAttr(t *testing.T) {
 	}
 	if strings.Contains(got, " & ") {
 		t.Fatalf("raw ampersand survived: %q", got)
+	}
+}
+
+func TestStdinByteReadyOnPipe(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+
+	ready, err := stdinByteReady(int(r.Fd()), 20*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ready {
+		t.Fatal("empty pipe reported ready")
+	}
+
+	if _, err := w.Write([]byte("k")); err != nil {
+		t.Fatal(err)
+	}
+	ready, err = stdinByteReady(int(r.Fd()), 50*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ready {
+		t.Fatal("wrote a byte but poll missed it")
+	}
+	consumeStdinByte(int(r.Fd()))
+	ready, err = stdinByteReady(int(r.Fd()), 20*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ready {
+		t.Fatal("byte should have been consumed")
+	}
+}
+
+func TestWaitForStdinOrReleaseReturnsOnReleaseWithoutStealing(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+
+	incoming := make(chan claudeIPCMessage, 1)
+	signals := make(chan os.Signal)
+	done := make(chan struct{})
+	go func() {
+		waitForStdinOrRelease(int(r.Fd()), incoming, signals)
+		close(done)
+	}()
+	incoming <- claudeIPCMessage{Type: "release"}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("did not return on release")
+	}
+
+	if _, err := w.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	var b [1]byte
+	n, err := r.Read(b[:])
+	if err != nil || n != 1 || b[0] != 'x' {
+		t.Fatalf("release path stole stdin: n=%d err=%v b=%q", n, err, b[:n])
+	}
+}
+
+func TestWaitForStdinOrReleaseConsumesKey(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+
+	incoming := make(chan claudeIPCMessage)
+	signals := make(chan os.Signal)
+	done := make(chan struct{})
+	go func() {
+		waitForStdinOrRelease(int(r.Fd()), incoming, signals)
+		close(done)
+	}()
+	if _, err := w.Write([]byte("k")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("did not return on key")
+	}
+	ready, err := stdinByteReady(int(r.Fd()), 20*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ready {
+		t.Fatal("key should have been consumed")
 	}
 }

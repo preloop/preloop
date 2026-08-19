@@ -3,18 +3,28 @@
 package cmd
 
 import (
-	"os"
 	"os/exec"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
-func cancelStdinRead(fd int) {
-	_ = os.Stdin.SetReadDeadline(time.Now())
+func stdinByteReady(fd int, timeout time.Duration) (bool, error) {
+	ms := uint32(timeout.Milliseconds())
+	if timeout < 0 {
+		ms = windows.INFINITE
+	}
+	ev, err := windows.WaitForSingleObject(windows.Handle(fd), ms)
+	if err != nil {
+		return false, err
+	}
+	return ev == windows.WAIT_OBJECT_0, nil
 }
 
-func restoreStdinRead(fd int) {
-	_ = os.Stdin.SetReadDeadline(time.Time{})
+func consumeStdinByte(fd int) {
+	var b [1]byte
+	_, _ = syscall.Read(fd, b[:])
 }
 
 func claudeSysProcAttr() *syscall.SysProcAttr {

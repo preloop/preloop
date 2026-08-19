@@ -208,40 +208,31 @@ func waitForAnyKeyOrRelease(incoming <-chan claudeIPCMessage, signals <-chan os.
 		state, err := term.MakeRaw(fd)
 		if err == nil {
 			old = state
+			defer func() { _ = term.Restore(fd, old) }()
 		}
 	}
-	key := make(chan struct{}, 1)
-	readerDone := make(chan struct{})
-	go func() {
-		defer close(readerDone)
-		var b [1]byte
-		_, _ = os.Stdin.Read(b[:])
-		select {
-		case key <- struct{}{}:
-		default:
-		}
-	}()
-	defer func() {
-		cancelStdinRead(fd)
-		select {
-		case <-readerDone:
-		case <-time.After(100 * time.Millisecond):
-		}
-		restoreStdinRead(fd)
-		if old != nil {
-			_ = term.Restore(fd, old)
-		}
-	}()
+	waitForStdinOrRelease(fd, incoming, signals)
+}
+
+func waitForStdinOrRelease(fd int, incoming <-chan claudeIPCMessage, signals <-chan os.Signal) {
+	// Poll the fd with a timeout instead of a blocking Read goroutine.
+	// SetReadDeadline is unsupported on os.Stdin, and SetNonblock cannot
+	// interrupt a read already sitting in the kernel, so that leftover
+	// goroutine would steal the first byte from the restarted TUI.
 	for {
-		select {
-		case <-key:
+		ready, err := stdinByteReady(fd, 50*time.Millisecond)
+		if err == nil && ready {
+			consumeStdinByte(fd)
 			return
+		}
+		select {
 		case <-signals:
 			return
 		case msg := <-incoming:
 			if msg.Type == "release" || msg.Type == "released" {
 				return
 			}
+		default:
 		}
 	}
 }

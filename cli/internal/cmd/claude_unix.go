@@ -3,20 +3,37 @@
 package cmd
 
 import (
-	"os"
 	"os/exec"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
-func cancelStdinRead(fd int) {
-	_ = os.Stdin.SetReadDeadline(time.Now())
-	_ = syscall.SetNonblock(fd, true)
+func stdinByteReady(fd int, timeout time.Duration) (bool, error) {
+	ms := int(timeout.Milliseconds())
+	if timeout < 0 {
+		ms = -1
+	}
+	fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+	n, err := unix.Poll(fds, ms)
+	if err != nil {
+		if err == unix.EINTR {
+			return false, nil
+		}
+		return false, err
+	}
+	if n <= 0 {
+		return false, nil
+	}
+	return fds[0].Revents&(unix.POLLIN|unix.POLLHUP|unix.POLLERR) != 0, nil
 }
 
-func restoreStdinRead(fd int) {
+func consumeStdinByte(fd int) {
+	_ = syscall.SetNonblock(fd, true)
+	var b [1]byte
+	_, _ = syscall.Read(fd, b[:])
 	_ = syscall.SetNonblock(fd, false)
-	_ = os.Stdin.SetReadDeadline(time.Time{})
 }
 
 func claudeSysProcAttr() *syscall.SysProcAttr {
