@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -342,7 +343,25 @@ func beginLeasedJob(
 		})
 	}
 
-	cmd := exec.Command("docker", "run", "--rm", image)
+	apiURL, err := runnerControlPlaneURL()
+	if err != nil {
+		reason := "PRELOOP_URL could not be resolved: " + err.Error()
+		_ = conn.WriteJSON(map[string]any{
+			"type":         "logs",
+			"execution_id": executionID,
+			"lines":        []string{reason},
+		})
+		return conn.WriteJSON(map[string]any{
+			"type":         "complete",
+			"execution_id": executionID,
+			"status":       "FAILED",
+			"error":        reason,
+		})
+	}
+
+	env := runnerJobEnv(job, apiURL)
+	cmd := exec.Command("docker", dockerRunArgs(image, env)...)
+	cmd.Env = append(os.Environ(), formatJobEnv(env)...)
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
@@ -423,6 +442,102 @@ func runnerImageFromJob(job map[string]any) string {
 		return image
 	}
 	return ""
+}
+
+// runnerJobEnv maps a leased job payload onto the environment contract
+// hosted agent containers already receive (container.py): FLOW_ID,
+// EXECUTION_ID, AGENT_PROMPT, AGENT_CONFIG, AI_MODEL, AI_MODEL_PROVIDER,
+// and PRELOOP_API_TOKEN. PRELOOP_URL points the agent back at the
+// control plane that leased the job.
+func runnerJobEnv(job map[string]any, apiURL string) map[string]string {
+	env := map[string]string{}
+	setIf := func(key string, value any) {
+		if s, ok := value.(string); ok && s != "" {
+			env[key] = s
+		}
+	}
+	setIf("EXECUTION_ID", job["execution_id"])
+	setIf("FLOW_ID", job["flow_id"])
+	setIf("AGENT_PROMPT", job["prompt"])
+	setIf("AI_MODEL", job["model_identifier"])
+	setIf("AI_MODEL_PROVIDER", job["model_provider"])
+	setIf("PRELOOP_API_TOKEN", job["account_api_token"])
+	if apiURL != "" {
+		env["PRELOOP_URL"] = apiURL
+	}
+	if cfg, ok := job["agent_config"].(map[string]any); ok && len(cfg) > 0 {
+		sanitized := sanitizeAgentConfig(cfg)
+		if len(sanitized) > 0 {
+			if data, err := json.Marshal(sanitized); err == nil {
+				env["AGENT_CONFIG"] = string(data)
+			}
+		}
+	}
+	return env
+}
+
+func sanitizeAgentConfig(cfg map[string]any) map[string]any {
+	out := make(map[string]any, len(cfg))
+	for key, value := range cfg {
+		if isAgentConfigSecretKey(key) {
+			continue
+		}
+		if nested, ok := value.(map[string]any); ok {
+			out[key] = sanitizeAgentConfig(nested)
+			continue
+		}
+		out[key] = value
+	}
+	return out
+}
+
+func isAgentConfigSecretKey(key string) bool {
+	switch strings.ToLower(key) {
+	case "api_key", "apikey", "api_token", "access_token", "secret", "password", "token":
+		return true
+	default:
+		lower := strings.ToLower(key)
+		return strings.HasSuffix(lower, "_api_key") ||
+			strings.HasSuffix(lower, "_access_token") ||
+			strings.HasSuffix(lower, "_password") ||
+			strings.HasSuffix(lower, "_secret")
+	}
+}
+
+// dockerRunArgs passes env keys with bare -e flags so values are read
+// from the runner process environment and never show up in `ps` output.
+func dockerRunArgs(image string, env map[string]string) []string {
+	args := []string{"run", "--rm"}
+	keys := make([]string, 0, len(env))
+	for key := range env {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		args = append(args, "-e", key)
+	}
+	return append(args, image)
+}
+
+func formatJobEnv(env map[string]string) []string {
+	pairs := make([]string, 0, len(env))
+	for key, value := range env {
+		pairs = append(pairs, key+"="+value)
+	}
+	sort.Strings(pairs)
+	return pairs
+}
+
+func runnerControlPlaneURL() (string, error) {
+	cfg, err := config.Resolve(FlagToken, FlagURL)
+	if err != nil {
+		return "", err
+	}
+	apiURL := strings.TrimRight(cfg.APIURL, "/")
+	if apiURL == "" {
+		return "", fmt.Errorf("PRELOOP_URL is empty")
+	}
+	return apiURL, nil
 }
 
 func dockerAvailable() bool {

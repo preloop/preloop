@@ -14,7 +14,13 @@ from sqlalchemy.orm import Session
 
 from preloop.api.auth import get_current_active_user
 from preloop.models import schemas
-from preloop.models.crud import crud_flow_execution, crud_flow_execution_log, crud_user
+from preloop.models.crud import (
+    crud_api_key,
+    crud_flow,
+    crud_flow_execution,
+    crud_flow_execution_log,
+    crud_user,
+)
 from preloop.models.crud.flow_runner import crud_flow_runner
 from preloop.models.db.session import get_db_session as get_db
 from preloop.models.models.flow_runner import FlowRunner
@@ -160,13 +166,66 @@ def _authenticate_runner(db: Session, runner_id: UUID, token: str) -> FlowRunner
     return row
 
 
-def job_for_runner_replay(pending_job: Dict[str, Any]) -> Dict[str, Any]:
-    """Copy a stored job before attaching it to a WebSocket response.
+def runner_needs_lease_token(runner: Any) -> bool:
+    """True while a persisted lease has not yet started on the runner.
 
-    Replay jobs omit the short-lived account token by design because secrets
-    are never persisted in ``pending_job``. The live lease push is authoritative.
+    Production is multi-replica: ``push_job_to_runner`` only hits the
+    socket if this process holds ``_live``, so an already-online idle
+    runner usually first sees a brand-new lease on the next 15s
+    heartbeat. Mint a token for that unstarted lease (``reported_status``
+    is ``None`` or ``PENDING``). Skip once the runner is mid-execution or
+    terminal so heartbeats do not churn keys.
     """
-    return dict(pending_job)
+    status = str(getattr(runner, "reported_status", None) or "").strip().upper()
+    return status in {"", "PENDING"}
+
+
+def job_for_heartbeat_ack(
+    db: Session,
+    runner: Any,
+) -> Optional[Dict[str, Any]]:
+    """Job copy for a heartbeat ack; mints only while the lease is unstarted."""
+    pending_job = getattr(runner, "pending_job", None)
+    if not pending_job:
+        return None
+    return job_for_runner_replay(
+        db,
+        pending_job=pending_job,
+        mint_token=runner_needs_lease_token(runner),
+    )
+
+
+def job_for_runner_replay(
+    db: Session,
+    *,
+    pending_job: Dict[str, Any],
+    mint_token: bool = False,
+) -> Dict[str, Any]:
+    """Copy a stored job; mint a token when the caller still needs one.
+
+    Secrets are never persisted in ``pending_job``. Hello always mints so
+    a reconnect can start the lease. Heartbeats mint only while the
+    runner has not yet reported a running or terminal status; see
+    ``job_for_heartbeat_ack``.
+    """
+    job = dict(pending_job)
+    if not mint_token:
+        return job
+    execution_id = _parse_runner_execution_id(job.get("execution_id"))
+    if execution_id is None:
+        return job
+    execution = crud_flow_execution.get(db, id=execution_id)
+    if execution is None or getattr(execution, "flow_id", None) is None:
+        return job
+    flow = crud_flow.get(db, id=execution.flow_id)
+    if flow is None:
+        return job
+    from preloop.services.flow_runtime_token import create_flow_runtime_token
+
+    token, _ = create_flow_runtime_token(db, flow=flow, execution_id=execution.id)
+    if token:
+        job["account_api_token"] = token
+    return job
 
 
 def _parse_runner_execution_id(value: Any) -> Optional[UUID]:
@@ -201,7 +260,9 @@ async def runner_ws(
     hello: Dict[str, Any] = {"type": "hello", "runner_id": runner_key}
     db.refresh(runner)
     if runner.pending_job:
-        hello["job"] = job_for_runner_replay(runner.pending_job)
+        hello["job"] = job_for_runner_replay(
+            db, pending_job=runner.pending_job, mint_token=True
+        )
     if runner.halt_requested:
         hello["halt"] = True
         if runner.current_execution_id:
@@ -222,8 +283,9 @@ async def runner_ws(
                 crud_flow_runner.touch_heartbeat(db, runner, status=status)
                 db.refresh(runner)
                 reply: Dict[str, Any] = {"type": "ack"}
-                if runner.pending_job:
-                    reply["job"] = job_for_runner_replay(runner.pending_job)
+                heartbeat_job = job_for_heartbeat_ack(db, runner)
+                if heartbeat_job is not None:
+                    reply["job"] = heartbeat_job
                 if runner.halt_requested:
                     reply["halt"] = True
                     if runner.current_execution_id:
@@ -302,6 +364,12 @@ async def runner_ws(
                     if raw.get("error"):
                         execution.error_message = str(raw["error"])
                     db.add(execution)
+                    crud_api_key.deactivate_runtime_keys_for_flow_execution(
+                        db,
+                        account_id=runner.account_id,
+                        execution_id=execution_id,
+                        commit=False,
+                    )
                 db.add(runner)
                 db.commit()
                 await websocket.send_json({"type": "ack"})

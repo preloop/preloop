@@ -163,3 +163,38 @@ def test_create_runtime_key_stores_hash_only(db_session, create_account, create_
     validated = crud_api_key.validate_key(db_session, key=presented_value)
     assert validated is not None
     assert validated.id == runtime_key.id
+
+
+def test_deactivate_runtime_keys_for_flow_execution(
+    db_session, create_account, create_user
+):
+    account = create_account()
+    user = create_user(account=account)
+    runtime_key, _ = crud_api_key.create_runtime_key(
+        db_session,
+        name="Leased Flow Runtime Key",
+        account_id=account.id,
+        user_id=user.id,
+        scopes=["mcp:read"],
+        context_data={"flow_execution_id": "flow-exec-lease"},
+    )
+    other_key, _ = crud_api_key.create_runtime_key(
+        db_session,
+        name="Other Flow Runtime Key",
+        account_id=account.id,
+        user_id=user.id,
+        scopes=["mcp:read"],
+        context_data={"flow_execution_id": "flow-exec-other"},
+    )
+
+    deactivated = crud_api_key.deactivate_runtime_keys_for_flow_execution(
+        db_session,
+        account_id=account.id,
+        execution_id="flow-exec-lease",
+    )
+    db_session.refresh(runtime_key)
+    db_session.refresh(other_key)
+
+    assert [key.id for key in deactivated] == [runtime_key.id]
+    assert runtime_key.is_active is False
+    assert other_key.is_active is True

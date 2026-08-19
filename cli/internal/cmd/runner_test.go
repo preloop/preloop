@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -60,6 +61,77 @@ func TestRunnerImageFromJob(t *testing.T) {
 		"agent_config": map[string]any{"image": "preloop/agent:dev"},
 	}); got != "preloop/agent:dev" {
 		t.Fatalf("image = %q", got)
+	}
+}
+
+func TestRunnerJobEnvMatchesHostedContract(t *testing.T) {
+	job := map[string]any{
+		"execution_id":      "exec-1",
+		"flow_id":           "flow-1",
+		"prompt":            "review the PR",
+		"model_identifier":  "claude-sonnet-4-5",
+		"model_provider":    "anthropic",
+		"account_api_token": "secret-token",
+		"agent_config":      map[string]any{"image": "preloop/agent:dev"},
+	}
+	env := runnerJobEnv(job, "https://review.preloop.ai")
+	want := map[string]string{
+		"EXECUTION_ID":      "exec-1",
+		"FLOW_ID":           "flow-1",
+		"AGENT_PROMPT":      "review the PR",
+		"AI_MODEL":          "claude-sonnet-4-5",
+		"AI_MODEL_PROVIDER": "anthropic",
+		"PRELOOP_API_TOKEN": "secret-token",
+		"PRELOOP_URL":       "https://review.preloop.ai",
+		"AGENT_CONFIG":      `{"image":"preloop/agent:dev"}`,
+	}
+	if len(env) != len(want) {
+		t.Fatalf("env = %v, want %v", env, want)
+	}
+	for key, value := range want {
+		if env[key] != value {
+			t.Fatalf("env[%s] = %q, want %q", key, env[key], value)
+		}
+	}
+}
+
+func TestRunnerJobEnvSkipsMissingFields(t *testing.T) {
+	env := runnerJobEnv(map[string]any{"execution_id": "exec-1"}, "")
+	if len(env) != 1 || env["EXECUTION_ID"] != "exec-1" {
+		t.Fatalf("env = %v", env)
+	}
+}
+
+func TestDockerRunArgsUsesBareEnvFlags(t *testing.T) {
+	args := dockerRunArgs("preloop/agent:dev", map[string]string{
+		"PRELOOP_API_TOKEN": "secret-token",
+		"EXECUTION_ID":      "exec-1",
+	})
+	want := []string{
+		"run", "--rm",
+		"-e", "EXECUTION_ID",
+		"-e", "PRELOOP_API_TOKEN",
+		"preloop/agent:dev",
+	}
+	if len(args) != len(want) {
+		t.Fatalf("args = %v, want %v", args, want)
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Fatalf("args[%d] = %q, want %q", i, args[i], want[i])
+		}
+	}
+	for _, arg := range args {
+		if strings.Contains(arg, "secret-token") {
+			t.Fatalf("secret leaked into argv: %v", args)
+		}
+	}
+}
+
+func TestFormatJobEnv(t *testing.T) {
+	pairs := formatJobEnv(map[string]string{"B": "2", "A": "1"})
+	if len(pairs) != 2 || pairs[0] != "A=1" || pairs[1] != "B=2" {
+		t.Fatalf("pairs = %v", pairs)
 	}
 }
 
@@ -326,5 +398,59 @@ func TestRunnerCommandsExist(t *testing.T) {
 		if !names[want] {
 			t.Fatalf("missing runner %s", want)
 		}
+	}
+}
+
+func TestRunnerJobEnvStripsCredentialShapedAgentConfig(t *testing.T) {
+	job := map[string]any{
+		"execution_id": "exec-1",
+		"agent_config": map[string]any{
+			"image":          "preloop/agent:dev",
+			"max_tokens":     128,
+			"token_limit":    4096,
+			"api_key":        "provider-secret",
+			"token":          "also-secret",
+			"openai_api_key": "sk-test",
+			"provider": map[string]any{
+				"api_key": "nested-secret",
+				"model":   "gpt-4",
+			},
+		},
+	}
+	env := runnerJobEnv(job, "https://review.preloop.ai")
+	got := env["AGENT_CONFIG"]
+	if !strings.Contains(got, `"image":"preloop/agent:dev"`) {
+		t.Fatalf("AGENT_CONFIG = %q", got)
+	}
+	if !strings.Contains(got, `"max_tokens":128`) {
+		t.Fatalf("max_tokens should survive sanitization: %q", got)
+	}
+	if !strings.Contains(got, `"token_limit":4096`) {
+		t.Fatalf("token_limit should survive sanitization: %q", got)
+	}
+	if !strings.Contains(got, `"model":"gpt-4"`) {
+		t.Fatalf("nested non-secret should survive: %q", got)
+	}
+	for _, leaked := range []string{"provider-secret", "also-secret", "sk-test", "nested-secret"} {
+		if strings.Contains(got, leaked) {
+			t.Fatalf("credential leaked into AGENT_CONFIG: %s in %q", leaked, got)
+		}
+	}
+}
+
+func TestRunnerControlPlaneURLFailsClosedOnBadConfig(t *testing.T) {
+	home := testenv.SetTempHome(t)
+	cfgDir := filepath.Join(home, ".preloop")
+	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), []byte(":\n  - not: yaml: ["), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldToken, oldURL := FlagToken, FlagURL
+	FlagToken, FlagURL = "", ""
+	t.Cleanup(func() { FlagToken, FlagURL = oldToken, oldURL })
+	if _, err := runnerControlPlaneURL(); err == nil {
+		t.Fatal("expected resolve failure")
 	}
 }

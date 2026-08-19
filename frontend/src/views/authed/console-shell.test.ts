@@ -240,6 +240,33 @@ describe('ConsoleShell', () => {
     expect(el.shadowRoot?.querySelector('a[href="/console/cost"]')).to.exist;
   });
 
+  it('nests Runners under Settings instead of the top-level nav', async () => {
+    const el = (await fixture(
+      html`<console-shell></console-shell>`
+    )) as ConsoleShell;
+
+    await waitUntil(
+      () =>
+        el.shadowRoot?.querySelector('a[href="/console/settings/api-keys"]') !==
+        null,
+      'Settings links did not render'
+    );
+
+    expect(el.shadowRoot?.querySelector('a[href="/console/runners"]')).to.not
+      .exist;
+
+    const settingsSections = Array.from(
+      el.shadowRoot?.querySelectorAll('sl-details.nav-section') ?? []
+    );
+    const settingsSection = settingsSections.find((section) =>
+      section.textContent?.includes('Settings')
+    );
+    expect(settingsSection).to.exist;
+    expect(
+      settingsSection?.querySelector('a[href="/console/settings/runners"]')
+    ).to.exist;
+  });
+
   it('shows All events under Audit when audit_logs is enabled', async () => {
     invalidateApiCaches();
     fetchStub.callsFake(async (input: RequestInfo | URL) => {
