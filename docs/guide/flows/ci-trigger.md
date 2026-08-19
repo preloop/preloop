@@ -49,3 +49,6 @@ preloop flow trigger pull-request-reviewer --runner local --wait
 
 If no matching runner heartbeats within 15 minutes the execution fails.
 There is no fallback onto hosted compute.
+
+To set up a runner on plain Linux or Proxmox, see the
+[self-hosted runner quickstart](../runners/quickstart-linux.md).
