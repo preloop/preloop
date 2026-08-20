@@ -7,7 +7,117 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Highlights: **native flow schedules** run flows on cron or friendly
+interval/daily/weekly cadences with a console editor and next-run previews,
+**self-hosted runners** lease flow jobs onto your own machines with
+`preloop runner`, **`preloop claude`** brings Happy-class remote control of
+Claude Code sessions, **eval-grade flows** gain matrix fan-out, workspace
+seeding, and a first-class `result.json` verdict channel, and **cost
+accounting gets honest**: provider-reported cost is authoritative, unpriced
+usage is never shown as $0.00, and reprice plus ledger backfill repair
+history.
+
 ### Added
+
+- **Security audit preset pack** (#259): three single-execution presets built
+  on the Observe/Eval pattern (read-only toolset, mandatory
+  `/workspace/result.json` with a versioned schema, evidence pack under
+  `/workspace/evidence/`). **SBOM Verify** (`preloop.cra.sbomaudit/v1`)
+  checks validity, NTIA/CRA minimum elements, completeness against delivered
+  build manifests, and license flags for CI-emitted SPDX/CycloneDX documents
+  (it verifies, never generates, an SBOM). **SBOM Exploit Check**
+  (`preloop.cra.vulnscan/v1`) maps components to CVEs via OSV.dev, adds
+  known-exploited flags from the CISA KEV catalog and best-effort EPSS
+  scores, uses NVD as a rate-limited fallback only, applies a severity gate,
+  and echoes VEX suppressions instead of dropping them. **Release Security
+  Audit** (`preloop.cra.releaseaudit/v1`) runs both in one execution plus a
+  drift comparison against a previous run's `result.json`, intended for
+  webhook-fed release builds and scheduled re-audits. Payload contract,
+  schemas, and honest limits in `docs/guide/flows/security-audit-presets.md`.
+- **Layered preset directories** (#261): `PRELOOP_PRESETS_PATH` accepts an
+  `os.pathsep`-separated list of directories. Later directories override
+  earlier ones only when a preset declares the same slug; otherwise catalogs
+  union, and a `disabled: true` preset in a later directory suppresses its
+  same-slug predecessor (tombstone). Single-directory values match the
+  previous behavior except that two files resolving to the same slug now
+  de-duplicate (later file wins, with a warning) instead of both loading.
+  Overlay deployments can now surface upstream presets without re-shipping
+  them.
+- **Observe / Eval preset with a first-class `result.json` artifact** (#231):
+  new global preset with an empty MCP toolset by default (no write tools)
+  whose prompt enforces a run-measure-report protocol ending with
+  `/workspace/result.json` (`preloop.eval.result/v1`:
+  status/summary/metrics/checks/artifacts). The runner captures the artifact
+  after the agent finishes via the Docker archive API (works on exited
+  containers; 256 KiB cap; invalid or oversized artifacts recorded as
+  wrapped error objects), persists it as `flow_execution.result` (new JSONB
+  migration), and serves it on `GET /flows/executions/{id}` plus a new
+  `GET /flows/executions/{id}/result` (404 when no artifact). List rows stay
+  light. Kubernetes capture is a stubbed TODO.
+- **`result.json` is a second success-confirmation channel** (#234): agent
+  CLIs exit 0 even when the agent died mid-task, so the printed sentinel
+  stays a fail-closed positive-confirmation contract; but a
+  `/workspace/result.json` with a success status now counts as positive
+  confirmation of equal standing, cutting false negatives (a verifiably
+  completed review was FAILED because the model forgot to print the sentinel
+  after a 3.7M-token run). An explicit failure status in `result.json` wins
+  over everything, including a printed sentinel, and an eval "fail" verdict
+  is a completed evaluation, not a flow failure. A run failing only for
+  missing confirmation says so explicitly and names both channels. The PR
+  reviewer preset writes `result.json` as its completion act.
+- **Matrix/batch trigger fan-out** (#230): one flow definition can drive a
+  model x harness evaluation grid without cloning the flow per cell. The
+  trigger body accepts a reserved `matrix` key: up to 25
+  `{agent_type?, ai_model_id?}` cells, each producing one execution, all
+  sharing a `batch_id` (new indexed column). Validation is all-or-nothing
+  (cap, allowed keys, factory agent types, account-visible model, else 422)
+  and all rows are committed before any cell is dispatched, so a mid-batch
+  crash leaves visible PENDING rows rather than silently missing cells. The
+  response returns `batch_id` plus per-cell execution refs, and a new
+  `GET /flows/batches/{batch_id}/executions` lists a batch with a
+  status/cost/token rollup. Non-matrix triggers are wire-identical to before.
+- **Workspace seeding from trigger payloads** (#236, #238, #239): webhook
+  trigger payloads can declare inline files to materialize in the agent's
+  `/workspace` before the agent starts
+  (`{"workspace_files": [{"path": ..., "content_base64": ...}]}`) instead of
+  embedding fixtures into the prompt. Strict validation: relative paths only
+  with path-traversal and `.git` guards (including nested `.git` and runtime
+  symlink containment), strict base64, a 1 MiB total cap enforced on encoded
+  size before decoding, and a 50-file cap. The orchestrator validates before
+  any container starts; seeded paths are stamped into
+  `trigger_event_details._workspace_file_paths` for audit and
+  `content_base64` is redacted from prompt embeds.
+- **Usage ingest push API** (#254): `POST /api/v1/usage/ingest`, the
+  continuous-push evolution of the CSV usage import: an API-key-authenticated
+  harness posts sanitized spend records as they occur. Records are identified
+  by (source, external_id) per account; replays return 200 with per-record
+  `deduplicated` flags and never double-count spend (a replay whose content
+  hash differs is additionally flagged `conflict=true`, never a 409).
+  Hook-shaped lifecycle events (`session_start`, `session_end`,
+  `subagent_start`, `subagent_stop`, `response`, `compaction`) land as
+  zero-cost imported rows so subagent fan-out is countable in near-real-time;
+  `conversation_id` / `parent_conversation_id` are first-class indexed
+  columns so worker spend can roll up under its parent thread. `cost_basis`
+  distinguishes reconciled billing-export rows from hook-derived estimates:
+  reconciled rows supersede estimates for the same scope and the two are
+  never summed. Rows land as `usage_source='imported'`, identical to the CSV
+  path, and stay out of gateway budget accounting.
+- **CNPG scheduled backups in the Helm chart** (#257): CloudNativePG
+  continuous backups replace the deploy-time pg_dump. The Cluster template
+  gains `endpointURL` (S3-compatible stores), optional `serverName`,
+  base-backup compression, and fail-fast validation when backups are enabled
+  without a destination; a new ScheduledBackup CR template runs periodic base
+  backups while WAL archiving stays continuous. Backup profiles for
+  production and staging ship as value overlays, the chart README documents
+  enablement, verification, on-demand backups, and the full restore
+  procedure including PITR, and `scripts/helm-render-check.sh` runs lint and
+  render assertions in CI. Base backups default to
+  `backupOwnerReference=none` so pausing or uninstalling the schedule can
+  never garbage-collect the restore anchors.
+- **Signed release provenance**: the release workflow attests every published
+  asset with SLSA build provenance and ships the `.intoto.jsonl` bundle as a
+  release asset. Verify any downloaded artifact with
+  `gh attestation verify <file> --repo preloop/preloop`.
 
 - **Happy-class Claude Code control**: `preloop claude` owns the process
   (native TUI locally, Agent SDK when phone/web/watch takes over, any-key
@@ -38,32 +148,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   billing plugin's 7-day async cliff whose acknowledgement serialized as
   "examined 0 rows".
 
-### Fixed
+- **Flow execution duration in the console**: the executions table now shows a
+  **Duration** column in place of the raw "End Time" (the start time already
+  said when the run happened; the end time alone never said how long it took),
+  and the same value is appended to the "Started …" line on the Flows and
+  dashboard execution lists. Running executions display `Running · <elapsed>`,
+  ticking every second on the execution detail page and recomputed on each
+  render elsewhere; runs that ended without an `end_time` show `—` instead of
+  claiming to still be running. Both timestamps were already returned by the
+  API, so this is a console-only change.
 
-- **OpenRouter Kimi slug is unpriced under provider `openai`**: traffic
-  recorded as `moonshotai/kimi-k3` is the same SKU as bundled
-  `moonshot/kimi-k3` ($3/$15 per million). Lookup now maps the OpenRouter
-  org slug onto the Moonshot catalog key so those rows get a cost instead
-  of `$0`. Reprice still-unpriced historical rows after deploy
-  (`POST /api/v1/cost/reprice` with `only_unpriced=true`).
-- **Reprice row selection**: `only_unpriced` repricing now also examines rows
-  tagged `cost_source='unpriced'` that carry a stray stored cost (legacy $0
-  writes), and the ledger backfill additionally admits legacy rows recorded
-  before cost provenance existed (`cost_source IS NULL` with a NULL cost).
-- **Estimates can no longer overwrite actuals**: repricing (bulk and
-  single-row) refuses to touch `provider`, `reconciled`, and `imported`
-  cost sources even with `only_unpriced=false` — provider-reported and
-  ledger-reconciled figures are never replaced by catalog estimates.
-- **Async reprice acknowledgements**: `RepriceResponse` counters are `null`
-  (not `0`) when the run was dispatched to a background worker, so an async
-  submission is no longer indistinguishable from "the window contained no
-  rows".
-- **Ledger CSV parser rejects non-finite totals**: `nan` / `inf` in
-  `total_usage` are skipped like negatives, so they cannot land in
-  `estimated_cost`.
-- **Gemini streamGenerateContent usage**: that route now uses
-  `GatewayStreamingResponse`, so deferred success rows flush after the
-  SSE body instead of being dropped.
+- **Chat-style session transcript ("Conversation" view)**: the session observer
+  now reconstructs a chat-shaped transcript from the captured gateway events
+  and activity rows. Only top-level user prompts and final agent responses are
+  expanded; tool calls, tool results, system prompts, injected harness segments
+  (system reminders, compaction summaries, Preloop question notices) and
+  intermediate agent output are collapsed into expandable step groups.
+  Tool results are detected exactly from the raw request body structure when it
+  was captured; otherwise the view discloses how many requests lacked structure
+  instead of guessing.
+
+- **Per-request and per-session prompt-cache accounting**: the session request
+  timeline now reports each request's cache read/write/miss tokens (`null`
+  means "not reported by the provider", never zero; misses are labelled
+  `reported` or `derived`) and a whole-session rollup with hit ratio over
+  covered requests, coverage disclosure, a per-model breakdown, and estimated
+  cache savings computed only from exact catalog prices (`catalog_exact`, or
+  `catalog_exact_partial` as a lower bound in mixed-model sessions; omitted
+  with a stated reason otherwise). Replay-validation traffic is excluded.
+
+- **Nginx route parity test**: `backend/tests/test_nginx_route_parity.py`
+  asserts that every prerendered marketing route resolves to prerendered HTML
+  in BOTH the docker nginx template and the production Helm ConfigMap by
+  implementing nginx location-matching precedence, preventing the recurring
+  "works locally, serves the SPA homepage in production" drift. Also adds the
+  missing `/ai-act-readiness` route to the docker template.
+
+- **Admin alert for unpriceable models**: the gateway now notifies admins the
+  first time a `(model_alias, provider)` pair proves unpriceable, including the
+  account and token volume, so missing pricing is noticed instead of silently
+  surfacing as no spend. Deduplicated via a persisted `audit_log` marker with a
+  24h cooldown (`UNPRICED_MODEL_ALERT_COOLDOWN_HOURS`), so it holds across
+  replicas rather than firing once per process, and every failure path is
+  swallowed so alerting can never break a user request.
+
+- **`scripts/reprice_unpriced_usage.py`**: operator script to backfill costs for
+  historical rows recorded while a model was unpriced. Dry run by default;
+  requires `--apply` to persist.
+
+- **`test:integration:cli-onboard` CI job** (manual): builds the CLI from the
+  branch, onboards a planted Claude Code install in API-key mode against the
+  deployed test environment, and asserts that the enrollment routes through the
+  gateway and that a request made with the minted credential is metered. Shares
+  its onboarding semantics with the recorded e2e rig module 08 via
+  `scripts/e2e-rig/lib/cli_onboard.py`. Uses the existing `PRELOOP_TEST_API_KEY`
+  variable; no new secrets.
+- **`test:unit:scripts` CI job**: runs the install script's shell-helper tests
+  and the e2e rig's pure-python unit tests, neither of which any existing job
+  executed.
 
 - **Agent Control for Claude Code (G1) and native session targeting (G2)**:
   `claude_code` is now a supported Agent Control kind. `control_enabled`
@@ -144,6 +286,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reads) validates a config without saving and returns its `type`, a human
   `description`, and the next few run times; `schedule_state` on flow
   responses now carries the same `type`/`description` fields.
+- **Schedules in the console** (#235): the flow editor gains a "Schedule"
+  trigger type with friendly-first forms (interval / daily / weekly) and
+  cron behind an Advanced toggle, a timezone picker defaulting to the
+  browser timezone, and a live preview of the next 3 run times with backend
+  validation errors surfaced inline. The flows list shows a next-run
+  indicator on scheduled flow cards (with a warning badge when the flow is
+  paused and the schedule suspended), and the flow detail page shows a
+  schedule summary card with cadence description, active/paused state, the
+  next 3 runs, and the last run status.
 - **Provider-reported cost is ingested as authoritative**: when the upstream
   reports the request's actual cost inside the response usage payload
   (OpenRouter usage accounting: `usage.cost` and
@@ -174,15 +325,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `image-size` to the `image-size-next@2.1.1` fork. Upstream never
   published `2.0.3`, which is the version GHSA-w3rx-r6r6-pgpr /
   GHSA-5p2g-fcmc-qvqq advertise as patched.
+- **Hono pin**: `@preloop-ai/claude-plugin` installs `hono@4.13.3`
+  instead of a floating `^4`.
 
 ### Changed
 
-- **Model gateway stream close**: the gateway yields the terminal SSE
-  event (`message_stop` / `[DONE]`) and finishes the HTTP body before
-  writing the usage row, so bookkeeping cannot hold the last event on
-  the client-visible stream. A client that disconnects after that
-  terminal event is recorded as 200 with captured usage, not
-  499/partial.
+- **Model gateway stream close** (#263): the gateway yields the terminal
+  SSE event (`message_stop` / `[DONE]`) and finishes the HTTP body
+  before writing the usage row, so bookkeeping cannot hold the last
+  event on the client-visible stream. A client that disconnects after
+  that terminal event is recorded as 200 with captured usage, not
+  499/partial. The Gemini `streamGenerateContent` route now uses the
+  same `GatewayStreamingResponse`, so deferred success rows flush after
+  the body instead of being dropped.
 - **OSS TLS proxy and Helm ingress skip the console hop for the model
   gateway**: `/openai`, `/anthropic`, and `/gemini` now proxy straight to
   the gateway instead of hairpinning through console nginx. Helm does
@@ -222,7 +377,109 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   force-push/rebase or a missing marker), making per-push review cost
   proportional to the push delta instead of the whole PR.
 
+- **"Halt" is now "Pause" throughout the console**, rendered as a play/pause
+  toggle in amber/warning tones. Red/danger styling stays reserved for the
+  genuinely destructive offboard and remove actions, matching the fact that
+  pausing is now reversible.
+
+- **`identity.*` tags are hidden from the default agent tag chips** and shown
+  instead under a collapsed "Identity history" disclosure on the agent detail
+  view. These tags are server-written bookkeeping from agent re-keying, not
+  operator labels; they are preserved unchanged when an operator edits tags.
+
 ### Fixed
+
+- **Edit and Delete on the AI model detail page** (#265): the header
+  actions on `/console/ai-models/{id}` had no click handlers and the
+  edit modal was not mounted, so Edit worked from the models list but
+  did nothing on the detail page. Both now use the same dialog as the
+  list; Delete confirms and returns to the list.
+- **Webhook trigger returns `execution_id` and fails honestly** (#227): the
+  public webhook endpoint validated the addressed flow (id, secret, enabled)
+  but then routed through generic event matching that swallowed failures, so
+  a flow whose trigger filters did not match (or any dispatch error) was
+  silently dropped while the endpoint still answered
+  `{"status": "triggered"}` with no execution reference. The endpoint now
+  triggers the addressed flow directly and returns
+  `execution_id`/`execution_status`/`execution_url` (plus a nested
+  `execution` object aligned with `/flows/{id}/trigger`). Semantics are
+  explicit: a redelivered payload for the same repo and commit returns 200
+  with the existing `execution_id` and `deduplicated: true`; a
+  `trigger_config` mismatch is a 422 with actionable detail; 500 is reserved
+  for "no execution row was created"; and a post-commit dispatch failure
+  returns 202 with the committed `execution_id` so callers poll instead of
+  retrying into duplicates.
+- **Flow deletion no longer orphans a running agent's logs** (#237):
+  `DELETE /flows/{flow_id}` cascaded to executions (and their logs) with no
+  guard for running agents, so an agent still streaming logs hit
+  foreign-key-violating inserts and a spurious data-loss admin alert.
+  Deleting a flow with executions in progress is now refused with a 409
+  pointing at the stop command, the log persister drops entries for
+  since-deleted executions with a single structured warning (persisting the
+  rest of the batch, no alert for known orphans), and the residual drop
+  alert reports the real attempt count and carries the captured exception.
+- **OpenCode aborted long LLM requests at ~120s**: the generated
+  `opencode.json` hardcoded a 120s whole-request timeout, far below the rest
+  of the stack (gateway proxy 900s, MCP tools 600s), so reviewer runs with
+  large prompts died with "The operation timed out." while the upstream call
+  completed seconds later. The timeout is now 600s (aligned with the MCP
+  tool budget, under the proxy's 900s so gateway failures still surface as
+  retryable HTTP errors), the SSE inter-chunk timeout gets the same budget
+  so a long silent reasoning gap is not treated as a dead stream, and
+  operators can override via `OPENCODE_LLM_TIMEOUT_SEC` (malformed values
+  are tolerated and logged, not fatal).
+- **Credits-based OpenRouter provider cost was recorded at exactly 2x**
+  (#224): credits-based responses return `usage.cost` AND an identical
+  `usage.cost_details.upstream_inference_cost`; summing both doubled the
+  real charge. The two are now summed only in the BYOK shape (where `cost`
+  is OpenRouter's fee excluding the vendor charge); otherwise `cost` alone
+  is the total. Retained precision widened from 10 to 12 decimal places so
+  live micro-charges round-trip, and historical rows carrying the duplicated
+  shape reprice correctly through the same helper.
+- **Deploy rollouts killed in-flight gateway streams**: gateway and api pods
+  ran with the Kubernetes default 30s termination grace period, so kubelet
+  SIGKILLed uvicorn while it was still draining streaming connections and
+  agents' flow executions failed during every deploy window.
+  `terminationGracePeriodSeconds` is now pinned via values (default 900,
+  aligned with the proxy read timeout). The grace period is a ceiling, not a
+  delay: idle pods still terminate in about 10s.
+- **Blog URLs served the SPA homepage in production**: the Helm nginx
+  ConfigMap never received the `/blog` rules, so every blog URL returned
+  homepage HTML, and the RSS feed was served with the wrong MIME type. Both
+  are fixed and the route parity test now locks the docker and Helm configs
+  together.
+- **Access rules with a bare `true`/`false` condition failed closed** (#213):
+  a literal `true` condition expression was normalised to `args.true`, which
+  failed to parse, so allow rules configured with a catch-all condition fell
+  back to require_approval. Boolean literals are now handled
+  case-insensitively before normalisation.
+- **`create_project` returned 500 on the duplicate check** (#214):
+  `CRUDProject.get_by_identifier` did not accept the `organization_id`
+  argument its callers passed (also breaking `create_issue` and project
+  `test_connection`). It now takes the optional filter and the duplicate
+  check is scoped to the target organization as intended.
+
+- **OpenRouter Kimi slug is unpriced under provider `openai`**: traffic
+  recorded as `moonshotai/kimi-k3` is the same SKU as bundled
+  `moonshot/kimi-k3` ($3/$15 per million). Lookup now maps the OpenRouter
+  org slug onto the Moonshot catalog key so those rows get a cost instead
+  of `$0`. Reprice still-unpriced historical rows after deploy
+  (`POST /api/v1/cost/reprice` with `only_unpriced=true`).
+- **Reprice row selection**: `only_unpriced` repricing now also examines rows
+  tagged `cost_source='unpriced'` that carry a stray stored cost (legacy $0
+  writes), and the ledger backfill additionally admits legacy rows recorded
+  before cost provenance existed (`cost_source IS NULL` with a NULL cost).
+- **Estimates can no longer overwrite actuals**: repricing (bulk and
+  single-row) refuses to touch `provider`, `reconciled`, and `imported`
+  cost sources even with `only_unpriced=false` — provider-reported and
+  ledger-reconciled figures are never replaced by catalog estimates.
+- **Async reprice acknowledgements**: `RepriceResponse` counters are `null`
+  (not `0`) when the run was dispatched to a background worker, so an async
+  submission is no longer indistinguishable from "the window contained no
+  rows".
+- **Ledger CSV parser rejects non-finite totals**: `nan` / `inf` in
+  `total_usage` are skipped like negatives, so they cannot land in
+  `estimated_cost`.
 
 - **GitLab CI against MCP Python SDK v2 and CLI telemetry**: integration
   jobs now pin `mcp>=1.0.0,<2` (`pip install mcp` was pulling v2, which
@@ -488,79 +745,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   correct without extra flags, and `proxy_buffering` is off so tokens are
   relayed as they arrive instead of being accumulated by nginx. A chart test
   asserts all of this so the override cannot be silently dropped again.
-
-### Added
-
-- **Flow execution duration in the console**: the executions table now shows a
-  **Duration** column in place of the raw "End Time" (the start time already
-  said when the run happened; the end time alone never said how long it took),
-  and the same value is appended to the "Started …" line on the Flows and
-  dashboard execution lists. Running executions display `Running · <elapsed>`,
-  ticking every second on the execution detail page and recomputed on each
-  render elsewhere; runs that ended without an `end_time` show `—` instead of
-  claiming to still be running. Both timestamps were already returned by the
-  API, so this is a console-only change.
-
-- **Chat-style session transcript ("Conversation" view)**: the session observer
-  now reconstructs a chat-shaped transcript from the captured gateway events
-  and activity rows. Only top-level user prompts and final agent responses are
-  expanded; tool calls, tool results, system prompts, injected harness segments
-  (system reminders, compaction summaries, Preloop question notices) and
-  intermediate agent output are collapsed into expandable step groups.
-  Tool results are detected exactly from the raw request body structure when it
-  was captured; otherwise the view discloses how many requests lacked structure
-  instead of guessing.
-
-- **Per-request and per-session prompt-cache accounting**: the session request
-  timeline now reports each request's cache read/write/miss tokens (`null`
-  means "not reported by the provider", never zero; misses are labelled
-  `reported` or `derived`) and a whole-session rollup with hit ratio over
-  covered requests, coverage disclosure, a per-model breakdown, and estimated
-  cache savings computed only from exact catalog prices (`catalog_exact`, or
-  `catalog_exact_partial` as a lower bound in mixed-model sessions; omitted
-  with a stated reason otherwise). Replay-validation traffic is excluded.
-
-- **Nginx route parity test**: `backend/tests/test_nginx_route_parity.py`
-  asserts that every prerendered marketing route resolves to prerendered HTML
-  in BOTH the docker nginx template and the production Helm ConfigMap by
-  implementing nginx location-matching precedence, preventing the recurring
-  "works locally, serves the SPA homepage in production" drift. Also adds the
-  missing `/ai-act-readiness` route to the docker template.
-
-- **Admin alert for unpriceable models**: the gateway now notifies admins the
-  first time a `(model_alias, provider)` pair proves unpriceable, including the
-  account and token volume, so missing pricing is noticed instead of silently
-  surfacing as no spend. Deduplicated via a persisted `audit_log` marker with a
-  24h cooldown (`UNPRICED_MODEL_ALERT_COOLDOWN_HOURS`), so it holds across
-  replicas rather than firing once per process, and every failure path is
-  swallowed so alerting can never break a user request.
-
-- **`scripts/reprice_unpriced_usage.py`**: operator script to backfill costs for
-  historical rows recorded while a model was unpriced. Dry run by default;
-  requires `--apply` to persist.
-
-- **`test:integration:cli-onboard` CI job** (manual): builds the CLI from the
-  branch, onboards a planted Claude Code install in API-key mode against the
-  deployed test environment, and asserts that the enrollment routes through the
-  gateway and that a request made with the minted credential is metered. Shares
-  its onboarding semantics with the recorded e2e rig module 08 via
-  `scripts/e2e-rig/lib/cli_onboard.py`. Uses the existing `PRELOOP_TEST_API_KEY`
-  variable; no new secrets.
-- **`test:unit:scripts` CI job**: runs the install script's shell-helper tests
-  and the e2e rig's pure-python unit tests, neither of which any existing job
-  executed.
-
-### Changed
-
-- **"Halt" is now "Pause" throughout the console**, rendered as a play/pause
-  toggle in amber/warning tones. Red/danger styling stays reserved for the
-  genuinely destructive offboard and remove actions, matching the fact that
-  pausing is now reversible.
-
-- **`identity.*` tags are hidden from the default agent tag chips** and shown
-  instead under a collapsed "Identity history" disclosure on the agent detail
-  view. These tags are server-written bookkeeping from agent re-keying, not
-  operator labels; they are preserved unchanged when an operator edits tags.
 
 ## [0.14.0] - 2026-08-07
 
