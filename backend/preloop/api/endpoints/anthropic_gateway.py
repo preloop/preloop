@@ -6,7 +6,6 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Body, Depends, Header
 from sqlalchemy.orm import Session
-from starlette.responses import StreamingResponse
 
 from preloop.models.db.session import get_db_session
 from preloop.services.model_gateway_auth import (
@@ -15,6 +14,7 @@ from preloop.services.model_gateway_auth import (
 )
 from preloop.api.deps import get_budget_enforcer
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
+from preloop.services.gateway_streaming import GatewayStreamingResponse
 from preloop.services.openai_gateway import OpenAIGatewayService
 
 router = APIRouter(include_in_schema=False)
@@ -87,13 +87,14 @@ def create_message(
         client_session_id=x_preloop_session_id or x_claude_code_session_id,
     )
     if payload.get("stream"):
-        return StreamingResponse(
+        return GatewayStreamingResponse(
             service.stream_message(
                 payload,
                 anthropic_version=anthropic_version,
                 anthropic_beta=anthropic_beta,
             ),
             media_type="text/event-stream",
+            on_complete=service.flush_deferred_stream_record,
         )
     return service.create_message(
         payload,

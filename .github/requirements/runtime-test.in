@@ -1,4 +1,11 @@
-# Regenerate with: uv pip compile --universal --generate-hashes --python-version 3.11 runtime-test.in -o runtime-test.txt
+# Pytest-only lock (publish-runtime-plugins verify job):
+#   uv pip compile --universal --generate-hashes --python-version 3.11 runtime-test.in -o runtime-test.txt
+# Runtime + pytest (ci.yml test-runtime-plugins job):
+#   uv pip compile --universal --generate-hashes --python-version 3.11 \
+#     ../../pyproject.toml runtime-test.in -o runtime-plugin-test.txt
+pip
+pytest
+pytest-asyncio
 pip
 pytest
 pytest-asyncio

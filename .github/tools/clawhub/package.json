@@ -1,0 +1,8 @@
+{
+  "name": "preloop-ci-clawhub",
+  "private": true,
+  "description": "Lockfile-pinned ClawHub CLI for plugin publish CI. Bump clawhub, then npm install.",
+  "dependencies": {
+    "clawhub": "0.23.3"
+  }
+}
