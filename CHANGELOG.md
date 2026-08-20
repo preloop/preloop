@@ -38,9 +38,11 @@ history.
   `os.pathsep`-separated list of directories. Later directories override
   earlier ones only when a preset declares the same slug; otherwise catalogs
   union, and a `disabled: true` preset in a later directory suppresses its
-  same-slug predecessor (tombstone). Single-directory values keep the exact
-  previous behavior, and overlay deployments can now surface upstream
-  presets without re-shipping them.
+  same-slug predecessor (tombstone). Single-directory values match the
+  previous behavior except that two files resolving to the same slug now
+  de-duplicate (later file wins, with a warning) instead of both loading.
+  Overlay deployments can now surface upstream presets without re-shipping
+  them.
 - **Observe / Eval preset with a first-class `result.json` artifact** (#231):
   new global preset with an empty MCP toolset by default (no write tools)
   whose prompt enforces a run-measure-report protocol ending with
@@ -323,15 +325,19 @@ history.
   `image-size` to the `image-size-next@2.1.1` fork. Upstream never
   published `2.0.3`, which is the version GHSA-w3rx-r6r6-pgpr /
   GHSA-5p2g-fcmc-qvqq advertise as patched.
+- **Hono pin**: `@preloop-ai/claude-plugin` installs `hono@4.13.3`
+  instead of a floating `^4`.
 
 ### Changed
 
-- **Model gateway stream close**: the gateway yields the terminal SSE
-  event (`message_stop` / `[DONE]`) and finishes the HTTP body before
-  writing the usage row, so bookkeeping cannot hold the last event on
-  the client-visible stream. A client that disconnects after that
-  terminal event is recorded as 200 with captured usage, not
-  499/partial.
+- **Model gateway stream close** (#263): the gateway yields the terminal
+  SSE event (`message_stop` / `[DONE]`) and finishes the HTTP body
+  before writing the usage row, so bookkeeping cannot hold the last
+  event on the client-visible stream. A client that disconnects after
+  that terminal event is recorded as 200 with captured usage, not
+  499/partial. The Gemini `streamGenerateContent` route now uses the
+  same `GatewayStreamingResponse`, so deferred success rows flush after
+  the body instead of being dropped.
 - **OSS TLS proxy and Helm ingress skip the console hop for the model
   gateway**: `/openai`, `/anthropic`, and `/gemini` now proxy straight to
   the gateway instead of hairpinning through console nginx. Helm does
@@ -383,15 +389,11 @@ history.
 
 ### Fixed
 
-- **Gemini streamGenerateContent usage** (#263): that route now uses
-  `GatewayStreamingResponse`, so deferred success rows flush after the
-  SSE body instead of being dropped.
-- **Gateway SSE stream completion** (#263): the gateway finishes the SSE
-  body (`more_body=false`) before recording usage, so terminal frames like
-  `[DONE]` and `message_stop` can no longer be held back by bookkeeping.
-  Also closes open GitHub security alerts: hash-pinned Python locks for
-  Docker/CI, `npm ci` for CLI/e2e installs, Hono override to 4.13.3, and
-  `image-size` aliased to a patched release.
+- **Edit and Delete on the AI model detail page** (#265): the header
+  actions on `/console/ai-models/{id}` had no click handlers and the
+  edit modal was not mounted, so Edit worked from the models list but
+  did nothing on the detail page. Both now use the same dialog as the
+  list; Delete confirms and returns to the list.
 - **Webhook trigger returns `execution_id` and fails honestly** (#227): the
   public webhook endpoint validated the addressed flow (id, secret, enabled)
   but then routed through generic event matching that swallowed failures, so
