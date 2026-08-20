@@ -249,7 +249,8 @@ class TestLayeredLoading:
         )
         result = _load_from([oss])
         assert [p["name"] for p in result] == ["First", "Second"]
-        assert [p["slug"] for p in result] == ["first", "second"]
+        # The loader-internal slug identity never leaks into the catalog.
+        assert all("slug" not in p for p in result)
 
     def test_union_of_distinct_slugs(self, tmp_path: Path):
         """Presets with distinct slugs from all dirs appear (union)."""
@@ -299,6 +300,8 @@ class TestLayeredLoading:
         result = _load_from([oss, ee])
         assert len(result) == 1
         assert result[0]["name"] == "EE Triage"
+        # The explicit slug key is stripped before the catalog is returned.
+        assert "slug" not in result[0]
 
     def test_tombstone_suppresses_earlier_preset(self, tmp_path: Path):
         """`disabled: true` in a later dir hides the same-slug preset entirely."""
@@ -346,6 +349,57 @@ class TestLayeredLoading:
         with pytest.raises(ValueError, match="invalid 'slug'"):
             _load_yaml_file(yaml_file)
 
+    def test_same_dir_collision_warns_and_later_file_wins(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
+        """Two files in ONE directory resolving to the same slug is almost
+        certainly a mistake: the later file wins, but a warning is logged so
+        the drop is surfaced instead of silently swallowed."""
+        oss = self._make_dir(
+            tmp_path,
+            "oss",
+            {
+                "001-triage.yaml": "name: Old Triage\n",
+                "002-triage.yaml": "name: New Triage\n",
+            },
+        )
+        with caplog.at_level("WARNING", logger="preloop.flow_presets"):
+            result = _load_from([oss])
+        assert [p["name"] for p in result] == ["New Triage"]
+        warnings = [r for r in caplog.records if "slug collision" in r.message]
+        assert len(warnings) == 1
+        message = warnings[0].getMessage()
+        assert "002-triage.yaml" in message
+        assert "001-triage.yaml" in message
+        assert "'triage'" in message
+
+    def test_cross_dir_override_does_not_warn(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
+        """Cross-directory same-slug override is the intended layering
+        feature and must stay silent."""
+        oss = self._make_dir(tmp_path, "oss", {"001-triage.yaml": "name: OSS\n"})
+        ee = self._make_dir(tmp_path, "ee", {"001-triage.yaml": "name: EE\n"})
+        with caplog.at_level("WARNING", logger="preloop.flow_presets"):
+            result = _load_from([oss, ee])
+        assert [p["name"] for p in result] == ["EE"]
+        assert not [r for r in caplog.records if "slug collision" in r.message]
+
+    def test_slug_never_leaks_into_catalog(self, tmp_path: Path):
+        """Neither explicit nor filename-derived slugs appear in catalog
+        dicts; the loader is the sole owner of the identity."""
+        oss = self._make_dir(
+            tmp_path,
+            "oss",
+            {
+                "001-explicit.yaml": "slug: my-explicit\nname: Explicit\n",
+                "002-derived.yaml": "name: Derived\n",
+            },
+        )
+        result = _load_from([oss])
+        assert len(result) == 2
+        assert all("slug" not in p for p in result)
+
 
 class TestSyncPropagationOnDirChange:
     """When a preset's source dir changes (EE override), the loaded content
@@ -369,11 +423,13 @@ class TestSyncPropagationOnDirChange:
         oss_hash = compute_content_hash(oss_only[0]["prompt_template"])
         layered_hash = compute_content_hash(layered[0]["prompt_template"])
 
-        # Same identity, different content: sync (which compares
+        # Same identity (both files derive slug "triage", so the EE layer
+        # overrides), different content: sync (which compares
         # source_prompt_hash against the current preset hash in
         # sync_preset_to_derived_flows) will auto-update non-customized
         # derived flows and notify customized ones.
-        assert oss_only[0]["slug"] == layered[0]["slug"] == "triage"
+        assert oss_only[0]["name"] == layered[0]["name"] == "Triage"
+        assert len(layered) == 1
         assert oss_hash != layered_hash
 
     def test_content_hash_stable_without_override(self, tmp_path: Path):

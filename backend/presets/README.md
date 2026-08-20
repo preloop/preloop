@@ -62,8 +62,14 @@ merged with union semantics:
   shown.
 - **Ordering**: the catalog is stably sorted by (numeric prefix, slug).
 
-A single-directory value (the default) behaves exactly like the historical
-single-directory loader.
+The `slug` is loader-internal identity only: it is stripped from the loaded
+preset data before the catalog is handed to the rest of the application.
+
+A single-directory value (the default) behaves like the historical
+single-directory loader, except that presets are now de-duplicated by slug
+even within one directory: two files in the same directory that resolve to
+the same slug (e.g. `001-triage.yaml` and `002-triage.yaml`) collide — the
+later file wins and a warning is logged at startup.
 
 ## Notes
 
