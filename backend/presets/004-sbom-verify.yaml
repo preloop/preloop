@@ -1,3 +1,4 @@
+slug: sbom-verify
 name: SBOM Verify
 description: >-
   Verify and audit a CI-emitted SBOM (SPDX or CycloneDX) instead of

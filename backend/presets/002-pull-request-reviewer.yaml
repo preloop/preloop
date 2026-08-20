@@ -1,3 +1,4 @@
+slug: pull-request-reviewer
 name: Pull Request Reviewer
 description: >-
   Automatically review pull requests for code quality, potential bugs, security
