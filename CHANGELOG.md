@@ -160,6 +160,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The per-row repricing entry point also adopts a provider cost stored in a
   row's `usage_details`, so historical rows can be fixed retroactively.
 
+### Security
+
+- **Hash-pinned application installs**: Docker and GitHub CI install
+  third-party Python deps from `uv pip compile --generate-hashes` locks,
+  then `pip install --no-deps -e .` for the local package. ClawHub CLI
+  and the Claude live e2e SDK install go through `npm ci` lockfiles
+  instead of unpinned `npm i -g` / `@latest`.
+- **image-size DoS advisories**: the console lockfile now resolves
+  `image-size` to the `image-size-next@2.1.1` fork. Upstream never
+  published `2.0.3`, which is the version GHSA-w3rx-r6r6-pgpr /
+  GHSA-5p2g-fcmc-qvqq advertise as patched.
+
 ### Changed
 
 - **Model gateway stream close**: the gateway yields the terminal SSE

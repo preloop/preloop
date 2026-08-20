@@ -22,13 +22,6 @@ from unittest.mock import MagicMock, patch
 from preloop.services.gateway_streaming import GatewayStreamingResponse
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 import preloop.services.openai_gateway as openai_gateway
-from preloop.services.openai_gateway import (
-    _GATEWAY_STARTED_EMIT_MAX_PENDING,
-    OpenAIGatewayService,
-    _anthropic_passthrough_http_client,
-    _close_anthropic_passthrough_http_client,
-    _emit_account_event_nonblocking,
-)
 
 
 def _parse_sse_payload(event: str):
@@ -39,12 +32,12 @@ def _parse_sse_payload(event: str):
     return json.loads(payload)
 
 
-def _service() -> OpenAIGatewayService:
+def _service() -> openai_gateway.OpenAIGatewayService:
     auth_context = ModelGatewayAuthContext(
         token="token",
         user=SimpleNamespace(id="user-1", account_id="account-1"),
     )
-    return OpenAIGatewayService(MagicMock(), auth_context)
+    return openai_gateway.OpenAIGatewayService(MagicMock(), auth_context)
 
 
 def _openai_model() -> SimpleNamespace:
@@ -99,7 +92,7 @@ def _anthropic_upstream() -> list[dict]:
 
 @contextmanager
 def _stream_patches(
-    service: OpenAIGatewayService, upstream: list[dict]
+    service: openai_gateway.OpenAIGatewayService, upstream: list[dict]
 ) -> Iterator[None]:
     with ExitStack() as stack:
         stack.enter_context(
@@ -339,14 +332,14 @@ def test_anthropic_stream_disconnect_after_stop_still_records():
 
 def test_anthropic_passthrough_http_client_is_reused():
     """OAuth passthrough must reuse one process-level httpx client."""
-    _close_anthropic_passthrough_http_client()
-    first = _anthropic_passthrough_http_client()
-    second = _anthropic_passthrough_http_client()
+    openai_gateway._close_anthropic_passthrough_http_client()
+    first = openai_gateway._anthropic_passthrough_http_client()
+    second = openai_gateway._anthropic_passthrough_http_client()
     try:
         assert first is second
         assert not first.is_closed
     finally:
-        _close_anthropic_passthrough_http_client()
+        openai_gateway._close_anthropic_passthrough_http_client()
 
 
 def test_oauth_passthrough_complete_posts_via_shared_client():
@@ -385,14 +378,14 @@ def test_started_emit_drops_when_queue_is_full():
         patch.object(
             openai_gateway,
             "_GATEWAY_STARTED_EMIT_PENDING",
-            _GATEWAY_STARTED_EMIT_MAX_PENDING,
+            openai_gateway._GATEWAY_STARTED_EMIT_MAX_PENDING,
         ),
         patch.object(
             openai_gateway._GATEWAY_STARTED_EMIT_EXECUTOR, "submit"
         ) as mock_submit,
         patch.object(openai_gateway, "emit_account_event") as mock_emit,
     ):
-        _emit_account_event_nonblocking({"type": "test"})
+        openai_gateway._emit_account_event_nonblocking({"type": "test"})
 
     mock_submit.assert_not_called()
     mock_emit.assert_not_called()

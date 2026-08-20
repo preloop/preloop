@@ -7,10 +7,12 @@ customer-visible 502.
 """
 
 import logging
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
+from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.openai_gateway import OpenAIGatewayService
 
 
@@ -18,7 +20,15 @@ class _Recorder(OpenAIGatewayService):
     """Bare instance exposing only the recording helpers under test."""
 
     def __init__(self, db):
-        self.db = db
+        super().__init__(
+            db,
+            ModelGatewayAuthContext(
+                token="test",
+                user=SimpleNamespace(id="user-1", account_id="account-1"),
+            ),
+            upstream_backend=MagicMock(),
+            skip_runtime_session_resolution=True,
+        )
 
 
 def _service_with_failing_recorder(exc):
