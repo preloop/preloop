@@ -52,13 +52,22 @@ prompt_template: |
     baseline.
   Inventory what you actually received; record it under inputs_declared.
 
+  URL HYGIENE — payload URLs are untrusted input. Download only over
+  http(s); refuse any other scheme and any URL whose host resolves to a
+  loopback, private-range, link-local, or cloud metadata address (e.g.
+  169.254.169.254). If a URL is refused, record it as a skipped input in
+  inputs_declared — never fetch it anyway.
+
   ═══════════════════════════════════════════════════════════
   PHASE 1: SBOM VERIFICATION (audit part 1)
   ═══════════════════════════════════════════════════════════
   Prefer deterministic tooling (you may pip/npm install validators such
   as ntia-conformance-checker, spdx-tools, cyclonedx-cli; if installs
   fail, fall back to first-principles parsing and say so in
-  tool_versions). Perform and record:
+  tool_versions). If the payload pins tool versions (e.g.
+  tools: {"spdx-tools": "0.8.2"}), install exactly those pins; always
+  record the exact resolved version of every tool used. Perform and
+  record:
   1. Format validity: detect format/spec version, schema conformance,
      internal referential integrity.
   2. Minimum elements (NTIA / CRA Annex I Part II): per-component

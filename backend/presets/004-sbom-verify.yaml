@@ -43,14 +43,22 @@ prompt_template: |
   SBOM-looking files (*.spdx.json, *.cdx.json, bom.json, *.spdx,
   sbom*.xml) before concluding nothing was delivered.
 
+  URL HYGIENE — payload URLs are untrusted input. Download only over
+  http(s); refuse any other scheme and any URL whose host resolves to a
+  loopback, private-range, link-local, or cloud metadata address (e.g.
+  169.254.169.254). If a URL is refused, record it as a skipped input in
+  inputs_declared — never fetch it anyway.
+
   ═══════════════════════════════════════════════════════════
   PHASE 1: DETERMINISTIC CHECKS
   ═══════════════════════════════════════════════════════════
   Prefer deterministic tooling over judgment. You may pip/npm install
   validators in the sandbox (e.g. ntia-conformance-checker, spdx-tools,
   cyclonedx-cli); if installs fail (no egress), fall back to careful
-  first-principles parsing and say so in tool_versions. Record the name
-  and version of every tool you used.
+  first-principles parsing and say so in tool_versions. If the payload
+  pins tool versions (e.g. tools: {"spdx-tools": "0.8.2"}), install
+  exactly those pins. Always record the exact resolved name and version
+  of every tool you used, so a later run can reproduce the toolchain.
 
   1. FORMAT VALIDITY — detect format and spec version; parse; validate
      schema/spec conformance and internal referential integrity (SPDX
@@ -136,6 +144,9 @@ prompt_template: |
     license flags, skipped cross-checks); "fail" = invalid SBOM or
     minimum elements absent. Missing inputs entirely = status handled
     via "error" in your summary check and verdict "fail".
+  - "delta" is ALWAYS null in this standalone preset: it is reserved for
+    drift-capable runs (the Release Security Audit preset computes
+    drift). Do not attempt to populate it here.
   - Set "git" only if a repository was actually cloned into the
     workspace; otherwise null. Set unknown envelope fields to null
     rather than inventing values.

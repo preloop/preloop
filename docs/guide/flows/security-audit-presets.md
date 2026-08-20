@@ -27,12 +27,23 @@ servers or tools), deterministic checks separated from agent judgment
 1. Clone the preset into a flow and configure a webhook trigger. Your CI
    job calls `POST /webhooks/flows/{flow_id}/{webhook_secret}` after the
    build; the response carries `execution_id` so the pipeline can poll
-   `/flows/executions/{execution_id}/result` and gate the release on the
-   verdict.
+   `/api/v1/flows/executions/{execution_id}/result` and gate the release
+   on the verdict.
 2. Deliver the SBOM either **inline** via the payload's
    [`workspace_files` seed](../../webhook-triggers.md) (base64, 1 MiB
    encoded cap across files) or **by pointer**: put URLs in the payload
    and the agent downloads them at run start.
+
+> **Trust and egress for URL delivery.** Payload URLs are treated as
+> hostile input: anyone holding the webhook secret can inject them, and
+> the exec sandbox needs egress to the vulnerability sources, so the
+> runner does **not** guarantee egress filtering. The prompts instruct
+> the agent to fetch only http(s) URLs and to refuse targets resolving
+> to loopback, private-range, link-local, or cloud metadata addresses
+> (e.g. `169.254.169.254`), but this is prompt-level hardening, not a
+> network policy. Prefer inline `workspace_files` delivery where
+> integrity matters; a platform-level egress allowlist is an open
+> question.
 
 Example payload (field names are conventions the prompt understands; the
 agent also searches `/workspace` for SBOM-shaped files):
@@ -142,7 +153,9 @@ Verdict semantics: `fail` = invalid SBOM or minimum elements absent;
 `pass_with_findings` = valid but findings exist (coverage gaps, license
 flags, skipped cross-checks); `pass` = clean. Build cross-checks are
 marked `skipped` when no build manifests were delivered — absence of
-evidence is reported, not papered over.
+evidence is reported, not papered over. `delta` is **always `null`** in
+this standalone preset: the field is reserved for drift-capable runs
+(only the Release Security Audit preset computes drift).
 
 ### `preloop.cra.vulnscan/v1` (SBOM Exploit Check)
 
@@ -168,6 +181,9 @@ Default gate when the payload provides none: fail on any KEV-listed
 finding or CVSS ≥ 9.0. VEX suppressions (OpenVEX or CycloneDX VEX) are
 applied to the gate but always echoed in `findings` with their
 `vex_status` — auditors ask what was suppressed and why.
+`new_since_last_run` is **always `null`** in this standalone preset: the
+field is reserved for drift-capable runs (only the Release Security
+Audit preset computes drift).
 
 ### `preloop.cra.releaseaudit/v1` (Release Security Audit)
 
@@ -216,3 +232,12 @@ verdict: `fail` if the SBOM audit failed or the severity gate failed;
   artifact persisted by the platform. Long-horizon retention/export of the
   full evidence pack and artifact signing are open platform questions —
   not claimed by these presets.
+- Validators/scanners are installed at run time, so the toolchain is not
+  bit-for-bit fixed across runs. Every run records the exact resolved
+  tool versions (`tool_versions`) and source snapshot dates
+  (`db_versions`), and the payload can pin versions (e.g.
+  `"tools": {"spdx-tools": "0.8.2"}`) which the prompt honors. Shipping
+  pinned tools in the runner image is the stronger fix and an open
+  platform question. Note that for vulnerability results, database churn
+  — not tool versions — is the dominant source of run-to-run variance,
+  which is why snapshot dates are always recorded.
