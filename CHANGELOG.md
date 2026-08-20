@@ -34,6 +34,13 @@ history.
   drift comparison against a previous run's `result.json`, intended for
   webhook-fed release builds and scheduled re-audits. Payload contract,
   schemas, and honest limits in `docs/guide/flows/security-audit-presets.md`.
+- **Layered preset directories** (#261): `PRELOOP_PRESETS_PATH` accepts an
+  `os.pathsep`-separated list of directories. Later directories override
+  earlier ones only when a preset declares the same slug; otherwise catalogs
+  union, and a `disabled: true` preset in a later directory suppresses its
+  same-slug predecessor (tombstone). Single-directory values keep the exact
+  previous behavior, and overlay deployments can now surface upstream
+  presets without re-shipping them.
 - **Observe / Eval preset with a first-class `result.json` artifact** (#231):
   new global preset with an empty MCP toolset by default (no write tools)
   whose prompt enforces a run-measure-report protocol ending with
@@ -363,6 +370,12 @@ history.
 
 ### Fixed
 
+- **Gateway SSE stream completion** (#263): the gateway finishes the SSE
+  body (`more_body=false`) before recording usage, so terminal frames like
+  `[DONE]` and `message_stop` can no longer be held back by bookkeeping.
+  Also closes open GitHub security alerts: hash-pinned Python locks for
+  Docker/CI, `npm ci` for CLI/e2e installs, Hono override to 4.13.3, and
+  `image-size` aliased to a patched release.
 - **Webhook trigger returns `execution_id` and fails honestly** (#227): the
   public webhook endpoint validated the addressed flow (id, secret, enabled)
   but then routed through generic event matching that swallowed failures, so
