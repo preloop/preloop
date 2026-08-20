@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-08-20
+
 Highlights: **native flow schedules** run flows on cron or friendly
 interval/daily/weekly cadences with a console editor and next-run previews,
 **self-hosted runners** lease flow jobs onto your own machines with
