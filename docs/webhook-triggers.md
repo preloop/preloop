@@ -70,3 +70,9 @@ where `/workspace` resolves through a symlink work normally.
 - Full-event prompt embeds (`{{trigger_event}}` /
   `{{trigger_event.payload}}`) redact each `content_base64` so fixture
   blobs never inflate prompts.
+
+### See also
+
+- [Security audit presets](guide/flows/security-audit-presets.md) — CI-fed
+  SBOM verification, exploit checking, and release audits that consume
+  `workspace_files`-seeded artifacts.

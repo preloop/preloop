@@ -45,6 +45,14 @@ _ENDPOINT_HOST_PREFIXES = (
     ("maas.aliyuncs.com", "dashscope"),
 )
 
+# OpenRouter (and some OpenAI-compatible configs) use the vendor's org slug
+# as the first path segment. LiteLLM's price map uses the provider namespace.
+# ``moonshotai/kimi-k3`` is the same SKU as ``moonshot/kimi-k3``; without this
+# rewrite the vendored Moonshot prices never match and the row stays unpriced.
+_VENDOR_NAMESPACE_ALIASES = {
+    "moonshotai": "moonshot",
+}
+
 
 def _strip_synthetic_prefix(candidate: str) -> str:
     """Remove Preloop's routing-only provider prefixes from a model name.
@@ -142,6 +150,14 @@ def _expand_candidate(
     if endpoint_prefix and not normalized.lower().startswith(f"{endpoint_prefix}/"):
         yield f"{endpoint_prefix}/{normalized}"
     yield normalized
+
+    vendor, separator, rest = normalized.partition("/")
+    if separator and rest:
+        canonical_vendor = _VENDOR_NAMESPACE_ALIASES.get(vendor.lower())
+        if canonical_vendor:
+            aliased = f"{canonical_vendor}/{rest}"
+            if aliased.lower() != normalized.lower():
+                yield aliased
 
     stripped = normalized
     for region_prefix in _BEDROCK_REGION_PREFIXES:

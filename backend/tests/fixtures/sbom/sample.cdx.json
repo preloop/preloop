@@ -1,0 +1,58 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:3e671687-395b-41f5-a30f-a58921a69b79",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-08-01T12:00:00Z",
+    "tools": [
+      {
+        "vendor": "Example",
+        "name": "example-cdx-generator",
+        "version": "1.0.0"
+      }
+    ],
+    "component": {
+      "bom-ref": "pkg:generic/example-app@2.1.0",
+      "type": "application",
+      "name": "example-app",
+      "version": "2.1.0"
+    }
+  },
+  "components": [
+    {
+      "bom-ref": "pkg:generic/openssl@3.0.13",
+      "type": "library",
+      "name": "openssl",
+      "version": "3.0.13",
+      "supplier": {
+        "name": "Example Embedded Vendor (synthetic fixture)"
+      },
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "purl": "pkg:generic/openssl@3.0.13"
+    },
+    {
+      "bom-ref": "urn:example:component:no-version",
+      "type": "library",
+      "name": "legacy-blob",
+      "supplier": {
+        "name": "NOASSERTION"
+      }
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "pkg:generic/example-app@2.1.0",
+      "dependsOn": [
+        "pkg:generic/openssl@3.0.13",
+        "urn:example:component:no-version"
+      ]
+    }
+  ]
+}

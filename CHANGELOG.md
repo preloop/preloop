@@ -40,6 +40,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **OpenRouter Kimi slug is unpriced under provider `openai`**: traffic
+  recorded as `moonshotai/kimi-k3` is the same SKU as bundled
+  `moonshot/kimi-k3` ($3/$15 per million). Lookup now maps the OpenRouter
+  org slug onto the Moonshot catalog key so those rows get a cost instead
+  of `$0`. Reprice still-unpriced historical rows after deploy
+  (`POST /api/v1/cost/reprice` with `only_unpriced=true`).
 - **Reprice row selection**: `only_unpriced` repricing now also examines rows
   tagged `cost_source='unpriced'` that carry a stray stored cost (legacy $0
   writes), and the ledger backfill additionally admits legacy rows recorded
