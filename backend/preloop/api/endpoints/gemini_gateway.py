@@ -10,6 +10,7 @@ from starlette.responses import StreamingResponse
 
 from preloop.api.deps import get_budget_enforcer
 from preloop.models.db.session import get_db_session
+from preloop.services.gateway_streaming import GatewayStreamingResponse
 from preloop.services.gemini_gateway import GeminiGatewayService
 from preloop.services.model_gateway_auth import (
     ModelGatewayAuthContext,
@@ -98,12 +99,14 @@ def stream_generate_content(
     x_preloop_session_id: Optional[str] = Header(None, alias="X-Preloop-Session-Id"),
 ) -> StreamingResponse:
     """Stream Gemini-compatible content from the shared gateway."""
-    return StreamingResponse(
-        GeminiGatewayService(
-            db,
-            auth_context,
-            client_session_id=x_preloop_session_id,
-            budget_enforcer=budget_enforcer,
-        ).stream_generate_content(model_name, payload),
+    service = GeminiGatewayService(
+        db,
+        auth_context,
+        client_session_id=x_preloop_session_id,
+        budget_enforcer=budget_enforcer,
+    )
+    return GatewayStreamingResponse(
+        service.stream_generate_content(model_name, payload),
         media_type="text/event-stream",
+        on_complete=service.flush_deferred_stream_record,
     )

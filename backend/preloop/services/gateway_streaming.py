@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Mapping, Optional
 
+from starlette.concurrency import run_in_threadpool
 from starlette.responses import StreamingResponse
 from starlette.types import Send
 
@@ -48,7 +49,9 @@ class GatewayStreamingResponse(StreamingResponse):
         if self.on_complete is None:
             return
         try:
-            self.on_complete()
+            # Sync generators previously recorded on Starlette's iterate
+            # threadpool. Keep that off the event loop.
+            await run_in_threadpool(self.on_complete)
         except Exception:  # noqa: BLE001 - body is already on the wire
             logger.warning(
                 "Deferred gateway stream recording failed after body flush",

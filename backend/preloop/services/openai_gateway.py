@@ -5936,7 +5936,7 @@ class OpenAIGatewayService:
         if recorded:
             return
         if self._deferred_stream_record is not None:
-            if sys.exc_info()[0] is GeneratorExit:
+            if isinstance(sys.exc_info()[1], GeneratorExit):
                 self.flush_deferred_stream_record()
             return
         self._record_stream_abort(**abort_kwargs)

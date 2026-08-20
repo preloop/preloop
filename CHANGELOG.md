@@ -61,6 +61,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Ledger CSV parser rejects non-finite totals**: `nan` / `inf` in
   `total_usage` are skipped like negatives, so they cannot land in
   `estimated_cost`.
+- **Gemini streamGenerateContent usage**: that route now uses
+  `GatewayStreamingResponse`, so deferred success rows flush after the
+  SSE body instead of being dropped.
 
 - **Agent Control for Claude Code (G1) and native session targeting (G2)**:
   `claude_code` is now a supported Agent Control kind. `control_enabled`

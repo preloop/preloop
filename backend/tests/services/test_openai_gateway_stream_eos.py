@@ -421,3 +421,34 @@ def test_gateway_streaming_response_records_after_body_flush() -> None:
 
     assert order == ["generator_exhausted", "body_flush", "record"]
     assert sent[-1]["more_body"] is False
+
+
+def test_gateway_streaming_response_records_via_threadpool() -> None:
+    """Usage recording must not run on the ASGI event loop."""
+    recorded_on: list[str] = []
+
+    def _on_complete() -> None:
+        recorded_on.append("worker")
+
+    response = GatewayStreamingResponse(
+        iter(["data: hi\n\n"]),
+        media_type="text/event-stream",
+        on_complete=_on_complete,
+    )
+
+    async def _send(_message: dict[str, Any]) -> None:
+        return None
+
+    with patch(
+        "preloop.services.gateway_streaming.run_in_threadpool",
+        new_callable=MagicMock,
+    ) as mock_pool:
+
+        async def _run(fn: Any) -> None:
+            recorded_on.append("pool")
+            fn()
+
+        mock_pool.side_effect = _run
+        asyncio.run(response.stream_response(_send))
+
+    assert recorded_on == ["pool", "worker"]
