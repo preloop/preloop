@@ -261,6 +261,7 @@ def test_fully_consumed_stream_records_one_success_row(db_session, test_user):
     ):
         stream = service.stream_response({"model": "ok-resp", "input": "Hello"})
         events = list(stream)
+        service.flush_deferred_stream_record()
         stream.close()
         del stream
         gc.collect()

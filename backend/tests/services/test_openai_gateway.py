@@ -1526,6 +1526,7 @@ def test_stream_chat_completion_emits_codex_chunks_for_oauth_models():
                 }
             )
         )
+        service.flush_deferred_stream_record()
 
     mock_create_codex.assert_called_once()
     mock_call_litellm.assert_not_called()
@@ -3587,6 +3588,7 @@ def test_responses_stream_persists_openrouter_provider_cost(db_session, test_use
                 {"model": "openrouter/auto-beta", "input": "Hello", "stream": True}
             )
         )
+        service.flush_deferred_stream_record()
     assert any('"response.completed"' in event for event in events)
 
     usage_row = _latest_usage_row(db_session, "/openai/v1/responses")
@@ -3627,6 +3629,7 @@ def test_chat_completions_stream_persists_openrouter_provider_cost(
                 }
             )
         )
+        service.flush_deferred_stream_record()
     assert events  # stream produced output
 
     usage_row = _latest_usage_row(db_session, "/openai/v1/chat/completions")

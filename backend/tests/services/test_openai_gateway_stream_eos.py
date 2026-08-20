@@ -1,22 +1,25 @@
 """Client-visible EOS must not wait on gateway usage recording.
 
-The stream generators used to call ``_record_gateway_request`` (DB +
-activity bookkeeping) *before* yielding ``message_stop`` / ``[DONE]``.
-That held the last SSE event for the duration of recording. These tests
-pin the new order: the terminal event is yielded first, then recording
-runs on the subsequent pull. Disconnect at that yield still bills, but
-as a completed 200 with captured usage rather than 499/partial.
+Yielding ``message_stop`` / ``[DONE]`` before ``_record_gateway_request`` is
+not enough: Starlette still pulls the generator again before sending
+``more_body=False``, and that pull used to run recording. These tests pin
+that the terminal event is yielded with recording only stashed, and that
+``flush_deferred_stream_record`` (the ASGI complete hook) writes the row.
+Disconnect at that yield still bills as a completed 200 with captured
+usage rather than 499/partial.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from contextlib import ExitStack, contextmanager
 from types import SimpleNamespace
-from typing import Iterator
+from typing import Any, Iterator
 from unittest.mock import MagicMock, patch
 
+from preloop.services.gateway_streaming import GatewayStreamingResponse
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 import preloop.services.openai_gateway as openai_gateway
 from preloop.services.openai_gateway import (
@@ -118,7 +121,7 @@ def _stream_patches(
 
 
 def test_chat_stream_emits_done_before_recording():
-    """``[DONE]`` is yielded before ``_record_gateway_request`` runs."""
+    """``[DONE]`` is yielded with recording only stashed, not run."""
     service = _service()
     order: list[str] = []
 
@@ -140,10 +143,10 @@ def test_chat_stream_emits_done_before_recording():
             if _parse_sse_payload(event) == "[DONE]":
                 order.append("done")
                 break
-        try:
-            next(stream)
-        except StopIteration:
-            pass
+        remainder = list(stream)
+        assert order == ["done"]
+        assert remainder == []
+        service.flush_deferred_stream_record()
 
     assert order == ["done", "record"]
 
@@ -170,17 +173,20 @@ def test_chat_stream_emits_done_even_if_recording_is_slow():
         )
         started = time.perf_counter()
         saw_done = False
+        elapsed = 0.0
         for event in stream:
             if _parse_sse_payload(event) == "[DONE]":
                 saw_done = True
                 elapsed = time.perf_counter() - started
                 break
         remainder = list(stream)
+        assert saw_done
+        assert elapsed < 0.1
+        assert recorded == []
+        assert remainder == []
+        service.flush_deferred_stream_record()
 
-    assert saw_done
-    assert elapsed < 0.1
     assert recorded == ["record"]
-    assert remainder == []
 
 
 def test_chat_stream_disconnect_after_done_still_records():
@@ -206,8 +212,7 @@ def test_chat_stream_disconnect_after_done_still_records():
                 stream.close()
                 break
 
-    mock_abort.assert_called_once()
-    assert mock_abort.call_args.kwargs["stream_completed"] is True
+    mock_abort.assert_not_called()
     assert mock_record.call_args.kwargs["status_code"] == 200
     assert mock_record.call_args.kwargs.get("usage_source") is None
     assert mock_record.call_args.kwargs.get("error_class") is None
@@ -264,10 +269,10 @@ def test_responses_stream_emits_done_before_recording():
             if _parse_sse_payload(event) == "[DONE]":
                 order.append("done")
                 break
-        try:
-            next(stream)
-        except StopIteration:
-            pass
+        remainder = list(stream)
+        assert order == ["done"]
+        assert remainder == []
+        service.flush_deferred_stream_record()
 
     assert order == ["done", "record"]
 
@@ -295,10 +300,10 @@ def test_anthropic_stream_emits_message_stop_before_recording():
             if "event: message_stop" in event:
                 order.append("message_stop")
                 break
-        try:
-            next(stream)
-        except StopIteration:
-            pass
+        remainder = list(stream)
+        assert order == ["message_stop"]
+        assert remainder == []
+        service.flush_deferred_stream_record()
 
     assert order == ["message_stop", "record"]
 
@@ -326,8 +331,7 @@ def test_anthropic_stream_disconnect_after_stop_still_records():
                 stream.close()
                 break
 
-    mock_abort.assert_called_once()
-    assert mock_abort.call_args.kwargs["stream_completed"] is True
+    mock_abort.assert_not_called()
     assert mock_record.call_args.kwargs["status_code"] == 200
     assert mock_record.call_args.kwargs.get("usage_source") is None
     assert mock_record.call_args.kwargs.get("error_class") is None
@@ -392,3 +396,35 @@ def test_started_emit_drops_when_queue_is_full():
 
     mock_submit.assert_not_called()
     mock_emit.assert_not_called()
+
+
+def test_gateway_streaming_response_records_after_body_flush() -> None:
+    """ASGI ``more_body=False`` is sent before deferred usage recording."""
+    order: list[str] = []
+
+    def _gen() -> Iterator[str]:
+        yield "data: hi\n\n"
+        yield "data: [DONE]\n\n"
+        order.append("generator_exhausted")
+
+    def _on_complete() -> None:
+        order.append("record")
+
+    response = GatewayStreamingResponse(
+        _gen(),
+        media_type="text/event-stream",
+        on_complete=_on_complete,
+    )
+    sent: list[dict[str, Any]] = []
+
+    async def _send(message: dict[str, Any]) -> None:
+        sent.append(message)
+        if message.get("type") == "http.response.body" and not message.get(
+            "more_body", True
+        ):
+            order.append("body_flush")
+
+    asyncio.run(response.stream_response(_send))
+
+    assert order == ["generator_exhausted", "body_flush", "record"]
+    assert sent[-1]["more_body"] is False

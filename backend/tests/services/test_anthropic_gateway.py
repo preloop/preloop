@@ -210,6 +210,7 @@ def test_stream_message_emits_anthropic_events_and_records_usage(db_session, tes
                 }
             )
         )
+        service.flush_deferred_stream_record()
 
     assert any("event: message_start" in event for event in events)
     assert any("event: content_block_delta" in event for event in events)

@@ -162,11 +162,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Model gateway stream close**: the gateway now yields the terminal SSE
-  event (`message_stop` / `[DONE]`) before writing the usage row, so
-  bookkeeping no longer holds the last event on the client-visible stream.
-  A client that disconnects after that terminal event is recorded as 200
-  with captured usage, not 499/partial.
+- **Model gateway stream close**: the gateway yields the terminal SSE
+  event (`message_stop` / `[DONE]`) and finishes the HTTP body before
+  writing the usage row, so bookkeeping cannot hold the last event on
+  the client-visible stream. A client that disconnects after that
+  terminal event is recorded as 200 with captured usage, not
+  499/partial.
 - **OSS TLS proxy and Helm ingress skip the console hop for the model
   gateway**: `/openai`, `/anthropic`, and `/gemini` now proxy straight to
   the gateway instead of hairpinning through console nginx. Helm does
