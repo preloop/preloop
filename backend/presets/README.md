@@ -17,6 +17,7 @@ Preset files should be named with a numeric prefix to control the order they app
 Each YAML file should define a single flow preset:
 
 ```yaml
+slug: "issue-triage-assistant"   # Stable identity used for layering/override
 name: "Issue Triage Assistant"
 description: "Automatically analyze new issues..."
 icon: "funnel"
@@ -41,6 +42,28 @@ is_preset: true
 > **Note:** Use `trigger_event_types` (plural, array) not the legacy
 > `trigger_event_type` (singular). The singular form is ignored by the
 > schema and flows created with it will never match events.
+
+## Layered Preset Directories
+
+`PRELOOP_PRESETS_PATH` accepts an `os.pathsep`-separated list of directories
+(e.g. `/app/backend/presets:/app/presets` on Linux), loaded in order and
+merged with union semantics:
+
+- **Identity**: every preset has a stable `slug`. Declare it explicitly in
+  the YAML (recommended); otherwise it is derived from the filename stem
+  minus the numeric prefix (`004-docs-generator.yaml` -> `docs-generator`).
+- **Union**: presets with distinct slugs from all directories appear in the
+  catalog.
+- **Override**: on slug collision, the preset from the *later* directory
+  fully replaces the earlier one. Its numeric filename prefix determines the
+  catalog position.
+- **Tombstone**: a preset with `disabled: true` in a later directory
+  suppresses the same-slug preset from earlier directories and is itself not
+  shown.
+- **Ordering**: the catalog is stably sorted by (numeric prefix, slug).
+
+A single-directory value (the default) behaves exactly like the historical
+single-directory loader.
 
 ## Notes
 
