@@ -14,33 +14,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements file first to leverage Docker cache
+# Copy manifests and hash-pinned locks first to leverage Docker cache.
+# Runtime lock: uv pip compile --universal --generate-hashes --python-version 3.11 \
+#   pyproject.toml -o requirements/runtime.txt
 COPY pyproject.toml .
 COPY VERSION .
 COPY requirements/docker-build.txt requirements/docker-build.txt
+COPY requirements/runtime.txt requirements/runtime.txt
 
-# Install build dependencies and Python packages in separate layers for better caching.
-# Hash-pinned via requirements/docker-build.txt (regenerate with the uv command
-# recorded at the top of that file).
+# Build tooling, then third-party runtime deps. Both are hash-pinned.
+# The local package is installed after COPY backend so this layer stays cached
+# across application-only changes.
 RUN pip install --no-cache-dir --require-hashes -r requirements/docker-build.txt
-
+RUN pip install --no-cache-dir --require-hashes -r requirements/runtime.txt
 
 # Copy application code (this changes most frequently, so put it last)
 COPY backend/ backend/
 COPY scripts/ scripts/
 
-# Install the main application.
-#
-# Scorecard's Pinned-Dependencies check flags this line ("pipCommand not pinned
-# by hash"). It only accepts an editable install when `--no-deps` is also
-# passed, because it cannot verify transitive dependencies otherwise. We do not
-# do that here: `--no-deps` would install the `preloop` package with *none* of
-# its runtime dependencies (fastapi, sqlalchemy, pydantic, ...), producing an
-# image that fails on import. The build tooling this step relies on (pip,
-# setuptools, wheel, build) IS hash-pinned, above, via
-# requirements/docker-build.txt. Accepting the warning is the correct trade-off
-# until the application dependency set itself is lockfile-managed.
-RUN pip install --no-cache-dir -e .
+# Install only the local package. Deps came from the hashed runtime lock above.
+# `--no-deps` is what OpenSSF Scorecard accepts for an editable install.
+RUN pip install --no-cache-dir --no-deps -e .
 
 # Expose the port
 EXPOSE 8000

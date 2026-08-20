@@ -1,10 +1,12 @@
 import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
+import { Router } from '@vaadin/router';
 
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
+import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
@@ -15,7 +17,9 @@ import '../../../components/view-header.ts';
 import '../../../components/resource-actions.ts';
 import '../../../components/budget-policy-editor.ts';
 import '../../../components/preloop-session-observer.ts';
+import '../../../components/add-ai-model-modal';
 import {
+  deleteAIModel,
   extractErrorMessage,
   fetchWithAuth,
   getAIModel,
@@ -89,6 +93,12 @@ export class AIModelDetailView extends LitElement {
 
   @state()
   private gatewayEnableInFlight = false;
+
+  @state()
+  private isEditModalOpen = false;
+
+  @state()
+  private isDeleteConfirmOpen = false;
 
   private initialized = false;
   private unsubscribeRealtime?: () => void;
@@ -666,6 +676,44 @@ export class AIModelDetailView extends LitElement {
     return Boolean(this.getGatewayConfig()?.enabled);
   }
 
+  private openEditModal = () => {
+    if (!this.model) {
+      return;
+    }
+    this.isEditModalOpen = true;
+  };
+
+  private closeEditModal = () => {
+    this.isEditModalOpen = false;
+  };
+
+  private async handleModelUpdated() {
+    this.closeEditModal();
+    await this.loadData({ preserveLoadingState: true });
+  }
+
+  private openDeleteConfirm = () => {
+    if (!this.model) {
+      return;
+    }
+    this.isDeleteConfirmOpen = true;
+  };
+
+  private async confirmDelete() {
+    if (!this.model) {
+      return;
+    }
+    try {
+      await deleteAIModel(this.model.id);
+      this.isDeleteConfirmOpen = false;
+      Router.go('/console/ai-models');
+    } catch (error) {
+      this.isDeleteConfirmOpen = false;
+      this.error =
+        error instanceof Error ? error.message : 'Failed to delete model';
+    }
+  }
+
   private async enableGatewayRouting() {
     if (!this.model?.id || !this.model.has_api_key) {
       this.validationError =
@@ -1068,7 +1116,14 @@ export class AIModelDetailView extends LitElement {
                             </sl-button>
                           `
                         : html`
-                            Add upstream API credentials (edit this model)
+                            Add upstream API credentials
+                            <sl-button
+                              variant="text"
+                              size="small"
+                              @click=${this.openEditModal}
+                            >
+                              (edit this model)
+                            </sl-button>
                             before enabling gateway routing.
                           `
                     }
@@ -1117,13 +1172,20 @@ export class AIModelDetailView extends LitElement {
         </div>
         <div slot="main-column" class="header-actions">
           <resource-actions
+            .collapseOverflow=${false}
             .actions=${[
-              { id: 'edit', label: 'Edit', icon: 'pencil' },
+              {
+                id: 'edit',
+                label: 'Edit',
+                icon: 'pencil',
+                onClick: this.openEditModal,
+              },
               {
                 id: 'delete',
                 label: 'Delete',
                 icon: 'trash',
                 variant: 'danger',
+                onClick: this.openDeleteConfirm,
               },
             ]}
           ></resource-actions>
@@ -1369,6 +1431,27 @@ export class AIModelDetailView extends LitElement {
           </div>
         </div>
       </div>
+      <add-ai-model-modal
+        ?open=${this.isEditModalOpen}
+        .model=${this.model}
+        @model-updated=${this.handleModelUpdated}
+        @close-modal=${this.closeEditModal}
+      ></add-ai-model-modal>
+      <sl-dialog
+        label="Delete Model"
+        .open=${this.isDeleteConfirmOpen}
+        @sl-hide=${() => (this.isDeleteConfirmOpen = false)}
+      >
+        Are you sure you want to delete the model "${this.model?.name}"?
+        <sl-button
+          slot="footer"
+          @click=${() => (this.isDeleteConfirmOpen = false)}
+          >Cancel</sl-button
+        >
+        <sl-button slot="footer" variant="danger" @click=${this.confirmDelete}
+          >Delete</sl-button
+        >
+      </sl-dialog>
     `;
   }
 }

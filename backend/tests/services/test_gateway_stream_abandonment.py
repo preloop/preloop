@@ -193,6 +193,40 @@ def test_abandoned_gemini_stream_is_recorded(db_session, test_user):
     assert rows[0].error_class == ERROR_CLASS_STREAM_ABANDONED
 
 
+def test_fully_consumed_gemini_stream_records_one_success_row(db_session, test_user):
+    """Gemini wraps stream_response; success still needs the ASGI flush hook.
+
+    Exhausting the translating generator stashes the row on the inner
+    responses stream. Without flush_deferred_stream_record the usage is
+    dropped. The route must call that hook via GatewayStreamingResponse.
+    """
+    ai_model = _create_gateway_model(db_session, test_user.account_id, "ok-gem")
+    service = GeminiGatewayService(
+        db_session, ModelGatewayAuthContext(token="t", user=test_user)
+    )
+
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value=_upstream_chunks(),
+    ):
+        stream = service.stream_generate_content(
+            "ok-gem",
+            {"contents": [{"role": "user", "parts": [{"text": "Hello"}]}]},
+        )
+        events = list(stream)
+        assert _rows_for(db_session, ai_model) == []
+        service.flush_deferred_stream_record()
+        stream.close()
+        del stream
+        gc.collect()
+
+    assert events, "expected SSE events from a completed Gemini stream"
+    rows = _rows_for(db_session, ai_model)
+    assert len(rows) == 1, f"expected exactly one usage row, got {len(rows)}"
+    assert rows[0].status_code == 200
+    assert rows[0].error_class is None
+
+
 def test_abandoned_stream_records_usage_after_session_teardown_detached_orm(
     db_session, test_user
 ):
@@ -261,6 +295,7 @@ def test_fully_consumed_stream_records_one_success_row(db_session, test_user):
     ):
         stream = service.stream_response({"model": "ok-resp", "input": "Hello"})
         events = list(stream)
+        service.flush_deferred_stream_record()
         stream.close()
         del stream
         gc.collect()

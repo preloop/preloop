@@ -312,13 +312,26 @@ history.
   The per-row repricing entry point also adopts a provider cost stored in a
   row's `usage_details`, so historical rows can be fixed retroactively.
 
+### Security
+
+- **Hash-pinned application installs**: Docker and GitHub CI install
+  third-party Python deps from `uv pip compile --generate-hashes` locks,
+  then `pip install --no-deps -e .` for the local package. ClawHub CLI
+  and the Claude live e2e SDK install go through `npm ci` lockfiles
+  instead of unpinned `npm i -g` / `@latest`.
+- **image-size DoS advisories**: the console lockfile now resolves
+  `image-size` to the `image-size-next@2.1.1` fork. Upstream never
+  published `2.0.3`, which is the version GHSA-w3rx-r6r6-pgpr /
+  GHSA-5p2g-fcmc-qvqq advertise as patched.
+
 ### Changed
 
-- **Model gateway stream close**: the gateway now yields the terminal SSE
-  event (`message_stop` / `[DONE]`) before writing the usage row, so
-  bookkeeping no longer holds the last event on the client-visible stream.
-  A client that disconnects after that terminal event is recorded as 200
-  with captured usage, not 499/partial.
+- **Model gateway stream close**: the gateway yields the terminal SSE
+  event (`message_stop` / `[DONE]`) and finishes the HTTP body before
+  writing the usage row, so bookkeeping cannot hold the last event on
+  the client-visible stream. A client that disconnects after that
+  terminal event is recorded as 200 with captured usage, not
+  499/partial.
 - **OSS TLS proxy and Helm ingress skip the console hop for the model
   gateway**: `/openai`, `/anthropic`, and `/gemini` now proxy straight to
   the gateway instead of hairpinning through console nginx. Helm does
@@ -370,6 +383,9 @@ history.
 
 ### Fixed
 
+- **Gemini streamGenerateContent usage** (#263): that route now uses
+  `GatewayStreamingResponse`, so deferred success rows flush after the
+  SSE body instead of being dropped.
 - **Gateway SSE stream completion** (#263): the gateway finishes the SSE
   body (`more_body=false`) before recording usage, so terminal frames like
   `[DONE]` and `message_stop` can no longer be held back by bookkeeping.

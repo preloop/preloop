@@ -30,6 +30,9 @@
     "@anthropic-ai/claude-agent-sdk": "^0.3.220",
     "ws": "^8.18.3"
   },
+  "overrides": {
+    "hono": "4.13.3"
+  },
   "devDependencies": {
     "@types/node": "^22.19.19",
     "@types/ws": "^8.18.1",

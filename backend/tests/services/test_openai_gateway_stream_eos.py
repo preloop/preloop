@@ -1,31 +1,27 @@
 """Client-visible EOS must not wait on gateway usage recording.
 
-The stream generators used to call ``_record_gateway_request`` (DB +
-activity bookkeeping) *before* yielding ``message_stop`` / ``[DONE]``.
-That held the last SSE event for the duration of recording. These tests
-pin the new order: the terminal event is yielded first, then recording
-runs on the subsequent pull. Disconnect at that yield still bills, but
-as a completed 200 with captured usage rather than 499/partial.
+Yielding ``message_stop`` / ``[DONE]`` before ``_record_gateway_request`` is
+not enough: Starlette still pulls the generator again before sending
+``more_body=False``, and that pull used to run recording. These tests pin
+that the terminal event is yielded with recording only stashed, and that
+``flush_deferred_stream_record`` (the ASGI complete hook) writes the row.
+Disconnect at that yield still bills as a completed 200 with captured
+usage rather than 499/partial.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from contextlib import ExitStack, contextmanager
 from types import SimpleNamespace
-from typing import Iterator
+from typing import Any, Iterator
 from unittest.mock import MagicMock, patch
 
+from preloop.services.gateway_streaming import GatewayStreamingResponse
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 import preloop.services.openai_gateway as openai_gateway
-from preloop.services.openai_gateway import (
-    _GATEWAY_STARTED_EMIT_MAX_PENDING,
-    OpenAIGatewayService,
-    _anthropic_passthrough_http_client,
-    _close_anthropic_passthrough_http_client,
-    _emit_account_event_nonblocking,
-)
 
 
 def _parse_sse_payload(event: str):
@@ -36,12 +32,12 @@ def _parse_sse_payload(event: str):
     return json.loads(payload)
 
 
-def _service() -> OpenAIGatewayService:
+def _service() -> openai_gateway.OpenAIGatewayService:
     auth_context = ModelGatewayAuthContext(
         token="token",
         user=SimpleNamespace(id="user-1", account_id="account-1"),
     )
-    return OpenAIGatewayService(MagicMock(), auth_context)
+    return openai_gateway.OpenAIGatewayService(MagicMock(), auth_context)
 
 
 def _openai_model() -> SimpleNamespace:
@@ -96,7 +92,7 @@ def _anthropic_upstream() -> list[dict]:
 
 @contextmanager
 def _stream_patches(
-    service: OpenAIGatewayService, upstream: list[dict]
+    service: openai_gateway.OpenAIGatewayService, upstream: list[dict]
 ) -> Iterator[None]:
     with ExitStack() as stack:
         stack.enter_context(
@@ -118,7 +114,7 @@ def _stream_patches(
 
 
 def test_chat_stream_emits_done_before_recording():
-    """``[DONE]`` is yielded before ``_record_gateway_request`` runs."""
+    """``[DONE]`` is yielded with recording only stashed, not run."""
     service = _service()
     order: list[str] = []
 
@@ -140,10 +136,10 @@ def test_chat_stream_emits_done_before_recording():
             if _parse_sse_payload(event) == "[DONE]":
                 order.append("done")
                 break
-        try:
-            next(stream)
-        except StopIteration:
-            pass
+        remainder = list(stream)
+        assert order == ["done"]
+        assert remainder == []
+        service.flush_deferred_stream_record()
 
     assert order == ["done", "record"]
 
@@ -170,17 +166,20 @@ def test_chat_stream_emits_done_even_if_recording_is_slow():
         )
         started = time.perf_counter()
         saw_done = False
+        elapsed = 0.0
         for event in stream:
             if _parse_sse_payload(event) == "[DONE]":
                 saw_done = True
                 elapsed = time.perf_counter() - started
                 break
         remainder = list(stream)
+        assert saw_done
+        assert elapsed < 0.1
+        assert recorded == []
+        assert remainder == []
+        service.flush_deferred_stream_record()
 
-    assert saw_done
-    assert elapsed < 0.1
     assert recorded == ["record"]
-    assert remainder == []
 
 
 def test_chat_stream_disconnect_after_done_still_records():
@@ -206,8 +205,7 @@ def test_chat_stream_disconnect_after_done_still_records():
                 stream.close()
                 break
 
-    mock_abort.assert_called_once()
-    assert mock_abort.call_args.kwargs["stream_completed"] is True
+    mock_abort.assert_not_called()
     assert mock_record.call_args.kwargs["status_code"] == 200
     assert mock_record.call_args.kwargs.get("usage_source") is None
     assert mock_record.call_args.kwargs.get("error_class") is None
@@ -264,10 +262,10 @@ def test_responses_stream_emits_done_before_recording():
             if _parse_sse_payload(event) == "[DONE]":
                 order.append("done")
                 break
-        try:
-            next(stream)
-        except StopIteration:
-            pass
+        remainder = list(stream)
+        assert order == ["done"]
+        assert remainder == []
+        service.flush_deferred_stream_record()
 
     assert order == ["done", "record"]
 
@@ -295,10 +293,10 @@ def test_anthropic_stream_emits_message_stop_before_recording():
             if "event: message_stop" in event:
                 order.append("message_stop")
                 break
-        try:
-            next(stream)
-        except StopIteration:
-            pass
+        remainder = list(stream)
+        assert order == ["message_stop"]
+        assert remainder == []
+        service.flush_deferred_stream_record()
 
     assert order == ["message_stop", "record"]
 
@@ -326,8 +324,7 @@ def test_anthropic_stream_disconnect_after_stop_still_records():
                 stream.close()
                 break
 
-    mock_abort.assert_called_once()
-    assert mock_abort.call_args.kwargs["stream_completed"] is True
+    mock_abort.assert_not_called()
     assert mock_record.call_args.kwargs["status_code"] == 200
     assert mock_record.call_args.kwargs.get("usage_source") is None
     assert mock_record.call_args.kwargs.get("error_class") is None
@@ -335,14 +332,14 @@ def test_anthropic_stream_disconnect_after_stop_still_records():
 
 def test_anthropic_passthrough_http_client_is_reused():
     """OAuth passthrough must reuse one process-level httpx client."""
-    _close_anthropic_passthrough_http_client()
-    first = _anthropic_passthrough_http_client()
-    second = _anthropic_passthrough_http_client()
+    openai_gateway._close_anthropic_passthrough_http_client()
+    first = openai_gateway._anthropic_passthrough_http_client()
+    second = openai_gateway._anthropic_passthrough_http_client()
     try:
         assert first is second
         assert not first.is_closed
     finally:
-        _close_anthropic_passthrough_http_client()
+        openai_gateway._close_anthropic_passthrough_http_client()
 
 
 def test_oauth_passthrough_complete_posts_via_shared_client():
@@ -381,14 +378,77 @@ def test_started_emit_drops_when_queue_is_full():
         patch.object(
             openai_gateway,
             "_GATEWAY_STARTED_EMIT_PENDING",
-            _GATEWAY_STARTED_EMIT_MAX_PENDING,
+            openai_gateway._GATEWAY_STARTED_EMIT_MAX_PENDING,
         ),
         patch.object(
             openai_gateway._GATEWAY_STARTED_EMIT_EXECUTOR, "submit"
         ) as mock_submit,
         patch.object(openai_gateway, "emit_account_event") as mock_emit,
     ):
-        _emit_account_event_nonblocking({"type": "test"})
+        openai_gateway._emit_account_event_nonblocking({"type": "test"})
 
     mock_submit.assert_not_called()
     mock_emit.assert_not_called()
+
+
+def test_gateway_streaming_response_records_after_body_flush() -> None:
+    """ASGI ``more_body=False`` is sent before deferred usage recording."""
+    order: list[str] = []
+
+    def _gen() -> Iterator[str]:
+        yield "data: hi\n\n"
+        yield "data: [DONE]\n\n"
+        order.append("generator_exhausted")
+
+    def _on_complete() -> None:
+        order.append("record")
+
+    response = GatewayStreamingResponse(
+        _gen(),
+        media_type="text/event-stream",
+        on_complete=_on_complete,
+    )
+    sent: list[dict[str, Any]] = []
+
+    async def _send(message: dict[str, Any]) -> None:
+        sent.append(message)
+        if message.get("type") == "http.response.body" and not message.get(
+            "more_body", True
+        ):
+            order.append("body_flush")
+
+    asyncio.run(response.stream_response(_send))
+
+    assert order == ["generator_exhausted", "body_flush", "record"]
+    assert sent[-1]["more_body"] is False
+
+
+def test_gateway_streaming_response_records_via_threadpool() -> None:
+    """Usage recording must not run on the ASGI event loop."""
+    recorded_on: list[str] = []
+
+    def _on_complete() -> None:
+        recorded_on.append("worker")
+
+    response = GatewayStreamingResponse(
+        iter(["data: hi\n\n"]),
+        media_type="text/event-stream",
+        on_complete=_on_complete,
+    )
+
+    async def _send(_message: dict[str, Any]) -> None:
+        return None
+
+    with patch(
+        "preloop.services.gateway_streaming.run_in_threadpool",
+        new_callable=MagicMock,
+    ) as mock_pool:
+
+        async def _run(fn: Any) -> None:
+            recorded_on.append("pool")
+            fn()
+
+        mock_pool.side_effect = _run
+        asyncio.run(response.stream_response(_send))
+
+    assert recorded_on == ["pool", "worker"]

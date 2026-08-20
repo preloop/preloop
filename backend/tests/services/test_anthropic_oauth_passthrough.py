@@ -442,6 +442,7 @@ def test_oauth_passthrough_stream_relays_sse_verbatim(db_session, test_user):
             _oauth_credentials()
         )
         emitted = list(service.stream_message(request_payload))
+        service.flush_deferred_stream_record()
 
     mock_completion.assert_not_called()
     # Chunks relayed verbatim, in order.

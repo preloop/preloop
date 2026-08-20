@@ -107,7 +107,7 @@ def get_engine(database_url: Optional[str] = None):
 
     try:
         # Configure connection pool with proper limits, recycling, and timeouts
-        _engine = create_engine(
+        engine = create_engine(
             url,
             **_database_pool_kwargs(),
             connect_args={
@@ -117,17 +117,17 @@ def get_engine(database_url: Optional[str] = None):
             echo=False,  # Set to True for SQL query debugging
         )
 
-        with _engine.connect() as conn:
+        with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
 
-        if not check_pgvector_extension(_engine):
-            install_pgvector_extension(_engine)
+        if not check_pgvector_extension(engine):
+            install_pgvector_extension(engine)
 
         logger.debug(f"Connected to database using {url}")
+        _engine = engine
         return _engine
     except (ImportError, SQLAlchemyError) as e:
         logger.error(f"Database connection failed: {e}")
-        _engine = None  # Reset on failure
         raise Exception(f"Database connection failed: {e}")
 
 
@@ -221,7 +221,7 @@ def get_async_engine(database_url: Optional[str] = None) -> AsyncEngine:
 
     try:
         # Configure connection pool with proper limits, recycling, and timeouts
-        _async_engine = create_async_engine(
+        engine = create_async_engine(
             url,
             **_database_pool_kwargs(),
             connect_args={
@@ -232,10 +232,10 @@ def get_async_engine(database_url: Optional[str] = None) -> AsyncEngine:
         )
 
         logger.debug(f"Connected to async database using {url}")
+        _async_engine = engine
         return _async_engine
     except (ImportError, SQLAlchemyError) as e:
         logger.error(f"Async database connection failed: {e}")
-        _async_engine = None  # Reset on failure
         raise Exception(f"Async database connection failed: {e}")
 
 

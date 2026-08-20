@@ -1,7 +1,8 @@
-# Live e2e against the latest Claude Agent SDK / bundled Claude Code.
-# Unit tests in ci.yml stay fake-SDK. This job installs @latest and runs
-# runtime-plugins/claude-preloop/test/live-sdk.e2e.mjs when ANTHROPIC_API_KEY
-# is present. Same-repo PRs and workflow_dispatch only (no fork secrets).
+# Live e2e against the lockfile-pinned Claude Agent SDK / bundled Claude Code.
+# Unit tests in ci.yml stay fake-SDK. This job uses `npm ci` (no floating
+# `@latest` install) and runs runtime-plugins/claude-preloop/test/live-sdk.e2e.mjs
+# when ANTHROPIC_API_KEY is present. Same-repo PRs and workflow_dispatch only
+# (no fork secrets). Bump the SDK by updating the plugin lockfile.
 
 name: Claude Code e2e
 
@@ -43,9 +44,8 @@ jobs:
       - name: Install plugin dependencies
         run: npm ci
 
-      - name: Install latest Claude Agent SDK
+      - name: Show locked Claude Agent SDK version
         run: |
-          npm install @anthropic-ai/claude-agent-sdk@latest
           node -e "const fs=require('fs'); const p='node_modules/@anthropic-ai/claude-agent-sdk/package.json'; console.log('claude-agent-sdk', JSON.parse(fs.readFileSync(p,'utf8')).version)"
 
       - name: Build sidecar
