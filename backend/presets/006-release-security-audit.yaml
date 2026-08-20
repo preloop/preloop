@@ -7,9 +7,13 @@ description: >-
   against a previous run's result.json when provided. Emits one combined
   /workspace/result.json (preloop.cra.releaseaudit/v1) and a combined
   evidence pack under /workspace/evidence/ suitable for a compliance
-  folder. Wire a CI webhook trigger for release builds; attach a schedule
-  to re-audit the last released SBOM periodically through the support
-  period.
+  folder. Product mode: attach the product's code repositories plus a
+  dedicated compliance repository via the flow's git clone config, and
+  the run additionally commits a small dated result stub into each code
+  repo and the full evidence pack into the compliance repo, cross-linked
+  by commit SHA (hybrid evidence storage). Wire a CI webhook trigger for
+  release builds; attach a schedule to re-audit the last released SBOM
+  periodically through the support period.
 icon: shield-lock
 trigger_event_source: null
 trigger_event_types: null
@@ -17,9 +21,14 @@ prompt_template: |
   You are running a RELEASE SECURITY AUDIT: SBOM verification, then
   exploit/vulnerability matching, then drift against the previous audit —
   all in this single execution. You have NO write tools: do not create
-  issues, post comments, push commits, or mutate any external system.
-  Work read-only against the workspace and your sandbox. Scratch space is
-  /tmp; the evidence pack goes under /workspace/evidence/.
+  issues, post comments, or mutate any external system, and never run
+  git push. The ONLY writes you may make are files in your sandbox and —
+  in product mode, PHASE 4B — local git commits of the evidence files
+  described there, inside the workspace checkouts, on the branch the
+  platform prepared. Pushing and PR creation happen in the platform's
+  post-execution step, gated by the flow's git config, never by you.
+  Scratch space is /tmp; the evidence pack goes under
+  /workspace/evidence/.
 
   You VERIFY SBOMs, you never GENERATE them. SBOM creation belongs to the
   build toolchain (Yocto/OpenEmbedded create-spdx, AOSP SBOM tooling,
@@ -50,6 +59,13 @@ prompt_template: |
     in the seed (e.g. previous/result.json) or by URL. If absent, drift
     is null and the corresponding check is marked skipped — never guess a
     baseline.
+  - Optional git checkouts (product mode): the flow's git clone config
+    may have cloned one or more repositories under /workspace. Inventory
+    them (e.g. find /workspace -maxdepth 2 -name .git -type d) and
+    record each with its remote (git remote get-url origin) and HEAD
+    commit SHA (git rev-parse HEAD) in inputs_declared. They feed
+    PHASE 4B evidence storage only: you do NOT scan repository source
+    code for vulnerabilities — the SBOM stays the inventory of record.
   Inventory what you actually received; record it under inputs_declared.
 
   URL HYGIENE — payload URLs are untrusted input. Download only over
@@ -136,8 +152,76 @@ prompt_template: |
   conformity assessment, certification, or legal advice."
 
   ═══════════════════════════════════════════════════════════
-  PHASE 5: REPORT (MANDATORY)
+  PHASE 4B: EVIDENCE STORAGE (MULTI-REPO PRODUCT MODE)
   ═══════════════════════════════════════════════════════════
+  The unit of analysis is the PRODUCT, which may span several code
+  repositories (e.g. firmware + app + cloud). Storage is hybrid:
+  a small diffable stub next to each code repo's history, and the full
+  pack in a dedicated product-level compliance repo, cross-linked by
+  commit SHA. This phase runs ONLY when git checkouts exist under
+  /workspace; with no checkouts, mark the check
+  "evidence_storage: skipped — no repositories attached" and set
+  evidence_storage to null (the run then behaves exactly like an
+  artifact-only audit — that is not a failure).
+
+  Identify the COMPLIANCE REPO among the checkouts:
+  - the checkout at /workspace/compliance (flow-config convention: a
+    repositories[] entry with clone_path "compliance"), or
+  - the checkout at the payload's compliance_repo_path
+    (workspace-relative), which overrides the convention.
+  Every other checkout is a CODE REPO of the product. If checkouts
+  exist but none is the compliance repo, write the per-repo stubs only
+  and record the missing compliance repo as a failed (not skipped)
+  check — the flow was configured for product mode incompletely.
+
+  For each CODE REPO, write ONE per-repo stub — small (target < 2 KB),
+  diffable, no findings detail (details live in the compliance repo;
+  code repos must not accrue artifact bloat):
+    <repo>/.preloop/evidence/<UTC YYYY-MM-DDTHHMMSSZ of run_at>-release-security-audit.json
+  {
+    "schema": "preloop.cra.repostub/v1",
+    "flow": "release-security-audit",
+    "run_at": "<ISO 8601 UTC>",
+    "repo": { "remote": "<credential-free URL>", "commit": "<HEAD SHA>", "branch": "<checked-out branch>" },
+    "product": { "name": "<payload product, or null>", "compliance_repo": "<compliance remote, or null>", "evidence_path": "<pack path in compliance repo, or null>" },
+    "release_ref": "<or null>",
+    "verdict": "pass" | "pass_with_findings" | "fail",
+    "gate_passed": true|false,
+    "counts_by_severity": { "critical": 0, "high": 0, "medium": 0, "low": 0, "unknown": 0 },
+    "result_schema": "preloop.cra.releaseaudit/v1",
+    "disclaimer": "Machine-generated evidence for conformity assessment support. Not a conformity assessment, certification, or legal advice."
+  }
+
+  For the COMPLIANCE REPO, write the PRODUCT EVIDENCE PACK under
+    products/<product>/audits/<UTC YYYY-MM-DDTHHMMSSZ>-<release_ref or "unversioned">/
+  containing: a copy of result.json, the full evidence/ directory from
+  PHASE 4, and a manifest.json:
+  {
+    "schema": "preloop.cra.evidencepack/v1",
+    "flow": "release-security-audit",
+    "run_at": "<ISO 8601 UTC>",
+    "product": "<product name>",
+    "release_ref": "<or null>",
+    "verdict": "...",
+    "repos": [ { "remote": "...", "commit": "<HEAD SHA>", "branch": "...", "stub_path": ".preloop/evidence/<stub filename>" } ],
+    "artifacts": { "result": "result.json", "audit_report": "evidence/audit-report.md", "findings": "evidence/findings.json", "sbom_findings": "evidence/sbom-findings.json", "drift_report": "evidence/drift-report.md or null" },
+    "disclaimer": "Machine-generated evidence for conformity assessment support. Not a conformity assessment, certification, or legal advice."
+  }
+  Product name: payload field "product" if present, else the compliance
+  repo's directory name. Every repos[] entry records the HEAD SHA
+  observed in the checkout — the manifest SHAs and the stub SHAs must
+  agree; that cross-reference is the audit trail's spine.
+
+  COMMIT DISCIPLINE (strict):
+  - In each checkout, git add ONLY the evidence files you wrote there,
+    then git commit on the branch the platform prepared. Suggested
+    message: "chore(evidence): release security audit <UTC date>
+    (<verdict>)". Never modify or stage any other file; never amend or
+    rebase existing history; NEVER run git push.
+  - If a commit fails (read-only checkout, hooks, identity), record the
+    failure honestly in checks and in evidence_storage
+    (committed: false) — the /workspace evidence pack still stands as
+    the execution artifact.
   As your FINAL action, write /workspace/result.json: valid JSON, a
   single top-level object, no trailing output after it. Do not paste the
   JSON into chat; the file is the deliverable.
@@ -179,6 +263,12 @@ prompt_template: |
       "alert": true|false
     },
     "verdict": "pass" | "pass_with_findings" | "fail",
+    "evidence_storage": null | {
+      "mode": "hybrid",
+      "product": "<product name>",
+      "compliance_repo": null | { "remote": "...", "commit": "<HEAD SHA at clone>", "evidence_path": "products/<product>/audits/<run>/", "committed": true|false },
+      "code_repos": [ { "remote": "...", "commit": "<HEAD SHA>", "branch": "...", "stub_path": ".preloop/evidence/<stub filename>", "committed": true|false } ]
+    },
     "checks": [ { "name": "...", "passed": true|false, "skipped": true|false, "details": "<evidence>" } ],
     "assessments": [ { "topic": "...", "judgment": "<clearly-marked agent judgment>" } ],
     "artifacts": {
@@ -203,6 +293,11 @@ prompt_template: |
     KEV/critical/high entries if needed, note the truncation, and keep
     the full list in evidence/findings.json.
   - Set unknown envelope fields to null rather than inventing values.
+  - "git": fill it only when exactly one repository is checked out; with
+    multiple checkouts set it to null — per-repo identity lives in
+    evidence_storage.code_repos. "evidence_storage" is null whenever
+    PHASE 4B was skipped (no checkouts); this additive field keeps the
+    schema at preloop.cra.releaseaudit/v1.
 agent_type: codex
 agent_config:
   sandbox_type: exec

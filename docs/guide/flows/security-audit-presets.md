@@ -1,6 +1,6 @@
-# Security audit presets (SBOM verify, exploit check, release audit)
+# Security audit presets (SBOM verify, exploit check, release audit, due diligence)
 
-Three flow presets turn a CI release build into audit-grade security
+These flow presets turn a CI release build into audit-grade security
 evidence. They **verify** SBOMs emitted by your build toolchain
 (Yocto/OpenEmbedded `create-spdx`, AOSP SBOM tooling, CycloneDX build
 plugins) — they never generate one. Each run is a single execution that
@@ -13,10 +13,12 @@ human-readable evidence pack under `/workspace/evidence/`.
 | --- | --- | --- |
 | SBOM Verify | Format validity, NTIA/CRA minimum elements, completeness vs build manifests, license flags | `preloop.cra.sbomaudit/v1` |
 | SBOM Exploit Check | Components → CVEs via OSV.dev, known-exploited flags via CISA KEV, severity gate | `preloop.cra.vulnscan/v1` |
-| Release Security Audit | Both of the above in one execution, plus drift vs a previous run's result.json | `preloop.cra.releaseaudit/v1` |
+| Release Security Audit | Both of the above in one execution, plus drift vs a previous run's result.json, plus [multi-repo evidence storage](#evidence-storage-architecture-multi-repo-products) | `preloop.cra.releaseaudit/v1` |
+| [Component Due Diligence Record](#component-due-diligence-record) | Agent legwork on one integrated component; a human carries the risk decision via approval; the record lands in the compliance repo | `preloop.cra.duediligence/v1` |
 
-All three follow the Observe/Eval pattern: read-only toolset (no MCP
-servers or tools), deterministic checks separated from agent judgment
+The audit presets follow the Observe/Eval pattern: read-only toolset (no
+MCP servers or tools; the due-diligence preset's single tool is
+`request_approval`), deterministic checks separated from agent judgment
 (`checks[]` vs `assessments[]`), and every artifact carries the line:
 
 > Machine-generated evidence for conformity assessment support. Not a
@@ -218,7 +220,155 @@ verdict: `fail` if the SBOM audit failed or the severity gate failed;
   sbom-findings.json   # full SBOM verification findings (release audit)
   vuln-report.md       # human-readable vuln report (exploit check)
   drift-report.md      # delta vs previous run (release audit, when baseline given)
+  dossier.md           # due-diligence dossier (component due diligence)
+  facts.json           # machine-readable due-diligence facts (component due diligence)
 ```
+
+In product mode the Release Security Audit additionally copies
+`result.json` and `evidence/` into the compliance repo and writes
+per-repo stubs — see
+[Evidence storage architecture](#evidence-storage-architecture-multi-repo-products).
+
+## Evidence storage architecture (multi-repo products)
+
+Authorities and auditors think in **products**, but a product usually
+spans several code repositories — firmware, companion app, cloud
+backend. Preloop flows already attach any number of git repositories
+(`git_clone_config.repositories[]`, each with its own `clone_path`), and
+the Release Security Audit preset uses that to store evidence in a
+**hybrid** layout:
+
+1. **Per-repo stub** — each audited code repo receives one small
+   (< 2 KB), diffable, dated file at
+   `.preloop/evidence/<UTC timestamp>-release-security-audit.json`
+   (`preloop.cra.repostub/v1`): run date, verdict, gate outcome,
+   severity counts, the repo's own HEAD commit SHA, and a pointer to the
+   product-level pack. It rides the same PR discipline as code, so the
+   evidence trail is tamper-evident with the code history — and it
+   deliberately carries **no findings detail**, so code repos never
+   accrue artifact bloat.
+2. **Product-level compliance repo** — one dedicated repository per
+   product receives the full pack under
+   `products/<product>/audits/<UTC timestamp>-<release_ref>/`: a copy of
+   `result.json`, the whole `evidence/` directory, and a
+   `manifest.json` (`preloop.cra.evidencepack/v1`) listing every
+   constituent code repo with its remote and **HEAD commit SHA**. The
+   manifest SHAs and the stub SHAs must agree — that cross-reference is
+   the spine of the audit trail.
+
+Why hybrid, rather than everything in the code repos or everything in a
+database:
+
+- **Authorities think product-level.** One repo answers "show me the
+  evidence for this product", across firmware/app/cloud, in one place.
+- **Access control.** Auditors and legal can be granted the compliance
+  repo without any source access.
+- **Retention outlives repo churn.** CRA-style retention runs for years
+  after release; code repos get renamed, split, and archived. The
+  compliance repo persists, and its records reference code repos by
+  commit SHA, which survives renames.
+- **No artifact bloat in code repos**, while each repo still carries a
+  tamper-evident, diffable trace of every audit that covered it.
+
+### Configuring product mode
+
+Clone the Release Security Audit preset into a flow and attach the
+product's repositories plus the compliance repo. The flow config names
+the compliance repo by the `clone_path: compliance` convention (a
+payload field `compliance_repo_path` can override the path per run):
+
+```json
+{
+  "enabled": true,
+  "repositories": [
+    {"repository_url": "https://git.example.com/example-product/firmware.git", "clone_path": "firmware"},
+    {"repository_url": "https://git.example.com/example-product/companion-app.git", "clone_path": "companion-app"},
+    {"repository_url": "https://git.example.com/example-product/product-compliance.git", "clone_path": "compliance"}
+  ],
+  "create_pull_request": true
+}
+```
+
+The agent writes the stubs and the pack and **commits locally** on the
+branch the platform prepared; pushing and PR/MR creation happen in the
+platform's post-execution step, per repository, gated by this flow
+config — the agent never runs `git push`. With no repositories attached
+the phase is skipped and the preset behaves exactly as before
+(artifact-only); `result.json` stays `preloop.cra.releaseaudit/v1` and
+gains only an additive, nullable `evidence_storage` section describing
+what was written where and whether each commit succeeded.
+
+### The same pattern for SBOM Verify and Exploit Check (spec)
+
+The standalone presets remain artifact-only for now. When they adopt
+product mode they will follow the identical pattern, changing only the
+flow slug in the stub filename
+(`…-sbom-verify.json` / `…-sbom-exploit-check.json`), the `result_schema`
+field, and the pack directory (`products/<product>/audits/…` with the
+per-preset artifact set). The compliance-repo convention
+(`clone_path: compliance`), the stub/manifest schemas
+(`preloop.cra.repostub/v1`, `preloop.cra.evidencepack/v1`), the SHA
+cross-reference rule, and the commit discipline are shared — one
+storage architecture, three producers.
+
+### Honest limits of the storage design
+
+- Tamper evidence comes from git history (and whatever branch
+  protection/signing you enforce on the compliance repo) — records are
+  not independently signed or timestamped by Preloop.
+- The SHA cross-reference proves which code the audit *saw checked
+  out*; it does not prove the delivered SBOM was built from those SHAs.
+  That link is only as strong as the build metadata your CI delivers.
+- Retention is your repo's retention: the design assumes you keep the
+  compliance repo for the support period; Preloop does not enforce it.
+
+## Component Due Diligence Record
+
+CRA-style due diligence applies to **every integrated component**,
+commercial and open source — and the decisions must be *stored*, not
+just made: expect to answer how you decided a component was appropriate,
+what documentation you checked, and what was known at the time. This
+preset splits the work honestly:
+
+- **Agent legwork (facts, sources cited):** documentation actually
+  delivered or fetched; CVE history via OSV.dev with CISA KEV
+  cross-check; maintenance signals (release cadence, activity,
+  deprecation notices) from cited public sources; **presence** of a
+  supplier CE declaration document (never its authenticity —
+  `authenticity_verified` is always `false`); declared license; and an
+  explicit *open unknowns* list.
+- **Human risk decision:** the agent calls the builtin
+  `request_approval` tool once with a neutral dossier summary — it
+  never recommends an outcome. Approval granted → `accepted`, denied →
+  `rejected`, tool unavailable → `pending` (and the run reports
+  `error`). Reviewer identity and the decision timestamp live in
+  Preloop's approval audit trail; the record references the approval
+  and never invents a name.
+- **Stored record:** `result.json` (`preloop.cra.duediligence/v1`)
+  plus, when the flow attaches a compliance repo (same
+  `clone_path: compliance` convention), a dated pair committed under
+  `products/<product>/components/<component>/` —
+  `<UTC timestamp>-due-diligence.json` and the human-readable dossier
+  beside it.
+
+Trigger it manually or by webhook, one component per run:
+
+```json
+{
+  "component": {"name": "libexample", "version": "1.4.2", "purl": "pkg:generic/libexample@1.4.2", "supplier": "Example Components Ltd"},
+  "product": "example-product",
+  "usage_context": "TLS transport in the firmware update client",
+  "workspace_files": [
+    {"path": "docs/security-policy.pdf", "content_base64": "…"},
+    {"path": "docs/ce-declaration.pdf", "content_base64": "…"}
+  ]
+}
+```
+
+A `rejected` decision is still a successfully **recorded** decision —
+the point is the trail. A granted approval means one reviewer accepted
+the component's risk for this product at this time; it is not a
+certification, and the record says so.
 
 ## Honest limits
 
