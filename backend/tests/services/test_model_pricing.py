@@ -440,6 +440,33 @@ def test_candidates_strip_openai_compatible_provider_prefix() -> None:
     assert "openai-compatible/deepseek/deepseek-v4-flash-0731" not in candidates
 
 
+def test_moonshotai_slug_maps_to_moonshot_catalog_key() -> None:
+    """OpenRouter's moonshotai/ org slug must hit the vendored moonshot/ prices.
+
+    The unpriced-model alert fired for provider=openai, alias=moonshotai/kimi-k3
+    because candidates never included moonshot/kimi-k3, which is the bundled
+    key. Same SKU, same $3/$15 per million.
+    """
+    ai_model = AIModel(
+        provider_name="openai",
+        model_identifier="moonshotai/kimi-k3",
+        meta_data={"gateway": {"model_alias": "moonshotai/kimi-k3"}},
+    )
+    candidates = list(_iter_litellm_model_candidates(ai_model))
+    assert "moonshotai/kimi-k3" in candidates
+    assert "moonshot/kimi-k3" in candidates
+
+    load_catalog(force=True)
+    estimate = estimate_ai_model_usage_cost_detailed(
+        ai_model,
+        prompt_tokens=1_000_000,
+        completion_tokens=1_000_000,
+        total_tokens=2_000_000,
+    )
+    assert estimate.source == "catalog"
+    assert estimate.cost == pytest.approx(18.0, rel=1e-6)
+
+
 def test_candidates_add_openrouter_prefix_for_openrouter_endpoint() -> None:
     """A model served via openrouter.ai gains ``openrouter/`` catalog keys.
 
