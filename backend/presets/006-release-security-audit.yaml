@@ -1,3 +1,4 @@
+slug: release-security-audit
 name: Release Security Audit
 description: >-
   The full release-time audit in one execution: verify the CI-emitted SBOM

@@ -265,7 +265,7 @@ class TestPresetsLoadThroughLoader:
 
         load_flow_presets.cache_clear()
         try:
-            with patch("preloop.flow_presets.PRESETS_DIR", PRESETS_DIR):
+            with patch("preloop.flow_presets.PRESETS_DIRS", [PRESETS_DIR]):
                 names = [p["name"] for p in load_flow_presets()]
             for name in PRESET_FILES:
                 assert name in names

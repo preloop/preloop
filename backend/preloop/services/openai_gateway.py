@@ -9,13 +9,24 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from itertools import chain
-from typing import Any, Dict, Iterator, List, Optional, Protocol, Sequence, Set
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterator,
+    List,
+    Optional,
+    Protocol,
+    Sequence,
+    Set,
+)
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
@@ -532,6 +543,10 @@ class OpenAIGatewayService:
         # Computed once from the account inventory on first use so listing,
         # alias resolution, and default selection all consume the same set.
         self._authorized_model_ids_cache: Optional[frozenset[str]] = None
+        # Usage row stashed until the ASGI body has been finished
+        # (``GatewayStreamingResponse.on_complete``). None when the generator
+        # is still mid-stream or recording already ran.
+        self._deferred_stream_record: Optional[Callable[[], None]] = None
 
     def _adopt_native_session_id(self, payload: Optional[Dict[str, Any]]) -> None:
         """Adopt the agent's own session id from an Anthropic request payload.
@@ -1557,11 +1572,7 @@ class OpenAIGatewayService:
                 # before the yield so a client close at message_stop records
                 # 200 with captured usage, not 499/partial.
                 terminal_sent = True
-                yield self._anthropic_sse_event(
-                    "message_stop",
-                    {"type": "message_stop"},
-                )
-                self._record_gateway_request(
+                self._defer_stream_record(
                     endpoint="/anthropic/v1/messages",
                     method="POST",
                     status_code=200,
@@ -1579,7 +1590,10 @@ class OpenAIGatewayService:
                     request_payload=payload,
                     accumulated_output_text="".join(assistant_parts),
                 )
-                recorded = True
+                yield self._anthropic_sse_event(
+                    "message_stop",
+                    {"type": "message_stop"},
+                )
             except Exception as exc:
                 gateway_error = self._stream_error("anthropic", exc)
                 if not recorded:
@@ -1616,7 +1630,8 @@ class OpenAIGatewayService:
                 # already-consumed upstream tokens would go unbilled and let
                 # cumulative budgets drift. Record a best-effort row here.
                 if not recorded:
-                    self._record_stream_abort(
+                    self._finish_stream_generator(
+                        recorded=recorded,
                         endpoint="/anthropic/v1/messages",
                         endpoint_kind="anthropic_messages_stream",
                         started_at=started_at,
@@ -1842,8 +1857,7 @@ class OpenAIGatewayService:
                 # the yield so a client close at [DONE] records 200 with
                 # captured usage, not 499/partial.
                 terminal_sent = True
-                yield self._sse_done()
-                self._record_gateway_request(
+                self._defer_stream_record(
                     endpoint="/openai/v1/chat/completions",
                     method="POST",
                     status_code=200,
@@ -1860,7 +1874,7 @@ class OpenAIGatewayService:
                     request_payload=payload,
                     accumulated_output_text="".join(assistant_parts),
                 )
-                recorded = True
+                yield self._sse_done()
             except Exception as exc:
                 gateway_error = self._stream_error("openai", exc)
                 if not recorded:
@@ -1899,7 +1913,8 @@ class OpenAIGatewayService:
                 # See stream_message: catch the client-disconnect GeneratorExit
                 # so consumed tokens are still accounted.
                 if not recorded:
-                    self._record_stream_abort(
+                    self._finish_stream_generator(
+                        recorded=recorded,
                         endpoint="/openai/v1/chat/completions",
                         endpoint_kind="chat_completions_stream",
                         started_at=started_at,
@@ -2265,8 +2280,7 @@ class OpenAIGatewayService:
                 # the yield so a client close at [DONE] records 200 with
                 # captured usage, not 499/partial.
                 terminal_sent = True
-                yield self._sse_done()
-                self._record_gateway_request(
+                self._defer_stream_record(
                     endpoint="/openai/v1/responses",
                     method="POST",
                     status_code=200,
@@ -2283,7 +2297,7 @@ class OpenAIGatewayService:
                     request_payload=payload,
                     accumulated_output_text="".join(assistant_parts),
                 )
-                recorded = True
+                yield self._sse_done()
             except Exception as exc:
                 gateway_error = self._stream_error("openai", exc)
                 if not recorded:
@@ -2320,7 +2334,8 @@ class OpenAIGatewayService:
                 # See stream_message: account for tokens consumed before a
                 # client disconnect (GeneratorExit).
                 if not recorded:
-                    self._record_stream_abort(
+                    self._finish_stream_generator(
+                        recorded=recorded,
                         endpoint="/openai/v1/responses",
                         endpoint_kind="responses_stream",
                         started_at=started_at,
@@ -3520,8 +3535,7 @@ class OpenAIGatewayService:
                 # the yield so a client close at [DONE] records 200 with
                 # captured usage, not 499/partial.
                 terminal_sent = True
-                yield "data: [DONE]\n\n"
-                self._record_gateway_request(
+                self._defer_stream_record(
                     endpoint="/openai/v1/responses",
                     method="POST",
                     status_code=200,
@@ -3534,7 +3548,7 @@ class OpenAIGatewayService:
                     budget_result=budget_result,
                     request_payload=payload,
                 )
-                recorded = True
+                yield "data: [DONE]\n\n"
             except Exception as exc:
                 gateway_error = self._stream_error("openai", exc)
                 if not recorded:
@@ -3568,7 +3582,8 @@ class OpenAIGatewayService:
                 yield "data: [DONE]\n\n"
             finally:
                 if not recorded:
-                    self._record_stream_abort(
+                    self._finish_stream_generator(
+                        recorded=recorded,
                         endpoint="/openai/v1/responses",
                         endpoint_kind="responses_stream",
                         started_at=started_at,
@@ -3762,8 +3777,7 @@ class OpenAIGatewayService:
                 # the yield so a client close at [DONE] records 200 with
                 # captured usage, not 499/partial.
                 terminal_sent = True
-                yield self._sse_done()
-                self._record_gateway_request(
+                self._defer_stream_record(
                     endpoint="/openai/v1/chat/completions",
                     method="POST",
                     status_code=200,
@@ -3776,7 +3790,7 @@ class OpenAIGatewayService:
                     budget_result=budget_result,
                     request_payload=payload,
                 )
-                recorded = True
+                yield self._sse_done()
             except Exception as exc:
                 gateway_error = self._stream_error("openai", exc)
                 if not recorded:
@@ -3810,7 +3824,8 @@ class OpenAIGatewayService:
                 yield self._sse_done()
             finally:
                 if not recorded:
-                    self._record_stream_abort(
+                    self._finish_stream_generator(
+                        recorded=recorded,
                         endpoint="/openai/v1/chat/completions",
                         endpoint_kind="chat_completions_stream",
                         started_at=started_at,
@@ -4412,7 +4427,7 @@ class OpenAIGatewayService:
                     stop_reason=state["stop_reason"],
                     usage=normalized_usage,
                 )
-                self._record_gateway_request(
+                self._defer_stream_record(
                     endpoint="/anthropic/v1/messages",
                     method="POST",
                     status_code=200,
@@ -4430,7 +4445,6 @@ class OpenAIGatewayService:
                     request_payload=payload,
                     accumulated_output_text=accumulated_text,
                 )
-                recorded = True
             except Exception as exc:
                 gateway_error = self._stream_error("anthropic", exc)
                 if not recorded:
@@ -4465,7 +4479,8 @@ class OpenAIGatewayService:
                 # GeneratorExit (client disconnect) bypasses the except above;
                 # bill already-consumed upstream tokens best-effort.
                 if not recorded:
-                    self._record_stream_abort(
+                    self._finish_stream_generator(
+                        recorded=recorded,
                         endpoint="/anthropic/v1/messages",
                         endpoint_kind="anthropic_messages_stream",
                         started_at=started_at,
@@ -5886,6 +5901,45 @@ class OpenAIGatewayService:
             ai_model=ai_model,
             requested_alias=model_alias,
         )
+
+    def _defer_stream_record(self, **kwargs: Any) -> None:
+        """Stash a success usage record until the HTTP body is finished.
+
+        Starlette pulls the generator once more after the terminal SSE yield
+        and only then sends ``more_body=False``. Recording in that pull holds
+        ``[DONE]`` / ``message_stop`` on the wire. The route's
+        ``GatewayStreamingResponse`` calls :meth:`flush_deferred_stream_record`
+        after that frame.
+        """
+        self._deferred_stream_record = lambda: self._record_gateway_request(**kwargs)
+
+    def flush_deferred_stream_record(self) -> None:
+        """Write a stashed stream usage row. Safe to call more than once."""
+        fn = self._deferred_stream_record
+        self._deferred_stream_record = None
+        if fn is not None:
+            fn()
+
+    def _finish_stream_generator(
+        self,
+        *,
+        recorded: bool,
+        **abort_kwargs: Any,
+    ) -> None:
+        """Generator teardown: abort, or leave a deferred success record.
+
+        A normal return after the terminal yield leaves the stash for
+        :meth:`flush_deferred_stream_record`. ``GeneratorExit`` at that yield
+        (client closed) must record now, because the ASGI complete hook may
+        not run.
+        """
+        if recorded:
+            return
+        if self._deferred_stream_record is not None:
+            if isinstance(sys.exc_info()[1], GeneratorExit):
+                self.flush_deferred_stream_record()
+            return
+        self._record_stream_abort(**abort_kwargs)
 
     def _record_stream_abort(
         self,

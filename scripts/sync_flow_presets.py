@@ -19,9 +19,12 @@ Usage:
     python scripts/sync_flow_presets.py --cleanup --dry-run
 
 Environment Variables:
-    PRELOOP_PRESETS_PATH: Path to the presets directory. Defaults to the
-                          open-source presets directory. Set to /app/presets
-                          in the EE Docker image.
+    PRELOOP_PRESETS_PATH: os.pathsep-separated list of preset directories,
+                          loaded in order (later dirs override earlier ones
+                          on slug collision; union otherwise). Defaults to
+                          the open-source presets directory. Set to
+                          "/app/backend/presets:/app/presets" in the EE
+                          Docker image to layer EE presets on top of OSS.
 """
 
 import argparse
@@ -37,7 +40,7 @@ from preloop.models.db.session import get_db_session
 from preloop.models.crud.flow import CRUDFlow
 from preloop.models.models.flow import Flow
 from preloop.models import schemas
-from preloop.flow_presets import FLOW_PRESETS, PRESETS_DIR
+from preloop.flow_presets import FLOW_PRESETS, PRESETS_DIRS
 from preloop.services.flow_presets_service import (
     compute_content_hash,
     link_unlinked_flows_by_content,
@@ -52,7 +55,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-logger.info(f"Loading presets from: {PRESETS_DIR}")
+logger.info(f"Loading presets from: {[str(d) for d in PRESETS_DIRS]}")
 logger.info(f"Found {len(FLOW_PRESETS)} preset definitions")
 
 

@@ -467,4 +467,61 @@ describe('AIModelDetailView', () => {
     expect(message).to.not.contain('https://');
     expect(message).to.not.match(/sk-[A-Za-z0-9]/);
   });
+
+  it('opens the shared edit dialog from the header Edit action', async () => {
+    const element = (await fixture(
+      html`<ai-model-detail-view .modelId=${'model-1'}></ai-model-detail-view>`
+    )) as AIModelDetailView;
+
+    await waitUntil(
+      () => !(element as any).loading,
+      'AI model detail view did not finish loading',
+      { timeout: 5000 }
+    );
+    await element.updateComplete;
+
+    const actions = element.shadowRoot?.querySelector('resource-actions');
+    expect(actions).to.exist;
+    const clickable = Array.from(
+      actions!.shadowRoot?.querySelectorAll('sl-button, sl-menu-item') || []
+    ).find((el) => (el.textContent || '').includes('Edit'));
+    expect(clickable).to.exist;
+    (clickable as HTMLElement).click();
+    await element.updateComplete;
+
+    const modal = element.shadowRoot?.querySelector(
+      'add-ai-model-modal'
+    ) as HTMLElement & { open: boolean; model: { id?: string } | null };
+    expect(modal).to.exist;
+    expect(modal.open).to.equal(true);
+    expect(modal.model?.id).to.equal('model-1');
+  });
+
+  it('opens a delete confirmation from the header Delete action', async () => {
+    const element = (await fixture(
+      html`<ai-model-detail-view .modelId=${'model-1'}></ai-model-detail-view>`
+    )) as AIModelDetailView;
+
+    await waitUntil(
+      () => !(element as any).loading,
+      'AI model detail view did not finish loading',
+      { timeout: 5000 }
+    );
+    await element.updateComplete;
+
+    const actions = element.shadowRoot?.querySelector('resource-actions');
+    const clickable = Array.from(
+      actions!.shadowRoot?.querySelectorAll('sl-button, sl-menu-item') || []
+    ).find((el) => (el.textContent || '').includes('Delete'));
+    expect(clickable).to.exist;
+    (clickable as HTMLElement).click();
+    await element.updateComplete;
+
+    expect((element as any).isDeleteConfirmOpen).to.equal(true);
+    const dialog = element.shadowRoot?.querySelector('sl-dialog');
+    expect(dialog).to.exist;
+    expect(dialog?.getAttribute('label') || (dialog as any).label).to.contain(
+      'Delete Model'
+    );
+  });
 });

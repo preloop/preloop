@@ -6,7 +6,6 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Body, Depends, Header, Request
 from sqlalchemy.orm import Session
-from starlette.responses import StreamingResponse
 
 from preloop.models.db.session import get_db_session
 from preloop.services.agent_session_headers import native_session_id_from_headers
@@ -16,6 +15,7 @@ from preloop.services.model_gateway_auth import (
 )
 from preloop.api.deps import get_budget_enforcer
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
+from preloop.services.gateway_streaming import GatewayStreamingResponse
 from preloop.services.openai_gateway import OpenAIGatewayService
 
 router = APIRouter(include_in_schema=False)
@@ -79,9 +79,10 @@ def create_chat_completion(
         or native_session_id_from_headers(request.headers, auth_context=auth_context),
     )
     if payload.get("stream"):
-        return StreamingResponse(
+        return GatewayStreamingResponse(
             service.stream_chat_completion(payload),
             media_type="text/event-stream",
+            on_complete=service.flush_deferred_stream_record,
         )
     return service.create_chat_completion(payload)
 
@@ -110,8 +111,9 @@ def create_response(
         or native_session_id_from_headers(request.headers, auth_context=auth_context),
     )
     if payload.get("stream"):
-        return StreamingResponse(
+        return GatewayStreamingResponse(
             service.stream_response(payload),
             media_type="text/event-stream",
+            on_complete=service.flush_deferred_stream_record,
         )
     return service.create_response(payload)

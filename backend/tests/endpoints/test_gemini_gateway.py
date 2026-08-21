@@ -6,6 +6,7 @@ import json
 from unittest.mock import AsyncMock, patch
 
 from preloop.models.crud import crud_ai_model
+from preloop.models.models.api_usage import ApiUsage
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 
 
@@ -527,6 +528,12 @@ def test_stream_generate_content_streams_gemini_sse(app, client, db_session, tes
         "candidatesTokenCount": 4,
         "totalTokenCount": 7,
     }
+    db_session.expire_all()
+    rows = (
+        db_session.query(ApiUsage).filter(ApiUsage.action_type == "model_gateway").all()
+    )
+    assert len(rows) == 1
+    assert rows[0].status_code == 200
 
 
 def test_stream_generate_content_midstream_failure_emits_gemini_error_event(

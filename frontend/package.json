@@ -1,6 +1,6 @@
 {
   "name": "preloop",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "description": "Preloop console frontend",
   "main": "src/main.ts",
   "overrides": {
@@ -16,7 +16,8 @@
     "ip-address": "^10.1.1",
     "esbuild": "^0.28.1",
     "postcss": "^8.5.18",
-    "yaml": "2.8.3"
+    "yaml": "2.8.3",
+    "image-size": "npm:image-size-next@2.1.1"
   },
   "scripts": {
     "start": "npm run dev",

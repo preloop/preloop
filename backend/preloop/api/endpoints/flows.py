@@ -1225,6 +1225,20 @@ def update_flow(
         if flow_in.trigger_event_source == "schedule":
             flow_in.trigger_event_types = ["schedule"]
 
+    # Webhook triggers need a secret to build the trigger URL. The create
+    # path auto-generates one, but flows switched to a webhook trigger
+    # later (e.g. cloned presets, which start with no trigger) ended up
+    # with webhook_config=None: the console never shows a webhook URL and
+    # the flow is untriggerable. Mirror the create-path behavior here.
+    if (
+        effective_source == "webhook"
+        and not flow.webhook_config
+        and not flow_in.webhook_config
+    ):
+        flow_in.webhook_config = schemas.WebhookConfig(
+            webhook_secret=secrets.token_urlsafe(32)
+        )
+
     # Detect customization for template-tracked flows
     # If the user modifies the prompt or tools, mark them as customized
     # so they won't be auto-updated when the source preset changes

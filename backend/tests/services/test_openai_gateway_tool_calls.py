@@ -165,6 +165,7 @@ def test_stream_chat_completion_preserves_tool_calls_in_recorded_response_payloa
                 }
             )
         )
+        service.flush_deferred_stream_record()
 
     assert chunks[-1] == "data: [DONE]\n\n"
     first_payload = json.loads(chunks[0].removeprefix("data: ").strip())

@@ -109,6 +109,14 @@ jobs:
           npm run build
           npm pack --dry-run
 
+      # Lockfile-pinned ClawHub CLI (see .github/tools/clawhub). `npm ci` is
+      # what Scorecard accepts; a global `npm i -g` is not.
+      - name: Install ClawHub CLI
+        working-directory: .github/tools/clawhub
+        run: |
+          npm ci
+          echo "${GITHUB_WORKSPACE}/.github/tools/clawhub/node_modules/.bin" >> "$GITHUB_PATH"
+
       # Fail before npm is touched if the ClawHub token is missing or the
       # package does not pass the Plugin Inspector. npm and ClawHub must go out
       # together or not at all.
@@ -119,9 +127,6 @@ jobs:
             echo "::error::secret CLAWHUB_TOKEN is not set on the 'release' environment — refusing to publish to npm, because npm and ClawHub must not diverge. Generate it once locally with 'clawhub login' then 'clawhub token', and add it as a repo secret."
             exit 1
           fi
-          # npm cannot hash-pin a global install; exact-version pin is the
-          # closest available control. Bump deliberately.
-          npm i -g clawhub@0.23.3
           clawhub login --token "$CLAWHUB_TOKEN" --no-input
           clawhub whoami --no-input
           clawhub package validate . --json --no-input

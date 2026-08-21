@@ -1631,6 +1631,92 @@ async def test_update_flow_schedule_config_on_webhook_flow_rejected(
 
 
 @pytest.mark.asyncio
+async def test_update_flow_switch_to_webhook_generates_secret(
+    mock_account: Account, mocker: MockerFixture
+):
+    """Switching a flow with no webhook_config to a webhook trigger
+    auto-generates a webhook secret (mirrors the create path; cloned
+    presets start with trigger_event_source=None and no secret)."""
+    mock_crud_flow = _mock_crud_flow_no_conflicts(mocker)
+    flow_id = uuid.uuid4()
+    mock_flow = MagicMock()
+    mock_flow.name = "Cloned Preset Flow"
+    mock_flow.trigger_event_source = None
+    mock_flow.webhook_config = None
+    mock_flow.schedule_config = None
+    mock_flow.source_preset_id = None
+    mock_flow.is_enabled = True
+    mock_crud_flow.get.return_value = mock_flow
+
+    flow_update = schemas.FlowUpdate(
+        trigger_event_source="webhook",
+        trigger_event_types=["webhook"],
+    )
+    mock_crud_flow.update.return_value = schemas.FlowResponse(
+        id=flow_id,
+        name="Cloned Preset Flow",
+        trigger_event_source="webhook",
+        trigger_event_types=["webhook"],
+        prompt_template="p",
+        created_at=datetime.now(ZoneInfo("UTC")),
+        updated_at=datetime.now(ZoneInfo("UTC")),
+    )
+
+    await maybe_await(
+        flows.update_flow(
+            db=MagicMock(),
+            flow_id=flow_id,
+            flow_in=flow_update,
+            current_user=mock_account,
+        )
+    )
+
+    assert flow_update.webhook_config is not None
+    assert flow_update.webhook_config.webhook_secret
+    assert len(flow_update.webhook_config.webhook_secret) >= 32
+
+
+@pytest.mark.asyncio
+async def test_update_flow_webhook_keeps_existing_secret(
+    mock_account: Account, mocker: MockerFixture
+):
+    """Updating a webhook flow that already has a secret does not
+    overwrite it."""
+    mock_crud_flow = _mock_crud_flow_no_conflicts(mocker)
+    flow_id = uuid.uuid4()
+    mock_flow = MagicMock()
+    mock_flow.name = "Webhook Flow"
+    mock_flow.trigger_event_source = "webhook"
+    mock_flow.webhook_config = {"webhook_secret": "existing-secret"}
+    mock_flow.schedule_config = None
+    mock_flow.source_preset_id = None
+    mock_flow.is_enabled = True
+    mock_crud_flow.get.return_value = mock_flow
+
+    flow_update = schemas.FlowUpdate(name="Renamed Webhook Flow")
+    mock_crud_flow.update.return_value = schemas.FlowResponse(
+        id=flow_id,
+        name="Renamed Webhook Flow",
+        trigger_event_source="webhook",
+        trigger_event_types=["webhook"],
+        prompt_template="p",
+        created_at=datetime.now(ZoneInfo("UTC")),
+        updated_at=datetime.now(ZoneInfo("UTC")),
+    )
+
+    await maybe_await(
+        flows.update_flow(
+            db=MagicMock(),
+            flow_id=flow_id,
+            flow_in=flow_update,
+            current_user=mock_account,
+        )
+    )
+
+    assert flow_update.webhook_config is None
+
+
+@pytest.mark.asyncio
 async def test_update_flow_switch_to_schedule_forces_event_types(
     mock_account: Account, mocker: MockerFixture
 ):
