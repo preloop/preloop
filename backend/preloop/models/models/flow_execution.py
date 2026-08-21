@@ -2,7 +2,16 @@ import uuid
 from datetime import datetime, UTC
 from typing import Optional
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import (
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    LargeBinary,
+    Numeric,
+    String,
+    Text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, query_expression, relationship
 
@@ -76,6 +85,12 @@ class FlowExecution(Base):
     # the parsed contents of /workspace/result.json captured by the runner
     # after the agent finishes. First-class alternative to scraping logs.
     result = Column(JSONB, nullable=True)
+    # Evidence pack (tar.gz of /workspace/evidence) captured by the runner for
+    # audit-style flows. Size-capped at capture time
+    # (MAX_EVIDENCE_ARCHIVE_BYTES); served by
+    # GET /flows/executions/{id}/evidence. Deliberately NOT exposed on the
+    # execution response schemas.
+    evidence_archive = Column(LargeBinary, nullable=True)
     execution_logs = Column(
         JSONB, nullable=True
     )  # Full execution logs (array of log messages)

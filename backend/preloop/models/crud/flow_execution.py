@@ -185,6 +185,19 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
 
         return db_obj
 
+    def set_evidence_archive(
+        self, db: Session, *, db_obj: FlowExecution, archive: bytes
+    ) -> FlowExecution:
+        """Persist the captured evidence pack archive (tar.gz bytes).
+
+        Separate from ``update`` because the archive is binary and must never
+        travel through the FlowExecutionUpdate schema (which is serialized to
+        NATS for UI updates).
+        """
+        db_obj.evidence_archive = archive  # type: ignore[assignment]
+        db.flush()
+        return db_obj
+
     def get_by_flow(
         self,
         db: Session,

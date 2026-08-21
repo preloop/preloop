@@ -188,6 +188,10 @@ class FlowExecutionOrchestrator:
             False  # Set when AGENT_EXEC_START_MARKER seen in logs
         )
         self._user_messages: asyncio.Queue = asyncio.Queue()
+        # Evidence pack (tar.gz bytes) captured alongside the result artifact
+        # before executor cleanup; persisted at finalize time. Kept out of
+        # the agent_result dict so it never travels through NATS updates.
+        self._evidence_archive: Optional[bytes] = None
 
         # Execution metrics tracked during execution
         self.total_tokens: int = 0
@@ -2097,7 +2101,14 @@ class FlowExecutionOrchestrator:
         report; executors that support first-class capture expose
         ``get_result_artifact``. Best-effort: a missing artifact or an
         executor without support simply yields None.
+
+        Also captures the evidence pack (``/workspace/evidence`` as tar.gz
+        bytes) as a side effect, stashed on ``self._evidence_archive`` for
+        persistence at finalize time. It must happen here because both
+        artifacts are only readable before the executor is cleaned up, and
+        this method is called on every terminal path.
         """
+        await self._capture_evidence_archive(agent_executor, session_reference)
         getter = getattr(agent_executor, "get_result_artifact", None)
         if not callable(getter):
             return None
@@ -2115,6 +2126,33 @@ class FlowExecutionOrchestrator:
             {"keys": sorted(artifact.keys())[:20]},
         )
         return artifact
+
+    async def _capture_evidence_archive(
+        self, agent_executor: Any, session_reference: str
+    ) -> None:
+        """Capture the evidence pack archive, if the executor supports it.
+
+        Best-effort and captured at most once per execution: retries on the
+        same terminal path must not overwrite an already captured archive
+        with None after the container is gone.
+        """
+        if self._evidence_archive is not None:
+            return
+        getter = getattr(agent_executor, "get_evidence_archive", None)
+        if not callable(getter):
+            return
+        try:
+            archive = await getter(session_reference)
+        except Exception as e:
+            logger.warning(f"Failed to capture evidence archive: {e}")
+            return
+        if not isinstance(archive, (bytes, bytearray)) or not archive:
+            return
+        self._evidence_archive = bytes(archive)
+        self.execution_logger.log_milestone(
+            "evidence_archive_captured",
+            {"size_bytes": len(self._evidence_archive)},
+        )
 
     async def _monitor_agent_execution(
         self, session_reference: str, agent_executor: Any
@@ -2919,6 +2957,23 @@ class FlowExecutionOrchestrator:
                 )
             except Exception as e:
                 logger.error(f"Failed to calculate final metrics for execution: {e}")
+
+            # Persist the evidence pack (if one was captured before executor
+            # cleanup) in the same transaction as the terminal status update.
+            if self._evidence_archive is not None and self.execution_log is not None:
+                try:
+                    crud_flow_execution.set_evidence_archive(
+                        self.db,
+                        db_obj=self.execution_log,
+                        archive=self._evidence_archive,
+                    )
+                except Exception as evidence_error:
+                    logger.warning(
+                        f"Failed to persist evidence archive: {evidence_error}"
+                    )
+                    # A failed flush must not poison the terminal status
+                    # update that follows.
+                    self.db.rollback()
 
             await self._update_execution_log(
                 status=final_status,

@@ -1,9 +1,13 @@
 """Container-based agent executor for Docker and Kubernetes."""
 
+import base64
+import binascii
+import io
 import json
 import logging
 import os
 import shlex
+import tarfile
 from typing import Any, Dict, Optional
 
 import aiodocker
@@ -36,6 +40,78 @@ RESULT_ARTIFACT_PATH = "/workspace/result.json"
 # Guardrail: refuse to persist oversized artifacts (the preset asks agents to
 # keep result.json small and reference workspace files for bulky output).
 MAX_RESULT_ARTIFACT_BYTES = 256 * 1024
+
+# Directory inside the agent container where audit-style presets write their
+# evidence pack (see backend/presets/004..006). Captured as a tar.gz archive.
+EVIDENCE_DIR_PATH = "/workspace/evidence"
+# Cap on the COMPRESSED evidence archive. On Kubernetes the archive travels
+# base64-encoded through the pod log stream, so this must stay comfortably
+# inside the kubelet's default 10 MiB container-log rotation limit.
+MAX_EVIDENCE_ARCHIVE_BYTES = 2 * 1024 * 1024
+
+# Marker-line prefix for the Kubernetes artifact log channel. Every line the
+# emission wrapper prints starts with this prefix, so operator-facing log
+# consumers can filter the (potentially large, base64) blocks statelessly.
+# Grammar:
+#   PRELOOP_ARTIFACT_BEGIN <channel> <status> [<size_bytes>]
+#   PRELOOP_ARTIFACT_B64 <base64-chunk>          (0..n lines)
+#   PRELOOP_ARTIFACT_END <channel>
+# where <channel> is "result" or "evidence" and <status> is one of
+# present | absent | too_large | error.
+ARTIFACT_STREAM_LINE_PREFIX = "PRELOOP_ARTIFACT_"
+
+# Environment variable carrying the original (unwrapped) agent script when the
+# Kubernetes artifact-emission wrapper is applied.
+K8S_INNER_SCRIPT_ENV = "PRELOOP_INNER_SCRIPT"
+
+# Wrapper applied to Kubernetes agent scripts. Runs the unchanged agent script
+# in a CHILD shell (so its own `trap ... EXIT` and `exit $rc` cannot skip the
+# epilogue), then emits result.json and the evidence pack into stdout between
+# PRELOOP_ARTIFACT_* markers. `base64 < file` (stdin form) is portable across
+# GNU coreutils, busybox and BSD; wrapped or single-line output are both
+# accepted by the parser.
+K8S_ARTIFACT_WRAPPER_SCRIPT = f"""
+_preloop_emit_artifacts() {{
+    if [ -f {RESULT_ARTIFACT_PATH} ]; then
+        _pl_size=$(wc -c < {RESULT_ARTIFACT_PATH} | tr -d ' ')
+        if [ "$_pl_size" -gt {MAX_RESULT_ARTIFACT_BYTES} ] 2>/dev/null; then
+            echo "PRELOOP_ARTIFACT_BEGIN result too_large $_pl_size"
+        else
+            echo "PRELOOP_ARTIFACT_BEGIN result present $_pl_size"
+            base64 < {RESULT_ARTIFACT_PATH} | sed 's/^/PRELOOP_ARTIFACT_B64 /'
+        fi
+        echo "PRELOOP_ARTIFACT_END result"
+    else
+        echo "PRELOOP_ARTIFACT_BEGIN result absent"
+        echo "PRELOOP_ARTIFACT_END result"
+    fi
+    if [ -d {EVIDENCE_DIR_PATH} ]; then
+        if tar -czf /tmp/preloop-evidence.tar.gz -C /workspace evidence 2>/dev/null; then
+            _pl_esize=$(wc -c < /tmp/preloop-evidence.tar.gz | tr -d ' ')
+            if [ "$_pl_esize" -gt {MAX_EVIDENCE_ARCHIVE_BYTES} ] 2>/dev/null; then
+                echo "PRELOOP_ARTIFACT_BEGIN evidence too_large $_pl_esize"
+            else
+                echo "PRELOOP_ARTIFACT_BEGIN evidence present $_pl_esize"
+                base64 < /tmp/preloop-evidence.tar.gz | sed 's/^/PRELOOP_ARTIFACT_B64 /'
+            fi
+        else
+            echo "PRELOOP_ARTIFACT_BEGIN evidence error"
+        fi
+        echo "PRELOOP_ARTIFACT_END evidence"
+    else
+        echo "PRELOOP_ARTIFACT_BEGIN evidence absent"
+        echo "PRELOOP_ARTIFACT_END evidence"
+    fi
+}}
+if [ -z "${{{K8S_INNER_SCRIPT_ENV}}}" ]; then
+    echo "ERROR: {K8S_INNER_SCRIPT_ENV} is not set" >&2
+    exit 1
+fi
+bash -c "${{{K8S_INNER_SCRIPT_ENV}}}"
+_preloop_rc=$?
+_preloop_emit_artifacts
+exit $_preloop_rc
+"""
 
 
 def _exception_message(exc: BaseException) -> str:
@@ -402,6 +478,18 @@ class ContainerAgentExecutor(AgentExecutor):
         command = execution_context.get("_container_command")
         args = execution_context.get("_container_args")
 
+        # Wrap `bash -c <script>` invocations with the artifact-emission
+        # epilogue so result.json / the evidence pack become retrievable from
+        # the pod's log stream after completion (a finished pod's filesystem
+        # is unreachable through the API). The original script moves into an
+        # env var and runs unchanged in a child shell.
+        wrapped = self._wrap_kubernetes_args_for_artifacts(args)
+        if wrapped is not None:
+            args, inner_script = wrapped
+            env_vars.append(
+                client.V1EnvVar(name=K8S_INNER_SCRIPT_ENV, value=inner_script)
+            )
+
         # Run as root by default — codex-universal installs runtimes (nvm, pyenv,
         # cargo, phpenv) under /root and hardcodes /root/.nvm/nvm.sh in /etc/profile.
         # Set AGENT_RUN_AS_NON_ROOT=true to use UID 1000 (for images that support it).
@@ -746,8 +834,11 @@ class ContainerAgentExecutor(AgentExecutor):
         try:
             await self._init_kubernetes_clients()
 
-            # Get logs
-            logs = await self.get_logs(job_name, tail=1000)
+            # Get logs. Fetch ALL lines (not a tail): the artifact emission
+            # block at the end of the stream is filtered out only AFTER the
+            # server applied tail_lines, so a tail could silently push the
+            # success sentinel out of the inspected window.
+            logs = await self.get_logs(job_name, tail=None)
             output_summary = "\n".join(logs[-50:]) if logs else None
 
             # Check for error patterns in logs
@@ -834,19 +925,16 @@ class ContainerAgentExecutor(AgentExecutor):
 
         Returns the parsed JSON object, a wrapped ``{"error": ...}`` object
         when the file exists but is unusable (invalid JSON, not an object,
-        oversized) or the Docker daemon failed with a non-404 status while
-        fetching it, or ``None`` when the agent wrote no artifact (Docker
-        404) — which is the normal case for non-eval flows.
+        oversized) or the fetch failed in a visible way, or ``None`` when the
+        agent wrote no artifact — the normal case for non-eval flows.
 
-        TODO(kubernetes): a completed pod's filesystem is not reachable via
-        the API without a sidecar or a reader mounting the workspace volume,
-        so Kubernetes capture ships separately; this returns None there.
+        On Kubernetes a completed pod's filesystem is not reachable via the
+        API, so the agent script is wrapped to emit the artifact into the pod
+        log stream between ``PRELOOP_ARTIFACT_*`` markers; this method parses
+        it back out of the logs (see ``K8S_ARTIFACT_WRAPPER_SCRIPT``).
         """
         if self.use_kubernetes:
-            self.logger.debug(
-                "Result artifact capture is not yet implemented for Kubernetes"
-            )
-            return None
+            return await self._get_kubernetes_result_artifact(session_reference)
 
         try:
             docker = await self._get_docker_client()
@@ -895,25 +983,250 @@ class ContainerAgentExecutor(AgentExecutor):
             if fileobj is None:
                 return None
             raw = fileobj.read(MAX_RESULT_ARTIFACT_BYTES + 1)
+        finally:
+            tar.close()
+
+        return self._interpret_result_artifact_bytes(raw, session_reference)
+
+    def _interpret_result_artifact_bytes(
+        self, raw: bytes, session_reference: str
+    ) -> Dict[str, Any]:
+        """Parse captured result.json bytes with the shared validation rules.
+
+        Shared by the Docker archive path and the Kubernetes log-channel path
+        so both surface identical error objects.
+        """
+        try:
             parsed = json.loads(raw.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             self.logger.warning(
-                f"Result artifact from container {session_reference[:12]} "
-                f"is not valid JSON: {e}"
+                f"Result artifact from {session_reference[:40]} is not valid JSON: {e}"
             )
             return {
                 "error": "result_artifact_invalid_json",
                 "detail": str(e)[:500],
             }
-        finally:
-            tar.close()
-
         if not isinstance(parsed, dict):
             return {
                 "error": "result_artifact_not_object",
                 "detail": f"expected a JSON object, got {type(parsed).__name__}",
             }
         return parsed
+
+    @staticmethod
+    def _wrap_kubernetes_args_for_artifacts(
+        args: Any,
+    ) -> Optional[tuple[list, str]]:
+        """Return wrapped ``(args, inner_script)`` for ``["-c", script]`` args.
+
+        Only the ``bash -c <script>`` shape used by the shell-scripted agents
+        (codex, gemini, opencode) is wrapped; anything else is left untouched
+        and artifact capture degrades to the pre-wrapper behaviour (None).
+        """
+        if (
+            isinstance(args, list)
+            and len(args) == 2
+            and args[0] == "-c"
+            and isinstance(args[1], str)
+        ):
+            return ["-c", K8S_ARTIFACT_WRAPPER_SCRIPT], args[1]
+        return None
+
+    @staticmethod
+    def _extract_artifact_stream(
+        lines: list[str], channel: str
+    ) -> Optional[Dict[str, Any]]:
+        """Extract one artifact channel from pod log lines.
+
+        Returns ``None`` when no BEGIN marker for ``channel`` exists (wrapper
+        not applied, or logs rotated away), otherwise a dict with:
+        ``status``: present | absent | too_large | error | truncated | corrupt
+        ``size``: declared byte size when the marker carried one
+        ``data``: decoded payload bytes when status == "present"
+        """
+        begin_prefix = f"{ARTIFACT_STREAM_LINE_PREFIX}BEGIN {channel}"
+        end_line = f"{ARTIFACT_STREAM_LINE_PREFIX}END {channel}"
+        b64_prefix = f"{ARTIFACT_STREAM_LINE_PREFIX}B64 "
+
+        begin_idx = None
+        for idx in range(len(lines) - 1, -1, -1):
+            if lines[idx].strip().startswith(begin_prefix):
+                begin_idx = idx
+                break
+        if begin_idx is None:
+            return None
+
+        marker_parts = lines[begin_idx].strip().split()
+        # ["PRELOOP_ARTIFACT_BEGIN", channel, status, size?]
+        status = marker_parts[2] if len(marker_parts) > 2 else "error"
+        size: Optional[int] = None
+        if len(marker_parts) > 3:
+            try:
+                size = int(marker_parts[3])
+            except ValueError:
+                size = None
+
+        chunks: list[str] = []
+        terminated = False
+        for line in lines[begin_idx + 1 :]:
+            stripped = line.strip()
+            if stripped == end_line:
+                terminated = True
+                break
+            if stripped.startswith(b64_prefix):
+                chunks.append(stripped[len(b64_prefix) :])
+        if not terminated:
+            return {"status": "truncated", "size": size, "data": None}
+        if status != "present":
+            return {"status": status, "size": size, "data": None}
+        try:
+            data = base64.b64decode("".join(chunks), validate=True)
+        except (binascii.Error, ValueError):
+            return {"status": "corrupt", "size": size, "data": None}
+        return {"status": "present", "size": size, "data": data}
+
+    async def _get_kubernetes_result_artifact(
+        self, job_name: str
+    ) -> Optional[Dict[str, Any]]:
+        """Capture result.json emitted into the pod log stream on Kubernetes.
+
+        The agent script wrapper emits the artifact between structured marker
+        lines right before the container exits (see
+        ``K8S_ARTIFACT_WRAPPER_SCRIPT``); this reads the full pod log and
+        parses the last ``result`` channel block.
+        """
+        try:
+            lines = await self._get_kubernetes_logs(
+                job_name, tail=None, include_artifact_streams=True
+            )
+        except Exception as e:
+            self.logger.warning(
+                f"Failed to read logs for result artifact of Job {job_name}: "
+                f"{_exception_message(e)}"
+            )
+            return None
+
+        stream = self._extract_artifact_stream(lines, "result")
+        if stream is None:
+            # Wrapper not applied (custom runner image / legacy job) or the
+            # emission was rotated out of the log — same visibility as before
+            # this feature existed.
+            self.logger.debug(
+                f"No result artifact emission found in logs of Job {job_name}"
+            )
+            return None
+        status = stream["status"]
+        if status == "absent":
+            return None
+        if status == "too_large":
+            self.logger.warning(
+                f"Result artifact from Job {job_name} is too large "
+                f"({stream['size']} bytes), not persisting content"
+            )
+            return {
+                "error": "result_artifact_too_large",
+                "size_bytes": stream["size"],
+                "limit_bytes": MAX_RESULT_ARTIFACT_BYTES,
+            }
+        if status != "present":
+            # truncated / corrupt / error: an eval run whose artifact could
+            # not be recovered must not look identical to one that reported
+            # nothing.
+            self.logger.warning(
+                f"Result artifact emission from Job {job_name} is unusable "
+                f"(status={status})"
+            )
+            return {
+                "error": "result_artifact_fetch_failed",
+                "detail": f"log emission {status}",
+            }
+        return self._interpret_result_artifact_bytes(stream["data"], job_name)
+
+    async def get_evidence_archive(self, session_reference: str) -> Optional[bytes]:
+        """Capture the evidence pack (``/workspace/evidence``) as tar.gz bytes.
+
+        Docker: fetches the directory through the archive API and re-packs it
+        as tar.gz. Kubernetes: decodes the base64 emission from the pod log
+        stream (see ``K8S_ARTIFACT_WRAPPER_SCRIPT``). Best-effort: returns
+        ``None`` when there is no evidence directory, when it exceeds
+        ``MAX_EVIDENCE_ARCHIVE_BYTES``, or on fetch errors (all logged).
+        """
+        if self.use_kubernetes:
+            return await self._get_kubernetes_evidence_archive(session_reference)
+        return await self._get_docker_evidence_archive(session_reference)
+
+    async def _get_kubernetes_evidence_archive(self, job_name: str) -> Optional[bytes]:
+        try:
+            lines = await self._get_kubernetes_logs(
+                job_name, tail=None, include_artifact_streams=True
+            )
+        except Exception as e:
+            self.logger.warning(
+                f"Failed to read logs for evidence archive of Job {job_name}: "
+                f"{_exception_message(e)}"
+            )
+            return None
+        stream = self._extract_artifact_stream(lines, "evidence")
+        if stream is None or stream["status"] == "absent":
+            return None
+        if stream["status"] != "present":
+            self.logger.warning(
+                f"Evidence archive from Job {job_name} not captured "
+                f"(status={stream['status']}, size={stream['size']})"
+            )
+            return None
+        return bytes(stream["data"])
+
+    async def _get_docker_evidence_archive(
+        self, session_reference: str
+    ) -> Optional[bytes]:
+        try:
+            docker = await self._get_docker_client()
+            container = await docker.containers.get(session_reference)
+            tar = await container.get_archive(EVIDENCE_DIR_PATH)
+        except DockerError as e:
+            if e.status != 404:
+                self.logger.warning(
+                    f"Failed to read evidence archive from container "
+                    f"{session_reference[:12]}: {_exception_message(e)}"
+                )
+            return None
+        except Exception as e:
+            self.logger.warning(
+                f"Failed to read evidence archive from container "
+                f"{session_reference[:12]}: {_exception_message(e)}"
+            )
+            return None
+
+        try:
+            total_size = sum(m.size for m in tar.getmembers() if m.isfile())
+            if total_size > MAX_EVIDENCE_ARCHIVE_BYTES:
+                self.logger.warning(
+                    f"Evidence pack from container {session_reference[:12]} "
+                    f"is too large uncompressed ({total_size} bytes), "
+                    "not capturing"
+                )
+                return None
+            buffer = io.BytesIO()
+            with tarfile.open(fileobj=buffer, mode="w:gz") as out:
+                for member in tar.getmembers():
+                    if member.isfile():
+                        fileobj = tar.extractfile(member)
+                        if fileobj is not None:
+                            out.addfile(member, fileobj)
+                    elif member.isdir():
+                        out.addfile(member)
+        finally:
+            tar.close()
+
+        data = buffer.getvalue()
+        if len(data) > MAX_EVIDENCE_ARCHIVE_BYTES:
+            self.logger.warning(
+                f"Evidence archive from container {session_reference[:12]} "
+                f"is too large ({len(data)} bytes), not capturing"
+            )
+            return None
+        return data
 
     def _detect_error_in_logs(self, logs_text: str) -> bool:
         """
@@ -1239,7 +1552,10 @@ class ContainerAgentExecutor(AgentExecutor):
             yield f"[ERROR] Unexpected error: {error_message}"
 
     async def _get_kubernetes_logs(
-        self, job_name: str, tail: int | None = None
+        self,
+        job_name: str,
+        tail: int | None = None,
+        include_artifact_streams: bool = False,
     ) -> list[str]:
         """
         Get logs from the Pod associated with a Kubernetes Job.
@@ -1247,6 +1563,10 @@ class ContainerAgentExecutor(AgentExecutor):
         Args:
             job_name: Name of the Job
             tail: Number of recent log lines, or None for all logs
+            include_artifact_streams: Keep the ``PRELOOP_ARTIFACT_*`` emission
+                lines (base64 result/evidence blocks). Off by default so
+                operator-facing logs and summaries stay readable; only the
+                artifact-capture paths turn this on.
 
         Returns:
             List of log lines
@@ -1285,7 +1605,14 @@ class ContainerAgentExecutor(AgentExecutor):
             log_text = log_data.decode("utf-8", errors="replace")
 
             # Split into lines
-            return log_text.strip().split("\n") if log_text.strip() else []
+            lines = log_text.strip().split("\n") if log_text.strip() else []
+            if not include_artifact_streams:
+                lines = [
+                    line
+                    for line in lines
+                    if not line.strip().startswith(ARTIFACT_STREAM_LINE_PREFIX)
+                ]
+            return lines
 
         except ApiException as e:
             if e.status == 404:
@@ -1377,7 +1704,12 @@ class ContainerAgentExecutor(AgentExecutor):
             # Read lines from the stream
             async for line in response.content:
                 decoded_line = line.decode("utf-8", errors="replace").rstrip()
-                if decoded_line:  # Skip empty lines
+                if decoded_line and not decoded_line.startswith(
+                    ARTIFACT_STREAM_LINE_PREFIX
+                ):
+                    # Skip empty lines and the artifact emission block (base64
+                    # result/evidence payload) — noise for live viewers; the
+                    # capture path reads it from the pod log afterwards.
                     yield decoded_line
 
         except ApiException as e:
