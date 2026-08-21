@@ -76,7 +76,7 @@ def test_alembic_head_is_reachable_from_base() -> None:
 
 
 def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
-    """Self-hosted runners parent the previous main head; ingest then toggles."""
+    """Each new revision parents the previous main head; single linear chain."""
     script = _script_directory()
     runners = script.get_revision("20260817_add_flow_runners")
     assert runners.down_revision == "20260806_approval_rule_ctx"
@@ -84,4 +84,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert ingest.down_revision == "20260817_add_flow_runners"
     toggles = script.get_revision("20260818_notify_toggles")
     assert toggles.down_revision == "20260818_usage_ingest_conv"
-    assert script.get_heads() == ["20260818_notify_toggles"]
+    evidence = script.get_revision("20260821_flow_exec_evidence")
+    assert evidence.down_revision == "20260818_notify_toggles"
+    assert script.get_heads() == ["20260821_flow_exec_evidence"]
