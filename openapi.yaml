@@ -7165,6 +7165,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/flows/executions/{execution_id}/evidence:
+    get:
+      tags:
+      - Flows
+      summary: Get Flow Execution Evidence
+      description: 'Download the evidence pack captured for a flow execution.
+
+
+        Audit-style flows write an evidence pack under ``/workspace/evidence``;
+
+        the runner captures it as a tar.gz archive after the agent finishes.
+
+        Returns 404 if the execution does not exist or no evidence was captured.'
+      operationId: get_flow_execution_evidence_api_v1_flows_executions__execution_id__evidence_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/flows/executions/{execution_id}/logs:
     get:
       tags:

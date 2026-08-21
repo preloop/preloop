@@ -3,7 +3,7 @@ import secrets
 from datetime import datetime
 from typing import Any, Dict, List, NoReturn, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
 
 from preloop.models import schemas
@@ -492,6 +492,41 @@ def get_flow_execution_result(
         "status": execution.status,
         "result": execution.result,
     }
+
+
+@router.get("/flows/executions/{execution_id}/evidence")
+@require_permission("view_flows")
+def get_flow_execution_evidence(
+    *,
+    db: Session = Depends(get_db),
+    execution_id: uuid.UUID,
+    current_user: User = Depends(get_current_active_user),
+) -> Response:
+    """Download the evidence pack captured for a flow execution.
+
+    Audit-style flows write an evidence pack under ``/workspace/evidence``;
+    the runner captures it as a tar.gz archive after the agent finishes.
+    Returns 404 if the execution does not exist or no evidence was captured.
+    """
+    execution = crud_flow_execution.get(
+        db=db, id=execution_id, account_id=current_user.account_id
+    )
+    if not execution:
+        raise HTTPException(status_code=404, detail="Flow execution not found")
+    if not execution.evidence_archive:
+        raise HTTPException(
+            status_code=404,
+            detail="Flow execution has no captured evidence pack",
+        )
+    return Response(
+        content=bytes(execution.evidence_archive),
+        media_type="application/gzip",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="evidence-{execution.id}.tar.gz"'
+            )
+        },
+    )
 
 
 @router.get("/flows/executions/{execution_id}/logs")

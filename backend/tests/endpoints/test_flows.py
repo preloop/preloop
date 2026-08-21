@@ -772,6 +772,89 @@ async def test_get_flow_execution_result_no_artifact(
 
 
 @pytest.mark.asyncio
+async def test_get_flow_execution_evidence(
+    mock_account: Account, mocker: MockerFixture
+):
+    """Tests that the captured evidence pack is served as a tar.gz download."""
+    execution_id = uuid.uuid4()
+    mock_crud_flow_execution = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow_execution",
+        new_callable=MagicMock,
+    )
+
+    execution = MagicMock()
+    execution.id = execution_id
+    execution.evidence_archive = b"\x1f\x8b-fake-gzip-bytes"
+    mock_crud_flow_execution.get.return_value = execution
+
+    response = await maybe_await(
+        flows.get_flow_execution_evidence(
+            db=MagicMock(), execution_id=execution_id, current_user=mock_account
+        )
+    )
+
+    assert response.body == b"\x1f\x8b-fake-gzip-bytes"
+    assert response.media_type == "application/gzip"
+    assert (
+        response.headers["content-disposition"]
+        == f'attachment; filename="evidence-{execution_id}.tar.gz"'
+    )
+    mock_crud_flow_execution.get.assert_called_once_with(
+        db=mocker.ANY, id=execution_id, account_id=mock_account.account_id
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_flow_execution_evidence_none_captured(
+    mock_account: Account, mocker: MockerFixture
+):
+    """Tests that 404 is raised when no evidence pack was captured."""
+    execution_id = uuid.uuid4()
+    mock_crud_flow_execution = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow_execution",
+        new_callable=MagicMock,
+    )
+
+    execution = MagicMock()
+    execution.id = execution_id
+    execution.evidence_archive = None
+    mock_crud_flow_execution.get.return_value = execution
+
+    with pytest.raises(HTTPException) as exc_info:
+        await maybe_await(
+            flows.get_flow_execution_evidence(
+                db=MagicMock(), execution_id=execution_id, current_user=mock_account
+            )
+        )
+
+    assert exc_info.value.status_code == 404
+    assert "evidence" in str(exc_info.value.detail).lower()
+
+
+@pytest.mark.asyncio
+async def test_get_flow_execution_evidence_execution_not_found(
+    mock_account: Account, mocker: MockerFixture
+):
+    """Tests that 404 is raised for a non-existent execution."""
+    execution_id = uuid.uuid4()
+    mock_crud_flow_execution = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow_execution",
+        new_callable=MagicMock,
+    )
+    mock_crud_flow_execution.get.return_value = None
+
+    with pytest.raises(HTTPException) as exc_info:
+        await maybe_await(
+            flows.get_flow_execution_evidence(
+                db=MagicMock(), execution_id=execution_id, current_user=mock_account
+            )
+        )
+
+    assert exc_info.value.status_code == 404
+    assert "not found" in str(exc_info.value.detail).lower()
+
+
+@pytest.mark.asyncio
 async def test_get_flow_execution_result_execution_not_found(
     mock_account: Account, mocker: MockerFixture
 ):

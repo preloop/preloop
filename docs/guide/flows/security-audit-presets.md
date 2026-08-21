@@ -228,10 +228,11 @@ verdict: `fail` if the SBOM audit failed or the severity gate failed;
 - No Declaration of Conformity, CE marking decision, "compliant" verdict,
   legal product classification, or Article 14 filing. Evidence in, human
   assessment out.
-- Evidence files live in the execution workspace; `result.json` is the
-  artifact persisted by the platform. Long-horizon retention/export of the
-  full evidence pack and artifact signing are open platform questions —
-  not claimed by these presets.
+- `result.json` is persisted by the platform, and the evidence pack is
+  captured as a size-capped tar.gz served by
+  `GET /api/v1/flows/executions/{id}/evidence`. Long-horizon retention of
+  oversized packs and artifact signing are open platform questions — not
+  claimed by these presets.
 - Validators/scanners are installed at run time, so the toolchain is not
   bit-for-bit fixed across runs. Every run records the exact resolved
   tool versions (`tool_versions`) and source snapshot dates
