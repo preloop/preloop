@@ -5,7 +5,11 @@ from unittest.mock import AsyncMock, patch, PropertyMock
 import pytest
 
 from preloop.agents.base import AgentStatus
-from preloop.agents.container import ContainerAgentExecutor
+from preloop.agents.container import (
+    ContainerAgentExecutor,
+    K8S_TERMINAL_LOG_TAIL_LINES,
+    _WORST_CASE_EMISSION_LINES,
+)
 
 
 @pytest.fixture
@@ -530,7 +534,9 @@ class TestKubernetesResultArtifact:
             "status": "success",
         }
         executor._get_kubernetes_logs.assert_awaited_once_with(
-            "job-123", tail=None, include_artifact_streams=True
+            "job-123",
+            tail=K8S_TERMINAL_LOG_TAIL_LINES,
+            include_artifact_streams=True,
         )
 
     @pytest.mark.asyncio
@@ -631,6 +637,57 @@ class TestKubernetesResultArtifact:
         assert artifact == {"status": "success"}
 
 
+class TestKubernetesTerminalLogSharedRead:
+    """Terminal path downloads the pod log once, bounded, for all consumers."""
+
+    @pytest.mark.asyncio
+    async def test_result_and_evidence_share_one_read(self):
+        executor = _k8s_executor()
+        lines = (
+            ["agent output", "FLOW_EXECUTION_SUCCESS"]
+            + _emission_lines("result", b'{"status": "success"}')
+            + _emission_lines("evidence", b"fake-tar-gz-bytes")
+        )
+        executor._get_kubernetes_logs = AsyncMock(return_value=lines)
+
+        artifact = await executor.get_result_artifact("job-123")
+        evidence = await executor.get_evidence_archive("job-123")
+
+        assert artifact == {"status": "success"}
+        assert evidence == b"fake-tar-gz-bytes"
+        # Both channels were served from a single cached read.
+        executor._get_kubernetes_logs.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_empty_read_is_not_cached(self):
+        executor = _k8s_executor()
+        executor._get_kubernetes_logs = AsyncMock(return_value=[])
+
+        assert await executor.get_result_artifact("job-123") is None
+        assert await executor.get_evidence_archive("job-123") is None
+        # Transient empty reads must not poison later consumers.
+        assert executor._get_kubernetes_logs.await_count == 2
+
+    def test_tail_bound_covers_worst_case_emission(self):
+        import math
+
+        from preloop.agents.container import (
+            MAX_EVIDENCE_ARCHIVE_BYTES,
+            MAX_RESULT_ARTIFACT_BYTES,
+        )
+
+        # Both channels at their byte caps, base64-wrapped at the narrowest
+        # wrap width in the wild (60 cols), plus marker lines, must fit in
+        # the bounded window — with at least the pre-wrapper tail=1000 of
+        # real agent output left over for the status scan.
+        worst_b64_chars = (
+            math.ceil((MAX_RESULT_ARTIFACT_BYTES + MAX_EVIDENCE_ARCHIVE_BYTES) / 3) * 4
+        )
+        worst_lines = math.ceil(worst_b64_chars / 60) + 8
+        assert _WORST_CASE_EMISSION_LINES >= worst_lines
+        assert K8S_TERMINAL_LOG_TAIL_LINES - _WORST_CASE_EMISSION_LINES >= 1000
+
+
 class TestEvidenceArchive:
     """Evidence pack capture (tar.gz of /workspace/evidence)."""
 
@@ -691,6 +748,13 @@ class TestEvidenceArchive:
         import io
         import tarfile as tarfile_mod
 
+        # Member names mirror real `GET /containers/{id}/archive` output:
+        # Docker rebases entries onto the BASENAME of the requested path
+        # (moby pkg/archive TarResourceRebase — same semantics as `docker
+        # cp`), so archiving /workspace/evidence yields `evidence/...`
+        # entries. This matches the K8s wrapper's `tar -C /workspace
+        # evidence` layout, keeping the downloaded archive layout identical
+        # across backends.
         source = _make_tar(
             {
                 "evidence/findings.json": b'[{"id": "CVE-0000-0000"}]',

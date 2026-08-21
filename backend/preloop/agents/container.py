@@ -49,6 +49,18 @@ EVIDENCE_DIR_PATH = "/workspace/evidence"
 # inside the kubelet's default 10 MiB container-log rotation limit.
 MAX_EVIDENCE_ARCHIVE_BYTES = 2 * 1024 * 1024
 
+# Bounded tail for terminal-path pod log reads on Kubernetes. The artifact
+# emission always TRAILS the agent output and its payload is capped by the two
+# byte limits above, so a window of (worst-case emission lines + a generous
+# status-scan window) is guaranteed to contain the COMPLETE emission plus at
+# least as much real agent output as the pre-wrapper tail=1000 status read
+# inspected. Worst case emission: both byte caps base64-encoded at the
+# narrowest wrap width in the wild (60 cols), plus marker lines.
+_WORST_CASE_EMISSION_LINES = (
+    MAX_RESULT_ARTIFACT_BYTES + MAX_EVIDENCE_ARCHIVE_BYTES
+) * 4 // (3 * 60) + 64
+K8S_TERMINAL_LOG_TAIL_LINES = _WORST_CASE_EMISSION_LINES + 2000
+
 # Marker-line prefix for the Kubernetes artifact log channel. Every line the
 # emission wrapper prints starts with this prefix, so operator-facing log
 # consumers can filter the (potentially large, base64) blocks statelessly.
@@ -70,6 +82,13 @@ K8S_INNER_SCRIPT_ENV = "PRELOOP_INNER_SCRIPT"
 # PRELOOP_ARTIFACT_* markers. `base64 < file` (stdin form) is portable across
 # GNU coreutils, busybox and BSD; wrapped or single-line output are both
 # accepted by the parser.
+#
+# Security note: the emission duplicates result/evidence content into the pod
+# log, where it is retained by the kubelet until log rotation and readable by
+# anyone with pod-log access in the agent namespace. Deployments must keep
+# that RBAC scoped as tightly as the account-scoped API/DB column. The
+# object-storage follow-up (tracked on the PR) moves the evidence channel off
+# the log stream entirely.
 K8S_ARTIFACT_WRAPPER_SCRIPT = f"""
 _preloop_emit_artifacts() {{
     if [ -f {RESULT_ARTIFACT_PATH} ]; then
@@ -168,6 +187,11 @@ class ContainerAgentExecutor(AgentExecutor):
         self.agent_namespace = os.getenv(
             "AGENT_EXECUTION_NAMESPACE", "agent-executions"
         )
+        # One bounded pod-log read per finished job, shared by the terminal
+        # path's three consumers (status scan, result channel, evidence
+        # channel). Executor instances live for a single execution, so no
+        # eviction is needed.
+        self._k8s_terminal_log_cache: Dict[str, list[str]] = {}
 
     async def _get_docker_client(self) -> aiodocker.Docker:
         """Get or create Docker client."""
@@ -834,11 +858,20 @@ class ContainerAgentExecutor(AgentExecutor):
         try:
             await self._init_kubernetes_clients()
 
-            # Get logs. Fetch ALL lines (not a tail): the artifact emission
-            # block at the end of the stream is filtered out only AFTER the
-            # server applied tail_lines, so a tail could silently push the
-            # success sentinel out of the inspected window.
-            logs = await self.get_logs(job_name, tail=None)
+            # Get logs from the shared bounded terminal read. A small tail
+            # (the pre-wrapper tail=1000) is no longer safe: the server
+            # applies tail_lines BEFORE we filter the artifact emission, and
+            # a present evidence block can occupy tens of thousands of
+            # trailing lines — evicting the success sentinel from any small
+            # window. The shared read's bound is derived from the emission
+            # byte caps, so after filtering the emission lines out we still
+            # hold at least as much real agent output as before the wrapper.
+            raw_lines = await self._get_kubernetes_terminal_logs(job_name)
+            logs = [
+                line
+                for line in raw_lines
+                if not line.strip().startswith(ARTIFACT_STREAM_LINE_PREFIX)
+            ]
             output_summary = "\n".join(logs[-50:]) if logs else None
 
             # Check for error patterns in logs
@@ -1085,6 +1118,32 @@ class ContainerAgentExecutor(AgentExecutor):
             return {"status": "corrupt", "size": size, "data": None}
         return {"status": "present", "size": size, "data": data}
 
+    async def _get_kubernetes_terminal_logs(self, job_name: str) -> list[str]:
+        """Read the tail of a finished Job's pod log once and cache it.
+
+        The terminal path has three log consumers — status summarisation and
+        error-pattern scanning (``_get_kubernetes_result``), the ``result``
+        artifact channel and the ``evidence`` channel. They all share this
+        single bounded read instead of each re-downloading the log.
+
+        ``K8S_TERMINAL_LOG_TAIL_LINES`` is sized so the trailing artifact
+        emission is ALWAYS fully inside the window (its payload is byte-capped
+        and it is the last thing the wrapper prints), with a generous window
+        of real agent output to spare for the status scan. Returns raw lines
+        (artifact streams included); callers filter what they don't need.
+        """
+        cached = self._k8s_terminal_log_cache.get(job_name)
+        if cached is not None:
+            return cached
+        lines = await self._get_kubernetes_logs(
+            job_name, tail=K8S_TERMINAL_LOG_TAIL_LINES, include_artifact_streams=True
+        )
+        if lines:
+            # Don't cache empty reads: they can be transient (pod listing
+            # hiccup) and each caller degrades gracefully on its own.
+            self._k8s_terminal_log_cache[job_name] = lines
+        return lines
+
     async def _get_kubernetes_result_artifact(
         self, job_name: str
     ) -> Optional[Dict[str, Any]]:
@@ -1092,13 +1151,11 @@ class ContainerAgentExecutor(AgentExecutor):
 
         The agent script wrapper emits the artifact between structured marker
         lines right before the container exits (see
-        ``K8S_ARTIFACT_WRAPPER_SCRIPT``); this reads the full pod log and
-        parses the last ``result`` channel block.
+        ``K8S_ARTIFACT_WRAPPER_SCRIPT``); this parses the last ``result``
+        channel block out of the shared terminal log read.
         """
         try:
-            lines = await self._get_kubernetes_logs(
-                job_name, tail=None, include_artifact_streams=True
-            )
+            lines = await self._get_kubernetes_terminal_logs(job_name)
         except Exception as e:
             self.logger.warning(
                 f"Failed to read logs for result artifact of Job {job_name}: "
@@ -1157,9 +1214,7 @@ class ContainerAgentExecutor(AgentExecutor):
 
     async def _get_kubernetes_evidence_archive(self, job_name: str) -> Optional[bytes]:
         try:
-            lines = await self._get_kubernetes_logs(
-                job_name, tail=None, include_artifact_streams=True
-            )
+            lines = await self._get_kubernetes_terminal_logs(job_name)
         except Exception as e:
             self.logger.warning(
                 f"Failed to read logs for evidence archive of Job {job_name}: "

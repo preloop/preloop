@@ -2973,6 +2973,15 @@ class FlowExecutionOrchestrator:
                     )
                     # A failed flush must not poison the terminal status
                     # update that follows.
+                    #
+                    # NOTE: rollback() discards ALL pending session state,
+                    # not just the failed archive. That is safe here only
+                    # because the archive is the sole pending change at this
+                    # point and _update_execution_log() below re-persists
+                    # status/result/metrics and commits. If you add another
+                    # pending write to this terminal block BEFORE this line,
+                    # it would be silently dropped — narrow this recovery
+                    # (expire + rebind the execution row) instead.
                     self.db.rollback()
 
             await self._update_execution_log(
