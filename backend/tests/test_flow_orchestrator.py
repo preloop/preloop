@@ -1144,6 +1144,86 @@ class TestFlowExecutionOrchestrator:
             assert persisted.result == artifact
 
     @pytest.mark.asyncio
+    async def test_evidence_archive_persisted(
+        self,
+        db_session: Session,
+        test_flow: Flow,
+        mock_nats_client,
+        event_data,
+        mock_agent_executor,
+    ):
+        """The evidence pack captured before cleanup lands in the DB.
+
+        Covers the wiring: get_evidence_archive (executor, pre-cleanup) ->
+        orchestrator stash -> flow_execution.evidence_archive at finalize.
+        """
+        from preloop.models.models.flow_execution import FlowExecution
+
+        archive = b"\x1f\x8b" + b"fake-evidence-tar-gz"
+        mock_agent_executor.get_result_artifact = AsyncMock(
+            return_value={"status": "success"}
+        )
+        mock_agent_executor.get_evidence_archive = AsyncMock(return_value=archive)
+
+        with patch(
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
+            return_value=mock_agent_executor,
+        ):
+            orchestrator = FlowExecutionOrchestrator(
+                db=db_session,
+                flow_id=test_flow.id,
+                trigger_event_data=event_data,
+                nats_client=mock_nats_client,
+            )
+
+            await orchestrator.run()
+
+            assert orchestrator.execution_log.status == "SUCCEEDED"
+            mock_agent_executor.get_evidence_archive.assert_awaited()
+
+            persisted = (
+                db_session.query(FlowExecution)
+                .filter(FlowExecution.id == orchestrator.execution_log.id)
+                .one()
+            )
+            assert bytes(persisted.evidence_archive) == archive
+
+    @pytest.mark.asyncio
+    async def test_no_evidence_archive_leaves_column_null(
+        self,
+        db_session: Session,
+        test_flow: Flow,
+        mock_nats_client,
+        event_data,
+        mock_agent_executor,
+    ):
+        """Executors returning no archive (or none captured) persist NULL."""
+        from preloop.models.models.flow_execution import FlowExecution
+
+        mock_agent_executor.get_result_artifact = AsyncMock(return_value=None)
+        mock_agent_executor.get_evidence_archive = AsyncMock(return_value=None)
+
+        with patch(
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
+            return_value=mock_agent_executor,
+        ):
+            orchestrator = FlowExecutionOrchestrator(
+                db=db_session,
+                flow_id=test_flow.id,
+                trigger_event_data=event_data,
+                nats_client=mock_nats_client,
+            )
+
+            await orchestrator.run()
+
+            persisted = (
+                db_session.query(FlowExecution)
+                .filter(FlowExecution.id == orchestrator.execution_log.id)
+                .one()
+            )
+            assert persisted.evidence_archive is None
+
+    @pytest.mark.asyncio
     async def test_result_artifact_persisted_on_failure_path(
         self,
         db_session: Session,

@@ -434,17 +434,9 @@ async def test_read_presets(mock_account: Account, mocker: MockerFixture):
     )
 
 
-@pytest.mark.asyncio
-async def test_clone_preset(mock_account: Account, mocker: MockerFixture):
-    """Tests that cloning a preset works correctly."""
-    # Arrange
-    flow_id = uuid.uuid4()
-    mock_crud_flow = mocker.patch(
-        "preloop.api.endpoints.flows.crud_flow",
-        new_callable=MagicMock,
-    )
+def _make_preset(flow_id: uuid.UUID, ai_model_id=None):
+    """Build a preset-like object with __dict__ support (like the ORM row)."""
 
-    # Create a simple object with __dict__ support
     class PresetObj:
         pass
 
@@ -456,15 +448,67 @@ async def test_clone_preset(mock_account: Account, mocker: MockerFixture):
     preset.trigger_event_source = "github"
     preset.trigger_event_types = ["commit"]  # Use array field
     preset.prompt_template = "test"
-    preset.ai_model_id = uuid.uuid4()
-    preset.agent_type = "openhands"
+    preset.ai_model_id = ai_model_id
+    preset.agent_type = "codex"
     preset.agent_config = {"agent_type": "CodeActAgent"}
     preset.allowed_mcp_servers = []
     preset.allowed_mcp_tools = []
+    return preset
 
+
+def _make_ai_model(
+    account_id,
+    *,
+    is_default: bool = False,
+    provider_name: str = "openai",
+    credentials_secret_id=None,
+    api_key=None,
+    meta_data=None,
+    api_endpoint=None,
+    created_at=None,
+):
+    """Build an AI-model-like object for clone binding tests."""
+    from datetime import datetime, timezone
+
+    model = MagicMock()
+    model.id = uuid.uuid4()
+    model.account_id = account_id
+    model.is_default = is_default
+    model.provider_name = provider_name
+    model.credentials_secret_id = credentials_secret_id
+    model.api_key = api_key
+    model.meta_data = meta_data
+    model.api_endpoint = api_endpoint
+    model.model_kind = "llm"
+    model.created_at = created_at or datetime(2026, 1, 1, tzinfo=timezone.utc)
+    return model
+
+
+@pytest.mark.asyncio
+async def test_clone_preset(mock_account: Account, mocker: MockerFixture):
+    """Cloning a preset binds the account's default AI model at clone time."""
+    # Arrange
+    flow_id = uuid.uuid4()
+    mock_crud_flow = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow",
+        new_callable=MagicMock,
+    )
+    mock_crud_ai_model = mocker.patch(
+        "preloop.api.endpoints.flows.crud_ai_model",
+        new_callable=MagicMock,
+    )
+
+    preset = _make_preset(flow_id)  # presets ship without a bound model
     mock_crud_flow.get.return_value = preset
     # Mock get_by_name_and_account to return None (no existing flow with that name)
     mock_crud_flow.get_by_name_and_account.return_value = None
+
+    account_model = _make_ai_model(
+        mock_account.account_id,
+        is_default=True,
+        credentials_secret_id=uuid.uuid4(),
+    )
+    mock_crud_ai_model.get_by_account.return_value = [account_model]
 
     # Convert mock_account.id to string for validation
     mock_account.id = str(mock_account.id)
@@ -481,6 +525,170 @@ async def test_clone_preset(mock_account: Account, mocker: MockerFixture):
     # Assert
     assert result == cloned_flow
     mock_crud_flow.create.assert_called_once()
+    flow_in = mock_crud_flow.create.call_args.kwargs["flow_in"]
+    assert flow_in.ai_model_id == account_model.id
+
+
+@pytest.mark.asyncio
+async def test_clone_preset_prefers_default_model(
+    mock_account: Account, mocker: MockerFixture
+):
+    """The account default model wins over newer non-default models."""
+    from datetime import datetime, timezone
+
+    flow_id = uuid.uuid4()
+    mock_crud_flow = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow", new_callable=MagicMock
+    )
+    mock_crud_ai_model = mocker.patch(
+        "preloop.api.endpoints.flows.crud_ai_model", new_callable=MagicMock
+    )
+    mock_crud_flow.get.return_value = _make_preset(flow_id)
+    mock_crud_flow.get_by_name_and_account.return_value = None
+    mock_account.id = str(mock_account.id)
+
+    newer = _make_ai_model(
+        mock_account.account_id,
+        api_key="k",
+        created_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+    )
+    default = _make_ai_model(
+        mock_account.account_id,
+        is_default=True,
+        api_key="k",
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    mock_crud_ai_model.get_by_account.return_value = [newer, default]
+    mock_crud_flow.create.return_value = MagicMock()
+
+    await maybe_await(
+        flows.clone_preset(db=MagicMock(), flow_id=flow_id, current_user=mock_account)
+    )
+
+    flow_in = mock_crud_flow.create.call_args.kwargs["flow_in"]
+    assert flow_in.ai_model_id == default.id
+
+
+@pytest.mark.asyncio
+async def test_clone_preset_skips_credential_less_models(
+    mock_account: Account, mocker: MockerFixture
+):
+    """A model row with no credential source cannot be bound."""
+    flow_id = uuid.uuid4()
+    mock_crud_flow = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow", new_callable=MagicMock
+    )
+    mock_crud_ai_model = mocker.patch(
+        "preloop.api.endpoints.flows.crud_ai_model", new_callable=MagicMock
+    )
+    mock_crud_flow.get.return_value = _make_preset(flow_id)
+    mock_crud_flow.get_by_name_and_account.return_value = None
+    mock_account.id = str(mock_account.id)
+
+    bare = _make_ai_model(mock_account.account_id, is_default=True)  # no creds
+    gateway = _make_ai_model(
+        mock_account.account_id, meta_data={"gateway": {"enabled": True}}
+    )
+    mock_crud_ai_model.get_by_account.return_value = [bare, gateway]
+    mock_crud_flow.create.return_value = MagicMock()
+
+    await maybe_await(
+        flows.clone_preset(db=MagicMock(), flow_id=flow_id, current_user=mock_account)
+    )
+
+    flow_in = mock_crud_flow.create.call_args.kwargs["flow_in"]
+    assert flow_in.ai_model_id == gateway.id
+
+
+@pytest.mark.asyncio
+async def test_clone_preset_no_usable_model_fails_at_clone_time(
+    mock_account: Account, mocker: MockerFixture
+):
+    """No usable account model: fail the CLONE with an actionable message,
+    never let the first run die with a raw provider/gateway error."""
+    flow_id = uuid.uuid4()
+    mock_crud_flow = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow", new_callable=MagicMock
+    )
+    mock_crud_ai_model = mocker.patch(
+        "preloop.api.endpoints.flows.crud_ai_model", new_callable=MagicMock
+    )
+    mock_crud_flow.get.return_value = _make_preset(flow_id)
+    mock_crud_flow.get_by_name_and_account.return_value = None
+    mock_crud_ai_model.get_by_account.return_value = []
+
+    with pytest.raises(HTTPException) as exc_info:
+        await maybe_await(
+            flows.clone_preset(
+                db=MagicMock(), flow_id=flow_id, current_user=mock_account
+            )
+        )
+
+    assert exc_info.value.status_code == 422
+    detail = str(exc_info.value.detail)
+    assert "codex" in detail
+    assert "Add an AI model" in detail
+    mock_crud_flow.create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_clone_preset_keeps_visible_preset_model(
+    mock_account: Account, mocker: MockerFixture
+):
+    """A preset bound to a global model keeps that binding."""
+    flow_id = uuid.uuid4()
+    preset_model_id = uuid.uuid4()
+    mock_crud_flow = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow", new_callable=MagicMock
+    )
+    mock_crud_ai_model = mocker.patch(
+        "preloop.api.endpoints.flows.crud_ai_model", new_callable=MagicMock
+    )
+    mock_crud_flow.get.return_value = _make_preset(flow_id, ai_model_id=preset_model_id)
+    mock_crud_flow.get_by_name_and_account.return_value = None
+    mock_account.id = str(mock_account.id)
+
+    global_model = _make_ai_model(None, api_key="k")  # account_id=None: global
+    mock_crud_ai_model.get.return_value = global_model
+    mock_crud_flow.create.return_value = MagicMock()
+
+    await maybe_await(
+        flows.clone_preset(db=MagicMock(), flow_id=flow_id, current_user=mock_account)
+    )
+
+    flow_in = mock_crud_flow.create.call_args.kwargs["flow_in"]
+    assert flow_in.ai_model_id == preset_model_id
+    mock_crud_ai_model.get_by_account.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_clone_preset_codex_needs_endpoint_for_custom_provider(
+    mock_account: Account, mocker: MockerFixture
+):
+    """codex + non-OpenAI provider without endpoint/gateway is not usable."""
+    flow_id = uuid.uuid4()
+    mock_crud_flow = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow", new_callable=MagicMock
+    )
+    mock_crud_ai_model = mocker.patch(
+        "preloop.api.endpoints.flows.crud_ai_model", new_callable=MagicMock
+    )
+    mock_crud_flow.get.return_value = _make_preset(flow_id)
+    mock_crud_flow.get_by_name_and_account.return_value = None
+
+    endpointless = _make_ai_model(
+        mock_account.account_id, provider_name="acme", api_key="k"
+    )
+    mock_crud_ai_model.get_by_account.return_value = [endpointless]
+
+    with pytest.raises(HTTPException) as exc_info:
+        await maybe_await(
+            flows.clone_preset(
+                db=MagicMock(), flow_id=flow_id, current_user=mock_account
+            )
+        )
+
+    assert exc_info.value.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -769,6 +977,89 @@ async def test_get_flow_execution_result_no_artifact(
 
     assert exc_info.value.status_code == 404
     assert "result" in str(exc_info.value.detail).lower()
+
+
+@pytest.mark.asyncio
+async def test_get_flow_execution_evidence(
+    mock_account: Account, mocker: MockerFixture
+):
+    """Tests that the captured evidence pack is served as a tar.gz download."""
+    execution_id = uuid.uuid4()
+    mock_crud_flow_execution = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow_execution",
+        new_callable=MagicMock,
+    )
+
+    execution = MagicMock()
+    execution.id = execution_id
+    execution.evidence_archive = b"\x1f\x8b-fake-gzip-bytes"
+    mock_crud_flow_execution.get.return_value = execution
+
+    response = await maybe_await(
+        flows.get_flow_execution_evidence(
+            db=MagicMock(), execution_id=execution_id, current_user=mock_account
+        )
+    )
+
+    assert response.body == b"\x1f\x8b-fake-gzip-bytes"
+    assert response.media_type == "application/gzip"
+    assert (
+        response.headers["content-disposition"]
+        == f'attachment; filename="evidence-{execution_id}.tar.gz"'
+    )
+    mock_crud_flow_execution.get.assert_called_once_with(
+        db=mocker.ANY, id=execution_id, account_id=mock_account.account_id
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_flow_execution_evidence_none_captured(
+    mock_account: Account, mocker: MockerFixture
+):
+    """Tests that 404 is raised when no evidence pack was captured."""
+    execution_id = uuid.uuid4()
+    mock_crud_flow_execution = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow_execution",
+        new_callable=MagicMock,
+    )
+
+    execution = MagicMock()
+    execution.id = execution_id
+    execution.evidence_archive = None
+    mock_crud_flow_execution.get.return_value = execution
+
+    with pytest.raises(HTTPException) as exc_info:
+        await maybe_await(
+            flows.get_flow_execution_evidence(
+                db=MagicMock(), execution_id=execution_id, current_user=mock_account
+            )
+        )
+
+    assert exc_info.value.status_code == 404
+    assert "evidence" in str(exc_info.value.detail).lower()
+
+
+@pytest.mark.asyncio
+async def test_get_flow_execution_evidence_execution_not_found(
+    mock_account: Account, mocker: MockerFixture
+):
+    """Tests that 404 is raised for a non-existent execution."""
+    execution_id = uuid.uuid4()
+    mock_crud_flow_execution = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow_execution",
+        new_callable=MagicMock,
+    )
+    mock_crud_flow_execution.get.return_value = None
+
+    with pytest.raises(HTTPException) as exc_info:
+        await maybe_await(
+            flows.get_flow_execution_evidence(
+                db=MagicMock(), execution_id=execution_id, current_user=mock_account
+            )
+        )
+
+    assert exc_info.value.status_code == 404
+    assert "not found" in str(exc_info.value.detail).lower()
 
 
 @pytest.mark.asyncio
