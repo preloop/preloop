@@ -104,12 +104,12 @@ auditable record.
 
 ## result.json schemas
 
-### Common evidence envelope (all three schemas)
+### Shared evidence envelope
 
 ```json
 {
-  "schema": "preloop.cra.sbomaudit/v1 | preloop.cra.vulnscan/v1 | preloop.cra.releaseaudit/v1",
-  "flow": "sbom-verify | sbom-exploit-check | release-security-audit",
+  "schema": "preloop.cra.sbomaudit/v1 | preloop.cra.vulnscan/v1 | preloop.cra.releaseaudit/v1 | preloop.cra.duediligence/v1",
+  "flow": "sbom-verify | sbom-exploit-check | release-security-audit | component-due-diligence",
   "run_at": "ISO 8601 UTC",
   "git": {"remote": "…", "commit": "…", "branch": "…", "dirty": false},
   "tool_versions": {"<tool>": "<version or 'unavailable: reason'>"},

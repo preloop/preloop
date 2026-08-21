@@ -203,6 +203,15 @@ class TestReleaseAuditEvidenceStorage:
         # Commit failure is recorded, never papered over.
         assert "committed: false" in norm
 
+    def test_report_phase_is_its_own_heading(self, prompt):
+        """PHASE 4B must not swallow the mandatory result.json write."""
+        assert "PHASE 4B: EVIDENCE STORAGE (MULTI-REPO PRODUCT MODE)" in prompt
+        assert "PHASE 5: REPORT (MANDATORY)" in prompt
+        assert prompt.index("PHASE 4B:") < prompt.index("PHASE 5: REPORT")
+        assert prompt.index("PHASE 5: REPORT") < prompt.index(
+            "As your FINAL action, write /workspace/result.json"
+        )
+
     def test_repos_are_not_scanned(self, prompt):
         """Checkouts feed evidence storage; the SBOM stays the inventory."""
         norm = _norm(prompt)

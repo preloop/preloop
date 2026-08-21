@@ -223,6 +223,10 @@ prompt_template: |
     failure honestly in checks and in evidence_storage
     (committed: false) — the /workspace evidence pack still stands as
     the execution artifact.
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 5: REPORT (MANDATORY)
+  ═══════════════════════════════════════════════════════════
   As your FINAL action, write /workspace/result.json: valid JSON, a
   single top-level object, no trailing output after it. Do not paste the
   JSON into chat; the file is the deliverable.
