@@ -1,17 +1,22 @@
 import uuid
 import secrets
 from datetime import datetime
-from typing import Any, Dict, List, NoReturn, Optional
+from typing import Any, Dict, List, NoReturn, Optional, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
 
 from preloop.models import schemas
-from preloop.models.crud import crud_account, crud_runtime_session_activity
+from preloop.models.crud import (
+    crud_account,
+    crud_ai_model,
+    crud_runtime_session_activity,
+)
 from preloop.models.crud.flow import CRUDFlow
 from preloop.models.crud.flow_execution import CRUDFlowExecution
 from preloop.models.db.session import get_db_session as get_db
 from preloop.api.auth import get_current_active_user
+from preloop.models.models.ai_model import AIModel
 from preloop.models.models.user import User
 from preloop.schemas.gateway_usage import FlowGatewayUsageSummaryResponse
 from preloop.services.model_gateway_usage import ModelGatewayUsageService
@@ -213,6 +218,88 @@ def read_presets(
     return crud_flow.get_presets_for_account(db, account_id=current_user.account_id)
 
 
+def _model_has_credential_source(model: AIModel) -> bool:
+    """True when an AI model row has some way to authenticate at run time."""
+    if model.credentials_secret_id or model.api_key:
+        return True
+    meta_data = model.meta_data if isinstance(model.meta_data, dict) else {}
+    gateway = meta_data.get("gateway")
+    return bool(isinstance(gateway, dict) and gateway.get("enabled"))
+
+
+def _model_usable_for_agent(model: AIModel, agent_type: str) -> bool:
+    """True when the agent harness can actually reach this model.
+
+    The codex harness talks to OpenAI directly, or to any other provider only
+    through an explicit endpoint (custom provider / gateway); a model row
+    without either fails inside the container. Other harnesses take the
+    endpoint from the model row as-is, so the credential check suffices.
+    """
+    if not _model_has_credential_source(model):
+        return False
+    if getattr(model, "model_kind", "llm") != "llm":
+        return False
+    if (agent_type or "").lower() == "codex":
+        provider = (model.provider_name or "").strip().lower()
+        if provider in ("openai", ""):
+            return True
+        meta_data = model.meta_data if isinstance(model.meta_data, dict) else {}
+        gateway = meta_data.get("gateway")
+        gateway_enabled = isinstance(gateway, dict) and gateway.get("enabled")
+        return bool(model.api_endpoint or gateway_enabled)
+    return True
+
+
+def _resolve_clone_model_binding(
+    db: Session, preset: Any, account_id: uuid.UUID
+) -> uuid.UUID:
+    """Pick the AI model a cloned preset should run with, at CLONE time.
+
+    Presets ship with ``ai_model_id`` unset (they are account-agnostic), so a
+    verbatim clone runs the default agent with no credentials and dies at RUN
+    time with a raw provider/gateway error. Resolve the binding here instead:
+
+    1. Keep the preset's model when it is set and visible to this account.
+    2. Otherwise bind an account model that the preset's agent can use,
+       preferring the account default, then the newest.
+    3. Otherwise fail the clone with an actionable message.
+
+    Raises:
+        HTTPException: 422 when the account has no usable model credentials.
+    """
+    if preset.ai_model_id:
+        model = crud_ai_model.get(db, id=str(preset.ai_model_id))
+        if model is not None and (
+            model.account_id is None or str(model.account_id) == str(account_id)
+        ):
+            return cast(uuid.UUID, preset.ai_model_id)
+
+    candidates = [
+        model
+        for model in crud_ai_model.get_by_account(db, account_id=account_id)
+        if _model_usable_for_agent(model, preset.agent_type)
+    ]
+    if candidates:
+        candidates.sort(
+            key=lambda m: (
+                not m.is_default,
+                -(m.created_at.timestamp() if m.created_at else 0.0),
+            )
+        )
+        return cast(uuid.UUID, candidates[0].id)
+
+    raise HTTPException(
+        status_code=422,
+        detail=(
+            f"This preset runs on the '{preset.agent_type}' agent, which needs "
+            "an AI model with working credentials, but your account has no "
+            "usable AI model configured for it. Add an AI model (with an API "
+            "key or gateway access) under Settings, then clone the preset "
+            "again."
+        ),
+    )
+
+
 @router.post("/flows/presets/{flow_id}/clone", response_model=schemas.FlowResponse)
 @require_permission("create_flows")
 def clone_preset(
@@ -231,6 +318,15 @@ def clone_preset(
     if not preset or not preset.is_preset:
         raise HTTPException(status_code=404, detail="Preset not found")
 
+    # Bind an AI model that will actually work for this account BEFORE
+    # creating the clone: presets ship without a model, and a clone without
+    # one fails at run time with a raw provider error (never do that to a
+    # first run). Raises 422 with an actionable message when the account has
+    # no usable model.
+    bound_ai_model_id = _resolve_clone_model_binding(
+        db, preset, current_user.account_id
+    )
+
     # Build dict excluding fields we want to override or that aren't in FlowCreate
     # Note: is_enabled is excluded so cloned flows start enabled (presets are disabled)
     # Also exclude template tracking fields - we set these explicitly
@@ -247,6 +343,8 @@ def clone_preset(
             "is_preset",
             "is_enabled",
             "account_id",
+            # Model binding - resolved for this account above
+            "ai_model_id",
             # Template tracking fields - set explicitly below
             "source_preset_id",
             "source_prompt_hash",
@@ -279,6 +377,7 @@ def clone_preset(
         is_preset=False,
         is_enabled=True,  # Cloned flows start enabled
         account_id=str(current_user.account_id),
+        ai_model_id=bound_ai_model_id,
         # Template tracking: link to source preset
         source_preset_id=str(preset.id),
         source_prompt_hash=source_prompt_hash,
@@ -1006,7 +1105,6 @@ def _validate_matrix(
     from pydantic import ValidationError
 
     from preloop.agents.factory import SUPPORTED_AGENT_TYPES
-    from preloop.models.crud import crud_ai_model
     from preloop.services.flow_trigger_service import MATRIX_MAX_ENTRIES
 
     def _reject(detail: str) -> NoReturn:
