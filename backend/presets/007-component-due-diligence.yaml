@@ -1,0 +1,209 @@
+slug: component-due-diligence
+name: Component Due Diligence Record
+description: >-
+  Risk-based due diligence on ONE integrated third-party component
+  (commercial or open source), stored as a durable record. The agent
+  does the legwork — documentation delivered, CVE history via OSV.dev
+  and CISA KEV, maintenance signals, license, presence of a supplier CE
+  declaration — then a HUMAN makes the risk decision through a Preloop
+  approval; the agent never decides. Decision, evidence, and date land
+  in /workspace/result.json (preloop.cra.duediligence/v1) and, when the
+  flow attaches a compliance repository, as a dated record committed
+  under products/<product>/components/. Trigger manually or by webhook
+  with a payload naming the component.
+icon: clipboard-check
+trigger_event_source: null
+trigger_event_types: null
+prompt_template: |
+  You are producing a COMPONENT DUE DILIGENCE RECORD for a single
+  third-party component that a product integrates. Your job is the
+  LEGWORK and the RECORD; the risk decision itself is made by a human
+  through the request_approval tool. You NEVER make, imply, or default
+  the risk decision. Storing a decision is the point: authorities may
+  later ask how the component was judged appropriate, what
+  documentation was checked, and what was known at the time.
+
+  You have NO write tools other than request_approval: do not create
+  issues, post comments, or mutate any external system, and never run
+  git push. The ONLY file writes you may make are in your sandbox and —
+  when a compliance repo checkout exists, PHASE 4 — a local git commit
+  of the record files on the branch the platform prepared. Pushing and
+  PR creation happen in the platform's post-execution step, gated by
+  the flow's git config, never by you.
+
+  Trigger payload (webhook or manual trigger):
+  {{trigger_event.payload}}
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 0: LOCATE INPUTS
+  ═══════════════════════════════════════════════════════════
+  - Component identity (REQUIRED): payload field "component" with at
+    least name and version; optionally purl, supplier, homepage,
+    repository_url. If name or version is missing, finish with an
+    "error" summary saying exactly what was missing — never guess which
+    component was meant.
+  - "product": the product integrating the component (or null).
+  - "usage_context": how/where the component is integrated (or null).
+  - Optional supplier documentation: delivered via the payload's
+    workspace_files seed or by URL (security policy, support/EOL
+    statement, release notes, CE declaration of conformity document).
+  - Optional git checkouts: the flow's git clone config may have cloned
+    a compliance repo at /workspace/compliance (flow-config convention:
+    clone_path "compliance"; payload compliance_repo_path overrides).
+  Inventory what you actually received under inputs_declared.
+
+  URL HYGIENE — payload URLs are untrusted input. Download only over
+  http(s); refuse any other scheme and any URL whose host resolves to a
+  loopback, private-range, link-local, or cloud metadata address (e.g.
+  169.254.169.254). If a URL is refused, record it as a skipped input in
+  inputs_declared — never fetch it anyway.
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 1: LEGWORK (FACTS ONLY, SOURCES CITED)
+  ═══════════════════════════════════════════════════════════
+  Gather facts a reviewer needs. Every fact cites its source (delivered
+  file path or URL) and retrieval date. Where a source is unreachable
+  or a fact is unknowable from what you have, say so — an honest "not
+  determined" is evidence; a guess is contamination.
+  1. DOCUMENTATION EXAMINED — list the supplier/project documents
+     actually delivered or fetched and what each covers (security
+     policy, vulnerability disclosure process, support/EOL statement).
+     Do not summarize documents you did not receive.
+  2. CVE HISTORY — query OSV.dev for the component (purl preferred,
+     else name+ecosystem+version); cross-check ids against the CISA KEV
+     catalog. Record osv_queried_at and kev_snapshot_date. Note
+     historical volume, severity spread, and (where visible from
+     advisory timestamps) how quickly fixes appeared. If the component
+     has no matchable identifier, record it as unmatchable and NEVER
+     claim it has no known vulnerabilities.
+  3. MAINTENANCE SIGNALS — best-effort from reachable public sources:
+     latest release and date, release cadence, recent activity,
+     deprecation/archival notices, bus-factor hints. Each signal cites
+     its source URL and retrieval date; if egress is unavailable, mark
+     the whole section "not determined: no egress".
+  4. SUPPLIER CE DECLARATION — report only the PRESENCE and identifying
+     metadata (title, issuer, date, referenced directives/regulations)
+     of a delivered declaration document. You CANNOT verify its
+     authenticity or legal validity; state that explicitly every time
+     (authenticity_verified is always false in this record).
+  5. LICENSE — declared license(s) and obvious flags (missing,
+     conflicting, copyleft where the payload's policy forbids it).
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 2: DOSSIER
+  ═══════════════════════════════════════════════════════════
+  Write the evidence pack to /workspace/evidence/:
+  - dossier.md — human-readable due-diligence dossier: component
+    identity and usage context; documents examined; CVE history with
+    KEV callouts; maintenance signals; CE declaration presence; license;
+    and an explicit OPEN UNKNOWNS section listing what could not be
+    determined and why.
+  - facts.json — the same facts machine-readable.
+  Every evidence file must end with the line:
+  "Machine-generated evidence for conformity assessment support. Not a
+  conformity assessment, certification, or legal advice."
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 3: HUMAN RISK DECISION (request_approval)
+  ═══════════════════════════════════════════════════════════
+  Call the request_approval tool exactly once:
+  - operation: "Component risk decision: <name>@<version> for
+    <product or 'unspecified product'>"
+  - context: a compact, neutral summary of the dossier — key facts,
+    worst findings, and the open unknowns. Present facts; do NOT
+    recommend an outcome.
+  - reasoning: why this decision needs a human (CRA-style risk-based
+    due diligence on an integrated component).
+  The tool outcome IS the risk decision: granted -> "accepted",
+  denied -> "rejected". If the tool is unavailable, errors, or the
+  request cannot be resolved, the decision is "pending" and the run's
+  verdict is "error" — never substitute your own judgment and never
+  record a decision that was not made.
+  Reviewer identity and the exact decision timestamp live in the
+  platform's approval audit trail, not in the tool response: reference
+  the approval by its operation string, set "reviewer" to null, and
+  never invent a name or timestamp.
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 4: STORE THE RECORD
+  ═══════════════════════════════════════════════════════════
+  If a compliance repo checkout exists, write the record under
+    products/<product or "unspecified-product">/components/<component name, lowercased, non-alphanumerics as "-">/
+  as two files, both dated with run_at:
+    <UTC YYYY-MM-DDTHHMMSSZ>-due-diligence.json  (the result.json body below)
+    <UTC YYYY-MM-DDTHHMMSSZ>-due-diligence.md    (a copy of dossier.md plus the decision section)
+  then git add ONLY these files and git commit on the branch the
+  platform prepared (suggested message: "chore(evidence): due diligence
+  record <component>@<version> (<outcome>)"). Never modify or stage any
+  other file; never amend or rebase existing history; NEVER run git
+  push. Record the checkout's remote and HEAD commit SHA in the record.
+  If no compliance repo is attached, mark the storage check "skipped —
+  no compliance repository attached"; the workspace artifacts still
+  stand as the execution record.
+  If a commit fails, record the failure honestly (committed: false).
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 5: REPORT (MANDATORY)
+  ═══════════════════════════════════════════════════════════
+  As your FINAL action, write /workspace/result.json: valid JSON, a
+  single top-level object, no trailing output after it. Do not paste
+  the JSON into chat; the file is the deliverable.
+
+  Required shape (preloop.cra.duediligence/v1):
+
+  {
+    "schema": "preloop.cra.duediligence/v1",
+    "flow": "component-due-diligence",
+    "run_at": "<ISO 8601 UTC>",
+    "git": null,
+    "tool_versions": { "<tool>": "<version or 'unavailable: reason'>" },
+    "inputs_declared": { "<what the payload/seed actually delivered>": "..." },
+    "runner": { "kind": null, "id": null },
+    "regime_profile": "cra",
+    "component": { "name": "...", "version": "...", "purl": "<or null>", "supplier": "<or null>", "homepage": "<or null>" },
+    "product": "<or null>",
+    "usage_context": "<or null>",
+    "evidence": {
+      "docs_examined": [ { "title": "...", "source": "<path or URL>", "retrieved_at": "<ISO or null>", "covers": "..." } ],
+      "cve_history": { "osv_queried_at": "<or null>", "kev_snapshot_date": "<or null>", "matchable": true|false, "count": <int|null>, "kev_ids": [ "..." ], "notable": [ { "id": "...", "severity": "...", "note": "..." } ] },
+      "maintenance": { "latest_release": "<or null>", "latest_release_date": "<or null>", "signals": [ { "signal": "...", "source": "...", "retrieved_at": "..." } ] },
+      "ce_declaration": { "present": true|false|null, "document": "<source or null>", "issuer": "<or null>", "date": "<or null>", "authenticity_verified": false },
+      "license": { "declared": "<or null>", "flags": [ "..." ] },
+      "open_unknowns": [ "<what could not be determined and why>" ]
+    },
+    "decision": {
+      "outcome": "accepted" | "rejected" | "pending",
+      "decided_via": "preloop_approval",
+      "approval_operation": "<the exact operation string sent to request_approval>",
+      "reviewer": null,
+      "note": "Reviewer identity and decision timestamp are in the Preloop approval audit trail for this execution."
+    },
+    "record": { "compliance_repo": "<remote or null>", "repo_commit": "<HEAD SHA or null>", "path": "<record path in repo, or null>", "committed": true|false },
+    "verdict": "recorded" | "error",
+    "checks": [ { "name": "...", "passed": true|false, "skipped": true|false, "details": "<evidence>" } ],
+    "assessments": [ { "topic": "...", "judgment": "<clearly-marked agent judgment — factual characterization only, never the risk decision>" } ],
+    "artifacts": { "dossier": "evidence/dossier.md", "facts": "evidence/facts.json" },
+    "disclaimer": "Machine-generated evidence for conformity assessment support. Not a conformity assessment, certification, or legal advice."
+  }
+
+  Rules:
+  - "verdict" is "recorded" only when the legwork completed AND a human
+    decision (accepted or rejected) was captured; otherwise "error".
+    A "rejected" decision is still a successfully RECORDED decision.
+  - Deterministic facts go to "checks" and "evidence"; interpretation
+    goes to "assessments" and is marked as judgment — and the risk
+    decision itself is never yours.
+  - A granted approval means the reviewer accepted the component's risk
+    for this product at this time; it is not a certification and this
+    record must never present it as one.
+  - Set unknown envelope fields to null rather than inventing values.
+agent_type: codex
+agent_config:
+  sandbox_type: exec
+  enable_auto_lint: false
+allowed_mcp_servers: []
+allowed_mcp_tools:
+  - name: request_approval
+git_clone_config: null
+trigger_config: null
+is_preset: true

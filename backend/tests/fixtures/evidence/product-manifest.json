@@ -1,0 +1,31 @@
+{
+  "schema": "preloop.cra.evidencepack/v1",
+  "flow": "release-security-audit",
+  "run_at": "2026-08-20T12:00:00Z",
+  "product": "example-product",
+  "release_ref": "v1.2.3",
+  "verdict": "pass_with_findings",
+  "repos": [
+    {
+      "remote": "https://git.example.com/example-product/firmware.git",
+      "commit": "b2c7d3b9c643ed04aa7f6730561d002d3e0f2ef7",
+      "branch": "main",
+      "stub_path": ".preloop/evidence/2026-08-20T120000Z-release-security-audit.json"
+    },
+    {
+      "remote": "https://git.example.com/example-product/companion-app.git",
+      "commit": "85d3da33ad60aa4ffbdadd2f0580fcdfaa18468a",
+      "branch": "main",
+      "stub_path": ".preloop/evidence/2026-08-20T120000Z-release-security-audit.json"
+    }
+  ],
+  "artifacts": {
+    "result": "result.json",
+    "audit_report": "evidence/audit-report.md",
+    "findings": "evidence/findings.json",
+    "sbom_findings": "evidence/sbom-findings.json",
+    "drift_report": null
+  },
+  "note": "synthetic fixture",
+  "disclaimer": "Machine-generated evidence for conformity assessment support. Not a conformity assessment, certification, or legal advice."
+}

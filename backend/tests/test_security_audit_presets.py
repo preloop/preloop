@@ -156,6 +156,116 @@ class TestReleaseSecurityAuditPreset:
         assert "schedule" in data["description"].lower()
 
 
+class TestReleaseAuditEvidenceStorage:
+    """Multi-repo product mode: hybrid evidence storage (per-repo stubs +
+    product-level compliance repo), cross-linked by commit SHA."""
+
+    @pytest.fixture()
+    def prompt(self):
+        return _load_preset(PRESET_FILES["Release Security Audit"])["prompt_template"]
+
+    def test_hybrid_storage_phase_present(self, prompt):
+        assert "EVIDENCE STORAGE (MULTI-REPO PRODUCT MODE)" in prompt
+        # Per-repo stub next to the code, full pack in the compliance repo.
+        assert ".preloop/evidence/" in prompt
+        assert "products/<product>/audits/" in prompt
+
+    def test_versioned_storage_schemas(self, prompt):
+        assert "preloop.cra.repostub/v1" in prompt
+        assert "preloop.cra.evidencepack/v1" in prompt
+        # result.json gains an additive, nullable section — same schema id.
+        assert '"evidence_storage"' in prompt
+
+    def test_compliance_repo_named_by_flow_config(self, prompt):
+        """The flow config names the compliance repo (clone_path
+        convention); the payload may override the path."""
+        norm = _norm(prompt)
+        assert 'clone_path "compliance"' in norm
+        assert "compliance_repo_path" in prompt
+
+    def test_sha_cross_reference_is_explicit(self, prompt):
+        norm = _norm(prompt)
+        assert "git rev-parse HEAD" in prompt
+        assert "the manifest SHAs and the stub SHAs must agree" in norm
+
+    def test_skipped_without_checkouts(self, prompt):
+        """No attached repos => artifact-only behavior, honestly recorded."""
+        norm = _norm(prompt)
+        assert "skipped — no repositories attached" in norm
+        assert "that is not a failure" in norm
+
+    def test_commit_discipline(self, prompt):
+        norm = _norm(prompt)
+        # Agent commits locally; the platform pushes / opens PRs.
+        assert "NEVER run git push" in norm
+        assert "git add ONLY the evidence files" in norm
+        assert "never amend or rebase existing history" in norm
+        # Commit failure is recorded, never papered over.
+        assert "committed: false" in norm
+
+    def test_report_phase_is_its_own_heading(self, prompt):
+        """PHASE 4B must not swallow the mandatory result.json write."""
+        assert "PHASE 4B: EVIDENCE STORAGE (MULTI-REPO PRODUCT MODE)" in prompt
+        assert "PHASE 5: REPORT (MANDATORY)" in prompt
+        assert prompt.index("PHASE 4B:") < prompt.index("PHASE 5: REPORT")
+        assert prompt.index("PHASE 5: REPORT") < prompt.index(
+            "As your FINAL action, write /workspace/result.json"
+        )
+
+    def test_repos_are_not_scanned(self, prompt):
+        """Checkouts feed evidence storage; the SBOM stays the inventory."""
+        norm = _norm(prompt)
+        assert "you do NOT scan repository source code" in norm
+
+    def test_stubs_stay_small(self, prompt):
+        norm = _norm(prompt)
+        assert "target < 2 KB" in norm
+        assert "artifact bloat" in norm
+
+
+class TestEvidenceStorageFixtures:
+    """Synthetic per-repo stub + product manifest documenting the hybrid
+    storage cross-reference."""
+
+    FIXTURES = Path(__file__).resolve().parent / "fixtures" / "evidence"
+
+    def test_repo_stub_shape(self):
+        stub = json.loads((self.FIXTURES / "repo-stub.json").read_text())
+        assert stub["schema"] == "preloop.cra.repostub/v1"
+        assert stub["result_schema"] == "preloop.cra.releaseaudit/v1"
+        assert len(stub["repo"]["commit"]) == 40
+        int(stub["repo"]["commit"], 16)  # hex SHA
+        assert stub["disclaimer"].startswith(DISCLAIMER)
+        # The stub points at the product-level pack.
+        assert stub["product"]["compliance_repo"]
+        assert stub["product"]["evidence_path"].startswith("products/")
+
+    def test_repo_stub_is_small_and_summary_only(self):
+        raw = (self.FIXTURES / "repo-stub.json").read_text()
+        assert len(raw.encode()) < 2048
+        assert "findings" not in json.loads(raw)  # no detail in code repos
+
+    def test_manifest_cross_references_stub_by_sha(self):
+        stub = json.loads((self.FIXTURES / "repo-stub.json").read_text())
+        manifest = json.loads((self.FIXTURES / "product-manifest.json").read_text())
+        assert manifest["schema"] == "preloop.cra.evidencepack/v1"
+        assert manifest["disclaimer"].startswith(DISCLAIMER)
+        by_remote = {r["remote"]: r for r in manifest["repos"]}
+        entry = by_remote[stub["repo"]["remote"]]
+        # The spine of the audit trail: manifest SHA == stub SHA.
+        assert entry["commit"] == stub["repo"]["commit"]
+        assert entry["stub_path"].startswith(".preloop/evidence/")
+        for repo in manifest["repos"]:
+            assert len(repo["commit"]) == 40
+            int(repo["commit"], 16)
+
+    def test_fixtures_are_synthetic(self):
+        for name in ("repo-stub.json", "product-manifest.json"):
+            text = (self.FIXTURES / name).read_text()
+            assert "synthetic fixture" in text
+            assert "example" in text  # example.com-style identities only
+
+
 class TestPresetsLoadThroughLoader:
     def test_loader_picks_up_all_three(self):
         from unittest.mock import patch
