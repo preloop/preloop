@@ -227,8 +227,14 @@ def resolve_ai_model_runtime(
 
     if gateway_enabled:
         gateway_url = gateway_config.get("url") or default_model_gateway_url()
-        gateway_model_alias = gateway_config.get(
-            "model_alias"
+        # effective_gateway_alias is the single definition of the alias a
+        # binding answers to (it strips whitespace); using it here keeps
+        # runtime resolution in agreement with write-time uniqueness
+        # validation and the collision audit. The fallback is defensive:
+        # inside this branch the gateway is enabled, so the helper cannot
+        # return None.
+        gateway_model_alias = effective_gateway_alias(
+            ai_model
         ) or _build_default_gateway_alias(ai_model)
         gateway_provider = (
             gateway_config.get("provider_adapter") or DEFAULT_GATEWAY_PROVIDER

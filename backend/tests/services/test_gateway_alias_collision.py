@@ -285,3 +285,43 @@ def test_import_update_into_collision_is_auto_suffixed(db_session, test_user):
         },
     )
     assert effective_gateway_alias(updated) == "zai/glm-5.3-2"
+
+
+# ---------------------------------------------------------------------------
+# Effective-alias consistency (validation vs runtime)
+# ---------------------------------------------------------------------------
+
+
+def test_whitespace_padded_alias_agrees_between_validation_and_runtime(
+    db_session, test_user
+):
+    """One alias definition everywhere: a padded ``model_alias`` strips.
+
+    Regression: write-time validation and the audit used the stripped
+    ``effective_gateway_alias`` while ``resolve_ai_model_runtime`` used the
+    raw configured string, so a whitespace-padded alias was a collision at
+    write time yet a *distinct* alias at runtime (false-positive 400,
+    unroutable spelling).
+    """
+    from preloop.services.model_runtime_resolver import resolve_ai_model_runtime
+
+    padded = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in=_model_payload("padded", alias=" zai/glm-5.3 "),
+        account_id=test_user.account_id,
+    )
+    assert effective_gateway_alias(padded) == "zai/glm-5.3"
+    # Runtime resolution must agree with the write-time/audit definition.
+    assert resolve_ai_model_runtime(padded).model_gateway_model_alias == "zai/glm-5.3"
+    # ... which makes the padded row reachable by its stripped spelling.
+    service = _service(db_session, test_user)
+    resolved = service._resolve_requested_model("zai/glm-5.3", provider="openai")
+    assert resolved.id == padded.id
+    assert service.alias_collision_warning is None
+    # And a second write on the stripped spelling is a real collision.
+    with pytest.raises(ValueError, match="already used"):
+        crud_ai_model.create_with_account(
+            db=db_session,
+            obj_in=_model_payload("collides"),
+            account_id=test_user.account_id,
+        )

@@ -22,6 +22,31 @@ from preloop.services.openai_gateway import OpenAIGatewayService
 router = APIRouter(include_in_schema=False)
 
 
+_WARNING_HEADER_MAX_LEN = 256
+
+
+def _sanitize_header_value(value: str, max_len: int = _WARNING_HEADER_MAX_LEN) -> str:
+    """Make an arbitrary string safe to emit as an HTTP header value.
+
+    The warning text embeds client-controlled input (the requested model
+    spelling) and model names that may contain anything a user or an
+    agent-onboarding import wrote. Three hazards are neutralized:
+
+    * CR/LF would split the header (response-splitting/injection class);
+    * non-latin-1 characters (CJK/emoji in a model name) raise
+      ``UnicodeEncodeError`` inside Starlette's ``Response.init_headers``,
+      turning a successful completion into a 500 on exactly the collision
+      path this header exists to make visible;
+    * unbounded model inventories could inflate the header past proxy
+      limits, so the value is capped.
+    """
+    cleaned = value.replace("\r", " ").replace("\n", " ")
+    cleaned = cleaned.encode("ascii", "replace").decode("ascii")
+    if len(cleaned) > max_len:
+        cleaned = cleaned[: max_len - 3] + "..."
+    return cleaned
+
+
 def _with_alias_collision_warning(
     result: Dict[str, Any], service: OpenAIGatewayService
 ) -> Any:
@@ -34,7 +59,11 @@ def _with_alias_collision_warning(
     if service.alias_collision_warning:
         return JSONResponse(
             content=result,
-            headers={"X-Preloop-Warning": service.alias_collision_warning},
+            headers={
+                "X-Preloop-Warning": _sanitize_header_value(
+                    service.alias_collision_warning
+                )
+            },
         )
     return result
 

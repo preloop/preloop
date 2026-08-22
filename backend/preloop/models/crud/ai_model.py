@@ -260,6 +260,21 @@ class CRUDAIModel(CRUDBase[AIModel]):
         never fail onboarding, but it must never silently take over a user's
         alias either.
 
+        This is deliberately an application-level read-then-write check with
+        no backing DB constraint, so two writes racing each other can both
+        pass and land a collision. A partial unique index cannot express the
+        *effective* alias — it is a conditional over
+        ``meta_data->'gateway'->>'model_alias'`` and the computed
+        ``provider/model_identifier`` default (an indexed expression would
+        need a backfilled generated column) — and creating one would abort
+        ``alembic upgrade`` on accounts holding legacy user-created
+        collisions, which the audit migration intentionally reports but
+        never rewrites. The residual race is tolerated because the runtime
+        resolver keeps colliding aliases deterministic (user-created wins,
+        else stable inventory order) and every multi-match is logged and
+        surfaced via ``X-Preloop-Warning``, so a raced-in collision is
+        visible instead of silently misrouting.
+
         Args:
             db: Active session.
             obj_data: Normalized column values about to be written. Mutated
@@ -284,6 +299,9 @@ class CRUDAIModel(CRUDBase[AIModel]):
 
         from preloop.services.model_runtime_resolver import effective_gateway_alias
 
+        # NOTE: read-then-write without a DB-level uniqueness guard; see the
+        # docstring for why no partial unique index backs this and why the
+        # concurrent-write window is acceptable.
         taken: set[str] = set()
         for existing in (
             db.query(self.model).filter(self.model.account_id == account_id).all()

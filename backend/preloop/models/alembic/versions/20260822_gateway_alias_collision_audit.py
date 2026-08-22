@@ -129,8 +129,15 @@ def upgrade() -> None:
             gateway = dict(meta.get("gateway") or {})
             gateway["model_alias"] = new_alias
             meta["gateway"] = gateway
+            # ``meta_data`` is JSONB and the bound value is a Python str;
+            # PostgreSQL has no implicit text -> jsonb assignment cast, so
+            # the cast must be explicit or the UPDATE raises at deploy time.
             connection.execute(
-                sa.text("UPDATE ai_model SET meta_data = :meta_data WHERE id = :id"),
+                sa.text(
+                    "UPDATE ai_model "
+                    "SET meta_data = CAST(:meta_data AS jsonb) "
+                    "WHERE id = :id"
+                ),
                 {"meta_data": json.dumps(meta), "id": entry["id"]},
             )
             logger.warning(
