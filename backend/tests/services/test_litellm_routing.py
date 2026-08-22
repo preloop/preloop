@@ -8,8 +8,12 @@ not a routing instruction when the stored provider says otherwise).
 
 from preloop.models.models.ai_model import AIModel
 from preloop.services.litellm_routing import (
+    PRELOOP_APP_NAME,
+    PRELOOP_SITE_URL,
     PROVIDER_PREFIX,
+    apply_preloop_client_headers,
     known_litellm_providers,
+    preloop_user_agent,
     to_litellm_model,
 )
 
@@ -82,3 +86,61 @@ class TestSlashPrefixHeuristicNoRegression:
             endpoint="https://my-gateway.example.com/v1",
         )
         assert to_litellm_model(model) == "openai/moonshot/kimi-k3"
+
+
+class TestPreloopClientIdentity:
+    """LiteLLM client branding is Preloop on every upstream, not just OpenRouter."""
+
+    def test_user_agent_never_contains_litellm(self):
+        assert "litellm" not in preloop_user_agent().lower()
+        assert preloop_user_agent().lower().startswith("preloop/")
+
+    def test_apply_stamps_user_agent_on_openai(self):
+        kwargs: dict = {}
+        apply_preloop_client_headers(kwargs, _model("openai", "gpt-5"))
+        ua = kwargs["extra_headers"]["User-Agent"]
+        assert "litellm" not in ua.lower()
+        assert ua.lower().startswith("preloop/")
+
+    def test_apply_stamps_user_agent_on_zai(self):
+        kwargs: dict = {}
+        apply_preloop_client_headers(kwargs, _model("zai", "glm-5.3"))
+        ua = kwargs["extra_headers"]["User-Agent"]
+        assert "litellm" not in ua.lower()
+        assert ua.lower().startswith("preloop/")
+
+    def test_apply_stamps_user_agent_on_anthropic(self):
+        kwargs: dict = {}
+        apply_preloop_client_headers(kwargs, _model("anthropic", "claude-opus-4-6"))
+        ua = kwargs["extra_headers"]["User-Agent"]
+        assert "litellm" not in ua.lower()
+        assert ua.lower().startswith("preloop/")
+
+    def test_apply_preserves_existing_extra_headers(self):
+        kwargs = {"extra_headers": {"anthropic-beta": "oauth-2025-04-20"}}
+        apply_preloop_client_headers(kwargs, _model("anthropic", "claude-opus-4-6"))
+        assert kwargs["extra_headers"]["anthropic-beta"] == "oauth-2025-04-20"
+        assert "litellm" not in kwargs["extra_headers"]["User-Agent"].lower()
+
+    def test_openrouter_also_gets_attribution_headers(self):
+        kwargs: dict = {}
+        apply_preloop_client_headers(
+            kwargs,
+            _model(
+                "openrouter",
+                "anthropic/claude-opus-4.6",
+                endpoint="https://openrouter.ai/api/v1",
+            ),
+        )
+        extra = kwargs["extra_headers"]
+        assert extra["X-Title"] == PRELOOP_APP_NAME == "Preloop"
+        assert extra["HTTP-Referer"] == PRELOOP_SITE_URL == "https://preloop.ai"
+        assert "litellm" not in extra["User-Agent"].lower()
+
+    def test_non_openrouter_does_not_require_xtitle(self):
+        kwargs: dict = {}
+        apply_preloop_client_headers(kwargs, _model("openai", "gpt-5"))
+        extra = kwargs["extra_headers"]
+        assert "User-Agent" in extra
+        assert extra.get("X-Title") is None
+        assert extra.get("HTTP-Referer") is None

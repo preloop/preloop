@@ -38,8 +38,9 @@ of the stored provider/endpoint sent live traffic to the wrong vendor with a
 truncated model id (issue #172).
 """
 
+import os
 from functools import lru_cache
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 from urllib.parse import urlsplit
 
 import litellm
@@ -82,6 +83,86 @@ OPENAI_COMPATIBLE_PROVIDERS = frozenset({"openai-compatible", "custom"})
 OPENROUTER_HOSTS = frozenset({"openrouter.ai"})
 
 OPENROUTER_PREFIX = "openrouter/"
+
+# LiteLLM's HTTP client defaults User-Agent to ``litellm/{version}`` (overridable
+# via ``LITELLM_USER_AGENT``). Its OpenRouter adapter also defaults
+# ``HTTP-Referer`` / ``X-Title`` to ``https://litellm.ai`` / ``liteLLM``
+# (``OR_SITE_URL`` / ``OR_APP_NAME``). Provider dashboards attribute traffic
+# from those headers, so Preloop must replace them on every completion.
+PRELOOP_APP_NAME = "Preloop"
+PRELOOP_SITE_URL = "https://preloop.ai"
+OPENROUTER_APP_NAME = PRELOOP_APP_NAME
+OPENROUTER_SITE_URL = PRELOOP_SITE_URL
+
+
+def preloop_user_agent() -> str:
+    """User-Agent sent on every LiteLLM completion.
+
+    LiteLLM otherwise stamps ``litellm/{version}``, which is what provider
+    dashboards (OpenRouter, z.ai, OpenAI, ...) display as the client app.
+    """
+    from preloop import __version__
+
+    return f"Preloop/{__version__}"
+
+
+def preloop_client_headers() -> Dict[str, str]:
+    """LiteLLM-default client headers replaced on every upstream."""
+    return {"User-Agent": preloop_user_agent()}
+
+
+def openrouter_app_headers() -> Dict[str, str]:
+    """OpenRouter app-attribution headers (HTTP-Referer / X-Title)."""
+    return {
+        "HTTP-Referer": PRELOOP_SITE_URL,
+        "X-Title": PRELOOP_APP_NAME,
+    }
+
+
+def is_openrouter_model(ai_model: Any) -> bool:
+    """Whether this model's traffic terminates at OpenRouter.
+
+    True for the explicit ``openrouter`` provider and for any model whose
+    ``api_endpoint`` points at openrouter.ai (e.g. an ``openai-compatible``
+    provider with an OpenRouter base URL). Mirrors the routing decision in
+    :func:`to_litellm_model`.
+    """
+    provider = (getattr(ai_model, "provider_name", None) or "").strip().lower()
+    if provider == "openrouter":
+        return True
+    return is_openrouter_endpoint(getattr(ai_model, "api_endpoint", None))
+
+
+def apply_preloop_client_headers(
+    kwargs: Dict[str, Any], ai_model: Any = None
+) -> Dict[str, Any]:
+    """Replace LiteLLM client branding on every completion kwargs dict.
+
+    User-Agent is always Preloop (not gated on OpenRouter). OpenRouter
+    attribution headers are added when the request terminates there.
+    Merges into existing ``extra_headers`` so provider-specific headers
+    (Claude Code OAuth betas, etc.) are kept.
+    """
+    extra = dict(kwargs.get("extra_headers") or {})
+    extra.update(preloop_client_headers())
+    if ai_model is not None and is_openrouter_model(ai_model):
+        extra.update(openrouter_app_headers())
+    kwargs["extra_headers"] = extra
+    return kwargs
+
+
+def ensure_preloop_client_identity() -> None:
+    """Fill LiteLLM env defaults so its HTTP client is not ``litellm/...``.
+
+    ``LITELLM_USER_AGENT`` is the supported override for the default
+    ``User-Agent: litellm/{version}`` header baked into LiteLLM's httpx
+    client. ``OR_SITE_URL`` / ``OR_APP_NAME`` override the OpenRouter
+    adapter's ``liteLLM`` attribution. Does not clobber an operator-set
+    value.
+    """
+    os.environ.setdefault("LITELLM_USER_AGENT", preloop_user_agent())
+    os.environ.setdefault("OR_SITE_URL", OPENROUTER_SITE_URL)
+    os.environ.setdefault("OR_APP_NAME", OPENROUTER_APP_NAME)
 
 
 @lru_cache(maxsize=1)

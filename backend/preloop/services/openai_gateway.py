@@ -115,7 +115,12 @@ from preloop.services.model_pricing import (
     _iter_litellm_model_candidates,
     estimate_ai_model_usage_cost_detailed,
 )
-from preloop.services.litellm_routing import is_openrouter_endpoint, to_litellm_model
+from preloop.services.litellm_routing import (
+    apply_preloop_client_headers,
+    ensure_preloop_client_identity,
+    is_openrouter_model,
+    to_litellm_model,
+)
 from preloop.services.pricing_overrides import resolve_pricing_override
 from preloop.services.model_runtime_resolver import resolve_ai_model_runtime
 from preloop.services.gateway_usage_search import GatewayUsageSearchService
@@ -261,18 +266,8 @@ def _openrouter_usage_accounting_enabled() -> bool:
 
 
 def _is_openrouter_upstream(ai_model: AIModel) -> bool:
-    """Whether this model's traffic terminates at OpenRouter.
-
-    True for the explicit ``openrouter`` provider and for any model whose
-    ``api_endpoint`` points at openrouter.ai (e.g. an ``openai-compatible``
-    provider with an OpenRouter base URL). Mirrors the routing decision in
-    :func:`preloop.services.litellm_routing.to_litellm_model` so the
-    usage-accounting flag is sent exactly when the request goes to OpenRouter.
-    """
-    provider = (getattr(ai_model, "provider_name", None) or "").strip().lower()
-    if provider == "openrouter":
-        return True
-    return is_openrouter_endpoint(getattr(ai_model, "api_endpoint", None))
+    """Whether this model's traffic terminates at OpenRouter."""
+    return is_openrouter_model(ai_model)
 
 
 def _bedrock_region(ai_model: AIModel) -> Optional[str]:
@@ -341,6 +336,11 @@ def _anthropic_oauth_environment(auth_token: str) -> Iterator[None]:
 
 class LiteLLMModelGatewayBackend:
     def completion(self, **kwargs: Any) -> Any:
+        # Belt-and-suspenders: LiteLLM's httpx client defaults User-Agent to
+        # ``litellm/{version}`` unless LITELLM_USER_AGENT is set, and will
+        # also re-stamp liteLLM on OpenRouter if extra_headers are dropped.
+        ensure_preloop_client_identity()
+        apply_preloop_client_headers(kwargs)
         anthropic_auth_token = kwargs.pop("_preloop_anthropic_auth_token", None)
         if anthropic_auth_token:
             with _anthropic_oauth_environment(str(anthropic_auth_token)):
@@ -4640,6 +4640,14 @@ class OpenAIGatewayService:
                 kwargs[target_key] = payload[source_key]
         if payload.get("stop") is not None:
             kwargs["stop"] = payload["stop"]
+        # LiteLLM fallback metadata for unlisted models (e.g. zai/glm-5.3)
+        # forwards client flags the provider rejects. Drop those instead of
+        # failing the whole request. Aux generation already does this.
+        kwargs["drop_params"] = True
+        # Identify as Preloop on every upstream. User-Agent is global so
+        # provider dashboards do not attribute traffic to LiteLLM.
+        # OpenRouter also gets HTTP-Referer / X-Title.
+        apply_preloop_client_headers(kwargs, ai_model)
 
         return kwargs
 
