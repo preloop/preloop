@@ -150,16 +150,14 @@ class TestPreloopClientIdentity:
         assert extra.get("HTTP-Referer") is None
 
     def test_ensure_identity_is_idempotent_and_skips_eval_when_set(self, monkeypatch):
-        import preloop.services.litellm_routing as routing
-
         monkeypatch.setenv("LITELLM_USER_AGENT", "already-set")
         monkeypatch.setenv("OR_SITE_URL", "https://already.example")
         monkeypatch.setenv("OR_APP_NAME", "already")
-        monkeypatch.setattr(routing, "_PRELOOP_CLIENT_IDENTITY_APPLIED", False)
+        ensure_preloop_client_identity.cache_clear()
 
-        with patch.object(routing, "preloop_user_agent") as mock_ua:
-            routing.ensure_preloop_client_identity()
-            routing.ensure_preloop_client_identity()
+        with patch("preloop.services.litellm_routing.preloop_user_agent") as mock_ua:
+            ensure_preloop_client_identity()
+            ensure_preloop_client_identity()
             mock_ua.assert_not_called()
 
         assert os.environ["LITELLM_USER_AGENT"] == "already-set"
@@ -167,12 +165,10 @@ class TestPreloopClientIdentity:
         assert os.environ["OR_APP_NAME"] == "already"
 
     def test_ensure_identity_sets_missing_env_once(self, monkeypatch):
-        import preloop.services.litellm_routing as routing
-
         monkeypatch.delenv("LITELLM_USER_AGENT", raising=False)
         monkeypatch.delenv("OR_SITE_URL", raising=False)
         monkeypatch.delenv("OR_APP_NAME", raising=False)
-        monkeypatch.setattr(routing, "_PRELOOP_CLIENT_IDENTITY_APPLIED", False)
+        ensure_preloop_client_identity.cache_clear()
 
         ensure_preloop_client_identity()
         first_ua = os.environ["LITELLM_USER_AGENT"]
