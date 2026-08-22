@@ -73,6 +73,34 @@ def _get_gateway_config(ai_model: AIModel) -> Dict[str, Any]:
     return gateway_config if isinstance(gateway_config, dict) else {}
 
 
+def effective_gateway_alias(ai_model: AIModel) -> Optional[str]:
+    """Return the single alias a gateway-enabled model answers to.
+
+    This is the value alias-uniqueness is enforced against: the configured
+    ``meta_data.gateway.model_alias`` when set, otherwise the default
+    ``provider/model_identifier`` spelling. ``None`` for models that are not
+    gateway-enabled (they cannot collide because they are never resolved).
+    """
+    gateway_config = _get_gateway_config(ai_model)
+    if not gateway_config.get("enabled"):
+        return None
+    configured_alias = gateway_config.get("model_alias")
+    if isinstance(configured_alias, str) and configured_alias.strip():
+        return configured_alias.strip()
+    return _build_default_gateway_alias(ai_model)
+
+
+def is_agent_managed_model(ai_model: AIModel) -> bool:
+    """True when the model row was imported/managed by agent tooling.
+
+    Agent onboarding (``preloop agents onboard``) and gateway autoregistration
+    stamp ``meta_data.managed_by``; explicitly user-created models never carry
+    it. Collision handling prefers user-created rows over these imports.
+    """
+    meta_data = ai_model.meta_data if isinstance(ai_model.meta_data, dict) else {}
+    return bool(str(meta_data.get("managed_by") or "").strip())
+
+
 def gateway_url_for_api(gateway_url: Optional[str], api: str) -> Optional[str]:
     """Return the sibling gateway URL for the requested client API shape."""
     if not gateway_url:
@@ -199,8 +227,14 @@ def resolve_ai_model_runtime(
 
     if gateway_enabled:
         gateway_url = gateway_config.get("url") or default_model_gateway_url()
-        gateway_model_alias = gateway_config.get(
-            "model_alias"
+        # effective_gateway_alias is the single definition of the alias a
+        # binding answers to (it strips whitespace); using it here keeps
+        # runtime resolution in agreement with write-time uniqueness
+        # validation and the collision audit. The fallback is defensive:
+        # inside this branch the gateway is enabled, so the helper cannot
+        # return None.
+        gateway_model_alias = effective_gateway_alias(
+            ai_model
         ) or _build_default_gateway_alias(ai_model)
         gateway_provider = (
             gateway_config.get("provider_adapter") or DEFAULT_GATEWAY_PROVIDER

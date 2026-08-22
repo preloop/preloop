@@ -117,7 +117,10 @@ from preloop.services.model_pricing import (
 )
 from preloop.services.litellm_routing import is_openrouter_endpoint, to_litellm_model
 from preloop.services.pricing_overrides import resolve_pricing_override
-from preloop.services.model_runtime_resolver import resolve_ai_model_runtime
+from preloop.services.model_runtime_resolver import (
+    is_agent_managed_model,
+    resolve_ai_model_runtime,
+)
 from preloop.services.gateway_usage_search import GatewayUsageSearchService
 from preloop.services.secret_service import (
     ANTHROPIC_CLAUDE_CODE_OAUTH_CREDENTIAL_TYPE,
@@ -543,6 +546,11 @@ class OpenAIGatewayService:
         # Computed once from the account inventory on first use so listing,
         # alias resolution, and default selection all consume the same set.
         self._authorized_model_ids_cache: Optional[frozenset[str]] = None
+        # Human-readable warning set when the requested model alias matched
+        # more than one binding. Endpoints surface it to the caller (e.g. as
+        # an X-Preloop-Warning response header) so a silent misroute like the
+        # zai/glm-5.3 collision is visible at the client, not just in logs.
+        self.alias_collision_warning: Optional[str] = None
         # Usage row stashed until the ASGI body has been finished
         # (``GatewayStreamingResponse.on_complete``). None when the generator
         # is still mid-stream or recording already ran.
@@ -2424,20 +2432,55 @@ class OpenAIGatewayService:
             # verbatim on the Anthropic OAuth passthrough, so the user's 1M
             # selection keeps working while authorization and pricing key on
             # the base model.
+            # On a tie (two bindings answering to the same spelling — e.g. a
+            # user-created model and an agent-onboarding import that silently
+            # took the same alias) the explicitly user-created binding wins:
+            # it encodes routing intent, while imports are bookkeeping. Ties
+            # within the same class fall back to the stable inventory order,
+            # and every tie is logged + surfaced as a client warning.
             normalized_requested = self._strip_claude_variant_marker(
                 str(requested_model)
             )
-            suffix_match: Optional[AIModel] = None
+            exact_matches: List[AIModel] = []
+            suffix_matches: List[AIModel] = []
             for ai_model, alias in gateway_enabled_models:
                 if alias == requested_model or alias == normalized_requested:
-                    return ai_model
-                if suffix_match is None and (
-                    alias.endswith(f"/{requested_model}")
-                    or alias.endswith(f"/{normalized_requested}")
+                    exact_matches.append(ai_model)
+                elif alias.endswith(f"/{requested_model}") or alias.endswith(
+                    f"/{normalized_requested}"
                 ):
-                    suffix_match = ai_model
-            if suffix_match is not None:
-                return suffix_match
+                    suffix_matches.append(ai_model)
+            for candidates in (exact_matches, suffix_matches):
+                if not candidates:
+                    continue
+                if len(candidates) == 1:
+                    return candidates[0]
+                user_created = [
+                    model for model in candidates if not is_agent_managed_model(model)
+                ]
+                chosen = (user_created or candidates)[0]
+                shadowed = [
+                    f"{model.id} ({model.name!r})"
+                    for model in candidates
+                    if model.id != chosen.id
+                ]
+                self.alias_collision_warning = (
+                    f"gateway alias collision: '{requested_model}' matches "
+                    f"{len(candidates)} model bindings; served by "
+                    f"{chosen.id} ({chosen.name!r}), shadowing "
+                    f"{', '.join(shadowed)}. Re-alias or remove the "
+                    "duplicate binding(s)."
+                )
+                logger.warning(
+                    "gateway_alias_collision account=%s requested=%r "
+                    "chosen=%s chosen_name=%r shadowed=%s",
+                    self.auth_context.user.account_id,
+                    requested_model,
+                    chosen.id,
+                    chosen.name,
+                    shadowed,
+                )
+                return chosen
             for _, alias in unauthorized_gateway_models:
                 if alias == requested_model or alias.endswith(f"/{requested_model}"):
                     available = (

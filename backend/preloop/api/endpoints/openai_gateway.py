@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Body, Depends, Header, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from preloop.models.db.session import get_db_session
@@ -19,6 +20,52 @@ from preloop.services.gateway_streaming import GatewayStreamingResponse
 from preloop.services.openai_gateway import OpenAIGatewayService
 
 router = APIRouter(include_in_schema=False)
+
+
+_WARNING_HEADER_MAX_LEN = 256
+
+
+def _sanitize_header_value(value: str, max_len: int = _WARNING_HEADER_MAX_LEN) -> str:
+    """Make an arbitrary string safe to emit as an HTTP header value.
+
+    The warning text embeds client-controlled input (the requested model
+    spelling) and model names that may contain anything a user or an
+    agent-onboarding import wrote. Three hazards are neutralized:
+
+    * CR/LF would split the header (response-splitting/injection class);
+    * non-latin-1 characters (CJK/emoji in a model name) raise
+      ``UnicodeEncodeError`` inside Starlette's ``Response.init_headers``,
+      turning a successful completion into a 500 on exactly the collision
+      path this header exists to make visible;
+    * unbounded model inventories could inflate the header past proxy
+      limits, so the value is capped.
+    """
+    cleaned = value.replace("\r", " ").replace("\n", " ")
+    cleaned = cleaned.encode("ascii", "replace").decode("ascii")
+    if len(cleaned) > max_len:
+        cleaned = cleaned[: max_len - 3] + "..."
+    return cleaned
+
+
+def _with_alias_collision_warning(
+    result: Dict[str, Any], service: OpenAIGatewayService
+) -> Any:
+    """Attach the alias-collision warning header to a non-streaming result.
+
+    When the requested model alias matched more than one binding the service
+    records a warning; surfacing it as ``X-Preloop-Warning`` keeps the body
+    OpenAI-compatible while making the collision visible to the caller.
+    """
+    if service.alias_collision_warning:
+        return JSONResponse(
+            content=result,
+            headers={
+                "X-Preloop-Warning": _sanitize_header_value(
+                    service.alias_collision_warning
+                )
+            },
+        )
+    return result
 
 
 async def get_model_gateway_auth_context(
@@ -84,7 +131,9 @@ def create_chat_completion(
             media_type="text/event-stream",
             on_complete=service.flush_deferred_stream_record,
         )
-    return service.create_chat_completion(payload)
+    return _with_alias_collision_warning(
+        service.create_chat_completion(payload), service
+    )
 
 
 @router.post("/responses")
@@ -116,4 +165,4 @@ def create_response(
             media_type="text/event-stream",
             on_complete=service.flush_deferred_stream_record,
         )
-    return service.create_response(payload)
+    return _with_alias_collision_warning(service.create_response(payload), service)

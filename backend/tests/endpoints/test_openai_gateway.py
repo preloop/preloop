@@ -797,3 +797,111 @@ def test_responses_stream_midstream_failure_emits_sse_error_event(
     assert error_events[-1].get("code") == "upstream_disconnect"
     assert "upstream connection reset" in error_events[-1]["message"]
     assert "data: [DONE]" in response.text
+
+
+def test_alias_collision_warning_header_present_and_sanitized(
+    app, client, db_session, test_user
+):
+    """A collision surfaces ``X-Preloop-Warning`` on the real HTTP response.
+
+    The shadowed import carries a non-latin-1 name (CJK + emoji): without
+    sanitization Starlette's latin-1 header encoding raises
+    ``UnicodeEncodeError`` and the completion 500s on exactly the path this
+    header exists to make visible.
+    """
+    user_created = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "glm-5.3",
+            "provider_name": "zai",
+            "model_identifier": "glm-5.3",
+            "api_key": "provider-secret",
+            "meta_data": {
+                "gateway": {
+                    "enabled": True,
+                    "model_alias": "zai/glm-5.3",
+                    "provider_adapter": "preloop",
+                }
+            },
+        },
+        account_id=test_user.account_id,
+    )
+    imported = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "OpenCode 评审模型 🚀",
+            "provider_name": "zai",
+            "model_identifier": "glm-5.3",
+            "api_key": "provider-secret",
+            "meta_data": {
+                "managed_by": "preloop agents onboard",
+                "gateway": {
+                    "enabled": True,
+                    "model_alias": "zai/glm-5.3-tmp",
+                    "provider_adapter": "preloop",
+                },
+            },
+        },
+        account_id=test_user.account_id,
+    )
+    # Force the legacy collision (write-time validation auto-suffixes new
+    # imports, so recreate the pre-fix data shape directly).
+    imported.meta_data = {
+        **imported.meta_data,
+        "gateway": {**imported.meta_data["gateway"], "model_alias": "zai/glm-5.3"},
+    }
+    db_session.flush()
+
+    app.dependency_overrides[get_model_gateway_auth_context] = lambda: (
+        ModelGatewayAuthContext(token="runtime-token", user=test_user)
+    )
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value={
+            "id": "chatcmpl_123",
+            "created": 1710000000,
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        },
+    ):
+        response = client.post(
+            "/openai/v1/chat/completions",
+            headers={"Authorization": "Bearer ignored"},
+            json={
+                "model": "zai/glm-5.3",
+                "messages": [{"role": "user", "content": "Hello"}],
+            },
+        )
+
+    assert response.status_code == 200
+    warning = response.headers.get("X-Preloop-Warning")
+    assert warning, "collision warning header must be present on the response"
+    assert str(user_created.id) in warning
+    assert str(imported.id) in warning
+    # Sanitized: single-line, pure ASCII, bounded.
+    assert "\r" not in warning and "\n" not in warning
+    warning.encode("ascii")  # must not raise
+    assert len(warning) <= 256
+
+
+def test_sanitize_header_value_strips_crlf_and_caps_length():
+    """CR/LF are neutralized (header-injection class) and length is capped."""
+    from preloop.api.endpoints.openai_gateway import _sanitize_header_value
+
+    injected = "evil\r\nX-Injected: 1\nrest"
+    cleaned = _sanitize_header_value(injected)
+    assert "\r" not in cleaned and "\n" not in cleaned
+    assert "X-Injected" in cleaned  # content kept, structure neutralized
+
+    long_value = "a" * 10_000
+    capped = _sanitize_header_value(long_value)
+    assert len(capped) == 256
+    assert capped.endswith("...")
+
+    # Non-latin-1 characters become ASCII replacements, never raise.
+    assert _sanitize_header_value("模型🚀") == "???"
