@@ -18,6 +18,7 @@ from preloop.services.upstream_errors import (
     ERROR_CLASS_CLIENT_CANCELLED,
     classify_recorded_error,
     classify_upstream_error,
+    is_retryable_upstream_failure,
 )
 
 
@@ -134,6 +135,39 @@ def test_client_shaped_4xx_returns_none():
     """Validation-style 4xx keep existing passthrough handling."""
     exc = _FakeHTTPError("messages must be a non-empty list", status_code=400)
     assert classify_upstream_error(exc) is None
+
+
+def test_midstream_provider_unavailable_is_retryable():
+    """Founder 502 signature: OpenRouter JSON error injected mid-stream."""
+    exc = _MidStreamFallbackError(
+        "Upstream provider disconnected mid-stream: APIError: "
+        "OpenrouterException - Message: JSON error injected into SSE stream, "
+        "Metadata: {'error_type': 'provider_unavailable'}"
+    )
+    assert is_retryable_upstream_failure(exc) is True
+
+
+def test_unsupported_parallel_tool_calls_is_not_retryable():
+    """glm-5.3 4xx must not be retried; drop_params is the fix, not retry."""
+    exc = _FakeHTTPError(
+        "zai does not support parameters: ['parallel_tool_calls']",
+        status_code=400,
+    )
+    assert is_retryable_upstream_failure(exc) is False
+
+
+def test_auth_401_is_not_retryable():
+    exc = _FakeHTTPError("Invalid API key", status_code=401)
+    assert is_retryable_upstream_failure(exc) is False
+
+
+def test_quota_exhausted_is_not_retryable():
+    exc = _FakeHTTPError(
+        "HTTP 429: request reached organization TPD rate limit",
+        status_code=429,
+        error_type="rate_limit_reached_error",
+    )
+    assert is_retryable_upstream_failure(exc) is False
 
 
 def test_opaque_failure_maps_to_upstream_error_502():

@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import os
+import random
 import re
 import sys
 import threading
@@ -98,6 +99,7 @@ from preloop.services.upstream_errors import (
     ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED,
     classify_recorded_error,
     classify_upstream_error,
+    is_retryable_upstream_failure,
 )
 from preloop.services.model_price_catalog import schedule_price_lookup
 from preloop.services.unpriced_model_alert import (
@@ -310,6 +312,32 @@ def _bedrock_credential_kwargs(secret_value: Optional[str]) -> Dict[str, Any]:
 class ModelGatewayBackend(Protocol):
     def completion(self, **kwargs: Any) -> Any:
         pass
+
+
+# Bounded retries for transient 502 / provider_unavailable /
+# upstream_disconnect / MidStreamFallbackError. 1 initial + 2 retries.
+# Not LiteLLM Router fallbacks; those would require a model list.
+_UPSTREAM_RETRY_MAX_ATTEMPTS = 3
+_UPSTREAM_RETRY_BASE_SECONDS = 0.2
+
+
+def _upstream_retry_delay_seconds(attempt: int) -> float:
+    """Exponential backoff plus jitter for one gateway upstream retry.
+
+    Args:
+        attempt: Zero-based index of the failure that just happened.
+
+    Returns:
+        Seconds to wait before the next attempt.
+    """
+    return (_UPSTREAM_RETRY_BASE_SECONDS * (2**attempt)) + random.uniform(
+        0, _UPSTREAM_RETRY_BASE_SECONDS
+    )
+
+
+def _sleep_before_upstream_retry(seconds: float) -> None:
+    """Sleep hook tests can patch without freezing the suite."""
+    time.sleep(seconds)
 
 
 _ANTHROPIC_OAUTH_ENV_LOCK = threading.Lock()
@@ -1278,14 +1306,10 @@ class OpenAIGatewayService:
                     url=url, headers=headers, body=body
                 )
             else:
-                upstream_stream = self._prefetch_upstream_stream(
-                    self._call_litellm(
-                        model,
-                        messages=messages,
-                        payload=payload,
-                        stream=True,
-                        provider="anthropic",
-                    ),
+                upstream_stream = self._open_upstream_stream(
+                    model,
+                    messages=messages,
+                    payload=payload,
                     provider="anthropic",
                 )
         except ModelGatewayAPIError as exc:
@@ -1703,14 +1727,10 @@ class OpenAIGatewayService:
                     started_at=started_at,
                     budget_result=budget_result,
                 )
-            upstream_stream = self._prefetch_upstream_stream(
-                self._call_litellm(
-                    model,
-                    messages=messages,
-                    payload=payload,
-                    stream=True,
-                    provider="openai",
-                ),
+            upstream_stream = self._open_upstream_stream(
+                model,
+                messages=messages,
+                payload=payload,
                 provider="openai",
             )
         except ModelGatewayAPIError as exc:
@@ -1978,14 +1998,10 @@ class OpenAIGatewayService:
                     started_at=started_at,
                     budget_result=budget_result,
                 )
-            upstream_stream = self._prefetch_upstream_stream(
-                self._call_litellm(
-                    model,
-                    messages=messages,
-                    payload=payload,
-                    stream=True,
-                    provider="openai",
-                ),
+            upstream_stream = self._open_upstream_stream(
+                model,
+                messages=messages,
+                payload=payload,
                 provider="openai",
             )
         except ModelGatewayAPIError as exc:
@@ -4670,6 +4686,56 @@ class OpenAIGatewayService:
     # attribution is not lost. Codex requests are not governance-stripped, so
     # every codex tool reports ``stripped=False`` (correct).
     # ------------------------------------------------------------------
+    def _run_with_upstream_retries(
+        self,
+        provider: GatewayProvider,
+        operation: Callable[[], Any],
+    ) -> Any:
+        """Run ``operation`` with bounded retries for transient upstream faults.
+
+        Retries 502 / provider_unavailable / upstream_disconnect /
+        MidStreamFallbackError / network / overload. Does not retry 4xx
+        unsupported-params, auth, or quota. Intermediate failures are not
+        admin-alerted; only the final mapped error notifies.
+
+        Args:
+            provider: Gateway provider used to shape the final error.
+            operation: Zero-arg callable to invoke.
+
+        Returns:
+            The value returned by ``operation``.
+
+        Raises:
+            ModelGatewayAPIError: When retries are exhausted or the error
+                is not retryable.
+        """
+        last_exc: Optional[Exception] = None
+        for attempt in range(_UPSTREAM_RETRY_MAX_ATTEMPTS):
+            try:
+                return operation()
+            except Exception as exc:
+                last_exc = exc
+                if (
+                    attempt >= _UPSTREAM_RETRY_MAX_ATTEMPTS - 1
+                    or not is_retryable_upstream_failure(exc)
+                ):
+                    break
+                delay = _upstream_retry_delay_seconds(attempt)
+                logger.warning(
+                    "Retrying gateway upstream call after transient failure "
+                    "(attempt %s/%s, delay=%.2fs, error=%s)",
+                    attempt + 1,
+                    _UPSTREAM_RETRY_MAX_ATTEMPTS,
+                    delay,
+                    exc,
+                )
+                _sleep_before_upstream_retry(delay)
+        assert last_exc is not None
+        self._capture_rate_limit_headers(headers_from_exception(last_exc))
+        if isinstance(last_exc, ModelGatewayAPIError):
+            raise last_exc
+        raise self._normalize_upstream_error(provider, last_exc) from last_exc
+
     def _call_litellm(
         self,
         ai_model: AIModel,
@@ -4678,6 +4744,7 @@ class OpenAIGatewayService:
         payload: Dict[str, Any],
         stream: bool = False,
         provider: GatewayProvider,
+        retry_transient: bool = True,
     ):
         # Capture the ORIGINAL tools before optimization strips any of them so
         # per-tool attribution covers the request as the client sent it.
@@ -4699,16 +4766,65 @@ class OpenAIGatewayService:
             provider=provider,
         )
 
-        try:
-            response = self.upstream_backend.completion(**kwargs)
-        except Exception as exc:
-            self._capture_rate_limit_headers(headers_from_exception(exc))
-            raise self._normalize_upstream_error(provider, exc) from exc
+        def _invoke() -> Any:
+            return self.upstream_backend.completion(**kwargs)
+
+        if retry_transient:
+            response = self._run_with_upstream_retries(provider, _invoke)
+        else:
+            response = _invoke()
         if not stream:
             # LiteLLM relays provider headers in _hidden_params; best effort,
             # absent headers simply record no snapshot.
             self._capture_rate_limit_headers(headers_from_litellm_response(response))
         return response
+
+    def _open_upstream_stream(
+        self,
+        ai_model: AIModel,
+        *,
+        messages: List[Dict[str, Any]],
+        payload: Dict[str, Any],
+        provider: GatewayProvider,
+    ) -> "_PrefetchedUpstreamStream":
+        """Open a streaming completion and prefetch the first chunk, with retry.
+
+        Covers the founder 502 signature: LiteLLM raises
+        ``MidStreamFallbackError`` wrapping OpenRouter
+        ``provider_unavailable`` / ``upstream_disconnect`` on the first
+        SSE event (or the completion handshake). A later disconnect after
+        tokens have already been forwarded cannot be stitched onto the
+        same SSE response without duplicating billed tokens; that case
+        stays an SSE error and the flow-level retry may recover the run.
+
+        Args:
+            ai_model: Resolved model row.
+            messages: Chat messages for the completion.
+            payload: Client request payload.
+            provider: Gateway provider used to shape errors.
+
+        Returns:
+            A prefetched stream ready to iterate.
+
+        Raises:
+            ModelGatewayAPIError: When retries are exhausted or the error
+                is not retryable.
+        """
+
+        def _attempt() -> "_PrefetchedUpstreamStream":
+            return self._prefetch_upstream_stream(
+                self._call_litellm(
+                    ai_model,
+                    messages=messages,
+                    payload=payload,
+                    stream=True,
+                    provider=provider,
+                    retry_transient=False,
+                ),
+                provider=provider,
+            )
+
+        return self._run_with_upstream_retries(provider, _attempt)
 
     def _prefetch_upstream_stream(
         self, upstream_stream: Any, *, provider: GatewayProvider
@@ -4742,8 +4858,11 @@ class OpenAIGatewayService:
         except ModelGatewayAPIError:
             raise
         except Exception as exc:
+            # Leave the exception raw so ``_open_upstream_stream`` can retry
+            # MidStreamFallbackError / 502 without admin-alerting each
+            # attempt. The retry wrapper maps the final failure.
             self._capture_rate_limit_headers(headers_from_exception(exc))
-            raise self._normalize_upstream_error(provider, exc) from exc
+            raise
         return _PrefetchedUpstreamStream(
             chain([first_chunk], iterator), raw=upstream_stream
         )

@@ -14,6 +14,7 @@ from preloop.models.crud import (
     crud_runtime_session,
 )
 from preloop.models.crud import crud_api_key
+from preloop.services.litellm_routing import preloop_user_agent
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.services.openai_gateway import OpenAIGatewayService
@@ -61,6 +62,8 @@ def test_call_litellm_uses_injected_upstream_backend():
         api_key="provider-secret",
         timeout=600,
         temperature=0.2,
+        drop_params=True,
+        extra_headers={"User-Agent": preloop_user_agent()},
     )
 
 
@@ -98,6 +101,8 @@ def test_call_litellm_allows_bedrock_ambient_credentials():
         messages=[{"role": "user", "content": "Hello"}],
         timeout=600,
         aws_region_name="us-east-1",
+        drop_params=True,
+        extra_headers={"User-Agent": preloop_user_agent()},
     )
 
 
@@ -148,6 +153,8 @@ def test_call_litellm_passes_imported_bedrock_credentials():
         aws_secret_access_key="secret-test",
         aws_session_token="session-test",
         aws_region_name="eu-central-1",
+        drop_params=True,
+        extra_headers={"User-Agent": preloop_user_agent()},
     )
 
 
@@ -195,8 +202,10 @@ def test_call_litellm_uses_claude_code_oauth_headers():
         extra_headers={
             "anthropic-beta": "oauth-2025-04-20",
             "anthropic-client-platform": "claude-code",
+            "User-Agent": preloop_user_agent(),
         },
         max_tokens=1,
+        drop_params=True,
     )
 
 

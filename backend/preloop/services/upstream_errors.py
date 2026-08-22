@@ -273,6 +273,101 @@ _DISCONNECT_DETAIL_MARKERS = (
     "peer closed connection",
 )
 
+# Transient provider faults the gateway should retry (bounded). Includes the
+# OpenRouter mid-stream signature: MidStreamFallbackError wrapping
+# provider_unavailable / upstream_disconnect / HTTP 502.
+_RETRYABLE_MARKERS = (
+    "provider_unavailable",
+    "upstream_disconnect",
+    "disconnected mid-stream",
+    "json error injected into sse stream",
+    "midstreamfallbackerror",
+)
+
+# Client / model-capability errors. Retrying these cannot succeed and burns
+# quota (glm-5.3 parallel_tool_calls, auth, bad params).
+_NON_RETRYABLE_MARKERS = (
+    "does not support parameters",
+    "unsupported parameter",
+    "unsupported_parameter",
+    "parallel_tool_calls",
+    "invalid_request",
+    "invalid api key",
+    "incorrect api key",
+    "authentication",
+)
+
+_RETRYABLE_ERROR_CLASSES = frozenset(
+    {
+        ERROR_CLASS_NETWORK,
+        ERROR_CLASS_UPSTREAM_DISCONNECT,
+        ERROR_CLASS_UPSTREAM_OVERLOADED,
+        ERROR_CLASS_UPSTREAM_ERROR,
+        ERROR_CLASS_UPSTREAM_RATE_LIMITED,
+    }
+)
+
+_NON_RETRYABLE_ERROR_CLASSES = frozenset(
+    {
+        ERROR_CLASS_UPSTREAM_AUTH,
+        ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED,
+        ERROR_CLASS_CLIENT_CANCELLED,
+        ERROR_CLASS_STREAM_ABANDONED,
+    }
+)
+
+_RETRYABLE_STATUS_CODES = frozenset(
+    {408, 425, 429, 500, 502, 503, 504, 520, 522, 524, 529}
+)
+
+
+def is_retryable_upstream_failure(exc: Exception) -> bool:
+    """Whether the gateway should retry this upstream failure.
+
+    Retries transient 502 / provider_unavailable / upstream_disconnect /
+    MidStreamFallbackError / network / overload. Does not retry 4xx
+    validation, auth, quota, or unsupported-parameter errors
+    (``parallel_tool_calls``).
+
+    Args:
+        exc: Raw LiteLLM/httpx exception or a mapped ``ModelGatewayAPIError``.
+
+    Returns:
+        True when another bounded attempt could plausibly succeed.
+    """
+    text = _exception_text(exc)
+    if _contains(text, _NON_RETRYABLE_MARKERS):
+        return False
+
+    if bool(getattr(exc, "terminal", False)):
+        return False
+
+    error_class = getattr(exc, "error_class", None)
+    if error_class in _NON_RETRYABLE_ERROR_CLASSES:
+        return False
+
+    classified = classify_upstream_error(exc)
+    if classified is not None:
+        if classified.terminal:
+            return False
+        if classified.error_class in _NON_RETRYABLE_ERROR_CLASSES:
+            return False
+        if classified.error_class in _RETRYABLE_ERROR_CLASSES:
+            return True
+        if classified.status_code in _RETRYABLE_STATUS_CODES:
+            return True
+
+    if error_class in _RETRYABLE_ERROR_CLASSES:
+        return True
+
+    status = _status_code(exc)
+    if status in _RETRYABLE_STATUS_CODES:
+        return True
+    if status is not None and 400 <= status < 500:
+        return False
+
+    return _contains(text, _RETRYABLE_MARKERS)
+
 
 def classify_recorded_error(
     status_code: int, error_detail: Optional[str]
