@@ -151,18 +151,31 @@ def apply_preloop_client_headers(
     return kwargs
 
 
+_PRELOOP_CLIENT_IDENTITY_APPLIED = False
+
+
 def ensure_preloop_client_identity() -> None:
-    """Fill LiteLLM env defaults so its HTTP client is not ``litellm/...``.
+    """Fill LiteLLM env defaults once so new HTTP clients are not ``litellm/...``.
 
     ``LITELLM_USER_AGENT`` is the supported override for the default
     ``User-Agent: litellm/{version}`` header baked into LiteLLM's httpx
     client. ``OR_SITE_URL`` / ``OR_APP_NAME`` override the OpenRouter
     adapter's ``liteLLM`` attribution. Does not clobber an operator-set
     value.
+
+    Call this at process startup, not per request. LiteLLM caches httpx
+    clients, so an env change after the first client is created is a
+    no-op. ``apply_preloop_client_headers`` is the source of truth for
+    branding on every completion.
     """
-    os.environ.setdefault("LITELLM_USER_AGENT", preloop_user_agent())
+    global _PRELOOP_CLIENT_IDENTITY_APPLIED
+    if _PRELOOP_CLIENT_IDENTITY_APPLIED:
+        return
+    if "LITELLM_USER_AGENT" not in os.environ:
+        os.environ["LITELLM_USER_AGENT"] = preloop_user_agent()
     os.environ.setdefault("OR_SITE_URL", OPENROUTER_SITE_URL)
     os.environ.setdefault("OR_APP_NAME", OPENROUTER_APP_NAME)
+    _PRELOOP_CLIENT_IDENTITY_APPLIED = True
 
 
 @lru_cache(maxsize=1)

@@ -117,7 +117,6 @@ from preloop.services.model_pricing import (
 )
 from preloop.services.litellm_routing import (
     apply_preloop_client_headers,
-    ensure_preloop_client_identity,
     is_openrouter_model,
     to_litellm_model,
 )
@@ -336,10 +335,8 @@ def _anthropic_oauth_environment(auth_token: str) -> Iterator[None]:
 
 class LiteLLMModelGatewayBackend:
     def completion(self, **kwargs: Any) -> Any:
-        # Belt-and-suspenders: LiteLLM's httpx client defaults User-Agent to
-        # ``litellm/{version}`` unless LITELLM_USER_AGENT is set, and will
-        # also re-stamp liteLLM on OpenRouter if extra_headers are dropped.
-        ensure_preloop_client_identity()
+        # extra_headers is the source of truth for Preloop branding.
+        # LITELLM_USER_AGENT is set once at process startup.
         apply_preloop_client_headers(kwargs)
         anthropic_auth_token = kwargs.pop("_preloop_anthropic_auth_token", None)
         if anthropic_auth_token:
@@ -4640,9 +4637,10 @@ class OpenAIGatewayService:
                 kwargs[target_key] = payload[source_key]
         if payload.get("stop") is not None:
             kwargs["stop"] = payload["stop"]
+        # Intentional global default, not zai-only. Matches aux generation.
         # LiteLLM fallback metadata for unlisted models (e.g. zai/glm-5.3)
         # forwards client flags the provider rejects. Drop those instead of
-        # failing the whole request. Aux generation already does this.
+        # failing the whole request.
         kwargs["drop_params"] = True
         # Identify as Preloop on every upstream. User-Agent is global so
         # provider dashboards do not attribute traffic to LiteLLM.

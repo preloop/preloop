@@ -6,12 +6,16 @@ heuristic must not regress issue #172 (a vendor prefix inside a model id is
 not a routing instruction when the stored provider says otherwise).
 """
 
+import os
+from unittest.mock import patch
+
 from preloop.models.models.ai_model import AIModel
 from preloop.services.litellm_routing import (
     PRELOOP_APP_NAME,
     PRELOOP_SITE_URL,
     PROVIDER_PREFIX,
     apply_preloop_client_headers,
+    ensure_preloop_client_identity,
     known_litellm_providers,
     preloop_user_agent,
     to_litellm_model,
@@ -144,3 +148,39 @@ class TestPreloopClientIdentity:
         assert "User-Agent" in extra
         assert extra.get("X-Title") is None
         assert extra.get("HTTP-Referer") is None
+
+    def test_ensure_identity_is_idempotent_and_skips_eval_when_set(self, monkeypatch):
+        import preloop.services.litellm_routing as routing
+
+        monkeypatch.setenv("LITELLM_USER_AGENT", "already-set")
+        monkeypatch.setenv("OR_SITE_URL", "https://already.example")
+        monkeypatch.setenv("OR_APP_NAME", "already")
+        monkeypatch.setattr(routing, "_PRELOOP_CLIENT_IDENTITY_APPLIED", False)
+
+        with patch.object(routing, "preloop_user_agent") as mock_ua:
+            routing.ensure_preloop_client_identity()
+            routing.ensure_preloop_client_identity()
+            mock_ua.assert_not_called()
+
+        assert os.environ["LITELLM_USER_AGENT"] == "already-set"
+        assert os.environ["OR_SITE_URL"] == "https://already.example"
+        assert os.environ["OR_APP_NAME"] == "already"
+
+    def test_ensure_identity_sets_missing_env_once(self, monkeypatch):
+        import preloop.services.litellm_routing as routing
+
+        monkeypatch.delenv("LITELLM_USER_AGENT", raising=False)
+        monkeypatch.delenv("OR_SITE_URL", raising=False)
+        monkeypatch.delenv("OR_APP_NAME", raising=False)
+        monkeypatch.setattr(routing, "_PRELOOP_CLIENT_IDENTITY_APPLIED", False)
+
+        ensure_preloop_client_identity()
+        first_ua = os.environ["LITELLM_USER_AGENT"]
+        assert "litellm" not in first_ua.lower()
+        assert first_ua.lower().startswith("preloop/")
+        assert os.environ["OR_SITE_URL"] == PRELOOP_SITE_URL
+        assert os.environ["OR_APP_NAME"] == PRELOOP_APP_NAME
+
+        monkeypatch.setenv("LITELLM_USER_AGENT", "should-not-replace")
+        ensure_preloop_client_identity()
+        assert os.environ["LITELLM_USER_AGENT"] == "should-not-replace"

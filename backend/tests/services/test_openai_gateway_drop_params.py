@@ -56,6 +56,17 @@ def test_build_completion_kwargs_sets_drop_params_for_zai():
     assert kwargs.get("api_key") == "sk-test"
 
 
+def test_build_completion_kwargs_sets_drop_params_globally():
+    """drop_params is the gateway default for every provider, not only zai."""
+    model = SimpleNamespace(
+        provider_name="openai",
+        model_identifier="gpt-5",
+        api_endpoint=None,
+    )
+    kwargs = _build_kwargs(model, payload={"parallel_tool_calls": True})
+    assert kwargs["drop_params"] is True
+
+
 def test_build_completion_kwargs_user_agent_is_preloop_for_zai():
     """Non-OpenRouter upstreams must not identify as LiteLLM."""
     model = SimpleNamespace(

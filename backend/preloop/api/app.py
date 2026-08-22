@@ -244,6 +244,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Initialize Sentry if DSN is configured
     init_sentry()
 
+    # Stamp LiteLLM env defaults before any httpx client is cached so
+    # provider dashboards do not attribute traffic to LiteLLM.
+    from preloop.services.litellm_routing import ensure_preloop_client_identity
+
+    ensure_preloop_client_identity()
+
     # Register the vendored model-price catalog so gateway cost estimates are
     # deterministic per release (independent of the installed litellm version).
     # load_catalog() already handles missing/corrupt files; this catch is only

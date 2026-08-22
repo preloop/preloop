@@ -125,6 +125,43 @@ class TestBuildAuxKwargsPrecedence:
 
         assert result["drop_params"] is True
 
+    def test_user_agent_is_preloop_for_non_openrouter(self):
+        """Aux completions must not identify as LiteLLM on any upstream."""
+        model = _make_model()
+        result = build_aux_kwargs(model, {}, call_site_kwargs={"model": "test"})
+        ua = result["extra_headers"]["User-Agent"]
+        assert "litellm" not in ua.lower()
+        assert ua.lower().startswith("preloop/")
+        assert result["extra_headers"].get("X-Title") is None
+
+    def test_user_agent_is_preloop_for_openrouter(self):
+        model = _make_model(
+            provider_name="openrouter",
+            model_identifier="anthropic/claude-opus-4.6",
+            api_endpoint="https://openrouter.ai/api/v1",
+        )
+        result = build_aux_kwargs(model, {}, call_site_kwargs={"model": "test"})
+        extra = result["extra_headers"]
+        ua = extra["User-Agent"]
+        assert "litellm" not in ua.lower()
+        assert ua.lower().startswith("preloop/")
+        assert extra["X-Title"] == "Preloop"
+        assert extra["HTTP-Referer"] == "https://preloop.ai"
+
+    def test_user_agent_preserves_existing_extra_headers(self):
+        model = _make_model()
+        result = build_aux_kwargs(
+            model,
+            {},
+            call_site_kwargs={
+                "model": "test",
+                "extra_headers": {"X-Custom": "keep-me"},
+            },
+        )
+        extra = result["extra_headers"]
+        assert extra["X-Custom"] == "keep-me"
+        assert "litellm" not in extra["User-Agent"].lower()
+
     def test_none_model_parameters_handled(self):
         """model_parameters=None does not crash."""
         model = _make_model(model_parameters=None)
