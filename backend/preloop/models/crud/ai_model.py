@@ -1,6 +1,8 @@
 """CRUD operations for AIModel model."""
 
+import copy
 import json
+import logging
 import uuid
 from typing import Any, Dict, Optional, Sequence
 
@@ -11,6 +13,30 @@ from preloop.models.models.ai_model import AIModel
 from preloop.models.crud.secret_reference import crud_secret_reference
 from preloop.services.secret_service import get_secret_service
 from .base import CRUDBase
+
+logger = logging.getLogger(__name__)
+
+
+def _effective_gateway_alias_from_fields(
+    provider_name: Optional[str],
+    model_identifier: Optional[str],
+    meta_data: Optional[Dict],
+) -> Optional[str]:
+    """Compute the alias a would-be model row answers to on the gateway.
+
+    Mirrors ``model_runtime_resolver.effective_gateway_alias`` but works on
+    raw field values so create/update payloads can be validated before a row
+    exists. ``None`` when the row is not gateway-enabled.
+    """
+    gateway = meta_data.get("gateway") if isinstance(meta_data, dict) else None
+    if not isinstance(gateway, dict) or not gateway.get("enabled"):
+        return None
+    alias = gateway.get("model_alias")
+    if isinstance(alias, str) and alias.strip():
+        return alias.strip()
+    provider = (provider_name or "openai").strip().lower()
+    identifier = (model_identifier or "").strip()
+    return f"{provider}/{identifier}" if identifier else provider
 
 
 class CRUDAIModel(CRUDBase[AIModel]):
@@ -214,6 +240,91 @@ class CRUDAIModel(CRUDBase[AIModel]):
                 return ai_model
         return candidates[0]
 
+    def _enforce_unique_gateway_alias(
+        self,
+        db: Session,
+        *,
+        obj_data: Dict,
+        provider_name: Optional[str],
+        model_identifier: Optional[str],
+        account_id,
+        exclude_id: Optional[uuid.UUID] = None,
+    ) -> None:
+        """Keep gateway aliases unique per account at write time.
+
+        Two bindings answering to the same alias make routing and usage
+        attribution ambiguous (an alias resolves to exactly one
+        ``ai_model_id``). Explicit user writes that would collide are
+        rejected; agent-onboarding imports (rows carrying
+        ``meta_data.managed_by``) are auto-suffixed instead — an import must
+        never fail onboarding, but it must never silently take over a user's
+        alias either.
+
+        Args:
+            db: Active session.
+            obj_data: Normalized column values about to be written. Mutated
+                in place (deep-copied ``meta_data``) when auto-suffixing.
+            provider_name: Effective provider for default-alias computation.
+            model_identifier: Effective identifier for default-alias
+                computation.
+            account_id: Owning account; ``None`` (system rows) is exempt.
+            exclude_id: Row being updated, excluded from the taken-alias set.
+
+        Raises:
+            ValueError: When a non-import write would create a collision.
+        """
+        if account_id is None:
+            return
+        meta_data = obj_data.get("meta_data")
+        alias = _effective_gateway_alias_from_fields(
+            provider_name, model_identifier, meta_data
+        )
+        if not alias:
+            return
+
+        from preloop.services.model_runtime_resolver import effective_gateway_alias
+
+        taken: set[str] = set()
+        for existing in (
+            db.query(self.model).filter(self.model.account_id == account_id).all()
+        ):
+            if exclude_id is not None and existing.id == exclude_id:
+                continue
+            existing_alias = effective_gateway_alias(existing)
+            if existing_alias:
+                taken.add(existing_alias)
+        if alias not in taken:
+            return
+
+        managed_by = (
+            str((meta_data or {}).get("managed_by") or "").strip()
+            if isinstance(meta_data, dict)
+            else ""
+        )
+        if not managed_by:
+            raise ValueError(
+                f"Gateway alias '{alias}' is already used by another AI model "
+                "in this account. Choose a different alias (or remove the "
+                "other binding) so gateway routing and usage attribution stay "
+                "unambiguous."
+            )
+
+        suffix = 2
+        while f"{alias}-{suffix}" in taken:
+            suffix += 1
+        suffixed = f"{alias}-{suffix}"
+        new_meta = copy.deepcopy(meta_data)
+        new_meta.setdefault("gateway", {})["model_alias"] = suffixed
+        obj_data["meta_data"] = new_meta
+        logger.warning(
+            "gateway_alias_collision_autosuffix account=%s managed_by=%r "
+            "requested_alias=%r assigned_alias=%r",
+            account_id,
+            managed_by,
+            alias,
+            suffixed,
+        )
+
     def create_with_account(
         self,
         db: Session,
@@ -234,6 +345,13 @@ class CRUDAIModel(CRUDBase[AIModel]):
         """
         obj_data = self._normalize_model_kind_fields(dict(obj_in))
         self._validate_qwen_api_endpoint(obj_data)
+        self._enforce_unique_gateway_alias(
+            db,
+            obj_data=obj_data,
+            provider_name=obj_data.get("provider_name"),
+            model_identifier=obj_data.get("model_identifier"),
+            account_id=account_id,
+        )
         if obj_in.get("is_default"):
             for existing_model in (
                 db.query(self.model)
@@ -357,6 +475,34 @@ class CRUDAIModel(CRUDBase[AIModel]):
         """Update an AIModel. If setting a model as default, ensure others are not."""
         obj_data = self._normalize_model_kind_fields(dict(obj_in))
         self._validate_qwen_api_endpoint(obj_data, existing=db_obj)
+
+        # Enforce alias uniqueness only when this update changes the effective
+        # gateway alias; pre-existing rows (including legacy collisions being
+        # cleaned up) must remain updatable for unrelated fields.
+        from preloop.services.model_runtime_resolver import effective_gateway_alias
+
+        merged_provider = obj_data.get("provider_name", db_obj.provider_name)
+        merged_identifier = obj_data.get("model_identifier", db_obj.model_identifier)
+        merged_meta = (
+            obj_data["meta_data"] if "meta_data" in obj_data else db_obj.meta_data
+        )
+        new_alias = _effective_gateway_alias_from_fields(
+            merged_provider, merged_identifier, merged_meta
+        )
+        if new_alias and new_alias != effective_gateway_alias(db_obj):
+            check_data = {"meta_data": merged_meta}
+            self._enforce_unique_gateway_alias(
+                db,
+                obj_data=check_data,
+                provider_name=merged_provider,
+                model_identifier=merged_identifier,
+                account_id=db_obj.account_id,
+                exclude_id=db_obj.id,
+            )
+            if check_data["meta_data"] is not merged_meta:
+                # Import row was auto-suffixed; persist the rewritten alias.
+                obj_data["meta_data"] = check_data["meta_data"]
+
         target_model_kind = (obj_data.get("meta_data") or {}).get(
             "service_kind"
         ) or db_obj.model_kind

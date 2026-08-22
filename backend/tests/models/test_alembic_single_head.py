@@ -86,4 +86,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert toggles.down_revision == "20260818_usage_ingest_conv"
     evidence = script.get_revision("20260821_flow_exec_evidence")
     assert evidence.down_revision == "20260818_notify_toggles"
-    assert script.get_heads() == ["20260821_flow_exec_evidence"]
+    alias_audit = script.get_revision("20260822_alias_collision_audit")
+    assert alias_audit.down_revision == "20260821_flow_exec_evidence"
+    assert script.get_heads() == ["20260822_alias_collision_audit"]
