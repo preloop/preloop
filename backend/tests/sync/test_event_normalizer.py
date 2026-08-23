@@ -10,6 +10,7 @@ from preloop.sync.event_normalizer import (
     SUBJECT_KEY,
     attach_trigger_subject,
     extract_trigger_subject,
+    gitlab_label_delta,
     humanize_event_type,
     normalize_event_type,
     extract_filter_fields,
@@ -105,6 +106,54 @@ class TestEventNormalization:
         normalized = normalize_event_type("unknown", "some_event", {})
         assert normalized == "some_event"
 
+    def test_gitlab_label_add_normalizes_to_issue_labeled(self):
+        """GitLab has no labeled event; a label add on update is issue_labeled."""
+        payload = {
+            "object_attributes": {"action": "update", "iid": 87},
+            "changes": {
+                "labels": {
+                    "previous": [{"title": "glitchtip"}],
+                    "current": [
+                        {"title": "glitchtip"},
+                        {"title": "agent-ready"},
+                    ],
+                }
+            },
+        }
+        assert normalize_event_type("gitlab", "Issue Hook", payload) == "issue_labeled"
+
+    def test_gitlab_label_remove_normalizes_to_issue_unlabeled(self):
+        """A GitLab update that only removes labels is issue_unlabeled."""
+        payload = {
+            "object_attributes": {"action": "update"},
+            "changes": {
+                "labels": {
+                    "previous": [{"title": "agent-ready"}],
+                    "current": [],
+                }
+            },
+        }
+        assert (
+            normalize_event_type("gitlab", "Issue Hook", payload) == "issue_unlabeled"
+        )
+
+    def test_gitlab_title_only_update_stays_issue_updated(self):
+        """Title/body edits without a label delta stay issue_updated."""
+        payload = {
+            "object_attributes": {"action": "update", "title": "new title"},
+            "changes": {"title": {"previous": "old", "current": "new title"}},
+        }
+        assert normalize_event_type("gitlab", "Issue Hook", payload) == "issue_updated"
+
+    def test_github_labeled_still_issue_labeled(self):
+        """GitHub issues + action labeled stays issue_labeled."""
+        payload = {
+            "action": "labeled",
+            "label": {"name": "agent-ready"},
+            "issue": {"number": 269, "labels": [{"name": "agent-ready"}]},
+        }
+        assert normalize_event_type("github", "issues", payload) == "issue_labeled"
+
 
 class TestFilterFieldExtraction:
     """Test extraction of filter fields from webhook payloads."""
@@ -118,6 +167,48 @@ class TestFilterFieldExtraction:
         assert set(fields["labels"]) == {"API", "Feature"}
         assert fields["state"] == "opened"
         assert fields["action"] == "open"
+
+    def test_gitlab_label_add_sets_added_labels(self):
+        """GitLab label delta is exposed as added_labels for trigger_config."""
+        payload = {
+            "object_attributes": {"action": "update", "state": "opened"},
+            "user": {"username": "root"},
+            "labels": [
+                {"title": "glitchtip"},
+                {"title": "agent-ready"},
+            ],
+            "changes": {
+                "labels": {
+                    "previous": [{"title": "glitchtip"}],
+                    "current": [
+                        {"title": "glitchtip"},
+                        {"title": "agent-ready"},
+                    ],
+                }
+            },
+        }
+        fields = extract_filter_fields("gitlab", "Issue Hook", payload)
+        assert fields["added_labels"] == ["agent-ready"]
+        assert "removed_labels" not in fields
+        added, removed = gitlab_label_delta(payload)
+        assert added == ["agent-ready"]
+        assert removed == []
+
+    def test_github_labeled_sets_added_labels(self):
+        """GitHub issues.labeled exposes the new label as added_labels."""
+        payload = {
+            "action": "labeled",
+            "label": {"name": "agent-ready"},
+            "issue": {
+                "state": "open",
+                "user": {"login": "octocat"},
+                "labels": [{"name": "glitchtip"}, {"name": "agent-ready"}],
+            },
+            "sender": {"login": "preloop[bot]"},
+        }
+        fields = extract_filter_fields("github", "issues", payload)
+        assert fields["added_labels"] == ["agent-ready"]
+        assert "agent-ready" in fields["labels"]
 
     def test_gitlab_issue_closed_filters(self):
         """Test GitLab issue closed event extracts correct filter fields."""

@@ -8,9 +8,39 @@ Also extracts filter-relevant fields from webhook payloads to enable
 conditional flow triggering based on author, labels, assignee, etc.
 """
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 from preloop.models.models.flow_execution import TRIGGER_SUBJECT_KEY
+
+
+def gitlab_label_delta(payload: Optional[dict]) -> Tuple[List[str], List[str]]:
+    """Return (added, removed) label titles from a GitLab issue/MR webhook.
+
+    GitLab does not emit a dedicated labeled event. Label edits arrive as
+    ``Issue Hook`` / ``Merge Request Hook`` with ``action=update`` and a
+    ``changes.labels`` previous/current pair.
+    """
+    if not payload:
+        return [], []
+    changes = payload.get("changes") or {}
+    labels_change = changes.get("labels") or {}
+    if not isinstance(labels_change, dict):
+        return [], []
+
+    def _titles(entries: Any) -> set[str]:
+        titles: set[str] = set()
+        for item in entries or []:
+            if isinstance(item, dict):
+                title = item.get("title")
+                if title:
+                    titles.add(str(title))
+            elif isinstance(item, str) and item.strip():
+                titles.add(item)
+        return titles
+
+    previous = _titles(labels_change.get("previous"))
+    current = _titles(labels_change.get("current"))
+    return sorted(current - previous), sorted(previous - current)
 
 
 # Mapping of GitLab webhook events to normalized event types
@@ -140,7 +170,16 @@ def normalize_event_type(
         if normalized == "issue_opened" and payload:
             action = payload.get("object_attributes", {}).get("action")
             if action == "update":
-                normalized = "issue_updated"
+                added, removed = gitlab_label_delta(payload)
+                if added:
+                    # A label was added. This is the GitLab equivalent of
+                    # GitHub issues.labeled so implementation flows can
+                    # subscribe to issue_labeled on both trackers.
+                    normalized = "issue_labeled"
+                elif removed:
+                    normalized = "issue_unlabeled"
+                else:
+                    normalized = "issue_updated"
             elif action == "close":
                 normalized = "issue_closed"
             elif action == "reopen":
@@ -498,6 +537,12 @@ def extract_filter_fields(
         if labels:
             filter_fields["labels"] = [label.get("title") for label in labels]
 
+        added_labels, removed_labels = gitlab_label_delta(payload)
+        if added_labels:
+            filter_fields["added_labels"] = added_labels
+        if removed_labels:
+            filter_fields["removed_labels"] = removed_labels
+
         # Milestone
         milestone = obj_attrs.get("milestone")
         if milestone:
@@ -537,6 +582,18 @@ def extract_filter_fields(
         # GitHub structure varies by event type
         action = payload.get("action")
         filter_fields["action"] = action
+
+        label_obj = payload.get("label")
+        label_name = None
+        if isinstance(label_obj, dict):
+            label_name = label_obj.get("name")
+        elif isinstance(label_obj, str):
+            label_name = label_obj
+        if label_name:
+            if action == "labeled":
+                filter_fields["added_labels"] = [label_name]
+            elif action == "unlabeled":
+                filter_fields["removed_labels"] = [label_name]
 
         # Extract from issue object
         if "issue" in payload:
