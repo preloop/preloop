@@ -6,7 +6,20 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/preloop/preloop/cli/internal/testenv"
 )
+
+// pinClaudeNpmGlobalRoots overrides the npm global root probe for the duration
+// of a test. Without this, a machine that really has the plugin installed
+// under a fixed prefix such as /opt/homebrew/lib/node_modules would satisfy
+// the package lookup even though PATH and HOME point at temp dirs.
+func pinClaudeNpmGlobalRoots(t *testing.T, roots []string) {
+	t.Helper()
+	previous := claudeNpmGlobalRootsFunc
+	claudeNpmGlobalRootsFunc = func() []string { return roots }
+	t.Cleanup(func() { claudeNpmGlobalRootsFunc = previous })
+}
 
 func TestSupportsAgentControlChannelIncludesClaudeCode(t *testing.T) {
 	if !supportsAgentControlChannel(AgentConfig{Name: "Claude Code"}) {
@@ -230,12 +243,10 @@ func TestFindClaudeSidecarPackageEntryMissingEverywhere(t *testing.T) {
 
 func TestResolveClaudeSidecarInvocationPrefersBinOnPath(t *testing.T) {
 	binDir := t.TempDir()
-	plugin := filepath.Join(binDir, "preloop-claude-plugin")
-	if err := os.WriteFile(plugin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	plugin := writeFakeExecutable(t, binDir, "preloop-claude-plugin")
 	t.Setenv("PATH", binDir)
-	t.Setenv("HOME", t.TempDir())
+	testenv.SetTempHome(t)
+	pinClaudeNpmGlobalRoots(t, []string{t.TempDir()})
 	invocation, err := resolveClaudeSidecarInvocation()
 	if err != nil {
 		t.Fatal(err)
@@ -247,7 +258,8 @@ func TestResolveClaudeSidecarInvocationPrefersBinOnPath(t *testing.T) {
 
 func TestResolveClaudeSidecarInvocationErrorIsActionable(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	t.Setenv("HOME", t.TempDir())
+	testenv.SetTempHome(t)
+	pinClaudeNpmGlobalRoots(t, []string{t.TempDir()})
 	_, err := resolveClaudeSidecarInvocation()
 	if err == nil {
 		t.Fatal("expected an error with no plugin anywhere")
@@ -265,7 +277,8 @@ func TestRunClaudeLauncherFailsFastWithoutSidecar(t *testing.T) {
 	// socket nothing had created and failed 8 seconds later with a confusing
 	// message. The launcher must stop with one actionable error instead.
 	t.Setenv("PATH", t.TempDir())
-	t.Setenv("HOME", t.TempDir())
+	testenv.SetTempHome(t)
+	pinClaudeNpmGlobalRoots(t, []string{t.TempDir()})
 	var out, errOut strings.Builder
 	cmd := claudeCmd
 	cmd.SetOut(&out)

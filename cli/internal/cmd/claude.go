@@ -376,7 +376,7 @@ func resolveClaudeSidecarInvocation() (claudeSidecarInvocation, error) {
 	if bin, err := resolveRuntimeExecutable("preloop-claude-plugin"); err == nil {
 		return claudeSidecarInvocation{bin: bin}, nil
 	}
-	entry, found, err := findClaudeSidecarPackageEntry(claudeNpmGlobalRoots())
+	entry, found, err := findClaudeSidecarPackageEntry(claudeNpmGlobalRootsFunc())
 	if err != nil {
 		return claudeSidecarInvocation{}, err
 	}
@@ -424,6 +424,12 @@ func findClaudeSidecarPackageEntry(roots []string) (string, bool, error) {
 	}
 	return "", false, nil
 }
+
+// claudeNpmGlobalRootsFunc is a seam for tests: claudeNpmGlobalRoots probes
+// fixed absolute prefixes (for example /opt/homebrew/lib/node_modules), so a
+// machine with the plugin genuinely installed there would leak into tests
+// that pin PATH and HOME to temp dirs.
+var claudeNpmGlobalRootsFunc = claudeNpmGlobalRoots
 
 // claudeNpmGlobalRoots returns candidate npm global node_modules directories:
 // whatever npm itself reports, plus common prefixes for machines where npm is
