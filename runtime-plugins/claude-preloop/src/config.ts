@@ -43,15 +43,53 @@ export function defaultTranscriptDir(): string {
   return path.join(os.homedir(), ".claude", "projects");
 }
 
-export function loadConfig(configPath?: string): ControlConfig {
+/**
+ * Where the usable settings were found. `preloop agents onboard` writes a
+ * nested `{"control": {...}}` block; the README long documented the flat
+ * shape. Both are accepted on read, and the source is reported so a config
+ * that yields NOTHING usable is loudly distinguishable from a good one
+ * (a silently-empty config idles the sidecar forever).
+ */
+export type ConfigSource = "control-block" | "flat" | "empty";
+
+export type LoadedConfig = {
+  config: ControlConfig;
+  source: ConfigSource;
+  path: string;
+};
+
+/** Keys that mark a config object as carrying real control settings. */
+const USABLE_KEYS: (keyof ControlConfig)[] = [
+  "enabled",
+  "protocol",
+  "runtime",
+  "control_ws_url",
+  "bearer_token",
+  "runtime_principal_id",
+];
+
+export function loadConfigDetailed(configPath?: string): LoadedConfig {
   const resolvedPath = configPath ?? defaultConfigPath();
   const raw = JSON.parse(fs.readFileSync(resolvedPath, "utf8")) as Record<
     string,
     unknown
   >;
   // Accept either a flat file or a nested `control` block.
-  const config = (raw.control ?? raw) as ControlConfig;
-  return config;
+  const nested = raw.control;
+  if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+    return {
+      config: nested as ControlConfig,
+      source: "control-block",
+      path: resolvedPath,
+    };
+  }
+  const flat = raw as ControlConfig;
+  const usable = USABLE_KEYS.some((key) => flat[key] !== undefined);
+  return { config: flat, source: usable ? "flat" : "empty", path: resolvedPath };
+}
+
+export function loadConfig(configPath?: string): ControlConfig {
+  return loadConfigDetailed(configPath).config;
 }
 
 export function verifyConfig(config: ControlConfig): void {
