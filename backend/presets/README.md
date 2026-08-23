@@ -35,6 +35,9 @@ allowed_mcp_servers: []
 allowed_mcp_tools:
   - name: "search_issues"
   - name: "get_issue"
+# Codex/Gemini/OpenCode always attach Preloop MCP. Tool enablement is
+# the allowlist. Name-only entries are the legacy shape and mean
+# Preloop builtins on preloop-mcp.
 git_clone_config: null
 is_preset: true
 ```

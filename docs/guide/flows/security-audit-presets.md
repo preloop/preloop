@@ -16,10 +16,9 @@ human-readable evidence pack under `/workspace/evidence/`.
 | Release Security Audit | Both of the above in one execution, plus drift vs a previous run's result.json, plus [multi-repo evidence storage](#evidence-storage-architecture-multi-repo-products) | `preloop.cra.releaseaudit/v1` |
 | [Component Due Diligence Record](#component-due-diligence-record) | Agent legwork on one integrated component; a human carries the risk decision via approval; the record lands in the compliance repo | `preloop.cra.duediligence/v1` |
 
-The audit presets follow the Observe/Eval pattern: read-only toolset (no
-MCP servers or tools; the due-diligence preset's single tool is
-`request_approval`), deterministic checks separated from agent judgment
-(`checks[]` vs `assessments[]`), and every artifact carries the line:
+The audit presets follow the Observe/Eval pattern: no write tools;
+deterministic checks separated from agent judgment (`checks[]` vs
+`assessments[]`); and every artifact carries the line:
 
 > Machine-generated evidence for conformity assessment support. Not a
 > conformity assessment, certification, or legal advice.
@@ -99,6 +98,14 @@ auditable record.
 - Components without a version or a purl/CPE identifier cannot be reliably
   matched; they are counted as `unmatchable` and results never claim
   vulnerability absence for them.
+- The Release Security Audit additionally reports `db_resolvable`
+  coverage (components in ecosystems the advisory databases actually
+  index; `pkg:generic` and `pkg:github` are not db-resolvable) and runs
+  a mandatory negative control: a known-vulnerable component queried in
+  the same style as the inventory. If the control comes back empty the
+  method is blind for that class (`method_blind: true`) and those
+  components are reported as "not screenable by this method", never as
+  "zero vulnerabilities".
 - If the sandbox has no egress to these sources, the run reports an error
   rather than fabricating findings or their absence.
 
@@ -210,6 +217,50 @@ Envelope plus `sbom_audit` (the `sbomaudit` body above, minus envelope),
 `drift` is `null` when no previous `result.json` was delivered. Overall
 verdict: `fail` if the SBOM audit failed or the severity gate failed;
 `pass_with_findings` if gated-clean but findings or skipped checks exist.
+If `sbom_audit.verdict` is `fail`, `result.verdict` must be `fail`.
+
+When a repository is attached, the run also fills `gap_register`
+(`null` when no checkout / `repository_url`). Items are
+`met | gap | partial | declared`. `not_checkable` is required.
+`secrets_findings_count` must equal the SHA+path finding row count — a
+gitleaks count of 0 is not "met". A previous run's SHA+path set is a
+freeze floor: dropping a row without `resolved` plus a reason fails.
+Gap items appear in `checks[]` as `passed: false` and may move a clean
+run to `pass_with_findings`; they never flip the severity gate or
+`sbom_audit.verdict`.
+
+The gap-register phase carries a full, genericized procedure in the
+prompt: pickaxe keyword-family sweeps over git history (`git log -S`
+on credential-shaped config names plus `--grep` sweeps), a
+forbidden-to-dismiss rule (every pickaxe hit is classified as finding
+or not-a-finding with a reason; dismissing hits as "keyword changes
+only" is the documented failure mode), one SHA+path row per finding,
+junk-at-HEAD checks via `git ls-files`, key-filename citation rules,
+and default-credential citations by setting name at `file:line`.
+Secret values never appear in any artifact: findings are reported as
+commit SHA plus path only, and `git log -p` / `git show` of secret
+blobs are forbidden.
+
+### Scanner execution happens in the sandbox
+
+The Release Security Audit preset instructs the agent to install and
+run **gitleaks** (recommended pin 8.24.3, git mode, full history,
+`--redact`) and **zizmor** (recommended pin 1.16.0, GitHub Actions
+workflows) inside the execution sandbox, the same way the SBOM phase
+installs `spdx-tools` and `ntia-conformance-checker`. Untrusted-repo
+work runs in the governed sandbox, never on the Preloop API server;
+the platform keeps only deterministic result validation (the
+gap-register freeze comparator in `preloop.security.gap_register`).
+Resolved scanner versions are recorded in `tool_versions`, or
+`unavailable: reason` when an install fails. A gitleaks finding count
+of 0 still does not make secrets hygiene met; that rule lives in
+gap-register / `result.json` validation. If the checkout has no
+`.github/workflows`, zizmor is recorded as not applicable.
+
+Components with no purl/CPE can be given a generic VCS PURL
+(`pkg:generic/<name>@<version>?vcs_url=git+…@<commit>`) when the
+repository URL and commit are known, then queried against OSV. This is
+a hook, not a full SBOM rewrite.
 
 ## Evidence pack layout
 
@@ -220,6 +271,7 @@ verdict: `fail` if the SBOM audit failed or the severity gate failed;
   sbom-findings.json   # full SBOM verification findings (release audit)
   vuln-report.md       # human-readable vuln report (exploit check)
   drift-report.md      # delta vs previous run (release audit, when baseline given)
+  gap-register.md      # file-presence / hygiene register (release audit, when a repo is attached)
   dossier.md           # due-diligence dossier (component due diligence)
   facts.json           # machine-readable due-diligence facts (component due diligence)
 ```

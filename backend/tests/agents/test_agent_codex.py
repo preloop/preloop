@@ -199,6 +199,20 @@ class TestCodexBuildScript:
         assert "_post_exec_sleep()" in script
         assert "trap _post_exec_sleep EXIT" in script
 
+    def test_script_always_attaches_preloop_mcp(self):
+        """Empty allowlist still attaches Preloop MCP. Overhead is tools."""
+        agent = CodexAgent({})
+        bare = agent._build_codex_script(
+            {
+                "prompt": "test",
+                "execution_id": "exec-1",
+                "flow_name": "test-flow",
+            }
+        )
+        assert "[mcp_servers.preloop]" in bare
+        assert "preloop.security.mcp_server" not in bare
+        assert "repo-audit" not in bare
+
     def test_script_contains_codex_exec_command(self):
         """Script runs codex exec with correct flags."""
         agent = CodexAgent({})
@@ -242,12 +256,15 @@ class TestCodexAuthConfig:
         assert "OPENAI_API_KEY" in auth_block
         assert 'model = "gpt-5.4"' in auth_block
         assert "[mcp_servers.preloop]" in auth_block
+        assert "repo-audit" not in auth_block
 
     def test_custom_provider_config(self):
         """Custom provider generates provider-specific config.toml section."""
         agent = CodexAgent({})
         auth_block = agent._build_codex_auth_config(
-            "claude-sonnet-4-20250514", "anthropic", "https://api.anthropic.com/v1"
+            "claude-sonnet-4-20250514",
+            "anthropic",
+            "https://api.anthropic.com/v1",
         )
         assert "ANTHROPIC_API_KEY" in auth_block
         assert "anthropic" in auth_block

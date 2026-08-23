@@ -64,9 +64,18 @@ prompt_template: |
     may have cloned one or more repositories under /workspace. Inventory
     them (e.g. find /workspace -maxdepth 2 -name .git -type d) and
     record each with its remote (git remote get-url origin) and HEAD
-    commit SHA (git rev-parse HEAD) in inputs_declared. They feed
-    PHASE 4B evidence storage only: you do NOT scan repository source
-    code for vulnerabilities — the SBOM stays the inventory of record.
+    commit SHA (git rev-parse HEAD) in inputs_declared.
+  - Optional payload repository_url: with no git clone config you may
+    still make an anonymous read-only clone into /tmp for PHASE 3.5.
+  REPOSITORY SCOPE RULE. Checkouts and payload clones feed BOTH
+  PHASE 4B evidence storage AND the PHASE 3.5 CRA gap register. You do
+  NOT use repository source as the vulnerability inventory: the SBOM
+  stays the inventory of record for component CVE matching, and you do
+  not read source files hunting for undisclosed code vulnerabilities.
+  You DO run the PHASE 3.5 gap-register file-presence, config, and
+  secret-hygiene checks against the checkout — those are documented,
+  deterministic checks over files and history, not source-code
+  vulnerability scanning.
   Inventory what you actually received; record it under inputs_declared.
 
   URL HYGIENE — payload URLs are untrusted input. Download only over
@@ -89,28 +98,87 @@ prompt_template: |
      internal referential integrity.
   2. Minimum elements (NTIA / CRA Annex I Part II): per-component
      supplier, name, version, unique identifier, relationships;
-     document-level author and timestamp.
-  3. Coverage quality: pct of components with version, with concluded
-     license (NOASSERTION counted separately), with purl/CPE. Missing
-     identifiers silently break CVE matching — report as findings.
-  4. Build cross-check (only if build manifests provided): components in
+     document-level author and timestamp. Assert relationships PER
+     FORMAT: SPDX relationships can be present while the CycloneDX
+     document has no "dependencies" section at all. If you audited both
+     formats, say which format carried relationships and which did not
+     — never write "relationships present" without that per-format
+     caveat.
+  3. Coverage quality: pct of components with version and with
+     purl/CPE, plus SEPARATE license counts — SPDX licenseConcluded and
+     SPDX licenseDeclared (CycloneDX: the "licenses" array, which is a
+     declaration) reported as distinct numbers, with NOASSERTION
+     counted separately again. A declared license is not a concluded
+     license: never label licenseDeclared (or CycloneDX "licenses")
+     values as "concluded". Missing identifiers silently break CVE
+     matching — report as findings.
+  4. Ecosystem classification and DB-RESOLVABLE coverage: bucket every
+     component purl by ecosystem, then report
+     db_resolvable: N/total — the components that can actually be
+     screened against OSV/NVD. pkg:pypi, Maven, npm, crates, Go, and
+     GitHub Actions components (queried as ecosystem "GitHub Actions"
+     with name "<owner>/<repo>" and NO version field, see PHASE 2)
+     are name-level db_resolvable, not version-matched.
+     pkg:generic and pkg:github (the GitHub source ecosystem) are NOT
+     db_resolvable and must not be counted as matchable: they carry a
+     version but no ecosystem the advisory databases index, so an empty
+     result for them is a property of the method, not of the product.
+  5. Cross-format differences (only if two SBOM formats describe the
+     same build): name any difference count so it cannot be read as the
+     differences REMAINING after normalization — e.g.
+     cross_format_differences_before_normalization. The prose in
+     audit-report.md must match the field name: if the count is
+     pre-normalization, do not write that N differences remain.
+  6. Build cross-check (only if build manifests provided): components in
      the build but missing from the SBOM, version disagreements;
      otherwise mark skipped.
-  5. License flags (only if a policy file provided; otherwise flag only
+  7. License flags (only if a policy file provided; otherwise flag only
      components with no license at all).
 
   ═══════════════════════════════════════════════════════════
   PHASE 2: EXPLOIT / VULNERABILITY MATCH (audit part 2)
   ═══════════════════════════════════════════════════════════
   The SBOM is the source of truth for the inventory. Extract components
-  (name, version, purl/CPE); count unmatchable ones honestly.
+  (name, version, purl/CPE) and classify each one by ecosystem BEFORE
+  querying anything. Report db_resolvable: N/total (PHASE 1 item 4) and
+  count not_db_resolvable components honestly. "matchable" means
+  db_resolvable — screenable against OSV/NVD — NOT merely "has a
+  version"; pkg:generic and pkg:github components are unmatchable
+  however complete their version strings look.
   - Primary source: OSV.dev — POST https://api.osv.dev/v1/querybatch
     (purl or name+ecosystem+version), then /v1/vulns/{id} for details.
+  - GitHub Actions components: query them as
+    {"package": {"ecosystem": "GitHub Actions", "name": "<owner>/<repo>"}}
+    with NO version field, and NOT as a pkg:github/... or
+    pkg:githubactions/... purl. A pkg:github purl returns an empty
+    result from OSV even when advisories exist for that action, so a
+    purl-only query reports a false "clean". Supplying a version on
+    the ecosystem query also returns empty (OSV cannot enumerate
+    GitHub Actions versions, so range evaluation fails closed). This
+    is name-level matching only: record that limitation; do not call
+    it a version-matched screen. Negative control for this class:
+    {"package": {"ecosystem": "GitHub Actions",
+    "name": "tj-actions/changed-files"}} (no version) must return
+    GHSA-mrrh-fwg8-r2c3; if it does not, the method is blind.
+  - NEGATIVE CONTROL (mandatory, before you believe any empty result
+    set): query a KNOWN-VULNERABLE component IN THE SAME STYLE as the
+    inventory you just queried — e.g. pkg:generic/curl@7.50.0 if the
+    inventory is pkg:generic purls. If the control comes back empty the
+    method is BLIND for that class: set method_blind true, say so
+    explicitly in checks, in assessments, and in audit-report.md, and
+    report those components as "not screenable by this method" rather
+    than as "zero vulnerabilities". Record the control query verbatim,
+    its result, and method_blind in the inventory's negative_control
+    object.
   - Known-exploited: CISA KEV catalog JSON
     (https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json);
-    record its dateReleased as kev_snapshot_date. KEV hits are flagged as
-    potential CRA Article 14 reporting candidates — a signal for a human,
-    not legal advice and not a report filing.
+    record its dateReleased as kev_snapshot_date. If cisa.gov returns
+    403 or is unreachable, fall back to the official cisagov/kev-data
+    GitHub mirror, record the URL actually used, and still capture
+    dateReleased. Do not treat a failed primary fetch as "zero KEV
+    hits". KEV hits are flagged as potential CRA Article 14 reporting
+    candidates: a signal for a human, not legal advice and not a
+    report filing.
   - EPSS best-effort via https://api.first.org/data/v1/epss?cve=...;
     null if unreachable.
   - NVD is a fallback only; the public API without a key is rate-limited
@@ -136,21 +204,254 @@ prompt_template: |
   findings, or a pass -> fail transition.
 
   ═══════════════════════════════════════════════════════════
+  PHASE 3.5: CRA GAP REGISTER (WHEN A REPOSITORY IS PRESENT)
+  ═══════════════════════════════════════════════════════════
+  WHEN TO RUN: if (a) git checkouts exist under /workspace (from the
+  flow's git clone config, OR a .git directory already present in the
+  workspace seed — find /workspace -maxdepth 3 -name .git -type d),
+  or (b) the payload carries a repository_url (make an anonymous
+  read-only clone into /tmp). If neither, mark the check
+  "gap_register: skipped — no repository attached" and set
+  gap_register to null — that is not a failure.
+
+  This phase is FILE-PRESENCE, CONFIG, and SECRET-HYGIENE work only.
+  It does not turn the repository into the vulnerability inventory (the
+  SBOM stays the inventory of record). Prefer deterministic commands
+  (test -f, grep -n, git log --format, git diff-tree --name-only) to
+  collect pointers. You then CLASSIFY those pointers: a scanner exit
+  code is not a verdict. Do not clone or vendor third-party skill
+  libraries (including offensive/cybersecurity skill packs): they are
+  not a substitute for this walk, they mix dual-use tradecraft into a
+  CRA evidence run, and they blow the context window. Encode the
+  procedure here, then use your judgment as reviewer.
+
+  SANDBOX SCANNERS. Install and run gitleaks and zizmor inside this
+  execution sandbox, the same way PHASE 1 installs spdx-tools and
+  ntia-conformance-checker. Recommended pins unless the payload pins
+  others: gitleaks 8.24.3, zizmor 1.16.0. Record the exact resolved
+  version of each in tool_versions, or "unavailable: reason" if the
+  install fails. Scanners run here, in the sandbox, never on the
+  platform control plane. gitleaks runs in git mode over the full
+  history; report commit, file, rule, and line only, NEVER the secret
+  value (use --redact). zizmor covers GitHub Actions workflows; if the
+  checkout has no .github/workflows, record it as not applicable, and
+  do not reimplement action-pinning checks by hand.
+
+  Give every item a status — met | gap | partial | declared — and an
+  evidence pointer: file:line, or a commit SHA. "declared" means the
+  repository states a commitment you cannot verify from files alone;
+  that is a legitimate status, not a pass.
+  1. CVD policy: a coordinated vulnerability disclosure policy exists
+     AND is the MANUFACTURER'S OWN. Check SECURITY.md, SECURITY.txt,
+     .github/SECURITY.md. A file that merely points at an upstream
+     project's contact form is a gap (or partial), not met — say which
+     upstream it defers to.
+  2. Public security contact: SECURITY.md, security.txt or
+     .well-known/security.txt, or a mailbox named in-repo. PRESENCE
+     only — never send mail and never probe the mailbox.
+  3. Declared support window: grep docs/, README, SECURITY, SUPPORT for
+     a support period ("years of support", "supported until", end-of-
+     life dates). The presence of a statement is checkable; the
+     commitment itself is at most "declared". If no support-window
+     statement exists, status is gap. Do not mark declared just
+     because a support window is required; declared is only when a
+     statement is present and the commitment itself cannot be
+     verified from files.
+  4. Article 14 runbook files: templates or procedures for the 24h
+     early warning, the 72h notification, and the 14d/final report;
+     CSIRT/ENISA routing; a named internal escalation path. File and
+     doc presence only — do not invent legal advice or judge adequacy
+     under the regulation.
+  5. Update mechanism and signed OTA evidence: OTA endpoint/URL config,
+     signing configuration, verification code or documented signing
+     process in-repo (update headers, signing scripts, key handling
+     docs). Record what exists versus what is empty or unsigned.
+     Cite an empty OTA_URL default, HTTP (not HTTPS) OTA URLs, and
+     auto-upgrade rules that rewrite the OTA URL over HTTP. Absence
+     of signing/verification is a gap even when an OTA URL is present.
+  6. Secrets hygiene: run gitleaks from the sandbox install above
+     (record the version, or "unavailable: reason"). A gitleaks count
+     of 0 does NOT make this item met. Independently scan git history
+     for credentials that were committed and later removed. Allowed
+     commands (SHA + subject + path only): git log --all
+     --format='%H %s' -S on MQTT_PASS, MQTT_PASSWORD, MQTT_USER,
+     PASSWORD, PASSWD, SECRET, TOKEN, API_KEY, API_TOKEN, STA_PASS,
+     WEB_PASSWORD, PRIVATE_KEY; git log --all --format='%H %s'
+     --grep='should not be public' --grep='MQTT_PASS'
+     --grep='Remove MQTT' --grep='API token'
+     --grep='private defines' --grep='PRIVATE repo'; git log
+     --all --diff-filter=D --summary; then git log -1 --name-only
+     --pretty=format:'%H %s' <commit> for paths. Do not use git
+     diff-tree --no-patch --name-only (those flags cannot be
+     combined). FORBIDDEN: git log -p, git show, git diff, cat of
+     historical blobs, or any command that prints a secret VALUE
+     into the transcript. Report PATH and COMMIT SHA only. NEVER
+     print, echo, quote, or copy a secret VALUE into any artifact,
+     log, report, or result.json, and never re-derive or "confirm"
+     one. When something is found, write exactly the shape
+     "credential-like secret recoverable from git history at
+     <commit> <path>" with no value and no excerpt.
+     KNOWN FAILURE MODE (forbidden): running pickaxe, seeing hits,
+     and dismissing them as "keyword changes only" / "do not
+     establish secrets". That is how a removed MQTT password in git
+     history is missed. You MUST classify each pickaxe commit as
+     finding or not-a-finding with a one-line reason in
+     gap-register.md. Treat as a FINDING when any of: the subject or
+     body says remove/delete/should not be public/credential/
+     password/secret/private / API token / private defines / PRIVATE
+     repo; subject says use secrets for MQTT_USER / MQTT_PASS; the
+     pickaxe term is MQTT_PASS / MQTT_PASSWORD / MQTT_USER
+     / API_TOKEN / a *_PASS / *_PASSWORD / PRIVATE_KEY define or
+     assignment in a header or config; a deleted path looks like a
+     key file (*.pem, *.key, id_rsa, *_private.h); or a deleted
+     editor swap of a product config header (*.swp). Unclassified
+     pickaxe hits mean this item is gap or partial, never met.
+     A pickaxe MQTT_PASS / MQTT_PASSWORD / API_TOKEN hit in a
+     product override header is always a finding and MUST appear
+     as its own SHA+path row, even if the subject looks like a
+     later default, invalid-token, or command-line replacement.
+     Do not keep only the "Remove MQTT" commit, and do not drop
+     it either: a commit whose subject contains "Remove MQTT"
+     MUST appear as its own SHA+path row even if pickaxe -S on
+     the current header misses that SHA.
+     A pickaxe STA_PASS / WEB_PASSWORD / *_PASS / *_PASSWORD hit
+     in a product override header is likewise always a finding
+     and MUST appear as its own SHA+path row, including subjects
+     that say example, needs filling in, or disable default
+     password. A deleted editor swap of a product config header
+     (*.swp) MUST appear as its own SHA+path row. A prose note
+     without a row is a miss.
+     SHA+PATH REGISTER (required in gap-register.md): list EVERY
+     classified finding commit as one SHA+path row or bullet. Do
+     not write that the full register is "retained in the execution
+     record", "in the transcript", or "additional classified
+     indicators" without the SHAs. Two example SHAs plus a count
+     is a miss when more findings were classified.
+  7. Default credentials and open provisioning: an open provisioning AP
+     with no password, default MQTT/admin/root passwords in headers,
+     configs, or docs, sample or committed keys. Also cite hardcoded
+     MQTT/OTA broker hostnames, default WEB_USERNAME, and a
+     webserver enabled with an empty WEB_PASSWORD. Check both
+     product override headers and upstream default headers. If a
+     product changelog or README admits a default AP with no
+     password or default MQTT user/password, cite that file:line as
+     well. An empty STA_PASS / STA_PASS1 (or empty STA_SSID
+     pairing) in a product override header at HEAD MUST be cited
+     as that file:line AND the setting MUST be named STA_PASS1
+     (or STA_PASS). A surrounding line range that does not name
+     the setting is a miss. A changelog or README admission of a
+     default AP with no password does not replace the header
+     citation. Cite file:line; name the setting, not the value.
+  8. Repo hygiene: tracked junk or accidental files (garbage
+     filenames that look like pager-dump fragments or commit-message
+     slices; files whose names contain "should not be public").
+     Confirm current junk names with git ls-files at HEAD; cite
+     EVERY current HEAD junk path, not just the first match. Include
+     every space-containing root filename and every path whose name
+     contains "should not be public" or looks like a pager-dump /
+     commit-message fragment. Also cite disabled leftover workflow
+     files still tracked at HEAD (*.off, *.yml.old, *.yml.off). A
+     sibling fragment or leftover .off path left uncited is a miss.
+     Do not say a file was later deleted unless HEAD lacks
+     the path. Harmless still counts as a gap: it is evidence no
+     hygiene pass has run.
+  9. Key-management pointers: README/docs that assert a private key
+     (ca.key, id_rsa, *.pem used as a CA or device key) lives in
+     this or another repository. Cite file:line, the URL path, AND
+     the asserted key filename (write "ca.key" or "id_rsa" in the
+     evidence text). A README line pointer without the key name is
+     a miss. NEVER fetch, clone, or open the key. A 404/private
+     target does not clear the finding; the assertion is the finding.
+  10. In-repo secret scanning in CI: a gitleaks, trufflehog, or
+     equivalent workflow/hook under .github/ or similar. Presence is
+     met; absence is gap. Do not install a third-party skill pack to
+     stand in for this check.
+  11. In-repo CI SBOM job: a syft, cdxgen, cyclonedx, or SPDX
+     generation/publish step under .github/workflows or equivalent.
+     Presence is met; absence is gap. This does not generate an
+     SBOM; it only records whether THIS repository's CI emits one.
+     The manufacturer CI SBOM remains the production path.
+  12. Debug-build leakage: vendor debug defines (the DEBUG_* family)
+     or equivalent debug flags enabled (not merely commented) in
+     product headers or build flags. Commented-out samples are not
+     a gap. Cite file:line of an enabled flag only.
+
+  SHA+PATH REGISTER FREEZE. Record every classified history row in
+  gap_register.secrets_findings with sha, path, subject, term, kind,
+  and status finding | not_a_finding (a not_a_finding row requires a
+  one-line reason). secrets_findings_count MUST equal the number of
+  rows whose status is finding, and MUST equal the SHA+path rows
+  listed in gap-register.md, never the gitleaks count. The previous
+  result's gap_register SHA+path set is a freeze floor: dropping a
+  prior row without a resolved entry (sha, path, reason) fails
+  platform validation. You do not self-grade the floor.
+
+  Write evidence/gap-register.md: the requirement walk, each item with
+  its met/gap/partial/declared status and its evidence pointer, the
+  SHA+path register, and an explicit list of what was NOT checkable
+  from the repository alone (the not_checkable field is required).
+  GAP-REGISTER SEVERITY RULE: every gap item also appears in checks[]
+  with passed:false, but gap items alone must NOT flip the overall
+  severity gate or the SBOM-audit verdict. The overall verdict rules do
+  not change: "fail" only if the SBOM audit failed OR the severity gate
+  failed. Gap items can move a clean run to "pass_with_findings" and
+  nothing more. State this explicitly in audit-report.md so nobody
+  reads a green gate as a clean gap register.
+  gap_register.ready is a summary flag with one meaning: true only when
+  no item is a gap or partial and secrets_findings_count is 0. A
+  "declared" item cannot make ready true on its own — a declaration is
+  not evidence. secrets_findings_count MUST equal classified history
+  findings, not gitleaks count, and MUST equal the number of SHA+path
+  rows listed in gap-register.md.
+
+  ═══════════════════════════════════════════════════════════
   PHASE 4: COMBINED EVIDENCE PACK
   ═══════════════════════════════════════════════════════════
   Write a compliance-folder-ready pack to /workspace/evidence/:
-  - audit-report.md — the combined human-readable audit: what SBOM was
-    verified against which build evidence, with which tools and source
-    snapshot dates; every check and its outcome; findings by severity
-    with KEV hits called out; VEX suppressions echoed; drift summary;
-    gate outcome.
+  - audit-report.md — the combined human-readable audit. It MUST OPEN
+    with a one-page cover for a non-AI reader: three clearly labelled
+    boxes, in this order, before any table or finding list.
+      BOX 1 — "What we checked". List the inputs actually delivered and
+      the classes actually screened. It must contain the sentence: this
+      run demonstrates the pipeline; it is not yet a complete CRA gap
+      review unless the gap-register phase ran AND private product
+      repositories were in scope. Say which of those two held.
+      BOX 2 — "What we did NOT check". Not-db-resolvable component
+      classes (and any negative control that came back blind), skipped
+      cross-checks, absent baselines, and everything gap-register.md
+      lists as not checkable from the repository alone.
+      BOX 3 — "What you should do next week". A short, concrete,
+      ordered list of the highest-value fixes implied by the gaps and
+      findings — no legal advice, no compliance verdict.
+    Then, still near the top and in plain English:
+      DRIFT LINE. If this is the first run that had an SBOM at all and
+      the baseline had none, write "first run with an SBOM; no security
+      improvement is implied." A "pass_with_findings" verdict and a
+      "gate: fail -> pass" transition must never be allowed to read as
+      the product having got healthier.
+      NTIA RECONCILIATION LINE. When NTIA minimum elements FAIL while
+      the overall verdict is pass or pass_with_findings, write one
+      sentence a non-AI reader can follow explaining why: the minimum-
+      elements failure is an SBOM metadata completeness gap, the
+      overall verdict is driven by the SBOM-audit and severity-gate
+      rules, and this reconciliation is agent judgment. Do not leave
+      the two lines side by side unexplained.
+    After the cover: what SBOM was verified against which build
+    evidence, with which tools and source snapshot dates; every check
+    and its outcome; findings by severity with KEV hits called out; VEX
+    suppressions echoed; drift summary; gate outcome.
   - findings.json — full machine-readable vulnerability findings.
   - sbom-findings.json — full SBOM verification findings register.
+  - gap-register.md — the PHASE 3.5 CRA requirement walk (only when a
+    repository was present; omit it when that phase was skipped).
   - drift-report.md — the delta vs the previous run (only when a
     baseline was provided).
-  Every evidence file must end with the line:
+  Markdown evidence files must end with the line:
   "Machine-generated evidence for conformity assessment support. Not a
   conformity assessment, certification, or legal advice."
+  JSON evidence files carry that text ONLY in the "disclaimer" field.
+  Never append prose after a JSON file's closing brace: trailing text
+  makes the file invalid JSON.
 
   ═══════════════════════════════════════════════════════════
   PHASE 4B: EVIDENCE STORAGE (MULTI-REPO PRODUCT MODE)
@@ -205,7 +506,7 @@ prompt_template: |
     "release_ref": "<or null>",
     "verdict": "...",
     "repos": [ { "remote": "...", "commit": "<HEAD SHA>", "branch": "...", "stub_path": ".preloop/evidence/<stub filename>" } ],
-    "artifacts": { "result": "result.json", "audit_report": "evidence/audit-report.md", "findings": "evidence/findings.json", "sbom_findings": "evidence/sbom-findings.json", "drift_report": "evidence/drift-report.md or null" },
+    "artifacts": { "result": "result.json", "audit_report": "evidence/audit-report.md", "findings": "evidence/findings.json", "sbom_findings": "evidence/sbom-findings.json", "gap_register": "evidence/gap-register.md or null", "drift_report": "evidence/drift-report.md or null" },
     "disclaimer": "Machine-generated evidence for conformity assessment support. Not a conformity assessment, certification, or legal advice."
   }
   Product name: payload field "product" if present, else the compliance
@@ -246,13 +547,31 @@ prompt_template: |
       "source": { "format": "spdx"|"cyclonedx", "spec_version": "...", "generator_tool": "<or null>", "build_ref": "<or null>" },
       "valid": true|false,
       "minimum_elements": { "passed": true|false, "missing": ["..."] },
-      "coverage": { "components": <int>, "pct_with_version": <n>, "pct_with_license": <n>, "pct_with_identifier": <n>, "unmatched_vs_build": [...] | null },
+      "coverage": {
+        "components": <int>,
+        "pct_with_version": <n>,
+        "pct_with_license": <n>,
+        "pct_with_license_concluded": <n>,
+        "pct_with_license_declared": <n>,
+        "pct_with_identifier": <n>,
+        "db_resolvable": <int>,
+        "not_db_resolvable": <int>,
+        "unmatched_vs_build": [...] | null
+      },
       "license_flags": [ { "component": "...", "license": "...", "flag": "deny|flag|missing" } ],
       "verdict": "pass" | "pass_with_findings" | "fail"
     },
     "vuln_scan": {
       "db_versions": { "osv_queried_at": "...", "kev_snapshot_date": "<or null>", "epss_queried_at": "<or null>", "nvd": "<'not used' or honest usage note>" },
-      "inventory": { "components": <int>, "matchable": <int>, "unmatchable": <int> },
+      "inventory": {
+        "components": <int>,
+        "matchable": <int>,
+        "unmatchable": <int>,
+        "db_resolvable": <int>,
+        "not_db_resolvable": <int>,
+        "by_ecosystem": { "<ecosystem or 'generic'>": <int> },
+        "negative_control": { "query": "<the control query as sent>", "result": "<what came back>", "method_blind": true|false }
+      },
       "findings": [ { "id": "...", "pkg": "...", "version": "...", "severity": "...", "cvss": <n|null>, "epss": <n|null>, "kev": true|false, "fix_version": "<or null>", "vex_status": "<or null>" } ],
       "counts_by_severity": { "critical": 0, "high": 0, "medium": 0, "low": 0, "unknown": 0 },
       "art14_candidates": [ "<CVE ids of KEV-listed findings>" ],
@@ -268,6 +587,16 @@ prompt_template: |
       "alert": true|false
     },
     "verdict": "pass" | "pass_with_findings" | "fail",
+    "gap_register": null | {
+      "ran": true,
+      "repo": { "remote": "...", "commit": "<40 hex>", "branch": "..." },
+      "items": [ { "id": "...", "title": "...", "status": "met|gap|partial|declared", "evidence": "<file:line or commit SHA>" } ],
+      "secrets_findings": [ { "sha": "<40 hex>", "path": "...", "subject": "...", "term": "...", "kind": "...", "status": "finding|not_a_finding", "reason": "<required when not_a_finding>" } ],
+      "secrets_findings_count": <int, equals SHA+path finding row count, values redacted>,
+      "not_checkable": [ "<what the repository could not show>" ],
+      "resolved": [ { "sha": "...", "path": "...", "reason": "..." } ],
+      "ready": true|false
+    },
     "evidence_storage": null | {
       "mode": "hybrid",
       "product": "<product name>",
@@ -280,6 +609,7 @@ prompt_template: |
       "audit_report": "evidence/audit-report.md",
       "findings": "evidence/findings.json",
       "sbom_findings": "evidence/sbom-findings.json",
+      "gap_register": "evidence/gap-register.md" | null,
       "drift_report": "evidence/drift-report.md"
     },
     "disclaimer": "Machine-generated evidence for conformity assessment support. Not a conformity assessment, certification, or legal advice."
@@ -288,12 +618,23 @@ prompt_template: |
   Rules:
   - Overall verdict: "fail" if the SBOM audit failed OR the severity gate
     failed; "pass_with_findings" if everything gated passed but findings
-    or skipped cross-checks exist; "pass" only when clean.
+    or skipped cross-checks exist; "pass" only when clean. PHASE 3.5 gap
+    items never change this: they appear as checks with passed:false and
+    can carry a run to "pass_with_findings", but a gap item alone never
+    flips the severity gate or the SBOM-audit verdict to "fail".
+    If sbom_audit.verdict is fail, result.verdict MUST be fail
+    (gap-register cannot upgrade it to pass_with_findings).
   - Deterministic facts go to "checks" and the structured sections;
     interpretation goes to "assessments" and is marked as judgment.
-  - Never claim vulnerability absence for unmatchable components, and
-    never claim SBOM completeness beyond what the delivered build
-    evidence allowed you to cross-check.
+  - Never claim vulnerability absence for unmatchable or
+    not-db-resolvable components (nor for any class whose negative
+    control came back blind), and never claim SBOM completeness beyond
+    what the delivered build evidence allowed you to cross-check.
+  - Secret values never leave the checkout: gap_register records
+    secrets_findings_count and path+commit pointers only. No values, no
+    excerpts, no reproduction steps, anywhere. A gitleaks count of 0 is
+    not met. Unclassified tool rows fail. A previous gap_register
+    SHA+path set is a freeze floor.
   - Keep result.json under 200 KB: truncate "vuln_scan.findings" to
     KEV/critical/high entries if needed, note the truncation, and keep
     the full list in evidence/findings.json.
@@ -301,8 +642,9 @@ prompt_template: |
   - "git": fill it only when exactly one repository is checked out; with
     multiple checkouts set it to null — per-repo identity lives in
     evidence_storage.code_repos. "evidence_storage" is null whenever
-    PHASE 4B was skipped (no checkouts); this additive field keeps the
-    schema at preloop.cra.releaseaudit/v1.
+    PHASE 4B was skipped (no checkouts) and "gap_register" is null
+    whenever PHASE 3.5 was skipped (no repository); these additive
+    nullable fields keep the schema at preloop.cra.releaseaudit/v1.
 agent_type: codex
 agent_config:
   sandbox_type: exec

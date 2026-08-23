@@ -634,6 +634,18 @@ exit $OPENCODE_EXIT_CODE
         # Without the slash, it treats the entire string as the provider.
         model_qualified = f"{effective_model_provider}/{model_local_id}"
 
+        mcp: Dict[str, Any] = {
+            "preloop": {
+                "type": "remote",
+                "url": "$PRELOOP_MCP_URL",
+                "headers": {
+                    "Authorization": "Bearer $PRELOOP_API_TOKEN",
+                },
+                "timeout": mcp_timeout_ms,
+                "enabled": True,
+            }
+        }
+
         config: Dict[str, Any] = {
             "$schema": "https://opencode.ai/config.json",
             "model": model_qualified,
@@ -642,17 +654,7 @@ exit $OPENCODE_EXIT_CODE
             "share": "disabled",
             "enabled_providers": [effective_model_provider],
             "permission": "allow",
-            "mcp": {
-                "preloop": {
-                    "type": "remote",
-                    "url": "$PRELOOP_MCP_URL",
-                    "headers": {
-                        "Authorization": "Bearer $PRELOOP_API_TOKEN",
-                    },
-                    "timeout": mcp_timeout_ms,
-                    "enabled": True,
-                }
-            },
+            "mcp": mcp,
         }
 
         # Add provider configuration for custom/non-builtin endpoints.

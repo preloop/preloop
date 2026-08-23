@@ -1201,6 +1201,6 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
             logger.error(f"Error checking approval status: {e}", exc_info=True)
             return json.dumps({"error": f"Failed to check approval status: {str(e)}"})
 
-    logger.info("All 13 default tools registered with DynamicFastMCP")
+    logger.info("Default tools registered with DynamicFastMCP")
 
     return mcp

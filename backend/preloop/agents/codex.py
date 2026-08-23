@@ -359,6 +359,10 @@ fi
         execution_id = execution_context.get("execution_id", "unknown")
         flow_name = execution_context.get("flow_name", "unknown")
 
+        auth_block = self._build_codex_auth_config(
+            model, model_provider, model_endpoint
+        )
+
         # Create the full script
         script = f"""
 set -e
@@ -411,8 +415,11 @@ fi
 # Configure Codex CLI authentication
 mkdir -p ~/.codex
 
-{self._build_codex_auth_config(model, model_provider, model_endpoint)}
-
+"""
+        script = (
+            script
+            + auth_block
+            + f"""
 # Debug: Show config files (with API key masked)
 echo "=== Codex Configuration ==="
 echo "Model: {model}"
@@ -431,6 +438,7 @@ CODEX_EXIT_CODE=$?
 # Exit with codex's exit code
 exit $CODEX_EXIT_CODE
 """
+        )
         return script
 
     async def _start_kubernetes_pod(self, execution_context: Dict[str, Any]) -> str:
@@ -516,6 +524,7 @@ exit $CODEX_EXIT_CODE
         For OpenAI models, generates a standard config.
         For custom models, generates a custom_provider section with base_url,
         env_key, and wire_api so Codex knows how to reach the provider.
+        Preloop MCP is always attached; tool enablement is the allowlist.
 
         Args:
             model: Model identifier (e.g., "gpt-5.4", "claude-sonnet-4-20250514")

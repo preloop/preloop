@@ -280,6 +280,12 @@ sequenceDiagram
 *   **External Backends:** Optional Vault/OpenBao-compatible KV v2 references via `SecretReference.external_ref`.
 *   **Runtime Boundary:** Gateway-enabled runtimes receive Preloop gateway tokens instead of provider API keys.
 
+### preloop.security (`./backend/preloop/security`)
+*   **Purpose:** Deterministic, server-side validation of security audit results. It is result validation, not scanning.
+*   **Gap-Register Freeze:** `gap_register.py` validates the `result.json` produced by release security audit runs. Previous SHA+path finding rows are a floor: dropping one without a `resolved` marker plus a reason fails, unclassified rows fail, and `secrets_findings_count` must match the row count. The agent never self-grades the floor.
+*   **Git Guard:** `git_guard.py` allow-lists metadata-only git invocations so no historical blob contents can be dumped into logs or transcripts. It has no production callers yet; it is the enforcement half of the planned follow-up that wires `validate_gap_register` into result ingestion.
+*   **Scanner Boundary:** Scanners (gitleaks, zizmor) are installed and run inside the agent execution sandbox per the release security audit preset (`backend/presets/006-release-security-audit.yaml`), never on the platform control plane.
+
 ### preloop.models (`./backend/preloop/models`)
 *   **Purpose:** Data modeling and database interaction layer.
 *   **Current Agent/Model Shape:** `AIModel` remains the durable flat row for provider, model identifier, endpoint, and credential reference, while `ManagedAgentAIModelBinding` carries explicit per-agent config slots and primary/default selection.
