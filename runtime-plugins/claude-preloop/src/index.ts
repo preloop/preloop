@@ -23,15 +23,22 @@ import {
   ControlConfig,
   PROTOCOL,
   RUNTIME,
+  defaultConfigPath,
   defaultTranscriptDir,
-  loadConfig,
+  loadConfigDetailed,
   verifyConfig,
 } from "./config.js";
 import { QueryFactory, SessionManager, sdkQueryFactory } from "./sessions.js";
 import { SessionActivity, TranscriptObserver } from "./observer.js";
 import { LauncherBridge, OwnershipMode } from "./mode.js";
 
-export { ControlConfig, loadConfig, verifyConfig } from "./config.js";
+export {
+  ControlConfig,
+  loadConfig,
+  loadConfigDetailed,
+  verifyConfig,
+} from "./config.js";
+export type { ConfigSource, LoadedConfig } from "./config.js";
 export { SessionManager } from "./sessions.js";
 export type { QueryFactory, SdkQueryHandle, SdkMessage, SdkUserMessage } from "./sessions.js";
 export { TranscriptObserver } from "./observer.js";
@@ -108,7 +115,26 @@ export class PreloopClaudeSidecar {
   }
 
   verify(): ControlConfig {
-    const config = this.controlConfig ?? loadConfig(this.configPath);
+    let config = this.controlConfig;
+    if (!config) {
+      const loaded = loadConfigDetailed(this.configPath);
+      this.log(
+        `config: ${loaded.path} (${loaded.source === "control-block" ? 'nested "control" block' : loaded.source + " schema"})`,
+      );
+      if (loaded.source === "empty") {
+        // The whole bug pattern of this saga is silent idling. A config that
+        // yields nothing usable must be LOUD, on stderr, before verifyConfig
+        // fails with a narrower message.
+        const warning =
+          `preloop-control config at ${loaded.path} contains no usable control settings ` +
+          '(expected flat keys or a top-level "control" object); ' +
+          "the sidecar cannot connect to Agent Control. " +
+          'Re-run: preloop agents onboard "Claude Code"';
+        this.log(warning);
+        console.error(warning);
+      }
+      config = loaded.config;
+    }
     verifyConfig(config);
     this.controlConfig = config;
     return config;
@@ -116,6 +142,9 @@ export class PreloopClaudeSidecar {
 
   async start(): Promise<void> {
     this.stopped = false;
+    this.log(
+      `sidecar starting (pid ${process.pid}, config ${this.configPath ?? defaultConfigPath()})`,
+    );
     const config = this.verify();
     if (config.enabled === false) {
       throw new Error("preloop-control is disabled (enabled=false)");
@@ -126,6 +155,7 @@ export class PreloopClaudeSidecar {
       void this.sessions?.release();
     });
     await this.launcher.listen();
+    this.log("launcher control socket listening");
     if (config.observer_enabled !== false) {
       this.observer = new TranscriptObserver(
         config.transcript_dir ?? defaultTranscriptDir(),
@@ -164,6 +194,11 @@ export class PreloopClaudeSidecar {
     // upgrade. That is the scheme Agent Control already prefers; the token
     // stays out of the URL and out of access-log query strings.
 
+    // The URL is loggable (the bearer token travels in a header, never in
+    // the URL). The token itself must never be logged.
+    // Log origin + pathname only: control_ws_url is user-supplied and could
+    // embed credentials in its query string; those must never reach the log.
+    this.log(`Agent Control: connecting to ${wsUrl.origin}${wsUrl.pathname}`);
     let socket: WebSocket;
     try {
       socket = new WebSocket(wsUrl, {
@@ -179,6 +214,7 @@ export class PreloopClaudeSidecar {
     this.socket = socket;
 
     socket.on("open", () => {
+      this.log("Agent Control: connected; announcing capabilities");
       this.reconnectAttempts = 0;
       this.sendEnvelope({
         type: "presence",
@@ -213,16 +249,19 @@ export class PreloopClaudeSidecar {
       void this.handleFrame(socket, websocketDataToString(data));
     });
 
-    socket.on("close", () => {
+    socket.on("close", (code) => {
+      this.log(`Agent Control: connection closed (code ${code})`);
       this.stopHeartbeat();
       if (this.socket === socket) {
         this.socket = undefined;
       }
       this.scheduleReconnect();
     });
-    socket.on("error", () => {
+    socket.on("error", (error) => {
       // 'error' is followed by 'close'; log and let close drive reconnect.
-      this.log("Preloop Agent Control websocket error");
+      this.log(
+        `Preloop Agent Control websocket error: ${errorMessage(error)}`,
+      );
     });
   }
 
@@ -457,6 +496,7 @@ export class PreloopClaudeSidecar {
       RECONNECT_BASE_DELAY_MS * 2 ** this.reconnectAttempts,
     );
     this.reconnectAttempts += 1;
+    this.log(`Agent Control: reconnecting in ${delay}ms`);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
       this.connect();
@@ -594,7 +634,12 @@ function invokedAsCli(): boolean {
 if (invokedAsCli()) {
   const args = parseArgs();
   const sidecar = new PreloopClaudeSidecar(args.configPath);
-  sidecar.setLogger((message) => console.error(message));
+  // Timestamped stderr: launchd/the launcher redirect stderr to
+  // ~/.preloop/logs/claude-sidecar.log, and a log line without a time is
+  // useless when correlating with launcher runs.
+  sidecar.setLogger((message) =>
+    console.error(`[${new Date().toISOString()}] ${message}`),
+  );
   if (args.command === "verify") {
     sidecar.verify();
     console.log("@preloop-ai/claude-plugin verified");

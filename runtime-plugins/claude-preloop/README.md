@@ -47,19 +47,25 @@ Control WebSocket and drives Claude Code through the
 ## Configuration
 
 The sidecar reads `~/.claude/preloop-control.json` (its own file;
-`~/.claude/settings.json` stays reserved for Claude Code's own schema):
+`~/.claude/settings.json` stays reserved for Claude Code's own schema).
+`preloop agents onboard "Claude Code"` writes the settings nested under a
+top-level `"control"` key; a flat file (all keys at the top level) is
+accepted too. A file with neither shape yields no usable settings and the
+sidecar logs a loud warning instead of idling silently.
 
 ```json
 {
-  "enabled": true,
-  "protocol": "preloop.agent_control.v1",
-  "runtime": "claude_code",
-  "control_ws_url": "wss://app.preloop.ai/api/v1/agents/control/ws",
-  "bearer_token": "agt_...",
-  "managed_agent_id": "...",
-  "runtime_principal_id": "claude-code-...",
-  "runtime_principal_name": "Claude Code",
-  "workspace_root": "/path/to/default/workspace"
+  "control": {
+    "enabled": true,
+    "protocol": "preloop.agent_control.v1",
+    "runtime": "claude_code",
+    "control_ws_url": "wss://app.preloop.ai/api/v1/agents/control/ws",
+    "bearer_token": "agt_...",
+    "managed_agent_id": "...",
+    "runtime_principal_id": "claude-code-...",
+    "runtime_principal_name": "Claude Code",
+    "workspace_root": "/path/to/default/workspace"
+  }
 }
 ```
 

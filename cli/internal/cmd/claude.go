@@ -126,8 +126,6 @@ func runClaudeLauncher(cmd *cobra.Command, args []string) error {
 	}
 	defer conn.Close()
 
-	sessionID := ""
-	mode := "local"
 	incoming := make(chan claudeIPCMessage, 8)
 	go readClaudeIPC(conn, incoming)
 
@@ -138,53 +136,79 @@ func runClaudeLauncher(cmd *cobra.Command, args []string) error {
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(signals)
 
+	return runClaudeLauncherLoop(claudeLauncherLoop{
+		out:        cmd.OutOrStdout(),
+		conn:       conn,
+		incoming:   incoming,
+		signals:    signals,
+		spawn:      startClaudeTUI,
+		args:       args,
+		waitRemote: waitForAnyKeyOrRelease,
+	})
+}
+
+// claudeLauncherLoop wires the launcher event loop to its environment so the
+// loop itself is testable without a terminal or a real claude binary.
+type claudeLauncherLoop struct {
+	out        io.Writer
+	conn       net.Conn
+	incoming   chan claudeIPCMessage
+	signals    chan os.Signal
+	spawn      func(extra []string, resumeSessionID string) (*exec.Cmd, error)
+	args       []string
+	waitRemote func(incoming <-chan claudeIPCMessage, signals <-chan os.Signal)
+}
+
+// runClaudeLauncherLoop owns exactly one live TUI child at a time. The TUI is
+// respawned only after this loop itself terminated the previous child (switch
+// to remote, or an explicit release). Informational IPC frames ("status",
+// "session") must NOT respawn: the sidecar sends a status broadcast for every
+// hello/local_ready, and respawning per frame stacked up multiple `claude`
+// children that all stopped on SIGTTIN (the silent-launcher bug).
+func runClaudeLauncherLoop(loop claudeLauncherLoop) error {
+	sessionID := ""
 	for {
-		child, startErr := startClaudeTUI(args, sessionID)
+		child, startErr := loop.spawn(loop.args, sessionID)
 		if startErr != nil {
 			return startErr
 		}
 		childDone := make(chan error, 1)
 		go func() { childDone <- child.Wait() }()
 
-		select {
-		case <-signals:
-			_ = terminateProcess(child, childDone)
-			return nil
-		case waitErr := <-childDone:
-			if waitErr != nil && !isExpectedClaudeExit(waitErr) {
-				return waitErr
-			}
-			return nil
-		case msg := <-incoming:
-			switch msg.Type {
-			case "switch":
+		respawn := false
+		for !respawn {
+			select {
+			case <-loop.signals:
 				_ = terminateProcess(child, childDone)
-				_ = writeClaudeIPC(conn, claudeIPCMessage{Type: "switched", SessionID: sessionID})
-				mode = "remote"
-				if msg.SessionID != "" {
-					sessionID = msg.SessionID
+				return nil
+			case waitErr := <-childDone:
+				if waitErr != nil && !isExpectedClaudeExit(waitErr) {
+					return waitErr
 				}
-				fmt.Fprintln(cmd.OutOrStdout(), "Remote. Press any key to return.")
-				waitForAnyKeyOrRelease(incoming, signals)
-				_ = writeClaudeIPC(conn, claudeIPCMessage{Type: "release", SessionID: sessionID})
-				mode = "local"
-			case "release":
-				_ = terminateProcess(child, childDone)
-				if msg.SessionID != "" {
-					sessionID = msg.SessionID
-				}
-				mode = "local"
-			case "status":
-				if msg.SessionID != "" {
-					sessionID = msg.SessionID
-				}
-				if msg.Mode != "" {
-					mode = msg.Mode
-				}
-				_ = mode
-			case "session":
-				if msg.SessionID != "" {
-					sessionID = msg.SessionID
+				return nil
+			case msg := <-loop.incoming:
+				switch msg.Type {
+				case "switch":
+					_ = terminateProcess(child, childDone)
+					_ = writeClaudeIPC(loop.conn, claudeIPCMessage{Type: "switched", SessionID: sessionID})
+					if msg.SessionID != "" {
+						sessionID = msg.SessionID
+					}
+					fmt.Fprintln(loop.out, "Remote. Press any key to return.")
+					loop.waitRemote(loop.incoming, loop.signals)
+					_ = writeClaudeIPC(loop.conn, claudeIPCMessage{Type: "release", SessionID: sessionID})
+					respawn = true
+				case "release":
+					_ = terminateProcess(child, childDone)
+					if msg.SessionID != "" {
+						sessionID = msg.SessionID
+					}
+					respawn = true
+				case "status", "session":
+					// Bookkeeping only; the current TUI keeps running.
+					if msg.SessionID != "" {
+						sessionID = msg.SessionID
+					}
 				}
 			}
 		}
@@ -204,7 +228,11 @@ func startClaudeTUI(extra []string, resumeSessionID string) (*exec.Cmd, error) {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.SysProcAttr = claudeSysProcAttr()
+	// No SysProcAttr on purpose: the TUI must inherit the launcher's process
+	// group, which is the terminal's foreground group. Spawning it with
+	// Setpgid put it in a BACKGROUND group, so its first tty read delivered
+	// SIGTTIN and the TUI sat stopped (state T) forever while the launcher
+	// waited silently. Detaching is only for the sidecar daemon.
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
@@ -335,13 +363,23 @@ func startClaudeSidecarProcess() error {
 		return err
 	}
 	cmd := exec.Command(invocation.bin, append(invocation.args, "run", "--config", claudeControlConfigPath())...)
-	cmd.SysProcAttr = claudeSysProcAttr()
+	cmd.SysProcAttr = claudeSidecarSysProcAttr()
 	logDir := filepath.Dir(claudeSidecarLogPath())
 	_ = os.MkdirAll(logDir, 0o700)
 	stdout, err := os.OpenFile(claudeSidecarLogPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return err
 	}
+	// A 0-byte log after a real run is indistinguishable from "never ran";
+	// that ambiguity burned a whole debugging session. Record the launch here
+	// so the log is non-empty even if the sidecar dies before its first line.
+	fmt.Fprintf(
+		stdout,
+		"[%s] launcher: starting Claude sidecar: %s %s\n",
+		time.Now().Format(time.RFC3339),
+		invocation.bin,
+		strings.Join(append(invocation.args, "run", "--config", claudeControlConfigPath()), " "),
+	)
 	cmd.Stdout = stdout
 	cmd.Stderr = stdout
 	if err := cmd.Start(); err != nil {

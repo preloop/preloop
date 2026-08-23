@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { loadConfig, verifyConfig } from "../dist/config.js";
+import { loadConfig, loadConfigDetailed, verifyConfig } from "../dist/config.js";
 
 const validConfig = {
   enabled: true,
@@ -65,4 +65,44 @@ test("verify rejects an unknown protocol", () => {
     () => verifyConfig({ ...validConfig, protocol: "preloop.v999" }),
     /Unsupported protocol/,
   );
+});
+
+test("loadConfigDetailed reports the nested control-block source", () => {
+  const file = writeTempConfig({ control: validConfig });
+  const loaded = loadConfigDetailed(file);
+  assert.equal(loaded.source, "control-block");
+  assert.equal(loaded.path, file);
+  assert.equal(loaded.config.runtime, "claude_code");
+});
+
+test("loadConfigDetailed reports the flat source", () => {
+  const file = writeTempConfig(validConfig);
+  const loaded = loadConfigDetailed(file);
+  assert.equal(loaded.source, "flat");
+  assert.equal(loaded.config.bearer_token, "agt_secret");
+});
+
+test("loadConfigDetailed flags a config with no usable settings as empty", () => {
+  // The silent-idle bug: a file that parses fine but carries no control
+  // settings under either shape must be distinguishable from a good one.
+  const file = writeTempConfig({ something_else: true });
+  const loaded = loadConfigDetailed(file);
+  assert.equal(loaded.source, "empty");
+});
+
+test("a nested control block with no usable keys is empty, not control-block", () => {
+  // Review follow-up on #280: {"control": {}} and {"control": {"unrelated":
+  // true}} are the same ambiguous case as an empty flat file; the loud
+  // warning must fire for them too.
+  for (const control of [{}, { unrelated: true }]) {
+    const file = writeTempConfig({ control });
+    const loaded = loadConfigDetailed(file);
+    assert.equal(loaded.source, "empty");
+  }
+});
+
+test("a nested control block that is an array is not treated as settings", () => {
+  const file = writeTempConfig({ control: ["nope"] });
+  const loaded = loadConfigDetailed(file);
+  assert.equal(loaded.source, "empty");
 });
