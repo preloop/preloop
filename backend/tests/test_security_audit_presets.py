@@ -57,16 +57,11 @@ class TestSecurityAuditPresetInvariants:
         assert data["name"] == name
 
     def test_read_only_toolset(self, preset):
-        """Write tools stay off. RSA opts into Preloop MCP scanner wrappers."""
+        """Write tools stay off. Scanners run in the sandbox, not via MCP."""
         name, data = preset
-        if name == "Release Security Audit":
-            assert data["allowed_mcp_servers"] == ["preloop-mcp"]
-            names = [t.get("name") for t in data["allowed_mcp_tools"]]
-            assert names == ["gitleaks_scan", "zizmor_scan"]
-            assert "repo-audit" not in json.dumps(data)
-            return
         assert data["allowed_mcp_servers"] == []
         assert data["allowed_mcp_tools"] == []
+        assert "repo-audit" not in json.dumps(data)
 
     def test_no_git_clone_or_baked_trigger(self, preset):
         """Presets ship trigger-agnostic, like 003-observe-eval."""
@@ -221,31 +216,128 @@ class TestReleaseAuditEvidenceStorage:
     def test_repos_are_not_scanned(self, prompt):
         """SBOM stays the vuln inventory; gap register is hygiene/config."""
         norm = _norm(prompt)
-        assert "do NOT use the repository as the vulnerability inventory" in norm
+        assert "NOT use repository source as the vulnerability inventory" in norm
         assert "FILE-PRESENCE, CONFIG, and SECRET-HYGIENE" in _norm(prompt)
-        assert "gitleaks_scan" in prompt
-        assert "zizmor_scan" in prompt
         assert "repo-audit" not in prompt
 
+    def test_scanners_run_in_the_sandbox(self, prompt):
+        """gitleaks/zizmor are installed and run in the execution sandbox;
+        no server-side MCP scanner wrappers."""
+        norm = _norm(prompt)
+        assert "Install and run gitleaks and zizmor inside this execution sandbox" in (
+            norm
+        )
+        assert "never on the platform control plane" in norm
+        assert "gitleaks 8.24.3" in prompt
+        assert "zizmor 1.16.0" in prompt
+        # The wrapper tool names must be gone.
+        assert "gitleaks_scan" not in prompt
+        assert "zizmor_scan" not in prompt
+        # zizmor scope + honest degradation.
+        assert "not applicable" in norm
+        assert "unavailable: reason" in prompt
+
     def test_gap_register_schema(self, prompt):
-        """PHASE 3.5 is a thin schema: statuses, freeze floor, no product nouns."""
-        assert "PHASE 3.5: GAP REGISTER" in prompt
+        """PHASE 3.5 keeps the freeze schema: statuses, floor, no product
+        nouns (generic config names like MQTT_PASS are allowed)."""
+        assert "PHASE 3.5: CRA GAP REGISTER" in prompt
         assert '"gap_register"' in prompt
         assert "not_checkable" in prompt
         assert "secrets_findings_count" in prompt
-        assert (
-            "gitleaks finding count of 0" in prompt or "gitleaks count of 0" in prompt
-        )
+        assert "gitleaks count of 0 does NOT make this item met" in _norm(prompt)
         assert "freeze floor" in prompt
         lowered = prompt.lower()
         for noun in (
-            "mqtt_pass",
             "kettlecompanion",
-            "remove mqtt",
             "tasmota",
             "user_config_override",
+            "my_user_config",
         ):
             assert noun not in lowered
+
+    def test_pickaxe_keyword_sweeps_restored(self, prompt):
+        """The battle-tested history sweep: keyword families + --grep."""
+        norm = _norm(prompt)
+        assert "-S" in prompt
+        for term in (
+            "MQTT_PASS",
+            "MQTT_PASSWORD",
+            "MQTT_USER",
+            "PASSWORD",
+            "PASSWD",
+            "SECRET",
+            "TOKEN",
+            "API_KEY",
+            "API_TOKEN",
+            "STA_PASS",
+            "WEB_PASSWORD",
+            "PRIVATE_KEY",
+        ):
+            assert term in prompt, f"missing pickaxe term {term}"
+        assert "--grep='should not be public'" in prompt
+        assert "--grep='Remove MQTT'" in prompt
+        assert "git log --all --diff-filter=D --summary" in norm
+
+    def test_forbidden_to_dismiss_rule(self, prompt):
+        """Classify EVERY pickaxe hit; the documented failure mode is
+        dismissing hits as keyword changes only."""
+        norm = _norm(prompt)
+        assert "KNOWN FAILURE MODE (forbidden)" in norm
+        assert '"keyword changes only"' in norm
+        assert "MUST classify each pickaxe commit" in norm
+        assert "Unclassified pickaxe hits mean this item is gap or partial" in norm
+        assert "SHA+PATH REGISTER" in prompt
+        assert "one SHA+path row" in norm
+
+    def test_secret_values_never_dumped(self, prompt):
+        norm = _norm(prompt)
+        assert "FORBIDDEN: git log -p, git show, git diff" in norm
+        assert "NEVER print, echo, quote, or copy a secret VALUE" in norm
+
+    def test_db_resolvable_and_negative_control(self, prompt):
+        """Coverage honesty: db_resolvable metric + mandatory negative
+        control with a method_blind flag."""
+        norm = _norm(prompt)
+        assert "db_resolvable" in prompt
+        assert "pkg:generic and pkg:github" in norm
+        assert "NEGATIVE CONTROL (mandatory" in norm
+        assert "method_blind" in prompt
+        assert "negative_control" in prompt
+        assert "tj-actions/changed-files" in prompt
+        assert "GHSA-mrrh-fwg8-r2c3" in prompt
+
+    def test_three_box_cover_page(self, prompt):
+        """audit-report.md opens with the non-agentic reader cover."""
+        for box in (
+            'BOX 1 — "What we checked"',
+            'BOX 2 — "What we did NOT check"',
+            'BOX 3 — "What you should do next week"',
+        ):
+            assert box in prompt, f"missing cover box: {box}"
+        assert "DRIFT LINE" in prompt
+        assert "NTIA RECONCILIATION LINE" in prompt
+
+    def test_hygiene_and_citation_rules(self, prompt):
+        """Junk-at-HEAD, leftover CI, key filenames, default-credential
+        citations, support-window semantics."""
+        norm = _norm(prompt)
+        assert "git ls-files at HEAD" in norm
+        assert "*.yml.off" in prompt
+        assert "Do not say a file was later deleted unless HEAD lacks the path" in norm
+        assert "ca.key" in prompt and "id_rsa" in prompt
+        assert "asserted key filename" in norm
+        assert "changelog or README admits a default AP with no password" in norm
+        assert "STA_PASS1" in prompt
+        assert "OTA_URL" in prompt
+        assert "empty WEB_PASSWORD" in norm
+        assert "If no support-window statement exists, status is gap" in norm
+
+    def test_count_equals_rows_and_floor(self, prompt):
+        norm = _norm(prompt)
+        assert (
+            "MUST equal the number of SHA+path rows listed in gap-register.md" in norm
+        )
+        assert "You do not self-grade the floor" in norm
 
     def test_sbom_fail_cannot_be_upgraded(self, prompt):
         assert "sbom_audit.verdict is fail, result.verdict MUST be fail" in _norm(

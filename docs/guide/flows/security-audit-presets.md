@@ -98,6 +98,14 @@ auditable record.
 - Components without a version or a purl/CPE identifier cannot be reliably
   matched; they are counted as `unmatchable` and results never claim
   vulnerability absence for them.
+- The Release Security Audit additionally reports `db_resolvable`
+  coverage (components in ecosystems the advisory databases actually
+  index; `pkg:generic` and `pkg:github` are not db-resolvable) and runs
+  a mandatory negative control: a known-vulnerable component queried in
+  the same style as the inventory. If the control comes back empty the
+  method is blind for that class (`method_blind: true`) and those
+  components are reported as "not screenable by this method", never as
+  "zero vulnerabilities".
 - If the sandbox has no egress to these sources, the run reports an error
   rather than fabricating findings or their absence.
 
@@ -221,41 +229,33 @@ Gap items appear in `checks[]` as `passed: false` and may move a clean
 run to `pass_with_findings`; they never flip the severity gate or
 `sbom_audit.verdict`.
 
-### Opt-in Preloop MCP scanner wrappers
+The gap-register phase carries a full, genericized procedure in the
+prompt: pickaxe keyword-family sweeps over git history (`git log -S`
+on credential-shaped config names plus `--grep` sweeps), a
+forbidden-to-dismiss rule (every pickaxe hit is classified as finding
+or not-a-finding with a reason; dismissing hits as "keyword changes
+only" is the documented failure mode), one SHA+path row per finding,
+junk-at-HEAD checks via `git ls-files`, key-filename citation rules,
+and default-credential citations by setting name at `file:line`.
+Secret values never appear in any artifact: findings are reported as
+commit SHA plus path only, and `git log -p` / `git show` of secret
+blobs are forbidden.
 
-Codex, Gemini, and OpenCode always attach the existing Preloop MCP
-server. Overhead is tool enablement, not a second process. The new
-wrappers are `default_enabled: False`, so ordinary agents do not pay
-their `tools/list` tax. The Release Security Audit preset opts in:
+### Scanner execution happens in the sandbox
 
-```yaml
-allowed_mcp_servers:
-  - preloop-mcp
-allowed_mcp_tools:
-  - name: gitleaks_scan
-  - name: zizmor_scan
-```
-
-Name-only tool entries are the legacy allowlist shape and mean
-Preloop builtins. To enable the same tools on a cloned flow, keep
-those allowlists (or add them in the flow editor).
-
-`gitleaks_scan` wraps **gitleaks** (git mode) on the Preloop API
-server: it clones the flow git-config / caller URL, then returns
-commit, file, rule, and line. Secret values are redacted. The tool
-refuses to dump `git log -p` / `git show` of secret blobs. Pin
-**gitleaks 8.24.3** on the API host. If the binary is missing, the
-tool returns `scanner_not_installed` rather than a fake empty MET.
-A gitleaks finding count of 0 still does not make secrets hygiene
-met; that rule lives in gap-register / `result.json` validation.
-
-`zizmor_scan` wraps **zizmor** (GitHub Actions). Pin **zizmor
-1.16.0**. If the checkout has no `.github/workflows`, the tool
-returns a structured not-applicable result. Do not reimplement
-action-pinning checks in Python.
-
-v1 coverage is gitleaks + zizmor. Hygiene filename walks, leftover
-disabled CI, cert parse, and upstream-fork divergence are deferred.
+The Release Security Audit preset instructs the agent to install and
+run **gitleaks** (recommended pin 8.24.3, git mode, full history,
+`--redact`) and **zizmor** (recommended pin 1.16.0, GitHub Actions
+workflows) inside the execution sandbox, the same way the SBOM phase
+installs `spdx-tools` and `ntia-conformance-checker`. Untrusted-repo
+work runs in the governed sandbox, never on the Preloop API server;
+the platform keeps only deterministic result validation (the
+gap-register freeze comparator in `preloop.security.gap_register`).
+Resolved scanner versions are recorded in `tool_versions`, or
+`unavailable: reason` when an install fails. A gitleaks finding count
+of 0 still does not make secrets hygiene met; that rule lives in
+gap-register / `result.json` validation. If the checkout has no
+`.github/workflows`, zizmor is recorded as not applicable.
 
 Components with no purl/CPE can be given a generic VCS PURL
 (`pkg:generic/<name>@<version>?vcs_url=git+…@<commit>`) when the

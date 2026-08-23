@@ -36,8 +36,8 @@ allowed_mcp_tools:
   - name: "search_issues"
   - name: "get_issue"
 # Codex/Gemini/OpenCode always attach Preloop MCP. Tool enablement is
-# the allowlist. New scanner wrappers (gitleaks_scan, zizmor_scan) are
-# default_enabled: False; the Release Security Audit preset opts in.
+# the allowlist. Name-only entries are the legacy shape and mean
+# Preloop builtins on preloop-mcp.
 git_clone_config: null
 is_preset: true
 ```
