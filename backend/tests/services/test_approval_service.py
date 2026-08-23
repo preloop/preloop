@@ -1,6 +1,7 @@
 """Tests for approval service."""
 
 import json
+import logging
 import uuid
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1176,6 +1177,109 @@ class TestPostWebhookNotification:
         assert target is not None
         assert target[2] == "abcdefghijklmnopqrstuvwxyz"
 
+    @pytest.mark.parametrize(
+        "config,channel,expect_target",
+        [
+            (
+                {
+                    "mattermost_url": "mm.example.com",
+                    "bot_token": "bot-token-test-value",
+                    "channel_id": "abcdefghijklmnopqrstuvwxyz",
+                },
+                None,
+                None,
+            ),
+            (
+                {
+                    "mattermost_url": "https://mm.example.com",
+                    "bot_token": "   ",
+                    "channel_id": "abcdefghijklmnopqrstuvwxyz",
+                },
+                None,
+                None,
+            ),
+            (
+                {
+                    "mattermost_url": "   ",
+                    "bot_token": "bot-token-test-value",
+                    "channel_id": "abcdefghijklmnopqrstuvwxyz",
+                },
+                None,
+                None,
+            ),
+            (
+                {
+                    "mattermost_url": "https://mm.example.com",
+                    "bot_token": "bot-token-test-value",
+                    "channel_id": "   ",
+                },
+                None,
+                None,
+            ),
+            (
+                {
+                    "mattermost_url": "https://mm.example.com",
+                    "bot_token": "bot-token-test-value",
+                    "channel_id": "from-config",
+                },
+                "from-workflow",
+                ("https://mm.example.com", "bot-token-test-value", "from-config"),
+            ),
+        ],
+        ids=[
+            "url-missing-scheme",
+            "whitespace-token",
+            "whitespace-url",
+            "whitespace-channel",
+            "channel-id-precedes-workflow-channel",
+        ],
+    )
+    async def test_mattermost_bot_target_validation_branches(
+        self, sample_approval_workflow, config, channel, expect_target
+    ):
+        sample_approval_workflow.approval_type = "standard"
+        sample_approval_workflow.approval_config = config
+        sample_approval_workflow.channel = channel
+        assert mattermost_bot_target(sample_approval_workflow) == expect_target
+
+    async def test_mattermost_bot_target_warns_on_plaintext_http(
+        self, sample_approval_workflow, caplog
+    ):
+        sample_approval_workflow.approval_type = "standard"
+        sample_approval_workflow.approval_config = {
+            "mattermost_url": "http://mm.example.com",
+            "bot_token": "bot-token-test-value",
+            "channel_id": "abcdefghijklmnopqrstuvwxyz",
+        }
+        with caplog.at_level(logging.WARNING):
+            target = mattermost_bot_target(sample_approval_workflow)
+        assert target == (
+            "http://mm.example.com",
+            "bot-token-test-value",
+            "abcdefghijklmnopqrstuvwxyz",
+        )
+        assert "plaintext HTTP" in caplog.text
+
+    async def test_post_webhook_incomplete_bot_config_names_field(
+        self, approval_service, sample_approval_request, sample_approval_workflow
+    ):
+        sample_approval_workflow.approval_type = "standard"
+        sample_approval_workflow.approval_config = {
+            "mattermost_url": "mm.example.com",
+            "bot_token": "bot-token-test-value",
+            "channel_id": "abcdefghijklmnopqrstuvwxyz",
+        }
+
+        with patch.object(approval_service, "update_approval_request") as mock_update:
+            result = await approval_service.post_webhook_notification(
+                sample_approval_request, sample_approval_workflow
+            )
+
+        assert result is False
+        update = mock_update.call_args[0][1]
+        assert "https://" in (update.webhook_error or "")
+        assert "No webhook URL configured" not in (update.webhook_error or "")
+
 
 class TestSendNotifications:
     """Test send_notifications method."""
@@ -1421,6 +1525,44 @@ class TestSendNotifications:
 
                     mock_webhook.assert_not_called()
                     assert "mattermost" not in result
+
+    async def test_send_notifications_standard_invalid_bot_still_posts(
+        self, approval_service, sample_approval_request, sample_approval_workflow
+    ):
+        """A typo'd scheme must not stay silent; record the config error."""
+        sample_approval_request.requested_at = datetime.utcnow()
+        sample_approval_workflow.approval_type = "standard"
+        sample_approval_workflow.channel = None
+        sample_approval_workflow.approval_config = {
+            "mattermost_url": "mm.example.com",
+            "channel_id": "abcdefghijklmnopqrstuvwxyz",
+            "bot_token": "bot-token-test-value",
+        }
+
+        with patch.object(
+            approval_service,
+            "_send_email_notification",
+            new_callable=AsyncMock,
+            return_value={"success": True, "sent": 0, "failed": 0, "skipped": 0},
+        ):
+            with patch.object(
+                approval_service,
+                "_send_push_notification",
+                new_callable=AsyncMock,
+                return_value={"success": True, "sent": 0, "failed": 0},
+            ):
+                with patch.object(
+                    approval_service,
+                    "post_webhook_notification",
+                    new_callable=AsyncMock,
+                    return_value=False,
+                ) as mock_webhook:
+                    result = await approval_service.send_notifications(
+                        sample_approval_request, sample_approval_workflow
+                    )
+
+                    mock_webhook.assert_called_once()
+                    assert result["mattermost"]["success"] is False
 
 
 class TestGetAllApproverUserIds:

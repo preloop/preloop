@@ -149,7 +149,7 @@ answer yes when interactive onboarding offers it for supported agents.
 
 ### Access Policies & Approval Workflows
 Define fine-grained access controls for any AI tool or operation. Tools support multiple ordered access rules that evaluate in priority order. When an AI attempts a protected operation, Preloop pauses and notifies you:
-- **Instant notifications** via mobile app, email, Slack, Mattermost, or custom webhook.
+- **Instant notifications** via mobile app, email, Slack, Mattermost, or custom webhook. Mattermost incoming webhooks cannot target DMs (they return 403). To post a DM or channel message from a `standard` workflow, set `approval_config` with `bot_token` (alias `mattermost_token`), `mattermost_url` (alias `base_url`, must start with `https://` or `http://`), and `channel_id`. Preloop then posts via the Mattermost Posts API. A `standard` workflow without those keys stays silent. Existing `mattermost` / `slack` / `webhook` workflows that already use `webhook_url` are unchanged.
 - **One-tap approvals** from your phone, watch, or desktop — for any onboarded agent's tool calls, including native `Bash`/`Edit` actions, not just MCP tools.
 - **Async approval mode** lets the agent poll for status instead of blocking network hooks.
 - **Agent questions** — beyond allow/deny, agents can call the built-in `ask_user` tool to ask the operator a question with multiple-choice options and/or a free-text reply, and get the answer back. Rendered as option buttons + an answer field in the mobile and watch apps.

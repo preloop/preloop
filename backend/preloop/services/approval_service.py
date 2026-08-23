@@ -43,6 +43,57 @@ def _approval_config_dict(workflow: ApprovalWorkflow) -> Dict[str, Any]:
     return cfg if isinstance(cfg, dict) else {}
 
 
+def _parse_mattermost_bot_target(
+    workflow: ApprovalWorkflow,
+) -> tuple[Optional[tuple[str, str, str]], Optional[str]]:
+    """Return ``(target, error)`` for a Mattermost bot post.
+
+    Incoming webhooks cannot target direct messages (Mattermost returns 403).
+    The bot-token Posts API can. Both values are None when no bot keys were
+    supplied so empty standard workflows and MagicMock fixtures stay silent.
+    """
+    cfg = _approval_config_dict(workflow)
+    raw_token = cfg.get("bot_token") or cfg.get("mattermost_token")
+    raw_url = cfg.get("mattermost_url") or cfg.get("base_url")
+    raw_channel = cfg.get("channel_id")
+    if not isinstance(raw_channel, str) or not raw_channel.strip():
+        fallback = getattr(workflow, "channel", None)
+        raw_channel = fallback if isinstance(fallback, str) else ""
+
+    token_ok = isinstance(raw_token, str) and bool(raw_token.strip())
+    url_ok = isinstance(raw_url, str) and bool(raw_url.strip())
+    if not token_ok and not url_ok:
+        return None, None
+
+    missing: List[str] = []
+    if not token_ok:
+        missing.append("bot_token (or mattermost_token)")
+    if not url_ok:
+        missing.append("mattermost_url (or base_url)")
+    channel = raw_channel.strip() if isinstance(raw_channel, str) else ""
+    if not channel:
+        missing.append("channel_id")
+    if missing:
+        return None, (
+            "Mattermost bot configuration incomplete: missing " + ", ".join(missing)
+        )
+
+    token = str(raw_token).strip()
+    url = str(raw_url).strip().rstrip("/")
+    if not url.startswith(("https://", "http://")):
+        return None, (
+            "Mattermost bot configuration incomplete: "
+            "mattermost_url must start with https:// or http://"
+        )
+    if url.startswith("http://"):
+        logger.warning(
+            "Mattermost bot token will be sent over plaintext HTTP (%s). "
+            "Prefer https:// unless this is a trusted internal instance.",
+            url,
+        )
+    return (url, token, channel), None
+
+
 def mattermost_bot_target(
     workflow: ApprovalWorkflow,
 ) -> Optional[tuple[str, str, str]]:
@@ -52,23 +103,14 @@ def mattermost_bot_target(
     The bot-token Posts API can. Non-string fields return None so empty
     standard workflows and MagicMock fixtures stay silent.
     """
-    cfg = _approval_config_dict(workflow)
-    token = cfg.get("bot_token") or cfg.get("mattermost_token")
-    url = cfg.get("mattermost_url") or cfg.get("base_url")
-    channel = cfg.get("channel_id")
-    if not isinstance(channel, str) or not channel.strip():
-        raw = getattr(workflow, "channel", None)
-        channel = raw if isinstance(raw, str) else ""
-    if not isinstance(token, str) or not isinstance(url, str):
-        return None
-    token = token.strip()
-    url = url.strip().rstrip("/")
-    channel = channel.strip()
-    if not token or not url or not channel:
-        return None
-    if not url.startswith(("https://", "http://")):
-        return None
-    return (url, token, channel)
+    target, _error = _parse_mattermost_bot_target(workflow)
+    return target
+
+
+def mattermost_bot_config_error(workflow: ApprovalWorkflow) -> Optional[str]:
+    """Return why bot credentials were rejected, or None if none were set."""
+    _target, error = _parse_mattermost_bot_target(workflow)
+    return error
 
 
 def _operator_present_at_machine(db, approval_request: ApprovalRequest) -> bool:
@@ -1580,7 +1622,10 @@ class ApprovalService:
         bot_target = mattermost_bot_target(approval_workflow)
 
         if not webhook_url and not bot_target:
-            error_msg = "No webhook URL configured in approval workflow"
+            error_msg = (
+                mattermost_bot_config_error(approval_workflow)
+                or "No webhook URL configured in approval workflow"
+            )
             await self.update_approval_request(
                 approval_request.id,
                 ApprovalRequestUpdate(webhook_error=error_msg),
@@ -2216,7 +2261,10 @@ class ApprovalService:
         if not any(
             channel in ("slack", "mattermost", "webhook")
             for channel in workflow_channels
-        ) and mattermost_bot_target(approval_workflow):
+        ) and (
+            mattermost_bot_target(approval_workflow)
+            or mattermost_bot_config_error(approval_workflow)
+        ):
             workflow_channels.append("mattermost")
         for channel in workflow_channels:
             if channel in ["slack", "mattermost", "webhook"]:

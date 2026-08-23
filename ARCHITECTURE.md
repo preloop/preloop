@@ -507,7 +507,7 @@ graph TD
 2. `DynamicMCPServer` checks if the tool requires approval via `_check_approval_required()`
 3. If approval is required:
    - `ApprovalService.create_and_notify()` creates an `ApprovalRequest` record
-   - Webhook notifications are sent to configured channels (Slack, Mattermost, custom endpoints)
+   - Webhook notifications are sent to configured channels (Slack, Mattermost, custom endpoints). Mattermost incoming webhooks cannot target DMs (403). When `approval_config` includes bot credentials (`bot_token` or `mattermost_token`, `mattermost_url` or `base_url`, and `channel_id`), Preloop posts via `/api/v4/posts` instead. A `standard` workflow with those keys uses the bot path; one without them stays silent. `http://` base URLs are accepted for internal instances but log a warning because the bearer token then travels in plaintext.
    - The service waits for approval with configurable timeout
 4. Approver reviews request and responds via:
    - Public approval API endpoint (`/approval/{request_id}/decide`)
