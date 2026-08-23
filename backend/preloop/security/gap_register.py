@@ -185,7 +185,12 @@ def validate_gap_register(
     reported = register.get("secrets_findings_count")
     if reported is None:
         failures.append("gap_register.secrets_findings_count is required")
-    elif int(reported) != expected_count:
+    elif isinstance(reported, bool) or not isinstance(reported, int):
+        failures.append(
+            "gap_register.secrets_findings_count must be an integer, "
+            f"got {type(reported).__name__}"
+        )
+    elif reported != expected_count:
         failures.append(
             "gap_register.secrets_findings_count "
             f"({reported}) != SHA+path finding row count ({expected_count})"

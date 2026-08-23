@@ -114,6 +114,22 @@ class TestGapRegisterFreeze:
         failures = validate_gap_register(result)
         assert any("unclassified" in f for f in failures)
 
+    def test_non_integer_count_is_a_classified_failure(self):
+        """A malformed count must produce a failure string, never a bare
+        ValueError that bypasses the failure-list contract."""
+        for bad in ("many", "2", 2.0, True, {"n": 2}, [2]):
+            result = _register(_rows())
+            result["gap_register"]["secrets_findings_count"] = bad
+            failures = validate_gap_register(result)
+            assert any(
+                "secrets_findings_count must be an integer" in f for f in failures
+            ), f"no classified failure for {bad!r}"
+
+    def test_repo_pin_mismatch_fails(self):
+        result = _register(_rows())
+        failures = validate_gap_register(result, repo_pin=SHA_B)
+        assert any("does not match pin" in f for f in failures)
+
     def test_sbom_fail_forces_overall_fail(self):
         result = _register(_rows())
         result["sbom_audit"] = {"verdict": "fail"}
@@ -130,7 +146,7 @@ class TestGapRegisterFreeze:
         except GapRegisterValidationError as exc:
             assert exc.failures
 
-    def test_gitleaks_zero_count_is_not_a_wrapper_verdict(self):
+    def test_gitleaks_zero_count_is_not_a_met_verdict(self):
         """finding_count 0 satisfies the count rule; it is not a MET oracle."""
         result = _register([])
         result["gap_register"]["secrets_findings_count"] = 0

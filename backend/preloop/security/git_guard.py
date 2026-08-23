@@ -77,6 +77,14 @@ def validate_git_argv(argv: Sequence[str]) -> None:
             flag = arg.split("=", 1)[0]
             if flag in FORBIDDEN_GIT_FLAGS or arg in FORBIDDEN_GIT_FLAGS:
                 raise ForbiddenGitError("git log -p / patch output is forbidden")
+            if arg.startswith("-L"):
+                raise ForbiddenGitError(
+                    "git log -L dumps line contents at every revision; forbidden"
+                )
+            if flag == "--output":
+                raise ForbiddenGitError(
+                    "git log --output redirects output to a file; forbidden"
+                )
         return
 
     # Allow a small set of metadata-only commands used by the scanners.
