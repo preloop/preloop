@@ -3661,15 +3661,10 @@ func TestSyncManagedAgentRuntimeArtifactsReplacesLegacyGeminiLauncher(t *testing
 	}
 }
 
-func TestSyncManagedAgentRuntimeArtifactsInstallsCodexLauncher(t *testing.T) {
-	skipManagedLauncherOnWindows(t, "installing the Codex managed launcher")
+func TestSyncManagedAgentRuntimeArtifactsSkipsCodexLauncher(t *testing.T) {
 	home := t.TempDir()
 	testenv.SetHome(t, home)
 
-	launcherDir := filepath.Join(home, ".local", "bin")
-	if err := os.MkdirAll(launcherDir, 0o755); err != nil {
-		t.Fatalf("failed to create launcher dir: %v", err)
-	}
 	originalDir := filepath.Join(home, "orig-bin")
 	if err := os.MkdirAll(originalDir, 0o755); err != nil {
 		t.Fatalf("failed to create original bin dir: %v", err)
@@ -3682,26 +3677,64 @@ func TestSyncManagedAgentRuntimeArtifactsInstallsCodexLauncher(t *testing.T) {
 	); err != nil {
 		t.Fatalf("failed to write fake codex executable: %v", err)
 	}
-	t.Setenv(
-		"PATH",
-		launcherDir+string(os.PathListSeparator)+originalDir+string(os.PathListSeparator)+os.Getenv("PATH"),
-	)
+	t.Setenv("PATH", originalDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	if err := syncManagedAgentRuntimeArtifacts(
 		AgentConfig{Name: "Codex CLI"},
 		"https://preloop.example",
 		"codex-durable-token",
 	); err != nil {
-		t.Fatalf("unexpected codex launcher install error: %v", err)
+		t.Fatalf("unexpected Codex runtime sync error: %v", err)
 	}
 
-	wrapperPath := filepath.Join(launcherDir, "codex")
-	output, err := exec.Command(wrapperPath).CombinedOutput()
-	if err != nil {
-		t.Fatalf("managed codex launcher failed: %v (%s)", err, string(output))
+	wrapperPath := filepath.Join(home, ".local", "bin", "codex")
+	if _, err := os.Stat(wrapperPath); !os.IsNotExist(err) {
+		t.Fatalf("expected Codex onboarding not to write a PATH wrapper, stat err=%v", err)
 	}
-	if got := string(output); got != "codex-durable-token" {
-		t.Fatalf("unexpected codex launcher env output: %q", got)
+	envPath := filepath.Join(home, ".preloop", "agents", "runtime", "codex-cli.env")
+	if _, err := os.Stat(envPath); !os.IsNotExist(err) {
+		t.Fatalf("expected Codex onboarding not to write a runtime env file, stat err=%v", err)
+	}
+}
+
+func TestSyncManagedAgentRuntimeArtifactsRemovesLegacyCodexLauncher(t *testing.T) {
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+
+	runtimeDir := filepath.Join(home, ".preloop", "agents", "runtime")
+	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
+		t.Fatalf("failed to create runtime dir: %v", err)
+	}
+	envPath := filepath.Join(runtimeDir, "codex-cli.env")
+	if err := os.WriteFile(envPath, []byte("export PRELOOP_TOKEN='legacy'\n"), 0o600); err != nil {
+		t.Fatalf("failed to write runtime env file: %v", err)
+	}
+
+	launcherDir := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(launcherDir, 0o755); err != nil {
+		t.Fatalf("failed to create launcher dir: %v", err)
+	}
+	wrapperPath := filepath.Join(launcherDir, "codex")
+	if err := os.WriteFile(
+		wrapperPath,
+		[]byte("#!/usr/bin/env bash\n"+preloopManagedLauncherMarker+"\nexec /usr/bin/env true\n"),
+		0o755,
+	); err != nil {
+		t.Fatalf("failed to write legacy Codex wrapper: %v", err)
+	}
+
+	if err := syncManagedAgentRuntimeArtifacts(
+		AgentConfig{Name: "Codex CLI"},
+		"https://preloop.example",
+		"codex-durable-token",
+	); err != nil {
+		t.Fatalf("unexpected Codex runtime sync error: %v", err)
+	}
+	if _, err := os.Stat(wrapperPath); !os.IsNotExist(err) {
+		t.Fatalf("expected leftover Codex wrapper to be removed, got err=%v", err)
+	}
+	if _, err := os.Stat(envPath); !os.IsNotExist(err) {
+		t.Fatalf("expected leftover Codex runtime env file to be removed, got err=%v", err)
 	}
 }
 

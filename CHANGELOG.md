@@ -23,6 +23,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `issue_unlabeled`). Filter field `added_labels` is set on GitHub and
   GitLab.
 
+### Changed
+
+- **Codex onboarding is config-only**: `preloop agents onboard` no longer
+  installs a `~/.local/bin/codex` PATH wrapper. MCP auth, model routing,
+  and the durable token already live in `~/.codex/config.toml`; native
+  tool approvals go through `~/.codex/hooks.json`. Re-onboarding removes
+  leftover Preloop wrappers from older installs. Gemini CLI still uses a
+  wrapper because it reads gateway credentials from the environment.
+
 ### Fixed
 
 - **Preloop-bot label events were dropped**: `_is_preloop_triggered_event`
