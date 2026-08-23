@@ -1069,3 +1069,50 @@ class TestProcessEventEdgeCases:
 
         # Both flows should have been attempted
         assert mock_create_task.call_count == 2
+
+
+class TestIsPreloopTriggeredEvent:
+    """Bot-loop guard: comments/PR edits skip, label hops must pass."""
+
+    def test_github_bot_comment_is_ignored(self, flow_trigger_service):
+        event = {
+            "source": "github",
+            "type": "comment_created",
+            "payload": {"sender": {"login": "preloop[bot]"}},
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is True
+
+    def test_github_bot_issue_labeled_is_not_ignored(self, flow_trigger_service):
+        event = {
+            "source": "github",
+            "type": "issue_labeled",
+            "payload": {
+                "sender": {"login": "preloop[bot]"},
+                "label": {"name": "agent-ready"},
+            },
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is False
+
+    def test_gitlab_bot_issue_labeled_is_not_ignored(self, flow_trigger_service):
+        event = {
+            "source": "gitlab",
+            "type": "issue_labeled",
+            "payload": {"user": {"username": "preloop"}},
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is False
+
+    def test_gitlab_bot_issue_updated_is_ignored(self, flow_trigger_service):
+        event = {
+            "source": "gitlab",
+            "type": "issue_updated",
+            "payload": {"user": {"username": "preloop"}},
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is True
+
+    def test_human_issue_labeled_is_not_ignored(self, flow_trigger_service):
+        event = {
+            "source": "github",
+            "type": "issue_labeled",
+            "payload": {"sender": {"login": "dimitris"}},
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is False

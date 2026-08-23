@@ -16,6 +16,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already uses `cryptography` when present. PyJWT was already in the
   tree via firebase-admin / MCP.
 
+### Added
+
+- **GitLab `issue_labeled`**: an Issue Hook whose `changes.labels` adds
+  a label now normalizes to `issue_labeled` (remove-only is
+  `issue_unlabeled`). Filter field `added_labels` is set on GitHub and
+  GitLab.
+
+### Fixed
+
+- **Preloop-bot label events were dropped**: `_is_preloop_triggered_event`
+  no longer skips `issue_labeled` / `issue_unlabeled`, so
+  `update_issue` adding `agent-ready` can start an implementation flow.
+
 ## [0.15.0] - 2026-08-20
 
 Highlights: **native flow schedules** run flows on cron or friendly
