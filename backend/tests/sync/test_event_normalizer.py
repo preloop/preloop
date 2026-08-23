@@ -145,6 +145,41 @@ class TestEventNormalization:
         }
         assert normalize_event_type("gitlab", "Issue Hook", payload) == "issue_updated"
 
+    def test_gitlab_mixed_add_and_remove_prefers_issue_labeled(self):
+        """A GitLab edit that adds and removes labels is issue_labeled.
+
+        Added wins so intake-to-implementation hops still fire. GitHub
+        would emit separate labeled and unlabeled events; GitLab cannot.
+        Both deltas stay in filter_fields so removed titles are not lost.
+        """
+        payload = {
+            "object_attributes": {"action": "update", "state": "opened"},
+            "user": {"username": "root"},
+            "labels": [
+                {"title": "glitchtip"},
+                {"title": "agent-ready"},
+            ],
+            "changes": {
+                "labels": {
+                    "previous": [
+                        {"title": "glitchtip"},
+                        {"title": "needs-triage"},
+                    ],
+                    "current": [
+                        {"title": "glitchtip"},
+                        {"title": "agent-ready"},
+                    ],
+                }
+            },
+        }
+        assert normalize_event_type("gitlab", "Issue Hook", payload) == "issue_labeled"
+        fields = extract_filter_fields("gitlab", "Issue Hook", payload)
+        assert fields["added_labels"] == ["agent-ready"]
+        assert fields["removed_labels"] == ["needs-triage"]
+        added, removed = gitlab_label_delta(payload)
+        assert added == ["agent-ready"]
+        assert removed == ["needs-triage"]
+
     def test_github_labeled_still_issue_labeled(self):
         """GitHub issues + action labeled stays issue_labeled."""
         payload = {

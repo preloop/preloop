@@ -19,6 +19,13 @@ def gitlab_label_delta(payload: Optional[dict]) -> Tuple[List[str], List[str]]:
     GitLab does not emit a dedicated labeled event. Label edits arrive as
     ``Issue Hook`` / ``Merge Request Hook`` with ``action=update`` and a
     ``changes.labels`` previous/current pair.
+
+    A single GitLab edit can both add and remove labels. This helper always
+    returns both deltas. Callers that need one event type
+    (``normalize_event_type``) give additions precedence: if ``added`` is
+    non-empty the edit is ``issue_labeled``, even when ``removed`` is also
+    set. ``extract_filter_fields`` still exposes both lists so a labeled
+    flow can filter on the removed titles.
     """
     if not payload:
         return [], []
@@ -172,9 +179,12 @@ def normalize_event_type(
             if action == "update":
                 added, removed = gitlab_label_delta(payload)
                 if added:
-                    # A label was added. This is the GitLab equivalent of
-                    # GitHub issues.labeled so implementation flows can
-                    # subscribe to issue_labeled on both trackers.
+                    # Added wins: a mixed add+remove edit is issue_labeled,
+                    # matching the intake-to-implementation hop. GitHub
+                    # emits separate labeled and unlabeled events for the
+                    # same edit; GitLab cannot. issue_unlabeled flows do
+                    # not fire for mixed edits. Both deltas still land in
+                    # filter_fields.
                     normalized = "issue_labeled"
                 elif removed:
                     normalized = "issue_unlabeled"
