@@ -883,8 +883,15 @@ def _is_qwen_chat_model(model_id: str) -> bool:
         "qwen-tts",
         "qwen-omni",
         "qwen2.5-omni",
+        "qwen3-omni",
+        "qwen3.5-omni",
+        "qwen3-s2s",
+        "qwen-mt",
+        "qwen3-livetranslate",
+        "qwen3.5-livetranslate",
         "qwen2.5-vl",
         "qvq-",
+        "tongyi-tingwu",
     )
     blocked_substrings = (
         "nsfw",
@@ -894,6 +901,8 @@ def _is_qwen_chat_model(model_id: str) -> bool:
         "-embedding",
         "-rerank",
         "-vl-",
+        "-s2s-",
+        "livetranslate",
     )
     if any(lowered.startswith(prefix) for prefix in blocked_prefixes):
         return False

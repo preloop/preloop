@@ -904,10 +904,18 @@ class TestGetQwenModels:
                     "wan2.2-t2v",
                     "qwen-image-plus",
                     "qwen-vl-max",
+                    "qwen3-omni-flash",
+                    "qwen3.5-omni-plus",
+                    "qwen3-s2s-flash-realtime",
+                    "qwen3-livetranslate-flash",
+                    "qwen-mt-plus",
+                    "tongyi-tingwu-slp",
                     "happy-horse-1.1",
                     "z-image",
                     "some-nsfw-model",
                     "deepseek-v4-pro",
+                    "glm-5.2",
+                    "kimi-k2.7-code",
                 )
             )
             mock_client.return_value = mock_instance
@@ -915,7 +923,12 @@ class TestGetQwenModels:
             result = await _get_qwen_models("valid_key")
 
             assert result.source == "live"
-            assert result.models == ["deepseek-v4-pro", "qwen3.8-max"]
+            assert result.models == [
+                "deepseek-v4-pro",
+                "glm-5.2",
+                "kimi-k2.7-code",
+                "qwen3.8-max",
+            ]
 
     def test_qwen_fallback_catalog_is_current_chat_models(self):
         """Keyless picker shows 2026-08 chat models, not the stale 2025 set."""
@@ -924,8 +937,14 @@ class TestGetQwenModels:
         assert "qwq-32b-preview" not in QWEN_KNOWN_MODELS
         assert "qwen-turbo" not in QWEN_KNOWN_MODELS
         assert _is_qwen_chat_model("qwen3.8-max")
+        assert _is_qwen_chat_model("deepseek-v4-pro")
+        assert _is_qwen_chat_model("glm-5.2")
+        assert _is_qwen_chat_model("kimi-k2.7-code")
         assert not _is_qwen_chat_model("wan2.2-t2v")
         assert not _is_qwen_chat_model("qwen3-vl-plus")
+        assert not _is_qwen_chat_model("qwen3-omni-flash")
+        assert not _is_qwen_chat_model("qwen3.5-omni-plus")
+        assert not _is_qwen_chat_model("qwen-mt-plus")
 
 
 class TestGetDeepSeekModels:
