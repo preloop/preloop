@@ -106,7 +106,7 @@ class TestGenerateMCPConfig:
         assert "tool3" in tools
 
     def test_generate_mcp_config_tool_without_server_name(self):
-        """Test that tools without server_name are skipped."""
+        """Tools without server_name default to the Preloop builtin server."""
         config = MCPConfigService.generate_mcp_config(
             allowed_mcp_servers=["preloop-mcp"],
             allowed_mcp_tools=[
@@ -116,10 +116,23 @@ class TestGenerateMCPConfig:
             preloop_url="https://app.test.com",
         )
 
-        # Only tool2 should be included
         tools = config["allowed_tools"]["preloop-mcp"]
-        assert len(tools) == 1
-        assert "tool2" in tools
+        assert tools == ["tool1", "tool2"]
+
+    def test_generate_mcp_config_legacy_name_only_shape(self):
+        """Presets 001/002/007 use ``- name: tool``; it must keep working."""
+        config = MCPConfigService.generate_mcp_config(
+            allowed_mcp_servers=["preloop-mcp"],
+            allowed_mcp_tools=[
+                {"name": "search_issues"},
+                {"name": "get_issue"},
+                "add_comment",  # bare string is also accepted
+            ],
+            preloop_url="https://app.test.com",
+        )
+
+        tools = config["allowed_tools"]["preloop-mcp"]
+        assert tools == ["search_issues", "get_issue", "add_comment"]
 
     def test_generate_mcp_config_unknown_repo_audit_is_skipped(self):
         """repo-audit is not a second MCP product; unknown servers are skipped."""
@@ -192,7 +205,7 @@ class TestGenerateMCPEnvironmentVars:
         assert "PRELOOP_MCP_URL" in env  # Always included
 
     def test_generate_mcp_environment_vars_tool_without_server(self):
-        """Test that tools without server_name are skipped."""
+        """Tools without server_name default to the Preloop builtin server."""
         env = MCPConfigService.generate_mcp_environment_vars(
             allowed_mcp_servers=["preloop-mcp"],
             allowed_mcp_tools=[
@@ -202,9 +215,17 @@ class TestGenerateMCPEnvironmentVars:
         )
 
         tools_map = json.loads(env["MCP_ALLOWED_TOOLS"])
-        # Only tool2 should be included
-        assert len(tools_map["preloop-mcp"]) == 1
-        assert "tool2" in tools_map["preloop-mcp"]
+        assert tools_map["preloop-mcp"] == ["tool1", "tool2"]
+
+    def test_generate_mcp_environment_vars_legacy_name_only_shape(self):
+        """Name-only entries land on preloop-mcp in MCP_ALLOWED_TOOLS."""
+        env = MCPConfigService.generate_mcp_environment_vars(
+            allowed_mcp_servers=["preloop-mcp"],
+            allowed_mcp_tools=[{"name": "request_approval"}],
+        )
+
+        tools_map = json.loads(env["MCP_ALLOWED_TOOLS"])
+        assert tools_map["preloop-mcp"] == ["request_approval"]
 
     @patch("preloop.services.mcp_config_service.os.getenv")
     def test_generate_mcp_environment_vars_custom_url(self, mock_getenv):
@@ -264,6 +285,29 @@ class TestValidateToolAccess:
         )
 
         assert result is False
+
+    def test_validate_tool_access_legacy_name_only_shape(self):
+        """Name-only entries validate as preloop-mcp builtins."""
+        allowed_tools = [{"name": "get_issue"}, "search_issues"]
+
+        assert (
+            MCPConfigService.validate_tool_access(
+                "preloop-mcp", "get_issue", allowed_tools
+            )
+            is True
+        )
+        assert (
+            MCPConfigService.validate_tool_access(
+                "preloop-mcp", "search_issues", allowed_tools
+            )
+            is True
+        )
+        assert (
+            MCPConfigService.validate_tool_access(
+                "other-server", "get_issue", allowed_tools
+            )
+            is False
+        )
 
     def test_validate_tool_access_empty_list(self):
         """Test validating access with empty allowed tools list."""

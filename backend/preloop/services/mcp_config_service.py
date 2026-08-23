@@ -3,9 +3,34 @@
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+# Name-only allowlist entries (the legacy preset shape, e.g.
+# ``- name: search_issues``) mean Preloop builtins on this server.
+DEFAULT_TOOL_SERVER = "preloop-mcp"
+
+
+def _normalize_tool_entry(tool: Any) -> Optional[Tuple[str, str]]:
+    """Return ``(server_name, tool_name)`` for an allowlist entry.
+
+    Accepts the DB schema shape (``server_name`` + ``tool_name``), the
+    legacy preset shape (``name`` only, or ``tool_name`` without a
+    server), and bare strings. Name-only entries default to
+    :data:`DEFAULT_TOOL_SERVER`. Returns ``None`` for entries with no
+    usable tool name.
+    """
+    if isinstance(tool, str):
+        name = tool.strip()
+        return (DEFAULT_TOOL_SERVER, name) if name else None
+    if isinstance(tool, dict):
+        tool_name = tool.get("tool_name") or tool.get("name")
+        if not tool_name:
+            return None
+        server_name = tool.get("server_name") or DEFAULT_TOOL_SERVER
+        return (server_name, tool_name)
+    return None
 
 
 class MCPConfigService:
@@ -63,12 +88,12 @@ class MCPConfigService:
                 # Other MCP servers can be configured here
                 logger.warning(f"Unknown MCP server: {server_name}, skipping")
 
-        # Build allowed tools map for filtering
+        # Build allowed tools map for filtering. Name-only entries (the
+        # legacy preset shape) default to the Preloop builtin server.
         for tool in allowed_mcp_tools:
-            server_name = tool.get("server_name")
-            tool_name = tool.get("tool_name")
-
-            if server_name and tool_name:
+            entry = _normalize_tool_entry(tool)
+            if entry:
+                server_name, tool_name = entry
                 if server_name not in config["allowed_tools"]:
                     config["allowed_tools"][server_name] = []
                 config["allowed_tools"][server_name].append(tool_name)
@@ -99,12 +124,13 @@ class MCPConfigService:
 
         # Set allowed tools as JSON string
         if allowed_mcp_tools:
-            # Create a simplified mapping for env var
+            # Create a simplified mapping for env var. Name-only entries
+            # (the legacy preset shape) default to the builtin server.
             tools_map = {}
             for tool in allowed_mcp_tools:
-                server_name = tool.get("server_name")
-                tool_name = tool.get("tool_name")
-                if server_name and tool_name:
+                entry = _normalize_tool_entry(tool)
+                if entry:
+                    server_name, tool_name = entry
                     if server_name not in tools_map:
                         tools_map[server_name] = []
                     tools_map[server_name].append(tool_name)
@@ -135,9 +161,7 @@ class MCPConfigService:
             True if tool access is allowed, False otherwise
         """
         for tool in allowed_mcp_tools:
-            if (
-                tool.get("server_name") == server_name
-                and tool.get("tool_name") == tool_name
-            ):
+            entry = _normalize_tool_entry(tool)
+            if entry == (server_name, tool_name):
                 return True
         return False
