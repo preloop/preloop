@@ -619,6 +619,14 @@ class FlowTriggerService:
         """
         payload = event_data.get("payload", {})
         source = event_data.get("source", "").lower()
+        event_type = event_data.get("type") or ""
+
+        # Applying a label is the hop from intake/dispatch onto an
+        # implementation flow. If we skip Preloop-bot label events, then
+        # update_issue(labels=["agent-ready"]) can never start a fixer.
+        # Comment/PR/body updates still loop-guard as before.
+        if event_type in {"issue_labeled", "issue_unlabeled"}:
+            return False
 
         # Get the sender/actor who triggered the event
         # Note: payload may be enriched with filter_fields which can overwrite
