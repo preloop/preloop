@@ -867,8 +867,9 @@ def _is_qwen_chat_model(model_id: str) -> bool:
     """Keep chat/completions SKUs; drop dedicated media, audio, and NSFW ids.
 
     Multimodal chat flagships (``qwen3.8-max``) stay. Dedicated Wan video,
-    Qwen-Image, Qwen-VL product lines, audio/TTS, Happy Horse, Z-Image, and
-    any id carrying ``nsfw`` are excluded from the picker.
+    Qwen-Image, Qwen-VL product lines, audio/TTS, Happy Horse, Z-Image,
+    hyphen-delimited omni/MT/s2s families, live-translate SKUs, and any id
+    carrying ``nsfw`` are excluded from the picker.
     """
     lowered = (model_id or "").strip().lower()
     if not lowered:
@@ -881,14 +882,6 @@ def _is_qwen_chat_model(model_id: str) -> bool:
         "qwen-vl",
         "qwen-audio",
         "qwen-tts",
-        "qwen-omni",
-        "qwen2.5-omni",
-        "qwen3-omni",
-        "qwen3.5-omni",
-        "qwen3-s2s",
-        "qwen-mt",
-        "qwen3-livetranslate",
-        "qwen3.5-livetranslate",
         "qwen2.5-vl",
         "qvq-",
         "tongyi-tingwu",
@@ -901,12 +894,17 @@ def _is_qwen_chat_model(model_id: str) -> bool:
         "-embedding",
         "-rerank",
         "-vl-",
-        "-s2s-",
         "livetranslate",
     )
+    # Hyphen-delimited families so a qwen4-omni / qwen3-mt-plus bump stays
+    # hidden without another prefix edit. Tokens, not bare substrings, so
+    # a third-party id like omnilingual-chat would still list.
+    blocked_family_tokens = frozenset({"omni", "mt", "s2s"})
     if any(lowered.startswith(prefix) for prefix in blocked_prefixes):
         return False
     if any(token in lowered for token in blocked_substrings):
+        return False
+    if any(part in blocked_family_tokens for part in lowered.split("-")):
         return False
     return True
 

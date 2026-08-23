@@ -906,9 +906,11 @@ class TestGetQwenModels:
                     "qwen-vl-max",
                     "qwen3-omni-flash",
                     "qwen3.5-omni-plus",
+                    "qwen4-omni-flash",
                     "qwen3-s2s-flash-realtime",
                     "qwen3-livetranslate-flash",
                     "qwen-mt-plus",
+                    "qwen3-mt-plus",
                     "tongyi-tingwu-slp",
                     "happy-horse-1.1",
                     "z-image",
@@ -944,7 +946,10 @@ class TestGetQwenModels:
         assert not _is_qwen_chat_model("qwen3-vl-plus")
         assert not _is_qwen_chat_model("qwen3-omni-flash")
         assert not _is_qwen_chat_model("qwen3.5-omni-plus")
+        assert not _is_qwen_chat_model("qwen4-omni-flash")
         assert not _is_qwen_chat_model("qwen-mt-plus")
+        assert not _is_qwen_chat_model("qwen3-mt-plus")
+        assert not _is_qwen_chat_model("qwen4-s2s-flash")
 
 
 class TestGetDeepSeekModels:
