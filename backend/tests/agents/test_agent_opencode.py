@@ -307,7 +307,12 @@ class TestOpenCodeBuildConfig:
     def test_mcp_server_config(self):
         """MCP config has preloop server with correct structure."""
         agent = OpenCodeAgent({})
-        config = agent._build_opencode_config("model-1", "anthropic", {}, 600000)
+        config = agent._build_opencode_config(
+            "model-1",
+            "anthropic",
+            {"allowed_mcp_servers": ["preloop-mcp"]},
+            600000,
+        )
         preloop = config["mcp"]["preloop"]
         assert preloop["type"] == "remote"
         assert preloop["url"] == "$PRELOOP_MCP_URL"
@@ -424,8 +429,19 @@ class TestOpenCodeBuildConfig:
     def test_timeout_in_milliseconds(self):
         """MCP timeout is in milliseconds."""
         agent = OpenCodeAgent({})
-        config = agent._build_opencode_config("model-1", "anthropic", {}, 900000)
+        config = agent._build_opencode_config(
+            "model-1",
+            "anthropic",
+            {"allowed_mcp_servers": ["preloop-mcp"]},
+            900000,
+        )
         assert config["mcp"]["preloop"]["timeout"] == 900000
+
+    def test_empty_allowlist_starts_no_mcp(self):
+        """Ordinary agents do not load Preloop or repo-audit MCP."""
+        agent = OpenCodeAgent({})
+        config = agent._build_opencode_config("model-1", "anthropic", {}, 600000)
+        assert config["mcp"] == {}
 
 
 class TestOpenCodePrepareEnvironment:

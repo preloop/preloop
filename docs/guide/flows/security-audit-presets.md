@@ -16,10 +16,9 @@ human-readable evidence pack under `/workspace/evidence/`.
 | Release Security Audit | Both of the above in one execution, plus drift vs a previous run's result.json, plus [multi-repo evidence storage](#evidence-storage-architecture-multi-repo-products) | `preloop.cra.releaseaudit/v1` |
 | [Component Due Diligence Record](#component-due-diligence-record) | Agent legwork on one integrated component; a human carries the risk decision via approval; the record lands in the compliance repo | `preloop.cra.duediligence/v1` |
 
-The audit presets follow the Observe/Eval pattern: read-only toolset (no
-MCP servers or tools; the due-diligence preset's single tool is
-`request_approval`), deterministic checks separated from agent judgment
-(`checks[]` vs `assessments[]`), and every artifact carries the line:
+The audit presets follow the Observe/Eval pattern: no write tools;
+deterministic checks separated from agent judgment (`checks[]` vs
+`assessments[]`); and every artifact carries the line:
 
 > Machine-generated evidence for conformity assessment support. Not a
 > conformity assessment, certification, or legal advice.
@@ -210,6 +209,56 @@ Envelope plus `sbom_audit` (the `sbomaudit` body above, minus envelope),
 `drift` is `null` when no previous `result.json` was delivered. Overall
 verdict: `fail` if the SBOM audit failed or the severity gate failed;
 `pass_with_findings` if gated-clean but findings or skipped checks exist.
+If `sbom_audit.verdict` is `fail`, `result.verdict` must be `fail`.
+
+When a repository is attached, the run also fills `gap_register`
+(`null` when no checkout / `repository_url`). Items are
+`met | gap | partial | declared`. `not_checkable` is required.
+`secrets_findings_count` must equal the SHA+path finding row count — a
+gitleaks count of 0 is not "met". A previous run's SHA+path set is a
+freeze floor: dropping a row without `resolved` plus a reason fails.
+Gap items appear in `checks[]` as `passed: false` and may move a clean
+run to `pass_with_findings`; they never flip the severity gate or
+`sbom_audit.verdict`.
+
+### Opt-in repo-audit tools
+
+Built-in MCP servers start only when a flow lists them. Ordinary agents
+pay no extra MCP process or tool-schema cost. The Release Security Audit
+preset enables the local `repo-audit` stdio server:
+
+```yaml
+allowed_mcp_servers:
+  - repo-audit
+allowed_mcp_tools:
+  - name: secret_history_scan
+    server_name: repo-audit
+  - name: repo_hygiene_walk
+    server_name: repo-audit
+  - name: ci_workflow_audit
+    server_name: repo-audit
+  - name: upstream_divergence
+    server_name: repo-audit
+```
+
+To enable the same tools on a cloned flow, keep those allowlists (or
+add them in the flow editor). The tools walk git history and HEAD
+without emitting secret values; `git log -p` / `git show` are rejected
+in the tool. Default term lists are generic (password/token/key/cert/env
+patterns). Callers may pass extra terms; do not bake product-specific
+nouns into the preset.
+
+Pin **gitleaks 8.24.3** in the runner image if you want the optional
+gitleaks sidecar; absence is recorded. A gitleaks exit of 0 still does
+not make secrets hygiene met. Deeper CI workflow audit (zizmor) is not
+shipped in this version — `ci_workflow_audit` covers generic YAML
+checks (mutable `uses:` tags, `pull_request_target`, over-broad
+permissions).
+
+Components with no purl/CPE can be given a generic VCS PURL
+(`pkg:generic/<name>@<version>?vcs_url=git+…@<commit>`) when the
+repository URL and commit are known, then queried against OSV. This is
+a hook, not a full SBOM rewrite.
 
 ## Evidence pack layout
 
@@ -220,6 +269,7 @@ verdict: `fail` if the SBOM audit failed or the severity gate failed;
   sbom-findings.json   # full SBOM verification findings (release audit)
   vuln-report.md       # human-readable vuln report (exploit check)
   drift-report.md      # delta vs previous run (release audit, when baseline given)
+  gap-register.md      # file-presence / hygiene register (release audit, when a repo is attached)
   dossier.md           # due-diligence dossier (component due diligence)
   facts.json           # machine-readable due-diligence facts (component due diligence)
 ```

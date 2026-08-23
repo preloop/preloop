@@ -421,6 +421,25 @@ fi
 echo '{settings_b64}' | base64 -d > "$HOME/.gemini/settings.json"
 """
 
+        from preloop.security.opt_in import (
+            mcp_allowlists_from_context,
+            wants_preloop_mcp,
+        )
+
+        servers, tools = mcp_allowlists_from_context(execution_context)
+        mcp_add_block = ""
+        if wants_preloop_mcp(servers, tools):
+            mcp_add_block = """
+# Register the Preloop MCP server via `gemini mcp add`.
+# Flags: -t http (HTTP transport), -s user (user scope),
+#         --trust (auto-approve), -H (custom header).
+gemini mcp add preloop "$PRELOOP_MCP_URL" \\
+  -t http \\
+  -s user \\
+  --trust \\
+  -H "Authorization: Bearer $PRELOOP_API_TOKEN"
+"""
+
         # Create the full script
         script = f"""
 set -e
@@ -470,14 +489,7 @@ fi
 # Configure Gemini CLI MCP servers
 mkdir -p ~/.gemini
 {gateway_settings_block}
-# Register the Preloop MCP server via `gemini mcp add`.
-# Flags: -t http (HTTP transport), -s user (user scope),
-#         --trust (auto-approve), -H (custom header).
-gemini mcp add preloop "$PRELOOP_MCP_URL" \
-  -t http \
-  -s user \
-  --trust \
-  -H "Authorization: Bearer $PRELOOP_API_TOKEN"
+{mcp_add_block}
 
 # Debug: Show config (with token masked)
 echo "=== Gemini Configuration ==="

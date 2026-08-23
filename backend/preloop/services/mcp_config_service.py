@@ -5,6 +5,13 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
+from preloop.security.bootstrap import stdio_server_config
+from preloop.security.opt_in import (
+    REPO_AUDIT_SERVER,
+    wants_preloop_mcp,
+    wants_repo_audit,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -43,35 +50,40 @@ class MCPConfigService:
             "allowed_tools": {},
         }
 
-        # Build MCP server configurations
-        for server_name in allowed_mcp_servers:
-            if server_name == "preloop-mcp":
-                # Preloop MCP endpoints with authentication
-                server_config = {
-                    "url": f"{preloop_url}/mcp/v1",
-                    "transport": "http-streaming",
+        # Built-in servers are opt-in. Empty allowlists start nothing.
+        if wants_preloop_mcp(allowed_mcp_servers, allowed_mcp_tools):
+            server_config = {
+                "url": f"{preloop_url}/mcp/v1",
+                "transport": "http-streaming",
+            }
+            if account_api_token:
+                server_config["headers"] = {
+                    "Authorization": f"Bearer {account_api_token}"
                 }
+            config["mcpServers"]["preloop-mcp"] = server_config
 
-                # Add authentication if token is provided
-                if account_api_token:
-                    server_config["headers"] = {
-                        "Authorization": f"Bearer {account_api_token}"
-                    }
+        if wants_repo_audit(allowed_mcp_servers, allowed_mcp_tools):
+            config["mcpServers"][REPO_AUDIT_SERVER] = stdio_server_config()
 
-                config["mcpServers"]["preloop-mcp"] = server_config
-            else:
-                # Other MCP servers can be configured here
+        listed_servers = {str(s).strip() for s in allowed_mcp_servers or []}
+        known = {"preloop-mcp", "preloop", REPO_AUDIT_SERVER}
+        for server_name in listed_servers - known:
+            if server_name:
                 logger.warning(f"Unknown MCP server: {server_name}, skipping")
 
         # Build allowed tools map for filtering
         for tool in allowed_mcp_tools:
-            server_name = tool.get("server_name")
-            tool_name = tool.get("tool_name")
-
-            if server_name and tool_name:
-                if server_name not in config["allowed_tools"]:
-                    config["allowed_tools"][server_name] = []
-                config["allowed_tools"][server_name].append(tool_name)
+            server_name = tool.get("server_name") or ""
+            tool_name = tool.get("tool_name") or tool.get("name")
+            if not tool_name:
+                continue
+            if not server_name:
+                server_name = (
+                    REPO_AUDIT_SERVER if wants_repo_audit([], [tool]) else "preloop-mcp"
+                )
+            if server_name not in config["allowed_tools"]:
+                config["allowed_tools"][server_name] = []
+            config["allowed_tools"][server_name].append(tool_name)
 
         logger.debug(f"Generated MCP config: {json.dumps(config, indent=2)}")
         return config
@@ -102,12 +114,19 @@ class MCPConfigService:
             # Create a simplified mapping for env var
             tools_map = {}
             for tool in allowed_mcp_tools:
-                server_name = tool.get("server_name")
-                tool_name = tool.get("tool_name")
-                if server_name and tool_name:
-                    if server_name not in tools_map:
-                        tools_map[server_name] = []
-                    tools_map[server_name].append(tool_name)
+                server_name = tool.get("server_name") or ""
+                tool_name = tool.get("tool_name") or tool.get("name")
+                if not tool_name:
+                    continue
+                if not server_name:
+                    server_name = (
+                        REPO_AUDIT_SERVER
+                        if wants_repo_audit([], [tool])
+                        else "preloop-mcp"
+                    )
+                if server_name not in tools_map:
+                    tools_map[server_name] = []
+                tools_map[server_name].append(tool_name)
 
             env["MCP_ALLOWED_TOOLS"] = json.dumps(tools_map)
 

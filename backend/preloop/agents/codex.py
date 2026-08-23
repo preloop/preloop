@@ -3,7 +3,7 @@
 import json
 import logging
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from aiodocker.exceptions import DockerError
 
@@ -359,6 +359,22 @@ fi
         execution_id = execution_context.get("execution_id", "unknown")
         flow_name = execution_context.get("flow_name", "unknown")
 
+        from preloop.security.bootstrap import bootstrap_shell_script
+        from preloop.security.opt_in import (
+            mcp_allowlists_from_context,
+            wants_repo_audit,
+        )
+
+        servers, tools = mcp_allowlists_from_context(execution_context)
+        # Interpolated separately: sources contain braces and must not
+        # pass through an f-string.
+        bootstrap_block = (
+            bootstrap_shell_script() if wants_repo_audit(servers, tools) else ""
+        )
+        auth_block = self._build_codex_auth_config(
+            model, model_provider, model_endpoint, execution_context
+        )
+
         # Create the full script
         script = f"""
 set -e
@@ -411,8 +427,12 @@ fi
 # Configure Codex CLI authentication
 mkdir -p ~/.codex
 
-{self._build_codex_auth_config(model, model_provider, model_endpoint)}
-
+"""
+        script = (
+            script
+            + bootstrap_block
+            + auth_block
+            + f"""
 # Debug: Show config files (with API key masked)
 echo "=== Codex Configuration ==="
 echo "Model: {model}"
@@ -431,6 +451,7 @@ CODEX_EXIT_CODE=$?
 # Exit with codex's exit code
 exit $CODEX_EXIT_CODE
 """
+        )
         return script
 
     async def _start_kubernetes_pod(self, execution_context: Dict[str, Any]) -> str:
@@ -507,8 +528,51 @@ exit $CODEX_EXIT_CODE
         # Call parent implementation which will use the args and env
         return await super()._start_kubernetes_pod(execution_context)
 
+    def _codex_mcp_toml(
+        self, execution_context: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """Return Codex config.toml MCP server blocks for opted-in servers.
+
+        Empty allowlists start no MCP servers and dump no tool schemas.
+        """
+        from preloop.security.bootstrap import BOOTSTRAP_ROOT
+        from preloop.security.opt_in import (
+            REPO_AUDIT_SERVER,
+            mcp_allowlists_from_context,
+            wants_preloop_mcp,
+            wants_repo_audit,
+        )
+
+        servers, tools = mcp_allowlists_from_context(execution_context)
+        blocks: list[str] = []
+        if wants_preloop_mcp(servers, tools):
+            blocks.append(
+                """
+[mcp_servers.preloop]
+url = "$PRELOOP_MCP_URL"
+bearer_token_env_var = "PRELOOP_API_TOKEN"
+tool_timeout_sec = $MCP_TOOL_TIMEOUT_SEC
+"""
+            )
+        if wants_repo_audit(servers, tools):
+            blocks.append(
+                f"""
+[mcp_servers.{REPO_AUDIT_SERVER.replace("-", "_")}]
+command = "python3"
+args = ["-m", "preloop.security.mcp_server"]
+
+[mcp_servers.{REPO_AUDIT_SERVER.replace("-", "_")}.env]
+PYTHONPATH = "{BOOTSTRAP_ROOT}"
+"""
+            )
+        return "".join(blocks)
+
     def _build_codex_auth_config(
-        self, model: str, model_provider: str, model_endpoint: str
+        self,
+        model: str,
+        model_provider: str,
+        model_endpoint: str,
+        execution_context: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         Build the auth.json and config.toml shell script block for Codex CLI.
@@ -516,15 +580,18 @@ exit $CODEX_EXIT_CODE
         For OpenAI models, generates a standard config.
         For custom models, generates a custom_provider section with base_url,
         env_key, and wire_api so Codex knows how to reach the provider.
+        MCP servers are opt-in via the flow allowlists.
 
         Args:
             model: Model identifier (e.g., "gpt-5.4", "claude-sonnet-4-20250514")
             model_provider: Provider name (e.g., "openai", "anthropic")
             model_endpoint: API base URL for custom providers
+            execution_context: Optional execution context with MCP allowlists
 
         Returns:
             Shell script block to write auth.json and config.toml
         """
+        mcp_toml = self._codex_mcp_toml(execution_context)
         is_custom = model_provider and model_provider != "openai"
 
         if is_custom:
@@ -565,11 +632,7 @@ name = "{model_provider.title()}"
 {base_url_line}
 env_key = "{env_key}"
 wire_api = "{wire_api}"
-
-[mcp_servers.preloop]
-url = "$PRELOOP_MCP_URL"
-bearer_token_env_var = "PRELOOP_API_TOKEN"
-tool_timeout_sec = $MCP_TOOL_TIMEOUT_SEC
+{mcp_toml}
 EOF"""
         else:
             # Standard OpenAI config
@@ -585,11 +648,7 @@ cat > ~/.codex/config.toml << EOF
 model = "{model}"
 
 rmcp_client = true
-
-[mcp_servers.preloop]
-url = "$PRELOOP_MCP_URL"
-bearer_token_env_var = "PRELOOP_API_TOKEN"
-tool_timeout_sec = $MCP_TOOL_TIMEOUT_SEC
+{mcp_toml}
 EOF"""
 
         return auth_block

@@ -177,6 +177,7 @@ class TestGeminiBuildScript:
             "execution_id": "exec-1",
             "flow_name": "test-flow",
             "_mcp_tool_timeout": 900,
+            "allowed_mcp_servers": ["preloop-mcp"],
         }
         script = agent._build_gemini_script(context)
         assert "gemini mcp add preloop" in script
@@ -335,7 +336,9 @@ class TestGeminiGatewayHelperModelSettings:
     def test_gateway_mode_writes_settings_json_before_mcp_add(self):
         """Script writes ~/.gemini/settings.json (helper pins) before gemini mcp add."""
         agent = GeminiAgent({})
-        script = agent._build_gemini_script(self._gateway_context())
+        script = agent._build_gemini_script(
+            self._gateway_context(allowed_mcp_servers=["preloop-mcp"])
+        )
         assert "settings.json" in script
         # Settings must land before `gemini mcp add` merges into the same file.
         assert script.index("settings.json") < script.index("gemini mcp add")

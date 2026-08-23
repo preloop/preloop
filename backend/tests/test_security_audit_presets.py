@@ -57,8 +57,21 @@ class TestSecurityAuditPresetInvariants:
         assert data["name"] == name
 
     def test_read_only_toolset(self, preset):
-        """No MCP servers/tools: the flows are read-only by construction."""
-        _, data = preset
+        """Write tools stay off. RSA opts into local repo-audit scanners."""
+        name, data = preset
+        if name == "Release Security Audit":
+            assert data["allowed_mcp_servers"] == ["repo-audit"]
+            names = [t.get("name") for t in data["allowed_mcp_tools"]]
+            assert names == [
+                "secret_history_scan",
+                "repo_hygiene_walk",
+                "ci_workflow_audit",
+                "upstream_divergence",
+            ]
+            assert all(
+                t.get("server_name") == "repo-audit" for t in data["allowed_mcp_tools"]
+            )
+            return
         assert data["allowed_mcp_servers"] == []
         assert data["allowed_mcp_tools"] == []
 
@@ -213,9 +226,35 @@ class TestReleaseAuditEvidenceStorage:
         )
 
     def test_repos_are_not_scanned(self, prompt):
-        """Checkouts feed evidence storage; the SBOM stays the inventory."""
+        """SBOM stays the vuln inventory; gap register is hygiene/config."""
         norm = _norm(prompt)
-        assert "you do NOT scan repository source code" in norm
+        assert "do NOT use the repository as the vulnerability inventory" in norm
+        assert "FILE-PRESENCE, CONFIG, and SECRET-HYGIENE" in _norm(prompt)
+        assert "secret_history_scan" in prompt
+        assert "repo_hygiene_walk" in prompt
+
+    def test_gap_register_schema(self, prompt):
+        """PHASE 3.5 is a thin schema: statuses, freeze floor, no product nouns."""
+        assert "PHASE 3.5: GAP REGISTER" in prompt
+        assert '"gap_register"' in prompt
+        assert "not_checkable" in prompt
+        assert "secrets_findings_count" in prompt
+        assert "gitleaks 0" in prompt or "gitleaks count of 0" in prompt
+        assert "freeze floor" in prompt
+        lowered = prompt.lower()
+        for noun in (
+            "mqtt_pass",
+            "kettlecompanion",
+            "remove mqtt",
+            "tasmota",
+            "user_config_override",
+        ):
+            assert noun not in lowered
+
+    def test_sbom_fail_cannot_be_upgraded(self, prompt):
+        assert "sbom_audit.verdict is fail, result.verdict MUST be fail" in _norm(
+            prompt
+        )
 
     def test_stubs_stay_small(self, prompt):
         norm = _norm(prompt)

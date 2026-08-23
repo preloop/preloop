@@ -35,6 +35,9 @@ allowed_mcp_servers: []
 allowed_mcp_tools:
   - name: "search_issues"
   - name: "get_issue"
+# Empty allowlists start no MCP servers. Add a server name (preloop-mcp
+# or repo-audit) and the tool names the flow needs. See the Release
+# Security Audit preset for the repo-audit opt-in.
 git_clone_config: null
 is_preset: true
 ```

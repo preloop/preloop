@@ -634,6 +634,34 @@ exit $OPENCODE_EXIT_CODE
         # Without the slash, it treats the entire string as the provider.
         model_qualified = f"{effective_model_provider}/{model_local_id}"
 
+        from preloop.security.bootstrap import BOOTSTRAP_ROOT
+        from preloop.security.opt_in import (
+            REPO_AUDIT_SERVER,
+            mcp_allowlists_from_context,
+            wants_preloop_mcp,
+            wants_repo_audit,
+        )
+
+        servers, tools = mcp_allowlists_from_context(execution_context)
+        mcp: Dict[str, Any] = {}
+        if wants_preloop_mcp(servers, tools):
+            mcp["preloop"] = {
+                "type": "remote",
+                "url": "$PRELOOP_MCP_URL",
+                "headers": {
+                    "Authorization": "Bearer $PRELOOP_API_TOKEN",
+                },
+                "timeout": mcp_timeout_ms,
+                "enabled": True,
+            }
+        if wants_repo_audit(servers, tools):
+            mcp[REPO_AUDIT_SERVER] = {
+                "type": "local",
+                "command": ["python3", "-m", "preloop.security.mcp_server"],
+                "environment": {"PYTHONPATH": BOOTSTRAP_ROOT},
+                "enabled": True,
+            }
+
         config: Dict[str, Any] = {
             "$schema": "https://opencode.ai/config.json",
             "model": model_qualified,
@@ -642,17 +670,7 @@ exit $OPENCODE_EXIT_CODE
             "share": "disabled",
             "enabled_providers": [effective_model_provider],
             "permission": "allow",
-            "mcp": {
-                "preloop": {
-                    "type": "remote",
-                    "url": "$PRELOOP_MCP_URL",
-                    "headers": {
-                        "Authorization": "Bearer $PRELOOP_API_TOKEN",
-                    },
-                    "timeout": mcp_timeout_ms,
-                    "enabled": True,
-                }
-            },
+            "mcp": mcp,
         }
 
         # Add provider configuration for custom/non-builtin endpoints.
