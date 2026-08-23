@@ -17,9 +17,7 @@ import yaml
 
 PRESETS_DIR = Path(__file__).resolve().parents[1] / "presets"
 
-DISCLAIMER = (
-    "Machine-generated review evidence. Not a certification, audit"
-)
+DISCLAIMER = "Machine-generated review evidence. Not a certification, audit"
 
 PRESET_FILES = {
     "Architecture and Strategy Conformance Review": (
@@ -36,9 +34,7 @@ SCHEMA_IDS = {
 }
 
 FLOW_SLUGS = {
-    "Architecture and Strategy Conformance Review": (
-        "architecture-strategy-review"
-    ),
+    "Architecture and Strategy Conformance Review": ("architecture-strategy-review"),
     "Full Repo Code Health Review": "repo-code-health-review",
     "Standards Compliance Walk": "standards-compliance-walk",
 }
@@ -118,7 +114,6 @@ class TestRepoReviewPresetInvariants:
         certification."""
         _, data = preset
         assert DISCLAIMER in data["prompt_template"]
-        assert DISCLAIMER in data["description"] or True  # description opt.
 
     def test_prompt_separates_facts_from_judgment(self, preset):
         _, data = preset
@@ -287,7 +282,7 @@ class TestArchitectureStrategyReviewPreset:
 
     def test_stable_finding_ids_and_verification_budget(self, prompt):
         norm = _norm(prompt)
-        assert 'arch:<category>:<path>:<slug>' in prompt
+        assert "arch:<category>:<path>:<slug>" in prompt
         assert "at most 2 greps and 2 file reads per finding" in norm
 
     def test_purpose_fit_is_marked_judgment(self, prompt):
@@ -333,7 +328,7 @@ class TestRepoCodeHealthReviewPreset:
         assert "Fewer verified findings beat a long noisy list" in norm
 
     def test_stable_finding_ids(self, prompt):
-        assert 'health:<lens>:<path>:<slug>' in prompt
+        assert "health:<lens>:<path>:<slug>" in prompt
 
     def test_per_module_register(self, prompt):
         norm = _norm(prompt)
@@ -361,7 +356,7 @@ class TestStandardsComplianceWalkPreset:
         norm = _norm(prompt)
         assert "YOU NEVER GUESS THE STANDARD" in norm
         assert (
-            'names no standards and does not set repo_declared mode, finish '
+            "names no standards and does not set repo_declared mode, finish "
             'with an "error" summary' in norm
         )
         assert "did not name would contaminate the register" in norm
@@ -419,13 +414,11 @@ class TestPresetsLoadThroughLoader:
             assert names.index(
                 "Architecture and Strategy Conformance Review"
             ) > names.index("Release Security Audit")
-            assert (
-                names.index("Full Repo Code Health Review")
-                > names.index("Architecture and Strategy Conformance Review")
+            assert names.index("Full Repo Code Health Review") > names.index(
+                "Architecture and Strategy Conformance Review"
             )
-            assert (
-                names.index("Standards Compliance Walk")
-                > names.index("Full Repo Code Health Review")
+            assert names.index("Standards Compliance Walk") > names.index(
+                "Full Repo Code Health Review"
             )
         finally:
             load_flow_presets.cache_clear()

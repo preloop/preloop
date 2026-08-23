@@ -53,7 +53,8 @@ All three presets follow the same guarantees:
   consecutive runs stay comparable.
 - **Declared coverage.** `result.json` carries a `coverage` block
   (`files_total`, `files_opened`, `plan_completed`, per-module sampling
-  basis, `not_reviewed`). Absence claims are valid only for opened files
+  basis (`full_repo_searches` in the standards walk, which does not
+  sample), `not_reviewed`). Absence claims are valid only for opened files
   or recorded full-repo searches, and `pass` requires the plan to have
   completed.
 - **Budget knobs** (payload, all optional): `depth`
