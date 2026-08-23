@@ -37,6 +37,40 @@ logger = logging.getLogger(__name__)
 _LOCAL_PRESENCE_WINDOW = timedelta(seconds=20)
 
 
+def _approval_config_dict(workflow: ApprovalWorkflow) -> Dict[str, Any]:
+    """Return ``approval_config`` only when it is a real dict."""
+    cfg = getattr(workflow, "approval_config", None)
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def mattermost_bot_target(
+    workflow: ApprovalWorkflow,
+) -> Optional[tuple[str, str, str]]:
+    """Return ``(base_url, token, channel_id)`` for a Mattermost bot post.
+
+    Incoming webhooks cannot target direct messages (Mattermost returns 403).
+    The bot-token Posts API can. Non-string fields return None so empty
+    standard workflows and MagicMock fixtures stay silent.
+    """
+    cfg = _approval_config_dict(workflow)
+    token = cfg.get("bot_token") or cfg.get("mattermost_token")
+    url = cfg.get("mattermost_url") or cfg.get("base_url")
+    channel = cfg.get("channel_id")
+    if not isinstance(channel, str) or not channel.strip():
+        raw = getattr(workflow, "channel", None)
+        channel = raw if isinstance(raw, str) else ""
+    if not isinstance(token, str) or not isinstance(url, str):
+        return None
+    token = token.strip()
+    url = url.strip().rstrip("/")
+    channel = channel.strip()
+    if not token or not url or not channel:
+        return None
+    if not url.startswith(("https://", "http://")):
+        return None
+    return (url, token, channel)
+
+
 def _operator_present_at_machine(db, approval_request: ApprovalRequest) -> bool:
     """True only when the operator is at the local TTY.
 
@@ -1537,12 +1571,15 @@ class ApprovalService:
         Returns:
             True if successful, False otherwise
         """
-        # Get webhook URL from workflow
-        webhook_url = None
-        if approval_workflow.approval_config:
-            webhook_url = approval_workflow.approval_config.get("webhook_url")
+        cfg = _approval_config_dict(approval_workflow)
+        webhook_url = cfg.get("webhook_url")
+        if not isinstance(webhook_url, str) or not webhook_url.strip():
+            webhook_url = None
+        else:
+            webhook_url = webhook_url.strip()
+        bot_target = mattermost_bot_target(approval_workflow)
 
-        if not webhook_url:
+        if not webhook_url and not bot_target:
             error_msg = "No webhook URL configured in approval workflow"
             await self.update_approval_request(
                 approval_request.id,
@@ -1571,8 +1608,14 @@ class ApprovalService:
         ask_text = (approval_request.summary or "").strip() or None
         headline = ask_text or f"Approval Required: {approval_request.tool_name}"
 
-        # Create message based on approval type
-        if approval_workflow.approval_type in ["slack", "mattermost"]:
+        # Create message based on approval type. Bot-token Mattermost
+        # posts use the same chat markdown even when approval_type is
+        # still ``standard`` (incoming DM webhooks 403).
+        use_chat_payload = (
+            approval_workflow.approval_type in ["slack", "mattermost"]
+            or bot_target is not None
+        )
+        if use_chat_payload:
             # Build message text with all details — summary first when present
             if ask_text:
                 message_text = f"⚠️ **{ask_text}**\n\n"
@@ -1672,14 +1715,36 @@ class ApprovalService:
                 },
             }
 
-        # Post to webhook
+        # Incoming webhook when configured; otherwise Mattermost bot Posts API.
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post(
-                    webhook_url,
-                    json=message,
-                    headers={"Content-Type": "application/json"},
-                )
+                if webhook_url:
+                    response = await client.post(
+                        webhook_url,
+                        json=message,
+                        headers={"Content-Type": "application/json"},
+                    )
+                else:
+                    assert bot_target is not None
+                    base_url, token, channel_id = bot_target
+                    post_body: Dict[str, Any] = {
+                        "channel_id": channel_id,
+                        "message": (
+                            message["text"]
+                            if isinstance(message, dict) and "text" in message
+                            else json.dumps(message)
+                        ),
+                    }
+                    if isinstance(message, dict) and message.get("attachments"):
+                        post_body["props"] = {"attachments": message["attachments"]}
+                    response = await client.post(
+                        f"{base_url}/api/v4/posts",
+                        json=post_body,
+                        headers={
+                            "Content-Type": "application/json",
+                            "Authorization": f"Bearer {token}",
+                        },
+                    )
                 response.raise_for_status()
 
             # Mark as posted
@@ -2142,10 +2207,17 @@ class ApprovalService:
             )
 
         # Handle webhook-based notifications (these are workflow-level, not per-user)
-        # Derive notification channels from approval_type (the model field)
+        # Derive notification channels from approval_type (the model field).
+        # A ``standard`` workflow with Mattermost bot credentials still
+        # posts: DMs reject incoming webhooks, so type alone is not enough.
         workflow_channels = (
             [approval_workflow.approval_type] if approval_workflow.approval_type else []
         )
+        if not any(
+            channel in ("slack", "mattermost", "webhook")
+            for channel in workflow_channels
+        ) and mattermost_bot_target(approval_workflow):
+            workflow_channels.append("mattermost")
         for channel in workflow_channels:
             if channel in ["slack", "mattermost", "webhook"]:
                 try:

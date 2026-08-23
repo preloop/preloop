@@ -9,7 +9,7 @@ import pytest
 from preloop.models.models import ApprovalWorkflow, ApprovalRequest
 from preloop.models.schemas.approval_request import ApprovalRequestUpdate
 
-from preloop.services.approval_service import ApprovalService
+from preloop.services.approval_service import ApprovalService, mattermost_bot_target
 
 pytestmark = pytest.mark.asyncio
 
@@ -1121,6 +1121,61 @@ class TestPostWebhookNotification:
             ]
             assert len(reasoning_fields) > 0
 
+    @patch("preloop.services.approval_service.httpx.AsyncClient")
+    async def test_post_webhook_mattermost_bot_token_success(
+        self,
+        mock_client_class,
+        approval_service,
+        sample_approval_request,
+        sample_approval_workflow,
+    ):
+        """DM incoming webhooks 403. Bot-token Posts API is the working path."""
+        sample_approval_workflow.approval_type = "standard"
+        sample_approval_workflow.channel = None
+        sample_approval_workflow.approval_config = {
+            "mattermost_url": "https://mm.example.com/",
+            "channel_id": "abcdefghijklmnopqrstuvwxyz",
+            "bot_token": "bot-token-test-value",
+        }
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_client = AsyncMock()
+        mock_client.post.return_value = mock_response
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        with patch.object(approval_service, "update_approval_request") as mock_update:
+            result = await approval_service.post_webhook_notification(
+                sample_approval_request, sample_approval_workflow
+            )
+
+        assert result is True
+        mock_client.post.assert_called_once()
+        args, kwargs = mock_client.post.call_args
+        assert args[0] == "https://mm.example.com/api/v4/posts"
+        assert kwargs["headers"]["Authorization"] == "Bearer bot-token-test-value"
+        assert kwargs["json"]["channel_id"] == "abcdefghijklmnopqrstuvwxyz"
+        assert "message" in kwargs["json"]
+        update = mock_update.call_args[0][1]
+        assert update.webhook_posted_at is not None
+
+    async def test_mattermost_bot_target_ignores_non_string_channel(
+        self, sample_approval_workflow
+    ):
+        """MagicMock.channel must not be treated as a channel id."""
+        sample_approval_workflow.approval_type = "standard"
+        sample_approval_workflow.approval_config = {
+            "mattermost_url": "https://mm.example.com",
+            "bot_token": "bot-token-test-value",
+        }
+        sample_approval_workflow.channel = MagicMock()
+        assert mattermost_bot_target(sample_approval_workflow) is None
+
+        sample_approval_workflow.channel = "abcdefghijklmnopqrstuvwxyz"
+        target = mattermost_bot_target(sample_approval_workflow)
+        assert target is not None
+        assert target[2] == "abcdefghijklmnopqrstuvwxyz"
+
 
 class TestSendNotifications:
     """Test send_notifications method."""
@@ -1293,6 +1348,79 @@ class TestSendNotifications:
 
                     assert result["slack"]["success"] is False
                     assert "error" in result["slack"]
+
+    async def test_send_notifications_standard_with_bot_config(
+        self, approval_service, sample_approval_request, sample_approval_workflow
+    ):
+        """Founder Mattermost ping is approval_type=standard with bot creds."""
+        sample_approval_request.requested_at = datetime.utcnow()
+        sample_approval_workflow.approval_type = "standard"
+        sample_approval_workflow.channel = "abcdefghijklmnopqrstuvwxyz"
+        sample_approval_workflow.approval_config = {
+            "mattermost_url": "https://mm.example.com",
+            "channel_id": "abcdefghijklmnopqrstuvwxyz",
+            "bot_token": "bot-token-test-value",
+        }
+
+        with patch.object(
+            approval_service,
+            "_send_email_notification",
+            new_callable=AsyncMock,
+            return_value={"success": True, "sent": 0, "failed": 0, "skipped": 0},
+        ):
+            with patch.object(
+                approval_service,
+                "_send_push_notification",
+                new_callable=AsyncMock,
+                return_value={"success": True, "sent": 0, "failed": 0},
+            ):
+                with patch.object(
+                    approval_service,
+                    "post_webhook_notification",
+                    new_callable=AsyncMock,
+                    return_value=True,
+                ) as mock_webhook:
+                    result = await approval_service.send_notifications(
+                        sample_approval_request, sample_approval_workflow
+                    )
+
+                    mock_webhook.assert_called_once()
+                    assert result["mattermost"]["success"] is True
+
+    async def test_send_notifications_standard_without_bot_skips_mattermost(
+        self, approval_service, sample_approval_request, sample_approval_workflow
+    ):
+        """Default standard workflow has no bot creds, so no Mattermost post."""
+        sample_approval_request.requested_at = datetime.utcnow()
+        sample_approval_request.tool_name = "shell"
+        sample_approval_workflow.approval_type = "standard"
+        sample_approval_workflow.channel = None
+        sample_approval_workflow.approval_config = None
+
+        with patch.object(
+            approval_service,
+            "_send_email_notification",
+            new_callable=AsyncMock,
+            return_value={"success": True, "sent": 0, "failed": 0, "skipped": 0},
+        ):
+            with patch.object(
+                approval_service,
+                "_send_push_notification",
+                new_callable=AsyncMock,
+                return_value={"success": True, "sent": 0, "failed": 0},
+            ):
+                with patch.object(
+                    approval_service,
+                    "post_webhook_notification",
+                    new_callable=AsyncMock,
+                    return_value=True,
+                ) as mock_webhook:
+                    result = await approval_service.send_notifications(
+                        sample_approval_request, sample_approval_workflow
+                    )
+
+                    mock_webhook.assert_not_called()
+                    assert "mattermost" not in result
 
 
 class TestGetAllApproverUserIds:
