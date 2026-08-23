@@ -1,9 +1,9 @@
-"""Security helpers used by Preloop MCP tools and RSA result validation.
+"""Security helpers for RSA result validation.
 
-Scanners are thin wrappers around maintained OSS CLIs (gitleaks, zizmor)
-registered on the existing ``preloop-mcp`` server with
-``default_enabled: False``. Gap-register freeze is result validation, not
-a scanner.
+Scanner execution (gitleaks, zizmor) happens inside the agent execution
+sandbox, installed by the preset the same way as spdx-tools. The server
+keeps only deterministic result validation: the gap-register freeze
+comparator is result validation, not a scanner.
 """
 
 from preloop.security.gap_register import (
@@ -11,15 +11,9 @@ from preloop.security.gap_register import (
     assert_gap_register,
     validate_gap_register,
 )
-from preloop.security.pins import (
-    RECOMMENDED_GITLEAKS_VERSION,
-    RECOMMENDED_ZIZMOR_VERSION,
-)
 
 __all__ = [
     "GapRegisterValidationError",
-    "RECOMMENDED_GITLEAKS_VERSION",
-    "RECOMMENDED_ZIZMOR_VERSION",
     "assert_gap_register",
     "validate_gap_register",
 ]

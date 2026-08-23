@@ -86,8 +86,6 @@ class TestListAllTools:
             "estimate_compliance",
             "improve_compliance",
             "permission_prompt",
-            "gitleaks_scan",
-            "zizmor_scan",
         }
         for tool in result:
             expected = tool["name"] not in default_disabled
