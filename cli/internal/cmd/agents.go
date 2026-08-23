@@ -3949,6 +3949,20 @@ func applyCodexManagedGateway(plan managedMCPEnrollmentPlan, baseURL, token, mod
 		providers = make(map[string]interface{})
 		plan.ManagedDocument["model_providers"] = providers
 	}
+	// Codex reads custom-provider credentials in this order
+	// (codex-rs model-provider/src/auth.rs bearer_auth_for_provider):
+	//  1. env_key → os.Getenv; if the key is set and the var is empty/unset,
+	//     Codex returns EnvVarError and never reaches step 2.
+	//  2. experimental_bearer_token (inline Authorization: Bearer).
+	//  3. otherwise ChatGPT/API-key auth from ~/.codex/auth.json.
+	//
+	// Desktop onboarding therefore inlines experimental_bearer_token and
+	// must not write env_key. The flow runner can use env_key because it
+	// launches Codex as a subprocess and injects PRELOOP_API_KEY into that
+	// process (backend/preloop/agents/codex.py). A PATH wrapper that only
+	// exports PRELOOP_TOKEN does not satisfy env_key unless config also
+	// names that variable — and naming it without guaranteeing the export
+	// would fail closed.
 	providers["preloop"] = map[string]interface{}{
 		"name":                      "Preloop",
 		"base_url":                  strings.TrimRight(baseURL, "/") + openClawGatewayPath,

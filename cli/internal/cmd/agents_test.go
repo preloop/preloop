@@ -2584,6 +2584,9 @@ func TestApplyCodexManagedGatewayConfiguresCustomProvider(t *testing.T) {
 	if preloop["experimental_bearer_token"] != "codex-durable-token" {
 		t.Fatalf("unexpected codex gateway token: %#v", preloop)
 	}
+	if _, hasEnvKey := preloop["env_key"]; hasEnvKey {
+		t.Fatalf("Codex desktop onboarding must not set env_key; unset PRELOOP_TOKEN would fail closed: %#v", preloop)
+	}
 	if preloop["wire_api"] != "responses" {
 		t.Fatalf("unexpected codex gateway wire_api: %#v", preloop)
 	}
@@ -2595,6 +2598,28 @@ func TestApplyCodexManagedGatewayConfiguresCustomProvider(t *testing.T) {
 	legacyHeaders := legacyPreloop["http_headers"].(map[string]interface{})
 	if legacyHeaders["Authorization"] != "Bearer codex-durable-token" {
 		t.Fatalf("unexpected Codex legacy Authorization header: %#v", legacyPreloop)
+	}
+	if _, hasBearerEnv := legacyPreloop["bearer_token_env_var"]; hasBearerEnv {
+		t.Fatalf("tokenful Codex MCP entry must not require bearer_token_env_var, got %#v", legacyPreloop)
+	}
+
+	agent := AgentConfig{Name: "Codex CLI", ConfigPath: configPath}
+	if err := writeAgentConfigDocument(agent, plan.ManagedDocument); err != nil {
+		t.Fatalf("failed to write Codex config: %v", err)
+	}
+	written, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("failed to read written Codex config: %v", err)
+	}
+	body := string(written)
+	if !strings.Contains(body, "experimental_bearer_token") {
+		t.Fatalf("expected experimental_bearer_token in written config, got:\n%s", body)
+	}
+	if strings.Contains(body, "env_key") {
+		t.Fatalf("written Codex config must not contain env_key, got:\n%s", body)
+	}
+	if strings.Contains(body, "bearer_token_env_var") {
+		t.Fatalf("written Codex config must not require bearer_token_env_var when a token is present, got:\n%s", body)
 	}
 }
 

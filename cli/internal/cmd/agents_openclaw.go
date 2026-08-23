@@ -6218,13 +6218,14 @@ func syncManagedAgentRuntimeArtifacts(agent AgentConfig, baseURL, token string) 
 			},
 		)
 	case "codex cli":
-		// Codex is config-file only: MCP auth, model routing, and the
-		// durable token already live in ~/.codex/config.toml
-		// (http_headers + model_providers.preloop.experimental_bearer_token).
-		// Native-tool approvals go through ~/.codex/hooks.json. A
-		// ~/.local/bin/codex PATH wrapper is unnecessary, fails when that
-		// directory is missing, and is shadowed by Homebrew's
-		// /opt/homebrew/bin/codex. Drop leftovers from older onboardings.
+		// Codex desktop onboarding is config-file only. Model routing uses
+		// experimental_bearer_token (not env_key); MCP uses inlined
+		// http_headers. Codex only requires a process env var when env_key
+		// or bearer_token_env_var is set — see applyCodexManagedGateway.
+		// A ~/.local/bin/codex wrapper that exported PRELOOP_TOKEN was a
+		// leftover of the Gemini launcher and of the flow runner's env_key
+		// pattern; it did not feed model auth, failed when ~/.local/bin was
+		// missing, and was shadowed by Homebrew. Remove leftovers.
 		return removeManagedAgentLauncher("codex", "codex-cli.env")
 	default:
 		return nil
