@@ -90,6 +90,17 @@ test("loadConfigDetailed flags a config with no usable settings as empty", () =>
   assert.equal(loaded.source, "empty");
 });
 
+test("a nested control block with no usable keys is empty, not control-block", () => {
+  // Review follow-up on #280: {"control": {}} and {"control": {"unrelated":
+  // true}} are the same ambiguous case as an empty flat file; the loud
+  // warning must fire for them too.
+  for (const control of [{}, { unrelated: true }]) {
+    const file = writeTempConfig({ control });
+    const loaded = loadConfigDetailed(file);
+    assert.equal(loaded.source, "empty");
+  }
+});
+
 test("a nested control block that is an array is not treated as settings", () => {
   const file = writeTempConfig({ control: ["nope"] });
   const loaded = loadConfigDetailed(file);

@@ -196,7 +196,9 @@ export class PreloopClaudeSidecar {
 
     // The URL is loggable (the bearer token travels in a header, never in
     // the URL). The token itself must never be logged.
-    this.log(`Agent Control: connecting to ${wsUrl.href}`);
+    // Log origin + pathname only: control_ws_url is user-supplied and could
+    // embed credentials in its query string; those must never reach the log.
+    this.log(`Agent Control: connecting to ${wsUrl.origin}${wsUrl.pathname}`);
     let socket: WebSocket;
     try {
       socket = new WebSocket(wsUrl, {

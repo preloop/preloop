@@ -119,6 +119,12 @@ test("start logs startup, socket listen, and WS connect results against a fake s
     assert.match(joined, new RegExp(`connecting to ws://127\\.0\\.0\\.1:${port}/control`));
     assert.match(joined, /Agent Control: connected/);
     assert.ok(!joined.includes(TOKEN), "log must never contain the token");
+    for (const line of lines.filter((l) => l.includes("connecting to"))) {
+      assert.ok(
+        !line.includes("?"),
+        "connect log must carry origin + pathname only, never a query string",
+      );
+    }
   } finally {
     sidecar.stop();
     server.close();

@@ -77,9 +77,15 @@ export function loadConfigDetailed(configPath?: string): LoadedConfig {
   // Accept either a flat file or a nested `control` block.
   const nested = raw.control;
   if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+    const nestedCfg = nested as ControlConfig;
+    // A control block with no usable keys is the same ambiguous case as an
+    // empty flat file: classify it "empty" so the loud warning fires.
+    const nestedUsable = USABLE_KEYS.some(
+      (key) => nestedCfg[key] !== undefined,
+    );
     return {
-      config: nested as ControlConfig,
-      source: "control-block",
+      config: nestedCfg,
+      source: nestedUsable ? "control-block" : "empty",
       path: resolvedPath,
     };
   }
