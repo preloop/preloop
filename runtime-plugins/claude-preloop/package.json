@@ -12,6 +12,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build",
     "verify": "node dist/index.js verify",
     "test": "npm run build && node --test",
     "test:e2e": "npm run build && PRELOOP_LIVE_CLAUDE_SDK=1 node --test test/live-sdk.e2e.mjs"

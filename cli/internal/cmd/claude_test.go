@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -172,5 +173,138 @@ func TestWaitForStdinOrReleaseConsumesKey(t *testing.T) {
 	}
 	if ready {
 		t.Fatal("key should have been consumed")
+	}
+}
+
+func TestFindClaudeSidecarPackageEntryFound(t *testing.T) {
+	root := t.TempDir()
+	distDir := filepath.Join(root, "@preloop-ai", "claude-plugin", "dist")
+	if err := os.MkdirAll(distDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entryPath := filepath.Join(distDir, "index.js")
+	if err := os.WriteFile(entryPath, []byte("// stub"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entry, found, err := findClaudeSidecarPackageEntry([]string{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || entry != entryPath {
+		t.Fatalf("found=%v entry=%q, want %q", found, entry, entryPath)
+	}
+}
+
+func TestFindClaudeSidecarPackageEntryUnbuiltInstallIsActionable(t *testing.T) {
+	// Repro of the founder's machine: npm install -g <source folder> symlinks
+	// the package without building dist/ and never links the bin. The lookup
+	// must name the broken install instead of claiming the plugin is missing.
+	root := t.TempDir()
+	pkgDir := filepath.Join(root, "@preloop-ai", "claude-plugin", "src")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, found, err := findClaudeSidecarPackageEntry([]string{root})
+	if found {
+		t.Fatal("unbuilt install must not be reported as usable")
+	}
+	if err == nil {
+		t.Fatal("expected an actionable error for an unbuilt install")
+	}
+	for _, want := range []string{"dist/index.js", "preloop agents onboard", "npm install -g @preloop-ai/claude-plugin"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q missing %q", err.Error(), want)
+		}
+	}
+	if strings.ContainsRune(err.Error(), '—') {
+		t.Fatalf("error contains an em dash: %q", err.Error())
+	}
+}
+
+func TestFindClaudeSidecarPackageEntryMissingEverywhere(t *testing.T) {
+	entry, found, err := findClaudeSidecarPackageEntry([]string{t.TempDir(), filepath.Join(t.TempDir(), "nope")})
+	if err != nil || found || entry != "" {
+		t.Fatalf("want clean miss, got entry=%q found=%v err=%v", entry, found, err)
+	}
+}
+
+func TestResolveClaudeSidecarInvocationPrefersBinOnPath(t *testing.T) {
+	binDir := t.TempDir()
+	plugin := filepath.Join(binDir, "preloop-claude-plugin")
+	if err := os.WriteFile(plugin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	t.Setenv("HOME", t.TempDir())
+	invocation, err := resolveClaudeSidecarInvocation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if invocation.bin != plugin || len(invocation.args) != 0 {
+		t.Fatalf("unexpected invocation %+v", invocation)
+	}
+}
+
+func TestResolveClaudeSidecarInvocationErrorIsActionable(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	_, err := resolveClaudeSidecarInvocation()
+	if err == nil {
+		t.Fatal("expected an error with no plugin anywhere")
+	}
+	if !strings.Contains(err.Error(), "preloop agents onboard \"Claude Code\"") {
+		t.Fatalf("error %q must tell the user to onboard", err.Error())
+	}
+	if strings.ContainsRune(err.Error(), '—') {
+		t.Fatalf("error contains an em dash: %q", err.Error())
+	}
+}
+
+func TestRunClaudeLauncherFailsFastWithoutSidecar(t *testing.T) {
+	// The bug: a missing plugin produced a warning, then the launcher dialed a
+	// socket nothing had created and failed 8 seconds later with a confusing
+	// message. The launcher must stop with one actionable error instead.
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	var out, errOut strings.Builder
+	cmd := claudeCmd
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	start := time.Now()
+	err := runClaudeLauncher(cmd, nil)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected launcher to fail without a sidecar")
+	}
+	if !strings.Contains(err.Error(), "cannot start the Claude Code sidecar") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "preloop agents onboard") {
+		t.Fatalf("error %q must include the onboard remediation", err.Error())
+	}
+	if strings.Contains(errOut.String(), "Warning: sidecar") {
+		t.Fatalf("launcher must not warn and continue: %q", errOut.String())
+	}
+	if strings.Contains(err.Error(), "is not listening") {
+		t.Fatalf("dial failure leaked through: %v", err)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("fail-fast took %s; the launcher must not sit in the dial loop", elapsed)
+	}
+}
+
+func TestClaudeNpmGlobalRootsDeduplicatesAndSkipsEmpty(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	roots := claudeNpmGlobalRoots()
+	seen := map[string]bool{}
+	for _, root := range roots {
+		if root == "" {
+			t.Fatal("empty root returned")
+		}
+		if seen[root] {
+			t.Fatalf("duplicate root %q", root)
+		}
+		seen[root] = true
 	}
 }
