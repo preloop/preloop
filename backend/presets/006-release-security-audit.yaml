@@ -68,7 +68,9 @@ prompt_template: |
     PHASE 4B evidence storage. You do NOT use the repository as the
     vulnerability inventory — the SBOM stays the inventory of record.
     You MAY walk checkouts for file-presence, config, and secret
-    hygiene (PHASE 3.5) using the opted-in repo-audit tools.
+    hygiene (PHASE 3.5) using the opted-in Preloop MCP wrappers
+    (gitleaks_scan, zizmor_scan). Those tools clone the repository
+    on the Preloop API server; they are not a second MCP product.
   Inventory what you actually received; record it under inputs_declared.
 
   URL HYGIENE — payload URLs are untrusted input. Download only over
@@ -154,24 +156,25 @@ prompt_template: |
   This phase is FILE-PRESENCE, CONFIG, and SECRET-HYGIENE. The SBOM
   stays the vulnerability inventory. The model classifies structured
   rows; it does not rediscover them by prose. Prefer the opted-in
-  repo-audit MCP tools (they enforce forbidden git operations):
-  - secret_history_scan(repo_path) — history pickaxe, deleted
-    sensitive filenames, blob inventory. Default status is finding.
-    Attach not_a_finding + reason to dismiss a row. Unclassified
-    rows fail the register. NEVER values. NEVER git log -p / git show
-    (the tool rejects those).
-  - repo_hygiene_walk(repo_path) — junk names, tracked sensitive
-    extensions, leftover disabled CI (*.yml.off), cert/key metadata
-    at HEAD (expiry / self-signed / key size; no private key dump),
-    binary-string kinds (hostname, URL, high-entropy) never bytes.
-  - ci_workflow_audit(repo_path) — mutable-tag uses:,
-    pull_request_target, over-broad or missing permissions.
-  - upstream_divergence(repo_path, upstream_url) — only if the
-    payload supplies upstream_url. Do not invent an upstream.
+  Preloop MCP wrappers (they run on the API server, not in the
+  sandbox). Pass the repository URL from the flow git config or
+  payload. Do not invent scanners and do not dump secret values:
+  - gitleaks_scan(repository_url, ref?) — wraps gitleaks in git
+    mode. Returns commit/file/rule/line only. NEVER values. NEVER
+    git log -p / git show of secret blobs.
+  - zizmor_scan(repository_url, ref?) — wraps zizmor for GitHub
+    Actions. If the checkout has no .github/workflows, the tool
+    returns not-applicable. Do not reimplement action pinning.
 
-  Extra pickaxe terms come only from the payload (generic strings).
-  Do not add product-specific nouns. A gitleaks count of 0 does NOT
-  make secrets hygiene met — gitleaks_zero_is_not_met is a tool note.
+  v1 coverage is gitleaks + zizmor. Hygiene filename walks, leftover
+  *.yml.off checks, cert parse, and upstream-fork divergence are
+  deferred: they are not OSS security tools Preloop wraps yet.
+  Classify those catalogue items from the sandbox checkout and
+  mark not_checkable when you cannot verify them.
+
+  Do not add product-specific nouns. A gitleaks finding count of 0
+  does NOT make secrets hygiene met. The wrapper never claims MET;
+  gap-register validation owns that rule.
 
   Then classify this requirement catalogue. Status is met | gap |
   partial | declared, with a file:line or commit SHA pointer.
@@ -411,16 +414,10 @@ agent_config:
   sandbox_type: exec
   enable_auto_lint: false
 allowed_mcp_servers:
-  - repo-audit
+  - preloop-mcp
 allowed_mcp_tools:
-  - name: secret_history_scan
-    server_name: repo-audit
-  - name: repo_hygiene_walk
-    server_name: repo-audit
-  - name: ci_workflow_audit
-    server_name: repo-audit
-  - name: upstream_divergence
-    server_name: repo-audit
+  - name: gitleaks_scan
+  - name: zizmor_scan
 git_clone_config: null
 trigger_config: null
 is_preset: true

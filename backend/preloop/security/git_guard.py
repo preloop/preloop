@@ -1,4 +1,4 @@
-"""Allow-listed git invocations for repo-audit tools.
+"""Allow-listed git invocations for scanner helpers.
 
 Forbidden operations are enforced here, not in the agent prompt. The tool
 process must never run commands that dump blob contents into a transcript.

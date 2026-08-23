@@ -93,6 +93,72 @@ PERMISSION_PROMPT_TOOL: Dict[str, Any] = {
 }
 
 
+GITLEAKS_SCAN_TOOL: Dict[str, Any] = {
+    "name": "gitleaks_scan",
+    "description": (
+        "Run gitleaks (git mode) against a repository URL on the Preloop "
+        "API server. Returns redacted findings (commit, file, rule, line). "
+        "Never returns secret values. A finding count of 0 is not a "
+        "secrets-hygiene MET; that decision belongs in result.json / "
+        "gap-register validation. Disabled by default; opt in via the "
+        "flow allowlist."
+    ),
+    "source": "builtin",
+    "default_enabled": False,
+    "requires_tracker": False,
+    "required_tracker_types": [],
+    "schema": {
+        "type": "object",
+        "properties": {
+            "repository_url": {
+                "type": "string",
+                "description": (
+                    "Git URL to clone on the API server (flow git config "
+                    "or a caller-supplied http/https URL)"
+                ),
+            },
+            "ref": {
+                "type": "string",
+                "description": "Optional branch, tag, or commit to check out",
+            },
+        },
+        "required": ["repository_url"],
+    },
+}
+
+
+ZIZMOR_SCAN_TOOL: Dict[str, Any] = {
+    "name": "zizmor_scan",
+    "description": (
+        "Run zizmor against GitHub Actions workflows in a repository "
+        "cloned on the Preloop API server. If the checkout has no "
+        ".github/workflows, returns a structured not-applicable result. "
+        "Disabled by default; opt in via the flow allowlist."
+    ),
+    "source": "builtin",
+    "default_enabled": False,
+    "requires_tracker": False,
+    "required_tracker_types": [],
+    "schema": {
+        "type": "object",
+        "properties": {
+            "repository_url": {
+                "type": "string",
+                "description": (
+                    "Git URL to clone on the API server (flow git config "
+                    "or a caller-supplied http/https URL)"
+                ),
+            },
+            "ref": {
+                "type": "string",
+                "description": "Optional branch, tag, or commit to check out",
+            },
+        },
+        "required": ["repository_url"],
+    },
+}
+
+
 def builtin_tools_with_ask_user(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Return ``tools`` with ``ASK_USER_TOOL`` inserted after request_approval."""
     result: List[Dict[str, Any]] = []

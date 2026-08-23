@@ -199,8 +199,8 @@ class TestCodexBuildScript:
         assert "_post_exec_sleep()" in script
         assert "trap _post_exec_sleep EXIT" in script
 
-    def test_script_bootstraps_repo_audit_only_when_opted_in(self):
-        """repo-audit sources are written into the sandbox only when listed."""
+    def test_script_always_attaches_preloop_mcp(self):
+        """Empty allowlist still attaches Preloop MCP. Overhead is tools."""
         agent = CodexAgent({})
         bare = agent._build_codex_script(
             {
@@ -209,23 +209,9 @@ class TestCodexBuildScript:
                 "flow_name": "test-flow",
             }
         )
+        assert "[mcp_servers.preloop]" in bare
         assert "preloop.security.mcp_server" not in bare
-        assert "Bootstrapping repo-audit MCP" not in bare
-
-        opted = agent._build_codex_script(
-            {
-                "prompt": "test",
-                "execution_id": "exec-1",
-                "flow_name": "test-flow",
-                "allowed_mcp_servers": ["repo-audit"],
-                "allowed_mcp_tools": [
-                    {"server_name": "repo-audit", "name": "secret_history_scan"}
-                ],
-            }
-        )
-        assert "Bootstrapping repo-audit MCP" in opted
-        assert "preloop.security.mcp_server" in opted
-        assert "[mcp_servers.repo_audit]" in opted
+        assert "repo-audit" not in bare
 
     def test_script_contains_codex_exec_command(self):
         """Script runs codex exec with correct flags."""
@@ -269,36 +255,8 @@ class TestCodexAuthConfig:
         auth_block = agent._build_codex_auth_config("gpt-5.4", "openai", "")
         assert "OPENAI_API_KEY" in auth_block
         assert 'model = "gpt-5.4"' in auth_block
-        assert "[mcp_servers.preloop]" not in auth_block
-
-    def test_openai_config_opts_in_preloop_mcp(self):
-        """Preloop MCP is started only when the flow allowlist says so."""
-        agent = CodexAgent({})
-        auth_block = agent._build_codex_auth_config(
-            "gpt-5.4",
-            "openai",
-            "",
-            {"allowed_mcp_servers": ["preloop-mcp"]},
-        )
         assert "[mcp_servers.preloop]" in auth_block
-
-    def test_openai_config_opts_in_repo_audit(self):
-        """Repo-audit stdio MCP is started only when opted in."""
-        agent = CodexAgent({})
-        auth_block = agent._build_codex_auth_config(
-            "gpt-5.4",
-            "openai",
-            "",
-            {
-                "allowed_mcp_servers": ["repo-audit"],
-                "allowed_mcp_tools": [
-                    {"server_name": "repo-audit", "name": "secret_history_scan"}
-                ],
-            },
-        )
-        assert "[mcp_servers.repo_audit]" in auth_block
-        assert "preloop.security.mcp_server" in auth_block
-        assert "[mcp_servers.preloop]" not in auth_block
+        assert "repo-audit" not in auth_block
 
     def test_custom_provider_config(self):
         """Custom provider generates provider-specific config.toml section."""
@@ -307,7 +265,6 @@ class TestCodexAuthConfig:
             "claude-sonnet-4-20250514",
             "anthropic",
             "https://api.anthropic.com/v1",
-            {"allowed_mcp_servers": ["preloop-mcp"]},
         )
         assert "ANTHROPIC_API_KEY" in auth_block
         assert "anthropic" in auth_block

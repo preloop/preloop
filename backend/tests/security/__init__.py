@@ -1,1 +1,1 @@
-"""Tests for the opt-in repo-audit scanners and gap-register freeze."""
+"""Tests for OSS scanner wrappers and gap-register freeze."""

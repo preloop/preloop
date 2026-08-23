@@ -421,15 +421,7 @@ fi
 echo '{settings_b64}' | base64 -d > "$HOME/.gemini/settings.json"
 """
 
-        from preloop.security.opt_in import (
-            mcp_allowlists_from_context,
-            wants_preloop_mcp,
-        )
-
-        servers, tools = mcp_allowlists_from_context(execution_context)
-        mcp_add_block = ""
-        if wants_preloop_mcp(servers, tools):
-            mcp_add_block = """
+        mcp_add_block = """
 # Register the Preloop MCP server via `gemini mcp add`.
 # Flags: -t http (HTTP transport), -s user (user scope),
 #         --trust (auto-approve), -H (custom header).

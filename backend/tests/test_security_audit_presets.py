@@ -57,20 +57,13 @@ class TestSecurityAuditPresetInvariants:
         assert data["name"] == name
 
     def test_read_only_toolset(self, preset):
-        """Write tools stay off. RSA opts into local repo-audit scanners."""
+        """Write tools stay off. RSA opts into Preloop MCP scanner wrappers."""
         name, data = preset
         if name == "Release Security Audit":
-            assert data["allowed_mcp_servers"] == ["repo-audit"]
+            assert data["allowed_mcp_servers"] == ["preloop-mcp"]
             names = [t.get("name") for t in data["allowed_mcp_tools"]]
-            assert names == [
-                "secret_history_scan",
-                "repo_hygiene_walk",
-                "ci_workflow_audit",
-                "upstream_divergence",
-            ]
-            assert all(
-                t.get("server_name") == "repo-audit" for t in data["allowed_mcp_tools"]
-            )
+            assert names == ["gitleaks_scan", "zizmor_scan"]
+            assert "repo-audit" not in json.dumps(data)
             return
         assert data["allowed_mcp_servers"] == []
         assert data["allowed_mcp_tools"] == []
@@ -230,8 +223,9 @@ class TestReleaseAuditEvidenceStorage:
         norm = _norm(prompt)
         assert "do NOT use the repository as the vulnerability inventory" in norm
         assert "FILE-PRESENCE, CONFIG, and SECRET-HYGIENE" in _norm(prompt)
-        assert "secret_history_scan" in prompt
-        assert "repo_hygiene_walk" in prompt
+        assert "gitleaks_scan" in prompt
+        assert "zizmor_scan" in prompt
+        assert "repo-audit" not in prompt
 
     def test_gap_register_schema(self, prompt):
         """PHASE 3.5 is a thin schema: statuses, freeze floor, no product nouns."""
@@ -239,7 +233,9 @@ class TestReleaseAuditEvidenceStorage:
         assert '"gap_register"' in prompt
         assert "not_checkable" in prompt
         assert "secrets_findings_count" in prompt
-        assert "gitleaks 0" in prompt or "gitleaks count of 0" in prompt
+        assert (
+            "gitleaks finding count of 0" in prompt or "gitleaks count of 0" in prompt
+        )
         assert "freeze floor" in prompt
         lowered = prompt.lower()
         for noun in (

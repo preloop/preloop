@@ -35,9 +35,9 @@ allowed_mcp_servers: []
 allowed_mcp_tools:
   - name: "search_issues"
   - name: "get_issue"
-# Empty allowlists start no MCP servers. Add a server name (preloop-mcp
-# or repo-audit) and the tool names the flow needs. See the Release
-# Security Audit preset for the repo-audit opt-in.
+# Codex/Gemini/OpenCode always attach Preloop MCP. Tool enablement is
+# the allowlist. New scanner wrappers (gitleaks_scan, zizmor_scan) are
+# default_enabled: False; the Release Security Audit preset opts in.
 git_clone_config: null
 is_preset: true
 ```

@@ -18,7 +18,12 @@ from preloop.services.dynamic_fastmcp import (
     _justification_var,
     create_dynamic_mcp_server,
 )
-from preloop.tools.builtin_defs import ASK_USER_TOOL, PERMISSION_PROMPT_TOOL
+from preloop.tools.builtin_defs import (
+    ASK_USER_TOOL,
+    GITLEAKS_SCAN_TOOL,
+    PERMISSION_PROMPT_TOOL,
+    ZIZMOR_SCAN_TOOL,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1201,6 +1206,69 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
             logger.error(f"Error checking approval status: {e}", exc_info=True)
             return json.dumps({"error": f"Failed to check approval status: {str(e)}"})
 
-    logger.info("All 13 default tools registered with DynamicFastMCP")
+    # Opt-in OSS scanner wrappers (default_enabled: False). Ordinary
+    # agents do not pay their tools/list tax. RSA and other flows opt
+    # in via allowed_mcp_tools on preloop-mcp.
+    @mcp.tool(description=GITLEAKS_SCAN_TOOL["description"])
+    async def gitleaks_scan(
+        repository_url: str,
+        ref: str | None = None,
+        ctx: Optional[Context] = None,
+    ) -> str:
+        """Run gitleaks against a repository cloned on the API server."""
+        import json
+
+        from preloop.security.gitleaks import gitleaks_scan as _gitleaks_scan
+        from preloop.services.dynamic_fastmcp_http import get_current_user_context
+
+        user_context = get_current_user_context()
+        if not user_context:
+            return json.dumps({"error": "No user context available"})
+
+        approved, error = await require_approval(
+            tool_name=GITLEAKS_SCAN_TOOL["name"],
+            tool_source="builtin",
+            account_id=user_context.account_id,
+            arguments={"repository_url": repository_url, "ref": ref},
+            ctx=ctx,
+            workflow_id=_rule_workflow_id_var.get(None),
+            correlation_id=_correlation_id_var.get(None),
+            justification=_justification_var.get(None),
+        )
+        if not approved:
+            return error
+        return json.dumps(_gitleaks_scan(repository_url, ref=ref))
+
+    @mcp.tool(description=ZIZMOR_SCAN_TOOL["description"])
+    async def zizmor_scan(
+        repository_url: str,
+        ref: str | None = None,
+        ctx: Optional[Context] = None,
+    ) -> str:
+        """Run zizmor against GitHub Actions workflows on the API server."""
+        import json
+
+        from preloop.security.zizmor import zizmor_scan as _zizmor_scan
+        from preloop.services.dynamic_fastmcp_http import get_current_user_context
+
+        user_context = get_current_user_context()
+        if not user_context:
+            return json.dumps({"error": "No user context available"})
+
+        approved, error = await require_approval(
+            tool_name=ZIZMOR_SCAN_TOOL["name"],
+            tool_source="builtin",
+            account_id=user_context.account_id,
+            arguments={"repository_url": repository_url, "ref": ref},
+            ctx=ctx,
+            workflow_id=_rule_workflow_id_var.get(None),
+            correlation_id=_correlation_id_var.get(None),
+            justification=_justification_var.get(None),
+        )
+        if not approved:
+            return error
+        return json.dumps(_zizmor_scan(repository_url, ref=ref))
+
+    logger.info("Default tools registered with DynamicFastMCP")
 
     return mcp

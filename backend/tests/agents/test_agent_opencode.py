@@ -437,11 +437,13 @@ class TestOpenCodeBuildConfig:
         )
         assert config["mcp"]["preloop"]["timeout"] == 900000
 
-    def test_empty_allowlist_starts_no_mcp(self):
-        """Ordinary agents do not load Preloop or repo-audit MCP."""
+    def test_empty_allowlist_still_attaches_preloop_mcp(self):
+        """Empty allowlist still attaches Preloop MCP. Overhead is tools."""
         agent = OpenCodeAgent({})
         config = agent._build_opencode_config("model-1", "anthropic", {}, 600000)
-        assert config["mcp"] == {}
+        assert "preloop" in config["mcp"]
+        assert "repo-audit" not in config["mcp"]
+        assert config["mcp"]["preloop"]["url"] == "$PRELOOP_MCP_URL"
 
 
 class TestOpenCodePrepareEnvironment:

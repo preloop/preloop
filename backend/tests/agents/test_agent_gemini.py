@@ -177,10 +177,10 @@ class TestGeminiBuildScript:
             "execution_id": "exec-1",
             "flow_name": "test-flow",
             "_mcp_tool_timeout": 900,
-            "allowed_mcp_servers": ["preloop-mcp"],
         }
         script = agent._build_gemini_script(context)
         assert "gemini mcp add preloop" in script
+        assert "repo-audit" not in script
         assert "-t http" in script
         assert "-s user" in script
         assert "--trust" in script

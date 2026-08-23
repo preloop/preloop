@@ -221,39 +221,41 @@ Gap items appear in `checks[]` as `passed: false` and may move a clean
 run to `pass_with_findings`; they never flip the severity gate or
 `sbom_audit.verdict`.
 
-### Opt-in repo-audit tools
+### Opt-in Preloop MCP scanner wrappers
 
-Built-in MCP servers start only when a flow lists them. Ordinary agents
-pay no extra MCP process or tool-schema cost. The Release Security Audit
-preset enables the local `repo-audit` stdio server:
+Codex, Gemini, and OpenCode always attach the existing Preloop MCP
+server. Overhead is tool enablement, not a second process. The new
+wrappers are `default_enabled: False`, so ordinary agents do not pay
+their `tools/list` tax. The Release Security Audit preset opts in:
 
 ```yaml
 allowed_mcp_servers:
-  - repo-audit
+  - preloop-mcp
 allowed_mcp_tools:
-  - name: secret_history_scan
-    server_name: repo-audit
-  - name: repo_hygiene_walk
-    server_name: repo-audit
-  - name: ci_workflow_audit
-    server_name: repo-audit
-  - name: upstream_divergence
-    server_name: repo-audit
+  - name: gitleaks_scan
+  - name: zizmor_scan
 ```
 
-To enable the same tools on a cloned flow, keep those allowlists (or
-add them in the flow editor). The tools walk git history and HEAD
-without emitting secret values; `git log -p` / `git show` are rejected
-in the tool. Default term lists are generic (password/token/key/cert/env
-patterns). Callers may pass extra terms; do not bake product-specific
-nouns into the preset.
+Name-only tool entries are the legacy allowlist shape and mean
+Preloop builtins. To enable the same tools on a cloned flow, keep
+those allowlists (or add them in the flow editor).
 
-Pin **gitleaks 8.24.3** in the runner image if you want the optional
-gitleaks sidecar; absence is recorded. A gitleaks exit of 0 still does
-not make secrets hygiene met. Deeper CI workflow audit (zizmor) is not
-shipped in this version — `ci_workflow_audit` covers generic YAML
-checks (mutable `uses:` tags, `pull_request_target`, over-broad
-permissions).
+`gitleaks_scan` wraps **gitleaks** (git mode) on the Preloop API
+server: it clones the flow git-config / caller URL, then returns
+commit, file, rule, and line. Secret values are redacted. The tool
+refuses to dump `git log -p` / `git show` of secret blobs. Pin
+**gitleaks 8.24.3** on the API host. If the binary is missing, the
+tool returns `scanner_not_installed` rather than a fake empty MET.
+A gitleaks finding count of 0 still does not make secrets hygiene
+met; that rule lives in gap-register / `result.json` validation.
+
+`zizmor_scan` wraps **zizmor** (GitHub Actions). Pin **zizmor
+1.16.0**. If the checkout has no `.github/workflows`, the tool
+returns a structured not-applicable result. Do not reimplement
+action-pinning checks in Python.
+
+v1 coverage is gitleaks + zizmor. Hygiene filename walks, leftover
+disabled CI, cert parse, and upstream-fork divergence are deferred.
 
 Components with no purl/CPE can be given a generic VCS PURL
 (`pkg:generic/<name>@<version>?vcs_url=git+…@<commit>`) when the

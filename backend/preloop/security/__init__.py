@@ -1,20 +1,25 @@
-"""Generic repository security scanners for opt-in RSA / audit flows.
+"""Security helpers used by Preloop MCP tools and RSA result validation.
 
-These tools are not loaded for ordinary agents. A flow opts in by listing
-``repo-audit`` in ``allowed_mcp_servers`` and the individual tool names in
-``allowed_mcp_tools``.
+Scanners are thin wrappers around maintained OSS CLIs (gitleaks, zizmor)
+registered on the existing ``preloop-mcp`` server with
+``default_enabled: False``. Gap-register freeze is result validation, not
+a scanner.
 """
 
-from preloop.security.opt_in import (
-    REPO_AUDIT_SERVER,
-    REPO_AUDIT_TOOLS,
-    wants_preloop_mcp,
-    wants_repo_audit,
+from preloop.security.gap_register import (
+    GapRegisterValidationError,
+    assert_gap_register,
+    validate_gap_register,
+)
+from preloop.security.pins import (
+    RECOMMENDED_GITLEAKS_VERSION,
+    RECOMMENDED_ZIZMOR_VERSION,
 )
 
 __all__ = [
-    "REPO_AUDIT_SERVER",
-    "REPO_AUDIT_TOOLS",
-    "wants_preloop_mcp",
-    "wants_repo_audit",
+    "GapRegisterValidationError",
+    "RECOMMENDED_GITLEAKS_VERSION",
+    "RECOMMENDED_ZIZMOR_VERSION",
+    "assert_gap_register",
+    "validate_gap_register",
 ]
