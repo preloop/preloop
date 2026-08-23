@@ -2,6 +2,14 @@
 
 Forbidden operations are enforced here, not in the agent prompt. The tool
 process must never run commands that dump blob contents into a transcript.
+
+This module currently has no production callers. It ships anyway because it
+is the enforcement half of the planned follow-up that wires
+``validate_gap_register`` into result ingestion: when the server-side
+ingestion path needs to consult repository metadata (for example resolving
+the previous audit SHA before running the freeze comparator), it must do so
+through ``run_git``/``validate_git_argv`` so that no blob contents can leak
+into logs or transcripts. That ingestion hook is the intended caller.
 """
 
 from __future__ import annotations
