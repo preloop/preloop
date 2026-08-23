@@ -417,8 +417,8 @@ func findClaudeSidecarPackageEntry(roots []string) (string, bool, error) {
 		}
 		return "", false, fmt.Errorf(
 			"@preloop-ai/claude-plugin is installed at %s but its dist/index.js build output is missing; "+
-				"rerun preloop agents onboard \"Claude Code\" to rebuild it, "+
-				"or run: npm install -g @preloop-ai/claude-plugin",
+				"rerun preloop agents onboard \"Claude Code\" to rebuild it "+
+				"(if the install is a source checkout, you can also run npm install and npm run build there)",
 			pkgDir,
 		)
 	}

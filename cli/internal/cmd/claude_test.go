@@ -224,7 +224,7 @@ func TestFindClaudeSidecarPackageEntryUnbuiltInstallIsActionable(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an actionable error for an unbuilt install")
 	}
-	for _, want := range []string{"dist/index.js", "preloop agents onboard", "npm install -g @preloop-ai/claude-plugin"} {
+	for _, want := range []string{"dist/index.js", "preloop agents onboard", "npm install and npm run build"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error %q missing %q", err.Error(), want)
 		}
