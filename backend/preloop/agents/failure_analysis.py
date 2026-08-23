@@ -119,7 +119,15 @@ _TRANSIENT_NETWORK_RE = re.compile(
     # `error="The operation timed out."` while the request was still
     # completing upstream — the canonical recoverable shape.
     r"|(?:request|read|socket|operation)\s+timed?\s*out"
-    r"|timeout\s+(?:of\s+)?\d+\s*ms\s+exceeded)\b",
+    r"|timeout\s+(?:of\s+)?\d+\s*ms\s+exceeded"
+    # OpenRouter / LiteLLM mid-stream provider drop. The gateway remaps this
+    # to HTTP 502 upstream_disconnect; agent logs often carry the raw
+    # signature without a "status: 502" token.
+    r"|provider_unavailable"
+    r"|upstream_disconnect"
+    r"|disconnected mid-stream"
+    r"|midstreamfallbackerror"
+    r"|json error injected into sse stream)\b",
     re.IGNORECASE,
 )
 

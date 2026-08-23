@@ -7,6 +7,7 @@ from typing import Optional
 
 import pytest
 
+from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.services.upstream_errors import (
     ERROR_CLASS_NETWORK,
     ERROR_CLASS_UPSTREAM_AUTH,
@@ -18,6 +19,7 @@ from preloop.services.upstream_errors import (
     ERROR_CLASS_CLIENT_CANCELLED,
     classify_recorded_error,
     classify_upstream_error,
+    is_retryable_upstream_failure,
 )
 
 
@@ -136,12 +138,69 @@ def test_client_shaped_4xx_returns_none():
     assert classify_upstream_error(exc) is None
 
 
+def test_midstream_provider_unavailable_is_retryable():
+    """Founder 502 signature: OpenRouter JSON error injected mid-stream."""
+    exc = _MidStreamFallbackError(
+        "Upstream provider disconnected mid-stream: APIError: "
+        "OpenrouterException - Message: JSON error injected into SSE stream, "
+        "Metadata: {'error_type': 'provider_unavailable'}"
+    )
+    assert is_retryable_upstream_failure(exc) is True
+
+
+def test_unsupported_parallel_tool_calls_is_not_retryable():
+    """glm-5.3 4xx must not be retried; drop_params is the fix, not retry."""
+    exc = _FakeHTTPError(
+        "zai does not support parameters: ['parallel_tool_calls']",
+        status_code=400,
+    )
+    assert is_retryable_upstream_failure(exc) is False
+
+
+def test_auth_401_is_not_retryable():
+    exc = _FakeHTTPError("Invalid API key", status_code=401)
+    assert is_retryable_upstream_failure(exc) is False
+
+
+def test_quota_exhausted_is_not_retryable():
+    exc = _FakeHTTPError(
+        "HTTP 429: request reached organization TPD rate limit",
+        status_code=429,
+        error_type="rate_limit_reached_error",
+    )
+    assert is_retryable_upstream_failure(exc) is False
+
+
 def test_opaque_failure_maps_to_upstream_error_502():
     exc = Exception("upstream exploded")
     result = classify_upstream_error(exc)
     assert result is not None
     assert result.error_class == ERROR_CLASS_UPSTREAM_ERROR
     assert result.status_code == 502
+
+
+def test_opaque_generic_exception_is_not_retryable():
+    """#109: first-chunk ``Exception`` is a 502 to the client, not a retry."""
+    rejected = Exception("upstream rejected the request")
+    assert is_retryable_upstream_failure(rejected) is False
+    assert is_retryable_upstream_failure(Exception("upstream exploded")) is False
+
+
+def test_actual_502_status_is_retryable():
+    """A real provider 502 (not a mapped opaque error) is retried."""
+    exc = _FakeHTTPError("bad gateway", status_code=502)
+    assert is_retryable_upstream_failure(exc) is True
+
+
+def test_mapped_upstream_error_502_is_not_retryable():
+    """#109: presentation 502 on a mapped opaque error is not a retry."""
+    exc = ModelGatewayAPIError(
+        provider="openai",
+        status_code=502,
+        message="upstream exploded",
+        error_class=ERROR_CLASS_UPSTREAM_ERROR,
+    )
+    assert is_retryable_upstream_failure(exc) is False
 
 
 @pytest.mark.parametrize(

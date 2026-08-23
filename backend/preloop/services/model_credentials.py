@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from preloop.models.crud.ai_model import ai_model as crud_ai_model
 from preloop.models.models.ai_model import AIModel
+from preloop.services.litellm_routing import apply_preloop_client_headers
 from preloop.services.secret_service import get_secret_service
 
 logger = logging.getLogger(__name__)
@@ -263,6 +264,9 @@ def build_aux_kwargs(
     ``call_site_kwargs`` keeps the call-site value. ``extra_body`` dicts are
     deep-merged so a default thinking-disable knob is not clobbered by an
     unrelated extra_body key in a higher layer.
+
+    Preloop client branding is applied last: User-Agent is always Preloop
+    (never LiteLLM). OpenRouter also gets ``X-Title`` / ``HTTP-Referer``.
     """
     # Layer 4: safety defaults (capability-checked, not blanket).
     merged: dict[str, Any] = {"drop_params": True}
@@ -279,6 +283,7 @@ def build_aux_kwargs(
     # Layer 1: call-site explicit args (always win).
     _merge_extra_body(merged, call_site_kwargs)
 
+    apply_preloop_client_headers(merged, model)
     return merged
 
 

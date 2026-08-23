@@ -376,3 +376,22 @@ class TestIdempotence:
 
         assert second.transient is False
         assert second.upstream_status == 401
+
+
+class TestOpenRouterMidStreamDisconnect:
+    """Gateway 502 signature must be retryable at flow level too."""
+
+    def test_provider_unavailable_midstream_is_transient(self):
+        logs = (
+            "Upstream provider disconnected mid-stream: APIError: "
+            "OpenrouterException - Message: JSON error injected into SSE "
+            "stream, Metadata: {'error_type': 'provider_unavailable'}\n"
+            "litellm.MidStreamFallbackError wrapping litellm.APIError"
+        )
+        analysis = analyze_agent_failure(logs)
+        assert analysis.transient is True
+
+    def test_unsupported_parallel_tool_calls_is_not_transient(self):
+        logs = "ERROR: zai does not support parameters: ['parallel_tool_calls']"
+        analysis = analyze_agent_failure(logs)
+        assert analysis.transient is False
