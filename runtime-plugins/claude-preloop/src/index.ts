@@ -14,6 +14,8 @@
 // Design memo: factory/roadmap/claude-code-remote-control.md §4 (issue #131).
 
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import { pathToFileURL } from "node:url";
 
 import WebSocket from "ws";
 
@@ -571,7 +573,25 @@ function parseArgs(): { command: string; configPath?: string } {
   };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Detect direct CLI invocation. npm installs the bin as a SYMLINK
+// (bin/preloop-claude-plugin -> .../dist/index.js) and Node resolves
+// import.meta.url to the realpath of the entry module, while process.argv[1]
+// keeps the symlink path. A naive string comparison therefore fails for every
+// npm-installed bin and the sidecar would exit 0 without ever listening.
+// Realpath argv[1] and compare file URLs instead.
+function invokedAsCli(): boolean {
+  const argv1 = process.argv[1];
+  if (!argv1) {
+    return false;
+  }
+  try {
+    return import.meta.url === pathToFileURL(fs.realpathSync(argv1)).href;
+  } catch {
+    return false;
+  }
+}
+
+if (invokedAsCli()) {
   const args = parseArgs();
   const sidecar = new PreloopClaudeSidecar(args.configPath);
   sidecar.setLogger((message) => console.error(message));

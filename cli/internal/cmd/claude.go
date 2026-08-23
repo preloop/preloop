@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -101,8 +103,11 @@ func claudeControlConfigPath() string {
 }
 
 func runClaudeLauncher(cmd *cobra.Command, args []string) error {
+	// The sidecar owns the control socket; without it there is no remote
+	// control and the dial below can never succeed. Stop with one actionable
+	// error instead of warning and then failing on the dial.
 	if err := ensureClaudeSidecarRunning(cmd.OutOrStdout()); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: sidecar: %v\n", err)
+		return fmt.Errorf("cannot start the Claude Code sidecar: %w", err)
 	}
 	printClaudePairingHint(cmd.OutOrStdout())
 
@@ -112,7 +117,12 @@ func runClaudeLauncher(cmd *cobra.Command, args []string) error {
 	}
 	conn, err := dialClaudeControlSocket(8 * time.Second)
 	if err != nil {
-		return fmt.Errorf("claude sidecar is not listening (%s): %w", claudeControlSocketPath(), err)
+		return fmt.Errorf(
+			"claude sidecar started but did not open %s: %w (check %s)",
+			claudeControlSocketPath(),
+			err,
+			claudeSidecarLogPath(),
+		)
 	}
 	defer conn.Close()
 
@@ -320,15 +330,15 @@ func ensureClaudeSidecarRunning(out io.Writer) error {
 }
 
 func startClaudeSidecarProcess() error {
-	bin, err := resolveRuntimeExecutable("preloop-claude-plugin")
+	invocation, err := resolveClaudeSidecarInvocation()
 	if err != nil {
-		return fmt.Errorf("preloop-claude-plugin not found; run preloop agents onboard \"Claude Code\"")
+		return err
 	}
-	cmd := exec.Command(bin, "run", "--config", claudeControlConfigPath())
+	cmd := exec.Command(invocation.bin, append(invocation.args, "run", "--config", claudeControlConfigPath())...)
 	cmd.SysProcAttr = claudeSysProcAttr()
-	logDir := filepath.Join(filepath.Dir(claudeControlSocketPath()), "logs")
+	logDir := filepath.Dir(claudeSidecarLogPath())
 	_ = os.MkdirAll(logDir, 0o700)
-	stdout, err := os.OpenFile(filepath.Join(logDir, "claude-sidecar.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	stdout, err := os.OpenFile(claudeSidecarLogPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return err
 	}
@@ -343,6 +353,124 @@ func startClaudeSidecarProcess() error {
 		_ = stdout.Close()
 	}()
 	return nil
+}
+
+func claudeSidecarLogPath() string {
+	return filepath.Join(filepath.Dir(claudeControlSocketPath()), "logs", "claude-sidecar.log")
+}
+
+// claudeSidecarInvocation describes how to start the sidecar: either the
+// preloop-claude-plugin bin directly, or node with the package entry point
+// when npm never linked the bin.
+type claudeSidecarInvocation struct {
+	bin  string
+	args []string
+}
+
+// resolveClaudeSidecarInvocation locates the sidecar executable. npm skips
+// creating the preloop-claude-plugin bin link when the package was installed
+// from a source checkout whose dist/ was not built yet, so a missing bin does
+// not mean the package is missing. Fall back to the package entry point under
+// the npm global root before telling the user to onboard.
+func resolveClaudeSidecarInvocation() (claudeSidecarInvocation, error) {
+	if bin, err := resolveRuntimeExecutable("preloop-claude-plugin"); err == nil {
+		return claudeSidecarInvocation{bin: bin}, nil
+	}
+	entry, found, err := findClaudeSidecarPackageEntry(claudeNpmGlobalRootsFunc())
+	if err != nil {
+		return claudeSidecarInvocation{}, err
+	}
+	if found {
+		node, nodeErr := resolveRuntimeExecutable("node")
+		if nodeErr != nil {
+			return claudeSidecarInvocation{}, fmt.Errorf(
+				"found the Claude sidecar at %s but node was not found on %s",
+				entry,
+				runtimeExecutableSearchDescription("node"),
+			)
+		}
+		return claudeSidecarInvocation{bin: node, args: []string{entry}}, nil
+	}
+	return claudeSidecarInvocation{}, fmt.Errorf(
+		"preloop-claude-plugin was not found on %s or in the npm global directory; "+
+			"run: preloop agents onboard \"Claude Code\"",
+		runtimeExecutableSearchDescription("preloop-claude-plugin"),
+	)
+}
+
+// findClaudeSidecarPackageEntry looks for @preloop-ai/claude-plugin under the
+// given npm global node_modules roots. Returns the dist entry point when the
+// package is installed and built. When the package directory exists but the
+// build output is missing (a source-folder install that never ran a build),
+// return an error that names the broken install instead of a generic
+// not-found message.
+func findClaudeSidecarPackageEntry(roots []string) (string, bool, error) {
+	for _, root := range roots {
+		pkgDir := filepath.Join(root, "@preloop-ai", "claude-plugin")
+		info, err := os.Stat(pkgDir)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		entry := filepath.Join(pkgDir, "dist", "index.js")
+		if entryInfo, entryErr := os.Stat(entry); entryErr == nil && !entryInfo.IsDir() {
+			return entry, true, nil
+		}
+		return "", false, fmt.Errorf(
+			"@preloop-ai/claude-plugin is installed at %s but its dist/index.js build output is missing; "+
+				"rerun preloop agents onboard \"Claude Code\" to rebuild it, "+
+				"or run: npm install -g @preloop-ai/claude-plugin",
+			pkgDir,
+		)
+	}
+	return "", false, nil
+}
+
+// claudeNpmGlobalRootsFunc is a seam for tests: claudeNpmGlobalRoots probes
+// fixed absolute prefixes (for example /opt/homebrew/lib/node_modules), so a
+// machine with the plugin genuinely installed there would leak into tests
+// that pin PATH and HOME to temp dirs.
+var claudeNpmGlobalRootsFunc = claudeNpmGlobalRoots
+
+// claudeNpmGlobalRoots returns candidate npm global node_modules directories:
+// whatever npm itself reports, plus common prefixes for machines where npm is
+// unavailable or misconfigured.
+func claudeNpmGlobalRoots() []string {
+	roots := []string{}
+	if npmBin, err := resolveRuntimeExecutable("npm"); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		output, cmdErr := exec.CommandContext(ctx, npmBin, "root", "-g").Output()
+		cancel()
+		if cmdErr == nil {
+			if root := strings.TrimSpace(string(output)); root != "" {
+				roots = append(roots, root)
+			}
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		roots = append(roots,
+			filepath.Join(home, ".npm-global", "lib", "node_modules"),
+		)
+		if matches, globErr := filepath.Glob(
+			filepath.Join(home, ".nvm", "versions", "node", "*", "lib", "node_modules"),
+		); globErr == nil {
+			sort.Sort(sort.Reverse(sort.StringSlice(matches)))
+			roots = append(roots, matches...)
+		}
+	}
+	roots = append(roots,
+		"/opt/homebrew/lib/node_modules",
+		"/usr/local/lib/node_modules",
+	)
+	seen := map[string]bool{}
+	unique := roots[:0]
+	for _, root := range roots {
+		if root == "" || seen[root] {
+			continue
+		}
+		seen[root] = true
+		unique = append(unique, root)
+	}
+	return unique
 }
 
 func claudeSidecarLaunchdPath() string {
@@ -404,11 +532,11 @@ func runClaudeSidecarStatus(cmd *cobra.Command, args []string) error {
 }
 
 func runClaudeSidecarForeground(cmd *cobra.Command, args []string) error {
-	bin, err := resolveRuntimeExecutable("preloop-claude-plugin")
+	invocation, err := resolveClaudeSidecarInvocation()
 	if err != nil {
-		return fmt.Errorf("preloop-claude-plugin not found: %w", err)
+		return err
 	}
-	child := exec.Command(bin, "run", "--config", claudeControlConfigPath())
+	child := exec.Command(invocation.bin, append(invocation.args, "run", "--config", claudeControlConfigPath())...)
 	child.Stdout = cmd.OutOrStdout()
 	child.Stderr = cmd.ErrOrStderr()
 	return child.Run()

@@ -4438,6 +4438,20 @@ func installAgentControlRuntimePlugin(agent AgentConfig, writer io.Writer) map[s
 		ctx, cancel = context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
 		args = []string{"install", "-g", installTarget}
+		// npm install -g <source folder> symlinks the folder as-is: it does
+		// not install the folder's devDependencies, so the TypeScript build
+		// (prepare script) cannot run and npm silently skips creating the
+		// preloop-claude-plugin bin link because dist/index.js is missing.
+		// Build the source first so the global install links a working bin.
+		if buildErr := buildClaudePluginSourceIfNeeded(installerPath, installTarget, writer); buildErr != nil {
+			result["control_plugin_install_status"] = "plugin_source_build_failed"
+			result["control_plugin_install_target"] = installTarget
+			result["control_plugin_install_error"] = buildErr.Error()
+			if writer != nil {
+				fmt.Fprintf(writer, "  Warning: Agent Control plugin source build failed: %s\n", buildErr) //nolint:errcheck
+			}
+			return mergeStringMaps(result, ensureManagedAgentControlSidecar(agent, writer))
+		}
 	}
 	output, err := exec.CommandContext(ctx, installerPath, args...).CombinedOutput()
 	result["control_plugin_install_status"] = "install_attempted"
@@ -4661,6 +4675,50 @@ func agentControlPluginSourceCandidates(startPath, dirName string) []string {
 		startPath = parent
 	}
 	return candidates
+}
+
+// buildClaudePluginSourceIfNeeded prepares a local claude-preloop source
+// checkout for a global npm install. It is a no-op when the install target is
+// the published package name or when dist/index.js is already built. For an
+// unbuilt source folder it installs the folder's dependencies (including
+// devDependencies, which hold the TypeScript compiler) and runs the build so
+// that npm install -g links the preloop-claude-plugin bin against a real
+// entry point.
+func buildClaudePluginSourceIfNeeded(npmPath, installTarget string, writer io.Writer) error {
+	info, err := os.Stat(installTarget)
+	if err != nil || !info.IsDir() {
+		// Registry package name, not a local source folder.
+		return nil
+	}
+	entry := filepath.Join(installTarget, "dist", "index.js")
+	if entryInfo, entryErr := os.Stat(entry); entryErr == nil && !entryInfo.IsDir() {
+		return nil
+	}
+	if writer != nil {
+		fmt.Fprintf(writer, "  Building Claude Agent Control plugin from source (%s)...\n", installTarget) //nolint:errcheck
+	}
+	steps := [][]string{
+		{"install", "--no-audit", "--no-fund"},
+		{"run", "build"},
+	}
+	for _, stepArgs := range steps {
+		ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+		command := exec.CommandContext(ctx, npmPath, stepArgs...)
+		command.Dir = installTarget
+		output, runErr := command.CombinedOutput()
+		cancel()
+		if runErr != nil {
+			message := strings.TrimSpace(string(output))
+			if message == "" {
+				message = runErr.Error()
+			}
+			return fmt.Errorf("npm %s in %s failed: %s", strings.Join(stepArgs, " "), installTarget, message)
+		}
+	}
+	if entryInfo, entryErr := os.Stat(entry); entryErr != nil || entryInfo.IsDir() {
+		return fmt.Errorf("build completed but %s is still missing", entry)
+	}
+	return nil
 }
 
 func existingAgentControlPluginSource(path string) (string, bool) {
