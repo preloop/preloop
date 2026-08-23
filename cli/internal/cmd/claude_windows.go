@@ -118,7 +118,7 @@ func consumeStdinByte(fd int) {
 	_, _ = syscall.Read(syscall.Handle(fd), b[:])
 }
 
-func claudeSysProcAttr() *syscall.SysProcAttr {
+func claudeSidecarSysProcAttr() *syscall.SysProcAttr {
 	return nil
 }
 

@@ -36,13 +36,20 @@ func consumeStdinByte(fd int) {
 	_ = syscall.SetNonblock(fd, false)
 }
 
-func claudeSysProcAttr() *syscall.SysProcAttr {
+// claudeSidecarSysProcAttr detaches the sidecar daemon into its own process
+// group so terminal signals (Ctrl+C) never reach it. It must NOT be applied
+// to the TUI child: a new pgroup is a background group on the controlling
+// tty, and the TUI stops on SIGTTIN the moment it reads stdin.
+func claudeSidecarSysProcAttr() *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{Setpgid: true}
 }
 
 func terminateClaudeProcess(cmd *exec.Cmd, wait <-chan error) error {
+	// The TUI child shares the launcher's (foreground) process group. Never
+	// signal that group: kill(-pgid) would SIGTERM the launcher itself. Group
+	// signalling is only safe when the child truly has its own group.
 	pgid, err := syscall.Getpgid(cmd.Process.Pid)
-	if err == nil {
+	if err == nil && pgid != syscall.Getpgrp() {
 		_ = syscall.Kill(-pgid, syscall.SIGTERM)
 	} else {
 		_ = cmd.Process.Signal(syscall.SIGTERM)

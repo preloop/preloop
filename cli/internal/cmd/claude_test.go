@@ -321,3 +321,29 @@ func TestClaudeNpmGlobalRootsDeduplicatesAndSkipsEmpty(t *testing.T) {
 		seen[root] = true
 	}
 }
+
+func TestStartClaudeSidecarProcessLogsLaunch(t *testing.T) {
+	// A 0-byte sidecar log after a real run left "sidecar never ran" and
+	// "sidecar ran fine" indistinguishable. The launcher itself must record
+	// every launch in the log, even if the sidecar dies before its first line.
+	binDir := t.TempDir()
+	writeFakeExecutable(t, binDir, "preloop-claude-plugin")
+	t.Setenv("PATH", binDir)
+	testenv.SetTempHome(t)
+	pinClaudeNpmGlobalRoots(t, []string{t.TempDir()})
+
+	if err := startClaudeSidecarProcess(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		data, err := os.ReadFile(claudeSidecarLogPath())
+		if err == nil && strings.Contains(string(data), "starting Claude sidecar") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("sidecar log missing the launch line: err=%v data=%q", err, data)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
