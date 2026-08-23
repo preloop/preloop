@@ -7,7 +7,11 @@ import pytest
 
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
-from preloop.services.openai_gateway import OpenAIGatewayService
+from preloop.services.openai_gateway import (
+    OpenAIGatewayService,
+    _UPSTREAM_RETRY_AFTER_CAP_SECONDS,
+    _upstream_retry_delay_seconds,
+)
 
 
 class _MidStreamFallbackError(Exception):
@@ -28,6 +32,16 @@ class _UnsupportedParamsError(Exception):
         super().__init__(message)
         self.message = message
         self.status_code = 400
+
+
+class _TransientRateLimitError(Exception):
+    """Non-terminal 429 with a provider Retry-After header."""
+
+    def __init__(self, retry_after: int) -> None:
+        super().__init__("rate limited")
+        self.message = "rate limited"
+        self.status_code = 429
+        self.response = SimpleNamespace(headers={"retry-after": str(retry_after)})
 
 
 _FOUNDER_502 = (
@@ -151,3 +165,46 @@ def test_open_upstream_stream_retries_first_chunk_disconnect():
         prefetched = _open_stream(service, ai_model)
     assert list(prefetched) == [{"delta": "hi"}]
     assert backend.completion.call_count == 2
+
+
+def test_retry_delay_honors_capped_retry_after():
+    """Backoff is raised to Retry-After, but a large hint stays bounded."""
+    with patch("preloop.services.openai_gateway.random.uniform", return_value=0.0):
+        assert _upstream_retry_delay_seconds(0) == 0.2
+        assert _upstream_retry_delay_seconds(0, retry_after_seconds=5) == 5.0
+        assert (
+            _upstream_retry_delay_seconds(0, retry_after_seconds=60)
+            == _UPSTREAM_RETRY_AFTER_CAP_SECONDS
+        )
+        assert _upstream_retry_delay_seconds(1, retry_after_seconds=0) == 0.4
+
+
+def test_call_litellm_honors_retry_after_on_transient_429():
+    service, ai_model, backend = _service_and_model()
+    backend.completion.side_effect = [
+        _TransientRateLimitError(5),
+        {"ok": True},
+    ]
+    with (
+        patch("preloop.services.openai_gateway._sleep_before_upstream_retry") as sleep,
+        patch("preloop.services.openai_gateway.random.uniform", return_value=0.0),
+    ):
+        result = _call(service, ai_model)
+    assert result == {"ok": True}
+    assert backend.completion.call_count == 2
+    sleep.assert_called_once_with(5.0)
+
+
+def test_call_litellm_caps_large_retry_after_on_transient_429():
+    service, ai_model, backend = _service_and_model()
+    backend.completion.side_effect = [
+        _TransientRateLimitError(600),
+        {"ok": True},
+    ]
+    with (
+        patch("preloop.services.openai_gateway._sleep_before_upstream_retry") as sleep,
+        patch("preloop.services.openai_gateway.random.uniform", return_value=0.0),
+    ):
+        result = _call(service, ai_model)
+    assert result == {"ok": True}
+    sleep.assert_called_once_with(_UPSTREAM_RETRY_AFTER_CAP_SECONDS)

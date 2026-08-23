@@ -319,20 +319,42 @@ class ModelGatewayBackend(Protocol):
 # Not LiteLLM Router fallbacks; those would require a model list.
 _UPSTREAM_RETRY_MAX_ATTEMPTS = 3
 _UPSTREAM_RETRY_BASE_SECONDS = 0.2
+# Cap provider Retry-After so a 429 hint cannot stall the gateway.
+_UPSTREAM_RETRY_AFTER_CAP_SECONDS = 8.0
 
 
-def _upstream_retry_delay_seconds(attempt: int) -> float:
-    """Exponential backoff plus jitter for one gateway upstream retry.
+def _upstream_retry_after_hint_seconds(exc: Exception) -> Optional[int]:
+    """Provider Retry-After from a mapped error or the raw exception."""
+    hinted = getattr(exc, "retry_after_seconds", None)
+    if isinstance(hinted, int) and hinted >= 0:
+        return hinted
+    classified = classify_upstream_error(exc)
+    if classified is None:
+        return None
+    return classified.retry_after_seconds
+
+
+def _upstream_retry_delay_seconds(
+    attempt: int,
+    retry_after_seconds: Optional[int] = None,
+) -> float:
+    """Exponential backoff plus jitter, raised to a capped Retry-After hint.
 
     Args:
         attempt: Zero-based index of the failure that just happened.
+        retry_after_seconds: Provider Retry-After when the exception
+            exposed one. Honored up to ``_UPSTREAM_RETRY_AFTER_CAP_SECONDS``.
 
     Returns:
         Seconds to wait before the next attempt.
     """
-    return (_UPSTREAM_RETRY_BASE_SECONDS * (2**attempt)) + random.uniform(
+    backoff = (_UPSTREAM_RETRY_BASE_SECONDS * (2**attempt)) + random.uniform(
         0, _UPSTREAM_RETRY_BASE_SECONDS
     )
+    if retry_after_seconds is None:
+        return backoff
+    hinted = min(float(max(retry_after_seconds, 0)), _UPSTREAM_RETRY_AFTER_CAP_SECONDS)
+    return max(backoff, hinted)
 
 
 def _sleep_before_upstream_retry(seconds: float) -> None:
@@ -4721,7 +4743,10 @@ class OpenAIGatewayService:
                     or not is_retryable_upstream_failure(exc)
                 ):
                     break
-                delay = _upstream_retry_delay_seconds(attempt)
+                delay = _upstream_retry_delay_seconds(
+                    attempt,
+                    retry_after_seconds=_upstream_retry_after_hint_seconds(exc),
+                )
                 logger.warning(
                     "Retrying gateway upstream call after transient failure "
                     "(attempt %s/%s, delay=%.2fs, error=%s)",
