@@ -178,6 +178,19 @@ def test_opaque_failure_maps_to_upstream_error_502():
     assert result.status_code == 502
 
 
+def test_opaque_generic_exception_is_not_retryable():
+    """#109: first-chunk ``Exception`` is a 502 to the client, not a retry."""
+    rejected = Exception("upstream rejected the request")
+    assert is_retryable_upstream_failure(rejected) is False
+    assert is_retryable_upstream_failure(Exception("upstream exploded")) is False
+
+
+def test_actual_502_status_is_retryable():
+    """A real provider 502 (not a mapped opaque error) is retried."""
+    exc = _FakeHTTPError("bad gateway", status_code=502)
+    assert is_retryable_upstream_failure(exc) is True
+
+
 @pytest.mark.parametrize(
     "status_code,detail,expected",
     [

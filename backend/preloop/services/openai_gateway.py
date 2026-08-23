@@ -4695,8 +4695,9 @@ class OpenAIGatewayService:
 
         Retries 502 / provider_unavailable / upstream_disconnect /
         MidStreamFallbackError / network / overload. Does not retry 4xx
-        unsupported-params, auth, or quota. Intermediate failures are not
-        admin-alerted; only the final mapped error notifies.
+        unsupported-params, auth, quota, or opaque generic exceptions.
+        Intermediate failures are not admin-alerted; only the final mapped
+        error notifies.
 
         Args:
             provider: Gateway provider used to shape the final error.

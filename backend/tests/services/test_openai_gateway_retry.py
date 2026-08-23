@@ -115,6 +115,23 @@ def test_call_litellm_exhausts_retries_on_persistent_502():
     assert backend.completion.call_count == 3
 
 
+def test_open_upstream_stream_does_not_retry_generic_first_chunk_error():
+    """Opaque first-chunk failures stay 502; retrying them can become HTTP 200."""
+    service, ai_model, backend = _service_and_model()
+
+    def _failing_stream():
+        raise Exception("upstream rejected the tools payload")
+        yield  # pragma: no cover
+
+    backend.completion.return_value = _failing_stream()
+    with patch("preloop.services.openai_gateway._sleep_before_upstream_retry") as sleep:
+        with pytest.raises(ModelGatewayAPIError) as exc_info:
+            _open_stream(service, ai_model)
+    assert exc_info.value.status_code == 502
+    assert backend.completion.call_count == 1
+    sleep.assert_not_called()
+
+
 def test_open_upstream_stream_retries_first_chunk_disconnect():
     service, ai_model, backend = _service_and_model()
 

@@ -297,12 +297,15 @@ _NON_RETRYABLE_MARKERS = (
     "authentication",
 )
 
+# Known-transient classes only. ``upstream_error`` is the presentation
+# bucket for opaque failures (mapped to HTTP 502 for the client, #116);
+# retrying those without a real 5xx / marker turns a first-chunk raise
+# into an empty HTTP 200 stream when the retry sees StopIteration (#109).
 _RETRYABLE_ERROR_CLASSES = frozenset(
     {
         ERROR_CLASS_NETWORK,
         ERROR_CLASS_UPSTREAM_DISCONNECT,
         ERROR_CLASS_UPSTREAM_OVERLOADED,
-        ERROR_CLASS_UPSTREAM_ERROR,
         ERROR_CLASS_UPSTREAM_RATE_LIMITED,
     }
 )
@@ -326,8 +329,9 @@ def is_retryable_upstream_failure(exc: Exception) -> bool:
 
     Retries transient 502 / provider_unavailable / upstream_disconnect /
     MidStreamFallbackError / network / overload. Does not retry 4xx
-    validation, auth, quota, or unsupported-parameter errors
-    (``parallel_tool_calls``).
+    validation, auth, quota, unsupported-parameter errors
+    (``parallel_tool_calls``), or opaque generic exceptions. Those last
+    are presented as 502 to the client (#116) but are not retried.
 
     Args:
         exc: Raw LiteLLM/httpx exception or a mapped ``ModelGatewayAPIError``.
@@ -354,8 +358,8 @@ def is_retryable_upstream_failure(exc: Exception) -> bool:
             return False
         if classified.error_class in _RETRYABLE_ERROR_CLASSES:
             return True
-        if classified.status_code in _RETRYABLE_STATUS_CODES:
-            return True
+        # Do not use classified.status_code: opaque errors are mapped to
+        # 502 for client presentation, not because the provider returned 502.
 
     if error_class in _RETRYABLE_ERROR_CLASSES:
         return True
