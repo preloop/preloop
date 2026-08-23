@@ -1,12 +1,12 @@
 """Apple Push Notification Service (APNS) for iOS push notifications."""
 
 import base64
-import time
 import logging
-from typing import Dict, Any, Optional, Tuple
+import time
+from typing import Any, Dict, Optional, Tuple
 
-from jose import jwt
 import httpx
+import jwt
 
 logger = logging.getLogger(__name__)
 

@@ -5,29 +5,29 @@ import logging
 import os
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, UTC
+from datetime import UTC, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
+import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt
+from jwt import PyJWTError
 from passlib.context import CryptContext
+from sqlalchemy.orm import Session
 
-from preloop.schemas.auth import TokenData
-from preloop.models.db.session import get_db_session
-from preloop.models.models.managed_agent import ManagedAgent
-from preloop.models.models.runtime_session import RuntimeSession
-from preloop.models.models.user import User
+# Configuration
+from preloop.config import settings
 from preloop.models.crud import (
     crud_api_key,
     crud_managed_agent,
     crud_runtime_session,
     crud_user,
 )
-from sqlalchemy.orm import Session
-
-# Configuration
-from preloop.config import settings
+from preloop.models.db.session import get_db_session
+from preloop.models.models.managed_agent import ManagedAgent
+from preloop.models.models.runtime_session import RuntimeSession
+from preloop.models.models.user import User
+from preloop.schemas.auth import TokenData
 
 SECRET_KEY: str = settings.security.secret_key
 ALGORITHM = "HS256"
@@ -438,7 +438,7 @@ def decode_token(token: str) -> TokenData:
             refresh=refresh,
             session_started_at=(datetime.fromtimestamp(sat, tz=UTC) if sat else None),
         )
-    except JWTError:
+    except PyJWTError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication credentials",
@@ -561,7 +561,7 @@ def get_current_user(
                 detail="Authentication error",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-    except JWTError as e:
+    except PyJWTError as e:
         # If JWT decoding fails and we haven't tried API key authentication yet, try it
         if (
             "." in token
@@ -654,7 +654,7 @@ def get_current_active_user_optional(
     except HTTPException:
         # Any authentication error (invalid, expired, etc.) should result in None
         return None
-    except JWTError as e:
+    except PyJWTError as e:
         logger.debug(
             "Token validation failed in get_current_active_user_optional: %s", e
         )
@@ -709,7 +709,7 @@ def get_user_from_token_if_valid_sync(token: str, db_session: Any) -> Optional[U
         # Raised by _authenticate_with_api_key with the concrete rejection
         # reason (inactive key, expired key, deleted/suspended managed agent).
         logger.info("Token rejected in get_user_from_token_if_valid: %s", e.detail)
-    except JWTError as e:
+    except PyJWTError as e:
         logger.debug("Token validation failed in get_user_from_token_if_valid: %s", e)
     except Exception as e:
         logger.warning("Unexpected error in get_user_from_token_if_valid: %s", e)

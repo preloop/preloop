@@ -19,8 +19,8 @@ from preloop.api.auth.jwt import decode_token, get_current_active_user
 from preloop.api.auth.webauthn_router import (
     _issue_challenge_token,
     _read_challenge_token,
-    router as webauthn_router,
 )
+from preloop.api.auth.webauthn_router import router as webauthn_router
 from preloop.models.models.user import User
 
 app = FastAPI()
@@ -346,11 +346,11 @@ class TestAuthenticationCeremony:
 
     def test_stale_challenge_rejected(self, db_session_mock):
         """An expired challenge token is rejected."""
-        from jose import jwt as jose_jwt
+        import jwt
 
         from preloop.api.auth.jwt import ALGORITHM, SECRET_KEY
 
-        expired = jose_jwt.encode(
+        expired = jwt.encode(
             {
                 "chal": _b64url(b"auth-chal"),
                 "purpose": "authenticate",
@@ -416,7 +416,8 @@ class TestLoginParityAndRateLimit:
 
     def test_verify_notifies_after_inactivity(self, db_session_mock, mock_user):
         """Inactivity notification parity with password login."""
-        from datetime import UTC, datetime, timedelta as td
+        from datetime import UTC, datetime
+        from datetime import timedelta as td
 
         mock_user.last_login = datetime.now(UTC) - td(days=30)
         challenge_token = _issue_challenge_token(b"auth-chal", "authenticate")

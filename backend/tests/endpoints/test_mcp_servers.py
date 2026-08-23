@@ -1,8 +1,9 @@
 """Tests for MCP server management endpoints."""
 
-import pytest
 import uuid
 from unittest.mock import AsyncMock, patch
+
+import pytest
 from fastapi.testclient import TestClient
 
 from preloop.models.models.mcp_server import MCPServer
@@ -231,7 +232,8 @@ def test_oauth_authorize_token_is_short_lived_and_scoped(
     client: TestClient, db_session, test_user
 ):
     """The mint endpoint returns a purpose- and server-scoped token."""
-    from jose import jwt as jose_jwt
+    import jwt
+
     from preloop.api.auth.jwt import ALGORITHM, SECRET_KEY
 
     server = _oauth_server(db_session, test_user)
@@ -239,7 +241,7 @@ def test_oauth_authorize_token_is_short_lived_and_scoped(
     assert resp.status_code == 200
     token = resp.json()["authorize_token"]
 
-    payload = jose_jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
     assert payload["purpose"] == "mcp_oauth_authorize"
     assert payload["server_id"] == str(server.id)
     assert payload["sub"] == str(test_user.id)
@@ -266,6 +268,7 @@ def test_oauth_authorize_rejects_token_for_other_server(
 ):
     """An authorize token minted for one server can't be used for another."""
     from datetime import timedelta
+
     from preloop.api.auth.jwt import create_access_token
 
     server = _oauth_server(db_session, test_user)
