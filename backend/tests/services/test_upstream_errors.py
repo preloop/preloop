@@ -7,6 +7,7 @@ from typing import Optional
 
 import pytest
 
+from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.services.upstream_errors import (
     ERROR_CLASS_NETWORK,
     ERROR_CLASS_UPSTREAM_AUTH,
@@ -189,6 +190,17 @@ def test_actual_502_status_is_retryable():
     """A real provider 502 (not a mapped opaque error) is retried."""
     exc = _FakeHTTPError("bad gateway", status_code=502)
     assert is_retryable_upstream_failure(exc) is True
+
+
+def test_mapped_upstream_error_502_is_not_retryable():
+    """#109: presentation 502 on a mapped opaque error is not a retry."""
+    exc = ModelGatewayAPIError(
+        provider="openai",
+        status_code=502,
+        message="upstream exploded",
+        error_class=ERROR_CLASS_UPSTREAM_ERROR,
+    )
+    assert is_retryable_upstream_failure(exc) is False
 
 
 @pytest.mark.parametrize(

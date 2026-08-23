@@ -365,7 +365,11 @@ def is_retryable_upstream_failure(exc: Exception) -> bool:
         return True
 
     status = _status_code(exc)
-    if status in _RETRYABLE_STATUS_CODES:
+    # Mapped ModelGatewayAPIError.status_code is a client-presentation
+    # mapping (#116), not a provider status. Trust the class decision
+    # and skip this fallback when error_class is already set. Raw
+    # exceptions with a real 502/500/503 stay retryable (#109).
+    if error_class is None and status in _RETRYABLE_STATUS_CODES:
         return True
     if status is not None and 400 <= status < 500:
         return False
