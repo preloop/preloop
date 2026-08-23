@@ -6204,6 +6204,10 @@ func detectWSLEnvironment(getenv func(string) string, procVersionPath string) bo
 func syncManagedAgentRuntimeArtifacts(agent AgentConfig, baseURL, token string) error {
 	switch strings.ToLower(strings.TrimSpace(agent.Name)) {
 	case "gemini cli":
+		// Gemini CLI still honors GEMINI_API_KEY / GOOGLE_GEMINI_BASE_URL
+		// from the process environment even when settings.json is rewritten,
+		// so a PATH wrapper is the only way to inject gateway routing without
+		// asking the operator to export those variables in every shell.
 		return syncManagedAgentLauncher(
 			"gemini",
 			"gemini-cli.env",
@@ -6214,13 +6218,15 @@ func syncManagedAgentRuntimeArtifacts(agent AgentConfig, baseURL, token string) 
 			},
 		)
 	case "codex cli":
-		return syncManagedAgentLauncher(
-			"codex",
-			"codex-cli.env",
-			map[string]string{
-				"PRELOOP_TOKEN": token,
-			},
-		)
+		// Codex desktop onboarding is config-file only. Model routing uses
+		// experimental_bearer_token (not env_key); MCP uses inlined
+		// http_headers. Codex only requires a process env var when env_key
+		// or bearer_token_env_var is set — see applyCodexManagedGateway.
+		// A ~/.local/bin/codex wrapper that exported PRELOOP_TOKEN was a
+		// leftover of the Gemini launcher and of the flow runner's env_key
+		// pattern; it did not feed model auth, failed when ~/.local/bin was
+		// missing, and was shadowed by Homebrew. Remove leftovers.
+		return removeManagedAgentLauncher("codex", "codex-cli.env")
 	default:
 		return nil
 	}

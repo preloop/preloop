@@ -23,6 +23,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `issue_unlabeled`). Filter field `added_labels` is set on GitHub and
   GitLab.
 
+### Changed
+
+- **Codex onboarding is config-only**: `preloop agents onboard` no longer
+  installs a `~/.local/bin/codex` PATH wrapper. Codex only requires a
+  process environment variable when `env_key` or `bearer_token_env_var` is
+  set; if `env_key` is set and the var is missing, Codex errors and never
+  falls back to an inline token. Desktop onboarding writes
+  `experimental_bearer_token` and inlined MCP `http_headers` instead, so
+  Homebrew's `codex` can run without a wrapper. The flow runner still uses
+  `env_key` because it launches Codex as a subprocess. Re-onboarding
+  removes leftover Preloop wrappers. Gemini CLI still uses a wrapper
+  because it reads gateway credentials from the environment.
+
 ### Fixed
 
 - **Preloop-bot label events were dropped**: `_is_preloop_triggered_event`
