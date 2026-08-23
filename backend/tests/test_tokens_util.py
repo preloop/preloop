@@ -1,10 +1,10 @@
 """Tests for token generation and validation utilities."""
 
 import os
-from datetime import datetime, timedelta, UTC
+from datetime import UTC, datetime, timedelta
 
+import jwt
 import pytest
-from jose import jwt
 
 from preloop.utils.tokens import (
     ALGORITHM,

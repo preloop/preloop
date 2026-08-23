@@ -53,7 +53,7 @@ dependencies = [
     "pydantic>=2.4.0",
     "pydantic-settings>=2.0.0",
     "pydantic[email]>=2.4.0",
-    "python-jose>=3.3.0",
+    "PyJWT>=2.8.0",
     "passlib[bcrypt]>=1.7.4",
     "bcrypt<4.1.0",
     "python-multipart>=0.0.6",

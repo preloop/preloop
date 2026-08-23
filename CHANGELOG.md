@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Drop python-jose for PyJWT**: auth tokens, email/reset tokens, WebAuthn
+  challenge state, MCP OAuth authorize codes, and APNs ES256 client
+  assertions now use PyJWT. python-jose pulled unmaintained
+  `python-ecdsa` (CVE-2024-23342, no patch). Auth is HS256; APNs ES256
+  already uses `cryptography` when present. PyJWT was already in the
+  tree via firebase-admin / MCP.
+
 ### Added
 
 - **GitLab `issue_labeled`**: an Issue Hook whose `changes.labels` adds
