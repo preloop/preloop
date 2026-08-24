@@ -1144,6 +1144,7 @@ class TestGetZaiModels:
     async def test_without_key_returns_fallback(self):
         result = await _get_zai_models(None)
         assert result.models == ZAI_KNOWN_MODELS
+        assert "glm-5.3" in result.models
         assert "glm-5" in result.models
         assert "glm-4.7" in result.models
         assert result.source == "fallback"

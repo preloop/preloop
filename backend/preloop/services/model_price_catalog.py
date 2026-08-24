@@ -63,6 +63,12 @@ OPENROUTER_MODELS_URL = os.getenv(
     "OPENROUTER_MODELS_URL", "https://openrouter.ai/api/v1/models"
 )
 _OPENROUTER_PREFIX = "openrouter/"
+# Z.ai has no equivalent. Probed 2026-08-22 with a live key:
+# GET /api/paas/v4/models -> 200 {data, object}; item keys
+# created/id/object/owned_by (no pricing). GET /api/paas/v4/pricing,
+# /prices, /price -> 404 {error, path, status, timestamp}.
+# GET /api/v1/pricing -> HTTP 200 {code: 500, success: false,
+# msg: "404 NOT_FOUND"}. Do not invent a live z.ai price fetch.
 
 _lock = threading.Lock()
 _loaded = False
