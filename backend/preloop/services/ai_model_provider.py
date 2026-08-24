@@ -838,10 +838,13 @@ MOONSHOT_KNOWN_MODELS = [
 ]
 
 # Fallback catalog used when no Z.ai key is available to list the live set.
-# Provenance: the zai/* entries in the pinned litellm price map (litellm
-# 1.82.1 prices glm-5 and glm-5.1, so they are included). Every id resolves
-# to zai/<id> in litellm's map (pinned by tests/services/test_model_pricing.py).
+# Provenance: live GET https://api.z.ai/api/paas/v4/models (2026-08-22)
+# plus the zai/* entries in the pinned litellm price map. glm-5.3 is on
+# the live list and on docs.z.ai/guides/overview/pricing; litellm's map
+# does not carry it yet. Priced under zai/<id> in model_prices.json
+# (pinned by tests/services/test_model_pricing.py).
 ZAI_KNOWN_MODELS = [
+    "glm-5.3",
     "glm-5.1",
     "glm-5",
     "glm-4.7",

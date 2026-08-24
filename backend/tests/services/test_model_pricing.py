@@ -1,6 +1,11 @@
 """Tests for model pricing estimation."""
 
+import importlib.util
 import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -12,6 +17,20 @@ from preloop.services.model_pricing import (
     estimate_ai_model_usage_cost,
     estimate_ai_model_usage_cost_detailed,
 )
+
+_ZAI_PRICING_FIXTURE = (
+    Path(__file__).resolve().parent / "fixtures" / "zai_text_models_pricing.md"
+)
+
+
+def _load_update_model_prices() -> Any:
+    """Load scripts/update_model_prices.py by path (not the shared install)."""
+    script = Path(__file__).resolve().parents[3] / "scripts" / "update_model_prices.py"
+    spec = importlib.util.spec_from_file_location("update_model_prices", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_candidates_normalize_bedrock_region_prefix() -> None:
@@ -223,7 +242,9 @@ class TestNewProviderPricing:
 
     moonshot ids are priced from Preloop's bundled snapshot (official
     Moonshot prices; the pinned litellm map lacks kimi-k3 and the k2.7-code
-    family). zai and mistral ids are priced from the pinned litellm map.
+    family). glm-5.3 is likewise bundled from docs.z.ai pricing (litellm
+    has no zai/glm-5.3 key). Other zai and mistral ids are priced from
+    the pinned litellm map.
     """
 
     def test_candidates_include_moonshot_prefix(self) -> None:
@@ -236,6 +257,41 @@ class TestNewProviderPricing:
         ai_model = AIModel(provider_name="zai", model_identifier="glm-5")
         candidates = list(_iter_litellm_model_candidates(ai_model))
         assert "zai/glm-5" in candidates
+
+    def test_candidates_include_zai_glm_53(self) -> None:
+        ai_model = AIModel(provider_name="zai", model_identifier="glm-5.3")
+        candidates = list(_iter_litellm_model_candidates(ai_model))
+        assert "zai/glm-5.3" in candidates
+
+    def test_glm_53_official_prices_in_bundled_table(self) -> None:
+        """Official prices from docs.z.ai/guides/overview/pricing.md
+        (fetched 2026-08-24): input $1.4, cached input $0.26, output $4.4
+        per 1M. Context/output limits from docs.z.ai/guides/llm/glm-5.3
+        (1M context, 128K max output)."""
+        prices = json.loads(CATALOG_PATH.read_text())
+        entry = prices["zai/glm-5.3"]
+        assert entry["litellm_provider"] == "zai"
+        assert entry["mode"] == "chat"
+        assert entry["input_cost_per_token"] == 1.4e-06
+        assert entry["output_cost_per_token"] == 4.4e-06
+        assert entry["cache_read_input_token_cost"] == 2.6e-07
+        assert entry["max_input_tokens"] == 1_000_000
+        assert entry["max_output_tokens"] == 128_000
+        assert "cache_creation_input_token_cost" not in entry
+
+    def test_glm_53_cost_resolves_through_estimator(self) -> None:
+        """An AIModel row for glm-5.3 produces a catalog price."""
+        load_catalog(force=True)
+        ai_model = AIModel(provider_name="zai", model_identifier="glm-5.3")
+        estimate = estimate_ai_model_usage_cost_detailed(
+            ai_model,
+            prompt_tokens=1_000_000,
+            completion_tokens=1_000_000,
+            total_tokens=2_000_000,
+        )
+        assert estimate.source == "catalog"
+        # 1M input at $1.4/M plus 1M output at $4.4/M.
+        assert estimate.cost == pytest.approx(5.8, rel=1e-6)
 
     def test_candidates_include_mistral_prefix(self) -> None:
         ai_model = AIModel(
@@ -299,6 +355,8 @@ class TestNewProviderPricing:
     def test_zai_fallback_ids_resolve_via_litellm_map(self) -> None:
         from preloop.services.ai_model_provider import ZAI_KNOWN_MODELS
 
+        # glm-5.3 is in the vendored snapshot, not litellm's published map.
+        load_catalog(force=True)
         for model_id in ZAI_KNOWN_MODELS:
             ai_model = AIModel(provider_name="zai", model_identifier=model_id)
             estimate = estimate_ai_model_usage_cost_detailed(
@@ -749,3 +807,203 @@ def test_explicit_price_override_still_wins_over_provider_cost() -> None:
     )
     assert estimate.source == "override"
     assert estimate.cost == pytest.approx(0.01)
+
+
+class TestUpdateModelPriceOverlays:
+    """update_model_prices.py overlay parser and merge (no network)."""
+
+    def test_update_model_parser_reads_text_models_fixture(self) -> None:
+        script = _load_update_model_prices()
+        rows = script.parse_zai_text_models(_ZAI_PRICING_FIXTURE.read_text())
+        assert "glm-5.3" in rows
+        assert rows["glm-5.3"]["input_cost_per_token"] == 1.4e-06
+        assert rows["glm-5.3"]["output_cost_per_token"] == 4.4e-06
+        assert rows["glm-5.3"]["cache_read_input_token_cost"] == 2.6e-07
+        assert "glm-5-turbo" in rows
+        assert rows["glm-5-turbo"]["input_cost_per_token"] == 1.2e-06
+        assert rows["glm-4.7-flash"]["input_cost_per_token"] == 0.0
+        assert rows["glm-4.7-flash"]["output_cost_per_token"] == 0.0
+        # Cached input was "-": field omitted, row kept.
+        assert "glm-4-32b-0414-128k" in rows
+        assert "cache_read_input_token_cost" not in rows["glm-4-32b-0414-128k"]
+        # Dash input/output: skip the row.
+        assert "glm-skip-me" not in rows
+        # Vision table must not leak into the overlay.
+        assert "glm-5v-turbo" not in rows
+
+    def test_update_model_moonshot_keys_survive_stub_litellm_merge(self) -> None:
+        script = _load_update_model_prices()
+        current = {
+            "gpt-4o": {
+                "litellm_provider": "openai",
+                "mode": "chat",
+                "input_cost_per_token": 2.5e-06,
+                "output_cost_per_token": 1.0e-05,
+            },
+            "moonshot/kimi-k3": {
+                "litellm_provider": "moonshot",
+                "mode": "chat",
+                "input_cost_per_token": 3e-06,
+                "output_cost_per_token": 1.5e-05,
+                "cache_read_input_token_cost": 3e-07,
+            },
+            "zai/glm-5-turbo": {
+                "litellm_provider": "zai",
+                "mode": "chat",
+                "input_cost_per_token": 9.9e-06,
+                "output_cost_per_token": 9.9e-06,
+                "max_input_tokens": 200000,
+            },
+        }
+        stub_litellm = {
+            "gpt-4o": {
+                "litellm_provider": "openai",
+                "mode": "chat",
+                "input_cost_per_token": 1.0e-06,
+                "output_cost_per_token": 4.0e-06,
+            }
+        }
+        zai_rows = script.parse_zai_text_models(_ZAI_PRICING_FIXTURE.read_text())
+        merged = script.apply_overlays(stub_litellm, current, zai_rows)
+        assert merged["moonshot/kimi-k3"]["input_cost_per_token"] == 3e-06
+        assert merged["zai/glm-5.3"]["input_cost_per_token"] == 1.4e-06
+        assert merged["zai/glm-5.3"]["max_input_tokens"] == 1_000_000
+        assert merged["zai/glm-5.3"]["max_output_tokens"] == 128_000
+        # Other z.ai rows keep existing max_* and do not invent new ones.
+        assert merged["zai/glm-5-turbo"]["input_cost_per_token"] == 1.2e-06
+        assert merged["zai/glm-5-turbo"]["max_input_tokens"] == 200000
+        assert "max_output_tokens" not in merged["zai/glm-5.2"]
+        assert "zai/glm-5v-turbo" not in merged
+
+    def test_update_model_compare_remote_excludes_overlay_prefixes(self) -> None:
+        script = _load_update_model_prices()
+        current = {
+            "_preloop_meta": {"source_url": "https://example.com/litellm.json"},
+            "gpt-4o": {
+                "litellm_provider": "openai",
+                "mode": "chat",
+                "input_cost_per_token": 1.0e-06,
+            },
+            "moonshot/kimi-k3": {
+                "litellm_provider": "moonshot",
+                "mode": "chat",
+                "input_cost_per_token": 3e-06,
+            },
+            "zai/glm-5.3": {
+                "litellm_provider": "zai",
+                "mode": "chat",
+                "input_cost_per_token": 1.4e-06,
+            },
+        }
+        upstream = {
+            "gpt-4o": {
+                "litellm_provider": "openai",
+                "mode": "chat",
+                "input_cost_per_token": 1.0e-06,
+            }
+        }
+        sourced = script.litellm_sourced_catalog(current)
+        assert "moonshot/kimi-k3" not in sourced
+        assert "zai/glm-5.3" not in sourced
+        assert "gpt-4o" in sourced
+        assert script.diff_catalogs(sourced, upstream) == []
+
+    def test_update_model_zai_fetch_failure_still_merges_litellm(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """docs.z.ai 404 or parse failure must not abort the litellm write."""
+        script = _load_update_model_prices()
+        previous_overlay = {
+            "url": script.ZAI_PRICING_URL,
+            "fetched_at": "2026-01-15T00:00:00+00:00",
+            "section": "Text Models",
+        }
+        current = {
+            "_preloop_meta": {
+                "source_url": "https://example.com/litellm.json",
+                "fetched_at": "2026-01-15T00:00:00+00:00",
+                "overlay_sources": [previous_overlay],
+            },
+            "gpt-4o": {
+                "litellm_provider": "openai",
+                "mode": "chat",
+                "input_cost_per_token": 2.5e-06,
+                "output_cost_per_token": 1.0e-05,
+            },
+            "moonshot/kimi-k3": {
+                "litellm_provider": "moonshot",
+                "mode": "chat",
+                "input_cost_per_token": 3e-06,
+                "output_cost_per_token": 1.5e-05,
+            },
+            "zai/glm-5.3": {
+                "litellm_provider": "zai",
+                "mode": "chat",
+                "input_cost_per_token": 1.4e-06,
+                "output_cost_per_token": 4.4e-06,
+            },
+        }
+        written: dict[str, Any] = {}
+
+        def fake_fetch_remote(url: str = script.SOURCE_URL) -> dict[str, Any]:
+            return {
+                "gpt-4o": {
+                    "litellm_provider": "openai",
+                    "mode": "chat",
+                    "input_cost_per_token": 1.0e-06,
+                    "output_cost_per_token": 4.0e-06,
+                }
+            }
+
+        def fake_fetch_text(url: str) -> str:
+            raise OSError("HTTP Error 404: Not Found")
+
+        def fake_write_catalog(
+            filtered: dict[str, Any],
+            source_url: str,
+            overlay_sources: list[dict[str, Any]] | None = None,
+        ) -> None:
+            written["filtered"] = filtered
+            written["source_url"] = source_url
+            written["overlay_sources"] = overlay_sources
+
+        monkeypatch.setattr(script, "fetch_remote", fake_fetch_remote)
+        monkeypatch.setattr(script, "fetch_text", fake_fetch_text)
+        monkeypatch.setattr(script, "load_current", lambda: current)
+        monkeypatch.setattr(script, "write_catalog", fake_write_catalog)
+        monkeypatch.setattr(sys, "argv", ["update_model_prices.py"])
+
+        assert script.main() == 0
+        merged = written["filtered"]
+        assert merged["gpt-4o"]["input_cost_per_token"] == 1.0e-06
+        assert merged["moonshot/kimi-k3"]["input_cost_per_token"] == 3e-06
+        assert merged["zai/glm-5.3"]["input_cost_per_token"] == 1.4e-06
+        assert written["overlay_sources"] == [previous_overlay]
+
+    def test_check_overlay_ages_uses_fixture_meta(self) -> None:
+        """--check ages overlay_sources from meta without fetching docs.z.ai."""
+        script = _load_update_model_prices()
+        now = datetime(2026, 8, 24, tzinfo=timezone.utc)
+        fresh_meta = {
+            "overlay_sources": [
+                {
+                    "url": "https://docs.z.ai/guides/overview/pricing.md",
+                    "fetched_at": "2026-08-20T00:00:00+00:00",
+                    "section": "Text Models",
+                }
+            ]
+        }
+        stale_meta = {
+            "overlay_sources": [
+                {
+                    "url": "https://docs.z.ai/guides/overview/pricing.md",
+                    "fetched_at": "2026-01-01T00:00:00+00:00",
+                    "section": "Text Models",
+                }
+            ]
+        }
+        assert script.overlay_sources_over_max_age(fresh_meta, 30, now=now) == []
+        stale = script.overlay_sources_over_max_age(stale_meta, 30, now=now)
+        assert len(stale) == 1
+        assert "older than 30 days" in stale[0]
+        assert script.overlay_sources_over_max_age({}, 30, now=now) == []

@@ -44,6 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **z.ai GLM-5.3 was unpriced**: first-party list prices from docs.z.ai
+  are now in the vendored catalog ($1.4 input, $0.26 cached input, $4.4
+  output per 1M). z.ai has no price API, so
+  `scripts/update_model_prices.py` refreshes those rows from the public
+  pricing page alongside the litellm map.
 - **Preloop-bot label events were dropped**: `_is_preloop_triggered_event`
   no longer skips `issue_labeled` / `issue_unlabeled`, so
   `update_issue` adding `agent-ready` can start an implementation flow.
