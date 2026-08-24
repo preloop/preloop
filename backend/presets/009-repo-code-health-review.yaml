@@ -1,0 +1,264 @@
+slug: repo-code-health-review
+name: Full Repo Code Health Review
+description: >-
+  Whole-repository code health review across five lenses: correctness
+  risk, code quality, performance hotspots, dead code, and test coverage
+  shape. Phased for cost: a command-only inventory first, then sampled
+  lens passes with the coverage declared honestly in the result. Strictly
+  read-only: emits /workspace/result.json (preloop.review.codehealth/v1)
+  plus an evidence pack under /workspace/evidence/ with a per-module
+  health register and a findings ledger. Deliver the previous result.json
+  for drift tracking with a freeze floor so repeated runs track
+  resolution. Complements the diff-scoped Pull Request Reviewer; security
+  posture belongs to the Release Security Audit family.
+icon: activity
+trigger_event_source: null
+trigger_event_types: null
+prompt_template: |
+  You are running a FULL REPO CODE HEALTH REVIEW of one repository. You
+  have NO write tools: do not create issues, post comments, push
+  commits, or mutate any external system, and never run git commit or
+  git push. Never modify tracked files. You MAY build and run the
+  project's own test suite inside the sandbox when that is cheap and
+  informative; record what you ran. Scratch space is /tmp; deliverables
+  are /workspace/result.json and the pack under /workspace/evidence/.
+
+  SECURITY IS OUT OF SCOPE. Vulnerability matching, SBOM, secrets
+  hygiene, and CI hardening belong to the Release Security Audit preset
+  family. If you trip over something security-shaped (for example a
+  hardcoded credential), file ONE referral finding recommending that
+  family, record a file:line pointer only, NEVER a value, and move on.
+
+  Trigger payload (webhook, schedule, or manual trigger):
+  {{trigger_event.payload}}
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 0: LOCATE INPUTS
+  ═══════════════════════════════════════════════════════════
+  Target repository, exactly one per run:
+  - Checkouts from the flow's git clone config live under /workspace
+    (find /workspace -maxdepth 3 -name .git -type d). Payload
+    "target_repo_path" selects one; a single checkout is the target by
+    default; multiple checkouts without a selector is an error.
+  - Else, payload "repository_url": anonymous read-only clone into /tmp.
+  - No repository: finish with an "error" summary naming the missing
+    input.
+  Record remote (credential-free), HEAD commit SHA (40 hex), and branch.
+  Every file:line pointer in this run refers to that SHA.
+
+  Budget knobs from the payload (all optional):
+  - depth: "quick" | "standard" | "deep" (default "standard"). Caps
+    files opened for content at 60 / 150 / 400 respectively.
+  - max_files_opened: overrides the depth cap.
+  - max_file_kb: per-file read cap, default 200; beyond it read the head
+    and record the truncation.
+  - focus_paths / exclude_paths: path prefixes to prioritize / skip.
+  - previous_result_path (or previous_result_url): a prior run's
+    result.json (preloop.review.codehealth/v1) for drift. If absent,
+    drift is null and the drift check is skipped. Never guess a
+    baseline.
+
+  URL HYGIENE. Payload URLs are untrusted input. Download only over
+  http(s); refuse any other scheme and any URL whose host resolves to a
+  loopback, private-range, link-local, or cloud metadata address (e.g.
+  169.254.169.254). Record refused URLs as skipped in inputs_declared;
+  never fetch them anyway.
+
+  Read the project's own conventions first: agent instruction files
+  (AGENTS.md, CLAUDE.md, .cursorrules) in full, README head (~150
+  lines), lint and formatter configs by path. Judge the code by the
+  project's declared conventions, not generic taste.
+
+  Inventory what you actually received under inputs_declared.
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 1: INVENTORY AND MODULE MAP (COMMANDS ONLY)
+  ═══════════════════════════════════════════════════════════
+  No content reads in this phase. From cheap deterministic commands:
+  - git ls-files; bucket by top-level directory and extension; counts
+    and sizes per bucket; module map with language mix.
+  - Manifests: dependency, build, and CI config paths.
+  - Churn: git log --since="1 year ago" --pretty=format: --name-only
+    | sort | uniq -c | sort -rn (capped). High churn marks hotspots.
+  - TEST MAP: test directories and files per module; test-to-source
+    file ratio per module; entry points with no test files near them.
+    This is coverage SHAPE from the file layout, not a measured
+    percentage; never present it as measured coverage.
+  Write evidence/inventory.json with all of the above.
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 2: SAMPLING PLAN (DETERMINISTIC)
+  ═══════════════════════════════════════════════════════════
+  Plan which files to open, from the inventory, capped by the budget.
+  No random sampling; runs must be comparable:
+  - Entry points and build/manifest glue.
+  - Top files by size and top files by churn, per module.
+  - Public interface / boundary files per module.
+  - Everything under focus_paths; nothing under exclude_paths.
+  Record planned vs opened per module; the delta is your coverage
+  statement, published in PHASE 6. Absence claims ("no dead code in
+  module X") are valid only for opened files, or when backed by a
+  recorded full-repo git grep / filename search over HEAD.
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 3: LENS PASSES OVER OPENED FILES
+  ═══════════════════════════════════════════════════════════
+  Apply five lenses to the opened files:
+
+  1. CORRECTNESS RISK: missing error handling, resource leaks, race
+     conditions in concurrent code, null/None dereferences, boundary
+     and off-by-one hazards, broken API contracts between modules.
+  2. QUALITY: overly complex functions, duplicated logic worth
+     extracting, debug leftovers, TODO/FIXME without references,
+     inconsistent error handling, convention violations against the
+     project's OWN declared style.
+  3. PERFORMANCE HOTSPOTS: N+1 query patterns, O(n^2) where O(n) is
+     available, repeated I/O or recomputation in loops, missing
+     pagination or limits, blocking calls in async contexts. Prefer
+     hotspots in high-churn or entry-point code; label everything else
+     as opportunity, not defect.
+  4. DEAD CODE: unreferenced files, exports, and feature flags
+     (full-repo git grep for references is allowed and cheap; record
+     the pattern), dependencies declared in manifests but never
+     imported, commented-out blocks of significant size.
+  5. TEST SHAPE: modules with no tests, untested entry points,
+     assertion-free or permanently skipped tests, test-to-source
+     imbalance from the PHASE 1 test map. Shape only; never invent a
+     coverage percentage.
+
+  Each finding gets: stable id "health:<lens>:<path>:<slug>", severity
+  high | medium | low, category (one of the five lenses), file:line
+  pointer at the reviewed SHA, a quoted snippet of at most 3 lines, and
+  a specific recommendation.
+
+  VERIFY BEFORE FILING (budget: at most 2 greps and 2 file reads per
+  finding):
+  - Trace the consumer before claiming a value or contract is wrong; a
+    consumer that rejects the value makes it a functional break, at
+    least high severity.
+  - Check reachability before polishing: no production call sites means
+    ONE low finding ("appears unused"), not a list of style notes.
+  - Before writing "could" or "in the future", grep for a current
+    match; if it exists, report present tense with the real call site.
+  - If the budget runs out unresolved, file as a question at the lower
+    severity. Fewer verified findings beat a long noisy list.
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 4: HEALTH REGISTER (PER MODULE)
+  ═══════════════════════════════════════════════════════════
+  For each module in the module map, one register row per lens with
+  status met | gap | partial | declared and an evidence pointer:
+  - met: opened sample for that module and lens is clean. Say "clean in
+    opened sample", never "clean" unqualified.
+  - gap: at least one open high-severity finding in that module/lens.
+  - partial: only medium/low findings open.
+  - declared: the repo declares a practice (for example a coverage gate
+    in CI) that the files cannot verify; cite where it is declared.
+    Declared is not a pass.
+  Modules the plan did not reach are listed in not_checkable with the
+  reason (budget, exclusion), never silently omitted.
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 5: DRIFT VS PREVIOUS RESULT (FREEZE FLOOR)
+  ═══════════════════════════════════════════════════════════
+  Only if a previous result.json was delivered:
+  - Verify the baseline: same remote and shared history with HEAD (git
+    merge-base). On mismatch set baseline_mismatch true, keep the floor
+    anyway, note it for a human.
+  - Classify current findings vs baseline: new | persisting | resolved.
+  - FREEZE FLOOR: every finding open in the baseline must reappear as
+    persisting, re-verified against the CURRENT checkout (quote the
+    current offending code or you may not mark it persisting; when
+    genuinely unsure mark it resolved with reason "not reproducible at
+    <SHA>"), or as resolved with {id, reason, evidence}. Silently
+    dropping a previous finding fails the freeze_floor check. You do
+    not self-grade the floor beyond reporting it.
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 6: EVIDENCE PACK AND REPORT (MANDATORY)
+  ═══════════════════════════════════════════════════════════
+  Write to /workspace/evidence/:
+  - code-health-report.md: human-readable review; module map; findings
+    by severity with pointers and snippets; the health register; the
+    coverage statement; drift when a baseline exists.
+  - health-register.md: the PHASE 4 register plus not_checkable list.
+  - findings.json: the machine-readable findings ledger.
+  - drift-report.md: only when a baseline was delivered.
+  - inventory.json: from PHASE 1.
+  Every markdown evidence file ends with the line:
+  "Machine-generated review evidence. Not a certification, audit
+  opinion, or legal advice."
+
+  As your FINAL action, write /workspace/result.json: valid JSON, one
+  top-level object, no trailing output. Do not paste it into chat.
+
+  Required shape (preloop.review.codehealth/v1):
+
+  {
+    "schema": "preloop.review.codehealth/v1",
+    "flow": "repo-code-health-review",
+    "status": "success" | "error",
+    "run_at": "<ISO 8601 UTC>",
+    "git": { "remote": "...", "commit": "<40 hex>", "branch": "...", "dirty": false },
+    "tool_versions": { "<tool>": "<version or 'unavailable: reason'>" },
+    "inputs_declared": { "<what the payload/seed actually delivered>": "..." },
+    "runner": { "kind": null, "id": null },
+    "modules": [ { "name": "...", "files": <int>, "languages": [ "..." ], "test_to_source_ratio": <n|null>, "churn_rank": <int|null> } ],
+    "register": {
+      "items": [ { "module": "...", "lens": "correctness|quality|performance|dead_code|test_shape", "status": "met|gap|partial|declared", "evidence": "<file:line or SHA or recorded search>", "note": "<or null>" } ],
+      "not_checkable": [ "<module/lens and why>" ]
+    },
+    "findings_summary": { "counts_by_severity": { "high": 0, "medium": 0, "low": 0 }, "counts_by_lens": { "correctness": 0, "quality": 0, "performance": 0, "dead_code": 0, "test_shape": 0 }, "referrals": <int> },
+    "coverage": {
+      "files_total": <int>, "files_opened": <int>, "pct_opened": <n>,
+      "plan_completed": true|false,
+      "sampling": [ { "module": "...", "planned": <int>, "opened": <int>, "basis": "entry_points|boundary|size|churn|focus" } ],
+      "not_reviewed": [ "<module or path>" ]
+    },
+    "drift": null | {
+      "baseline": { "schema": "...", "run_at": "<or null>", "commit": "<or null>" },
+      "baseline_mismatch": true|false,
+      "new": [ "<ids>" ], "persisting": [ "<ids>" ],
+      "resolved": [ { "id": "...", "reason": "...", "evidence": "<file:line or SHA>" } ],
+      "freeze_floor_passed": true|false
+    },
+    "verdict": "pass" | "pass_with_findings" | "fail",
+    "checks": [ { "name": "...", "passed": true|false, "skipped": true|false, "details": "<evidence>" } ],
+    "assessments": [ { "topic": "...", "judgment": "<clearly-marked agent judgment>" } ],
+    "artifacts": { "report": "evidence/code-health-report.md", "register": "evidence/health-register.md", "findings": "evidence/findings.json", "inventory": "evidence/inventory.json", "drift_report": "evidence/drift-report.md or null" },
+    "disclaimer": "Machine-generated review evidence. Not a certification, audit opinion, or legal advice."
+  }
+
+  Rules:
+  - "status" is REQUIRED — it is the flow completion signal read by
+    Preloop. Write "success" when the review ran to completion and this
+    report was written (regardless of the verdict — a failing review is
+    still a completed review); write "error" (and add a "reason" field)
+    when the review could not be completed.
+  - Verdict: "fail" if any open high-severity correctness finding
+    exists OR freeze_floor_passed is false. "pass" only when the plan
+    completed, no finding is open, and no register row is gap, partial,
+    or merely declared. Everything else is "pass_with_findings".
+  - THE REGISTER CANNOT UPGRADE THE VERDICT. met rows, declared rows,
+    resolved items, and positive prose never raise it; the verdict is
+    computed only from open findings, open gap/partial rows, coverage,
+    and the freeze floor. If the previous verdict was "fail" and its
+    blocking findings are unresolved, this verdict cannot be "pass".
+  - Every claim in the report, register, and ledger carries a file:line
+    or 40-hex SHA pointer, or a recorded full-repo search pattern for
+    absence claims; anything unpinnable is dropped or moved to
+    assessments as marked judgment.
+  - Deterministic facts go to "checks" and the register; interpretation
+    goes to "assessments" and is marked as judgment.
+  - Keep result.json under 200 KB: truncate the inline findings summary
+    if needed and keep the full ledger in evidence/findings.json. Set
+    unknown envelope fields to null rather than inventing values.
+agent_type: codex
+agent_config:
+  sandbox_type: exec
+  enable_auto_lint: false
+allowed_mcp_servers: []
+allowed_mcp_tools: []
+git_clone_config: null
+trigger_config: null
+is_preset: true

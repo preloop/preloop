@@ -7,10 +7,12 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from preloop.services.flow_orchestrator import (
+    FLOW_AUDIT_SUCCESS_INSTRUCTION,
     FLOW_EVAL_SUCCESS_INSTRUCTION,
     FLOW_SUCCESS_INSTRUCTION,
     FlowExecutionOrchestrator,
     _result_artifact_confirmation,
+    _success_instruction_for_prompt,
 )
 from preloop.agents.base import AgentStatus, AgentExecutionResult
 from preloop.models.models import Flow, Account
@@ -311,6 +313,69 @@ class TestFlowExecutionOrchestrator:
         assert "/workspace/result.json" in resolved_prompt
         assert "`pass` and `fail`" in resolved_prompt
         assert "`error`" in resolved_prompt
+
+    @pytest.mark.parametrize(
+        "audit_schema_marker",
+        [
+            # The schema ids actually present in the preset prompt texts:
+            "preloop.cra.sbomaudit/v1",  # 004-sbom-verify
+            "preloop.cra.vulnscan/v1",  # 005-sbom-exploit-check
+            "preloop.cra.releaseaudit/v1",  # 006-release-security-audit
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_prompt_resolution_audit_uses_verdict_instruction(
+        self,
+        audit_schema_marker: str,
+    ):
+        """Audit prompts get the verdict-contract confirmation instruction."""
+        orchestrator = FlowExecutionOrchestrator(
+            db=MagicMock(spec=Session),
+            flow_id=uuid4(),
+            trigger_event_data={},
+            nats_client=MagicMock(),
+        )
+        orchestrator.flow = MagicMock(
+            prompt_template=(
+                "As your FINAL action, write /workspace/result.json.\n"
+                f'Required shape ({audit_schema_marker}): {{ "schema": '
+                f'"{audit_schema_marker}", "verdict": "pass" }}'
+            )
+        )
+
+        resolved_prompt = await orchestrator._resolve_prompt()
+
+        assert resolved_prompt.endswith(FLOW_AUDIT_SUCCESS_INSTRUCTION)
+        # result.json + verdict is the confirmation channel...
+        assert '"verdict"' in resolved_prompt
+        assert '"pass_with_findings"' in resolved_prompt
+        # ...but the sentinel is NOT forbidden (unlike eval): it stays
+        # available, and required for shapes without a top-level verdict.
+        assert "FLOW_EXECUTION_SUCCESS" in resolved_prompt
+        assert "allowed and harmless" in resolved_prompt
+        assert "bare status object" in resolved_prompt
+
+    def test_instruction_selection_audit_vs_eval_vs_generic(self):
+        """Contract routing: eval wins first, then audit, else generic."""
+        assert (
+            _success_instruction_for_prompt("shape: preloop.eval.result/v1")
+            is FLOW_EVAL_SUCCESS_INSTRUCTION
+        )
+        assert (
+            _success_instruction_for_prompt("shape: preloop.cra.releaseaudit/v1")
+            is FLOW_AUDIT_SUCCESS_INSTRUCTION
+        )
+        assert (
+            _success_instruction_for_prompt("Fix the bug and open a PR.")
+            is FLOW_SUCCESS_INSTRUCTION
+        )
+        # The due-diligence contract's verdict vocabulary
+        # ("recorded" | "error") is not a recognized completion
+        # confirmation, so it keeps the generic sentinel instruction.
+        assert (
+            _success_instruction_for_prompt("shape: preloop.cra.duediligence/v1")
+            is FLOW_SUCCESS_INSTRUCTION
+        )
 
     @pytest.mark.asyncio
     async def test_prompt_resolution_nested(
@@ -1991,6 +2056,71 @@ class TestSuccessConfirmationChannels:
         assert result["result"] == artifact
 
     @pytest.mark.asyncio
+    async def test_audit_fail_verdict_does_not_fail_the_flow(
+        self, mock_nats_client, event_data
+    ):
+        """Audit ``verdict: fail`` (no sentinel) confirms flow completion.
+
+        Per the preloop.cra.* contracts, a failing audit is a completed
+        audit — channel 2 must recognize the verdict vocabulary even though
+        the artifact carries no "status" key.
+        """
+        artifact = {
+            "schema": "preloop.cra.releaseaudit/v1",
+            "verdict": "fail",
+            "checks": [{"name": "severity gate", "passed": False}],
+        }
+        orchestrator = self._monitor_orchestrator(
+            mock_nats_client, event_data, sentinel_seen=False
+        )
+        result = await orchestrator._monitor_agent_execution(
+            "session-confirmation-123",
+            _confirmation_executor(artifact=artifact),
+        )
+
+        assert result["status"] == "SUCCEEDED"
+        assert result["result"] == artifact
+
+    @pytest.mark.asyncio
+    async def test_audit_error_verdict_overrides_to_failed(
+        self, mock_nats_client, event_data
+    ):
+        """Audit ``verdict: error`` means the audit could not complete."""
+        artifact = {
+            "schema": "preloop.cra.sbomaudit/v1",
+            "verdict": "error",
+            "checks": [{"name": "inputs", "passed": False}],
+        }
+        orchestrator = self._monitor_orchestrator(
+            mock_nats_client, event_data, sentinel_seen=True
+        )
+        result = await orchestrator._monitor_agent_execution(
+            "session-confirmation-123",
+            _confirmation_executor(artifact=artifact),
+        )
+
+        assert result["status"] == "FAILED"
+        assert "result.json" in result["error_message"]
+        assert result["result"] == artifact
+
+    @pytest.mark.asyncio
+    async def test_unrecognized_verdict_without_sentinel_still_fails(
+        self, mock_nats_client, event_data
+    ):
+        """Neither channel: an unrecognized verdict is not a confirmation."""
+        artifact = {"schema": "preloop.cra.duediligence/v1", "verdict": "recorded"}
+        orchestrator = self._monitor_orchestrator(
+            mock_nats_client, event_data, sentinel_seen=False
+        )
+        result = await orchestrator._monitor_agent_execution(
+            "session-confirmation-123",
+            _confirmation_executor(artifact=artifact),
+        )
+
+        assert result["status"] == "FAILED"
+        assert "FLOW_EXECUTION_SUCCESS" in result["error_message"]
+
+    @pytest.mark.asyncio
     async def test_result_artifact_error_overrides_to_failed(
         self, mock_nats_client, event_data
     ):
@@ -2085,3 +2215,67 @@ class TestResultArtifactConfirmation:
 
     def test_pass_is_success_confirmation(self):
         assert _result_artifact_confirmation({"status": "pass"}) == "success"
+
+
+class TestResultArtifactVerdictConfirmation:
+    """Audit contracts confirm completion via top-level ``verdict``.
+
+    Vocabulary (preloop.cra.sbomaudit/v1, preloop.cra.releaseaudit/v1):
+    pass | pass_with_findings | fail are completed-run verdicts — a failing
+    audit is a completed flow (same semantics as eval) — while ``error``
+    means the audit itself could not complete.
+    """
+
+    @pytest.mark.parametrize(
+        "verdict", ["pass", "passed", "pass_with_findings", "fail"]
+    )
+    def test_completed_verdicts_confirm_success(self, verdict):
+        artifact = {"schema": "preloop.cra.releaseaudit/v1", "verdict": verdict}
+        assert _result_artifact_confirmation(artifact) == "success"
+
+    def test_verdict_is_normalized(self):
+        assert (
+            _result_artifact_confirmation({"verdict": "  Pass_With_Findings "})
+            == "success"
+        )
+
+    def test_error_verdict_is_failure_confirmation(self):
+        artifact = {"schema": "preloop.cra.releaseaudit/v1", "verdict": "error"}
+        assert _result_artifact_confirmation(artifact) == "failure"
+
+    def test_unrecognized_verdict_is_no_confirmation(self):
+        # e.g. the due-diligence contract's "recorded" — not a completion
+        # confirmation; the sentinel remains required for those flows.
+        assert _result_artifact_confirmation({"verdict": "recorded"}) is None
+
+    def test_non_string_verdict_is_no_confirmation(self):
+        assert _result_artifact_confirmation({"verdict": True}) is None
+
+    def test_neither_status_nor_verdict_is_no_confirmation(self):
+        assert _result_artifact_confirmation({"schema": "x", "checks": []}) is None
+
+    def test_recognized_status_wins_over_verdict(self):
+        # status stays authoritative: an explicit failure status is not
+        # softened by a passing verdict...
+        assert (
+            _result_artifact_confirmation({"status": "error", "verdict": "pass"})
+            == "failure"
+        )
+        # ...and a recognized success status is not overridden by an
+        # error verdict.
+        assert (
+            _result_artifact_confirmation({"status": "success", "verdict": "error"})
+            == "success"
+        )
+
+    def test_unrecognized_status_falls_back_to_verdict(self):
+        assert (
+            _result_artifact_confirmation(
+                {"status": "wat", "verdict": "pass_with_findings"}
+            )
+            == "success"
+        )
+        assert (
+            _result_artifact_confirmation({"status": None, "verdict": "error"})
+            == "failure"
+        )

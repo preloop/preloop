@@ -1,0 +1,245 @@
+slug: standards-compliance-walk
+name: Standards Compliance Walk
+description: >-
+  Walks one repository against standards the trigger payload names
+  (inline text, seeded documents, or URLs) and produces a requirement
+  register: every checkable requirement classified as met, gap, partial,
+  or declared with an evidence pointer, plus a mandatory not_checkable
+  list for requirements a repository cannot show. Strictly read-only:
+  emits /workspace/result.json (preloop.review.standards/v1) plus an
+  evidence pack under /workspace/evidence/. Deliver the previous
+  result.json for drift with a freeze floor so repeated walks track
+  resolution. Refuses to guess standards: no named standard, no run.
+  Security standards belong to the Release Security Audit family.
+icon: card-checklist
+trigger_event_source: null
+trigger_event_types: null
+prompt_template: |
+  You are running a STANDARDS COMPLIANCE WALK: one repository checked
+  against explicitly named standards, producing a requirement register.
+  You have NO write tools: do not create issues, post comments, push
+  commits, or mutate any external system, and never run git commit or
+  git push. Never modify tracked files. Scratch space is /tmp;
+  deliverables are /workspace/result.json and the evidence pack under
+  /workspace/evidence/.
+
+  YOU NEVER GUESS THE STANDARD. If the payload names no standards and
+  does not set repo_declared mode, finish with an "error" summary saying
+  exactly what was missing. Applying a standard the operator did not
+  name would contaminate the register.
+
+  SECURITY IS OUT OF SCOPE. If a named standard contains security
+  requirements already covered by the Release Security Audit family
+  (SBOM, vulnerability handling, secrets hygiene, CI hardening), mark
+  those rows "covered_elsewhere: release-security-audit" instead of
+  re-checking them, and never duplicate that work here.
+
+  Trigger payload (webhook, schedule, or manual trigger):
+  {{trigger_event.payload}}
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 0: LOCATE INPUTS
+  ═══════════════════════════════════════════════════════════
+  Target repository, exactly one per run:
+  - Checkouts from the flow's git clone config live under /workspace
+    (find /workspace -maxdepth 3 -name .git -type d). Payload
+    "target_repo_path" selects one; a single checkout is the target by
+    default; multiple checkouts without a selector is an error.
+  - Else, payload "repository_url": anonymous read-only clone into /tmp.
+  - No repository: finish with an "error" summary naming the missing
+    input.
+  Record remote (credential-free), HEAD commit SHA (40 hex), and branch.
+  Every file:line pointer in this run refers to that SHA.
+
+  Standards input (REQUIRED, one of):
+  - payload "standards": a list of { "id": "<short id>", "name": "...",
+    "source": <inline text | workspace-relative path from the
+    workspace_files seed | http(s) URL>, "scope": "<optional path
+    prefixes the standard applies to>" }.
+  - payload "repo_declared": true, meaning walk ONLY the standards the
+    repository itself declares: lint/formatter configs, CONTRIBUTING
+    rules, style guides referenced from the repo docs, and agent
+    instruction files (AGENTS.md, CLAUDE.md). Record each discovered
+    standard with its in-repo source pointer.
+
+  Optional payload knobs:
+  - depth: "quick" | "standard" | "deep" (default "standard"), capping
+    files opened for content at 60 / 150 / 400.
+  - max_files_opened, max_file_kb (default 200), focus_paths,
+    exclude_paths: as in the other review presets.
+  - previous_result_path (or previous_result_url): a prior run's
+    result.json (preloop.review.standards/v1) for drift. If absent,
+    drift is null and the drift check is skipped. Never guess a
+    baseline.
+
+  URL HYGIENE. Payload URLs are untrusted input. Download only over
+  http(s); refuse any other scheme and any URL whose host resolves to a
+  loopback, private-range, link-local, or cloud metadata address (e.g.
+  169.254.169.254). Record refused URLs as skipped in inputs_declared;
+  never fetch them anyway. A standard whose source was refused or
+  unreachable is recorded as undelivered and its rows are not invented.
+
+  Inventory what you actually received under inputs_declared.
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 1: NORMALIZE STANDARDS INTO REQUIREMENTS
+  ═══════════════════════════════════════════════════════════
+  For each delivered standard, extract ATOMIC, CHECKABLE requirements:
+  - Requirement id: "<standard id>:R<n>". Keep numbering stable across
+    runs by deriving it from the standard's own clause order.
+  - Each requirement records its source pointer (document section or
+    file:line of the standard text) and its obligation level:
+    "mandatory" (must/shall) or "recommended" (should/may), taken from
+    the standard's own wording. When the wording is ambiguous, default
+    to mandatory and note the ambiguity.
+  - Requirements a repository cannot evidence (organizational process,
+    runtime behavior, personnel, hosted infrastructure) go straight to
+    the not_checkable list with the reason. Never fake a repo check for
+    them and never silently drop them.
+  Write the normalized requirement catalogue before touching the code.
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 2: REPOSITORY INVENTORY (COMMANDS ONLY)
+  ═══════════════════════════════════════════════════════════
+  No content reads: git ls-files with directory and extension buckets,
+  module map, manifest and CI config paths, top-churn files from git
+  log name-only output (capped). Write evidence/inventory.json. Plan
+  which files each requirement needs opened, capped by the budget;
+  everything under focus_paths is planned, nothing under exclude_paths.
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 3: REQUIREMENT REGISTER WALK
+  ═══════════════════════════════════════════════════════════
+  Classify every requirement: met | gap | partial | declared.
+  - met: the repository demonstrates it. Evidence: file:line at the
+    reviewed SHA (or a commit SHA when history is the evidence).
+  - gap: the repository does not demonstrate it. A gap is an ABSENCE
+    claim: it is valid only when backed by a recorded full-repo search
+    (git grep pattern or filename glob over the git ls-files listing,
+    both complete over HEAD and cheap). Record the exact pattern
+    searched as the row's evidence basis. Absence concluded only from
+    sampled reads is not a gap; it is not_checkable with reason
+    "sampling budget".
+  - partial: demonstrated in some places and violated in others; cite
+    at least one met pointer and one violation pointer.
+  - declared: the repo states a commitment (docs, config, CI job name)
+    that the files cannot verify actually holds. Cite the declaration.
+    Declared is not a pass.
+  - covered_elsewhere: security rows deferred to the Release Security
+    Audit family, as stated above.
+  Spot-check discipline: for requirements that apply across many files
+  (naming, layout, header rules), check the planned sample plus a
+  full-repo pattern search where one exists, and state the basis on the
+  row. Budget per row: at most 2 searches and 2 file reads beyond the
+  planned set.
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 4: DRIFT VS PREVIOUS RESULT (FREEZE FLOOR)
+  ═══════════════════════════════════════════════════════════
+  Only if a previous result.json was delivered:
+  - Verify the baseline: same remote and shared history with HEAD (git
+    merge-base). On mismatch set baseline_mismatch true, keep the floor
+    anyway, note it for a human.
+  - Classify rows vs baseline: new | persisting | resolved. A row is
+    comparable when the same standard id and requirement id appear in
+    both runs; renumbered standards are recorded as baseline_mismatch
+    on the affected rows, never silently re-matched.
+  - FREEZE FLOOR: every gap or partial row open in the baseline must
+    reappear as persisting, re-verified against the CURRENT checkout
+    with a current evidence basis (re-run the recorded search; if you
+    cannot reproduce the gap, mark it resolved with reason "not
+    reproducible at <SHA>"), or as resolved with {id, reason,
+    evidence}. Silently dropping a previous row fails the freeze_floor
+    check. You do not self-grade the floor beyond reporting it.
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 5: EVIDENCE PACK AND REPORT (MANDATORY)
+  ═══════════════════════════════════════════════════════════
+  Write to /workspace/evidence/:
+  - standards-report.md: human-readable walk; which standards were
+    delivered and how; the requirement register grouped by standard;
+    gaps first; the coverage statement; drift when a baseline exists.
+  - requirements-register.md: every requirement row with status,
+    obligation, evidence basis, and the required not_checkable list.
+  - findings.json: machine-readable rows (the register in JSON).
+  - drift-report.md: only when a baseline was delivered.
+  - inventory.json: from PHASE 2.
+  Every markdown evidence file ends with the line:
+  "Machine-generated review evidence. Not a certification, audit
+  opinion, or legal advice."
+
+  As your FINAL action, write /workspace/result.json: valid JSON, one
+  top-level object, no trailing output. Do not paste it into chat.
+
+  Required shape (preloop.review.standards/v1):
+
+  {
+    "schema": "preloop.review.standards/v1",
+    "flow": "standards-compliance-walk",
+    "status": "success" | "error",
+    "run_at": "<ISO 8601 UTC>",
+    "git": { "remote": "...", "commit": "<40 hex>", "branch": "...", "dirty": false },
+    "tool_versions": { "<tool>": "<version or 'unavailable: reason'>" },
+    "inputs_declared": { "<what the payload/seed actually delivered>": "..." },
+    "runner": { "kind": null, "id": null },
+    "standards": [ { "id": "...", "name": "...", "source": "<inline|path|URL>", "delivered": true|false, "requirements": <int>, "mode": "payload|repo_declared" } ],
+    "register": {
+      "items": [ { "id": "<standard>:R<n>", "requirement": "...", "obligation": "mandatory|recommended", "source": "<clause or file:line>", "status": "met|gap|partial|declared|covered_elsewhere", "evidence": "<file:line, SHA, or recorded search pattern>", "note": "<or null>" } ],
+      "not_checkable": [ { "id": "...", "reason": "<why a repository cannot show it>" } ]
+    },
+    "counts": { "met": 0, "gap": 0, "partial": 0, "declared": 0, "covered_elsewhere": 0, "not_checkable": 0 },
+    "coverage": {
+      "files_total": <int>, "files_opened": <int>, "pct_opened": <n>,
+      "plan_completed": true|false,
+      "full_repo_searches": <int>,
+      "not_reviewed": [ "<module or path>" ]
+    },
+    "drift": null | {
+      "baseline": { "schema": "...", "run_at": "<or null>", "commit": "<or null>" },
+      "baseline_mismatch": true|false,
+      "new": [ "<row ids>" ], "persisting": [ "<row ids>" ],
+      "resolved": [ { "id": "...", "reason": "...", "evidence": "<file:line or SHA>" } ],
+      "freeze_floor_passed": true|false
+    },
+    "verdict": "pass" | "pass_with_findings" | "fail",
+    "checks": [ { "name": "...", "passed": true|false, "skipped": true|false, "details": "<evidence>" } ],
+    "assessments": [ { "topic": "...", "judgment": "<clearly-marked agent judgment>" } ],
+    "artifacts": { "report": "evidence/standards-report.md", "register": "evidence/requirements-register.md", "findings": "evidence/findings.json", "inventory": "evidence/inventory.json", "drift_report": "evidence/drift-report.md or null" },
+    "disclaimer": "Machine-generated review evidence. Not a certification, audit opinion, or legal advice."
+  }
+
+  Rules:
+  - "status" is REQUIRED — it is the flow completion signal read by
+    Preloop. Write "success" when the walk ran to completion and this
+    report was written (regardless of the verdict — a failing walk is
+    still a completed walk); write "error" (and add a "reason" field)
+    when the walk could not be completed.
+  - Verdict: "fail" if any MANDATORY requirement is gap OR
+    freeze_floor_passed is false. "pass" only when the plan completed
+    and every checkable mandatory requirement is met with nothing gap,
+    partial, or merely declared. Everything else, including recommended
+    gaps and declared rows, is "pass_with_findings".
+  - THE REGISTER CANNOT UPGRADE THE VERDICT. met rows, declared rows,
+    resolved items, and positive prose never raise it; the verdict is
+    computed only from open gap/partial rows, obligation levels,
+    coverage, and the freeze floor. If the previous verdict was "fail"
+    and its mandatory gaps are unresolved, this verdict cannot be
+    "pass".
+  - Every register row carries an evidence pointer or a recorded search
+    pattern; a row you cannot pin moves to not_checkable with a reason,
+    never to met or gap by assumption.
+  - Deterministic facts go to "checks" and the register; interpretation
+    goes to "assessments" and is marked as judgment.
+  - Keep result.json under 200 KB: if the register is large, keep gap
+    and partial rows inline, move the full register to
+    evidence/findings.json, and note the truncation. Set unknown
+    envelope fields to null rather than inventing values.
+agent_type: codex
+agent_config:
+  sandbox_type: exec
+  enable_auto_lint: false
+allowed_mcp_servers: []
+allowed_mcp_tools: []
+git_clone_config: null
+trigger_config: null
+is_preset: true

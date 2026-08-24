@@ -95,6 +95,34 @@ FLOW_EVAL_SUCCESS_INSTRUCTION = """
 IMPORTANT: Your existing structured /workspace/result.json report is the flow confirmation channel. Preserve its schema and all rich report fields; do not overwrite it with a bare status object. The `pass` and `fail` verdicts confirm that the flow completed. An `error` verdict means the evaluation could not complete. Do not print sentinel markers.
 ---"""
 
+# Instruction for audit flows (CRA/RSA preset family) whose result contract
+# uses a top-level "verdict" instead of "status". Mirrors the eval precedent:
+# the structured result.json IS the confirmation channel, and a failing audit
+# is a completed flow. Unlike the eval instruction, the sentinel is not
+# forbidden — printing it additionally is harmless, and it stays REQUIRED for
+# contracts without a top-level "verdict" (e.g. preloop.cra.vulnscan/v1),
+# which otherwise have no result.json confirmation at all.
+# NOTE: the sentinel is kept INLINE (see FLOW_SUCCESS_INSTRUCTION) so the
+# prompt echo cannot trigger the exact-line detector.
+FLOW_AUDIT_SUCCESS_INSTRUCTION = f"""
+
+---
+IMPORTANT: Your structured /workspace/result.json report is the flow confirmation channel: a top-level "verdict" of "pass", "pass_with_findings", or "fail" confirms that the flow ran to completion (a failing audit is still a completed audit); a verdict of "error" means the audit itself could not complete. Preserve the exact result schema your instructions require and all rich report fields; never overwrite the file with a bare status object. Additionally printing the success marker on a line by itself (no other text on that line) after writing the file is allowed and harmless: {FLOW_SUCCESS_SENTINEL}
+If your required result shape has NO top-level "verdict" field, you MUST print that marker after writing the file — without it the run is marked FAILED.
+---"""
+
+# Schema ids of the audit result contracts (presets 004-006) whose top-level
+# "verdict" vocabulary is pass | pass_with_findings | fail (+ error). The
+# due-diligence contract (preloop.cra.duediligence/v1, verdict
+# "recorded" | "error") is deliberately NOT listed: its verdict vocabulary is
+# not a recognized completion confirmation, so those flows keep the generic
+# sentinel instruction.
+AUDIT_RESULT_SCHEMA_MARKERS = (
+    "preloop.cra.sbomaudit/v1",
+    "preloop.cra.vulnscan/v1",
+    "preloop.cra.releaseaudit/v1",
+)
+
 
 def _success_instruction_for_prompt(prompt: str) -> str:
     """Select the completion instruction matching the prompt's result contract."""
@@ -104,6 +132,8 @@ def _success_instruction_for_prompt(prompt: str) -> str:
         or "do not print sentinel markers" in normalized_prompt
     ):
         return FLOW_EVAL_SUCCESS_INSTRUCTION
+    if any(marker in normalized_prompt for marker in AUDIT_RESULT_SCHEMA_MARKERS):
+        return FLOW_AUDIT_SUCCESS_INSTRUCTION
     return FLOW_SUCCESS_INSTRUCTION
 
 
@@ -118,6 +148,16 @@ RESULT_ARTIFACT_SUCCESS_STATUSES = frozenset(
 )
 RESULT_ARTIFACT_FAILURE_STATUSES = frozenset({"failure", "failed", "error"})
 
+# Audit vocabulary (preloop.cra.sbomaudit/v1, preloop.cra.releaseaudit/v1):
+# the top-level field is "verdict", never "status". As with eval, "fail" and
+# "pass_with_findings" are completed-run verdicts — the audit ran to
+# completion and reported its outcome — so they confirm the FLOW succeeded;
+# only "error" means the audit itself could not complete.
+RESULT_ARTIFACT_VERDICT_SUCCESSES = frozenset(
+    {"pass", "passed", "pass_with_findings", "fail"}
+)
+RESULT_ARTIFACT_VERDICT_FAILURES = frozenset({"error"})
+
 
 def _result_artifact_confirmation(artifact: Optional[Dict[str, Any]]) -> Optional[str]:
     """Classify a result.json artifact as an explicit completion verdict.
@@ -125,17 +165,29 @@ def _result_artifact_confirmation(artifact: Optional[Dict[str, Any]]) -> Optiona
     Returns ``"success"`` or ``"failure"`` when the artifact carries an
     explicit ``status`` verdict, else ``None`` (no artifact, no status field,
     or an unrecognised value — none of which is a confirmation).
+
+    ``status`` is authoritative when it carries a recognized value. When it
+    is absent or unrecognized, the audit contracts' top-level ``verdict`` is
+    consulted as a fallback so audit runs that honour their result schema are
+    recognized as completed (channel 2) instead of being overridden to FAILED
+    for a missing success confirmation.
     """
     if not isinstance(artifact, dict):
         return None
     status = artifact.get("status")
-    if not isinstance(status, str):
-        return None
-    normalized = status.strip().lower()
-    if normalized in RESULT_ARTIFACT_SUCCESS_STATUSES:
-        return "success"
-    if normalized in RESULT_ARTIFACT_FAILURE_STATUSES:
-        return "failure"
+    if isinstance(status, str):
+        normalized = status.strip().lower()
+        if normalized in RESULT_ARTIFACT_SUCCESS_STATUSES:
+            return "success"
+        if normalized in RESULT_ARTIFACT_FAILURE_STATUSES:
+            return "failure"
+    verdict = artifact.get("verdict")
+    if isinstance(verdict, str):
+        normalized = verdict.strip().lower()
+        if normalized in RESULT_ARTIFACT_VERDICT_SUCCESSES:
+            return "success"
+        if normalized in RESULT_ARTIFACT_VERDICT_FAILURES:
+            return "failure"
     return None
 
 
@@ -2447,9 +2499,11 @@ class FlowExecutionOrchestrator:
                             "Agent exited with code 0 but did not confirm "
                             "success on either channel: the "
                             f"{FLOW_SUCCESS_SENTINEL} sentinel was not printed "
-                            'and no result.json with {"status": "success"} was '
-                            "written. The work may have completed without "
-                            "confirmation, or the agent died mid-task."
+                            "and no result.json with a recognized completion "
+                            'status (top-level {"status": "success"} or an '
+                            "audit verdict such as pass, pass_with_findings, "
+                            "or fail) was written. The work may have completed "
+                            "without confirmation, or the agent died mid-task."
                         )
                     elif (
                         result.status == AgentStatus.SUCCEEDED
