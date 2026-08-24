@@ -319,8 +319,10 @@ class TestFlowExecutionOrchestrator:
         [
             # The schema ids actually present in the preset prompt texts:
             "preloop.cra.sbomaudit/v1",  # 004-sbom-verify
-            "preloop.cra.vulnscan/v1",  # 005-sbom-exploit-check
             "preloop.cra.releaseaudit/v1",  # 006-release-security-audit
+            # preloop.cra.vulnscan/v1 (005) deliberately absent: since its
+            # prompt carries a top-level "status" completion field it uses
+            # the generic instruction (see test below).
         ],
     )
     @pytest.mark.asyncio
@@ -367,6 +369,15 @@ class TestFlowExecutionOrchestrator:
         )
         assert (
             _success_instruction_for_prompt("Fix the bug and open a PR.")
+            is FLOW_SUCCESS_INSTRUCTION
+        )
+        # 005's vulnscan contract carries a top-level "status" completion
+        # field (preset revision #283), so it routes to the GENERIC
+        # instruction whose result.json-status branch matches its contract;
+        # the audit instruction's no-verdict sentinel fallback would be
+        # misleading for it.
+        assert (
+            _success_instruction_for_prompt("shape: preloop.cra.vulnscan/v1")
             is FLOW_SUCCESS_INSTRUCTION
         )
         # The due-diligence contract's verdict vocabulary
