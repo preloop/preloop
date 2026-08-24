@@ -60,6 +60,10 @@ def test_backend_shards_partition_with_pytest_split() -> None:
     assert "--splitting-algorithm=duration_based_chunks" in script
     assert "--splitting-algorithm=least_duration" not in script
     assert "--cov-fail-under" not in script
+    coverage_upload = next(
+        step for step in backend["steps"] if step.get("name") == "Upload coverage data"
+    )
+    assert "always()" not in str(coverage_upload.get("if", ""))
     assert backend["env"]["COVERAGE_FILE"] == "coverage-data.${{ matrix.group }}"
     assert backend["env"]["PRELOOP_DISABLE_TELEMETRY"] == "true"
 
