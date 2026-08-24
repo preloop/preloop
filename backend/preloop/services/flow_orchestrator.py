@@ -5,7 +5,7 @@ import asyncio
 import shlex
 from dataclasses import asdict
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 import re
 
 from sqlalchemy.orm import Session
@@ -191,6 +191,86 @@ def _result_artifact_confirmation(artifact: Optional[Dict[str, Any]]) -> Optiona
     return None
 
 
+# Line-start prefix an agent can print during the one-shot confirmation round
+# to state plainly that the ORIGINAL task did not complete. Everything after
+# the prefix is surfaced verbatim as the failure reason.
+FLOW_FAILURE_REPORT_PREFIX = "FLOW_EXECUTION_FAILED:"
+
+# Rough chars-per-token ratio used to convert the configured nudge token
+# ceiling into a character budget for the prior-context excerpt.
+CONFIRMATION_NUDGE_TOKEN_CHAR_RATIO = 4
+
+# How many trailing lines of the previous run's output are quoted into the
+# nudge prompt (before the character budget is applied).
+CONFIRMATION_NUDGE_LOG_TAIL_LINES = 200
+
+
+def _armed_log_lines(lines: List[str]) -> List[str]:
+    """Return stripped log lines armed at the agent-exec-start marker.
+
+    Mirrors the live-stream detector: lines before AGENT_EXEC_START_MARKER
+    are prompt echo and are discarded. When the marker itself is missing from
+    the refetched logs (e.g. runtime-side truncation), all lines are scanned:
+    that is safe because every completion instruction embeds the sentinel
+    INLINE, so a prompt echo can never occupy a full line by itself.
+    """
+    stripped = [str(line).strip() for line in lines]
+    try:
+        start = stripped.index(AGENT_EXEC_START_MARKER) + 1
+    except ValueError:
+        start = 0
+    return stripped[start:]
+
+
+def _sentinel_in_log_lines(lines: List[str]) -> bool:
+    """Exact-line success-sentinel scan over complete (refetched) logs."""
+    return FLOW_SUCCESS_SENTINEL in _armed_log_lines(lines)
+
+
+def _failure_report_in_log_lines(lines: List[str]) -> Optional[str]:
+    """Return the reason from an explicit FLOW_EXECUTION_FAILED: line, if any."""
+    for line in _armed_log_lines(lines):
+        if line.startswith(FLOW_FAILURE_REPORT_PREFIX):
+            return line[len(FLOW_FAILURE_REPORT_PREFIX) :].strip() or "no reason given"
+    return None
+
+
+def _build_confirmation_nudge_prompt(
+    original_prompt: str, prior_log_lines: List[str], max_tokens: int
+) -> str:
+    """Build the minimal follow-up prompt for the confirmation round.
+
+    The prompt carries prior context (head of the original prompt + tail of
+    the previous run's output) bounded by the configured token ceiling
+    (~4 chars/token, split evenly between the two excerpts). Every embedded
+    log line is quoted with "> " so that when the runtime echoes the prompt
+    into its own logs, no embedded line can satisfy the exact-line sentinel
+    detector or the line-start failure prefix.
+    """
+    budget_chars = max(2000, max_tokens * CONFIRMATION_NUDGE_TOKEN_CHAR_RATIO)
+    prompt_excerpt = original_prompt[: budget_chars // 2]
+    quoted_tail = "\n".join(
+        "> " + str(line) for line in prior_log_lines[-CONFIRMATION_NUDGE_LOG_TAIL_LINES:]
+    )[-(budget_chars // 2) :]
+    return f"""This is a one-shot completion-confirmation round, NOT a new task.
+
+Your previous invocation for the task below exited without confirming whether it completed. Do NOT redo, continue, or extend the task, and do not perform any new side effects (no pushes, comments, or API writes).
+
+Decide from the context below whether the ORIGINAL task ran to completion.
+
+If and only if it completed, confirm it through the originally-instructed channel: prefer writing /workspace/result.json with the completion status or verdict the original instructions require (for example {{"status": "success"}}); printing this marker on a line by itself (no other text on that line) is also accepted: {FLOW_SUCCESS_SENTINEL}
+
+If it did not complete, state that plainly: write /workspace/result.json as {{"status": "failure", "reason": "<one short sentence>"}} or print a single line that starts with {FLOW_FAILURE_REPORT_PREFIX} followed by the reason.
+
+--- ORIGINAL TASK PROMPT (truncated, context only) ---
+{prompt_excerpt}
+--- END ORIGINAL TASK PROMPT ---
+
+--- OUTPUT TAIL OF PREVIOUS RUN (each line quoted with "> ") ---
+{quoted_tail}
+--- END OUTPUT TAIL ---"""
+
+
 def _make_json_serializable(obj: Any) -> Any:
     """Recursively convert non-JSON-serializable types to serializable ones."""
     if isinstance(obj, uuid.UUID):
@@ -239,6 +319,13 @@ class FlowExecutionOrchestrator:
         self._agent_exec_started = (
             False  # Set when AGENT_EXEC_START_MARKER seen in logs
         )
+        # One-shot completion-confirmation round (layer 2): at most one nudge
+        # per execution, across all attempts. Set the moment a nudge is
+        # considered, so even an errored nudge is never repeated.
+        self._confirmation_nudge_attempted = False
+        # Execution context of the current attempt, kept so the confirmation
+        # nudge can re-invoke the agent with prior context.
+        self._execution_context: Optional[Dict[str, Any]] = None
         self._user_messages: asyncio.Queue = asyncio.Queue()
         # Evidence pack (tar.gz bytes) captured alongside the result artifact
         # before executor cleanup; persisted at finalize time. Kept out of
@@ -2206,6 +2293,327 @@ class FlowExecutionOrchestrator:
             {"size_bytes": len(self._evidence_archive)},
         )
 
+    async def _refetch_exited_session_logs(
+        self, agent_executor: Any, session_reference: str
+    ) -> List[str]:
+        """Refetch the COMPLETE runtime logs after agent exit (layer 3).
+
+        The live stream is best-effort: a late reconnect can silently lose
+        the tail, taking the success sentinel with it. Batch log reads
+        (docker logs / K8s pod logs) return the full buffer, so a post-exit
+        refetch is the authoritative view. Best-effort: any error yields an
+        empty list and the decision ladder simply moves on.
+        """
+        getter = getattr(agent_executor, "get_logs", None)
+        if not callable(getter):
+            return []
+        try:
+            logs = await getter(session_reference, tail=None)
+        except Exception as e:
+            logger.warning(f"Post-exit log refetch failed: {_exception_message(e)}")
+            return []
+        if not isinstance(logs, list):
+            return []
+        return [line for line in logs if isinstance(line, str)]
+
+    async def _resolve_missing_confirmation(
+        self,
+        agent_executor: Any,
+        session_reference: str,
+        result: Any,
+        result_artifact: Optional[Dict[str, Any]],
+    ) -> tuple[str, Optional[str], Optional[Dict[str, Any]]]:
+        """Decision ladder for an exit-0 run with no success confirmation.
+
+        Order (cheapest first):
+          1. Layer 3 — refetch the complete runtime logs and rescan for the
+             exact-line sentinel (covers the lost-stream-tail edge).
+          2. Layer 2 — one confirmation-round nudge on supported runtimes.
+          3. Fail closed with the standard missing-confirmation message.
+
+        Returns ``(final_status, error_message, result_artifact)``.
+        """
+        # Layer 3: post-exit full-log refetch + sentinel rescan.
+        refetched_lines = await self._refetch_exited_session_logs(
+            agent_executor, session_reference
+        )
+        sentinel_found = _sentinel_in_log_lines(refetched_lines)
+        self.execution_logger.log_milestone(
+            "post_exit_log_rescan",
+            {
+                "sentinel_found": sentinel_found,
+                "line_count": len(refetched_lines),
+            },
+        )
+        if sentinel_found:
+            logger.info(
+                "Post-exit log rescan found the success sentinel that the "
+                "live stream missed — treating the run as confirmed."
+            )
+            self._success_sentinel_seen.set()
+            return result.status.value, result.error_message, result_artifact
+
+        # Layer 2: one-shot confirmation round.
+        nudge = await self._run_confirmation_nudge(
+            agent_executor, refetched_lines
+        )
+        nudge_outcome = nudge.get("outcome")
+        nudge_artifact = nudge.get("artifact")
+        merged_artifact = result_artifact
+        if isinstance(nudge_artifact, dict):
+            # "Completing" result.json: keep the rich original report (if
+            # any) and let the nudge's completion fields land on top.
+            merged_artifact = (
+                {**result_artifact, **nudge_artifact}
+                if isinstance(result_artifact, dict)
+                else nudge_artifact
+            )
+
+        if nudge_outcome == "confirmed_success":
+            return result.status.value, result.error_message, merged_artifact
+
+        if nudge_outcome == "explicit_failure":
+            reason = nudge.get("reason") or "no reason given"
+            return (
+                "FAILED",
+                "Agent stated in the confirmation round that the original "
+                f"task did not complete: {reason}",
+                merged_artifact,
+            )
+
+        # Fail closed: no confirmation even after the ladder.
+        logger.warning(
+            f"Agent exited with SUCCEEDED status (exit_code={result.exit_code}) "
+            f"but neither success-confirmation channel was used "
+            f"(no sentinel in logs, no result.json success status). "
+            f"Overriding status to FAILED."
+        )
+        self.execution_logger.log_milestone(
+            "success_confirmation_missing",
+            {
+                "original_status": result.status.value,
+                "exit_code": result.exit_code,
+                "sentinel_seen": False,
+                "artifact_confirmation": _result_artifact_confirmation(
+                    result_artifact
+                ),
+                "nudge_outcome": nudge_outcome,
+            },
+        )
+        # When no error heuristics fired (result.error_message is empty),
+        # say explicitly that the run failed ONLY for missing confirmation,
+        # and name both channels — operators must be able to tell this
+        # class apart from real failures at a glance.
+        error_message = result.error_message or (
+            "Agent exited with code 0 but did not confirm "
+            "success on either channel: the "
+            f"{FLOW_SUCCESS_SENTINEL} sentinel was not printed "
+            "and no result.json with a recognized completion "
+            'status (top-level {"status": "success"} or an '
+            "audit verdict such as pass, pass_with_findings, "
+            "or fail) was written. The work may have completed "
+            "without confirmation, or the agent died mid-task."
+        )
+        return "FAILED", error_message, result_artifact
+
+    async def _run_confirmation_nudge(
+        self, agent_executor: Any, prior_log_lines: List[str]
+    ) -> Dict[str, Any]:
+        """Layer 2: re-invoke the agent ONCE to confirm or deny completion.
+
+        The nudge is a fresh, cheap invocation carrying prior context (head
+        of the original prompt + tail of the previous run's output, bounded
+        by ``flow_confirmation_nudge_max_tokens``). Its only job: if and only
+        if the original task completed, confirm through the
+        originally-instructed channel (result.json preferred, sentinel also
+        accepted); otherwise state the failure plainly.
+
+        Single-shot by construction (``_confirmation_nudge_attempted``) and a
+        graceful no-op for runtimes that cannot cheaply re-invoke with prior
+        context (``supports_confirmation_nudge`` is not ``True``). Every call
+        logs the ``confirmation_nudge_used`` milestone with its outcome.
+
+        Returns a dict with ``outcome`` and, when available, ``reason`` /
+        ``artifact``. Outcomes: ``confirmed_success``, ``explicit_failure``,
+        ``no_confirmation``, ``timeout``, ``error``,
+        ``skipped_already_used``, ``skipped_unsupported_runtime``,
+        ``skipped_no_execution_context``.
+        """
+
+        def _finish(
+            outcome: str,
+            *,
+            reason: Optional[str] = None,
+            artifact: Optional[Dict[str, Any]] = None,
+            channel: Optional[str] = None,
+            extra: Optional[Dict[str, Any]] = None,
+        ) -> Dict[str, Any]:
+            details: Dict[str, Any] = {"outcome": outcome}
+            if channel:
+                details["channel"] = channel
+            if reason:
+                details["reason"] = str(reason)[:500]
+            if extra:
+                details.update(extra)
+            self.execution_logger.log_milestone("confirmation_nudge_used", details)
+            logger.info(f"Confirmation nudge outcome: {outcome}")
+            return {"outcome": outcome, "reason": reason, "artifact": artifact}
+
+        if self._confirmation_nudge_attempted:
+            # One round max — even across flow-level retry attempts.
+            return _finish("skipped_already_used")
+        self._confirmation_nudge_attempted = True
+
+        # Strict identity check: mock executors (AsyncMock) auto-create
+        # truthy attributes, and an accidental nudge in tests or on an
+        # unvalidated runtime must be impossible.
+        if getattr(agent_executor, "supports_confirmation_nudge", False) is not True:
+            return _finish(
+                "skipped_unsupported_runtime",
+                extra={"agent_type": getattr(agent_executor, "agent_type", None)},
+            )
+
+        context = self._execution_context
+        if not isinstance(context, dict) or not context.get("prompt"):
+            return _finish("skipped_no_execution_context")
+
+        max_tokens = max(256, int(settings.flow_confirmation_nudge_max_tokens))
+        timeout_seconds = max(
+            30, int(settings.flow_confirmation_nudge_timeout_seconds)
+        )
+        log_lines = (
+            prior_log_lines or self.execution_logger.get_agent_output_lines()
+        )
+
+        nudge_context = dict(context)
+        nudge_context["prompt"] = _build_confirmation_nudge_prompt(
+            context["prompt"], log_lines, max_tokens
+        )
+        # No clone, no custom commands, no post-exec push/PR: the nudge must
+        # not repeat side effects of the original run.
+        nudge_context["git_clone_config"] = None
+        nudge_context["custom_commands"] = None
+        nudge_context["confirmation_nudge"] = True
+        # Token ceiling for runtimes that honor model parameters; the prompt
+        # budget above enforces the input side regardless.
+        model_parameters = dict(context.get("model_parameters") or {})
+        model_parameters.setdefault("max_output_tokens", max_tokens)
+        nudge_context["model_parameters"] = model_parameters
+
+        try:
+            nudge_reference, nudge_executor = await self._start_agent_session(
+                nudge_context
+            )
+        except Exception as start_error:
+            return _finish("error", reason=_exception_message(start_error))
+
+        try:
+            poll_interval = 5
+            elapsed = 0
+            status: Optional[AgentStatus] = None
+            terminal = (
+                AgentStatus.SUCCEEDED,
+                AgentStatus.FAILED,
+                AgentStatus.STOPPED,
+            )
+            while elapsed < timeout_seconds:
+                try:
+                    status = await nudge_executor.get_status(nudge_reference)
+                except Exception as status_error:
+                    logger.warning(
+                        "Nudge status check failed: "
+                        f"{_exception_message(status_error)}"
+                    )
+                if status in terminal:
+                    break
+                await asyncio.sleep(poll_interval)
+                elapsed += poll_interval
+
+            if status not in terminal:
+                try:
+                    await nudge_executor.stop(nudge_reference)
+                except Exception:
+                    pass
+                return _finish(
+                    "timeout",
+                    extra={
+                        "timeout_seconds": timeout_seconds,
+                        "session_reference": nudge_reference,
+                    },
+                )
+
+            nudge_logs: List[str] = []
+            try:
+                fetched = await nudge_executor.get_logs(nudge_reference, tail=None)
+                if isinstance(fetched, list):
+                    nudge_logs = [
+                        line for line in fetched if isinstance(line, str)
+                    ]
+            except Exception as log_error:
+                logger.warning(
+                    f"Failed to fetch nudge logs: {_exception_message(log_error)}"
+                )
+
+            artifact = await self._capture_result_artifact(
+                nudge_executor, nudge_reference
+            )
+            artifact_confirmation = _result_artifact_confirmation(artifact)
+            failure_reason = _failure_report_in_log_lines(nudge_logs)
+
+            # An explicit failure statement wins over everything, mirroring
+            # the main completion contract.
+            if artifact_confirmation == "failure" or failure_reason is not None:
+                reason = failure_reason
+                if reason is None and isinstance(artifact, dict):
+                    reason = (
+                        artifact.get("reason")
+                        or artifact.get("error")
+                        or artifact.get("summary")
+                        or f"result.json status={artifact.get('status')!r}"
+                    )
+                return _finish(
+                    "explicit_failure",
+                    reason=reason,
+                    artifact=artifact,
+                    channel=(
+                        "result_artifact"
+                        if artifact_confirmation == "failure"
+                        else "failure_line"
+                    ),
+                )
+
+            if artifact_confirmation == "success" or _sentinel_in_log_lines(
+                nudge_logs
+            ):
+                return _finish(
+                    "confirmed_success",
+                    artifact=artifact,
+                    channel=(
+                        "result_artifact"
+                        if artifact_confirmation == "success"
+                        else "sentinel"
+                    ),
+                )
+
+            return _finish(
+                "no_confirmation",
+                extra={
+                    "nudge_status": status.value
+                    if isinstance(status, AgentStatus)
+                    else None,
+                    "session_reference": nudge_reference,
+                },
+            )
+        except Exception as nudge_error:
+            return _finish("error", reason=_exception_message(nudge_error))
+        finally:
+            try:
+                await nudge_executor.cleanup()
+            except Exception as cleanup_error:
+                logger.warning(
+                    f"Error during nudge executor cleanup: {cleanup_error}"
+                )
+
     async def _monitor_agent_execution(
         self, session_reference: str, agent_executor: Any
     ) -> Dict[str, Any]:
@@ -2474,36 +2882,24 @@ class FlowExecutionOrchestrator:
                         and not self._success_sentinel_seen.is_set()
                         and artifact_confirmation != "success"
                     ):
-                        logger.warning(
-                            f"Agent exited with SUCCEEDED status (exit_code={result.exit_code}) "
-                            f"but neither success-confirmation channel was used "
-                            f"(no sentinel in logs, no result.json success status). "
-                            f"Overriding status to FAILED."
-                        )
-                        self.execution_logger.log_milestone(
-                            "success_confirmation_missing",
-                            {
-                                "original_status": result.status.value,
-                                "exit_code": result.exit_code,
-                                "sentinel_seen": False,
-                                "artifact_confirmation": artifact_confirmation,
-                            },
-                        )
-                        final_status = "FAILED"
-                        # When no error heuristics fired (result.error_message
-                        # is empty), say explicitly that the run failed ONLY
-                        # for missing confirmation, and name both channels —
-                        # operators must be able to tell this class apart from
-                        # real failures at a glance.
-                        error_message = result.error_message or (
-                            "Agent exited with code 0 but did not confirm "
-                            "success on either channel: the "
-                            f"{FLOW_SUCCESS_SENTINEL} sentinel was not printed "
-                            "and no result.json with a recognized completion "
-                            'status (top-level {"status": "success"} or an '
-                            "audit verdict such as pass, pass_with_findings, "
-                            "or fail) was written. The work may have completed "
-                            "without confirmation, or the agent died mid-task."
+                        # Neither confirmation channel was used. Before
+                        # failing closed, walk the recovery ladder:
+                        #   1. refetch the COMPLETE runtime logs and rescan
+                        #      for the sentinel (a late stream reconnect can
+                        #      lose the tail of an otherwise confirmed run),
+                        #   2. one confirmation-round nudge (supported
+                        #      runtimes only),
+                        #   3. FAILED with the standard missing-confirmation
+                        #      message.
+                        (
+                            final_status,
+                            error_message,
+                            result_artifact,
+                        ) = await self._resolve_missing_confirmation(
+                            agent_executor,
+                            session_reference,
+                            result,
+                            result_artifact,
                         )
                     elif (
                         result.status == AgentStatus.SUCCEEDED
@@ -2824,6 +3220,10 @@ class FlowExecutionOrchestrator:
         """
         max_attempts = max(1, int(settings.flow_execution_max_attempts))
         backoff_seconds = max(0, int(settings.flow_execution_retry_backoff_seconds))
+
+        # Kept for the completion-confirmation round: the nudge re-invokes
+        # the agent with a minimal follow-up prompt derived from this context.
+        self._execution_context = execution_context
 
         agent_result: Dict[str, Any] = {}
         session_reference: Optional[str] = None
