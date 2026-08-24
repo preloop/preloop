@@ -58,9 +58,13 @@ def _assert_replay_tools_normalized(
             # flow's entire MCP toolset, so dropping it would leave the agent
             # silently toolless rather than visibly broken. MCP namespaces
             # (`mcp__<server>`) additionally QUALIFY the flattened short names
-            # with the namespace prefix, because Codex's tool router only
-            # routes the `mcp__<server>__<tool>` form — a model calling the
-            # short name gets `unsupported call: <tool>` back.
+            # with the namespace prefix so the model-facing names stay unique.
+            # NOTE the qualified name is NOT router-routable by itself: the
+            # response translation must render the model's call back as a
+            # `function_call` with a separate `namespace` field and the SHORT
+            # name (staging exec 97c977f8 proved the flat qualified name is
+            # `unsupported call` too) — asserted by the namespace-call tests
+            # below.
             namespace_name = tool.get("name")
             for nested_tool in tool.get("tools") or []:
                 if (
@@ -160,6 +164,140 @@ def test_openai_gateway_responses_codex_replay_normalizes_tools(
     _assert_replay_tools_normalized(
         payload["tools"], mock_completion.call_args.kwargs["tools"]
     )
+
+
+def _gateway_model_and_auth(app, db_session, test_user):
+    """Register a gateway model and bypass auth, as the replay test does."""
+    crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Gateway Model",
+            "provider_name": "openai",
+            "model_identifier": "gpt-5",
+            "api_key": "provider-secret",
+            "meta_data": {
+                "gateway": {
+                    "enabled": True,
+                    "model_alias": "openai/gpt-5",
+                    "provider_adapter": "preloop",
+                }
+            },
+            "is_default": True,
+        },
+        account_id=test_user.account_id,
+    )
+    app.dependency_overrides[get_model_gateway_auth_context] = lambda: (
+        ModelGatewayAuthContext(token="gateway-token", user=test_user)
+    )
+
+
+def test_responses_namespace_tool_call_is_rendered_router_routable(
+    app, client, db_session, test_user
+):
+    """The exec 97c977f8 failure, end to end: the model calls the flat
+    qualified `mcp__preloop__ask_user` name it was declared, and the item
+    Codex receives back MUST carry the separate `namespace` field plus the
+    SHORT name — the only form `codex_core::tools::router` routes (a flat
+    function_call is `unsupported call` whether short or qualified, verified
+    against the real binary)."""
+    _gateway_model_and_auth(app, db_session, test_user)
+    payload = _load_codex_replay_payload()
+
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value={
+            "id": "chatcmpl_ns",
+            "created": 1710000000,
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_ns_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "mcp__preloop__preloop_get_goal",
+                                    "arguments": "{}",
+                                },
+                            }
+                        ],
+                    }
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        },
+    ):
+        response = client.post(
+            "/openai/v1/responses",
+            headers={"Authorization": "Bearer ignored"},
+            json=payload,
+        )
+
+    assert response.status_code == 200
+    calls = [
+        item
+        for item in response.json()["output"]
+        if item.get("type") == "function_call"
+    ]
+    assert len(calls) == 1
+    assert calls[0]["namespace"] == "mcp__preloop"
+    assert calls[0]["name"] == "preloop_get_goal"
+    assert calls[0]["call_id"] == "call_ns_1"
+
+
+def test_responses_namespace_history_echo_is_flattened_for_the_upstream(
+    app, client, db_session, test_user
+):
+    """Turn 2: Codex echoes the namespace-form call back in the input
+    history. The upstream was declared the flat qualified name and rejects an
+    unknown `namespace` field, so the history tool_call must be flattened."""
+    _gateway_model_and_auth(app, db_session, test_user)
+    payload = _load_codex_replay_payload()
+    payload["input"] = [
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "collect waivers"}],
+        },
+        {
+            "type": "function_call",
+            "call_id": "call_ns_1",
+            "namespace": "mcp__preloop",
+            "name": "preloop_get_goal",
+            "arguments": "{}",
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "call_ns_1",
+            "output": "the goal",
+        },
+    ]
+
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value={
+            "id": "chatcmpl_ns2",
+            "created": 1710000000,
+            "choices": [{"message": {"role": "assistant", "content": "done"}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        },
+    ) as mock_completion:
+        response = client.post(
+            "/openai/v1/responses",
+            headers={"Authorization": "Bearer ignored"},
+            json=payload,
+        )
+
+    assert response.status_code == 200
+    messages = mock_completion.call_args.kwargs["messages"]
+    tool_call_messages = [m for m in messages if m.get("tool_calls")]
+    assert len(tool_call_messages) == 1
+    tool_call = tool_call_messages[0]["tool_calls"][0]
+    assert tool_call["function"]["name"] == "mcp__preloop__preloop_get_goal"
+    assert "namespace" not in tool_call
+    assert "namespace" not in tool_call["function"]
 
 
 def test_list_models_endpoint_returns_gateway_models(

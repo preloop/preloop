@@ -27,6 +27,7 @@ from typing import (
     Protocol,
     Sequence,
     Set,
+    Tuple,
 )
 from urllib import error as urllib_error
 from urllib import request as urllib_request
@@ -50,8 +51,11 @@ from preloop.models.crud.runtime_session import IDLE_GENERATION_INFIX
 from preloop.services.codex_tool_compat import (
     unwrap_freeform_arguments,
     custom_tool_call_output,
+    namespace_tool_aliases,
     normalize_custom_tool_call_item,
+    qualify_namespace_call_history_item,
     restore_custom_tool_calls,
+    restore_namespace_tool_calls,
     sanitize_codex_tools,
 )
 from preloop.models.models.ai_model import AIModel
@@ -575,6 +579,15 @@ class OpenAIGatewayService:
         # aborts the run on the function shape). Reset per request so a
         # translated turn never leaks into an untranslated one.
         self._codex_freeform_tool_names: Set[str] = set()
+        # Alias -> (namespace, short_name) for tools the client declared
+        # inside ``mcp__*`` namespace containers on THIS request. Set with
+        # the freeform names above, read when response output items are
+        # built: Codex's tool router routes a namespace tool call ONLY as a
+        # ``function_call`` carrying a separate ``namespace`` field plus the
+        # SHORT name, so the model's flat-named call must be rendered back in
+        # that form (staging execution 97c977f8: the flat qualified name is
+        # "unsupported call"). Reset per request alongside the freeform set.
+        self._codex_namespace_tool_aliases: Dict[str, Tuple[str, str]] = {}
         # Upstream credential type ("oauth" | "api_key" | "ambient") of the
         # credential used to call the provider on THIS request, captured at
         # resolution time and read into the usage row at log time. Powers
@@ -2155,7 +2168,7 @@ class OpenAIGatewayService:
                             tool_call_states[index] = state
                             output_items.append(state["item"])
                         function_payload = tool_delta.get("function") or {}
-                        if function_payload.get("name"):
+                        if function_payload.get("name") and not state["announced"]:
                             state["item"]["name"] = function_payload["name"]
                         arguments_delta = function_payload.get("arguments")
                         if arguments_delta:
@@ -2176,6 +2189,22 @@ class OpenAIGatewayService:
                                     "input": "",
                                 }
                                 output_items[state["output_index"]] = state["item"]
+                            else:
+                                namespace_target = (
+                                    self._codex_namespace_tool_aliases.get(name)
+                                )
+                                if namespace_target is not None:
+                                    # Codex's router routes an MCP namespace
+                                    # tool call ONLY as a function_call with
+                                    # a separate `namespace` field and the
+                                    # SHORT name; the flat name the model was
+                                    # declared is "unsupported call" (staging
+                                    # execution 97c977f8). Same deferral as
+                                    # freeform tools: rewrite before the item
+                                    # is announced.
+                                    namespace, short = namespace_target
+                                    state["item"]["namespace"] = namespace
+                                    state["item"]["name"] = short
                             state["announced"] = True
                             yield self._sse_event(
                                 {
@@ -5320,7 +5349,14 @@ class OpenAIGatewayService:
     def _normalize_responses_tool_call_item(
         self, item: Dict[str, Any]
     ) -> Optional[Dict[str, Any]]:
-        """Convert one Responses API function call into chat tool_call format."""
+        """Convert one Responses API function call into chat tool_call format.
+
+        Codex echoes MCP namespace tool calls back in the namespace form (a
+        ``namespace`` field plus the SHORT tool name). Upstreams were declared
+        the flattened ``mcp__<server>__<tool>`` name and reject unknown
+        fields, so the history item is flattened back first.
+        """
+        item = qualify_namespace_call_history_item(item)
         function_name = item.get("name")
         call_id = item.get("call_id")
         if not function_name or not call_id:
@@ -5665,9 +5701,12 @@ class OpenAIGatewayService:
         answered with an ordinary ``function_call`` for those tools. This is a
         no-op for every request that did not carry such a tool.
         """
-        return restore_custom_tool_calls(
-            self._build_response_output_items_raw(response_dict),
-            self._codex_freeform_tool_names,
+        return restore_namespace_tool_calls(
+            restore_custom_tool_calls(
+                self._build_response_output_items_raw(response_dict),
+                self._codex_freeform_tool_names,
+            ),
+            self._codex_namespace_tool_aliases,
         )
 
     def _build_response_output_items_raw(
@@ -5748,6 +5787,9 @@ class OpenAIGatewayService:
         :mod:`preloop.services.codex_tool_compat`. Requests without those
         shapes are returned by that step untouched.
         """
+        # Capture the namespace alias map BEFORE sanitizing: it needs the
+        # original ``namespace`` containers, which sanitization flattens.
+        self._codex_namespace_tool_aliases = namespace_tool_aliases(tools)
         tools, freeform_names = sanitize_codex_tools(tools)
         self._codex_freeform_tool_names = freeform_names
         if not isinstance(tools, list):

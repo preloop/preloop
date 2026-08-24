@@ -16,8 +16,11 @@ a prod failure row, not invented:
 import json
 
 from preloop.services.codex_tool_compat import (
+    namespace_tool_aliases,
     normalize_custom_tool_call_item,
+    qualify_namespace_call_history_item,
     restore_custom_tool_calls,
+    restore_namespace_tool_calls,
     sanitize_codex_tools,
     unwrap_freeform_arguments,
 )
@@ -209,3 +212,162 @@ def test_unwrap_falls_back_to_raw_arguments_when_not_an_envelope():
     assert unwrap_freeform_arguments('{"patch": "y"}') == "y"
     # Multi-key JSON is ambiguous: keep it verbatim rather than guess.
     assert unwrap_freeform_arguments('{"a": "1", "b": "2"}') == '{"a": "1", "b": "2"}'
+
+
+NAMESPACE_REQUEST_TOOLS = [
+    {"type": "function", "name": "exec_command", "parameters": {}},
+    {
+        "type": "namespace",
+        "name": "multi_agent_v1",
+        "tools": [{"type": "function", "name": "spawn_agent"}],
+    },
+    {
+        "type": "namespace",
+        "name": "mcp__preloop",
+        "tools": [{"type": "function", "name": "ask_user", "parameters": {}}],
+    },
+]
+
+
+def test_namespace_aliases_register_canonical_and_bare_names():
+    """Both names the model may call must resolve to the SAME namespace call.
+
+    The declared (post-flattening) name is `mcp__preloop__ask_user`; preset
+    prompts and older transcripts steer some models to the bare `ask_user`.
+    The router accepts neither as a flat call, so both are aliases of the
+    namespace form.
+    """
+    aliases = namespace_tool_aliases(NAMESPACE_REQUEST_TOOLS)
+
+    assert aliases["mcp__preloop__ask_user"] == ("mcp__preloop", "ask_user")
+    assert aliases["ask_user"] == ("mcp__preloop", "ask_user")
+    # Codex-internal namespaces are not MCP: their router names are their own.
+    assert "spawn_agent" not in aliases
+    assert "multi_agent_v1__spawn_agent" not in aliases
+
+
+def test_namespace_bare_alias_is_dropped_on_cross_namespace_collision():
+    """An ambiguous short name must not be guessed into either namespace."""
+    tools = [
+        {
+            "type": "namespace",
+            "name": "mcp__alpha",
+            "tools": [{"type": "function", "name": "ask_user"}],
+        },
+        {
+            "type": "namespace",
+            "name": "mcp__beta",
+            "tools": [{"type": "function", "name": "ask_user"}],
+        },
+    ]
+
+    aliases = namespace_tool_aliases(tools)
+
+    assert "ask_user" not in aliases
+    assert aliases["mcp__alpha__ask_user"] == ("mcp__alpha", "ask_user")
+    assert aliases["mcp__beta__ask_user"] == ("mcp__beta", "ask_user")
+
+
+def test_namespace_bare_alias_never_shadows_a_top_level_tool():
+    """A plain function tool with the same name routes as itself."""
+    tools = [
+        {"type": "function", "name": "ask_user", "parameters": {}},
+        {
+            "type": "namespace",
+            "name": "mcp__preloop",
+            "tools": [{"type": "function", "name": "ask_user"}],
+        },
+    ]
+
+    aliases = namespace_tool_aliases(tools)
+
+    assert "ask_user" not in aliases
+    assert aliases["mcp__preloop__ask_user"] == ("mcp__preloop", "ask_user")
+
+
+def test_namespace_call_is_restored_to_the_router_routable_form():
+    """The live failure: a flat `mcp__preloop__ask_user` function_call gets
+    `ERROR codex_core::tools::router: error=unsupported call:
+    mcp__preloop__ask_user` (staging exec 97c977f8). Verified against the
+    real binary: the router routes ONLY `{"type": "function_call",
+    "namespace": "mcp__preloop", "name": "ask_user"}`."""
+    aliases = namespace_tool_aliases(NAMESPACE_REQUEST_TOOLS)
+    output_items = [
+        {
+            "id": "fc_1",
+            "type": "function_call",
+            "status": "completed",
+            "call_id": "call_1",
+            "name": "mcp__preloop__ask_user",
+            "arguments": json.dumps({"question": "waive CVE-X?"}),
+        }
+    ]
+
+    restored = restore_namespace_tool_calls(output_items, aliases)
+
+    assert restored[0]["namespace"] == "mcp__preloop"
+    assert restored[0]["name"] == "ask_user"
+    assert restored[0]["call_id"] == "call_1"
+    assert restored[0]["arguments"] == json.dumps({"question": "waive CVE-X?"})
+
+
+def test_namespace_call_by_bare_alias_is_restored_too():
+    """A model that calls the preset's bare `ask_user` still routes."""
+    aliases = namespace_tool_aliases(NAMESPACE_REQUEST_TOOLS)
+    output_items = [
+        {
+            "id": "fc_1",
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "ask_user",
+            "arguments": "{}",
+        }
+    ]
+
+    restored = restore_namespace_tool_calls(output_items, aliases)
+
+    assert restored[0]["namespace"] == "mcp__preloop"
+    assert restored[0]["name"] == "ask_user"
+
+
+def test_calls_to_non_namespace_tools_are_not_rewritten():
+    aliases = namespace_tool_aliases(NAMESPACE_REQUEST_TOOLS)
+    output_items = [
+        {
+            "id": "fc_1",
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "exec_command",
+            "arguments": "{}",
+        },
+        {"id": "m_1", "type": "message", "role": "assistant", "content": []},
+    ]
+
+    restored = restore_namespace_tool_calls(output_items, aliases)
+
+    assert restored == output_items
+
+
+def test_namespace_history_echo_is_flattened_for_upstreams():
+    """Codex echoes the namespace-form call back on the next turn; upstreams
+    know only the flat qualified name and reject unknown fields."""
+    item = {
+        "type": "function_call",
+        "call_id": "call_1",
+        "namespace": "mcp__preloop",
+        "name": "ask_user",
+        "arguments": "{}",
+    }
+
+    flattened = qualify_namespace_call_history_item(item)
+
+    assert flattened["name"] == "mcp__preloop__ask_user"
+    assert "namespace" not in flattened
+    # Codex-internal namespaces keep their own naming.
+    internal = {
+        "type": "function_call",
+        "call_id": "call_2",
+        "namespace": "multi_agent_v1",
+        "name": "spawn_agent",
+    }
+    assert qualify_namespace_call_history_item(internal) == internal
