@@ -2691,6 +2691,20 @@ def _codex_freeform_service() -> OpenAIGatewayService:
     return service
 
 
+def _codex_namespace_service() -> OpenAIGatewayService:
+    """A service whose current request declared the mcp__preloop ask_user tool."""
+    auth_context = ModelGatewayAuthContext(
+        token="token",
+        user=SimpleNamespace(id="user-1", account_id="account-1"),
+    )
+    service = OpenAIGatewayService(MagicMock(), auth_context)
+    service._codex_namespace_tool_aliases = {
+        "mcp__preloop__ask_user": ("mcp__preloop", "ask_user"),
+        "ask_user": ("mcp__preloop", "ask_user"),
+    }
+    return service
+
+
 def test_stream_response_emits_freeform_tool_call_as_custom_tool_call():
     """Codex aborts the run if its freeform tool is answered as a function_call.
 
@@ -2777,6 +2791,162 @@ def test_stream_response_emits_freeform_tool_call_as_custom_tool_call():
         if isinstance(event, dict)
         and event.get("type", "").startswith("response.function_call_arguments")
     ]
+
+
+def test_stream_response_emits_namespace_tool_call_with_short_name():
+    """Codex's router rejects a flat function_call whether short or qualified.
+
+    The streaming path must announce the item as namespace plus SHORT name
+    and keep that rewrite even if a later chunk re-sends the qualified
+    function.name the model was declared.
+    """
+    service = _codex_namespace_service()
+    ai_model = SimpleNamespace(id="model-1", provider_name="openai")
+    upstream_stream = iter(
+        [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "function": {"name": "mcp__preloop__ask_user"},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {
+                                        "name": "mcp__preloop__ask_user",
+                                        "arguments": '{"question":',
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {"index": 0, "function": {"arguments": ' "Ready?"}'}}
+                            ]
+                        }
+                    }
+                ]
+            },
+        ]
+    )
+
+    with (
+        patch.object(service, "_resolve_requested_model", return_value=ai_model),
+        patch.object(service, "_check_budget", return_value=None),
+        patch.object(service, "_call_litellm", return_value=upstream_stream),
+        patch.object(service, "_record_gateway_request"),
+    ):
+        events = [
+            _parse_sse_payload(event)
+            for event in service.stream_response(
+                {"model": "openai/gpt-5", "input": "Ask a question"}
+            )
+        ]
+
+    added = [
+        event
+        for event in events
+        if isinstance(event, dict) and event.get("type") == "response.output_item.added"
+    ]
+    assert len(added) == 1
+    assert added[0]["item"]["namespace"] == "mcp__preloop"
+    assert added[0]["item"]["name"] == "ask_user"
+
+    completed = events[-2]
+    output_item = completed["response"]["output"][0]
+    assert output_item["namespace"] == "mcp__preloop"
+    assert output_item["name"] == "ask_user"
+    assert output_item["type"] == "function_call"
+    assert output_item["call_id"] == "call_1"
+
+
+def test_stream_response_emits_namespace_tool_call_from_bare_alias():
+    """A first chunk that names the bare alias still announces namespace + short."""
+    service = _codex_namespace_service()
+    ai_model = SimpleNamespace(id="model-1", provider_name="openai")
+    upstream_stream = iter(
+        [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "function": {"name": "ask_user"},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {
+                                        "name": "mcp__preloop__ask_user",
+                                        "arguments": '{"question": "Ready?"}',
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        ]
+    )
+
+    with (
+        patch.object(service, "_resolve_requested_model", return_value=ai_model),
+        patch.object(service, "_check_budget", return_value=None),
+        patch.object(service, "_call_litellm", return_value=upstream_stream),
+        patch.object(service, "_record_gateway_request"),
+    ):
+        events = [
+            _parse_sse_payload(event)
+            for event in service.stream_response(
+                {"model": "openai/gpt-5", "input": "Ask a question"}
+            )
+        ]
+
+    added = [
+        event
+        for event in events
+        if isinstance(event, dict) and event.get("type") == "response.output_item.added"
+    ]
+    assert len(added) == 1
+    assert added[0]["item"]["namespace"] == "mcp__preloop"
+    assert added[0]["item"]["name"] == "ask_user"
+
+    completed = events[-2]
+    output_item = completed["response"]["output"][0]
+    assert output_item["namespace"] == "mcp__preloop"
+    assert output_item["name"] == "ask_user"
 
 
 def test_stream_response_still_emits_plain_function_calls_normally():

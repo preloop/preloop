@@ -2168,7 +2168,7 @@ class OpenAIGatewayService:
                             tool_call_states[index] = state
                             output_items.append(state["item"])
                         function_payload = tool_delta.get("function") or {}
-                        if function_payload.get("name"):
+                        if function_payload.get("name") and not state["announced"]:
                             state["item"]["name"] = function_payload["name"]
                         arguments_delta = function_payload.get("arguments")
                         if arguments_delta:

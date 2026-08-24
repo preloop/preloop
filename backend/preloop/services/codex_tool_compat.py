@@ -465,8 +465,8 @@ def namespace_tool_aliases(tools: Any) -> Dict[str, Tuple[str, str]]:
                 aliases[qualified] = (namespace, short)
                 if short in aliases and aliases[short] != (namespace, short):
                     ambiguous_short.add(short)
-                elif short != qualified:
-                    aliases.setdefault(short, (namespace, short))
+                # Unambiguous bare alias so a model that calls the short name still routes.
+                aliases.setdefault(short, (namespace, short))
         else:
             name = _nested_tool_name(tool)
             if name:
