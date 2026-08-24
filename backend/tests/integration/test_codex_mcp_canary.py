@@ -71,14 +71,17 @@ CANARY_TOOL_SHORT_NAME = "search"
 
 CODEX_BIN = shutil.which("codex")
 
-pytestmark = pytest.mark.skipif(
-    CODEX_BIN is None,
-    reason=(
-        "codex CLI binary not found on PATH. The CI job installs it "
-        "(npm install -g @openai/codex) and fails if it is missing; this "
-        "skip exists only for unrelated local pytest runs."
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        CODEX_BIN is None,
+        reason=(
+            "codex CLI binary not found on PATH. The CI job installs it "
+            "(npm install -g @openai/codex) and fails if it is missing; this "
+            "skip exists only for unrelated local pytest runs."
+        ),
     ),
-)
+]
 
 
 # ---------------------------------------------------------------------------
@@ -370,6 +373,8 @@ def _wait_for_health(
             if response.status_code == 200:
                 return
         except httpx.HTTPError:
+            # Expected while the backend is still booting: keep polling
+            # until the health endpoint answers or the deadline expires.
             pass
         time.sleep(1.0)
     raise RuntimeError("backend never became healthy:\n" + _tail(log_path))
@@ -438,6 +443,9 @@ tool_timeout_sec = 60
 
 
 def _run_codex(env_info: _CanaryEnv, tmp_path: Path, prompt: str) -> Tuple[int, str]:
+    # Narrow Optional[str] for mypy: the module-level skipif guarantees
+    # the binary exists whenever a test body runs.
+    assert CODEX_BIN is not None
     codex_home = tmp_path / "codex-home"
     workdir = tmp_path / "workdir"
     workdir.mkdir(parents=True, exist_ok=True)
