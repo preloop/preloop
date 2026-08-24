@@ -2499,9 +2499,11 @@ class FlowExecutionOrchestrator:
                             "Agent exited with code 0 but did not confirm "
                             "success on either channel: the "
                             f"{FLOW_SUCCESS_SENTINEL} sentinel was not printed "
-                            'and no result.json with {"status": "success"} was '
-                            "written. The work may have completed without "
-                            "confirmation, or the agent died mid-task."
+                            "and no result.json with a recognized completion "
+                            'status (top-level {"status": "success"} or an '
+                            "audit verdict such as pass, pass_with_findings, "
+                            "or fail) was written. The work may have completed "
+                            "without confirmation, or the agent died mid-task."
                         )
                     elif (
                         result.status == AgentStatus.SUCCEEDED
