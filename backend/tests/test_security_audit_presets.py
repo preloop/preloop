@@ -140,6 +140,17 @@ class TestSbomExploitCheckPreset:
         # Never claim absence for unmatchable components.
         assert "unmatchable" in prompt
 
+    def test_completion_status_contract(self):
+        """The vulnscan schema has no top-level verdict, so a required
+        top-level "status" field is its flow completion signal: "success"
+        when the scan completed, "error" when it could not."""
+        prompt = _load_preset(PRESET_FILES["SBOM Exploit Check"])["prompt_template"]
+        norm = _norm(prompt)
+        assert '"status": "success" | "error"' in norm
+        assert '"status" is REQUIRED — it is the flow completion signal' in norm
+        # Completion is about the scan finishing, not the gate outcome.
+        assert "regardless of the gate outcome or findings" in norm
+
 
 class TestReleaseSecurityAuditPreset:
     def test_combines_both_audits_plus_drift(self):

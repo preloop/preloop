@@ -758,14 +758,18 @@ prompt_template: |
 
   {
     "status": "success",
+    "review_posted": true | false,
     "risk_level": "low" | "medium" | "high",
     "findings_count": <total issues reported in this review>,
-    "review_action": "approve" | "request_changes" | "comment"
+    "review_action": "approve" | "request_changes" | "comment" | null
   }
 
-  Use "status": "success" only if the review was submitted (Step 4.4). If you
-  could not complete the review, write "status": "failure" instead and add a
-  "reason" field.
+  Use "status": "success" when the run completed — whether the review was
+  submitted (review_posted: true, Step 4.4) or you deliberately decided not
+  to post one (review_posted: false, review_action: null). If you hit an
+  unrecoverable error and could not complete the review, write
+  "status": "error" instead and add a "reason" field. Be honest: never
+  report success for work you did not do.
 
   ═══════════════════════════════════════════════════════════
   CRITICAL GUIDELINES

@@ -466,3 +466,79 @@ class TestRealPresetSlugs:
             )
             slugs.append(data["slug"])
         assert len(slugs) == len(set(slugs)), f"duplicate slugs: {slugs}"
+
+
+# Every shipped preset must declare an explicit result.json completion
+# channel in its prompt. Flows confirm completion either by printing the
+# FLOW_EXECUTION_SUCCESS sentinel or by writing /workspace/result.json with
+# a recognized completion status; presets must not rely on the model
+# remembering the sentinel (regression guard for exec 31613e46, where the
+# PR reviewer completed a full review then FAILED on the missing sentinel).
+# Maps preset file -> the exact status/verdict vocabulary line its prompt
+# documents (whitespace-normalized).
+PRESET_COMPLETION_MARKERS = {
+    "001-issue-triage-assistant.yaml": '"status": "success"',
+    "002-pull-request-reviewer.yaml": '"status": "success"',
+    "003-observe-eval.yaml": '"status": "pass" | "fail" | "error"',
+    "004-sbom-verify.yaml": '"verdict": "pass" | "pass_with_findings" | "fail"',
+    "005-sbom-exploit-check.yaml": '"status": "success" | "error"',
+    "006-release-security-audit.yaml": (
+        '"verdict": "pass" | "pass_with_findings" | "fail"'
+    ),
+    "007-component-due-diligence.yaml": '"status": "success" | "error"',
+}
+
+
+class TestShippedPresetCompletionContracts:
+    """Each shipped preset prompt pins its result.json completion contract."""
+
+    def _shipped_preset_files(self):
+        from preloop.flow_presets import DEFAULT_PRESETS_DIR
+
+        if not DEFAULT_PRESETS_DIR.exists():
+            pytest.skip("no shipped presets")
+        return sorted(DEFAULT_PRESETS_DIR.glob("*.y*ml"))
+
+    def test_every_shipped_preset_has_a_known_completion_marker(self):
+        """New presets must register their completion vocabulary here."""
+        names = [path.name for path in self._shipped_preset_files()]
+        assert names == sorted(PRESET_COMPLETION_MARKERS), (
+            "shipped presets and PRESET_COMPLETION_MARKERS out of sync — "
+            "every shipped preset needs an explicit result.json completion "
+            "contract and a marker entry in this test"
+        )
+
+    @pytest.mark.parametrize("filename", sorted(PRESET_COMPLETION_MARKERS))
+    def test_prompt_documents_result_json_completion_status(self, filename):
+        from preloop.flow_presets import DEFAULT_PRESETS_DIR
+
+        path = DEFAULT_PRESETS_DIR / filename
+        if not path.exists():
+            pytest.skip(f"{filename} not shipped in this layout")
+        prompt = yaml.safe_load(path.read_text())["prompt_template"]
+        norm = " ".join(prompt.split())
+        assert "/workspace/result.json" in norm, (
+            f"{filename} prompt must instruct writing /workspace/result.json"
+        )
+        assert PRESET_COMPLETION_MARKERS[filename] in norm, (
+            f"{filename} prompt must document its completion status vocabulary"
+        )
+
+    @pytest.mark.parametrize(
+        "filename",
+        ["001-issue-triage-assistant.yaml", "002-pull-request-reviewer.yaml"],
+    )
+    def test_success_and_error_paths_are_both_instructed(self, filename):
+        """001/002 use the plain status contract: success on completion,
+        error (with a reason) on unrecoverable failure."""
+        from preloop.flow_presets import DEFAULT_PRESETS_DIR
+
+        prompt = yaml.safe_load((DEFAULT_PRESETS_DIR / filename).read_text())[
+            "prompt_template"
+        ]
+        norm = " ".join(prompt.split())
+        assert '"status": "success"' in norm
+        assert '"status": "error"' in norm
+        assert '"reason"' in norm
+        # The final act framing: writing result.json is the last action.
+        assert "Record Completion (MANDATORY FINAL ACT)" in norm

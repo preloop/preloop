@@ -179,6 +179,7 @@ prompt_template: |
       "note": "Reviewer identity and decision timestamp are in the Preloop approval audit trail for this execution."
     },
     "record": { "compliance_repo": "<remote or null>", "repo_commit": "<HEAD SHA or null>", "path": "<record path in repo, or null>", "committed": true|false },
+    "status": "success" | "error",
     "verdict": "recorded" | "error",
     "checks": [ { "name": "...", "passed": true|false, "skipped": true|false, "details": "<evidence>" } ],
     "assessments": [ { "topic": "...", "judgment": "<clearly-marked agent judgment — factual characterization only, never the risk decision>" } ],
@@ -187,6 +188,12 @@ prompt_template: |
   }
 
   Rules:
+  - "status" is REQUIRED — it is the flow completion signal read by
+    Preloop. The "verdict" vocabulary (recorded|error) is deliberately
+    NOT a completion signal; "status" carries that role. Write
+    "status": "success" when the run completed and the decision was
+    captured (verdict "recorded"); write "status": "error" (and add a
+    "reason" field) when it could not (verdict "error").
   - "verdict" is "recorded" only when the legwork completed AND a human
     decision (accepted or rejected) was captured; otherwise "error".
     A "rejected" decision is still a successfully RECORDED decision.

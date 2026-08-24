@@ -578,6 +578,25 @@ prompt_template: |
   **Step 10.1: Post the Triage Comment**
   Use the `add_comment` tool to post your comprehensive triage report under the updated issue.
 
+  **Step 10.2: Record Completion (MANDATORY FINAL ACT)**
+
+  As your very last action, write /workspace/result.json — this file is how
+  Preloop confirms the triage completed. It must be valid JSON, a single
+  top-level object:
+
+  {
+    "status": "success",
+    "comment_posted": true | false,
+    "issue_type": "<the classification from Step 3.1>",
+    "suggested_priority": "<P0-P4, or null if not determined>"
+  }
+
+  Use "status": "success" when the run completed — whether you posted the
+  triage comment (comment_posted: true) or deliberately decided not to
+  post one (comment_posted: false). If you hit an unrecoverable error and
+  could not complete the triage, write "status": "error" instead and add
+  a "reason" field. Be honest: never report success for work you did not do.
+
 
   ═══════════════════════════════════════════════════════════
   CRITICAL GUIDELINES
