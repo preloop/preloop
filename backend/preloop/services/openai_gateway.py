@@ -2098,6 +2098,29 @@ class OpenAIGatewayService:
 
                 for chunk in upstream_stream:
                     chunk_dict = self._response_to_dict(chunk)
+                    # Some upstreams (OpenRouter among them) report provider
+                    # failures as an in-band `error` field on an otherwise
+                    # well-formed chunk instead of failing the transport.
+                    # Ignoring it used to fold such streams into a successful
+                    # EMPTY `response.completed`, which Codex treats as a
+                    # completed no-op turn and exits 0 without printing
+                    # anything (staging executions 1ded95c8 / ffb122bd).
+                    # Surface it as a stream error instead.
+                    chunk_error = chunk_dict.get("error")
+                    if chunk_error:
+                        # Scrub before surfacing: upstream blobs can echo
+                        # URLs and keys (same convention as _stream_error).
+                        chunk_error_message = extract_upstream_error_detail(
+                            json.dumps(chunk_error, default=str)
+                        ).message
+                        raise ModelGatewayAPIError(
+                            provider="openai",
+                            status_code=502,
+                            message=(
+                                "Upstream reported an in-stream error: "
+                                f"{chunk_error_message}"
+                            ),
+                        )
                     delta_text = self._extract_stream_delta_text(chunk_dict)
                     if delta_text:
                         if text_output_index is None:
@@ -2251,6 +2274,28 @@ class OpenAIGatewayService:
                     final_usage_details,
                     self._provider_cost_fields(upstream_stream),
                 )
+
+                if not output_items:
+                    # The upstream stream ended without a single output item:
+                    # no text delta, no tool-call delta, nothing. A completed
+                    # Responses stream whose `output` is empty is not a usable
+                    # model turn — Codex renders nothing, makes no calls, and
+                    # exits 0 as if the task were done (staging executions
+                    # 1ded95c8 / ffb122bd: upstream billed 18,268 prompt /
+                    # 0 completion tokens and the agent died silently, which
+                    # the flow then failed as a missing success confirmation).
+                    # Fail the stream loudly instead so the client retries or
+                    # errors visibly; silent truncation is the #109/#117
+                    # failure mode this path already guards against.
+                    raise ModelGatewayAPIError(
+                        provider="openai",
+                        status_code=502,
+                        message=(
+                            "Upstream stream completed without any output "
+                            "items (usage: "
+                            f"{json.dumps(final_usage, default=str)})"
+                        ),
+                    )
 
                 full_text = "".join(assistant_parts)
                 if text_output_index is not None:
