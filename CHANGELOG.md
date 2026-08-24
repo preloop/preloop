@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **GitHub CI backend tests run in parallel**: the backend unit suite is
+  sharded across four GitHub Actions jobs with pytest-split, each with
+  its own Postgres, so PRs are no longer gated on a single ~12-minute
+  pytest process. Coverage from the shards is combined before the 60%
+  floor is applied.
+
 - **Codex onboarding is config-only**: `preloop agents onboard` no longer
   installs a `~/.local/bin/codex` PATH wrapper. Codex only requires a
   process environment variable when `env_key` or `bearer_token_env_var` is

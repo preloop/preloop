@@ -75,9 +75,23 @@ jobs:
       - name: Helm render checks (chart lint + CNPG backup wiring)
         run: sh scripts/helm-render-check.sh
 
+  # Four shards, each with its own Postgres. GitLab splits this suite into
+  # dozens of per-file jobs; that is a poor fit here because each GitHub
+  # runner spends ~1.5m on checkout/pip/migrations before pytest starts.
+  # pytest-split keeps new tests in the partition automatically. Use
+  # duration_based_chunks (not least_duration): without a timings file,
+  # least_duration round-robins individual tests across shards and breaks
+  # unittest setUp isolation plus tests that share a process-wide DB
+  # session. Chunks keep collection order, so files stay together. The 60%
+  # coverage floor is applied after shards are combined -- a single shard
+  # only sees part of the tree.
   test-backend:
-    name: Backend Tests
+    name: Backend Tests (${{ matrix.group }}/4)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3, 4]
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -97,6 +111,8 @@ jobs:
       DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_db
       OPENAI_API_KEY: mock_key
       ANTHROPIC_API_KEY: mock_key
+      PRELOOP_DISABLE_TELEMETRY: "true"
+      COVERAGE_FILE: coverage-data.${{ matrix.group }}
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -128,10 +144,71 @@ jobs:
         run: |
           pytest -v \
             -m "not integration" \
+            --splits 4 \
+            --group ${{ matrix.group }} \
+            --splitting-algorithm=duration_based_chunks \
             --cov=preloop \
-            --cov-report=xml \
-            --cov-fail-under=60 \
+            --cov-report= \
             --junitxml=test-results.xml
+
+      - name: Upload coverage data
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: backend-coverage-${{ matrix.group }}
+          path: coverage-data.${{ matrix.group }}
+          if-no-files-found: error
+
+      - name: Upload test results
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: backend-test-results-${{ matrix.group }}
+          path: test-results.xml
+
+  test-backend-coverage:
+    name: Backend Coverage
+    runs-on: ubuntu-latest
+    needs: test-backend
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache pip
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('.github/requirements/app-dev.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      # Same lock as the shards so coverage.py can combine their data files.
+      - name: Install coverage
+        run: |
+          pip install --require-hashes -r .github/requirements/app-dev.txt
+          pip install --no-deps -e .
+
+      - name: Download shard coverage data
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: backend-coverage-*
+          path: coverage-shards
+          merge-multiple: true
+
+      - name: Combine coverage and enforce floor
+        run: |
+          mapfile -t coverage_files < <(find coverage-shards -name 'coverage-data.*' -type f | sort)
+          if [ ${#coverage_files[@]} -ne 4 ]; then
+            echo "Expected 4 shard coverage files, found ${#coverage_files[@]}"
+            find coverage-shards -type f -print
+            exit 1
+          fi
+          coverage combine "${coverage_files[@]}"
+          coverage xml -o coverage.xml
+          coverage report --fail-under=60
 
       - name: Upload coverage
         uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
@@ -140,13 +217,6 @@ jobs:
           files: ./coverage.xml
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
-
-      - name: Upload test results
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
-        with:
-          name: backend-test-results
-          path: test-results.xml
 
   # ==========================================================================
   # Frontend Tests
@@ -318,7 +388,7 @@ jobs:
   build-and-push:
     name: Build & Push Docker Images
     runs-on: ubuntu-latest
-    needs: [lint, test-backend, test-frontend, test-runtime-plugins]
+    needs: [lint, test-backend-coverage, test-frontend, test-runtime-plugins]
     permissions:
       contents: read
       packages: write
