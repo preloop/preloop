@@ -12,9 +12,15 @@ description: >-
   dedicated compliance repository via the flow's git clone config, and
   the run additionally commits a small dated result stub into each code
   repo and the full evidence pack into the compliance repo, cross-linked
-  by commit SHA (hybrid evidence storage). Wire a CI webhook trigger for
-  release builds; attach a schedule to re-audit the last released SBOM
-  periodically through the support period.
+  by commit SHA (hybrid evidence storage). Vulnerability screening is a
+  per-source coverage matrix (OSV purl, OSV git-range for vendored code,
+  plus labeled NVD-CPE/distro heuristics, each with its own negative
+  control), and human-authored waiver entries — from a payload file or,
+  with waiver_collection: "interactive", collected through the built-in
+  ask_user approval channel — are factored into the severity gate
+  deterministically and echoed verbatim in the evidence. Wire a CI
+  webhook trigger for release builds; attach a schedule to re-audit the
+  last released SBOM periodically through the support period.
 icon: shield-lock
 trigger_event_source: null
 trigger_event_types: null
@@ -55,6 +61,19 @@ prompt_template: |
   - Optional VEX statements file (OpenVEX or CycloneDX VEX).
   - Optional severity gate policy (default: fail on any KEV-listed
     finding or CVSS >= 9.0).
+  - Optional WAIVER FILE: human-authored gate acceptances, delivered in
+    the seed (e.g. waivers.json / waivers.yaml) or inline as payload
+    "waivers". Entries: {"id": "<finding id or gate-family id>",
+    "reason": "...", "author": "...", "date": "...", "approval_id":
+    "<platform approval id, when collected interactively>"}. An entry
+    missing id, reason, author, or date is INVALID and is reported as
+    such — it waives nothing. You never author, complete, or infer a
+    waiver entry yourself; you only transcribe and apply what humans
+    put on the record.
+  - Optional payload flag waiver_collection: "interactive" — see the
+    WAIVER COLLECTION rules in PHASE 2. Default (flag absent or any
+    other value): file-only, no questions asked, so CI runs stay
+    deterministic and unattended.
   - Optional PREVIOUS RESULT: a prior run's result.json
     (preloop.cra.releaseaudit/v1 or preloop.cra.vulnscan/v1), delivered
     in the seed (e.g. previous/result.json) or by URL. If absent, drift
@@ -120,9 +139,16 @@ prompt_template: |
      with name "<owner>/<repo>" and NO version field, see PHASE 2)
      are name-level db_resolvable, not version-matched.
      pkg:generic and pkg:github (the GitHub source ecosystem) are NOT
-     db_resolvable and must not be counted as matchable: they carry a
-     version but no ecosystem the advisory databases index, so an empty
-     result for them is a property of the method, not of the product.
+     db_resolvable by purl and must not be counted as matchable on the
+     purl source: they carry a version but no ecosystem the advisory
+     databases index, so an empty purl result for them is a property of
+     the method, not of the product. db_resolvable is therefore NOT one
+     number but a PER-SOURCE COVERAGE MATRIX (component x source): a
+     pkg:generic component whose enriched purl carries a vcs_url
+     qualifier IS screenable on the osv_git source even though the purl
+     source is blind to it. Build the matrix in PHASE 2 and keep the
+     scalar db_resolvable/not_db_resolvable counts as the purl-source
+     summary for baseline continuity.
   5. Cross-format differences (only if two SBOM formats describe the
      same build): name any difference count so it cannot be read as the
      differences REMAINING after normalization — e.g.
@@ -170,6 +196,54 @@ prompt_template: |
     than as "zero vulnerabilities". Record the control query verbatim,
     its result, and method_blind in the inventory's negative_control
     object.
+  - PER-SOURCE SCREENING MATRIX. Coverage is a matrix, component x
+    source, and every source gets its own negative control before you
+    believe any empty result from it. The purl queries above (with the
+    control just described) are the osv_purl source. Additionally
+    screen eligible components against:
+    - osv_git — DATABASE MATCH by git range. For components whose
+      enriched purl carries a vcs_url qualifier (vendored source
+      trees; the pkg:generic/pkg:github classes the purl source is
+      blind to): take the pinned commit from the vcs_url, or resolve
+      the upstream release tag matching the component version with
+      git ls-remote <vcs_url> '<tag>^{}' (read-only, no clone), then
+      POST {"commit": "<40 hex sha>"} to OSV /v1/query so OSV
+      evaluates its GIT ranges against that commit. A component with
+      no vcs_url and no resolvable tag stays blind for this source —
+      record it, never guess a commit. Negative control:
+      {"commit": "6fa1d817e5b1a00d7d0c8168091877476b499317"} (a curl
+      8.3.0 release commit) must return CVE-2023-38545; empty means
+      this source is blind.
+    - nvd_cpe — LABELED HEURISTIC, never presented as a database
+      match. NVD CPE name+version search
+      (virtualMatchString=cpe:2.3:a:*:<name>:<version>) for
+      well-known components no database source could screen. CPE
+      naming collides and splits vendors: every hit is reported as
+      "heuristic screen (nvd_cpe)", and this source is used for a
+      small targeted subset (well-known C libraries) within the NVD
+      rate limit — not for the whole inventory. Negative control:
+      virtualMatchString=cpe:2.3:a:haxx:curl:7.50.0 must return
+      known CVEs.
+    - osv_distro — LABELED HEURISTIC, same labeling rule.
+      Ecosystem-less OSV name+version query ({"package": {"name":
+      "<name>"}, "version": "<version>"}) echoes distro advisories
+      (Debian/Alpine/...) for well-known C libraries. Distro version
+      strings are not upstream version strings: echo hits are
+      heuristic signals, never a database match. Negative control:
+      {"package": {"name": "curl"}, "version": "7.50.0"} must return
+      distro-prefixed entries.
+    Record the full component x source matrix in
+    evidence/source-matrix.json and the per-source summary —
+    screenable and blind counts, control query VERBATIM, its result,
+    method_blind — in vuln_scan.inventory.source_matrix. A component
+    counts as screened only for sources that could actually evaluate
+    it; a component every source is blind to is "not screenable by
+    any method", never "zero vulnerabilities". Findings carry their
+    sources and match_kind. Heuristic-only findings (nvd_cpe or
+    osv_distro with no database-source confirmation) are reported and
+    labeled but do NOT enter the severity gate — a heuristic can
+    neither fail nor clear a release on its own; KEV-listed heuristic
+    hits are still called out prominently in audit-report.md.
   - Known-exploited: CISA KEV catalog JSON
     (https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json);
     record its dateReleased as kev_snapshot_date. If cisa.gov returns
@@ -190,6 +264,58 @@ prompt_template: |
     sources unreachable" — never fabricate findings or their absence.
   Apply VEX suppressions (echoed, never silently dropped) and the
   severity gate.
+
+  WAIVER APPLICATION (deterministic; the gate is the only thing a
+  waiver reconfigures). After computing the severity-gate failures,
+  factor in the delivered waiver entries mechanically:
+  - A gate failure whose finding id (or gate-family id) matches a
+    VALID waiver entry (id + reason + author + date all present;
+    approval_id additionally required for interactively collected
+    entries) is WAIVED: it stays in findings, marked waived, with the
+    waiver entry echoed VERBATIM next to it, and stops counting
+    against gate.passed.
+  - gate.passed is true only when every gate failure is waived. An
+    unwaived failure keeps the gate failed and the verdict rules
+    unchanged: waivers never upgrade the SBOM-audit verdict, never
+    touch the gap register, and the register still cannot upgrade
+    anything. Invalid entries waive nothing and are listed as invalid;
+    waiver entries that match no failure are echoed as unmatched,
+    never silently dropped.
+  - Record the outcome in vuln_scan.gate: waivers_applied (verbatim
+    entries), unwaived_failures, waivers_invalid, waivers_unmatched,
+    and passed computed AFTER waivers with the pre-waiver outcome in
+    passed_before_waivers. Write every entry seen — applied, unmatched,
+    invalid, and interactively collected — to evidence/waivers.json.
+  - NO MODEL-AUTHORED WAIVERS, EVER. You transcribe and apply; you do
+    not decide, draft, suggest wording for, or default any waiver.
+
+  WAIVER COLLECTION (only when the payload says
+  waiver_collection: "interactive"). This flow's allowed_mcp_tools
+  contains exactly one tool — the platform's built-in ask_user — as
+  the SOLE exception to the otherwise-empty allowlist: it is a
+  question channel routed through the platform approval workflow
+  (which captures the approver's identity), not a write tool, and it
+  exists here only so a human can put waivers on the record mid-run.
+  Rules:
+  - Non-interactive runs (the default) NEVER call ask_user, not even
+    to report progress. Interactive runs call it ONLY for waiver
+    collection as described next.
+  - After waiver-file application, if unwaived gate failures remain,
+    make EXACTLY ONE ask_user call for them all, batched: the
+    question lists each unwaived finding family (id, package,
+    severity, KEV flag) as a structured list and asks which to accept,
+    with a free-text reason per accepted family. Never one call per
+    finding, never a second round.
+  - The tool result carries the human's answer plus an approval audit
+    trailer ([approval_id: ...; answered_by: ...; answered_at: ...]).
+    Transcribe each acceptance VERBATIM into evidence/waivers.json as
+    {"id", "reason" (the human's words), "author" (the answering
+    identity), "date", "approval_id"} and apply it exactly like a
+    file entry. The approval id is required: an interactive answer
+    with no approval id waives nothing.
+  - TIMEOUT / no answer / declined = FAIL CLOSED: no waiver, the gate
+    failure stands, the verdict is unchanged, and the non-answer is
+    recorded in checks. Never re-ask, never assume acceptance.
 
   ═══════════════════════════════════════════════════════════
   PHASE 3: DRIFT VS PREVIOUS RESULT (audit part 3)
@@ -431,14 +557,27 @@ prompt_template: |
     with a one-page cover for a non-AI reader: three clearly labelled
     boxes, in this order, before any table or finding list.
       BOX 1 — "What we checked". List the inputs actually delivered and
-      the classes actually screened. It must contain the sentence: this
+      the classes actually screened. The screening coverage statement
+      DERIVES FROM THE PER-SOURCE MATRIX: one line per source, in
+      matrix order — "<source>: screened <screenable> of <total>
+      components (database match|labeled heuristic; control passed|
+      control BLIND)" — no aggregate coverage claim that the matrix
+      does not support. It must contain the sentence: this
       run demonstrates the pipeline; it is not yet a complete CRA gap
       review unless the gap-register phase ran AND private product
       repositories were in scope. Say which of those two held.
-      BOX 2 — "What we did NOT check". Not-db-resolvable component
-      classes (and any negative control that came back blind), skipped
+      BOX 2 — "What we did NOT check". Derived from the same matrix:
+      the components no source could screen
+      (source_matrix.screened_by_no_source, with their classes), every
+      source whose negative control came back blind, skipped
       cross-checks, absent baselines, and everything gap-register.md
       lists as not checkable from the repository alone.
+      WAIVERS (mandatory cover section, right after the three boxes).
+      List EVERY applied waiver — id, waived finding, reason, author,
+      date, approval id when present — echoed verbatim, plus invalid
+      and unmatched entries. If none: "No waivers were delivered or
+      applied." A reader must never discover a waived gate from the
+      gate line alone.
       BOX 3 — "What you should do next week". A short, concrete,
       ordered list of the highest-value fixes implied by the gaps and
       findings — no legal advice, no compliance verdict.
@@ -460,6 +599,12 @@ prompt_template: |
     and its outcome; findings by severity with KEV hits called out; VEX
     suppressions echoed; drift summary; gate outcome.
   - findings.json — full machine-readable vulnerability findings.
+  - source-matrix.json — the full component x source screening matrix
+    with the per-source negative controls (PHASE 2).
+  - waivers.json — every waiver entry seen: applied, unmatched, and
+    invalid, file-delivered and interactively collected, echoed
+    verbatim with approval ids where present. Omit the file ONLY when
+    no waiver input existed and the run was non-interactive.
   - sbom-findings.json — full SBOM verification findings register.
   - gap-register.md — the PHASE 3.5 CRA requirement walk (only when a
     repository was present; omit it when that phase was skipped).
@@ -589,12 +734,27 @@ prompt_template: |
         "db_resolvable": <int>,
         "not_db_resolvable": <int>,
         "by_ecosystem": { "<ecosystem or 'generic'>": <int> },
-        "negative_control": { "query": "<the control query as sent>", "result": "<what came back>", "method_blind": true|false }
+        "negative_control": { "query": "<the control query as sent>", "result": "<what came back>", "method_blind": true|false },
+        "source_matrix": {
+          "osv_purl": { "kind": "database", "screenable": <int>, "blind": <int>, "negative_control": { "query": "<verbatim>", "result": "<what came back>", "method_blind": true|false } },
+          "osv_git": { "kind": "database", "screenable": <int>, "blind": <int>, "negative_control": { ... } },
+          "nvd_cpe": { "kind": "heuristic", "screenable": <int>, "blind": <int>, "negative_control": { ... } },
+          "osv_distro": { "kind": "heuristic", "screenable": <int>, "blind": <int>, "negative_control": { ... } },
+          "screened_by_no_source": <int>
+        }
       },
-      "findings": [ { "id": "...", "pkg": "...", "version": "...", "severity": "...", "cvss": <n|null>, "epss": <n|null>, "kev": true|false, "fix_version": "<or null>", "vex_status": "<or null>" } ],
+      "findings": [ { "id": "...", "pkg": "...", "version": "...", "severity": "...", "cvss": <n|null>, "epss": <n|null>, "kev": true|false, "fix_version": "<or null>", "vex_status": "<or null>", "sources": [ "osv_purl" | "osv_git" | "nvd_cpe" | "osv_distro" ], "match_kind": "database" | "heuristic", "waived": true|false } ],
       "counts_by_severity": { "critical": 0, "high": 0, "medium": 0, "low": 0, "unknown": 0 },
       "art14_candidates": [ "<CVE ids of KEV-listed findings>" ],
-      "gate": { "policy": "<the policy applied>", "passed": true|false }
+      "gate": {
+        "policy": "<the policy applied>",
+        "passed": true|false,
+        "passed_before_waivers": true|false,
+        "waivers_applied": [ { "id": "...", "reason": "<verbatim>", "author": "...", "date": "...", "approval_id": "<or null>" } ],
+        "unwaived_failures": [ "<finding ids>" ],
+        "waivers_invalid": [ "<why each rejected entry waives nothing>" ],
+        "waivers_unmatched": [ { "<entries that matched no failure, verbatim>": "..." } ]
+      }
     },
     "drift": null | {
       "baseline": { "schema": "<of previous result>", "run_at": "<or null>", "build_ref": "<or null>" },
@@ -627,6 +787,8 @@ prompt_template: |
     "artifacts": {
       "audit_report": "evidence/audit-report.md",
       "findings": "evidence/findings.json",
+      "source_matrix": "evidence/source-matrix.json",
+      "waivers": "evidence/waivers.json" | null,
       "sbom_findings": "evidence/sbom-findings.json",
       "gap_register": "evidence/gap-register.md" | null,
       "drift_report": "evidence/drift-report.md"
@@ -636,19 +798,34 @@ prompt_template: |
 
   Rules:
   - Overall verdict: "fail" if the SBOM audit failed OR the severity gate
-    failed; "pass_with_findings" if everything gated passed but findings
-    or skipped cross-checks exist; "pass" only when clean. PHASE 3.5 gap
+    failed AFTER deterministic waiver application; "pass_with_findings"
+    if everything gated passed but findings, waived failures, or skipped
+    cross-checks exist; "pass" only when clean. PHASE 3.5 gap
     items never change this: they appear as checks with passed:false and
     can carry a run to "pass_with_findings", but a gap item alone never
     flips the severity gate or the SBOM-audit verdict to "fail".
     If sbom_audit.verdict is fail, result.verdict MUST be fail
-    (gap-register cannot upgrade it to pass_with_findings).
+    (gap-register cannot upgrade it to pass_with_findings, and no
+    waiver can either: waivers reconfigure only the severity gate).
+    A run with any applied waiver can never end better than
+    "pass_with_findings".
+  - Waivers are human-authored inputs applied mechanically (PHASE 2
+    WAIVER APPLICATION): an unwaived gate failure keeps the gate
+    failed, invalid entries waive nothing, and you never author or
+    default a waiver. Every entry seen is echoed verbatim in
+    evidence/waivers.json and listed on the audit-report.md cover.
+  - Heuristic sources (nvd_cpe, osv_distro) are labeled as such
+    everywhere they surface and never enter the severity gate or count
+    a component as matchable; only database sources do.
   - Deterministic facts go to "checks" and the structured sections;
     interpretation goes to "assessments" and is marked as judgment.
   - Never claim vulnerability absence for unmatchable or
     not-db-resolvable components (nor for any class whose negative
     control came back blind), and never claim SBOM completeness beyond
     what the delivered build evidence allowed you to cross-check.
+    Absence claims are per source: only a source that screened the
+    component (per source_matrix, with a passing control) supports one,
+    and components in screened_by_no_source support none at all.
   - Secret values never leave the checkout: gap_register records
     secrets_findings_count and path+commit pointers only. No values, no
     excerpts, no reproduction steps, anywhere. A gitleaks count of 0 is
@@ -663,13 +840,22 @@ prompt_template: |
     evidence_storage.code_repos. "evidence_storage" is null whenever
     PHASE 4B was skipped (no checkouts) and "gap_register" is null
     whenever PHASE 3.5 was skipped (no repository); these additive
-    nullable fields keep the schema at preloop.cra.releaseaudit/v1.
+    nullable fields — like inventory.source_matrix, the per-finding
+    sources/match_kind/waived fields, and the gate's waiver fields —
+    keep the schema at preloop.cra.releaseaudit/v1.
 agent_type: codex
 agent_config:
   sandbox_type: exec
   enable_auto_lint: false
 allowed_mcp_servers: []
-allowed_mcp_tools: []
+# The ONLY tool on this allowlist is the built-in ask_user question
+# channel, and only for interactive waiver collection (see the WAIVER
+# COLLECTION rules in the prompt). It is not a write tool: it routes a
+# question through the platform approval workflow, which captures the
+# approver's identity. Non-interactive runs never call it. Everything
+# else stays off the allowlist — scanners run in the sandbox.
+allowed_mcp_tools:
+  - name: ask_user
 git_clone_config: null
 trigger_config: null
 is_preset: true

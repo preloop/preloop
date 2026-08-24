@@ -534,6 +534,28 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
             return_comment_on_approve=True,
         )
 
+        # Approval audit trailer: the platform approval workflow captured the
+        # decision (approver identity, timestamp) on an approval record; stamp
+        # its id into the returned text so an agent transcribing the human's
+        # answer (e.g. into a waiver register) can reference the governed
+        # approval instead of asserting one. Absent metadata (no approval
+        # required, mocked helper) leaves the return format unchanged.
+        from preloop.services.approval_helper import consume_last_approval_meta
+
+        approval_meta = consume_last_approval_meta()
+
+        def _with_audit_trailer(text: str) -> str:
+            if not approval_meta:
+                return text
+            parts = [f"approval_id: {approval_meta.get('request_id')}"]
+            if approval_meta.get("responded_by"):
+                parts.append(f"answered_by: {approval_meta['responded_by']}")
+            if approval_meta.get("resolved_at"):
+                parts.append(f"answered_at: {approval_meta['resolved_at']}")
+            if approval_meta.get("status"):
+                parts.append(f"status: {approval_meta['status']}")
+            return f"{text}\n[{'; '.join(parts)}]"
+
         if not answered:
             # Async-approval workflows return immediately with a pending
             # payload (request id + deep links + polling instructions); pass
@@ -552,12 +574,16 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                 ):
                     return answer
             # Declined / cancelled / timed out — no answer was provided.
-            return f"No answer provided: {answer}" if answer else "No answer provided."
+            return _with_audit_trailer(
+                f"No answer provided: {answer}" if answer else "No answer provided."
+            )
 
         if answer:
-            return f"User answered: {answer}"
+            return _with_audit_trailer(f"User answered: {answer}")
         # Answered with no text (e.g. a bare approve on an options-only question).
-        return "User acknowledged the question but provided no answer text."
+        return _with_audit_trailer(
+            "User acknowledged the question but provided no answer text."
+        )
 
     # Register Tool 7c: permission_prompt (Claude Code --permission-prompt-tool
     # contract; shared metadata: tools.builtin_defs.PERMISSION_PROMPT_TOOL).

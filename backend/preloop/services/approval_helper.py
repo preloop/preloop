@@ -7,12 +7,52 @@ with real-time progress updates via FastMCP Context.
 import asyncio
 import logging
 import os
-from typing import NamedTuple, Optional, Tuple
+from contextvars import ContextVar
+from typing import Any, Dict, NamedTuple, Optional, Tuple
 
 from fastmcp import Context
 from preloop.models import models
 
 logger = logging.getLogger(__name__)
+
+#: Audit metadata of the most recent approval request this task created and
+#: saw resolved. ``ask_user`` consumes it to stamp the platform approval id
+#: (and the approver identity captured by the approval workflow) into its
+#: returned answer, so agents transcribing human decisions — e.g. waiver
+#: collection in the security-audit presets — can record WHICH governed
+#: approval produced the answer without needing any extra tool.
+_last_approval_meta_var: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
+    "last_approval_meta", default=None
+)
+
+
+def _set_last_approval_meta(
+    request_id: Any,
+    status: str,
+    resolved_at: Any = None,
+    responded_by: Optional[str] = None,
+) -> None:
+    """Record the approval audit metadata for the current task."""
+    _last_approval_meta_var.set(
+        {
+            "request_id": str(request_id),
+            "status": status,
+            "resolved_at": (
+                resolved_at.isoformat()
+                if hasattr(resolved_at, "isoformat")
+                else resolved_at
+            ),
+            "responded_by": responded_by,
+        }
+    )
+
+
+def consume_last_approval_meta() -> Optional[Dict[str, Any]]:
+    """Return and clear the last approval audit metadata, if any."""
+    meta = _last_approval_meta_var.get(None)
+    _last_approval_meta_var.set(None)
+    return meta
+
 
 #: Builtin tools whose approval request is a *question to the human* rather
 #: than a gate on a side-effecting tool. These get in-session delivery via
@@ -666,6 +706,14 @@ async def require_approval(
                             if current_request
                             else None
                         )
+                        current_resolved_at = (
+                            current_request.resolved_at if current_request else None
+                        )
+                        current_responses = (
+                            list(current_request.responses or [])
+                            if current_request
+                            else []
+                        )
 
                     logger.info(
                         f"[Polling] Checked approval status: {current_status if current_status else 'NOT_FOUND'} "
@@ -685,6 +733,20 @@ async def require_approval(
                         )
                         final_status = current_status
                         final_comment = current_comment
+                        responded_by = next(
+                            (
+                                str(vote.get("user_id"))
+                                for vote in reversed(current_responses)
+                                if isinstance(vote, dict) and vote.get("user_id")
+                            ),
+                            None,
+                        )
+                        _set_last_approval_meta(
+                            approval_request.id,
+                            current_status,
+                            resolved_at=current_resolved_at,
+                            responded_by=responded_by,
+                        )
                         break
 
                     # Check if initial timeout expired
@@ -806,6 +868,7 @@ async def require_approval(
                                     approval_request.id,
                                     ApprovalRequestUpdate(status="expired"),
                                 )
+                            _set_last_approval_meta(approval_request.id, "expired")
                             return (
                                 False,
                                 f"Approval timeout: request expired after {timeout_seconds}s",
@@ -836,6 +899,7 @@ async def require_approval(
                                 approval_request.id,
                                 ApprovalRequestUpdate(status="expired"),
                             )
+                        _set_last_approval_meta(approval_request.id, "expired")
                         return (
                             False,
                             f"Approval timeout: request expired after {total_timeout}s (including escalation)",

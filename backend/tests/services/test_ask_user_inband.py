@@ -326,6 +326,135 @@ class TestAskUserToolBehaviour:
 
 
 @pytest.mark.asyncio
+class TestAskUserApprovalAuditTrailer:
+    """The answered/declined returns carry the platform approval id (and
+    approver identity/timestamp when known) so agents transcribing human
+    decisions — e.g. interactive waiver collection — can reference the
+    governed approval record instead of asserting one."""
+
+    async def _ask_user_fn(self):
+        from preloop.services.initialize_mcp import initialize_mcp_with_tools
+
+        mcp = initialize_mcp_with_tools()
+        tool = await mcp.get_tool("ask_user")
+        return tool.fn
+
+    def _workflow_patches(self):
+        workflow = SimpleNamespace(id=uuid.uuid4())
+        return [
+            patch(
+                "preloop.services.dynamic_fastmcp_http.get_current_user_context",
+                return_value=_user_ctx(),
+            ),
+            patch(
+                "preloop.models.db.session.get_db_session",
+                return_value=iter([MagicMock()]),
+            ),
+            patch(
+                "preloop.models.crud.crud_approval_workflow.get_default",
+                return_value=workflow,
+            ),
+        ]
+
+    def _set_meta(self, **overrides):
+        from preloop.services import approval_helper
+
+        meta = {
+            "request_id": "11111111-2222-3333-4444-555555555555",
+            "status": "approved",
+            "resolved_at": "2026-08-24T12:00:00",
+            "responded_by": "a-user-id",
+        }
+        meta.update(overrides)
+        approval_helper._last_approval_meta_var.set(meta)
+
+    async def test_answer_carries_approval_trailer(self):
+        fn = await self._ask_user_fn()
+        p1, p2, p3 = self._workflow_patches()
+        with (
+            p1,
+            p2,
+            p3,
+            patch(
+                "preloop.services.initialize_mcp.require_approval",
+                new=AsyncMock(return_value=(True, "accept: CVE-2023-38545")),
+            ),
+        ):
+            self._set_meta()
+            result = await fn(question="Waive which findings?")
+        assert result.startswith("User answered: accept: CVE-2023-38545\n")
+        assert "approval_id: 11111111-2222-3333-4444-555555555555" in result
+        assert "answered_by: a-user-id" in result
+        assert "answered_at: 2026-08-24T12:00:00" in result
+        assert "status: approved" in result
+
+    async def test_timeout_still_reports_the_approval_id(self):
+        """Fail-closed transcription: even a non-answer references the
+        approval record that expired."""
+        fn = await self._ask_user_fn()
+        p1, p2, p3 = self._workflow_patches()
+        with (
+            p1,
+            p2,
+            p3,
+            patch(
+                "preloop.services.initialize_mcp.require_approval",
+                new=AsyncMock(
+                    return_value=(
+                        False,
+                        "Approval timeout: request expired after 300s",
+                    )
+                ),
+            ),
+        ):
+            self._set_meta(status="expired", resolved_at=None, responded_by=None)
+            result = await fn(question="Waive which findings?")
+        assert result.startswith(
+            "No answer provided: Approval timeout: request expired after 300s"
+        )
+        assert "approval_id: 11111111-2222-3333-4444-555555555555" in result
+        assert "status: expired" in result
+        assert "answered_by" not in result
+
+    async def test_meta_is_consumed_not_reused(self):
+        fn = await self._ask_user_fn()
+        p1, _, p3 = self._workflow_patches()
+        with (
+            p1,
+            # Fresh session iterator per call: this test calls ask_user twice.
+            patch(
+                "preloop.models.db.session.get_db_session",
+                side_effect=lambda: iter([MagicMock()]),
+            ),
+            p3,
+            patch(
+                "preloop.services.initialize_mcp.require_approval",
+                new=AsyncMock(return_value=(True, "blue")),
+            ),
+        ):
+            self._set_meta()
+            first = await fn(question="Favourite colour?")
+            second = await fn(question="Favourite colour?")
+        assert "approval_id" in first
+        assert second == "User answered: blue"
+
+    async def test_no_meta_keeps_legacy_format(self):
+        fn = await self._ask_user_fn()
+        p1, p2, p3 = self._workflow_patches()
+        with (
+            p1,
+            p2,
+            p3,
+            patch(
+                "preloop.services.initialize_mcp.require_approval",
+                new=AsyncMock(return_value=(True, "blue")),
+            ),
+        ):
+            result = await fn(question="Favourite colour?")
+        assert result == "User answered: blue"
+
+
+@pytest.mark.asyncio
 class TestApprovedAskUserReplayRegression:
     """REGRESSION (approve->execute handoff): replaying an approved ask_user
     must return the approver's comment (the human's answer) as the tool
