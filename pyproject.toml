@@ -117,6 +117,7 @@ dev = [
     "pytest-cov>=4.1.0",
     "pytest-asyncio>=0.21.1",
     "pytest-mock>=3.12.0",
+    "pytest-split>=0.10.0",
     "python-dotenv>=0.21.0", # Added python-dotenv
     "black>=23.7.0",
     "isort>=5.12.0",
