@@ -2108,12 +2108,17 @@ class OpenAIGatewayService:
                     # Surface it as a stream error instead.
                     chunk_error = chunk_dict.get("error")
                     if chunk_error:
+                        # Scrub before surfacing: upstream blobs can echo
+                        # URLs and keys (same convention as _stream_error).
+                        chunk_error_message = extract_upstream_error_detail(
+                            json.dumps(chunk_error, default=str)
+                        ).message
                         raise ModelGatewayAPIError(
                             provider="openai",
                             status_code=502,
                             message=(
                                 "Upstream reported an in-stream error: "
-                                f"{json.dumps(chunk_error, default=str)[:500]}"
+                                f"{chunk_error_message}"
                             ),
                         )
                     delta_text = self._extract_stream_delta_text(chunk_dict)
