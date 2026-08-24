@@ -72,7 +72,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -213,14 +213,21 @@ def sanitize_codex_tools(tools: Any) -> tuple[Any, Set[str]]:
             nested_tools, nested_freeform = sanitize_codex_tools(nested)
             if isinstance(nested_tools, list):
                 # MCP namespaces (``mcp__<server>``) advertise their nested
-                # tools under SHORT names, but Codex's tool router only
-                # routes the fully-qualified ``mcp__<server>__<tool>`` form:
-                # a model that calls the flattened short name gets
-                # ``unsupported call: <tool>`` back (staging execution
-                # 4ba5c5e7: 14 ``ask_user`` attempts, all rejected). Qualify
-                # the flattened names so what the model is declared is what
-                # the router routes. Non-MCP namespaces (multi_agent_v1)
-                # keep their nested names untouched.
+                # tools under SHORT names. Flattening them for the upstream
+                # requires globally unique model-facing names, so qualify
+                # them as ``mcp__<server>__<tool>``. NOTE this alone does
+                # NOT make the call routable: Codex's tool router accepts a
+                # namespace tool call ONLY as a ``function_call`` item that
+                # carries a separate ``namespace`` field plus the SHORT
+                # nested name (verified against the real binary: a plain
+                # function_call is rejected whether it uses the short name —
+                # staging exec 4ba5c5e7, 14 ``ask_user`` rejections — or the
+                # qualified name — staging exec 97c977f8,
+                # ``unsupported call: mcp__preloop__ask_user``). The
+                # response translation (:func:`restore_namespace_tool_calls`)
+                # renders the model's call back in that namespace form.
+                # Non-MCP namespaces (multi_agent_v1) keep their nested
+                # names untouched: their router names are not ours.
                 namespace_name = tool.get("name")
                 if isinstance(namespace_name, str) and namespace_name.startswith(
                     "mcp__"
@@ -384,3 +391,166 @@ def restore_custom_tool_calls(
             }
         )
     return restored
+
+
+def _nested_tool_name(tool: Any) -> Optional[str]:
+    """Return a nested namespace tool's declared name, any wire shape."""
+    if not isinstance(tool, dict):
+        return None
+    function = tool.get("function")
+    if isinstance(function, dict):
+        name = function.get("name")
+        if isinstance(name, str) and name:
+            return name
+    name = tool.get("name")
+    if isinstance(name, str) and name:
+        return name
+    return None
+
+
+def namespace_tool_aliases(tools: Any) -> Dict[str, Tuple[str, str]]:
+    """Map every model-callable alias to its ``(namespace, short_name)`` pair.
+
+    Codex's tool router accepts a call to an MCP namespace tool ONLY as a
+    ``function_call`` item carrying a separate ``namespace`` field and the
+    SHORT nested tool name (verified against the real binary; see
+    :func:`restore_namespace_tool_calls`). The model, however, is declared the
+    flattened ``mcp__<server>__<tool>`` name — and prompt text or older
+    transcripts may steer it to the bare short name instead. Both must route,
+    so both are registered as aliases of the same namespace call:
+
+    * the canonical qualified name (``mcp__preloop__ask_user``), always;
+    * the bare short name (``ask_user``), only while it is unambiguous — a
+      collision with another namespace's tool or with any top-level tool
+      name drops the bare alias rather than guessing.
+
+    Args:
+        tools: The ORIGINAL request ``tools`` value, before sanitization.
+
+    Returns:
+        Alias name -> ``(namespace, short_name)``. Empty when the request
+        declares no ``mcp__*`` namespace tools.
+    """
+    if not isinstance(tools, list):
+        return {}
+
+    aliases: Dict[str, Tuple[str, str]] = {}
+    ambiguous_short: Set[str] = set()
+    top_level_names: Set[str] = set()
+
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        if tool.get("type") == "namespace":
+            namespace = tool.get("name")
+            nested = tool.get("tools")
+            if (
+                not isinstance(namespace, str)
+                or not namespace.startswith("mcp__")
+                or not isinstance(nested, list)
+            ):
+                continue
+            for nested_tool in nested:
+                short = _nested_tool_name(nested_tool)
+                if not short:
+                    continue
+                prefix = f"{namespace}__"
+                if short.startswith(prefix):
+                    # Defensive: an already-qualified nested name still maps
+                    # to the short name the router expects.
+                    short = short[len(prefix) :]
+                    if not short:
+                        continue
+                qualified = f"{namespace}__{short}"
+                aliases[qualified] = (namespace, short)
+                if short in aliases and aliases[short] != (namespace, short):
+                    ambiguous_short.add(short)
+                elif short != qualified:
+                    aliases.setdefault(short, (namespace, short))
+        else:
+            name = _nested_tool_name(tool)
+            if name:
+                top_level_names.add(name)
+
+    for short in ambiguous_short:
+        aliases.pop(short, None)
+    for name in top_level_names:
+        # A top-level tool with the same name wins: Codex's router knows it
+        # as a plain function tool, so rewriting its calls to namespace form
+        # would break it. Never shadow one.
+        aliases.pop(name, None)
+    return aliases
+
+
+def restore_namespace_tool_calls(
+    output_items: List[Dict[str, Any]],
+    namespace_aliases: Dict[str, Tuple[str, str]],
+) -> List[Dict[str, Any]]:
+    """Render calls to flattened MCP namespace tools in the routable form.
+
+    Codex's tool router (``codex_core::tools::router``) routes a namespace
+    tool call ONLY when the ``function_call`` item carries the namespace in a
+    separate ``namespace`` field alongside the SHORT tool name. Verified
+    against the real binary: a plain ``function_call`` named ``ask_user``,
+    ``mcp__preloop__ask_user`` or ``mcp__preloop.ask_user`` is all
+    "unsupported call", while ``{"type": "function_call", "namespace":
+    "mcp__preloop", "name": "ask_user"}`` reaches the MCP server. This is the
+    response-side half of the namespace translation whose request-side half
+    (:func:`sanitize_codex_tools`) flattens and qualifies the declared names —
+    without this half every MCP tool call still fails after #286's
+    declaration fix (staging execution 97c977f8).
+
+    Args:
+        output_items: Responses-API output items built from the upstream
+            reply.
+        namespace_aliases: :func:`namespace_tool_aliases` of the request.
+
+    Returns:
+        The output items with matching calls rewritten in namespace form.
+        Returns the input unchanged when the request declared no MCP
+        namespace tools.
+    """
+    if not namespace_aliases or not isinstance(output_items, list):
+        return output_items
+
+    restored: List[Dict[str, Any]] = []
+    for item in output_items:
+        if not isinstance(item, dict) or item.get("type") != "function_call":
+            restored.append(item)
+            continue
+        target = namespace_aliases.get(item.get("name"))
+        if target is None:
+            restored.append(item)
+            continue
+        namespace, short = target
+        rewritten = dict(item)
+        rewritten["namespace"] = namespace
+        rewritten["name"] = short
+        restored.append(rewritten)
+    return restored
+
+
+def qualify_namespace_call_history_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    """Flatten a namespace-form ``function_call`` history item for upstreams.
+
+    Codex echoes the namespace-form call (``namespace`` field + short name)
+    back in the next turn's input history. Upstreams were declared the
+    flattened qualified name, so the history must use it too — and no
+    upstream accepts an unknown ``namespace`` field on a function call.
+
+    Args:
+        item: One Responses-API input item of type ``function_call``.
+
+    Returns:
+        The item with the qualified name and without the ``namespace`` field,
+        or the item unchanged when it carries no MCP namespace.
+    """
+    namespace = item.get("namespace")
+    if not isinstance(namespace, str) or not namespace.startswith("mcp__"):
+        return item
+    name = item.get("name")
+    flattened = dict(item)
+    flattened.pop("namespace", None)
+    if isinstance(name, str) and name and not name.startswith(f"{namespace}__"):
+        flattened["name"] = f"{namespace}__{name}"
+    return flattened
