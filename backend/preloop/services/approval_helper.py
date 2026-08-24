@@ -180,6 +180,13 @@ async def require_approval(
         - If approved: (True, "")
         - If declined/error: (False, "error message")
     """
+    # Scope the approval audit metadata to THIS call: every `require_approval`
+    # sets the ContextVar but only `ask_user` consumes it, and many paths
+    # below return without producing fresh metadata (allow/deny rules,
+    # workflow-not-found, async approval, poll-loop not-found). Clearing up
+    # front guarantees a later consumer can never read a stale approval id
+    # left behind by a previous call in the same task context.
+    _last_approval_meta_var.set(None)
     try:
         # Check if approval should be bypassed (e.g. during async re-execution
         # of an already-approved tool call).
@@ -714,6 +721,40 @@ async def require_approval(
                             if current_request
                             else []
                         )
+                        current_responded_by = None
+                        if current_status in ["approved", "declined", "cancelled"]:
+                            responded_by_id = next(
+                                (
+                                    vote.get("user_id")
+                                    for vote in reversed(current_responses)
+                                    if isinstance(vote, dict) and vote.get("user_id")
+                                ),
+                                None,
+                            )
+                            if responded_by_id:
+                                # Resolve to a human-meaningful identity (the
+                                # async-approval path does the same): the
+                                # trailer's answered_by lands verbatim in
+                                # audit evidence such as waiver registers,
+                                # where a raw user-id UUID helps nobody. Fall
+                                # back to the raw id when resolution fails.
+                                current_responded_by = str(responded_by_id)
+                                try:
+                                    import uuid as uuid_module
+
+                                    from preloop.models.models.user import User
+
+                                    responded_user = await poll_db.get(
+                                        User, uuid_module.UUID(str(responded_by_id))
+                                    )
+                                    if responded_user:
+                                        current_responded_by = (
+                                            responded_user.email
+                                            or responded_user.username
+                                            or current_responded_by
+                                        )
+                                except Exception:
+                                    pass
 
                     logger.info(
                         f"[Polling] Checked approval status: {current_status if current_status else 'NOT_FOUND'} "
@@ -733,19 +774,11 @@ async def require_approval(
                         )
                         final_status = current_status
                         final_comment = current_comment
-                        responded_by = next(
-                            (
-                                str(vote.get("user_id"))
-                                for vote in reversed(current_responses)
-                                if isinstance(vote, dict) and vote.get("user_id")
-                            ),
-                            None,
-                        )
                         _set_last_approval_meta(
                             approval_request.id,
                             current_status,
                             resolved_at=current_resolved_at,
-                            responded_by=responded_by,
+                            responded_by=current_responded_by,
                         )
                         break
 

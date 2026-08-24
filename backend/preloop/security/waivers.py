@@ -23,7 +23,12 @@ can re-validate a submitted gate against the delivered waiver file.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
+
+#: A gate item that failed the severity policy: either a bare finding id
+#: (``"CVE-2021-44228"``) or a mapping ``{"id": ..., "aliases": [...]}`` so a
+#: CVE-id waiver matches the same advisory surfaced under a GHSA/OSV alias.
+FailingItem = Union[str, Mapping[str, Any]]
 
 #: Fields a waiver entry must carry to be applicable at all.
 REQUIRED_WAIVER_FIELDS = ("id", "reason", "author", "date")
@@ -115,7 +120,7 @@ def _failing_keys(item: Any) -> Tuple[str, frozenset]:
 
 
 def apply_waivers(
-    failing_ids: Sequence[Any],
+    failing_ids: Sequence[FailingItem],
     waivers: Optional[Iterable[Mapping[str, Any]]],
     *,
     require_approval_id: bool = False,
@@ -172,7 +177,7 @@ def apply_waivers(
 
 def validate_waived_gate(
     gate: Mapping[str, Any],
-    failing_ids: Sequence[str],
+    failing_ids: Sequence[FailingItem],
     waivers: Optional[Iterable[Mapping[str, Any]]],
     *,
     require_approval_id: bool = False,
@@ -216,7 +221,7 @@ def validate_waived_gate(
 
 def assert_waived_gate(
     gate: Mapping[str, Any],
-    failing_ids: Sequence[str],
+    failing_ids: Sequence[FailingItem],
     waivers: Optional[Iterable[Mapping[str, Any]]],
     *,
     require_approval_id: bool = False,

@@ -453,6 +453,30 @@ class TestAskUserApprovalAuditTrailer:
             result = await fn(question="Favourite colour?")
         assert result == "User answered: blue"
 
+    async def test_stale_meta_from_prior_approval_is_not_reused(self):
+        """REGRESSION (review): `require_approval` gates every approval-required
+        tool but only `ask_user` consumed the shared ContextVar, and several
+        approval paths return without setting fresh metadata. The metadata is
+        now scoped to the current call — cleared on entry — so an early-
+        returning `require_approval` (here: the bypass path) can never leave a
+        previous approval's id behind to be misattributed to a later answer."""
+        from preloop.services import approval_helper
+        from preloop.services.dynamic_fastmcp import _bypass_approval_var
+
+        self._set_meta()
+        bypass_token = _bypass_approval_var.set(True)
+        try:
+            approved, _ = await approval_helper.require_approval(
+                tool_name="ask_user",
+                tool_source="builtin",
+                account_id=str(uuid.uuid4()),
+                arguments={"question": "Favourite colour?"},
+            )
+        finally:
+            _bypass_approval_var.reset(bypass_token)
+        assert approved is True
+        assert approval_helper.consume_last_approval_meta() is None
+
 
 @pytest.mark.asyncio
 class TestApprovedAskUserReplayRegression:

@@ -16,6 +16,7 @@ from preloop.security.gap_register import (
     validate_gap_register,
 )
 from preloop.security.waivers import (
+    FailingItem,
     WaiverValidationError,
     apply_waivers,
     assert_waived_gate,
@@ -27,6 +28,7 @@ __all__ = [
     "GapRegisterValidationError",
     "assert_gap_register",
     "validate_gap_register",
+    "FailingItem",
     "WaiverValidationError",
     "apply_waivers",
     "assert_waived_gate",
