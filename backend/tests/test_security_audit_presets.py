@@ -360,13 +360,11 @@ class TestReleaseAuditEvidenceStorage:
         assert "cite its file:line and quote only the rule/command names" in norm
         assert "never embedded credentials" in norm
         assert (
-            '"HTTP OTA URLs" alone without the auto-upgrade rule line is a miss'
-            in norm
+            '"HTTP OTA URLs" alone without the auto-upgrade rule line is a miss' in norm
         )
         assert "cite BOTH sides by name and file:line" in norm
         assert (
-            "the define that enables the server AND the empty password define"
-            in norm
+            "the define that enables the server AND the empty password define" in norm
         )
         assert "citing only one is a partial" in norm
 
@@ -430,6 +428,21 @@ class TestPerSourceScreeningMatrix:
         assert "git ls-remote <vcs_url> '<tag>^{}'" in norm
         assert '{"commit": "<40 hex sha>"}' in norm
         assert "record it, never guess a commit" in norm
+
+    def test_query_form_guidance(self, prompt):
+        """Malformed queries return empty sets that look clean: the purl
+        source pins the query form and demands a same-class control for
+        all-empty ecosystem classes (staging round W1 regression)."""
+        norm = _norm(prompt)
+        assert "QUERY FORM MATTERS" in norm
+        assert '{"package": {"purl": "<purl minus ?qualifiers>"}}' in norm
+        assert "strip qualifiers such as vcs_url first" in norm
+        assert "never combine a purl with a name+ecosystem object" in norm
+        assert "group:artifact with a COLON, never a slash" in norm
+        assert (
+            "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1 must "
+            "return CVE-2021-44228" in norm
+        )
 
     def test_one_negative_control_per_source(self, prompt):
         norm = _norm(prompt)
@@ -514,6 +527,16 @@ class TestReleaseAuditWaivers:
         assert 'waiver_collection: "interactive"' in norm
         assert "make EXACTLY ONE ask_user call for them all, batched" in norm
         assert "Never one call per finding, never a second round" in norm
+        # Tool routing (staging round W2 regression): the namespaced tool
+        # name routes; a routing failure fails closed like a timeout.
+        assert (
+            "Call the tool by the exact namespaced name your tool catalog "
+            "lists for the preloop MCP server" in norm
+        )
+        assert (
+            "a routing failure is not an answer — it fails closed like a "
+            "timeout" in norm
+        )
         assert "TIMEOUT / no answer / declined = FAIL CLOSED" in norm
         assert "Never re-ask, never assume acceptance" in norm
         # The approval record is the identity capture.

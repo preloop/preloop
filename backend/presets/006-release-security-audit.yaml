@@ -199,8 +199,19 @@ prompt_template: |
   - PER-SOURCE SCREENING MATRIX. Coverage is a matrix, component x
     source, and every source gets its own negative control before you
     believe any empty result from it. The purl queries above (with the
-    control just described) are the osv_purl source. Additionally
-    screen eligible components against:
+    control just described) are the osv_purl source. QUERY FORM
+    MATTERS for it: one component per query object; purl-carrying
+    components as {"package": {"purl": "<purl minus ?qualifiers>"}}
+    (strip qualifiers such as vcs_url first, and never combine a purl
+    with a name+ecosystem object in the same query); name+ecosystem
+    queries use the ecosystem's canonical name form (Maven is
+    group:artifact with a COLON, never a slash). A malformed query
+    returns an empty set that looks exactly like a clean component,
+    so any ecosystem class whose queries ALL came back empty needs
+    its own same-class control (e.g.
+    pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1 must return
+    CVE-2021-44228) before its empty results are believed.
+    Additionally screen eligible components against:
     - osv_git — DATABASE MATCH by git range. For components whose
       enriched purl carries a vcs_url qualifier (vendored source
       trees; the pkg:generic/pkg:github classes the purl source is
@@ -305,7 +316,11 @@ prompt_template: |
     question lists each unwaived finding family (id, package,
     severity, KEV flag) as a structured list and asks which to accept,
     with a free-text reason per accepted family. Never one call per
-    finding, never a second round.
+    finding, never a second round. Call the tool by the exact
+    namespaced name your tool catalog lists for the preloop MCP
+    server (a bare "ask_user" does not route on some runtimes); a
+    routing failure is not an answer — it fails closed like a
+    timeout, and you record the failed routing in checks.
   - The tool result carries the human's answer plus the platform's
     approval audit metadata: an [approval_id: ...; answered_by: ...;
     answered_at: ...] trailer where the platform stamps one, otherwise
