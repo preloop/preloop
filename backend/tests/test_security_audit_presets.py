@@ -343,6 +343,47 @@ class TestReleaseAuditEvidenceStorage:
         assert "empty WEB_PASSWORD" in norm
         assert "If no support-window statement exists, status is gap" in norm
 
+    def test_junk_paths_listed_verbatim(self, prompt):
+        """Literal junk paths, not category summaries or counts."""
+        norm = _norm(prompt)
+        assert "List each junk path VERBATIM as its own quoted string" in norm
+        assert "exactly as git ls-files prints it (including spaces)" in norm
+        assert (
+            'a category summary or a count ("three fragments") without the '
+            "literal paths is a miss" in norm
+        )
+
+    def test_auto_upgrade_rule_and_webserver_define_cited(self, prompt):
+        """The auto-upgrade rule line and BOTH webserver defines must be
+        cited by name and file:line, never summarized."""
+        norm = _norm(prompt)
+        assert "cite its file:line and quote only the rule/command names" in norm
+        assert "never embedded credentials" in norm
+        assert (
+            '"HTTP OTA URLs" alone without the auto-upgrade rule line is a miss' in norm
+        )
+        assert "cite BOTH sides by name and file:line" in norm
+        assert (
+            "the define that enables the server AND the empty password define" in norm
+        )
+        assert "citing only one is a partial" in norm
+
+    def test_stable_gap_register_item_ids(self, prompt):
+        """The fixed id vocabulary keeps previous-run floor diffs clean."""
+        norm = _norm(prompt)
+        assert "STABLE ITEM IDS" in prompt
+        assert "Use these exact item ids verbatim in gap_register.items[].id" in norm
+        id_list = (
+            "cvd_policy, security_contact, support_window, article14_runbooks, "
+            "update_and_signed_ota, secrets_hygiene, "
+            "default_credentials_provisioning, repo_hygiene, key_management, "
+            "ci_secret_scanning, ci_sbom_job, debug_leakage"
+        )
+        assert id_list in norm, "stable id list incomplete or reordered"
+        assert len(id_list.split(", ")) == 12
+        assert "Do not rename or merge ids between runs" in norm
+        assert "renamed ids break previous-run floor comparison" in norm
+
     def test_count_equals_rows_and_floor(self, prompt):
         norm = _norm(prompt)
         assert (

@@ -267,8 +267,12 @@ prompt_template: |
      process in-repo (update headers, signing scripts, key handling
      docs). Record what exists versus what is empty or unsigned.
      Cite an empty OTA_URL default, HTTP (not HTTPS) OTA URLs, and
-     auto-upgrade rules that rewrite the OTA URL over HTTP. Absence
-     of signing/verification is a gap even when an OTA URL is present.
+     auto-upgrade rules that rewrite the OTA URL over HTTP. When
+     such a rule exists, cite its file:line and quote only the
+     rule/command names (never embedded credentials); "HTTP OTA
+     URLs" alone without the auto-upgrade rule line is a miss.
+     Absence of signing/verification is a gap even when an OTA URL
+     is present.
   6. Secrets hygiene: run gitleaks from the sandbox install above
      (record the version, or "unavailable: reason"). A gitleaks count
      of 0 does NOT make this item met. Independently scan git history
@@ -332,10 +336,13 @@ prompt_template: |
      configs, or docs, sample or committed keys. Also cite hardcoded
      MQTT/OTA broker hostnames, default WEB_USERNAME, and a
      webserver enabled with an empty WEB_PASSWORD. Check both
-     product override headers and upstream default headers. If a
-     product changelog or README admits a default AP with no
-     password or default MQTT user/password, cite that file:line as
-     well. An empty STA_PASS / STA_PASS1 (or empty STA_SSID
+     product override headers and upstream default headers, and
+     cite BOTH sides by name and file:line: the define that
+     enables the server AND the empty password define; citing
+     only one is a partial. If a product changelog or README
+     admits a default AP with no password or default MQTT
+     user/password, cite that file:line as well. An empty
+     STA_PASS / STA_PASS1 (or empty STA_SSID
      pairing) in a product override header at HEAD MUST be cited
      as that file:line AND the setting MUST be named STA_PASS1
      (or STA_PASS). A surrounding line range that does not name
@@ -346,12 +353,16 @@ prompt_template: |
      filenames that look like pager-dump fragments or commit-message
      slices; files whose names contain "should not be public").
      Confirm current junk names with git ls-files at HEAD; cite
-     EVERY current HEAD junk path, not just the first match. Include
-     every space-containing root filename and every path whose name
-     contains "should not be public" or looks like a pager-dump /
-     commit-message fragment. Also cite disabled leftover workflow
-     files still tracked at HEAD (*.off, *.yml.old, *.yml.off). A
-     sibling fragment or leftover .off path left uncited is a miss.
+     EVERY current HEAD junk path, not just the first match. List
+     each junk path VERBATIM as its own quoted string, exactly as
+     git ls-files prints it (including spaces); a category summary
+     or a count ("three fragments") without the literal paths is a
+     miss. Include every space-containing root filename and every
+     path whose name contains "should not be public" or looks like
+     a pager-dump / commit-message fragment. Also cite disabled
+     leftover workflow files still tracked at HEAD (*.off,
+     *.yml.old, *.yml.off). A sibling fragment or leftover .off
+     path left uncited is a miss.
      Do not say a file was later deleted unless HEAD lacks
      the path. Harmless still counts as a gap: it is evidence no
      hygiene pass has run.
@@ -375,6 +386,14 @@ prompt_template: |
      or equivalent debug flags enabled (not merely commented) in
      product headers or build flags. Commented-out samples are not
      a gap. Cite file:line of an enabled flag only.
+
+  STABLE ITEM IDS. Use these exact item ids verbatim in
+  gap_register.items[].id: cvd_policy, security_contact,
+  support_window, article14_runbooks, update_and_signed_ota,
+  secrets_hygiene, default_credentials_provisioning, repo_hygiene,
+  key_management, ci_secret_scanning, ci_sbom_job, debug_leakage.
+  Do not rename or merge ids between runs; renamed ids break
+  previous-run floor comparison.
 
   SHA+PATH REGISTER FREEZE. Record every classified history row in
   gap_register.secrets_findings with sha, path, subject, term, kind,
