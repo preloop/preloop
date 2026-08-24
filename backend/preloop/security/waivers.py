@@ -96,8 +96,26 @@ def validate_waiver_entries(
     return valid, failures
 
 
+def _failing_keys(item: Any) -> Tuple[str, frozenset]:
+    """Return (display id, normalized {id} | aliases) for a failing item.
+
+    A failing item is either a bare id string or a mapping with ``id`` and
+    optional ``aliases`` — a CVE-id waiver must match the same advisory
+    surfaced under a GHSA/OSV alias.
+    """
+    if isinstance(item, Mapping):
+        display = str(item.get("id") or "")
+        keys = {normalize_waiver_id(item.get("id"))}
+        keys.update(normalize_waiver_id(a) for a in item.get("aliases") or [])
+    else:
+        display = str(item)
+        keys = {normalize_waiver_id(item)}
+    keys.discard("")
+    return display, frozenset(keys)
+
+
 def apply_waivers(
-    failing_ids: Sequence[str],
+    failing_ids: Sequence[Any],
     waivers: Optional[Iterable[Mapping[str, Any]]],
     *,
     require_approval_id: bool = False,
@@ -105,8 +123,9 @@ def apply_waivers(
     """Deterministically factor waivers into a gate outcome.
 
     Args:
-        failing_ids: Ids of the gate items that failed the severity policy
-            (finding ids such as CVE ids, or gate-family ids).
+        failing_ids: The gate items that failed the severity policy —
+            finding ids such as CVE ids, gate-family ids, or mappings of
+            ``{"id": ..., "aliases": [...]}`` for alias-aware matching.
         waivers: Candidate waiver entries.
         require_approval_id: Passed through to validation (interactive
             collection requires the platform approval id per entry).
@@ -130,11 +149,13 @@ def apply_waivers(
     unwaived: List[str] = []
     matched_keys: set = set()
     for failing in failing_ids:
-        key = normalize_waiver_id(failing)
-        entry = by_id.get(key)
+        display, keys = _failing_keys(failing)
+        entry = next((by_id[k] for k in sorted(keys) if k in by_id), None)
         if entry is None:
-            unwaived.append(str(failing))
-        elif key not in matched_keys:
+            unwaived.append(display)
+            continue
+        key = normalize_waiver_id(entry["id"])
+        if key not in matched_keys:
             matched_keys.add(key)
             applied.append(entry)
     unmatched = [

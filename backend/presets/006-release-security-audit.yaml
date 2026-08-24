@@ -284,7 +284,14 @@ prompt_template: |
     approval_id additionally required for interactively collected
     entries) is WAIVED: it stays in findings, marked waived, with the
     waiver entry echoed VERBATIM next to it, and stops counting
-    against gate.passed.
+    against gate.passed. Match waiver ids against the finding id AND
+    its recorded aliases — a CVE id waives the same advisory surfaced
+    under a GHSA/OSV alias — and record which id matched.
+  - Waivability is not severity-dependent: ANY gate failure,
+    KEV-listed findings included, can carry a human waiver. A waiver
+    does not dispute the finding; it puts the human's risk acceptance
+    on the record. You never decide that a failure is "unwaivable" —
+    you apply the delivered entries and, in interactive mode, ask.
   - gate.passed is true only when every gate failure is waived. An
     unwaived failure keeps the gate failed and the verdict rules
     unchanged: waivers never upgrade the SBOM-audit verdict, never
@@ -762,7 +769,7 @@ prompt_template: |
           "screened_by_no_source": <int>
         }
       },
-      "findings": [ { "id": "...", "pkg": "...", "version": "...", "severity": "...", "cvss": <n|null>, "epss": <n|null>, "kev": true|false, "fix_version": "<or null>", "vex_status": "<or null>", "sources": [ "osv_purl" | "osv_git" | "nvd_cpe" | "osv_distro" ], "match_kind": "database" | "heuristic", "waived": true|false } ],
+      "findings": [ { "id": "...", "pkg": "...", "version": "...", "severity": "...", "cvss": <n|null>, "epss": <n|null>, "kev": true|false, "fix_version": "<or null>", "vex_status": "<or null>", "sources": [ "osv_purl" | "osv_git" | "nvd_cpe" | "osv_distro" ], "match_kind": "database" | "heuristic", "waived": true|false, "aliases": [ "<other ids for the same advisory>" ] | null } ],
       "counts_by_severity": { "critical": 0, "high": 0, "medium": 0, "low": 0, "unknown": 0 },
       "art14_candidates": [ "<CVE ids of KEV-listed findings>" ],
       "gate": {

@@ -504,6 +504,20 @@ class TestReleaseAuditWaivers:
             in norm
         )
 
+    def test_any_failure_is_waivable_and_aliases_match(self, prompt):
+        """Staging W2 regression: the agent must not invent an
+        'unwaivable' class, and a CVE-id waiver covers its GHSA alias."""
+        norm = _norm(prompt)
+        assert "Waivability is not severity-dependent" in norm
+        assert "KEV-listed findings included" in norm
+        assert 'You never decide that a failure is "unwaivable"' in norm
+        assert (
+            "Match waiver ids against the finding id AND its recorded aliases" in norm
+        )
+        assert (
+            "a CVE id waives the same advisory surfaced under a GHSA/OSV alias" in norm
+        )
+
     def test_waivers_echoed_verbatim_and_cover_listed(self, prompt):
         norm = _norm(prompt)
         assert "echoed VERBATIM" in norm

@@ -91,6 +91,32 @@ class TestApplyWaivers:
         assert outcome["gate_passed_after_waivers"] is False
         assert outcome["waivers_unmatched"] == [stale]
 
+    def test_alias_aware_matching(self):
+        """A CVE-id waiver covers the same advisory surfaced as a GHSA
+        alias (staging round W2: OSV returned GHSA ids for log4shell)."""
+        failing = [{"id": "GHSA-jfh8-c2jp-5v3q", "aliases": ["CVE-2021-44228"]}]
+        outcome = apply_waivers(failing, [_waiver(id="CVE-2021-44228")])
+        assert outcome["gate_passed_after_waivers"] is True
+        assert outcome["waivers_applied"][0]["id"] == "CVE-2021-44228"
+
+    def test_alias_miss_keeps_failure_with_display_id(self):
+        failing = [{"id": "GHSA-7rjr-3q55-vv33", "aliases": ["CVE-2021-45046"]}]
+        outcome = apply_waivers(failing, [_waiver(id="CVE-2021-44228")])
+        assert outcome["gate_passed_after_waivers"] is False
+        assert outcome["unwaived_failures"] == ["GHSA-7rjr-3q55-vv33"]
+
+    def test_one_waiver_cannot_cover_two_failures_twice(self):
+        """The same entry applies once even when two failing items alias
+        to it — the second stays unwaived only if it truly has no cover."""
+        failing = [
+            {"id": "GHSA-jfh8-c2jp-5v3q", "aliases": ["CVE-2021-44228"]},
+            {"id": "CVE-2021-44228", "aliases": []},
+        ]
+        outcome = apply_waivers(failing, [_waiver(id="CVE-2021-44228")])
+        # Both items are the same advisory: covered, entry applied once.
+        assert outcome["gate_passed_after_waivers"] is True
+        assert len(outcome["waivers_applied"]) == 1
+
     def test_id_matching_is_case_insensitive_and_trimmed(self):
         outcome = apply_waivers(["cve-2023-38545"], [_waiver(id="  CVE-2023-38545 ")])
         assert outcome["gate_passed_after_waivers"] is True
