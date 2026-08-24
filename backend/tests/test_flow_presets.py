@@ -486,7 +486,23 @@ PRESET_COMPLETION_MARKERS = {
         '"verdict": "pass" | "pass_with_findings" | "fail"'
     ),
     "007-component-due-diligence.yaml": '"status": "success" | "error"',
+    "008-architecture-strategy-review.yaml": '"status": "success" | "error"',
+    "009-repo-code-health-review.yaml": '"status": "success" | "error"',
+    "010-standards-compliance-walk.yaml": '"status": "success" | "error"',
 }
+
+
+def _parse_completion_marker(marker: str) -> tuple[str, list[str]]:
+    """Split a marker line into its result.json field and value vocabulary.
+
+    ``'"status": "pass" | "fail" | "error"'`` -> ``("status", ["pass",
+    "fail", "error"])``.
+    """
+    field_part, _, values_part = marker.partition(":")
+    field = field_part.strip().strip('"')
+    values = [value.strip().strip('"') for value in values_part.split("|")]
+    assert field and all(values), f"malformed completion marker: {marker!r}"
+    return field, values
 
 
 class TestShippedPresetCompletionContracts:
@@ -542,3 +558,41 @@ class TestShippedPresetCompletionContracts:
         assert '"reason"' in norm
         # The final act framing: writing result.json is the last action.
         assert "Record Completion (MANDATORY FINAL ACT)" in norm
+
+
+class TestCompletionMarkersAreRecognizedByOrchestrator:
+    """PRESET_COMPLETION_MARKERS must match the real consumer.
+
+    The orchestrator's ``_result_artifact_confirmation`` is the code that
+    actually reads result.json and decides whether a flow confirmed
+    completion (channel 2). A preset whose documented vocabulary the
+    orchestrator does not recognize would complete its work and still be
+    marked FAILED — so an unrecognized contract must fail this suite.
+    """
+
+    @pytest.mark.parametrize("filename", sorted(PRESET_COMPLETION_MARKERS), ids=str)
+    def test_marker_vocabulary_is_classified_by_the_orchestrator(self, filename):
+        from preloop.services.flow_orchestrator import (
+            _result_artifact_confirmation,
+        )
+
+        field, values = _parse_completion_marker(PRESET_COMPLETION_MARKERS[filename])
+        assert field in {"status", "verdict"}, (
+            f"{filename}: completion field {field!r} is not a channel the "
+            "orchestrator reads (status or verdict)"
+        )
+        classifications = {
+            value: _result_artifact_confirmation({field: value}) for value in values
+        }
+        unrecognized = [v for v, c in classifications.items() if c is None]
+        assert not unrecognized, (
+            f"{filename}: documented {field} value(s) {unrecognized} are not "
+            "recognized by _result_artifact_confirmation — the preset would "
+            "write its contract and still be failed for a missing "
+            "confirmation"
+        )
+        assert "success" in classifications.values(), (
+            f"{filename}: no documented {field} value classifies as a "
+            "success confirmation — the preset can never confirm completion "
+            f"via result.json ({classifications})"
+        )
