@@ -144,6 +144,33 @@ def _custom_tool_description(tool: Dict[str, Any]) -> str:
     return description
 
 
+def _qualify_namespace_tool(namespace: str, tool: Any) -> Any:
+    """Prefix a flattened MCP namespace tool's name with its namespace.
+
+    Handles both nested shapes Codex puts on the wire: the chat-style
+    ``{"type": "function", "function": {"name": ...}}`` and the
+    responses-style ``{"type": "function", "name": ...}``. Names already
+    carrying the prefix are left untouched.
+    """
+    if not isinstance(tool, dict):
+        return tool
+    prefix = f"{namespace}__"
+    function = tool.get("function")
+    if isinstance(function, dict):
+        name = function.get("name")
+        if isinstance(name, str) and name and not name.startswith(prefix):
+            qualified = dict(tool)
+            qualified["function"] = {**function, "name": f"{prefix}{name}"}
+            return qualified
+        return tool
+    name = tool.get("name")
+    if isinstance(name, str) and name and not name.startswith(prefix):
+        qualified = dict(tool)
+        qualified["name"] = f"{prefix}{name}"
+        return qualified
+    return tool
+
+
 def sanitize_codex_tools(tools: Any) -> tuple[Any, Set[str]]:
     """Translate Codex-specific tool definitions into plain function tools.
 
@@ -185,6 +212,23 @@ def sanitize_codex_tools(tools: Any) -> tuple[Any, Set[str]]:
             changed = True
             nested_tools, nested_freeform = sanitize_codex_tools(nested)
             if isinstance(nested_tools, list):
+                # MCP namespaces (``mcp__<server>``) advertise their nested
+                # tools under SHORT names, but Codex's tool router only
+                # routes the fully-qualified ``mcp__<server>__<tool>`` form:
+                # a model that calls the flattened short name gets
+                # ``unsupported call: <tool>`` back (staging execution
+                # 4ba5c5e7: 14 ``ask_user`` attempts, all rejected). Qualify
+                # the flattened names so what the model is declared is what
+                # the router routes. Non-MCP namespaces (multi_agent_v1)
+                # keep their nested names untouched.
+                namespace_name = tool.get("name")
+                if isinstance(namespace_name, str) and namespace_name.startswith(
+                    "mcp__"
+                ):
+                    nested_tools = [
+                        _qualify_namespace_tool(namespace_name, nested_tool)
+                        for nested_tool in nested_tools
+                    ]
                 translated.extend(nested_tools)
             freeform_names |= nested_freeform
             continue

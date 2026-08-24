@@ -57,7 +57,13 @@ def test_custom_tool_grammar_is_preserved_in_the_description():
 
 
 def test_namespace_tools_are_flattened_not_dropped():
-    """Prod's `mcp__preloop` namespace held the flow's entire MCP toolset."""
+    """Prod's `mcp__preloop` namespace held the flow's entire MCP toolset.
+
+    Flattened MCP tools must keep the fully-qualified router name: staging
+    execution `4ba5c5e7` showed Codex's router rejects the short name
+    (`unsupported call: ask_user`), so declaring the short name to the model
+    guarantees every call fails.
+    """
     nested = {
         "type": "namespace",
         "name": "mcp__preloop",
@@ -69,8 +75,45 @@ def test_namespace_tools_are_flattened_not_dropped():
 
     tools, _ = sanitize_codex_tools([nested])
 
-    assert [tool["function"]["name"] for tool in tools] == ["get_goal", "update_goal"]
+    assert [tool["function"]["name"] for tool in tools] == [
+        "mcp__preloop__get_goal",
+        "mcp__preloop__update_goal",
+    ]
     assert all(tool["type"] == "function" for tool in tools)
+
+
+def test_mcp_namespace_qualifies_responses_style_tools():
+    """The responses-style nested shape (`name` at top level) qualifies too,
+    and an already-qualified name is not double-prefixed."""
+    nested = {
+        "type": "namespace",
+        "name": "mcp__preloop",
+        "tools": [
+            {"type": "function", "name": "ask_user", "parameters": {}},
+            {"type": "function", "name": "mcp__preloop__get_goal"},
+        ],
+    }
+
+    tools, _ = sanitize_codex_tools([nested])
+
+    assert [tool["name"] for tool in tools] == [
+        "mcp__preloop__ask_user",
+        "mcp__preloop__get_goal",
+    ]
+
+
+def test_non_mcp_namespace_keeps_short_names():
+    """multi_agent_v1 is Codex-internal; its router names are not ours to
+    rewrite."""
+    nested = {
+        "type": "namespace",
+        "name": "multi_agent_v1",
+        "tools": [{"type": "function", "name": "spawn_agent"}],
+    }
+
+    tools, _ = sanitize_codex_tools([nested])
+
+    assert [tool["name"] for tool in tools] == ["spawn_agent"]
 
 
 def test_host_executed_tools_are_dropped():

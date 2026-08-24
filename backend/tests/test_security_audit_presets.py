@@ -57,10 +57,21 @@ class TestSecurityAuditPresetInvariants:
         assert data["name"] == name
 
     def test_read_only_toolset(self, preset):
-        """Write tools stay off. Scanners run in the sandbox, not via MCP."""
+        """Write tools stay off. Scanners run in the sandbox, not via MCP.
+
+        SOLE exception: the Release Security Audit carries the built-in
+        ask_user question channel — and nothing else — so a human can put
+        gate waivers on the record when the payload asks for interactive
+        waiver collection. ask_user is not a write tool: it routes a
+        question through the platform approval workflow, which captures
+        the approver identity the waiver register records.
+        """
         name, data = preset
         assert data["allowed_mcp_servers"] == []
-        assert data["allowed_mcp_tools"] == []
+        if name == "Release Security Audit":
+            assert data["allowed_mcp_tools"] == [{"name": "ask_user"}]
+        else:
+            assert data["allowed_mcp_tools"] == []
         assert "repo-audit" not in json.dumps(data)
 
     def test_no_git_clone_or_baked_trigger(self, preset):
@@ -400,6 +411,186 @@ class TestReleaseAuditEvidenceStorage:
         norm = _norm(prompt)
         assert "target < 2 KB" in norm
         assert "artifact bloat" in norm
+
+
+class TestPerSourceScreeningMatrix:
+    """The screening coverage statement is a component x source matrix:
+    every source carries its own negative control, heuristic layers are
+    labeled and gate-inert, and the cover page derives from the matrix."""
+
+    @pytest.fixture(params=["SBOM Exploit Check", "Release Security Audit"])
+    def prompt(self, request):
+        return _load_preset(PRESET_FILES[request.param])["prompt_template"]
+
+    def test_matrix_block_present_with_all_sources(self, prompt):
+        norm = _norm(prompt)
+        assert "PER-SOURCE SCREENING MATRIX" in norm
+        for source in ("osv_purl", "osv_git", "nvd_cpe", "osv_distro"):
+            assert source in prompt, f"missing source: {source}"
+        assert "source_matrix" in prompt
+        assert "screened_by_no_source" in prompt
+        assert "evidence/source-matrix.json" in prompt
+
+    def test_git_range_source_screens_vendored_code(self, prompt):
+        """OSV commit queries via the vcs_url in enriched purls — the win
+        for vendored C code the purl path is blind to."""
+        norm = _norm(prompt)
+        assert "vcs_url" in prompt
+        assert "git ls-remote <vcs_url> '<tag>^{}'" in norm
+        assert '{"commit": "<40 hex sha>"}' in norm
+        assert "record it, never guess a commit" in norm
+
+    def test_query_form_guidance(self, prompt):
+        """Malformed queries return empty sets that look clean: the purl
+        source pins the query form and demands a same-class control for
+        all-empty ecosystem classes (staging round W1 regression)."""
+        norm = _norm(prompt)
+        assert "QUERY FORM MATTERS" in norm
+        assert '{"package": {"purl": "<purl minus ?qualifiers>"}}' in norm
+        assert "strip qualifiers such as vcs_url first" in norm
+        assert "never combine a purl with a name+ecosystem object" in norm
+        assert "group:artifact with a COLON, never a slash" in norm
+        assert (
+            "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1 must "
+            "return CVE-2021-44228" in norm
+        )
+        # Staging W2-r5 regression: the agent ran the control, saw the
+        # advisories, and never counted them as inventory findings.
+        assert "Control results are not quarantined" in norm
+        assert "a control never launders a real finding out of the screen" in norm
+
+    def test_one_negative_control_per_source(self, prompt):
+        norm = _norm(prompt)
+        # osv_git control: a curl 8.3.0 release commit and its known CVE.
+        assert "6fa1d817e5b1a00d7d0c8168091877476b499317" in prompt
+        assert "CVE-2023-38545" in prompt
+        # nvd_cpe control.
+        assert "cpe:2.3:a:haxx:curl:7.50.0" in prompt
+        # osv_distro control.
+        assert '{"package": {"name": "curl"}, "version": "7.50.0"}' in norm
+        assert "must return distro-prefixed entries" in norm
+
+    def test_heuristic_layers_are_labeled_and_gate_inert(self, prompt):
+        norm = _norm(prompt)
+        assert "LABELED HEURISTIC" in norm
+        assert "never presented as a database match" in norm
+        assert "do NOT enter the severity gate" in norm
+        assert "a heuristic can neither fail nor clear a release on its own" in norm
+
+    def test_findings_carry_source_and_match_kind(self, prompt):
+        assert '"match_kind": "database" | "heuristic"' in _norm(prompt)
+        assert '"osv_purl" | "osv_git" | "nvd_cpe" | "osv_distro"' in _norm(prompt)
+
+    def test_absence_claims_are_per_source(self, prompt):
+        norm = _norm(prompt)
+        assert '"not screenable by any method"' in norm
+        assert 'never "zero vulnerabilities"' in norm
+
+
+class TestReleaseAuditWaivers:
+    """Waivers: the governed alternative to verdict upgrades. Human-authored
+    inputs, deterministic application, verbatim echo, fail-closed defaults."""
+
+    @pytest.fixture
+    def prompt(self):
+        return _load_preset(PRESET_FILES["Release Security Audit"])["prompt_template"]
+
+    def test_waiver_file_input_declared(self, prompt):
+        norm = _norm(prompt)
+        assert "Optional WAIVER FILE: human-authored gate acceptances" in norm
+        assert '"id": "<finding id or gate-family id>"' in norm
+        # All four fields are required; an incomplete entry waives nothing.
+        assert "An entry missing id, reason, author, or date is INVALID" in norm
+
+    def test_no_model_authored_waivers(self, prompt):
+        norm = _norm(prompt)
+        assert "NO MODEL-AUTHORED WAIVERS, EVER" in norm
+        assert "You transcribe and apply" in norm or (
+            "you only transcribe and apply what humans put on the record" in norm
+        )
+
+    def test_unwaived_failure_keeps_gate_failed(self, prompt):
+        norm = _norm(prompt)
+        assert "gate.passed is true only when every gate failure is waived" in norm
+        assert "An unwaived failure keeps the gate failed" in norm
+        assert "waivers never upgrade the SBOM-audit verdict" in norm
+        assert (
+            'A run with any applied waiver can never end better than "pass_with_findings"'
+            in norm
+        )
+
+    def test_any_failure_is_waivable_and_aliases_match(self, prompt):
+        """Staging W2 regression: the agent must not invent an
+        'unwaivable' class, and a CVE-id waiver covers its GHSA alias."""
+        norm = _norm(prompt)
+        assert "Waivability is not severity-dependent" in norm
+        assert "KEV-listed findings included" in norm
+        assert 'You never decide that a failure is "unwaivable"' in norm
+        assert (
+            "Match waiver ids against the finding id AND its recorded aliases" in norm
+        )
+        assert (
+            "a CVE id waives the same advisory surfaced under a GHSA/OSV alias" in norm
+        )
+
+    def test_waivers_echoed_verbatim_and_cover_listed(self, prompt):
+        norm = _norm(prompt)
+        assert "echoed VERBATIM" in norm
+        assert "WAIVERS (mandatory cover section" in norm
+        assert '"No waivers were delivered or applied."' in norm
+        assert "evidence/waivers.json" in prompt
+        assert "never silently dropped" in norm
+
+    def test_gate_schema_carries_waiver_outcome(self, prompt):
+        for field in (
+            '"passed_before_waivers"',
+            '"waivers_applied"',
+            '"unwaived_failures"',
+            '"waivers_invalid"',
+            '"waivers_unmatched"',
+        ):
+            assert field in prompt, f"missing gate field: {field}"
+
+    def test_interactive_collection_is_batched_and_fail_closed(self, prompt):
+        norm = _norm(prompt)
+        assert 'waiver_collection: "interactive"' in norm
+        assert "make EXACTLY ONE ask_user call for them all, batched" in norm
+        assert "Never one call per finding, never a second round" in norm
+        # Tool routing (staging round W2 regression): the namespaced tool
+        # name routes; a routing failure fails closed like a timeout.
+        assert (
+            "Call the tool by the exact namespaced name your tool catalog "
+            "lists for the preloop MCP server" in norm
+        )
+        assert (
+            "a routing failure is not an answer — it fails closed like a "
+            "timeout" in norm
+        )
+        assert "TIMEOUT / no answer / declined = FAIL CLOSED" in norm
+        assert "Never re-ask, never assume acceptance" in norm
+        # The approval record is the identity capture.
+        assert (
+            "The approval id is required and always comes from the tool "
+            "result, never from you" in norm
+        )
+        assert (
+            "an interactive answer with no platform-reported approval id "
+            "waives nothing" in norm
+        )
+
+    def test_ask_user_is_the_sole_allowlist_exception(self, prompt):
+        norm = _norm(prompt)
+        assert "SOLE exception to the otherwise-empty allowlist" in norm
+        assert "not a write tool" in norm
+        assert "captures the approver's identity" in norm
+        assert "Non-interactive runs (the default) NEVER call ask_user" in norm
+
+    def test_default_stays_deterministic_and_unattended(self, prompt):
+        norm = _norm(prompt)
+        assert (
+            "file-only, no questions asked, so CI runs stay deterministic "
+            "and unattended" in norm
+        )
 
 
 class TestEvidenceStorageFixtures:

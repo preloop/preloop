@@ -56,8 +56,24 @@ def _assert_replay_tools_normalized(
             # A namespace is a container, not a tool. Its nested tools must be
             # LIFTED, not dropped: on prod the `mcp__preloop` namespace held the
             # flow's entire MCP toolset, so dropping it would leave the agent
-            # silently toolless rather than visibly broken.
-            expected_tools.extend(tool.get("tools") or [])
+            # silently toolless rather than visibly broken. MCP namespaces
+            # (`mcp__<server>`) additionally QUALIFY the flattened short names
+            # with the namespace prefix, because Codex's tool router only
+            # routes the `mcp__<server>__<tool>` form — a model calling the
+            # short name gets `unsupported call: <tool>` back.
+            namespace_name = tool.get("name")
+            for nested_tool in tool.get("tools") or []:
+                if (
+                    isinstance(namespace_name, str)
+                    and namespace_name.startswith("mcp__")
+                    and isinstance(nested_tool.get("name"), str)
+                    and not nested_tool["name"].startswith(f"{namespace_name}__")
+                ):
+                    nested_tool = {
+                        **nested_tool,
+                        "name": f"{namespace_name}__{nested_tool['name']}",
+                    }
+                expected_tools.append(nested_tool)
             continue
         expected_tools.append(tool)
     assert len(normalized_tools) == len(expected_tools)
