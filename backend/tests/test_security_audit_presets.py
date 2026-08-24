@@ -517,7 +517,14 @@ class TestReleaseAuditWaivers:
         assert "TIMEOUT / no answer / declined = FAIL CLOSED" in norm
         assert "Never re-ask, never assume acceptance" in norm
         # The approval record is the identity capture.
-        assert "an interactive answer with no approval id waives nothing" in norm
+        assert (
+            "The approval id is required and always comes from the tool "
+            "result, never from you" in norm
+        )
+        assert (
+            "an interactive answer with no platform-reported approval id "
+            "waives nothing" in norm
+        )
 
     def test_ask_user_is_the_sole_allowlist_exception(self, prompt):
         norm = _norm(prompt)

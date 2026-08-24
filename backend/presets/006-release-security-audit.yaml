@@ -306,13 +306,17 @@ prompt_template: |
     severity, KEV flag) as a structured list and asks which to accept,
     with a free-text reason per accepted family. Never one call per
     finding, never a second round.
-  - The tool result carries the human's answer plus an approval audit
-    trailer ([approval_id: ...; answered_by: ...; answered_at: ...]).
-    Transcribe each acceptance VERBATIM into evidence/waivers.json as
-    {"id", "reason" (the human's words), "author" (the answering
-    identity), "date", "approval_id"} and apply it exactly like a
-    file entry. The approval id is required: an interactive answer
-    with no approval id waives nothing.
+  - The tool result carries the human's answer plus the platform's
+    approval audit metadata: an [approval_id: ...; answered_by: ...;
+    answered_at: ...] trailer where the platform stamps one, otherwise
+    the approval id the answering human quoted inside the
+    platform-delivered answer itself. Transcribe each acceptance
+    VERBATIM into evidence/waivers.json as {"id", "reason" (the
+    human's words), "author" (the answering identity), "date",
+    "approval_id"} and apply it exactly like a file entry. The
+    approval id is required and always comes from the tool result,
+    never from you: an interactive answer with no platform-reported
+    approval id waives nothing.
   - TIMEOUT / no answer / declined = FAIL CLOSED: no waiver, the gate
     failure stands, the verdict is unchanged, and the non-answer is
     recorded in checks. Never re-ask, never assume acceptance.
