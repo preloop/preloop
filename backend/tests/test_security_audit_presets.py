@@ -349,13 +349,11 @@ class TestReleaseAuditEvidenceStorage:
         assert "cite its file:line and quote only the rule/command names" in norm
         assert "never embedded credentials" in norm
         assert (
-            '"HTTP OTA URLs" alone without the auto-upgrade rule line is a miss'
-            in norm
+            '"HTTP OTA URLs" alone without the auto-upgrade rule line is a miss' in norm
         )
         assert "cite BOTH sides by name and file:line" in norm
         assert (
-            "the define that enables the server AND the empty password define"
-            in norm
+            "the define that enables the server AND the empty password define" in norm
         )
         assert "citing only one is a partial" in norm
 
