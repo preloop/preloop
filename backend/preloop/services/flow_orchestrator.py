@@ -250,7 +250,8 @@ def _build_confirmation_nudge_prompt(
     budget_chars = max(2000, max_tokens * CONFIRMATION_NUDGE_TOKEN_CHAR_RATIO)
     prompt_excerpt = original_prompt[: budget_chars // 2]
     quoted_tail = "\n".join(
-        "> " + str(line) for line in prior_log_lines[-CONFIRMATION_NUDGE_LOG_TAIL_LINES:]
+        "> " + str(line)
+        for line in prior_log_lines[-CONFIRMATION_NUDGE_LOG_TAIL_LINES:]
     )[-(budget_chars // 2) :]
     return f"""This is a one-shot completion-confirmation round, NOT a new task.
 
@@ -2354,9 +2355,7 @@ class FlowExecutionOrchestrator:
             return result.status.value, result.error_message, result_artifact
 
         # Layer 2: one-shot confirmation round.
-        nudge = await self._run_confirmation_nudge(
-            agent_executor, refetched_lines
-        )
+        nudge = await self._run_confirmation_nudge(agent_executor, refetched_lines)
         nudge_outcome = nudge.get("outcome")
         nudge_artifact = nudge.get("artifact")
         merged_artifact = result_artifact
@@ -2394,9 +2393,7 @@ class FlowExecutionOrchestrator:
                 "original_status": result.status.value,
                 "exit_code": result.exit_code,
                 "sentinel_seen": False,
-                "artifact_confirmation": _result_artifact_confirmation(
-                    result_artifact
-                ),
+                "artifact_confirmation": _result_artifact_confirmation(result_artifact),
                 "nudge_outcome": nudge_outcome,
             },
         )
@@ -2478,12 +2475,8 @@ class FlowExecutionOrchestrator:
             return _finish("skipped_no_execution_context")
 
         max_tokens = max(256, int(settings.flow_confirmation_nudge_max_tokens))
-        timeout_seconds = max(
-            30, int(settings.flow_confirmation_nudge_timeout_seconds)
-        )
-        log_lines = (
-            prior_log_lines or self.execution_logger.get_agent_output_lines()
-        )
+        timeout_seconds = max(30, int(settings.flow_confirmation_nudge_timeout_seconds))
+        log_lines = prior_log_lines or self.execution_logger.get_agent_output_lines()
 
         nudge_context = dict(context)
         nudge_context["prompt"] = _build_confirmation_nudge_prompt(
@@ -2495,9 +2488,15 @@ class FlowExecutionOrchestrator:
         nudge_context["custom_commands"] = None
         nudge_context["confirmation_nudge"] = True
         # Token ceiling for runtimes that honor model parameters; the prompt
-        # budget above enforces the input side regardless.
+        # budget above enforces the input side regardless. The nudge ceiling
+        # is a hard cap: a larger limit inherited from the flow's model is
+        # clamped down, while a tighter pre-existing limit is respected.
         model_parameters = dict(context.get("model_parameters") or {})
-        model_parameters.setdefault("max_output_tokens", max_tokens)
+        existing_limit = model_parameters.get("max_output_tokens")
+        if isinstance(existing_limit, int) and 0 < existing_limit < max_tokens:
+            model_parameters["max_output_tokens"] = existing_limit
+        else:
+            model_parameters["max_output_tokens"] = max_tokens
         nudge_context["model_parameters"] = model_parameters
 
         try:
@@ -2521,8 +2520,7 @@ class FlowExecutionOrchestrator:
                     status = await nudge_executor.get_status(nudge_reference)
                 except Exception as status_error:
                     logger.warning(
-                        "Nudge status check failed: "
-                        f"{_exception_message(status_error)}"
+                        f"Nudge status check failed: {_exception_message(status_error)}"
                     )
                 if status in terminal:
                     break
@@ -2532,8 +2530,14 @@ class FlowExecutionOrchestrator:
             if status not in terminal:
                 try:
                     await nudge_executor.stop(nudge_reference)
-                except Exception:
-                    pass
+                except Exception as stop_error:
+                    # Best-effort stop of the timed-out nudge session; the
+                    # finally block still runs cleanup, and we fail closed
+                    # with the timeout outcome either way.
+                    logger.warning(
+                        "Failed to stop timed-out nudge session: "
+                        f"{_exception_message(stop_error)}"
+                    )
                 return _finish(
                     "timeout",
                     extra={
@@ -2546,9 +2550,7 @@ class FlowExecutionOrchestrator:
             try:
                 fetched = await nudge_executor.get_logs(nudge_reference, tail=None)
                 if isinstance(fetched, list):
-                    nudge_logs = [
-                        line for line in fetched if isinstance(line, str)
-                    ]
+                    nudge_logs = [line for line in fetched if isinstance(line, str)]
             except Exception as log_error:
                 logger.warning(
                     f"Failed to fetch nudge logs: {_exception_message(log_error)}"
@@ -2582,9 +2584,7 @@ class FlowExecutionOrchestrator:
                     ),
                 )
 
-            if artifact_confirmation == "success" or _sentinel_in_log_lines(
-                nudge_logs
-            ):
+            if artifact_confirmation == "success" or _sentinel_in_log_lines(nudge_logs):
                 return _finish(
                     "confirmed_success",
                     artifact=artifact,
@@ -2610,9 +2610,7 @@ class FlowExecutionOrchestrator:
             try:
                 await nudge_executor.cleanup()
             except Exception as cleanup_error:
-                logger.warning(
-                    f"Error during nudge executor cleanup: {cleanup_error}"
-                )
+                logger.warning(f"Error during nudge executor cleanup: {cleanup_error}")
 
     async def _monitor_agent_execution(
         self, session_reference: str, agent_executor: Any

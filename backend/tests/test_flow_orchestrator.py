@@ -2431,9 +2431,7 @@ class TestPostExitLogRescan:
         )
         orchestrator._agent_exec_started = True
         orchestrator.execution_log = type("ExecutionLogStub", (), {"id": uuid4()})()
-        orchestrator._sync_runtime_tool_activity_metrics = AsyncMock(
-            return_value=None
-        )
+        orchestrator._sync_runtime_tool_activity_metrics = AsyncMock(return_value=None)
         return orchestrator
 
     @pytest.mark.asyncio
@@ -2548,9 +2546,7 @@ class TestConfirmationNudge:
         )
         orchestrator._agent_exec_started = True
         orchestrator.execution_log = type("ExecutionLogStub", (), {"id": uuid4()})()
-        orchestrator._sync_runtime_tool_activity_metrics = AsyncMock(
-            return_value=None
-        )
+        orchestrator._sync_runtime_tool_activity_metrics = AsyncMock(return_value=None)
         orchestrator._execution_context = {
             "prompt": "original task prompt",
             "agent_type": "codex",
@@ -2633,6 +2629,66 @@ class TestConfirmationNudge:
         assert "original task prompt" in nudge_context["prompt"]
         # The original context object is untouched.
         assert orchestrator._execution_context["git_clone_config"] is not None
+
+    @pytest.mark.asyncio
+    async def test_nudge_token_ceiling_clamps_larger_inherited_limit(
+        self, mock_nats_client, event_data
+    ):
+        """A larger flow-level output limit must not defeat the nudge cap."""
+        executor = _confirmation_executor()
+        executor.get_logs = AsyncMock(return_value=[])
+        orchestrator = self._monitor_orchestrator(mock_nats_client, event_data)
+        orchestrator._execution_context = {
+            "prompt": "original task prompt",
+            "agent_type": "codex",
+            "agent_config": {},
+            "model_parameters": {"max_output_tokens": 128000, "temperature": 0.2},
+        }
+        nudge_executor = self._nudge_executor(
+            logs=[AGENT_EXEC_START_MARKER, FLOW_SUCCESS_SENTINEL]
+        )
+        self._wire_nudge(orchestrator, executor, nudge_executor)
+
+        await orchestrator._monitor_agent_execution(
+            "session-confirmation-123", executor
+        )
+
+        nudge_context = orchestrator._start_agent_session.await_args.args[0]
+        # The inherited 128k limit is clamped down to the nudge ceiling.
+        assert nudge_context["model_parameters"]["max_output_tokens"] == 4096
+        # Unrelated model parameters pass through untouched.
+        assert nudge_context["model_parameters"]["temperature"] == 0.2
+        # The original context object is untouched.
+        assert (
+            orchestrator._execution_context["model_parameters"]["max_output_tokens"]
+            == 128000
+        )
+
+    @pytest.mark.asyncio
+    async def test_nudge_token_ceiling_respects_tighter_existing_limit(
+        self, mock_nats_client, event_data
+    ):
+        """A tighter pre-existing output limit is kept as-is."""
+        executor = _confirmation_executor()
+        executor.get_logs = AsyncMock(return_value=[])
+        orchestrator = self._monitor_orchestrator(mock_nats_client, event_data)
+        orchestrator._execution_context = {
+            "prompt": "original task prompt",
+            "agent_type": "codex",
+            "agent_config": {},
+            "model_parameters": {"max_output_tokens": 1024},
+        }
+        nudge_executor = self._nudge_executor(
+            logs=[AGENT_EXEC_START_MARKER, FLOW_SUCCESS_SENTINEL]
+        )
+        self._wire_nudge(orchestrator, executor, nudge_executor)
+
+        await orchestrator._monitor_agent_execution(
+            "session-confirmation-123", executor
+        )
+
+        nudge_context = orchestrator._start_agent_session.await_args.args[0]
+        assert nudge_context["model_parameters"]["max_output_tokens"] == 1024
 
     @pytest.mark.asyncio
     async def test_nudge_confirms_success_via_result_artifact_and_merges(
@@ -2801,9 +2857,7 @@ class TestConfirmationNudge:
         assert nudges[0]["details"]["outcome"] == "timeout"
 
     @pytest.mark.asyncio
-    async def test_nudge_start_error_fails_closed(
-        self, mock_nats_client, event_data
-    ):
+    async def test_nudge_start_error_fails_closed(self, mock_nats_client, event_data):
         executor = _confirmation_executor()
         executor.get_logs = AsyncMock(return_value=[])
         executor.supports_confirmation_nudge = True
