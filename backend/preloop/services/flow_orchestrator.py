@@ -100,8 +100,11 @@ IMPORTANT: Your existing structured /workspace/result.json report is the flow co
 # the structured result.json IS the confirmation channel, and a failing audit
 # is a completed flow. Unlike the eval instruction, the sentinel is not
 # forbidden — printing it additionally is harmless, and it stays REQUIRED for
-# contracts without a top-level "verdict" (e.g. preloop.cra.vulnscan/v1),
-# which otherwise have no result.json confirmation at all.
+# contracts without a top-level "verdict" AND without a top-level "status"
+# field, which otherwise have no result.json confirmation at all.
+# (preloop.cra.vulnscan/v1 carries a top-level "status" completion field
+# since preset revision #283, so it uses the generic instruction, whose
+# result.json-status branch matches its contract.)
 # NOTE: the sentinel is kept INLINE (see FLOW_SUCCESS_INSTRUCTION) so the
 # prompt echo cannot trigger the exact-line detector.
 FLOW_AUDIT_SUCCESS_INSTRUCTION = f"""
@@ -119,7 +122,6 @@ If your required result shape has NO top-level "verdict" field, you MUST print t
 # sentinel instruction.
 AUDIT_RESULT_SCHEMA_MARKERS = (
     "preloop.cra.sbomaudit/v1",
-    "preloop.cra.vulnscan/v1",
     "preloop.cra.releaseaudit/v1",
 )
 

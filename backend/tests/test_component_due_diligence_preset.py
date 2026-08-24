@@ -64,6 +64,16 @@ class TestPresetInvariants:
         assert SCHEMA_ID in prompt
         assert "{{trigger_event.payload}}" in prompt
 
+    def test_completion_status_alongside_verdict(self, preset):
+        """The verdict vocabulary (recorded|error) is deliberately NOT a flow
+        completion signal; a required top-level "status" field carries the
+        completion contract alongside it."""
+        norm = _norm(preset["prompt_template"])
+        assert '"status": "success" | "error"' in norm
+        assert '"verdict": "recorded" | "error"' in norm
+        assert '"status" is REQUIRED — it is the flow completion signal' in norm
+        assert "NOT a completion signal" in norm
+
     def test_disclaimer(self, preset):
         assert DISCLAIMER in preset["prompt_template"]
 

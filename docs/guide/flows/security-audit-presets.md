@@ -172,6 +172,7 @@ Envelope plus:
 
 ```json
 {
+  "status": "success | error",
   "source_sbom": {"path": "sbom/image.spdx.json", "format": "spdx", "spec_version": "SPDX-2.3", "build_ref": null},
   "db_versions": {"osv_queried_at": "…", "kev_snapshot_date": "…", "epss_queried_at": null, "nvd": "not used"},
   "inventory": {"components": 214, "matchable": 189, "unmatchable": 25},
@@ -185,6 +186,13 @@ Envelope plus:
   "new_since_last_run": null
 }
 ```
+
+`status` is the **required** top-level flow completion signal read by
+Preloop: `success` when the scan completed and the report was written
+(regardless of gate outcome or findings), `error` (plus a `reason`
+field) when the scan could not be completed. It is independent of the
+severity gate — a failed gate on a completed scan is still
+`"status": "success"`.
 
 Default gate when the payload provides none: fail on any KEV-listed
 finding or CVSS ≥ 9.0. VEX suppressions (OpenVEX or CycloneDX VEX) are
@@ -417,10 +425,16 @@ Trigger it manually or by webhook, one component per run:
 }
 ```
 
-A `rejected` decision is still a successfully **recorded** decision —
-the point is the trail. A granted approval means one reviewer accepted
-the component's risk for this product at this time; it is not a
-certification, and the record says so.
+The record carries a required top-level `status` (`success | error`) —
+the flow completion signal read by Preloop. `status` is `success` when
+the run completed and the decision was captured; the record's own
+`verdict` vocabulary (`recorded | error`) and the human outcome
+(`decision.outcome`: `accepted | rejected | pending`) are deliberately
+**not** completion signals. A `rejected` decision is still a
+successfully **recorded** decision — the point is the trail. A granted
+approval means one reviewer accepted the component's risk for this
+product at this time; it is not a certification, and the record says
+so.
 
 ## Honest limits
 
