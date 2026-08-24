@@ -3829,3 +3829,380 @@ def test_provider_cost_fields_recovery_is_fail_open():
     assert (
         OpenAIGatewayService._provider_cost_fields(SimpleNamespace(chunks="nope")) == {}
     )
+
+
+# ---------------------------------------------------------------------------
+# Codex turn-1 round-trip with MCP namespace tools declared (#289 follow-up).
+#
+# Staging executions 1ded95c8 / ffb122bd (flow fd6de770, codex + ox-alpha)
+# died on their FIRST model call after the #289 deploy: the upstream returned
+# a 200 stream with zero output items (18,268 prompt / 0 completion tokens)
+# and the gateway folded it into a successful EMPTY `response.completed`,
+# which Codex treats as a completed no-op turn and exits 0 silently. These
+# tests pin the full turn-1 path (real tools normalization, no preset alias
+# maps): plain text and tool calls pass through untouched, and an empty or
+# error-carrying upstream stream fails LOUDLY instead of succeeding empty.
+# ---------------------------------------------------------------------------
+
+
+_CODEX_NAMESPACE_REQUEST_TOOLS = [
+    {
+        "type": "function",
+        "name": "exec_command",
+        "description": "Run a command.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        # The shape the Codex CLI actually sends for an MCP server entry
+        # (captured from codex-cli 0.149.0 against a live [mcp_servers.preloop]).
+        "type": "namespace",
+        "name": "mcp__preloop",
+        "description": "Tools in the mcp__preloop namespace.",
+        "tools": [
+            {
+                "type": "function",
+                "name": "ask_user",
+                "description": "Ask the human a question and wait for their answer.",
+                "strict": False,
+                "parameters": {
+                    "type": "object",
+                    "properties": {"question": {"type": "string"}},
+                    "required": ["question"],
+                    "additionalProperties": False,
+                },
+            }
+        ],
+    },
+]
+
+
+def _run_full_turn1_stream(upstream_chunks):
+    """Run stream_response through the REAL tools normalization path.
+
+    Unlike `_codex_namespace_service`, nothing is preset on the service: the
+    namespace alias map is captured by `_normalize_openai_tools` from the
+    request's own `tools`, exactly as in production. Only the litellm
+    boundary is stubbed.
+    """
+    auth_context = ModelGatewayAuthContext(
+        token="token",
+        user=SimpleNamespace(id="user-1", account_id="account-1"),
+    )
+    upstream_backend = MagicMock()
+    upstream_backend.completion.return_value = iter(upstream_chunks)
+    service = OpenAIGatewayService(
+        MagicMock(), auth_context, upstream_backend=upstream_backend
+    )
+    ai_model = SimpleNamespace(
+        id="model-1",
+        provider_name="openai",
+        model_identifier="ox-alpha",
+        api_endpoint=None,
+        meta_data={},
+        credentials_secret=None,
+        model_gateway_model_alias="ox-alpha",
+    )
+    record = MagicMock()
+    with (
+        patch.object(service, "_resolve_requested_model", return_value=ai_model),
+        patch.object(service, "_check_budget", return_value=None),
+        patch.object(service, "_record_gateway_request", record),
+        patch.object(
+            service,
+            "_optimize_request_context",
+            side_effect=lambda messages, payload: (messages, payload),
+        ),
+        patch(
+            "preloop.services.openai_gateway.get_secret_service"
+        ) as mock_secret_service,
+    ):
+        mock_secret_service.return_value.resolve_ai_model_credentials.return_value = (
+            SimpleNamespace(credential_type="api_key", value="provider-secret")
+        )
+        events = [
+            _parse_sse_payload(event)
+            for event in service.stream_response(
+                {
+                    "model": "ox-alpha",
+                    "input": "Run the audit",
+                    "tools": _CODEX_NAMESPACE_REQUEST_TOOLS,
+                    "stream": True,
+                }
+            )
+        ]
+    return events, record
+
+
+def test_stream_turn1_text_with_namespace_tools_passes_through():
+    """A plain first-turn text response is untouched by the namespace map."""
+    events, _ = _run_full_turn1_stream(
+        [
+            {"choices": [{"delta": {"role": "assistant", "content": None}}]},
+            # ox-alpha-style empty delta ahead of the visible text.
+            {"choices": [{"delta": {"content": ""}}]},
+            {"choices": [{"delta": {"content": "Plan ready."}}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+            {
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 3,
+                    "total_tokens": 103,
+                },
+            },
+        ]
+    )
+
+    assert not [e for e in events if isinstance(e, dict) and e.get("type") == "error"]
+    completed = events[-2]
+    assert completed["type"] == "response.completed"
+    output = completed["response"]["output"]
+    assert len(output) == 1
+    assert output[0]["type"] == "message"
+    assert output[0]["content"] == [{"type": "output_text", "text": "Plan ready."}]
+
+
+def test_stream_turn1_namespace_tool_call_routes_via_captured_aliases():
+    """A first-turn ask_user call is rewritten to namespace + SHORT name.
+
+    The alias map here is captured from the request's own namespace
+    container by `_normalize_openai_tools`, not preset on the service: this
+    is the original mcp__preloop__ask_user routing case end to end.
+    """
+    events, _ = _run_full_turn1_stream(
+        [
+            {"choices": [{"delta": {"role": "assistant", "content": None}}]},
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "function": {"name": "mcp__preloop__ask_user"},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {
+                                        "arguments": '{"question": "Proceed?"}'
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+            {
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 20,
+                    "total_tokens": 120,
+                },
+            },
+        ]
+    )
+
+    assert not [e for e in events if isinstance(e, dict) and e.get("type") == "error"]
+    added = [
+        e
+        for e in events
+        if isinstance(e, dict) and e.get("type") == "response.output_item.added"
+    ]
+    assert len(added) == 1
+    assert added[0]["item"]["namespace"] == "mcp__preloop"
+    assert added[0]["item"]["name"] == "ask_user"
+    completed = events[-2]
+    output_item = completed["response"]["output"][0]
+    assert output_item["type"] == "function_call"
+    assert output_item["namespace"] == "mcp__preloop"
+    assert output_item["name"] == "ask_user"
+    assert output_item["call_id"] == "call_1"
+
+
+def test_stream_turn1_empty_upstream_stream_fails_loudly():
+    """An upstream stream with zero output items must NOT complete empty.
+
+    This is the staging 1ded95c8 / ffb122bd signature: role/finish/usage
+    chunks only, 0 completion tokens. Folding it into a successful empty
+    `response.completed` makes Codex exit 0 without printing anything.
+    """
+    events, record = _run_full_turn1_stream(
+        [
+            {"choices": [{"delta": {"role": "assistant", "content": None}}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+            {
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 18268,
+                    "completion_tokens": 0,
+                    "total_tokens": 18268,
+                },
+            },
+        ]
+    )
+
+    errors = [e for e in events if isinstance(e, dict) and e.get("type") == "error"]
+    assert len(errors) == 1
+    assert "without any output" in errors[0]["message"]
+    assert not [
+        e
+        for e in events
+        if isinstance(e, dict) and e.get("type") == "response.completed"
+    ]
+    assert events[-1] == "[DONE]"
+    # The interaction is recorded as a failure, not a 200 success.
+    assert record.call_args.kwargs["status_code"] == 502
+
+
+def test_stream_turn1_upstream_error_chunk_surfaces_as_stream_error():
+    """An in-band upstream `error` chunk must not be swallowed silently."""
+    events, record = _run_full_turn1_stream(
+        [
+            {"choices": [{"delta": {"role": "assistant", "content": None}}]},
+            {"error": {"message": "Provider returned error", "code": 502}},
+            {
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 18268,
+                    "completion_tokens": 0,
+                    "total_tokens": 18268,
+                },
+            },
+        ]
+    )
+
+    errors = [e for e in events if isinstance(e, dict) and e.get("type") == "error"]
+    assert len(errors) == 1
+    assert "Provider returned error" in errors[0]["message"]
+    assert not [
+        e
+        for e in events
+        if isinstance(e, dict) and e.get("type") == "response.completed"
+    ]
+    assert record.call_args.kwargs["status_code"] == 502
+
+
+def test_stream_turn1_text_without_tools_still_passes():
+    """Control: the empty-stream guard never fires for a normal text turn."""
+    auth_context = ModelGatewayAuthContext(
+        token="token",
+        user=SimpleNamespace(id="user-1", account_id="account-1"),
+    )
+    service = OpenAIGatewayService(MagicMock(), auth_context)
+    ai_model = SimpleNamespace(id="model-1", provider_name="openai")
+    upstream_stream = iter(
+        [
+            {"choices": [{"delta": {"content": "Hello."}}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+        ]
+    )
+    with (
+        patch.object(service, "_resolve_requested_model", return_value=ai_model),
+        patch.object(service, "_check_budget", return_value=None),
+        patch.object(service, "_call_litellm", return_value=upstream_stream),
+        patch.object(service, "_record_gateway_request"),
+    ):
+        events = [
+            _parse_sse_payload(event)
+            for event in service.stream_response({"model": "gpt-5", "input": "Hi"})
+        ]
+    assert not [e for e in events if isinstance(e, dict) and e.get("type") == "error"]
+    completed = events[-2]
+    assert completed["response"]["output"][0]["content"] == [
+        {"type": "output_text", "text": "Hello."}
+    ]
+
+
+def test_create_response_turn1_with_namespace_tools_nonstreaming():
+    """Non-streaming: turn-1 text and tool call shapes with namespace tools."""
+    auth_context = ModelGatewayAuthContext(
+        token="token",
+        user=SimpleNamespace(id="user-1", account_id="account-1"),
+    )
+    upstream_backend = MagicMock()
+    service = OpenAIGatewayService(
+        MagicMock(), auth_context, upstream_backend=upstream_backend
+    )
+    ai_model = SimpleNamespace(
+        id="model-1",
+        provider_name="openai",
+        model_identifier="ox-alpha",
+        api_endpoint=None,
+        meta_data={},
+        credentials_secret=None,
+        model_gateway_model_alias="ox-alpha",
+    )
+
+    def _one_call(message):
+        upstream_backend.completion.return_value = {
+            "id": "chatcmpl-1",
+            "choices": [{"message": message, "finish_reason": "stop"}],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15,
+            },
+        }
+        with (
+            patch.object(service, "_resolve_requested_model", return_value=ai_model),
+            patch.object(service, "_check_budget", return_value=None),
+            patch.object(service, "_record_gateway_request"),
+            patch.object(
+                service,
+                "_optimize_request_context",
+                side_effect=lambda messages, payload: (messages, payload),
+            ),
+            patch(
+                "preloop.services.openai_gateway.get_secret_service"
+            ) as mock_secret_service,
+        ):
+            mock_secret_service.return_value.resolve_ai_model_credentials.return_value = SimpleNamespace(
+                credential_type="api_key", value="provider-secret"
+            )
+            return service.create_response(
+                {
+                    "model": "ox-alpha",
+                    "input": "Run the audit",
+                    "tools": _CODEX_NAMESPACE_REQUEST_TOOLS,
+                }
+            )
+
+    # Turn-1 text response passes through untouched.
+    text_response = _one_call({"role": "assistant", "content": "Plan ready."})
+    assert [item["type"] for item in text_response["output"]] == ["message"]
+    assert text_response["output_text"] == "Plan ready."
+
+    # Turn-1 tool call is restored to namespace + SHORT name.
+    tool_response = _one_call(
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "mcp__preloop__ask_user",
+                        "arguments": '{"question": "Proceed?"}',
+                    },
+                }
+            ],
+        }
+    )
+    calls = [i for i in tool_response["output"] if i["type"] == "function_call"]
+    assert len(calls) == 1
+    assert calls[0]["namespace"] == "mcp__preloop"
+    assert calls[0]["name"] == "ask_user"

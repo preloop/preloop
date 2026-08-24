@@ -44,6 +44,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Empty upstream streams no longer complete "successfully"**: an
+  OpenAI-Responses stream whose upstream produced zero output items
+  (or reported an in-band `error` chunk) used to be folded into a
+  successful empty `response.completed`. Codex treats that as a
+  completed no-op turn and exits 0 without printing anything, which a
+  flow then fails as a missing success confirmation (staging
+  executions 1ded95c8 / ffb122bd: 18,268 prompt / 0 completion
+  tokens, agent silent). Such streams now emit an SSE `error` event
+  and are recorded as a 502 upstream failure, so Codex retries the
+  turn (verified against codex-cli 0.149.0: 5 retries, then a loud
+  stream error) instead of dying silently.
 - **z.ai GLM-5.3 was unpriced**: first-party list prices from docs.z.ai
   are now in the vendored catalog ($1.4 input, $0.26 cached input, $4.4
   output per 1M). z.ai has no price API, so
