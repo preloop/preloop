@@ -443,6 +443,10 @@ class TestPerSourceScreeningMatrix:
             "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1 must "
             "return CVE-2021-44228" in norm
         )
+        # Staging W2-r5 regression: the agent ran the control, saw the
+        # advisories, and never counted them as inventory findings.
+        assert "Control results are not quarantined" in norm
+        assert "a control never launders a real finding out of the screen" in norm
 
     def test_one_negative_control_per_source(self, prompt):
         norm = _norm(prompt)
