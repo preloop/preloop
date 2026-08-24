@@ -57,7 +57,8 @@ def test_backend_shards_partition_with_pytest_split() -> None:
     script = _step_script(backend, "Run tests")
     assert f"--splits {BACKEND_TEST_SPLITS}" in script
     assert "--group ${{ matrix.group }}" in script
-    assert "--splitting-algorithm=least_duration" in script
+    assert "--splitting-algorithm=duration_based_chunks" in script
+    assert "--splitting-algorithm=least_duration" not in script
     assert "--cov-fail-under" not in script
     assert backend["env"]["COVERAGE_FILE"] == "coverage-data.${{ matrix.group }}"
     assert backend["env"]["PRELOOP_DISABLE_TELEMETRY"] == "true"

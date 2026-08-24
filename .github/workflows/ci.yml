@@ -78,7 +78,11 @@ jobs:
   # Four shards, each with its own Postgres. GitLab splits this suite into
   # dozens of per-file jobs; that is a poor fit here because each GitHub
   # runner spends ~1.5m on checkout/pip/migrations before pytest starts.
-  # pytest-split keeps new tests in the partition automatically. The 60%
+  # pytest-split keeps new tests in the partition automatically. Use
+  # duration_based_chunks (not least_duration): without a timings file,
+  # least_duration round-robins individual tests across shards and breaks
+  # unittest setUp isolation plus tests that share a process-wide DB
+  # session. Chunks keep collection order, so files stay together. The 60%
   # coverage floor is applied after shards are combined -- a single shard
   # only sees part of the tree.
   test-backend:
@@ -142,7 +146,7 @@ jobs:
             -m "not integration" \
             --splits 4 \
             --group ${{ matrix.group }} \
-            --splitting-algorithm=least_duration \
+            --splitting-algorithm=duration_based_chunks \
             --cov=preloop \
             --cov-report= \
             --junitxml=test-results.xml
