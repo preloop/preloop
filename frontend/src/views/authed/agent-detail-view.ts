@@ -5,6 +5,7 @@ import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
+import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
 import '@shoelace-style/shoelace/dist/components/details/details.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
@@ -183,6 +184,15 @@ export class AgentDetailView extends LitElement {
 
   @state()
   private allowedModelsText = '';
+
+  /**
+   * Last server-confirmed governance config; model-editor saves roll back to
+   * this on failure so toggles never show unpersisted selections.
+   */
+  private confirmedGovernance: SubjectGovernanceConfig | null = null;
+
+  /** Serializes available-model saves so rapid toggles cannot race. */
+  private modelSaveChain: Promise<void> = Promise.resolve();
 
   @state()
   private modelBudgetsText = '{}';
@@ -603,6 +613,7 @@ export class AgentDetailView extends LitElement {
         };
       }
       this.governance = governance.config;
+      this.confirmedGovernance = governance.config;
       // Resolve what "inherit" currently means for the approvals selector.
       void getAccountGovernanceDefaults()
         .then((defaults) => {
@@ -1133,9 +1144,9 @@ export class AgentDetailView extends LitElement {
     try {
       const parsedBudgets = JSON.parse(this.modelBudgetsText || '{}');
       const config: SubjectGovernanceConfig = {
-        allowed_models: Object.keys(parsedBudgets).filter(
-          (key) => key.trim() !== ''
-        ),
+        // The available-model list is managed explicitly from the Models &
+        // Spend tab; budget edits must not silently rewrite it.
+        allowed_models: this.governance.allowed_models || [],
         model_budgets: parsedBudgets,
         tool_rules: serializeScopedToolRules(this.scopedToolRules),
         tool_enabled_overrides: this.toolEnabledOverrides,
@@ -1144,6 +1155,7 @@ export class AgentDetailView extends LitElement {
       };
       const response = await updateAgentGovernance(this.agentId, config);
       this.governance = response.config;
+      this.confirmedGovernance = response.config;
       this.scopedToolRules = normalizeScopedToolRules(
         response.config.tool_rules
       );
@@ -1161,6 +1173,92 @@ export class AgentDetailView extends LitElement {
     } finally {
       this.actionLoading = false;
     }
+  }
+
+  /**
+   * Persist an explicit available-model list for this agent through the
+   * governance endpoint, preserving every other governance field.
+   *
+   * Updates are applied optimistically for immediate checkbox feedback, then
+   * serialized through a promise chain so rapid toggles cannot resolve out of
+   * order; a failed PUT rolls the editor back to the last server-confirmed
+   * state instead of leaving unpersisted selections on screen.
+   */
+  private async saveAllowedModels(models: string[]): Promise<void> {
+    if (!this.agentId) {
+      return;
+    }
+    this.governance = { ...this.governance, allowed_models: [...models] };
+    this.allowedModelsText = models.join(', ');
+    this.actionLoading = true;
+    const task = this.modelSaveChain.then(() => this.persistAllowedModels());
+    this.modelSaveChain = task.then(
+      () => undefined,
+      () => undefined
+    );
+    try {
+      await task;
+    } finally {
+      this.actionLoading = false;
+    }
+  }
+
+  private async persistAllowedModels(): Promise<void> {
+    if (!this.agentId) {
+      return;
+    }
+    try {
+      const response = await updateAgentGovernance(this.agentId, {
+        ...this.governance,
+      });
+      this.confirmedGovernance = response.config;
+      this.governance = response.config;
+      this.scopedToolRules = normalizeScopedToolRules(
+        response.config.tool_rules
+      );
+      this.toolEnabledOverrides = response.config.tool_enabled_overrides || {};
+      this.allowedModelsText = response.config.allowed_models.join(', ');
+      this.error = null;
+    } catch (error) {
+      console.error('Failed to update agent models:', error);
+      this.error =
+        error instanceof Error ? error.message : 'Failed to update models';
+      // Roll back to the last state the server confirmed so the toggles do
+      // not keep showing a selection that was never persisted.
+      if (this.confirmedGovernance) {
+        this.governance = { ...this.confirmedGovernance };
+        this.allowedModelsText =
+          this.confirmedGovernance.allowed_models.join(', ');
+      }
+    }
+  }
+
+  private handleAllowedModelToggle(modelName: string, checked: boolean): void {
+    // While unrestricted (empty allowlist) every checkbox renders unchecked,
+    // so checking a model switches the agent into restricted mode with just
+    // that model. Unchecking simply removes it from the restriction.
+    const current = [...(this.governance.allowed_models || [])];
+    let next: string[];
+    if (checked) {
+      if (current.includes(modelName)) {
+        return;
+      }
+      next = [...current, modelName].sort();
+    } else {
+      if (!current.includes(modelName)) {
+        return;
+      }
+      next = current.filter((m) => m !== modelName);
+    }
+    void this.saveAllowedModels(next);
+  }
+
+  private handleAllowedModelsTextChange(value: string): void {
+    const models = value
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    void this.saveAllowedModels(models);
   }
 
   private saveApprovalWorkflowSelection(workflowId: string | null): void {
@@ -2914,9 +3012,8 @@ export class AgentDetailView extends LitElement {
                             <div>
                               <div class="hero-title">Models & Spend</div>
                               <div class="meta-line">
-                                Assign budget limits restricting maximum spend
-                                per month. If a model does not have a budget, it
-                                will be prohibited.
+                                Update the models this agent can use and set
+                                monthly spend limits per model.
                               </div>
                             </div>
                             <sl-button
@@ -3011,6 +3108,78 @@ export class AgentDetailView extends LitElement {
                               `;
                             }
                           )}
+                        </div>
+                        <div
+                          style="margin-top: var(--sl-spacing-large); padding-top: var(--sl-spacing-large); border-top: 1px solid var(--sl-color-neutral-200); display: flex; flex-direction: column; gap: var(--sl-spacing-small);"
+                        >
+                          <div class="hero-title" id="available-models-title">
+                            Available models
+                          </div>
+                          <div class="meta-line" id="available-models-status">
+                            ${
+                              (this.governance.allowed_models || []).length ===
+                              0
+                                ? html`Every model is currently allowed. Check a
+                                  model to restrict this agent to selected
+                                  models only.`
+                                : html`This agent may only use the checked
+                                  models.`
+                            }
+                          </div>
+                          <div
+                            style="display: flex; flex-direction: column; gap: var(--sl-spacing-x-small); max-height: 260px; overflow-y: auto;"
+                          >
+                            ${this.availableModels.map((model: any) => {
+                              const allowed =
+                                this.governance.allowed_models || [];
+                              // While unrestricted (empty list) every box
+                              // renders unchecked; checking one switches to
+                              // restricted mode instead of faking "checked
+                              // because everything is allowed".
+                              const isChecked = allowed.includes(model.name);
+                              return html`
+                                <sl-checkbox
+                                  data-model-allow-toggle=${model.name}
+                                  ?checked=${isChecked}
+                                  @sl-change=${(e: Event) =>
+                                    this.handleAllowedModelToggle(
+                                      model.name,
+                                      (e.target as HTMLInputElement).checked
+                                    )}
+                                >
+                                  ${model.name}
+                                </sl-checkbox>
+                              `;
+                            })}
+                            ${
+                              this.availableModels.length === 0
+                                ? html`<div
+                                    class="meta-line"
+                                    style="margin: 0;"
+                                  >
+                                    No models configured yet. Add one with the
+                                    model list below.
+                                  </div>`
+                                : nothing
+                            }
+                          </div>
+                          <sl-input
+                            label="Allowed models"
+                            placeholder="provider/model-name, ..."
+                            .value=${this.allowedModelsText}
+                            @sl-change=${(e: Event) => {
+                              this.handleAllowedModelsTextChange(
+                                (e.target as HTMLInputElement).value
+                              );
+                            }}
+                          ></sl-input>
+                          <div
+                            style="font-size: 0.8rem; color: var(--sl-color-neutral-500);"
+                          >
+                            The authoritative comma separated list behind the
+                            checkboxes above, including aliases not offered as
+                            checkboxes. Leave empty to allow all models.
+                          </div>
                         </div>
                       </div>
                     </sl-card>

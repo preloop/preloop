@@ -402,10 +402,24 @@ describe('AgentDetailView', () => {
         }
 
         if (url === '/api/v1/ai-models') {
-          return new Response(JSON.stringify([]), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-          });
+          return new Response(
+            JSON.stringify([
+              {
+                id: 'model-openai-gpt-5',
+                name: 'openai/gpt-5',
+                provider_name: 'openai',
+              },
+              {
+                id: 'model-anthropic-claude',
+                name: 'anthropic/claude-sonnet-4',
+                provider_name: 'anthropic',
+              },
+            ]),
+            {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            }
+          );
         }
 
         return new Response(
@@ -612,5 +626,161 @@ describe('AgentDetailView', () => {
     expect(
       element.shadowRoot?.querySelector('#agent-native-tool-approvals-off-note')
     ).to.not.exist;
+  });
+
+  it('lets the user update the available models from the Models & Spend tab', async () => {
+    const element = await fixture<AgentDetailView>(
+      html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+    );
+
+    await waitUntil(
+      () => !(element as any).loading && (element as any).agent !== null,
+      'Agent detail view did not finish loading'
+    );
+
+    (element as any).activeTab = 'models';
+    await element.updateComplete;
+
+    // Every configured AI model renders as an allow toggle.
+    const toggles = Array.from(
+      element.shadowRoot!.querySelectorAll(
+        'sl-checkbox[data-model-allow-toggle]'
+      )
+    );
+    expect(
+      toggles.map((t: any) => t.getAttribute('data-model-allow-toggle'))
+    ).to.deep.equal(['openai/gpt-5', 'anthropic/claude-sonnet-4']);
+
+    // Governance already allows openai/gpt-5, so only that one is checked.
+    const gptToggle = element.shadowRoot?.querySelector(
+      'sl-checkbox[data-model-allow-toggle="openai/gpt-5"]'
+    ) as any;
+    expect(gptToggle.checked).to.be.true;
+    const claudeToggle = element.shadowRoot?.querySelector(
+      'sl-checkbox[data-model-allow-toggle="anthropic/claude-sonnet-4"]'
+    ) as any;
+    expect(claudeToggle.checked).to.be.false;
+
+    // Checking a model persists it through the governance PUT.
+    claudeToggle.checked = true;
+    claudeToggle.dispatchEvent(new Event('sl-change'));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const putCall = fetchStub
+      .getCalls()
+      .filter(
+        (call) =>
+          String(call.args[0]) === '/api/v1/agents/agent-1/governance' &&
+          call.args[1]?.method === 'PUT'
+      )
+      .pop();
+    expect(putCall).to.exist;
+    const body = JSON.parse(putCall!.args[1].body);
+    expect(body.allowed_models).to.deep.equal([
+      'anthropic/claude-sonnet-4',
+      'openai/gpt-5',
+    ]);
+    // Budgets ride along unchanged; the model list is not rewritten from them.
+    expect(body.model_budgets).to.deep.equal({
+      'openai/gpt-5': { monthly_usd_limit: 25 },
+    });
+
+    await element.updateComplete;
+    expect((element as any).governance.allowed_models).to.deep.equal([
+      'anthropic/claude-sonnet-4',
+      'openai/gpt-5',
+    ]);
+    // The status line reflects restricted mode.
+    const status = element.shadowRoot?.querySelector(
+      '#available-models-status'
+    );
+    expect(getDeepText(status).replace(/\s+/g, ' ')).to.contain(
+      'may only use the checked models'
+    );
+  });
+
+  it('unchecking the only allowed model clears the restriction via the manual override', async () => {
+    const element = await fixture<AgentDetailView>(
+      html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+    );
+
+    await waitUntil(
+      () => !(element as any).loading && (element as any).agent !== null,
+      'Agent detail view did not finish loading'
+    );
+
+    (element as any).activeTab = 'models';
+    await element.updateComplete;
+
+    // Governance allows exactly openai/gpt-5. Unchecking it empties the list,
+    // which the backend reads as "every model allowed".
+    const gptToggle = element.shadowRoot?.querySelector(
+      'sl-checkbox[data-model-allow-toggle="openai/gpt-5"]'
+    ) as any;
+    gptToggle.checked = false;
+    gptToggle.dispatchEvent(new Event('sl-change'));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const putCall = fetchStub
+      .getCalls()
+      .filter(
+        (call) =>
+          String(call.args[0]) === '/api/v1/agents/agent-1/governance' &&
+          call.args[1]?.method === 'PUT'
+      )
+      .pop();
+    expect(putCall).to.exist;
+    const body = JSON.parse(putCall!.args[1].body);
+    expect(body.allowed_models).to.deep.equal([]);
+
+    await element.updateComplete;
+    // The toggle must stay unchecked after the re-render instead of bouncing
+    // back to checked: an empty list is "all allowed", rendered as such.
+    expect(gptToggle.checked).to.be.false;
+    const status = element.shadowRoot?.querySelector(
+      '#available-models-status'
+    );
+    expect(getDeepText(status).replace(/\s+/g, ' ')).to.contain(
+      'Every model is currently allowed'
+    );
+
+    const overrideInput = element.shadowRoot?.querySelector(
+      'sl-input[label="Allowed models"]'
+    ) as any;
+    expect(overrideInput.value).to.equal('');
+  });
+
+  it('saving budgets no longer derives allowed_models from the budget keys', async () => {
+    const element = await fixture<AgentDetailView>(
+      html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+    );
+
+    await waitUntil(
+      () => !(element as any).loading && (element as any).agent !== null,
+      'Agent detail view did not finish loading'
+    );
+
+    // Governance loads with allowed_models=['openai/gpt-5']. Editing the
+    // budgets to add a different model must not silently allow that model.
+    (element as any).modelBudgetsText = JSON.stringify({
+      'openai/gpt-5': { monthly_usd_limit: 25 },
+      'anthropic/claude-sonnet-4': { monthly_usd_limit: 10 },
+    });
+    await (element as any).saveGovernance();
+
+    const putCall = fetchStub
+      .getCalls()
+      .filter(
+        (call) =>
+          String(call.args[0]) === '/api/v1/agents/agent-1/governance' &&
+          call.args[1]?.method === 'PUT'
+      )
+      .pop();
+    expect(putCall).to.exist;
+    const body = JSON.parse(putCall!.args[1].body);
+    expect(body.model_budgets['anthropic/claude-sonnet-4']).to.deep.equal({
+      monthly_usd_limit: 10,
+    });
+    expect(body.allowed_models).to.deep.equal(['openai/gpt-5']);
   });
 });
