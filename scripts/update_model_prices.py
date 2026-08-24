@@ -399,6 +399,59 @@ def write_catalog(
     CATALOG_PATH.write_text(json.dumps(payload, indent=1, sort_keys=False) + "\n")
 
 
+def overlay_sources_over_max_age(
+    meta: Dict[str, Any],
+    max_age_days: int,
+    now: Optional[datetime] = None,
+) -> List[str]:
+    """Return FAIL reasons for overlay_sources older than max_age_days.
+
+    Missing overlay_sources is not a failure (older catalogs). Does not
+    fetch any remote URL; callers pass a meta dict, including fixtures.
+    """
+    clock = now or datetime.now(timezone.utc)
+    sources = meta.get("overlay_sources")
+    if not isinstance(sources, list):
+        return []
+    failures: List[str] = []
+    for source in sources:
+        if not isinstance(source, dict):
+            failures.append("FAIL: overlay_sources entry is not an object")
+            continue
+        raw = source.get("fetched_at")
+        url = source.get("url") or "overlay"
+        if not raw:
+            failures.append(f"FAIL: overlay {url} has no fetched_at provenance")
+            continue
+        try:
+            fetched_at = datetime.fromisoformat(str(raw))
+        except ValueError:
+            failures.append(f"FAIL: overlay {url} has invalid fetched_at")
+            continue
+        if fetched_at.tzinfo is None:
+            fetched_at = fetched_at.replace(tzinfo=timezone.utc)
+        age_days = (clock - fetched_at).days
+        if age_days > max_age_days:
+            failures.append(
+                f"FAIL: overlay {url} older than {max_age_days} days "
+                f"(age={age_days}d): rerun this script"
+            )
+    return failures
+
+
+def _previous_overlay_sources(
+    current: Dict[str, Any],
+) -> Optional[List[Dict[str, Any]]]:
+    """Return existing overlay_sources so a failed fetch is not stamped fresh."""
+    meta = current.get(META_KEY)
+    if not isinstance(meta, dict):
+        return None
+    sources = meta.get("overlay_sources")
+    if isinstance(sources, list) and sources:
+        return sources
+    return None
+
+
 def check(max_age_days: int, compare_remote: bool) -> int:
     """Freshness gate: non-zero exit when the snapshot is stale or drifted."""
     current = load_current()
@@ -418,6 +471,13 @@ def check(max_age_days: int, compare_remote: bool) -> int:
     if age_days > max_age_days:
         print(f"FAIL: catalog older than {max_age_days} days: rerun this script")
         return 1
+    overlay_failures = overlay_sources_over_max_age(meta, max_age_days)
+    if overlay_failures:
+        for line in overlay_failures:
+            print(line)
+        return 1
+    if isinstance(meta.get("overlay_sources"), list) and meta["overlay_sources"]:
+        print(f"overlay_sources={len(meta['overlay_sources'])} within {max_age_days}d")
     if compare_remote:
         filtered = filter_catalog(fetch_remote())
         drift = diff_catalogs(litellm_sourced_catalog(current), filtered)
@@ -459,9 +519,24 @@ def main() -> int:
     filtered = filter_catalog(fetch_remote(args.url))
     current = load_current()
     print(f"Fetching {ZAI_PRICING_URL} ...")
-    zai_rows = parse_zai_text_models(fetch_text(ZAI_PRICING_URL))
+    overlay_sources: Optional[List[Dict[str, Any]]] = None
+    try:
+        zai_rows = parse_zai_text_models(fetch_text(ZAI_PRICING_URL))
+    except (ValueError, OSError) as exc:
+        print(
+            f"WARNING: z.ai pricing overlay skipped ({exc}); keeping existing overlays"
+        )
+        zai_rows = {}
+        overlay_sources = _previous_overlay_sources(current)
+    else:
+        overlay_sources = [
+            {
+                "url": ZAI_PRICING_URL,
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+                "section": "Text Models",
+            }
+        ]
     merged = apply_overlays(filtered, current, zai_rows)
-    overlay_fetched_at = datetime.now(timezone.utc).isoformat()
     changes = diff_catalogs({k: v for k, v in current.items() if k != META_KEY}, merged)
     if changes:
         print(f"{len(changes)} model change(s):")
@@ -469,17 +544,7 @@ def main() -> int:
             print("  " + line)
     else:
         print("No price/model changes; refreshing provenance only.")
-    write_catalog(
-        merged,
-        args.url,
-        overlay_sources=[
-            {
-                "url": ZAI_PRICING_URL,
-                "fetched_at": overlay_fetched_at,
-                "section": "Text Models",
-            }
-        ],
-    )
+    write_catalog(merged, args.url, overlay_sources=overlay_sources)
     print(f"Wrote {len(merged)} models to {CATALOG_PATH}")
     return 0
 

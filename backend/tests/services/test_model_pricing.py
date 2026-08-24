@@ -2,6 +2,8 @@
 
 import importlib.util
 import json
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -905,3 +907,103 @@ class TestUpdateModelPriceOverlays:
         assert "zai/glm-5.3" not in sourced
         assert "gpt-4o" in sourced
         assert script.diff_catalogs(sourced, upstream) == []
+
+    def test_update_model_zai_fetch_failure_still_merges_litellm(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """docs.z.ai 404 or parse failure must not abort the litellm write."""
+        script = _load_update_model_prices()
+        previous_overlay = {
+            "url": script.ZAI_PRICING_URL,
+            "fetched_at": "2026-01-15T00:00:00+00:00",
+            "section": "Text Models",
+        }
+        current = {
+            "_preloop_meta": {
+                "source_url": "https://example.com/litellm.json",
+                "fetched_at": "2026-01-15T00:00:00+00:00",
+                "overlay_sources": [previous_overlay],
+            },
+            "gpt-4o": {
+                "litellm_provider": "openai",
+                "mode": "chat",
+                "input_cost_per_token": 2.5e-06,
+                "output_cost_per_token": 1.0e-05,
+            },
+            "moonshot/kimi-k3": {
+                "litellm_provider": "moonshot",
+                "mode": "chat",
+                "input_cost_per_token": 3e-06,
+                "output_cost_per_token": 1.5e-05,
+            },
+            "zai/glm-5.3": {
+                "litellm_provider": "zai",
+                "mode": "chat",
+                "input_cost_per_token": 1.4e-06,
+                "output_cost_per_token": 4.4e-06,
+            },
+        }
+        written: dict[str, Any] = {}
+
+        def fake_fetch_remote(url: str = script.SOURCE_URL) -> dict[str, Any]:
+            return {
+                "gpt-4o": {
+                    "litellm_provider": "openai",
+                    "mode": "chat",
+                    "input_cost_per_token": 1.0e-06,
+                    "output_cost_per_token": 4.0e-06,
+                }
+            }
+
+        def fake_fetch_text(url: str) -> str:
+            raise OSError("HTTP Error 404: Not Found")
+
+        def fake_write_catalog(
+            filtered: dict[str, Any],
+            source_url: str,
+            overlay_sources: list[dict[str, Any]] | None = None,
+        ) -> None:
+            written["filtered"] = filtered
+            written["source_url"] = source_url
+            written["overlay_sources"] = overlay_sources
+
+        monkeypatch.setattr(script, "fetch_remote", fake_fetch_remote)
+        monkeypatch.setattr(script, "fetch_text", fake_fetch_text)
+        monkeypatch.setattr(script, "load_current", lambda: current)
+        monkeypatch.setattr(script, "write_catalog", fake_write_catalog)
+        monkeypatch.setattr(sys, "argv", ["update_model_prices.py"])
+
+        assert script.main() == 0
+        merged = written["filtered"]
+        assert merged["gpt-4o"]["input_cost_per_token"] == 1.0e-06
+        assert merged["moonshot/kimi-k3"]["input_cost_per_token"] == 3e-06
+        assert merged["zai/glm-5.3"]["input_cost_per_token"] == 1.4e-06
+        assert written["overlay_sources"] == [previous_overlay]
+
+    def test_check_overlay_ages_uses_fixture_meta(self) -> None:
+        """--check ages overlay_sources from meta without fetching docs.z.ai."""
+        script = _load_update_model_prices()
+        now = datetime(2026, 8, 24, tzinfo=timezone.utc)
+        fresh_meta = {
+            "overlay_sources": [
+                {
+                    "url": "https://docs.z.ai/guides/overview/pricing.md",
+                    "fetched_at": "2026-08-20T00:00:00+00:00",
+                    "section": "Text Models",
+                }
+            ]
+        }
+        stale_meta = {
+            "overlay_sources": [
+                {
+                    "url": "https://docs.z.ai/guides/overview/pricing.md",
+                    "fetched_at": "2026-01-01T00:00:00+00:00",
+                    "section": "Text Models",
+                }
+            ]
+        }
+        assert script.overlay_sources_over_max_age(fresh_meta, 30, now=now) == []
+        stale = script.overlay_sources_over_max_age(stale_meta, 30, now=now)
+        assert len(stale) == 1
+        assert "older than 30 days" in stale[0]
+        assert script.overlay_sources_over_max_age({}, 30, now=now) == []
