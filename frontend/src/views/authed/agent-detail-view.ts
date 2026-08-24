@@ -185,6 +185,15 @@ export class AgentDetailView extends LitElement {
   @state()
   private allowedModelsText = '';
 
+  /**
+   * Last server-confirmed governance config; model-editor saves roll back to
+   * this on failure so toggles never show unpersisted selections.
+   */
+  private confirmedGovernance: SubjectGovernanceConfig | null = null;
+
+  /** Serializes available-model saves so rapid toggles cannot race. */
+  private modelSaveChain: Promise<void> = Promise.resolve();
+
   @state()
   private modelBudgetsText = '{}';
 
@@ -604,6 +613,7 @@ export class AgentDetailView extends LitElement {
         };
       }
       this.governance = governance.config;
+      this.confirmedGovernance = governance.config;
       // Resolve what "inherit" currently means for the approvals selector.
       void getAccountGovernanceDefaults()
         .then((defaults) => {
@@ -1145,6 +1155,7 @@ export class AgentDetailView extends LitElement {
       };
       const response = await updateAgentGovernance(this.agentId, config);
       this.governance = response.config;
+      this.confirmedGovernance = response.config;
       this.scopedToolRules = normalizeScopedToolRules(
         response.config.tool_rules
       );
@@ -1167,17 +1178,40 @@ export class AgentDetailView extends LitElement {
   /**
    * Persist an explicit available-model list for this agent through the
    * governance endpoint, preserving every other governance field.
+   *
+   * Updates are applied optimistically for immediate checkbox feedback, then
+   * serialized through a promise chain so rapid toggles cannot resolve out of
+   * order; a failed PUT rolls the editor back to the last server-confirmed
+   * state instead of leaving unpersisted selections on screen.
    */
   private async saveAllowedModels(models: string[]): Promise<void> {
     if (!this.agentId) {
       return;
     }
+    this.governance = { ...this.governance, allowed_models: [...models] };
+    this.allowedModelsText = models.join(', ');
     this.actionLoading = true;
+    const task = this.modelSaveChain.then(() => this.persistAllowedModels());
+    this.modelSaveChain = task.then(
+      () => undefined,
+      () => undefined
+    );
+    try {
+      await task;
+    } finally {
+      this.actionLoading = false;
+    }
+  }
+
+  private async persistAllowedModels(): Promise<void> {
+    if (!this.agentId) {
+      return;
+    }
     try {
       const response = await updateAgentGovernance(this.agentId, {
         ...this.governance,
-        allowed_models: models,
       });
+      this.confirmedGovernance = response.config;
       this.governance = response.config;
       this.scopedToolRules = normalizeScopedToolRules(
         response.config.tool_rules
@@ -1189,33 +1223,33 @@ export class AgentDetailView extends LitElement {
       console.error('Failed to update agent models:', error);
       this.error =
         error instanceof Error ? error.message : 'Failed to update models';
-    } finally {
-      this.actionLoading = false;
+      // Roll back to the last state the server confirmed so the toggles do
+      // not keep showing a selection that was never persisted.
+      if (this.confirmedGovernance) {
+        this.governance = { ...this.confirmedGovernance };
+        this.allowedModelsText =
+          this.confirmedGovernance.allowed_models.join(', ');
+      }
     }
   }
 
   private handleAllowedModelToggle(modelName: string, checked: boolean): void {
+    // While unrestricted (empty allowlist) every checkbox renders unchecked,
+    // so checking a model switches the agent into restricted mode with just
+    // that model. Unchecking simply removes it from the restriction.
     const current = [...(this.governance.allowed_models || [])];
     let next: string[];
     if (checked) {
       if (current.includes(modelName)) {
         return;
       }
-      next = [...current, modelName];
+      next = [...current, modelName].sort();
     } else {
-      // An empty allowlist means "every model allowed". Unchecking a model
-      // must therefore materialize the full list minus that model so the
-      // restriction actually takes effect.
-      const known = this.availableModels
-        .map((model: any) => String(model.name || '').trim())
-        .filter(Boolean);
-      const base = new Set<string>(current.length > 0 ? current : known);
-      if (!base.delete(modelName)) {
+      if (!current.includes(modelName)) {
         return;
       }
-      next = Array.from(base).sort();
+      next = current.filter((m) => m !== modelName);
     }
-    this.governance = { ...this.governance, allowed_models: next };
     void this.saveAllowedModels(next);
   }
 
@@ -1224,7 +1258,6 @@ export class AgentDetailView extends LitElement {
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean);
-    this.allowedModelsText = models.join(', ');
     void this.saveAllowedModels(models);
   }
 
@@ -3082,9 +3115,16 @@ export class AgentDetailView extends LitElement {
                           <div class="hero-title" id="available-models-title">
                             Available models
                           </div>
-                          <div class="meta-line">
-                            Choose which models this agent may use. With none
-                            selected, every model is allowed.
+                          <div class="meta-line" id="available-models-status">
+                            ${
+                              (this.governance.allowed_models || []).length ===
+                              0
+                                ? html`Every model is currently allowed. Check a
+                                  model to restrict this agent to selected
+                                  models only.`
+                                : html`This agent may only use the checked
+                                  models.`
+                            }
                           </div>
                           <div
                             style="display: flex; flex-direction: column; gap: var(--sl-spacing-x-small); max-height: 260px; overflow-y: auto;"
@@ -3092,9 +3132,11 @@ export class AgentDetailView extends LitElement {
                             ${this.availableModels.map((model: any) => {
                               const allowed =
                                 this.governance.allowed_models || [];
-                              const isChecked =
-                                allowed.length === 0 ||
-                                allowed.includes(model.name);
+                              // While unrestricted (empty list) every box
+                              // renders unchecked; checking one switches to
+                              // restricted mode instead of faking "checked
+                              // because everything is allowed".
+                              const isChecked = allowed.includes(model.name);
                               return html`
                                 <sl-checkbox
                                   data-model-allow-toggle=${model.name}
@@ -3116,13 +3158,13 @@ export class AgentDetailView extends LitElement {
                                     style="margin: 0;"
                                   >
                                     No models configured yet. Add one with the
-                                    manual override below.
+                                    model list below.
                                   </div>`
                                 : nothing
                             }
                           </div>
                           <sl-input
-                            label="Manual override"
+                            label="Allowed models"
                             placeholder="provider/model-name, ..."
                             .value=${this.allowedModelsText}
                             @sl-change=${(e: Event) => {
@@ -3134,8 +3176,9 @@ export class AgentDetailView extends LitElement {
                           <div
                             style="font-size: 0.8rem; color: var(--sl-color-neutral-500);"
                           >
-                            Comma separated list of models not offered above.
-                            Leave empty to allow all models.
+                            The authoritative comma separated list behind the
+                            checkboxes above, including aliases not offered as
+                            checkboxes. Leave empty to allow all models.
                           </div>
                         </div>
                       </div>
