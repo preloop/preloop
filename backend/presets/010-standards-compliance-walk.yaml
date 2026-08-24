@@ -176,6 +176,7 @@ prompt_template: |
   {
     "schema": "preloop.review.standards/v1",
     "flow": "standards-compliance-walk",
+    "status": "success" | "error",
     "run_at": "<ISO 8601 UTC>",
     "git": { "remote": "...", "commit": "<40 hex>", "branch": "...", "dirty": false },
     "tool_versions": { "<tool>": "<version or 'unavailable: reason'>" },
@@ -208,6 +209,11 @@ prompt_template: |
   }
 
   Rules:
+  - "status" is REQUIRED — it is the flow completion signal read by
+    Preloop. Write "success" when the walk ran to completion and this
+    report was written (regardless of the verdict — a failing walk is
+    still a completed walk); write "error" (and add a "reason" field)
+    when the walk could not be completed.
   - Verdict: "fail" if any MANDATORY requirement is gap OR
     freeze_floor_passed is false. "pass" only when the plan completed
     and every checkable mandatory requirement is met with nothing gap,

@@ -213,6 +213,7 @@ prompt_template: |
   {
     "schema": "preloop.review.arch/v1",
     "flow": "architecture-strategy-review",
+    "status": "success" | "error",
     "run_at": "<ISO 8601 UTC>",
     "git": { "remote": "...", "commit": "<40 hex>", "branch": "...", "dirty": false },
     "tool_versions": { "<tool>": "<version or 'unavailable: reason'>" },
@@ -248,6 +249,11 @@ prompt_template: |
   }
 
   Rules:
+  - "status" is REQUIRED — it is the flow completion signal read by
+    Preloop. Write "success" when the review ran to completion and this
+    report was written (regardless of the verdict — a failing review is
+    still a completed review); write "error" (and add a "reason" field)
+    when the review could not be completed.
   - Verdict: "fail" if any open high-severity drift finding exists OR
     freeze_floor_passed is false. "pass" only when the plan completed,
     no register row is gap or partial, no finding is open, and no row is

@@ -101,6 +101,20 @@ class TestRepoReviewPresetInvariants:
         # The report write is the mandatory final action.
         assert "As your FINAL action, write /workspace/result.json" in prompt
 
+    def test_completion_status_field(self, preset):
+        """The preloop.review.*/v1 ids are not in the orchestrator's audit
+        verdict marker list, so each schema carries a required top-level
+        "status" field as its explicit result.json completion signal —
+        "success" when the run completed (regardless of the verdict),
+        "error" when it could not."""
+        _, data = preset
+        norm = _norm(data["prompt_template"])
+        assert '"status": "success" | "error"' in norm
+        assert '"status" is REQUIRED — it is the flow completion signal' in norm
+        # A failing review is still a completed review: completion is
+        # independent of the verdict.
+        assert "regardless of the verdict" in norm
+
     def test_prompt_forbids_writes(self, preset):
         """No commits, no pushes, no external mutation, ever."""
         _, data = preset
