@@ -50,6 +50,17 @@ class AgentExecutor(ABC):
     (Docker containers, Kubernetes pods, local processes).
     """
 
+    #: Whether this runtime supports the one-shot completion-confirmation
+    #: round ("nudge", layer 2 of the flow completion contract): a fresh,
+    #: cheap invocation carrying prior context (original prompt + output
+    #: tail) whose only job is to confirm or deny that the original task
+    #: completed. Runtimes that cannot cheaply re-invoke with prior context
+    #: (e.g. queued remote runners) leave this False and the orchestrator
+    #: no-ops the nudge for them, keeping the fail-closed behaviour.
+    #: The orchestrator checks ``is True`` strictly, so mocks without an
+    #: explicit opt-in never trigger a nudge.
+    supports_confirmation_nudge: bool = False
+
     def __init__(self, agent_type: str, config: Dict[str, Any]):
         """
         Initialize the agent executor.

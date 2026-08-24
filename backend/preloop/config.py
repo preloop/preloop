@@ -374,6 +374,25 @@ class Settings(BaseSettings):
             "per attempt, giving an overloaded provider time to recover."
         ),
     )
+    flow_confirmation_nudge_max_tokens: int = Field(
+        4096,
+        description=(
+            "Token ceiling for the one-shot confirmation round (layer 2 of "
+            "the completion contract). Bounds the prior-context excerpt "
+            "embedded in the nudge prompt (~4 chars/token) and is passed to "
+            "the nudge session as model_parameters.max_output_tokens for "
+            "runtimes that honor it. The nudge only asks the agent to "
+            "confirm or deny completion, so it should stay small."
+        ),
+    )
+    flow_confirmation_nudge_timeout_seconds: int = Field(
+        300,
+        description=(
+            "Maximum wall-clock time to wait for the one-shot confirmation "
+            "round before failing closed with the standard "
+            "missing-confirmation message."
+        ),
+    )
     flow_execution_worker_enabled: bool = Field(
         False,
         description=(
@@ -660,6 +679,12 @@ class Settings(BaseSettings):
             ),
             flow_execution_retry_backoff_seconds=int(
                 os.getenv("FLOW_EXECUTION_RETRY_BACKOFF_SECONDS", "15")
+            ),
+            flow_confirmation_nudge_max_tokens=int(
+                os.getenv("FLOW_CONFIRMATION_NUDGE_MAX_TOKENS", "4096")
+            ),
+            flow_confirmation_nudge_timeout_seconds=int(
+                os.getenv("FLOW_CONFIRMATION_NUDGE_TIMEOUT_SECONDS", "300")
             ),
             flow_execution_worker_enabled=os.getenv(
                 "FLOW_EXECUTION_WORKER_ENABLED", "false"

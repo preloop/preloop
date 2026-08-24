@@ -23,6 +23,11 @@ class CodexAgent(ContainerAgentExecutor):
     container for autonomous coding tasks.
     """
 
+    # Codex sessions are one-shot containers, so "resume" is a fresh
+    # invocation with prior context — validated for the orchestrator's
+    # completion-confirmation round (see AgentExecutor for semantics).
+    supports_confirmation_nudge = True
+
     def __init__(self, config: Dict[str, Any]):
         """
         Initialize Codex agent.
