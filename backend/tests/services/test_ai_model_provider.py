@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from preloop.services.ai_model_provider import (
     get_available_models_for_provider,
     ANTHROPIC_FALLBACK_MODELS,
+    BEDROCK_FALLBACK_MODELS,
     DEEPSEEK_KNOWN_MODELS,
     GOOGLE_FALLBACK_MODELS,
     MISTRAL_KNOWN_MODELS,
@@ -19,9 +20,13 @@ from preloop.services.ai_model_provider import (
     QWEN_US_BASE_URL,
     ZAI_KNOWN_MODELS,
     _is_qwen_chat_model,
+    ERROR_SDK_MISSING,
+    ERROR_UNKNOWN,
     FALLBACK_ERROR_REASONS,
     MODEL_DISCOVERY_TIMEOUT_SECONDS,
     ModelDiscoveryResult,
+    ProviderAuthError,
+    ProviderValidationError,
     _get_openai_models,
     _get_anthropic_models,
     _get_google_models,
@@ -1660,3 +1665,178 @@ class TestOpenAIAuthErrorDoesNotLeakSecrets:
         )
         # The type name IS logged (consistency with every other provider).
         assert "AuthenticationError" in full_log
+
+
+# ---------------------------------------------------------------------------
+# AWS Bedrock
+# ---------------------------------------------------------------------------
+
+
+def _foundation_summary(model_id, modalities=("TEXT",), status="ACTIVE"):
+    """Build a bedrock list_foundation_models summary entry."""
+    summary = MagicMock()
+    summary.modelId = model_id
+    summary.outputModalities = list(modalities)
+    summary.modelLifecycle.status = status
+    return summary
+
+
+def _bedrock_client(summaries):
+    client = MagicMock()
+    response = MagicMock()
+    response.modelSummaries = summaries
+    client.list_foundation_models.return_value = response
+    return client
+
+
+class TestBedrockModels:
+    """Bedrock discovery: live control-plane listing with a curated fallback."""
+
+    @pytest.mark.asyncio
+    async def test_routes_to_bedrock_handler(self):
+        with patch(
+            "preloop.services.ai_model_provider._get_bedrock_models"
+        ) as mock_get:
+            mock_get.return_value = ModelDiscoveryResult(
+                models=["anthropic.claude-sonnet-4-5"], source="live"
+            )
+            result = await get_available_models_for_provider("bedrock")
+            assert result.source == "live"
+            assert result.models == ["anthropic.claude-sonnet-4-5"]
+
+    @pytest.mark.asyncio
+    async def test_live_listing_keeps_text_chat_models_only(self):
+        client = _bedrock_client(
+            [
+                _foundation_summary("anthropic.claude-sonnet-4-5"),
+                # Embedding and image models cannot serve chat completions.
+                _foundation_summary(
+                    "amazon.titan-embed-text-v2:0", modalities=("EMBEDDING",)
+                ),
+                _foundation_summary("stability.sd3-large-v1:0", modalities=("IMAGE",)),
+                # Non-ACTIVE lifecycle entries are not usable on demand.
+                _foundation_summary("anthropic.claude-old", status="LEGACY"),
+                # Summaries without modality reporting predate the field;
+                # keep rather than guess.
+                _foundation_summary("legacy.model-v1", modalities=[]),
+            ]
+        )
+        session = MagicMock()
+        session.region_name = None
+        session.client.return_value = client
+
+        with patch("boto3.Session", return_value=session):
+            result = await get_available_models_for_provider(
+                "bedrock",
+                aws_auth={
+                    "aws_access_key_id": "AKIAIOSFODNN7EXAMPLE",
+                    "aws_secret_access_key": "secret",
+                    "aws_region_name": "us-east-1",
+                },
+            )
+
+        assert result.source == "live"
+        assert result.error is None
+        assert set(result.models) == {
+            "anthropic.claude-sonnet-4-5",
+            "legacy.model-v1",
+        }
+        session.client.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_rejected_credentials_raise_auth_error(self):
+        from botocore.exceptions import ClientError
+
+        client = MagicMock()
+        client.list_foundation_models.side_effect = ClientError(
+            {
+                "Error": {"Code": "UnrecognizedClientException"},
+                "ResponseMetadata": {"HTTPStatusCode": 403},
+            },
+            "ListFoundationModels",
+        )
+        session = MagicMock()
+        session.region_name = None
+        session.client.return_value = client
+
+        with (
+            patch("boto3.Session", return_value=session),
+            pytest.raises(ProviderAuthError, match="Invalid AWS credentials"),
+        ):
+            await get_available_models_for_provider(
+                "bedrock",
+                aws_auth={
+                    "aws_access_key_id": "AKIAIOSFODNN7EXAMPLE",
+                    "aws_secret_access_key": "wrong",
+                    "aws_region_name": "us-east-1",
+                },
+            )
+
+    @pytest.mark.asyncio
+    async def test_missing_credentials_raise_auth_error(self):
+        from botocore.exceptions import NoCredentialsError
+
+        client = MagicMock()
+        client.list_foundation_models.side_effect = NoCredentialsError()
+        session = MagicMock()
+        session.region_name = None
+        session.client.return_value = client
+
+        with (
+            patch("boto3.Session", return_value=session),
+            pytest.raises(ProviderAuthError),
+        ):
+            await get_available_models_for_provider(
+                "bedrock", aws_auth={"aws_region_name": "us-east-1"}
+            )
+
+    @pytest.mark.asyncio
+    async def test_control_plane_failure_returns_fallback_catalog(self):
+        client = MagicMock()
+        client.list_foundation_models.side_effect = Exception("boom")
+        session = MagicMock()
+        session.region_name = None
+        session.client.return_value = client
+
+        with patch("boto3.Session", return_value=session):
+            result = await get_available_models_for_provider(
+                "bedrock",
+                aws_auth={
+                    "aws_access_key_id": "AKIAIOSFODNN7EXAMPLE",
+                    "aws_secret_access_key": "secret",
+                    "aws_region_name": "us-east-1",
+                },
+            )
+
+        assert result.source == "fallback"
+        assert result.error == ERROR_UNKNOWN
+        assert result.models == BEDROCK_FALLBACK_MODELS
+
+    @pytest.mark.asyncio
+    async def test_missing_region_is_a_validation_error(self):
+        session = MagicMock()
+        session.region_name = None
+
+        with (
+            patch("boto3.Session", return_value=session),
+            pytest.raises(ProviderValidationError, match="region"),
+        ):
+            await get_available_models_for_provider(
+                "bedrock",
+                aws_auth={
+                    "aws_access_key_id": "AKIAIOSFODNN7EXAMPLE",
+                    "aws_secret_access_key": "secret",
+                },
+            )
+
+    @pytest.mark.asyncio
+    async def test_sdk_missing_returns_fallback_catalog(self):
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setitem(sys.modules, "boto3", None)
+        try:
+            result = await get_available_models_for_provider("bedrock")
+        finally:
+            monkeypatch.undo()
+        assert result.source == "fallback"
+        assert result.error == ERROR_SDK_MISSING
+        assert result.models == BEDROCK_FALLBACK_MODELS

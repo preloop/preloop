@@ -11160,6 +11160,34 @@ components:
           title: Model Kind
           description: Model service kind to fetch
           default: llm
+        aws_access_key_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Aws Access Key Id
+          description: AWS access key id for the bedrock provider. Never logged and
+            never persisted by this endpoint.
+        aws_secret_access_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Aws Secret Access Key
+          description: AWS secret access key for the bedrock provider. Never logged
+            and never persisted by this endpoint.
+        aws_session_token:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Aws Session Token
+          description: Optional temporary-session token for the bedrock provider.
+            Never logged and never persisted by this endpoint.
+        aws_region_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Aws Region Name
+          description: AWS region for the bedrock provider, e.g. us-east-1. Falls
+            back to boto3's default region chain when omitted.
       type: object
       title: AvailableModelsRequest
       description: 'Discovery request for a provider''s model catalog.

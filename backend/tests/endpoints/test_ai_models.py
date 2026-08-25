@@ -387,3 +387,59 @@ async def test_fetch_provider_models_bare_value_error_is_400(mocker: MockerFixtu
     http_exc = exc_info.value
     assert http_exc.status_code == 400
     assert "sk-SUPERSECRET-KEY" not in http_exc.detail
+
+
+@pytest.mark.asyncio
+async def test_fetch_provider_models_forwards_aws_credentials(
+    mocker: MockerFixture,
+):
+    """Bedrock discovery forwards AWS credential fields to the service layer."""
+    from fastapi import HTTPException
+
+    from preloop.schemas.ai_model import AvailableModelsRequest
+
+    mock = mocker.patch(
+        "preloop.api.endpoints.ai_models.get_available_models_for_provider",
+        side_effect=ValueError("stop here"),
+    )
+    request_in = AvailableModelsRequest(
+        model_kind="llm",
+        aws_access_key_id="AKIAIOSFODNN7EXAMPLE",
+        aws_secret_access_key="shhh",
+        aws_session_token="tok",
+        aws_region_name="eu-west-1",
+    )
+
+    with pytest.raises(HTTPException):
+        await ai_models._fetch_provider_models(
+            provider="bedrock",
+            api_key=None,
+            model_kind="llm",
+            api_endpoint=None,
+            aws_auth=ai_models._aws_auth_from_request(request_in),
+        )
+
+    assert mock.call_args.kwargs["aws_auth"] == {
+        "aws_access_key_id": "AKIAIOSFODNN7EXAMPLE",
+        "aws_secret_access_key": "shhh",
+        "aws_session_token": "tok",
+        "aws_region_name": "eu-west-1",
+    }
+
+
+def test_available_models_request_masks_aws_secrets():
+    """AWS credential material never survives serialization (logs, traces)."""
+    from preloop.schemas.ai_model import AvailableModelsRequest
+
+    request_in = AvailableModelsRequest(
+        api_key="sk-live-key",
+        aws_access_key_id="AKIAIOSFODNN7EXAMPLE",
+        aws_secret_access_key="shhh",
+        aws_session_token="tok",
+    )
+    dumped = request_in.model_dump()
+    assert dumped["api_key"] == "***"
+    serialized = request_in.model_dump_json()
+    assert "AKIAIOSFODNN7EXAMPLE" not in serialized
+    assert "shhh" not in serialized
+    assert '"***"' in serialized

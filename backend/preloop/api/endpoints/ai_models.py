@@ -387,6 +387,7 @@ async def list_provider_available_models(
         api_key=request_in.api_key if request_in else None,
         model_kind=request_in.model_kind if request_in else "llm",
         api_endpoint=request_in.api_endpoint if request_in else None,
+        aws_auth=_aws_auth_from_request(request_in),
     )
 
 
@@ -439,17 +440,45 @@ async def get_provider_available_models(
     return result.models
 
 
+def _aws_auth_from_request(
+    request_in: Optional[AvailableModelsRequest],
+) -> Optional[dict]:
+    """Collect AWS credential fields into a service-layer mapping, or None.
+
+    Only present fields are forwarded, so boto3's default credential chain
+    stays in play for the bedrock provider when the user supplied nothing.
+    """
+    if request_in is None:
+        return None
+    auth = {
+        key: getattr(request_in, key)
+        for key in (
+            "aws_access_key_id",
+            "aws_secret_access_key",
+            "aws_session_token",
+            "aws_region_name",
+        )
+        if getattr(request_in, key) is not None
+    }
+    return auth or None
+
+
 async def _fetch_provider_models(
     *,
     provider: str,
     api_key: Optional[str],
     model_kind: Literal["llm", "stt", "tts"],
     api_endpoint: Optional[str],
+    aws_auth: Optional[dict] = None,
 ) -> AvailableModelsResponse:
     """Shared body of the GET and POST available-models endpoints."""
     try:
         result = await get_available_models_for_provider(
-            provider, api_key, model_kind, api_endpoint
+            provider,
+            api_key,
+            model_kind,
+            api_endpoint,
+            aws_auth=aws_auth,
         )
         return AvailableModelsResponse(
             models=result.models,
