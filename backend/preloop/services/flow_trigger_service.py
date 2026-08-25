@@ -110,9 +110,11 @@ class FlowTriggerService:
                 if project_path and iid:
                     return f"gitlab:{project_path}:{obj_kind}:{iid}"
 
-            # GitLab release events (object_kind == "release")
+            # GitLab release events (object_kind == "release"). GitLab's
+            # Release Hook puts the tag at the top level; the nested
+            # release.tag shape is GitHub's, not GitLab's.
             if payload.get("object_kind") == "release":
-                tag = (payload.get("release") or {}).get("tag")
+                tag = payload.get("tag")
                 if project_path and tag:
                     return f"gitlab:{project_path}:release:{tag}"
 

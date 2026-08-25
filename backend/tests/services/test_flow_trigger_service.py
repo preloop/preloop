@@ -525,6 +525,74 @@ class TestProcessEvent:
         mock_create_task.assert_not_called()
 
 
+class TestProcessEventReleaseDedupe:
+    """process_event must coalesce duplicate release events (issue #241).
+
+    Release events reach process_event via /private/webhooks -> NATS with no
+    commit SHA, so only the fallback resource-key dedup can catch retries.
+    """
+
+    @staticmethod
+    def _release_event(tag: str) -> dict:
+        return {
+            "source": "github",
+            "type": "release",
+            "account_id": str(uuid.uuid4()),
+            "payload": {
+                "action": "published",
+                "release": {"tag_name": tag},
+                "repository": {"full_name": "owner/repo"},
+            },
+        }
+
+    @patch("preloop.services.flow_trigger_service.asyncio.create_task")
+    @patch("preloop.services.flow_trigger_service.get_nats_client")
+    @patch("preloop.services.flow_trigger_service.crud_flow")
+    @patch.object(FlowTriggerService, "_find_running_execution_for_resource_key")
+    async def test_duplicate_release_event_is_skipped(
+        self,
+        mock_find_resource,
+        mock_crud,
+        mock_nats,
+        mock_create_task,
+        flow_trigger_service,
+        sample_flow,
+    ):
+        """A running execution for the same release tag must not retrigger."""
+        mock_find_resource.return_value = MagicMock()  # existing execution
+        mock_nats.return_value = AsyncMock()
+        mock_crud.get_by_trigger.return_value = [sample_flow]
+
+        await flow_trigger_service.process_event(self._release_event("v1.2.3"))
+
+        mock_create_task.assert_not_called()
+        assert mock_find_resource.call_count == 1
+        assert mock_find_resource.call_args[0][1] == "github:owner/repo:release:v1.2.3"
+
+    @patch("preloop.services.flow_trigger_service.asyncio.create_task")
+    @patch("preloop.services.flow_trigger_service.get_nats_client")
+    @patch("preloop.services.flow_trigger_service.crud_flow")
+    @patch.object(FlowTriggerService, "_find_running_execution_for_resource_key")
+    async def test_different_release_tag_still_triggers(
+        self,
+        mock_find_resource,
+        mock_crud,
+        mock_nats,
+        mock_create_task,
+        flow_trigger_service,
+        sample_flow,
+    ):
+        """A new release tag must trigger a fresh execution."""
+        mock_find_resource.return_value = None
+        mock_nats.return_value = AsyncMock()
+        mock_crud.get_by_trigger.return_value = [sample_flow]
+
+        await flow_trigger_service.process_event(self._release_event("v2.0.0"))
+
+        mock_create_task.assert_called_once()
+        assert mock_find_resource.call_args[0][1] == "github:owner/repo:release:v2.0.0"
+
+
 class TestTriggerFlow:
     """Tests for trigger_flow method."""
 
@@ -1145,12 +1213,14 @@ class TestExtractResourceKeyRelease:
         assert flow_trigger_service._extract_resource_key(event) is None
 
     def test_gitlab_release_resource_key(self, flow_trigger_service):
+        """Real GitLab Release Hook shape: tag is a top-level field."""
         event = {
             "source": "gitlab",
             "object_kind": "release",
             "payload": {
                 "object_kind": "release",
-                "release": {"tag": "v2.0.0"},
+                "tag": "v2.0.0",
+                "commit": {"id": "abcdef1234567890"},
                 "project": {"path_with_namespace": "group/project"},
             },
         }
@@ -1164,7 +1234,7 @@ class TestExtractResourceKeyRelease:
             "source": "gitlab",
             "payload": {
                 "object_kind": "release",
-                "release": {"tag": "v2.0.0"},
+                "tag": "v2.0.0",
             },
         }
         assert flow_trigger_service._extract_resource_key(event) is None
