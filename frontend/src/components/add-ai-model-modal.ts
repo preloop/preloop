@@ -1006,7 +1006,6 @@ export class AddAIModelModal extends LitElement {
                   </sl-input>
                 `
           }
-          }
 
           <div class="full-width">
             <sl-checkbox
