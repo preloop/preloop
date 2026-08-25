@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import path from "node:path";
+
+import WebSocket from "ws";
 
 import {
   DEFAULT_APPROVAL_TIMEOUT_MS,
@@ -197,13 +198,17 @@ export class PreloopOpenCodePlugin {
     }
     const config = this.controlConfig ?? this.loadConfig();
     const wsUrl = new URL(config.control_ws_url!);
-    // Node's global WebSocket has no header option, so the durable bearer
-    // token is passed as a query param. The backend accepts this form.
-    wsUrl.searchParams.set("token", config.bearer_token!);
+    // Node's global WebSocket cannot set headers, but the `ws` package can.
+    // The durable bearer token is therefore sent as `Authorization: Bearer`
+    // on the HTTP upgrade — the scheme Agent Control already prefers — so it
+    // never appears in proxy/access-log query strings. The URL is loggable;
+    // the token itself must never be logged.
 
     let socket: WebSocket;
     try {
-      socket = new WebSocket(wsUrl);
+      socket = new WebSocket(wsUrl, {
+        headers: { authorization: `Bearer ${config.bearer_token!}` },
+      });
     } catch (error) {
       this.log(
         `Preloop Agent Control connect failed: ${
@@ -240,8 +245,29 @@ export class PreloopOpenCodePlugin {
     });
   }
 
+  /**
+   * Steering capabilities actually available through the connected SDK
+   * client. Advertised truthfully in presence so the console never offers an
+   * operator a control the plugin cannot perform.
+   */
+  private steeringCapabilities(config: ControlConfig): {
+    text: boolean;
+    interrupt: boolean;
+  } {
+    if (!this.remoteControlEnabled(config)) {
+      return { text: false, interrupt: false };
+    }
+    const session = this.client?.session;
+    return {
+      text:
+        typeof session?.chat === "function" ||
+        typeof session?.prompt === "function",
+      interrupt: typeof session?.abort === "function",
+    };
+  }
+
   presenceMessage(config: ControlConfig): Record<string, unknown> {
-    const remoteControl = this.remoteControlEnabled(config);
+    const steering = this.steeringCapabilities(config);
     return {
       type: "presence",
       name: "capabilities",
@@ -255,9 +281,9 @@ export class PreloopOpenCodePlugin {
           // plugin steers existing sessions rather than creating new ones.
           new_session: false,
           existing_session: true,
-          text: remoteControl,
+          text: steering.text,
           voice: false,
-          interrupt: remoteControl,
+          interrupt: steering.interrupt,
           tool_approval: this.toolApprovalEnabled(config),
         },
         runtime_principal_id: config.runtime_principal_id,
@@ -367,7 +393,7 @@ export class PreloopOpenCodePlugin {
   private startHeartbeat(config: ControlConfig): void {
     this.stopHeartbeat();
     this.heartbeatTimer = setInterval(() => {
-      if (!this.socket || this.socket.readyState !== this.socket.OPEN) {
+      if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
         return;
       }
       this.socket.send(
@@ -426,9 +452,8 @@ export class PreloopOpenCodePlugin {
    * `wss://host/api/v1/agents/control/ws` -> `https://host`.
    */
   permissionCheckUrl(config: ControlConfig): string {
-    const cfg = config as ControlConfig & { permission_check_url?: string };
-    if (cfg.permission_check_url) {
-      return cfg.permission_check_url;
+    if (config.permission_check_url) {
+      return config.permission_check_url;
     }
     const wsUrl = new URL(config.control_ws_url!);
     const httpProtocol = wsUrl.protocol === "wss:" ? "https:" : "http:";
@@ -441,6 +466,11 @@ export class PreloopOpenCodePlugin {
    * Returns `{ duplicate: true }` when `message_id` was already applied (the
    * backend replays undelivered commands on reconnect), otherwise the result
    * promise from {@link dispatch}.
+   *
+   * The id is remembered only while the dispatch is in flight and after it
+   * succeeds; a failed turn (chat/prompt unavailable, remote control
+   * disabled, ...) forgets the id so a backend replay re-executes instead of
+   * being acked as a completed duplicate.
    */
   handleCommand(command: OperatorCommand): {
     duplicate: boolean;
@@ -453,15 +483,28 @@ export class PreloopOpenCodePlugin {
     if (this.seenCommandIds.has(messageId)) {
       return { duplicate: true };
     }
+    // Reserve the id synchronously so concurrent deliveries of the same
+    // command cannot double-execute while the first dispatch is pending.
     this.seenCommandIds.add(messageId);
     while (this.seenCommandIds.size > DEDUPE_MAX_ENTRIES) {
       const oldest = this.seenCommandIds.values().next().value;
       if (oldest === undefined) {
         break;
       }
+      if (oldest === messageId) {
+        break;
+      }
       this.seenCommandIds.delete(oldest);
     }
-    return { duplicate: false, result: this.dispatch(command) };
+    return {
+      duplicate: false,
+      result: Promise.resolve(this.dispatch(command)).catch((error) => {
+        // Release the reservation so reconnect replays of the same
+        // message_id re-execute instead of being dropped as duplicates.
+        this.seenCommandIds.delete(messageId);
+        throw error;
+      }),
+    };
   }
 
   async dispatch(command: OperatorCommand): Promise<unknown> {
@@ -620,42 +663,62 @@ export class PreloopOpenCodePlugin {
   async handlePermissionAsked(request: PermissionRequest): Promise<{
     replied: boolean;
     response?: PermissionResponse;
-    skipped?: "disabled" | "duplicate" | "no-reply-channel";
+    skipped?: "disabled" | "duplicate" | "missing-id" | "no-reply-channel";
     reason?: string;
   }> {
     const config = this.controlConfig ?? this.loadConfig();
     if (!this.toolApprovalEnabled(config)) {
       return { replied: false, skipped: "disabled" };
     }
-    if (!request.id || this.pendingApprovals.has(request.id)) {
+    if (!request.id || request.id.trim() === "") {
+      // Not a duplicate — there is nothing to dedupe on. Log loudly so a
+      // silently-dropped escalation is visible.
+      this.log(
+        "Preloop approval skipped: permission.asked event carried no request id",
+      );
+      return {
+        replied: false,
+        skipped: "missing-id",
+        reason: "permission.asked event had no request id",
+      };
+    }
+    if (this.pendingApprovals.has(request.id)) {
       return { replied: false, skipped: "duplicate" };
     }
     this.pendingApprovals.set(request.id, request);
     while (this.pendingApprovals.size > DEDUPE_MAX_ENTRIES) {
       const oldest = this.pendingApprovals.keys().next().value;
-      if (oldest === undefined) {
+      if (oldest === undefined || oldest === request.id) {
         break;
       }
       this.pendingApprovals.delete(oldest);
     }
 
-    const decision = await this.requestOperatorDecision(request);
-    let response: PermissionResponse;
-    if (decision.decision === "deny") {
-      response = "reject";
-    } else {
-      response = "once";
-    }
+    try {
+      const decision = await this.requestOperatorDecision(request);
+      let response: PermissionResponse;
+      if (decision.decision === "deny") {
+        response = "reject";
+      } else {
+        response = "once";
+      }
 
-    const reply = this.client?.permission?.reply;
-    if (!reply) {
-      this.log(
-        `Preloop decision "${decision.decision}" for ${request.id} could not be applied: no SDK reply channel`,
-      );
-      return { replied: false, skipped: "no-reply-channel", response };
+      const reply = this.client?.permission?.reply;
+      if (!reply) {
+        this.log(
+          `Preloop decision "${decision.decision}" for ${request.id} could not be applied: no SDK reply channel`,
+        );
+        return { replied: false, skipped: "no-reply-channel", response };
+      }
+      await reply({ path: { id: request.id }, body: { response } });
+      return { replied: true, response, reason: decision.reason };
+    } finally {
+      // The round trip has settled (replied, rejected for lack of a reply
+      // channel, or errored): forget the reservation so the map cannot leak
+      // entries. Late duplicate asks after settlement re-escalate rather
+      // than being silently dropped.
+      this.pendingApprovals.delete(request.id);
     }
-    await reply({ path: { id: request.id }, body: { response } });
-    return { replied: true, response, reason: decision.reason };
   }
 
   /**

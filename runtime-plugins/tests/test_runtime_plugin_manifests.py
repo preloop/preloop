@@ -261,15 +261,11 @@ def test_hermes_package_metadata_matches_manifest() -> None:
 
 def test_opencode_package_metadata_is_standalone() -> None:
     package = json.loads((ROOT / "opencode-preloop" / "package.json").read_text())
-    opencode = package["opencode"]
 
     assert package["name"] == "@preloop-ai/opencode-plugin"
-    assert opencode["capabilities"]["tool_approval"] is True
-    assert "event" in opencode["hooks"]
-    assert "network:wss" in opencode["permissions"]
-    assert opencode["configPath"] == "preloop.control"
-    assert opencode["verification"]["command"]
-    assert opencode["install"]["npmSpec"] == "@preloop-ai/opencode-plugin"
+    # The plugin is distributed via npm only: no marketplace consumes the
+    # `opencode` manifest block, so it must not be present.
+    assert "opencode" not in package
     # OpenCode has no marketplace manifest; everything lives in package.json.
     assert not list((ROOT / "opencode-preloop").glob("*.plugin.json"))
     assert "opencode" not in package.get("dependencies", {})

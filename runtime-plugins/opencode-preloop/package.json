@@ -25,34 +25,9 @@
   "bin": {
     "preloop-opencode-plugin": "dist/cli.js"
   },
-  "opencode": {
-    "entrypoints": [
-      "./dist/index.js"
-    ],
-    "compat": {
-      "minVersion": ">=1.1.0"
-    },
-    "install": {
-      "npmSpec": "@preloop-ai/opencode-plugin"
-    },
-    "hooks": [
-      "event"
-    ],
-    "capabilities": {
-      "tool_approval": true
-    },
-    "permissions": [
-      "read_config:preloop.control",
-      "network:wss",
-      "network:https"
-    ],
-    "configPath": "preloop.control",
-    "verification": {
-      "command": "preloop-opencode-plugin verify --config ~/.config/opencode/opencode.json"
-    }
-  },
   "devDependencies": {
     "@types/node": "^22.19.19",
+    "@types/ws": "^8.18.1",
     "typescript": "^5.9.3"
   },
   "engines": {
@@ -66,5 +41,8 @@
   "homepage": "https://preloop.ai",
   "bugs": {
     "url": "https://github.com/preloop/preloop/issues"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
   }
 }

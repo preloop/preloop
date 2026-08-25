@@ -22,6 +22,12 @@ export type ControlConfig = {
   /** Gate the permission-ask bridging. Defaults to enabled. */
   tool_approval_enabled?: boolean;
   /**
+   * Override for Preloop's permission-check endpoint. When set, approval
+   * round trips POST here instead of deriving
+   * `<origin>/api/v1/agents/permission-check` from `control_ws_url`.
+   */
+  permission_check_url?: string;
+  /**
    * When Preloop cannot be reached (or the operator has not decided within
    * the timeout), allow the tool to run instead of rejecting it. Defaults to
    * false (fail closed / reject on error).
@@ -62,6 +68,7 @@ const USABLE_KEYS: (keyof ControlConfig)[] = [
   "control_ws_url",
   "bearer_token",
   "runtime_principal_id",
+  "permission_check_url",
 ];
 
 export function defaultConfigPath(): string {

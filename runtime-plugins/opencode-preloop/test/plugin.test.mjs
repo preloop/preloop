@@ -134,6 +134,30 @@ test("permissionCheckUrl derives https from the wss control URL", () => {
   );
 });
 
+test("permissionCheckUrl honors the permission_check_url override", () => {
+  const plugin = makePlugin();
+  assert.equal(
+    plugin.permissionCheckUrl({
+      ...baseConfig,
+      permission_check_url: "https://gateway.internal/preloop/check",
+    }),
+    "https://gateway.internal/preloop/check",
+  );
+});
+
+test("extractControlConfig recognizes a config carrying only permission_check_url", () => {
+  const extracted = extractControlConfig({
+    preloop: {
+      control: { ...baseConfig, permission_check_url: "https://gw/check" },
+    },
+  });
+  assert.equal(extracted.source, "control-block");
+  assert.equal(
+    extracted.config.permission_check_url,
+    "https://gw/check",
+  );
+});
+
 test("permissionCheckUrl derives http from a ws control URL", () => {
   const plugin = makePlugin();
   const wsConfig = {
@@ -261,7 +285,7 @@ test("transport error fails closed by default and open when configured", async (
 // ---------------------------------------------------------------------------
 // Dedupe of repeated message/request ids
 
-test("repeated permission.asked events for one id produce one round trip", async () => {
+test("concurrent permission.asked events for one id produce one round trip", async () => {
   let fetchCount = 0;
   const replies = [];
   const plugin = makePlugin(() => {
@@ -270,12 +294,50 @@ test("repeated permission.asked events for one id produce one round trip", async
   });
   plugin.setOpenCodeClient(makeClient(replies));
 
-  await plugin.handlePermissionAsked(askRequest("perm-dup"));
-  const second = await plugin.handlePermissionAsked(askRequest("perm-dup"));
+  // Both events race while the first round trip is still parked at Preloop.
+  const [first, second] = await Promise.all([
+    plugin.handlePermissionAsked(askRequest("perm-dup")),
+    plugin.handlePermissionAsked(askRequest("perm-dup")),
+  ]);
 
-  assert.equal(fetchCount, 1);
+  assert.equal(first.replied, true);
   assert.deepEqual(second, { replied: false, skipped: "duplicate" });
+  assert.equal(fetchCount, 1);
   assert.equal(replies.length, 1);
+});
+
+test("pendingApprovals entry is cleared once the round trip settles", async () => {
+  const plugin = makePlugin(() => jsonResponse(200, { decision: "allow" }));
+  plugin.setOpenCodeClient(makeClient([]));
+
+  await plugin.handlePermissionAsked(askRequest("perm-settled"));
+  assert.equal(plugin.pendingApprovals.size, 0);
+
+  const noChannel = makePlugin(() => jsonResponse(200, { decision: "deny" }));
+  noChannel.setOpenCodeClient({}); // no permission.reply channel
+  await noChannel.handlePermissionAsked(askRequest("perm-nochan"));
+  assert.equal(noChannel.pendingApprovals.size, 0);
+});
+
+test("a permission.asked event without an id is skipped as missing-id", async () => {
+  let called = false;
+  const plugin = makePlugin(
+    () => {
+      called = true;
+      return jsonResponse(200, { decision: "allow" });
+    },
+    { session_reference: "ses_default" },
+  );
+  plugin.setOpenCodeClient(makeClient([]));
+
+  const outcome = await plugin.handlePermissionAsked({});
+
+  assert.equal(outcome.replied, false);
+  assert.equal(outcome.skipped, "missing-id");
+  assert.notEqual(outcome.skipped, "duplicate");
+  assert.match(String(outcome.reason), /no request id/);
+  assert.equal(called, false);
+  assert.equal(plugin.pendingApprovals.size, 0);
 });
 
 test("permission.replied clears the dedupe entry so later asks re-escalate", async () => {
@@ -349,6 +411,70 @@ test("handleCommand executes each message_id once and flags replays", async () =
     { id: "ses_target", text: "hello agent" },
     { id: "ses_target", text: "hello agent" },
   ]);
+});
+
+test("a failed dispatch forgets the message_id so a replay re-executes", async () => {
+  let attempts = 0;
+  const chats = [];
+  const plugin = new PreloopOpenCodePlugin();
+  plugin.configure(baseConfig);
+  plugin.setOpenCodeClient({
+    session: {
+      chat: async (input) => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new Error("session unavailable");
+        }
+        chats.push({ id: input.path.id, text: input.body.parts[0].text });
+        return {};
+      },
+    },
+  });
+
+  const command = {
+    message_id: "cmd-retry",
+    type: "command",
+    name: "send_message",
+    payload: { text: "deliver me", target_session_id: "ses_target" },
+  };
+
+  // First delivery fails (e.g. backend reconnects and replays afterwards).
+  const first = plugin.handleCommand(command);
+  assert.equal(first.duplicate, false);
+  await assert.rejects(first.result, /session unavailable/);
+
+  // The reconnect replay must re-execute, not be acked as a duplicate.
+  const replay = plugin.handleCommand(command);
+  assert.equal(replay.duplicate, false);
+  await replay.result;
+
+  assert.equal(attempts, 2);
+  assert.deepEqual(chats, [{ id: "ses_target", text: "deliver me" }]);
+
+  // And once that retry succeeds, further replays stay completed-duplicates.
+  const settledReplay = plugin.handleCommand(command);
+  assert.equal(settledReplay.duplicate, true);
+});
+
+test("remote-control-gated failures also release the message_id for replay", async () => {
+  const plugin = makePlugin(undefined, { remote_control_enabled: false });
+  const command = {
+    message_id: "cmd-gated-retry",
+    type: "command",
+    name: "send_message",
+    payload: { text: "hi", target_session_id: "ses_x" },
+  };
+
+  const first = plugin.handleCommand(command);
+  await assert.rejects(first.result, /remote control is disabled/);
+
+  const enabledPlugin = makePlugin();
+  enabledPlugin.setOpenCodeClient({
+    session: { chat: async (input) => ({ text: input.body.parts[0].text }) },
+  });
+  const replay = enabledPlugin.handleCommand(command);
+  assert.equal(replay.duplicate, false);
+  await replay.result;
 });
 
 test("session targeting prefers explicit ids over the configured reference", () => {
@@ -743,4 +869,39 @@ test("presence advertises the opencode runtime and tool_approval capability", ()
   assert.equal(payload.protocol, "preloop.agent_control.v1");
   assert.equal(payload.capabilities.tool_approval, true);
   assert.equal(payload.capabilities.voice, false);
+});
+
+test("presence advertises steering capabilities the client actually supports", () => {
+  const full = makePlugin(undefined, { session_reference: "ses_default" });
+  full.setOpenCodeClient({
+    session: {
+      chat: async () => ({}),
+      prompt: async () => ({}),
+      abort: async () => true,
+    },
+  });
+  const fullPresence = full.presenceMessage(baseConfig);
+  assert.equal(fullPresence.payload.capabilities.text, true);
+  assert.equal(fullPresence.payload.capabilities.interrupt, true);
+
+  const chatOnly = makePlugin(undefined, { session_reference: "ses_default" });
+  chatOnly.setOpenCodeClient({ session: { chat: async () => ({}) } });
+  const chatOnlyPresence = chatOnly.presenceMessage(baseConfig);
+  assert.equal(chatOnlyPresence.payload.capabilities.text, true);
+  assert.equal(chatOnlyPresence.payload.capabilities.interrupt, false);
+
+  // No SDK client at all: nothing may be advertised.
+  const bare = makePlugin(undefined, { session_reference: "ses_default" });
+  const barePresence = bare.presenceMessage(baseConfig);
+  assert.equal(barePresence.payload.capabilities.text, false);
+  assert.equal(barePresence.payload.capabilities.interrupt, false);
+
+  // Prompt-only fallback still counts as text.
+  const promptOnly = makePlugin(undefined, { session_reference: "ses_default" });
+  promptOnly.setOpenCodeClient({
+    session: { prompt: async () => ({}), abort: async () => true },
+  });
+  const promptOnlyPresence = promptOnly.presenceMessage(baseConfig);
+  assert.equal(promptOnlyPresence.payload.capabilities.text, true);
+  assert.equal(promptOnlyPresence.payload.capabilities.interrupt, true);
 });

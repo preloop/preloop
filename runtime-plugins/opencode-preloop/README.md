@@ -6,16 +6,19 @@ routes every tool-permission prompt OpenCode raises through Preloop's
 approval system, so operators can approve or deny tool calls from the Preloop
 console (web/mobile) while the agent keeps working.
 
-The plugin is standalone: it has zero runtime dependencies and mirrors the
-contract of the other Preloop runtime plugins (`@preloop-ai/openclaw-plugin`,
-`@preloop-ai/claude-plugin`, `preloop-hermes-plugin`).
+The plugin mirrors the contract of the other Preloop runtime plugins
+(`@preloop-ai/openclaw-plugin`, `@preloop-ai/claude-plugin`,
+`preloop-hermes-plugin`). Its only runtime dependency is the `ws` package,
+used to authenticate the control WebSocket with an `Authorization` header.
 
 ## How approvals flow
 
 1. The plugin reads the `preloop.control` block that
    `preloop agents enroll` writes into `~/.config/opencode/opencode.json`.
 2. It connects to `preloop.control.control_ws_url` with the durable runtime
-   bearer token, advertises presence/capabilities (`runtime: "opencode"`,
+   bearer token (sent as `Authorization: Bearer` on the WebSocket upgrade via
+   the `ws` package, so the token never appears in proxy/access-log query
+   strings), advertises presence/capabilities (`runtime: "opencode"`,
    `tool_approval: true`), sends heartbeats, and reconnects with backoff.
 3. When OpenCode's permission system raises a prompt, the plugin receives the
    `permission.asked` event through the plugin `event` hook, dedupes it by
@@ -65,7 +68,9 @@ operator can drive it remotely like `@preloop-ai/openclaw-plugin`,
 Remote steering can be disabled entirely by setting
 `remote_control_enabled: false`; presence then advertises `text: false` and
 `interrupt: false`, and steering commands are rejected while tool approvals keep
-working.
+working. Capabilities are advertised truthfully: `text: true` only when the SDK
+client exposes `session.chat` or `session.prompt`, and `interrupt: true` only
+when `session.abort` is available.
 
 ### A note on OpenCode's plugin API
 
@@ -77,7 +82,8 @@ the same integration path OpenCode's own ACP bridge uses.
 
 ## Install
 
-Add the package to `plugin` in your OpenCode config:
+The plugin is distributed via npm only (there is no OpenCode marketplace
+listing). Add the package to `plugin` in your OpenCode config:
 
 ```json
 {
@@ -106,6 +112,7 @@ Written by `preloop agents enroll` under `preloop.control` in
       "control_ws_url": "wss://example.preloop.ai/api/v1/agents/control/ws",
       "bearer_token": "<durable runtime token>",
       "runtime_principal_id": "<principal id>",
+      "permission_check_url": "<optional; overrides the derived permission-check endpoint>",
       "session_reference": "<optional default session>",
       "tool_approval_enabled": true,
       "tool_approval_fail_open": false,
@@ -118,6 +125,11 @@ Written by `preloop agents enroll` under `preloop.control` in
 ```
 
 Set `PRELOOP_OPENCODE_CONTROL_CONFIG` to point at an alternative config file.
+
+`permission_check_url` is optional: when unset, the plugin derives
+`<origin>/api/v1/agents/permission-check` from `control_ws_url`. Set it when a
+proxy or non-standard deployment serves the permission-check endpoint at a
+different URL.
 
 ## Manual Test Without Preloop CLI
 
