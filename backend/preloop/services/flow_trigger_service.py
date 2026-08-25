@@ -89,6 +89,15 @@ class FlowTriggerService:
                 if repo_full_name and issue_number:
                     return f"github:{repo_full_name}:issue:{issue_number}"
 
+            # GitHub release events
+            release = payload.get("release") or {}
+            tag = release.get("tag_name")
+            if tag:
+                repo = payload.get("repository", {})
+                repo_full_name = repo.get("full_name", "")
+                if repo_full_name:
+                    return f"github:{repo_full_name}:release:{tag}"
+
         elif source == "gitlab":
             # GitLab MR/issue events
             obj_attrs = payload.get("object_attributes", {})
@@ -100,6 +109,144 @@ class FlowTriggerService:
                 obj_kind = payload.get("object_kind", "")
                 if project_path and iid:
                     return f"gitlab:{project_path}:{obj_kind}:{iid}"
+
+            # GitLab release events (object_kind == "release"). GitLab's
+            # Release Hook puts the tag at the top level; the nested
+            # release.tag shape is GitHub's, not GitLab's.
+            if payload.get("object_kind") == "release":
+                tag = payload.get("tag")
+                if project_path and tag:
+                    return f"gitlab:{project_path}:release:{tag}"
+
+        return None
+
+    @staticmethod
+    def _resolve_json_path(payload: Any, path: str) -> Any:
+        """Resolve a dotted JSON path like ``attachments.0.title_link``.
+
+        Numeric segments index into lists; other segments index into dicts.
+        Returns None when any step is missing or the shape does not match.
+        """
+        current: Any = payload
+        for part in path.split("."):
+            if isinstance(current, list):
+                try:
+                    current = current[int(part)]
+                except (ValueError, IndexError):
+                    return None
+            elif isinstance(current, dict):
+                current = current.get(part)
+            else:
+                return None
+            if current is None:
+                return None
+        return current
+
+    def _extract_webhook_resource_key(
+        self, flow: Flow, payload: Dict[str, Any]
+    ) -> Optional[str]:
+        """
+        Extract a deduplication key from a generic webhook payload.
+
+        Uses ``flow.webhook_config["dedupe_path"]`` (a dotted JSON path into
+        the webhook body) when configured. Without configuration, safe
+        defaults cover GlitchTip/Slack-style alert payloads
+        (``attachments[0].title_link``) and Sentry-style payloads
+        (``data.issue.id``).
+
+        Returns:
+            A stable key like ``webhook:attachments.0.title_link=<url>``,
+            or None when no configured/default path yields a value.
+        """
+        webhook_config = flow.webhook_config or {}
+        configured = (
+            webhook_config.get("dedupe_path")
+            if isinstance(webhook_config, dict)
+            else None
+        )
+        if configured:
+            paths = [configured]
+        else:
+            paths = ["attachments.0.title_link", "data.issue.id"]
+
+        for path in paths:
+            value = self._resolve_json_path(payload, path)
+            if isinstance(value, str):
+                value = value.strip()
+            if value not in (None, ""):
+                return f"webhook:{path}={value}"
+        return None
+
+    def _extract_dedupe_resource_key(
+        self, flow: Flow, event_data: Dict[str, Any]
+    ) -> Optional[str]:
+        """Deduplication key for ``event_data`` under ``flow``'s trigger type."""
+        if (event_data.get("source") or "").lower() == "webhook":
+            payload = event_data.get("payload")
+            if isinstance(payload, dict):
+                return self._extract_webhook_resource_key(flow, payload)
+            return None
+        return self._extract_resource_key(event_data)
+
+    def _fallback_dedupe_resource_key(
+        self, flow: Flow, event_data: Dict[str, Any]
+    ) -> Optional[str]:
+        """Resource key restricted to sources where commit-SHA dedup cannot apply.
+
+        Generic webhook deliveries (GlitchTip alerts, custom integrations) and
+        GitHub/GitLab release events carry no commit SHA, so the existing
+        commit-based dedup never fires for them. Issue/PR events are excluded:
+        they may legitimately lack a SHA (issue comments, label changes) and
+        their dedup behavior must stay unchanged (see issue #241).
+        """
+        source = (event_data.get("source") or "").lower()
+        if source != "webhook":
+            payload = event_data.get("payload")
+            is_release_event = isinstance(payload, dict) and (
+                bool(payload.get("release")) or payload.get("object_kind") == "release"
+            )
+            if not is_release_event:
+                return None
+        return self._extract_dedupe_resource_key(flow, event_data)
+
+    def _find_running_execution_for_resource_key(
+        self,
+        flow: Flow,
+        resource_key: str,
+        account_id: str,
+    ) -> Optional[FlowExecution]:
+        """
+        Return a running execution of ``flow`` for the same resource key.
+
+        Mirrors ``_find_running_execution_for_commit`` but keyed on the
+        resource identifier (issue/PR/release/webhook body identity) instead
+        of a commit SHA, so commit-less deliveries (GlitchTip alerts, release
+        notifications) can still be coalesced across retries.
+        """
+        executions = crud_flow_execution.get_running_by_flow(
+            self.db,
+            flow_id=flow.id,
+            account_id=uuid.UUID(account_id)
+            if isinstance(account_id, str)
+            else account_id,
+        )
+
+        for execution in executions:
+            trigger_details = execution.trigger_event_details or {}
+            exec_payload = trigger_details.get("payload", {})
+            exec_event_data = {
+                "source": trigger_details.get("source", ""),
+                "payload": exec_payload if isinstance(exec_payload, dict) else {},
+            }
+            if self._extract_dedupe_resource_key(flow, exec_event_data) == (
+                resource_key
+            ):
+                logger.info(
+                    f"Found running execution {execution.id} for flow "
+                    f"{flow.id} and resource {resource_key} "
+                    f"(status: {execution.status})"
+                )
+                return execution
 
         return None
 
@@ -328,30 +475,38 @@ class FlowTriggerService:
     def find_duplicate_execution(
         self, flow: Flow, event_data: Dict[str, Any]
     ) -> Optional[FlowExecution]:
-        """Return a running execution of ``flow`` for the same repo + commit
-        as ``event_data``, or None.
+        """Return a running execution of ``flow`` for the same identity as
+        ``event_data``, or None.
 
         Used by direct-trigger callers (e.g. the webhook endpoint) to preserve
         the commit-SHA deduplication that generic event matching
         (``process_event``) enforces, without silently dropping the event:
         callers can return the existing execution to the caller instead.
 
-        Scope (parity with ``process_event``): dedup applies only when the
-        payload carries a recognizable commit SHA (see
-        ``_extract_commit_sha``); commit-less payloads are never deduplicated.
-        The check-then-insert is also not atomic — a DB-level guard would be
-        needed to close the race for concurrent identical deliveries.
+        Scope: dedup applies when the payload carries a recognizable commit
+        SHA (see ``_extract_commit_sha``), or — as a fallback for
+        commit-less deliveries such as GlitchTip alerts and release events —
+        when a resource key can be extracted (see
+        ``_fallback_dedupe_resource_key``). Payloads with neither identity
+        are never deduplicated. The check-then-insert is also not atomic — a
+        DB-level guard would be needed to close the race for concurrent
+        identical deliveries.
         """
         commit_sha = self._extract_commit_sha(event_data)
-        if not commit_sha:
-            return None
-        repo_key = self._extract_repo_key(event_data)
-        return self._find_running_execution_for_commit(
-            flow.id,
-            commit_sha,
-            str(flow.account_id),
-            repo_key=repo_key,
-        )
+        if commit_sha:
+            repo_key = self._extract_repo_key(event_data)
+            return self._find_running_execution_for_commit(
+                flow.id,
+                commit_sha,
+                str(flow.account_id),
+                repo_key=repo_key,
+            )
+        resource_key = self._fallback_dedupe_resource_key(flow, event_data)
+        if resource_key:
+            return self._find_running_execution_for_resource_key(
+                flow, resource_key, str(flow.account_id)
+            )
+        return None
 
     def matches_trigger_config(self, flow: Flow, event_data: Dict[str, Any]) -> bool:
         """Public wrapper: does ``event_data`` satisfy ``flow.trigger_config``?"""
@@ -800,6 +955,30 @@ class FlowTriggerService:
                                 f"repo {repo_key or '(any)'} commit {commit_sha[:8]}. "
                                 f"This prevents duplicate executions when multiple events "
                                 f"are triggered for the same commit."
+                            )
+                            continue
+
+                    # Fallback dedup for commit-less deliveries (generic
+                    # webhooks, release events): coalesce on a resource key.
+                    # Issue/PR events are excluded so their existing behavior
+                    # is unchanged (see issue #241).
+                    if not commit_sha and account_id:
+                        resource_key = self._fallback_dedupe_resource_key(
+                            flow, event_data
+                        )
+                        if (
+                            resource_key
+                            and self._find_running_execution_for_resource_key(
+                                flow, resource_key, account_id
+                            )
+                            is not None
+                        ):
+                            logger.info(
+                                f"Skipping flow '{flow.name}' ({flow.id}) - "
+                                f"already has a running execution for "
+                                f"resource {resource_key}. This prevents "
+                                f"duplicate executions when delivery retries "
+                                f"re-send the same event."
                             )
                             continue
 

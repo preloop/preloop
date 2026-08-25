@@ -404,6 +404,14 @@ class WebhookConfig(BaseModel):
     webhook_secret: str = Field(
         description="Secure token for authenticating webhook requests (auto-generated)"
     )
+    dedupe_path: Optional[str] = Field(
+        default=None,
+        description=(
+            "Dotted JSON path into the webhook body used to build a "
+            "deduplication key (e.g. 'data.issue.id'). When unset, defaults "
+            "to 'attachments.0.title_link' then 'data.issue.id'."
+        ),
+    )
 
 
 class FlowBase(BaseModel):

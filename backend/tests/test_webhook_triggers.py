@@ -507,6 +507,172 @@ async def test_webhook_double_delivery_deduplicates_on_commit_sha(
 
 
 @pytest.mark.asyncio
+async def test_webhook_double_delivery_deduplicates_without_commit_sha(
+    db_session: Session, test_user
+):
+    """Commit-less GlitchTip-style retries must coalesce on the default
+    dedupe path (attachments[0].title_link): the second identical delivery
+    returns the existing execution with "deduplicated": true (issue #241).
+    """
+    from preloop.services.flow_trigger_service import FlowTriggerService
+
+    db = db_session
+    flow, webhook_secret = _create_webhook_flow(
+        db, test_user, "Webhook Flow Dedup Without Commit SHA"
+    )
+
+    client = _make_client(db)
+    glitchtip_payload = {
+        "alias": "alert",
+        "text": "Error rate high",
+        "attachments": [
+            {"title": "Alert", "title_link": "https://glitchtip.example/issues/42"}
+        ],
+    }
+
+    with patch.object(
+        FlowTriggerService, "_start_flow_execution", new_callable=AsyncMock
+    ):
+        first = client.post(
+            f"/webhooks/flows/{flow.id}/{webhook_secret}", json=glitchtip_payload
+        )
+        second = client.post(
+            f"/webhooks/flows/{flow.id}/{webhook_secret}", json=glitchtip_payload
+        )
+
+    assert first.status_code == 200
+    first_body = first.json()
+    assert first_body["status"] == "triggered"
+    assert first_body["deduplicated"] is False
+
+    assert second.status_code == 200
+    second_body = second.json()
+    assert second_body["deduplicated"] is True
+    assert second_body["execution_id"] == first_body["execution_id"]
+
+    # Exactly one execution row exists for the flow.
+    assert len(_executions_for_flow(db, flow.id)) == 1
+
+
+@pytest.mark.asyncio
+async def test_webhook_different_glitchtip_issue_is_not_deduplicated(
+    db_session: Session, test_user
+):
+    """A later webhook for a DIFFERENT GlitchTip issue id must still start a
+    new execution — only identical deliveries are coalesced (issue #241).
+    """
+    from preloop.services.flow_trigger_service import FlowTriggerService
+
+    db = db_session
+    flow, webhook_secret = _create_webhook_flow(
+        db, test_user, "Webhook Flow Different Issue Not Deduped"
+    )
+
+    client = _make_client(db)
+
+    def _payload(issue_number: int) -> dict:
+        return {
+            "text": "alert",
+            "attachments": [
+                {
+                    "title": "Alert",
+                    "title_link": f"https://glitchtip.example/issues/{issue_number}",
+                }
+            ],
+        }
+
+    with patch.object(
+        FlowTriggerService, "_start_flow_execution", new_callable=AsyncMock
+    ):
+        first = client.post(
+            f"/webhooks/flows/{flow.id}/{webhook_secret}", json=_payload(42)
+        )
+        second = client.post(
+            f"/webhooks/flows/{flow.id}/{webhook_secret}", json=_payload(43)
+        )
+
+    assert first.status_code == 200
+    assert first.json()["deduplicated"] is False
+
+    assert second.status_code == 200
+    second_body = second.json()
+    assert second_body["deduplicated"] is False
+    assert second_body["execution_id"] != first.json()["execution_id"]
+    assert len(_executions_for_flow(db, flow.id)) == 2
+
+
+@pytest.mark.asyncio
+async def test_webhook_custom_dedupe_path_deduplicates(db_session: Session, test_user):
+    """A flow-configured webhook_config.dedupe_path overrides the defaults."""
+    from preloop.services.flow_trigger_service import FlowTriggerService
+
+    import secrets
+
+    db = db_session
+    flow, webhook_secret = _create_webhook_flow(
+        db,
+        test_user,
+        "Webhook Flow Custom Dedupe Path",
+        webhook_config=schemas.WebhookConfig(
+            webhook_secret=secrets.token_urlsafe(32),
+            dedupe_path="event_id",
+        ),
+    )
+
+    client = _make_client(db)
+
+    with patch.object(
+        FlowTriggerService, "_start_flow_execution", new_callable=AsyncMock
+    ):
+        first = client.post(
+            f"/webhooks/flows/{flow.id}/{webhook_secret}", json={"event_id": "abc-1"}
+        )
+        second = client.post(
+            f"/webhooks/flows/{flow.id}/{webhook_secret}", json={"event_id": "abc-1"}
+        )
+
+    assert first.status_code == 200
+    assert first.json()["deduplicated"] is False
+
+    assert second.status_code == 200
+    assert second.json()["deduplicated"] is True
+    assert second.json()["execution_id"] == first.json()["execution_id"]
+    assert len(_executions_for_flow(db, flow.id)) == 1
+
+
+@pytest.mark.asyncio
+async def test_webhook_payload_with_no_identity_never_deduplicates(
+    db_session: Session, test_user
+):
+    """Payloads with neither a commit SHA nor a resolvable dedupe path are
+    never deduplicated — behavior preserved from before issue #241.
+    """
+    from preloop.services.flow_trigger_service import FlowTriggerService
+
+    db = db_session
+    flow, webhook_secret = _create_webhook_flow(
+        db, test_user, "Webhook Flow No Identity Never Deduped"
+    )
+
+    client = _make_client(db)
+    payload = {"foo": "bar"}
+
+    with patch.object(
+        FlowTriggerService, "_start_flow_execution", new_callable=AsyncMock
+    ):
+        first = client.post(f"/webhooks/flows/{flow.id}/{webhook_secret}", json=payload)
+        second = client.post(
+            f"/webhooks/flows/{flow.id}/{webhook_secret}", json=payload
+        )
+
+    assert first.status_code == 200
+    assert first.json()["deduplicated"] is False
+    assert second.status_code == 200
+    assert second.json()["deduplicated"] is False
+    assert len(_executions_for_flow(db, flow.id)) == 2
+
+
+@pytest.mark.asyncio
 async def test_webhook_trigger_returns_202_when_dispatch_fails_after_commit(
     db_session: Session, test_user
 ):

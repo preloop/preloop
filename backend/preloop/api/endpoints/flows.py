@@ -1615,10 +1615,11 @@ async def trigger_flow_via_webhook(
 
     Deduplication: redelivered payloads carrying the same commit SHA as a
     still-running execution of this flow return that execution with
-    ``"deduplicated": true`` instead of creating a duplicate. Payloads without
-    a recognizable commit SHA are never deduplicated (same scope as generic
-    event matching); commit-less callers that need idempotent redelivery
-    should include a unique ``sha`` field in the payload.
+    ``"deduplicated": true`` instead of creating a duplicate. Commit-less
+    payloads (e.g. GlitchTip alerts) are coalesced on a resource key derived
+    from ``webhook_config.dedupe_path`` or the default paths
+    ``attachments.0.title_link`` / ``data.issue.id``; payloads with neither
+    identity are never deduplicated.
     """
     # Get the flow without account filtering
     flow = crud_flow.get(db=db, id=flow_id)
