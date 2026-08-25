@@ -398,9 +398,9 @@ describe('AddAIModelModal OpenRouter provider', () => {
       'sl-select[label="Provider"]'
     ) as any;
     expect(providerSelect?.value).to.equal('openrouter');
-    const urlInput = Array.from(
-      el.shadowRoot?.querySelectorAll('sl-input') ?? []
-    ).find((i) => i.getAttribute('label') === 'API URL') as any;
+    const urlInput = el.shadowRoot?.querySelector(
+      'sl-input[data-field="api_endpoint"]'
+    ) as any;
     expect(urlInput?.value).to.equal('https://openrouter.ai/api/v1');
     // Editing must not wipe the stored id just because it is not in the
     // (unfetched) suggestion list.
@@ -750,7 +750,7 @@ describe('AddAIModelModal Qwen regional endpoints', () => {
     await element.updateComplete;
     const help =
       element.shadowRoot?.querySelector(
-        'sl-input[label="API URL"] [slot="help-text"]'
+        'sl-input[data-field="api_endpoint"] [slot="help-text"]'
       )?.textContent || '';
     expect(help).to.contain('dashscope.aliyuncs.com');
     expect(help).to.contain('dashscope-intl.aliyuncs.com');
@@ -867,6 +867,8 @@ describe('AddAIModelModal edit payload', () => {
     expect(payload).to.not.have.property('credentials_meta_data');
   });
 });
+
+/**
 
 /**
  * AWS Bedrock as a first-class provider: IAM credentials instead of an API
@@ -1047,5 +1049,211 @@ describe('AddAIModelModal Bedrock provider', () => {
     expect(putCalls).to.have.lengthOf(1);
     const body = JSON.parse(String(putCalls[0].args[1].body));
     expect(body.api_key).to.be.undefined;
+  });
+
+  it('preserves a stored non-default region when editing', async () => {
+    element.model = {
+      id: 'existing-id',
+      name: 'Claude on Bedrock',
+      provider_name: 'bedrock',
+      model_identifier: 'anthropic.claude-sonnet-4-5',
+      model_kind: 'llm',
+      has_api_key: true,
+      meta_data: {
+        provider_runtime: { region: 'eu-west-1' },
+      },
+    } as unknown as AIModel;
+    element.open = true;
+    await element.updateComplete;
+
+    // The form must show the persisted region, not the default.
+    expect((element as any)._bedrockRegion).to.equal('eu-west-1');
+
+    (element as any)._syncFormFromDom = () => {};
+    await (element as any)._handleFormSubmit(new Event('submit'));
+
+    const putCalls = fetchStub
+      .getCalls()
+      .filter((call) => String(call.args[0]).includes('existing-id'));
+    const body = JSON.parse(String(putCalls[0].args[1].body));
+    // Saving the edit must not silently re-route to us-east-1.
+    expect(body.meta_data.provider_runtime.region).to.equal('eu-west-1');
+  });
+
+  it('requires name and model id before submitting a Bedrock model', async () => {
+    (element as any)._currentModel = { provider_name: 'bedrock' };
+    (element as any)._bedrockAccessKeyId = 'AKIAIOSFODNN7EXAMPLE';
+    (element as any)._bedrockSecretAccessKey = 'shhh';
+    (element as any)._syncFormFromDom = () => {};
+
+    await (element as any)._handleFormSubmit(new Event('submit'));
+
+    // Credentials alone are not enough: missing name/model id must produce
+    // the friendly required-fields error, not a raw backend 422.
+    expect((element as any)._formError).to.contain('required fields');
+    expect(createdModelPayloads(fetchStub)).to.have.lengthOf(0);
+  });
+
+  it('does not duplicate credentials as api_key in discovery requests', async () => {
+    (element as any)._currentModel = { provider_name: 'bedrock' };
+    (element as any)._bedrockAccessKeyId = 'AKIAIOSFODNN7EXAMPLE';
+    (element as any)._bedrockSecretAccessKey = 'shhh';
+    (element as any)._bedrockSessionToken = 'tok';
+    (element as any)._bedrockRegion = 'us-east-1';
+    // The blob mirrors the inputs into api_key for submit/gateway gating.
+    (element as any)._syncBedrockApiKey();
+    expect((element as any)._currentModel.api_key).to.be.a('string');
+
+    await (element as any)._fetchModelsForCurrentProvider();
+
+    const [, init] = discoveryCalls()[0].args;
+    const body = JSON.parse(String(init.body));
+    // Credential material travels once, via the dedicated aws_* fields only.
+    expect(body.api_key).to.be.undefined;
+    expect(body.aws_secret_access_key).to.equal('shhh');
+  });
+});
+
+/**
+ * Issue #186: form state was synced from the shadow DOM by matching the
+ * human-readable `label` attribute against hardcoded strings. Renaming or
+ * translating a label silently stopped that field from syncing, and typed
+ * values were dropped on submit. Fields are now bound by a stable
+ * `data-field` attribute instead.
+ */
+describe('AddAIModelModal stable field bindings (#186)', () => {
+  let element: AddAIModelModal;
+  let sandbox: SinonSandbox;
+  let fetchStub: SinonStub;
+
+  const field = (name: string): any =>
+    element.shadowRoot?.querySelector(`[data-field="${name}"]`);
+
+  beforeEach(async () => {
+    localStorage.setItem('accessToken', 'test-access-token');
+    localStorage.setItem('refreshToken', 'test-refresh-token');
+    sandbox = sinon.createSandbox();
+    fetchStub = sandbox.stub(window, 'fetch');
+    fetchStub.callsFake(async (url: any, init: any) => {
+      if (
+        String(url).includes('/api/v1/ai-models') &&
+        init?.method === 'POST'
+      ) {
+        const body = JSON.parse(String(init.body));
+        return new Response(JSON.stringify({ id: 'id-1', ...body }), {
+          status: 201,
+        });
+      }
+      return new Response(JSON.stringify([]));
+    });
+
+    element = await fixture(html`<add-ai-model-modal></add-ai-model-modal>`);
+    element.open = true;
+    await element.updateComplete;
+    // A fully valid base model so submit passes validation; the tests then
+    // change individual fields through their DOM elements only.
+    (element as any)._currentModel = {
+      name: 'Base Model',
+      provider_name: 'openai',
+      model_identifier: 'gpt-base',
+      model_kind: 'llm',
+      api_endpoint: 'https://api.example.com/v1',
+      api_key: '',
+    };
+    (element as any)._modelSuggestions = ['gpt-base', 'gpt-other'];
+    // Render the custom model id input for every test in this block.
+    (element as any)._isOtherModel = true;
+    await element.updateComplete;
+  });
+
+  afterEach(() => {
+    sandbox.restore();
+    localStorage.clear();
+  });
+
+  const createPayloads = (): any[] =>
+    fetchStub
+      .getCalls()
+      .filter(
+        (call) =>
+          String(call.args[0]).includes('/api/v1/ai-models') &&
+          call.args[1]?.method === 'POST'
+      )
+      .map((call) => JSON.parse(String(call.args[1].body)));
+
+  // Set a value on the element without firing events: only the submit-time
+  // DOM sync may pick it up, mirroring a mutation the handlers missed.
+  const typeInto = async (el: any, value: string) => {
+    el.value = value;
+    await element.updateComplete;
+  };
+
+  it('binds every editable field with a data-field attribute', async () => {
+    for (const name of [
+      'name',
+      'api_endpoint',
+      'api_key',
+      'model_identifier',
+      'model_kind',
+    ]) {
+      expect(field(name), `missing data-field="${name}"`).to.exist;
+    }
+  });
+
+  it('syncs values typed into each bound field into the submitted model', async () => {
+    await typeInto(field('name'), 'Renamed From Dom');
+    await typeInto(field('api_endpoint'), 'https://dom.example.com/v1');
+    await typeInto(field('api_key'), 'sk-dom-typed-key');
+    await typeInto(field('model_identifier'), 'custom-id-from-dom');
+
+    await (element as any)._handleFormSubmit(new Event('submit'));
+
+    expect((element as any)._formError).to.equal(null);
+    const payload = createPayloads()[0];
+    expect(payload.name).to.equal('Renamed From Dom');
+    expect(payload.api_endpoint).to.equal('https://dom.example.com/v1');
+    expect(payload.api_key).to.equal('sk-dom-typed-key');
+    expect(payload.model_identifier).to.equal('custom-id-from-dom');
+  });
+
+  it('syncs the service kind select by data-field', async () => {
+    const select = field('model_kind');
+    select.value = 'tts';
+    await element.updateComplete;
+
+    await (element as any)._handleFormSubmit(new Event('submit'));
+
+    const payload = createPayloads()[0];
+    expect(payload.model_kind).to.equal('tts');
+  });
+
+  it('still syncs every field after its label text is changed', async () => {
+    // Simulate renaming/translating the UI: labels no longer match the
+    // English strings the old code matched on.
+    field('name').setAttribute('label', 'Anzeigename');
+    field('api_endpoint').setAttribute('label', 'API-URL');
+    field('api_key').setAttribute('label', 'Schlüssel');
+    field('model_kind').setAttribute('label', 'Diensttyp');
+
+    await element.updateComplete;
+    field('model_identifier').setAttribute('label', 'Modell-ID');
+
+    await typeInto(field('name'), 'Translated Sync');
+    await typeInto(field('api_endpoint'), 'https://translated.example.com/v1');
+    await typeInto(field('api_key'), 'sk-translated-key');
+
+    (element as any)._syncFormFromDom();
+
+    expect((element as any)._currentModel.name).to.equal('Translated Sync');
+    expect((element as any)._currentModel.api_endpoint).to.equal(
+      'https://translated.example.com/v1'
+    );
+    expect((element as any)._currentModel.api_key).to.equal(
+      'sk-translated-key'
+    );
+
+    field('model_kind').value = 'stt';
+    (element as any)._syncFormFromDom();
+    expect((element as any)._currentModel.model_kind).to.equal('stt');
   });
 });

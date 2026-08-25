@@ -266,6 +266,19 @@ export class AddAIModelModal extends LitElement {
     this._modelsSource = null;
     this._modelsFallbackReason = null;
     this._resetBedrockFields();
+    // Restore the persisted routing region so editing a model configured for
+    // e.g. eu-west-1 does not silently re-route it to the default region on
+    // save (the gateway reads the region from meta_data.provider_runtime).
+    if (this.model) {
+      const runtime = this.model.meta_data?.provider_runtime;
+      const storedRegion =
+        runtime && typeof runtime === 'object'
+          ? (runtime as { region?: unknown }).region
+          : undefined;
+      if (typeof storedRegion === 'string' && storedRegion.trim()) {
+        this._bedrockRegion = storedRegion.trim();
+      }
+    }
   }
 
   /** Clear the AWS credential inputs; editing falls back to "keep stored key". */
@@ -338,30 +351,36 @@ export class AddAIModelModal extends LitElement {
     };
   }
 
-  /** Read current input values directly from shadow DOM elements. */
+  /**
+   * Read current input values directly from shadow DOM elements.
+   *
+   * Fields are located by their stable `data-field` attribute, never by the
+   * visible label text: renaming or translating a label must not silently
+   * stop a field from syncing into the submitted model.
+   */
   private _syncFormFromDom() {
-    const inputs = this.shadowRoot?.querySelectorAll('sl-input') ?? [];
+    const inputs = this.shadowRoot?.querySelectorAll('[data-field]') ?? [];
     for (const input of inputs) {
-      const label = input.getAttribute('label');
+      const field = input.getAttribute('data-field');
       const val = (input as any).value as string;
-      if (label === 'Friendly Name') this._currentModel.name = val || undefined;
-      else if (label === 'API URL' && val)
+      if (field === 'name') this._currentModel.name = val || undefined;
+      else if (field === 'api_endpoint' && val)
         this._currentModel.api_endpoint = val;
-      else if (label === 'API Key' && val) this._currentModel.api_key = val;
-      else if (label === 'AWS Access Key ID') {
+      else if (field === 'api_key' && val) this._currentModel.api_key = val;
+      else if (field === 'bedrock_access_key_id') {
         this._bedrockAccessKeyId = val || '';
-      } else if (label === 'AWS Secret Access Key') {
+      } else if (field === 'bedrock_secret_access_key') {
         this._bedrockSecretAccessKey = val || '';
-      } else if (label === 'AWS Session Token') {
+      } else if (field === 'bedrock_session_token') {
         this._bedrockSessionToken = val || '';
-      } else if (label === 'AWS Region') {
+      } else if (field === 'bedrock_region') {
         this._bedrockRegion = val || BEDROCK_DEFAULT_REGION;
-      } else if (label === 'Custom Model Name / ID')
+      } else if (field === 'model_identifier')
         this._currentModel.model_identifier = val || undefined;
     }
     if (this._isBedrock) this._syncBedrockApiKey();
     const serviceKindSelect = this.shadowRoot?.querySelector(
-      'sl-select[label="Service Kind"]'
+      'sl-select[data-field="model_kind"]'
     ) as SlSelect | null;
     if (serviceKindSelect?.value) {
       this._currentModel.model_kind = serviceKindSelect.value as
@@ -530,7 +549,9 @@ export class AddAIModelModal extends LitElement {
     try {
       const result = await this._fetchModelSuggestionsForProvider(
         provider,
-        this._currentModel.api_key,
+        // Bedrock credentials travel via the dedicated aws_* body fields;
+        // sending the stored JSON blob as api_key would be redundant.
+        this._isBedrock ? undefined : this._currentModel.api_key,
         apiEndpoint,
         awsAuth
       );
@@ -639,6 +660,16 @@ export class AddAIModelModal extends LitElement {
     // Sync values from DOM in case event handlers missed a mutation
     this._syncFormFromDom();
 
+    // Shared required-field guard. Only `api_endpoint` is provider-specific:
+    // Bedrock has no HTTP endpoint (the region travels in meta_data instead).
+    if (
+      !this._currentModel.name ||
+      !this._currentModel.provider_name ||
+      !this._currentModel.model_identifier
+    ) {
+      this._formError = 'Please fill in all required fields';
+      return;
+    }
     if (this._isBedrock) {
       // Blank credential fields on an edited model mean "keep the stored key".
       const hasStoredBedrockKey = Boolean(
@@ -649,12 +680,7 @@ export class AddAIModelModal extends LitElement {
           'Please fill in the AWS access key, secret key and region';
         return;
       }
-    } else if (
-      !this._currentModel.name ||
-      !this._currentModel.provider_name ||
-      !this._currentModel.model_identifier ||
-      !this._currentModel.api_endpoint
-    ) {
+    } else if (!this._currentModel.api_endpoint) {
       this._formError = 'Please fill in all required fields';
       return;
     }
@@ -796,6 +822,7 @@ export class AddAIModelModal extends LitElement {
           <sl-input
             class="full-width"
             label="Friendly Name"
+            data-field="name"
             .value=${this._currentModel.name || ''}
             @sl-input=${(e: Event) => {
               this._currentModel.name = (e.target as HTMLInputElement).value;
@@ -805,6 +832,7 @@ export class AddAIModelModal extends LitElement {
           ></sl-input>
           <sl-select
             label="Service Kind"
+            data-field="model_kind"
             .value=${this._currentModel.model_kind || 'llm'}
             @sl-change=${this._handleServiceKindChange}
             ?disabled=${this._isSubmitting}
@@ -832,6 +860,7 @@ export class AddAIModelModal extends LitElement {
               ? html`
                   <sl-input
                     label="AWS Access Key ID"
+                    data-field="bedrock_access_key_id"
                     .value=${this._bedrockAccessKeyId}
                     @sl-input=${(e: Event) => {
                       this._bedrockAccessKeyId = (
@@ -853,6 +882,7 @@ export class AddAIModelModal extends LitElement {
                   <sl-input
                     type="password"
                     label="AWS Secret Access Key"
+                    data-field="bedrock_secret_access_key"
                     .value=${this._bedrockSecretAccessKey}
                     @sl-input=${(e: Event) => {
                       this._bedrockSecretAccessKey = (
@@ -869,6 +899,7 @@ export class AddAIModelModal extends LitElement {
                   <sl-input
                     type="password"
                     label="AWS Session Token"
+                    data-field="bedrock_session_token"
                     .value=${this._bedrockSessionToken}
                     @sl-input=${(e: Event) => {
                       this._bedrockSessionToken = (
@@ -882,6 +913,7 @@ export class AddAIModelModal extends LitElement {
                   ></sl-input>
                   <sl-input
                     label="AWS Region"
+                    data-field="bedrock_region"
                     .value=${this._bedrockRegion}
                     @sl-input=${(e: Event) => {
                       this._bedrockRegion = (
@@ -902,6 +934,7 @@ export class AddAIModelModal extends LitElement {
                   <sl-input
                     class="full-width"
                     label="API URL"
+                    data-field="api_endpoint"
                     .value=${this._currentModel.api_endpoint || ''}
                     @sl-input=${(e: Event) => {
                       this._currentModel.api_endpoint = (
@@ -931,6 +964,7 @@ export class AddAIModelModal extends LitElement {
                     class="full-width"
                     type="password"
                     label="API Key"
+                    data-field="api_key"
                     .value=${this._currentModel.api_key || ''}
                     @sl-input=${(e: Event) => {
                       this._currentModel.api_key = (
@@ -971,6 +1005,7 @@ export class AddAIModelModal extends LitElement {
                     }
                   </sl-input>
                 `
+          }
           }
 
           <div class="full-width">
@@ -1081,6 +1116,7 @@ export class AddAIModelModal extends LitElement {
                       <sl-input
                         class="full-width"
                         label="Custom Model Name / ID"
+                        data-field="model_identifier"
                         placeholder="Enter custom model name"
                         .value=${this._currentModel.model_identifier || ''}
                         @sl-input=${this._handleCustomModelInput}
@@ -1117,6 +1153,7 @@ export class AddAIModelModal extends LitElement {
                     <sl-input
                       class="full-width"
                       label="Model Name / ID"
+                      data-field="model_identifier"
                       placeholder="Enter model name manually"
                       .value=${this._currentModel.model_identifier || ''}
                       @sl-input=${this._handleCustomModelInput}

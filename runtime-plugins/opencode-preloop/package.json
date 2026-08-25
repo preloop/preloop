@@ -1,0 +1,48 @@
+{
+  "name": "@preloop-ai/opencode-plugin",
+  "version": "0.1.0",
+  "description": "Preloop Agent Control plugin for OpenCode",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "verify": "node dist/cli.js verify",
+    "test": "npm run build && node --test"
+  },
+  "keywords": [
+    "preloop",
+    "opencode",
+    "agent-control",
+    "tool-approval",
+    "autonomous-agents"
+  ],
+  "bin": {
+    "preloop-opencode-plugin": "dist/cli.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.19",
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/preloop/preloop.git",
+    "directory": "runtime-plugins/opencode-preloop"
+  },
+  "homepage": "https://preloop.ai",
+  "bugs": {
+    "url": "https://github.com/preloop/preloop/issues"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  }
+}

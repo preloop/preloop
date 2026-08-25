@@ -1682,12 +1682,12 @@ class OpenAIGatewayService:
                 logger.warning(
                     "Gateway anthropic-messages stream failed mid-stream: %s "
                     "provider=%s model=%s error_class=%s",
-                    exc,
+                    type(exc).__name__,
                     getattr(model, "provider_name", None),
                     payload.get("model"),
                     gateway_error.error_class,
                 )
-                yield self._anthropic_stream_error_event(exc)
+                yield self._anthropic_stream_error_event(exc, gateway_error)
             finally:
                 # Client disconnect raises GeneratorExit (a BaseException) at the
                 # paused yield, which the except above does not catch — so
@@ -1962,12 +1962,12 @@ class OpenAIGatewayService:
                 logger.warning(
                     "Gateway chat-completions stream failed mid-stream: %s "
                     "provider=%s model=%s error_class=%s",
-                    exc,
+                    type(exc).__name__,
                     getattr(model, "provider_name", None),
                     payload.get("model"),
                     gateway_error.error_class,
                 )
-                yield self._openai_stream_error_event(exc)
+                yield self._openai_stream_error_event(exc, gateway_error)
                 yield self._sse_done()
             finally:
                 # See stream_message: catch the client-disconnect GeneratorExit
@@ -2440,12 +2440,12 @@ class OpenAIGatewayService:
                 logger.warning(
                     "Gateway responses stream failed mid-stream: %s "
                     "provider=%s model=%s error_class=%s",
-                    exc,
+                    type(exc).__name__,
                     getattr(model, "provider_name", None),
                     payload.get("model"),
                     gateway_error.error_class,
                 )
-                yield self._responses_stream_error_event(exc)
+                yield self._responses_stream_error_event(exc, gateway_error)
                 yield self._sse_done()
             finally:
                 # See stream_message: account for tokens consumed before a
@@ -3725,12 +3725,12 @@ class OpenAIGatewayService:
                 logger.warning(
                     "Gateway codex responses stream failed mid-stream: %s "
                     "provider=%s model=%s error_class=%s",
-                    exc,
+                    type(exc).__name__,
                     getattr(ai_model, "provider_name", None),
                     payload.get("model"),
                     gateway_error.error_class,
                 )
-                yield self._responses_stream_error_event(exc)
+                yield self._responses_stream_error_event(exc, gateway_error)
                 yield "data: [DONE]\n\n"
             finally:
                 if not recorded:
@@ -3967,12 +3967,12 @@ class OpenAIGatewayService:
                 logger.warning(
                     "Gateway codex chat stream failed mid-stream: %s "
                     "provider=%s model=%s error_class=%s",
-                    exc,
+                    type(exc).__name__,
                     getattr(ai_model, "provider_name", None),
                     payload.get("model"),
                     gateway_error.error_class,
                 )
-                yield self._openai_stream_error_event(exc)
+                yield self._openai_stream_error_event(exc, gateway_error)
                 yield self._sse_done()
             finally:
                 if not recorded:
@@ -4621,12 +4621,12 @@ class OpenAIGatewayService:
                 logger.warning(
                     "Gateway anthropic passthrough stream failed mid-stream: %s "
                     "provider=%s model=%s error_class=%s",
-                    exc,
+                    type(exc).__name__,
                     getattr(ai_model, "provider_name", None),
                     requested_model,
                     gateway_error.error_class,
                 )
-                yield self._anthropic_stream_error_event(exc)
+                yield self._anthropic_stream_error_event(exc, gateway_error)
             finally:
                 # GeneratorExit (client disconnect) bypasses the except above;
                 # bill already-consumed upstream tokens best-effort.
@@ -5116,27 +5116,61 @@ class OpenAIGatewayService:
             )
         return error
 
-    def _openai_stream_error_event(self, exc: Exception) -> str:
-        """Render a mid-stream failure as an OpenAI-style SSE error event."""
-        return self._sse_event(self._stream_error("openai", exc).to_payload())
+    def _openai_stream_error_event(
+        self, exc: Exception, error: ModelGatewayAPIError | None = None
+    ) -> str:
+        """Render a mid-stream failure as an OpenAI-style SSE error event.
 
-    def _responses_stream_error_event(self, exc: Exception) -> str:
-        """Render a mid-stream failure as a Responses-API SSE error event."""
-        error = self._stream_error("openai", exc)
+        Args:
+            exc: The mid-stream exception.
+            error: Error already classified by ``_stream_error``; pass it so
+                the admin alert in ``_normalize_upstream_error`` fires once
+                per failure instead of twice (#210).
+        """
+        gateway_error = (
+            error if error is not None else self._stream_error("openai", exc)
+        )
+        return self._sse_event(gateway_error.to_payload())
+
+    def _responses_stream_error_event(
+        self, exc: Exception, error: ModelGatewayAPIError | None = None
+    ) -> str:
+        """Render a mid-stream failure as a Responses-API SSE error event.
+
+        Args:
+            exc: The mid-stream exception.
+            error: Error already classified by ``_stream_error``; pass it so
+                the admin alert in ``_normalize_upstream_error`` fires once
+                per failure instead of twice (#210).
+        """
+        gateway_error = (
+            error if error is not None else self._stream_error("openai", exc)
+        )
         return self._sse_event(
             {
                 "type": "error",
-                "code": error.code or error.error_type,
-                "message": error.message,
-                "param": error.param,
+                "code": gateway_error.code or gateway_error.error_type,
+                "message": gateway_error.message,
+                "param": gateway_error.param,
             }
         )
 
-    def _anthropic_stream_error_event(self, exc: Exception) -> str:
-        """Render a mid-stream failure as an Anthropic-style SSE error event."""
-        return self._anthropic_sse_event(
-            "error", self._stream_error("anthropic", exc).to_payload()
+    def _anthropic_stream_error_event(
+        self, exc: Exception, error: ModelGatewayAPIError | None = None
+    ) -> str:
+        """
+        Render a mid-stream failure as an Anthropic-style SSE error event.
+
+        Args:
+            exc: The mid-stream exception.
+            error: Error already classified by ``_stream_error``; pass it so
+                the admin alert in ``_normalize_upstream_error`` fires once
+                per failure instead of twice.
+        """
+        gateway_error = (
+            error if error is not None else self._stream_error("anthropic", exc)
         )
+        return self._anthropic_sse_event("error", gateway_error.to_payload())
 
     def _capture_tools_meta(self, original_tools: Any) -> None:
         """Stash per-tool cost attribution for the usage row.

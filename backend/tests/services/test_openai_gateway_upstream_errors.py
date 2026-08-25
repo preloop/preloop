@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import logging
+from contextlib import contextmanager
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from typing import Any, Iterator
+from unittest.mock import MagicMock, patch
 
+import pytest
+
+from preloop.models.crud import crud_ai_model
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.services.openai_gateway import OpenAIGatewayService
@@ -48,6 +54,76 @@ def _service() -> OpenAIGatewayService:
         user=SimpleNamespace(id="user-1", account_id="account-1"),
     )
     return OpenAIGatewayService(MagicMock(), auth_context)
+
+
+class TestMidStreamSingleAdminAlert:
+    """#210: one mid-stream 5xx must fire notify_admins exactly once.
+
+    The streaming except-blocks classify the exception once via
+    ``_stream_error`` and then reuse that error when rendering the SSE
+    event; re-running classification inside the render helpers would fire
+    a second admin alert for the same failure.
+    """
+
+    @staticmethod
+    def _capture_notify(captured_calls: list):
+        def _notify(*, subject: str, message: str) -> None:
+            captured_calls.append({"subject": subject, "message": message})
+
+        return _notify
+
+    def test_responses_stream_5xx_fires_single_admin_alert(self):
+        """Handler shape: _stream_error then render with the same error."""
+        from unittest.mock import patch as _patch
+
+        service = _service()
+        exc = _FakeHTTPError("upstream exploded mid-stream", status_code=502)
+
+        captured_calls: list = []
+        with _patch(
+            "preloop.sync.tasks.notify_admins",
+            side_effect=self._capture_notify(captured_calls),
+        ):
+            gateway_error = service._stream_error("openai", exc)
+            frame = service._responses_stream_error_event(exc, gateway_error)
+
+        assert len(captured_calls) == 1
+        assert frame.startswith("data: ")
+        assert '"type": "error"' in frame or '"type":"error"' in frame
+        assert "upstream exploded mid-stream" in frame
+
+    def test_chat_and_anthropic_streams_reuse_classified_error(self):
+        """Same dedupe applies to chat-completions and anthropic streams."""
+        from unittest.mock import patch as _patch
+
+        service = _service()
+        exc = _FakeHTTPError("upstream exploded mid-stream", status_code=500)
+
+        captured_calls: list = []
+        with _patch(
+            "preloop.sync.tasks.notify_admins",
+            side_effect=self._capture_notify(captured_calls),
+        ):
+            openai_error = service._stream_error("openai", exc)
+            openai_frame = service._openai_stream_error_event(exc, openai_error)
+            anthropic_error = service._stream_error("anthropic", exc)
+            anthropic_frame = service._anthropic_stream_error_event(
+                exc, anthropic_error
+            )
+
+        assert len(captured_calls) == 2  # once per provider stream, not twice
+        assert "upstream exploded mid-stream" in openai_frame
+        assert "upstream exploded mid-stream" in anthropic_frame
+
+    def test_render_helpers_without_precomputed_error_still_work(self):
+        """Direct calls (tests, non-stream paths) still classify on their own."""
+        service = _service()
+        exc = Exception("upstream connection reset")
+
+        responses_frame = service._responses_stream_error_event(exc)
+        assert '"code": "upstream_disconnect"' in responses_frame or (
+            '"code":"upstream_disconnect"' in responses_frame
+        )
 
 
 def test_normalize_connection_refused_returns_503_network():
@@ -390,3 +466,140 @@ class TestNotifyAdminsTraceScrubbing:
         assert len(trace_text) <= 400, (
             f"Trace length {len(trace_text)} exceeds 400-char cap"
         )
+
+
+# ---------------------------------------------------------------------------
+# Mid-stream handler log hygiene (issue #184).
+# ---------------------------------------------------------------------------
+
+_MIDSTREAM_SECRET = "sk-live-SUPERSECRETKEY1234567890abcdef"
+
+
+def _midstream_failure_chunks() -> Iterator[dict]:
+    """A stream that emits one chunk, then fails with a secret-bearing error."""
+    yield {"choices": [{"delta": {"content": "Hel"}}]}
+    raise RuntimeError(
+        f"upstream died at https://api.example.com/v1/chat?api_key={_MIDSTREAM_SECRET}"
+    )
+
+
+def _create_gateway_model(db_session: Any, account_id: str, alias: str) -> Any:
+    return crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": f"Gateway Model {alias}",
+            "provider_name": "openai",
+            "model_identifier": "test-model",
+            "api_key": "provider-secret",
+            "meta_data": {
+                "gateway": {
+                    "enabled": True,
+                    "model_alias": alias,
+                    "provider_adapter": "preloop",
+                },
+                "pricing": {
+                    "input_price_per_1k": 0.01,
+                    "output_price_per_1k": 0.02,
+                },
+            },
+            "is_default": True,
+        },
+        account_id=account_id,
+    )
+
+
+@contextmanager
+def _captured_gateway_warnings(caplog: pytest.LogCaptureFixture) -> Iterator[Any]:
+    """Attach caplog's handler to the gateway logger directly.
+
+    The ``preloop`` logger is configured with ``propagate: False``, so records
+    never reach the root logger caplog attaches to by default; without this,
+    ``caplog.text`` is empty and the leak assertions below pass vacuously.
+    """
+    emitting_logger = logging.getLogger("preloop.services.openai_gateway")
+    emitting_logger.addHandler(caplog.handler)
+    try:
+        with caplog.at_level(logging.WARNING, logger="preloop.services.openai_gateway"):
+            yield
+    finally:
+        emitting_logger.removeHandler(caplog.handler)
+
+
+class TestMidStreamErrorLogHygiene:
+    """Issue #184: mid-stream handlers logged the raw exception object.
+
+    Upstream SDK exception text can embed endpoint URLs and credentials, so
+    the warning must carry ``type(exc).__name__`` plus the classified
+    ``error_class``, never ``str(exc)``.
+    """
+
+    def _assert_no_leak(self, caplog: pytest.LogCaptureFixture) -> None:
+        assert caplog.records, "log capture produced no records"
+        full_log = caplog.text
+        assert "mid-stream" in full_log
+        assert "RuntimeError" in full_log, "exception type name must be logged"
+        assert "error_class=" in full_log, "classified error_class must be logged"
+        assert _MIDSTREAM_SECRET not in full_log, (
+            "raw exception text leaked into the mid-stream warning log"
+        )
+        assert "https://api.example.com" not in full_log
+
+    def test_chat_completions_midstream_warning_scrubs_exception(
+        self, db_session, test_user, caplog
+    ):
+        _create_gateway_model(db_session, test_user.account_id, "hyg-chat")
+        service = OpenAIGatewayService(
+            db_session, ModelGatewayAuthContext(token="t", user=test_user)
+        )
+        with patch(
+            "preloop.services.openai_gateway.litellm.completion",
+            return_value=_midstream_failure_chunks(),
+        ):
+            with _captured_gateway_warnings(caplog):
+                list(
+                    service.stream_chat_completion(
+                        {
+                            "model": "hyg-chat",
+                            "messages": [{"role": "user", "content": "Hello"}],
+                        }
+                    )
+                )
+        self._assert_no_leak(caplog)
+
+    def test_anthropic_messages_midstream_warning_scrubs_exception(
+        self, db_session, test_user, caplog
+    ):
+        _create_gateway_model(db_session, test_user.account_id, "hyg-anth")
+        service = OpenAIGatewayService(
+            db_session, ModelGatewayAuthContext(token="t", user=test_user)
+        )
+        with patch(
+            "preloop.services.openai_gateway.litellm.completion",
+            return_value=_midstream_failure_chunks(),
+        ):
+            with _captured_gateway_warnings(caplog):
+                list(
+                    service.stream_message(
+                        {
+                            "model": "hyg-anth",
+                            "messages": [{"role": "user", "content": "Hello"}],
+                            "max_tokens": 64,
+                        }
+                    )
+                )
+        self._assert_no_leak(caplog)
+
+    def test_responses_midstream_warning_scrubs_exception(
+        self, db_session, test_user, caplog
+    ):
+        _create_gateway_model(db_session, test_user.account_id, "hyg-resp")
+        service = OpenAIGatewayService(
+            db_session, ModelGatewayAuthContext(token="t", user=test_user)
+        )
+        with patch(
+            "preloop.services.openai_gateway.litellm.completion",
+            return_value=_midstream_failure_chunks(),
+        ):
+            with _captured_gateway_warnings(caplog):
+                list(service.stream_response({"model": "hyg-resp", "input": "Hello"}))
+        self._assert_no_leak(caplog)
