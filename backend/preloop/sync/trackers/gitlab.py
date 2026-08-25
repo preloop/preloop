@@ -1634,7 +1634,7 @@ class GitLabTracker(BaseTracker):
 
             # Return updated MR data
             return {
-                "id": str(mr.id),
+                "id": str(getattr(mr, "id", mr.iid)),
                 "iid": mr.iid,
                 "title": mr.title,
                 "description": mr.description or "",
@@ -1757,11 +1757,16 @@ class GitLabTracker(BaseTracker):
             project = await self._make_request(self.gl.projects.get, project_id)
             mr = await self._make_request(project.mergerequests.get, mr_iid)
 
+            # python-gitlab's approve()/unapprove() replace the object's
+            # attrs with the approvals payload, which has no `id` field.
+            # Capture the identity before mutating the object.
+            mr_id = str(getattr(mr, "id", mr.iid))
+
             # Approve the merge request
             approval = await self._make_request(mr.approve)
 
             return {
-                "id": str(mr.id),
+                "id": mr_id,
                 "iid": mr.iid,
                 "approved": True,
                 "approval_details": approval if approval else {},
@@ -1796,6 +1801,11 @@ class GitLabTracker(BaseTracker):
             raise TrackerResponseError(f"Failed to unapprove merge request: {e}")
 
         try:
+            # python-gitlab's unapprove() replaces the object's attrs with
+            # the approvals payload, which has no `id` field. Capture the
+            # identity before mutating the object.
+            mr_id = str(getattr(mr, "id", mr.iid))
+
             # Unapprove the merge request
             await self._make_request(mr.unapprove)
         except Exception as e:
@@ -1809,7 +1819,7 @@ class GitLabTracker(BaseTracker):
                     f"or approvals not available (404). Treating as no-op."
                 )
                 return {
-                    "id": str(mr.id),
+                    "id": str(getattr(mr, "id", mr.iid)),
                     "iid": mr.iid,
                     "approved": False,
                     "skipped": True,
@@ -1819,7 +1829,7 @@ class GitLabTracker(BaseTracker):
             raise TrackerResponseError(f"Failed to unapprove merge request: {e}")
 
         return {
-            "id": str(mr.id),
+            "id": mr_id,
             "iid": mr.iid,
             "approved": False,
         }
