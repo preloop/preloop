@@ -2,6 +2,10 @@ import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
+import '@shoelace-style/shoelace/dist/components/card/card.js';
+import '@shoelace-style/shoelace/dist/components/icon/icon.js';
+import '@shoelace-style/shoelace/dist/components/copy-button/copy-button.js';
+import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '../../components/view-header.ts';
 import { getRunners, type RunnerRecord } from '../../api';
 import { formatLocalDateTime } from '../../utils/date';
@@ -98,11 +102,54 @@ export class RunnersView extends LitElement {
           : this.error
             ? html`<p class="muted">${this.error}</p>`
             : this.runners.length === 0
-              ? html`<p class="muted">
-                  No runners registered. Run
-                  <code>preloop runner fg --labels local</code> on a machine
-                  that should take jobs.
-                </p>`
+              ? html`
+                  <sl-card
+                    style="width: 100%; max-width: 640px; margin-top: var(--sl-spacing-medium);"
+                  >
+                    <div
+                      style="display: flex; flex-direction: column; align-items: center; text-align: center; padding: var(--sl-spacing-medium);"
+                    >
+                      <sl-icon
+                        name="cpu"
+                        style="font-size: 2.5rem; color: var(--sl-color-primary-600); margin-bottom: var(--sl-spacing-small);"
+                      ></sl-icon>
+                      <h3
+                        style="margin: 0 0 var(--sl-spacing-x-small); font-size: var(--sl-font-size-large); font-weight: var(--sl-font-weight-semibold); color: var(--sl-color-neutral-900);"
+                      >
+                        No Runners Registered
+                      </h3>
+                      <p
+                        class="muted"
+                        style="margin: 0 0 var(--sl-spacing-large); max-width: 480px; line-height: 1.5;"
+                      >
+                        Self-hosted CLI runners execute flow jobs and automation
+                        tasks in your local environment or VPC with full network
+                        and credential access.
+                      </p>
+
+                      <div
+                        style="width: 100%; display: flex; align-items: center; justify-content: space-between; background: var(--sl-color-neutral-100); border: 1px solid var(--sl-color-neutral-300); border-radius: var(--sl-border-radius-medium); padding: var(--sl-spacing-small) var(--sl-spacing-medium); font-family: var(--sl-font-mono); font-size: var(--sl-font-size-small); margin-bottom: var(--sl-spacing-large);"
+                      >
+                        <code style="color: var(--sl-color-primary-700);"
+                          >preloop runner fg --labels local</code
+                        >
+                        <sl-copy-button
+                          value="preloop runner fg --labels local"
+                        ></sl-copy-button>
+                      </div>
+
+                      <sl-button
+                        variant="default"
+                        size="small"
+                        href="https://docs.preloop.ai/guide/runners"
+                        target="_blank"
+                      >
+                        <sl-icon slot="prefix" name="book"></sl-icon>
+                        View Runner Documentation
+                      </sl-button>
+                    </div>
+                  </sl-card>
+                `
               : html`
                   <table>
                     <thead>
