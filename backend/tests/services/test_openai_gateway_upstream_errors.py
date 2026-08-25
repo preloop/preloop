@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import logging
+from contextlib import contextmanager
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from typing import Any, Iterator
+from unittest.mock import MagicMock, patch
 
+import pytest
+
+from preloop.models.crud import crud_ai_model
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.services.openai_gateway import OpenAIGatewayService
@@ -390,3 +396,140 @@ class TestNotifyAdminsTraceScrubbing:
         assert len(trace_text) <= 400, (
             f"Trace length {len(trace_text)} exceeds 400-char cap"
         )
+
+
+# ---------------------------------------------------------------------------
+# Mid-stream handler log hygiene (issue #184).
+# ---------------------------------------------------------------------------
+
+_MIDSTREAM_SECRET = "sk-live-SUPERSECRETKEY1234567890abcdef"
+
+
+def _midstream_failure_chunks() -> Iterator[dict]:
+    """A stream that emits one chunk, then fails with a secret-bearing error."""
+    yield {"choices": [{"delta": {"content": "Hel"}}]}
+    raise RuntimeError(
+        f"upstream died at https://api.example.com/v1/chat?api_key={_MIDSTREAM_SECRET}"
+    )
+
+
+def _create_gateway_model(db_session: Any, account_id: str, alias: str) -> Any:
+    return crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": f"Gateway Model {alias}",
+            "provider_name": "openai",
+            "model_identifier": "test-model",
+            "api_key": "provider-secret",
+            "meta_data": {
+                "gateway": {
+                    "enabled": True,
+                    "model_alias": alias,
+                    "provider_adapter": "preloop",
+                },
+                "pricing": {
+                    "input_price_per_1k": 0.01,
+                    "output_price_per_1k": 0.02,
+                },
+            },
+            "is_default": True,
+        },
+        account_id=account_id,
+    )
+
+
+@contextmanager
+def _captured_gateway_warnings(caplog: pytest.LogCaptureFixture) -> Iterator[Any]:
+    """Attach caplog's handler to the gateway logger directly.
+
+    The ``preloop`` logger is configured with ``propagate: False``, so records
+    never reach the root logger caplog attaches to by default; without this,
+    ``caplog.text`` is empty and the leak assertions below pass vacuously.
+    """
+    emitting_logger = logging.getLogger("preloop.services.openai_gateway")
+    emitting_logger.addHandler(caplog.handler)
+    try:
+        with caplog.at_level(logging.WARNING, logger="preloop.services.openai_gateway"):
+            yield
+    finally:
+        emitting_logger.removeHandler(caplog.handler)
+
+
+class TestMidStreamErrorLogHygiene:
+    """Issue #184: mid-stream handlers logged the raw exception object.
+
+    Upstream SDK exception text can embed endpoint URLs and credentials, so
+    the warning must carry ``type(exc).__name__`` plus the classified
+    ``error_class``, never ``str(exc)``.
+    """
+
+    def _assert_no_leak(self, caplog: pytest.LogCaptureFixture) -> None:
+        assert caplog.records, "log capture produced no records"
+        full_log = caplog.text
+        assert "mid-stream" in full_log
+        assert "RuntimeError" in full_log, "exception type name must be logged"
+        assert "error_class=" in full_log, "classified error_class must be logged"
+        assert _MIDSTREAM_SECRET not in full_log, (
+            "raw exception text leaked into the mid-stream warning log"
+        )
+        assert "https://api.example.com" not in full_log
+
+    def test_chat_completions_midstream_warning_scrubs_exception(
+        self, db_session, test_user, caplog
+    ):
+        _create_gateway_model(db_session, test_user.account_id, "hyg-chat")
+        service = OpenAIGatewayService(
+            db_session, ModelGatewayAuthContext(token="t", user=test_user)
+        )
+        with patch(
+            "preloop.services.openai_gateway.litellm.completion",
+            return_value=_midstream_failure_chunks(),
+        ):
+            with _captured_gateway_warnings(caplog):
+                list(
+                    service.stream_chat_completion(
+                        {
+                            "model": "hyg-chat",
+                            "messages": [{"role": "user", "content": "Hello"}],
+                        }
+                    )
+                )
+        self._assert_no_leak(caplog)
+
+    def test_anthropic_messages_midstream_warning_scrubs_exception(
+        self, db_session, test_user, caplog
+    ):
+        _create_gateway_model(db_session, test_user.account_id, "hyg-anth")
+        service = OpenAIGatewayService(
+            db_session, ModelGatewayAuthContext(token="t", user=test_user)
+        )
+        with patch(
+            "preloop.services.openai_gateway.litellm.completion",
+            return_value=_midstream_failure_chunks(),
+        ):
+            with _captured_gateway_warnings(caplog):
+                list(
+                    service.stream_message(
+                        {
+                            "model": "hyg-anth",
+                            "messages": [{"role": "user", "content": "Hello"}],
+                            "max_tokens": 64,
+                        }
+                    )
+                )
+        self._assert_no_leak(caplog)
+
+    def test_responses_midstream_warning_scrubs_exception(
+        self, db_session, test_user, caplog
+    ):
+        _create_gateway_model(db_session, test_user.account_id, "hyg-resp")
+        service = OpenAIGatewayService(
+            db_session, ModelGatewayAuthContext(token="t", user=test_user)
+        )
+        with patch(
+            "preloop.services.openai_gateway.litellm.completion",
+            return_value=_midstream_failure_chunks(),
+        ):
+            with _captured_gateway_warnings(caplog):
+                list(service.stream_response({"model": "hyg-resp", "input": "Hello"}))
+        self._assert_no_leak(caplog)

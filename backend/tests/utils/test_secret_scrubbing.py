@@ -218,6 +218,68 @@ class TestScrubStructure:
         assert GITHUB_PAT not in str(scrub_structure(data))
 
 
+class TestQueryParameterSecrets:
+    """Issue #184: API keys passed as URL query parameters were not redacted.
+
+    Gemini takes its key as ``?key=AIza...``; other providers use
+    ``?api_key=...`` or OAuth-style ``?access_token=....`` The value must be
+    redacted while the parameter name survives, so operators know what to
+    rotate.
+    """
+
+    GEMINI_KEY = "AIzaSyD-1234567890abcdefghijklmnopqrstu"
+
+    def test_gemini_key_query_param(self) -> None:
+        line = (
+            "https://generativelanguage.googleapis.com/v1beta/models"
+            f"?key={self.GEMINI_KEY}"
+        )
+        scrubbed = scrub_secrets(line)
+        assert self.GEMINI_KEY not in scrubbed
+        assert scrubbed.endswith("models?key=[REDACTED]")
+        assert "generativelanguage.googleapis.com" in scrubbed
+
+    def test_api_key_query_param(self) -> None:
+        secret = "abcdef1234567890abcdef1234567890"
+        line = f"https://api.x.com/v1/models?api_key={secret}"
+        scrubbed = scrub_secrets(line)
+        assert secret not in scrubbed
+        assert "?api_key=[REDACTED]" in scrubbed
+
+    def test_access_token_query_param(self) -> None:
+        token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.secret"
+        line = f"https://example.com/oauth/callback?access_token={token}"
+        scrubbed = scrub_secrets(line)
+        assert token not in scrubbed
+        assert "access_token=[REDACTED]" in scrubbed
+
+    def test_param_name_is_preserved_for_rotation(self) -> None:
+        line = f"https://host/v1/x?key={self.GEMINI_KEY}&alt=sse"
+        scrubbed = scrub_secrets(line)
+        assert "key=" in scrubbed
+        assert "&alt=sse" in scrubbed
+
+    def test_bare_google_key_format(self) -> None:
+        """The AIza format must also be caught outside any URL."""
+        assert self.GEMINI_KEY not in scrub_secrets(f"GEMINI_API_KEY={self.GEMINI_KEY}")
+        scrubbed = scrub_secrets(f"request failed for key {self.GEMINI_KEY} (403)")
+        assert "AIza[REDACTED]" in scrubbed
+
+    def test_second_query_param_after_redacted_one_survives(self) -> None:
+        line = "https://host/v1/x?api_key=supersecretvalue123&model=gemini-pro"
+        scrubbed = scrub_secrets(line)
+        assert "supersecretvalue123" not in scrubbed
+        assert "model=gemini-pro" in scrubbed
+
+    def test_non_credential_params_are_untouched(self) -> None:
+        line = "GET https://api.github.com/repos/a/b?sort=updated&direction=desc 200"
+        assert scrub_secrets(line) == line
+
+    def test_words_ending_in_key_are_not_matched(self) -> None:
+        line = "https://host/search?monkey=value&sort_key=abc"
+        assert scrub_secrets(line) == line
+
+
 class TestReDoSResistance:
     """The URL userinfo patterns are applied to every agent log line, so they
     must stay near-linear on adversarial input (CodeQL py/polynomial-redos,
