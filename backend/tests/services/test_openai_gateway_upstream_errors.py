@@ -50,6 +50,76 @@ def _service() -> OpenAIGatewayService:
     return OpenAIGatewayService(MagicMock(), auth_context)
 
 
+class TestMidStreamSingleAdminAlert:
+    """#210: one mid-stream 5xx must fire notify_admins exactly once.
+
+    The streaming except-blocks classify the exception once via
+    ``_stream_error`` and then reuse that error when rendering the SSE
+    event; re-running classification inside the render helpers would fire
+    a second admin alert for the same failure.
+    """
+
+    @staticmethod
+    def _capture_notify(captured_calls: list):
+        def _notify(*, subject: str, message: str) -> None:
+            captured_calls.append({"subject": subject, "message": message})
+
+        return _notify
+
+    def test_responses_stream_5xx_fires_single_admin_alert(self):
+        """Handler shape: _stream_error then render with the same error."""
+        from unittest.mock import patch as _patch
+
+        service = _service()
+        exc = _FakeHTTPError("upstream exploded mid-stream", status_code=502)
+
+        captured_calls: list = []
+        with _patch(
+            "preloop.sync.tasks.notify_admins",
+            side_effect=self._capture_notify(captured_calls),
+        ):
+            gateway_error = service._stream_error("openai", exc)
+            frame = service._responses_stream_error_event(exc, gateway_error)
+
+        assert len(captured_calls) == 1
+        assert frame.startswith("data: ")
+        assert '"type": "error"' in frame or '"type":"error"' in frame
+        assert "upstream exploded mid-stream" in frame
+
+    def test_chat_and_anthropic_streams_reuse_classified_error(self):
+        """Same dedupe applies to chat-completions and anthropic streams."""
+        from unittest.mock import patch as _patch
+
+        service = _service()
+        exc = _FakeHTTPError("upstream exploded mid-stream", status_code=500)
+
+        captured_calls: list = []
+        with _patch(
+            "preloop.sync.tasks.notify_admins",
+            side_effect=self._capture_notify(captured_calls),
+        ):
+            openai_error = service._stream_error("openai", exc)
+            openai_frame = service._openai_stream_error_event(exc, openai_error)
+            anthropic_error = service._stream_error("anthropic", exc)
+            anthropic_frame = service._anthropic_stream_error_event(
+                exc, anthropic_error
+            )
+
+        assert len(captured_calls) == 2  # once per provider stream, not twice
+        assert "upstream exploded mid-stream" in openai_frame
+        assert "upstream exploded mid-stream" in anthropic_frame
+
+    def test_render_helpers_without_precomputed_error_still_work(self):
+        """Direct calls (tests, non-stream paths) still classify on their own."""
+        service = _service()
+        exc = Exception("upstream connection reset")
+
+        responses_frame = service._responses_stream_error_event(exc)
+        assert '"code": "upstream_disconnect"' in responses_frame or (
+            '"code":"upstream_disconnect"' in responses_frame
+        )
+
+
 def test_normalize_connection_refused_returns_503_network():
     """#116: connection refused becomes 503 with a clear upstream message."""
     err = OpenAIGatewayService._normalize_upstream_error(
