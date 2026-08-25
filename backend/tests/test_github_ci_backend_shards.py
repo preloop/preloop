@@ -75,13 +75,48 @@ def test_backend_coverage_job_combines_shards_before_floor() -> None:
     assert coverage["needs"] == "test-backend"
 
     install = _step_script(coverage, "Install coverage")
-    assert ".github/requirements/app-dev.txt" in install
+    assert ".github/requirements/coverage.txt" in install
+    assert "--require-hashes" in install
 
     script = _step_script(coverage, "Combine coverage and enforce floor")
     assert "coverage combine" in script
     assert "--fail-under=60" in script
     assert f"-ne {BACKEND_TEST_SPLITS}" in script
     assert "coverage-data.*" in script
+
+
+def test_coverage_lock_matches_app_dev_lock() -> None:
+    """coverage.txt must pin the same coverage.py version as app-dev.txt.
+
+    The combine/report job reads data files written by the shards, which use
+    app-dev.txt; a version mismatch can make ``coverage combine`` reject or
+    misread them.
+    """
+    coverage_version = _pinned_version(
+        REPO_ROOT / ".github" / "requirements" / "coverage.txt", "coverage"
+    )
+    app_dev_version = _pinned_version(
+        REPO_ROOT / ".github" / "requirements" / "app-dev.txt", "coverage"
+    )
+    assert coverage_version is not None, "coverage.txt must pin coverage==<version>"
+    assert app_dev_version is not None, "app-dev.txt must pin coverage==<version>"
+    assert coverage_version == app_dev_version
+
+
+def _pinned_version(lock_path: Path, package: str) -> str | None:
+    """Return the pinned ``package==x.y.z`` version from a requirements lock."""
+    prefix = f"{package}=="
+    with lock_path.open(encoding="utf-8") as handle:
+        for line in handle:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            # Requirement lines may be backslash-continued; the first physical
+            # line holds the name==version specifier.
+            requirement = stripped.split("\\")[0].strip()
+            if requirement.startswith(prefix):
+                return requirement[len(prefix) :].strip()
+    return None
 
 
 def test_build_and_push_waits_for_combined_backend_coverage() -> None:
