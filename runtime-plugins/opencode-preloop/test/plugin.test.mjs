@@ -367,21 +367,367 @@ test("session targeting prefers explicit ids over the configured reference", () 
   );
 });
 
-test("dispatch ignores non send_message envelopes and reports missing client", async () => {
+test("dispatch ignores non-command envelopes and reports a missing SDK surface", async () => {
   const plugin = makePlugin(undefined, { session_reference: "ses_default" });
   assert.equal(
     await plugin.dispatch({ message_id: "x", type: "status", name: "heartbeat" }),
     undefined,
   );
+  assert.equal(
+    await plugin.dispatch({
+      message_id: "z",
+      type: "command",
+      name: "request_takeover",
+      payload: { text: "hi" },
+    }),
+    undefined,
+  );
+  const noSession = makePlugin(undefined, { session_reference: "ses_default" });
+  noSession.setOpenCodeClient({ session: {} });
   await assert.rejects(
-    plugin.dispatch({
+    noSession.dispatch({
       message_id: "y",
       type: "command",
       name: "send_message",
       payload: { text: "hi" },
     }),
-    /client\.session\.chat is not available/,
+    /client\.session\.chat \/ client\.session\.prompt is not available/,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Remote control: prompt fallback, timeout, stop/interrupt
+
+test("send_message falls back to blocking session.prompt with the same payload", async () => {
+  const prompts = [];
+  const plugin = makePlugin(undefined, { session_reference: "ses_default" });
+  plugin.setOpenCodeClient({
+    session: {
+      prompt: async (input) => {
+        prompts.push({ id: input.path.id, text: input.body.parts[0].text });
+        return { info: { role: "assistant" }, parts: [] };
+      },
+    },
+  });
+
+  const result = await plugin.dispatch({
+    message_id: "cmd-prompt",
+    type: "command",
+    name: "send_message",
+    payload: { text: "run the checks", target_session_id: "ses_live" },
+  });
+
+  assert.deepEqual(prompts, [{ id: "ses_live", text: "run the checks" }]);
+  assert.equal(result.info.role, "assistant");
+});
+
+test("a hanging session.prompt rejects after turn_timeout_ms", async () => {
+  const plugin = makePlugin(undefined, {
+    session_reference: "ses_default",
+    turn_timeout_ms: 25,
+  });
+  plugin.setOpenCodeClient({
+    session: {
+      prompt: () => new Promise(() => undefined),
+    },
+  });
+
+  await assert.rejects(
+    plugin.dispatch({
+      message_id: "cmd-hang",
+      type: "command",
+      name: "send_message",
+      payload: { text: "hello" },
+    }),
+    /timed out after 25ms/,
+  );
+});
+
+test("turnTimeoutMs falls back to the default when unset or invalid", () => {
+  assert.equal(makePlugin().turnTimeoutMs(), 300000);
+  assert.equal(
+    makePlugin(undefined, { turn_timeout_ms: 4000 }).turnTimeoutMs(),
+    4000,
+  );
+  assert.equal(
+    makePlugin(undefined, { turn_timeout_ms: 0 }).turnTimeoutMs(),
+    300000,
+  );
+});
+
+test("payload.interrupt maps to session.abort on the targeted session", async () => {
+  const aborts = [];
+  const plugin = makePlugin();
+  plugin.setOpenCodeClient({
+    session: {
+      abort: async (input) => {
+        aborts.push(input.path.id);
+        return true;
+      },
+    },
+  });
+
+  const result = await plugin.dispatch({
+    message_id: "cmd-stop",
+    type: "command",
+    name: "send_message",
+    payload: { text: "ignored", interrupt: true, target_session_id: "ses_run" },
+  });
+
+  assert.equal(result, "interrupted");
+  assert.deepEqual(aborts, ["ses_run"]);
+});
+
+test("stop and interrupt command names map to session.abort", async () => {
+  const aborts = [];
+  const plugin = makePlugin(undefined, { session_reference: "ses_default" });
+  plugin.setOpenCodeClient({
+    session: {
+      abort: async (input) => {
+        aborts.push(input.path.id);
+        return true;
+      },
+    },
+  });
+
+  for (const name of ["stop", "interrupt"]) {
+    const result = await plugin.dispatch({
+      message_id: `cmd-${name}`,
+      type: "command",
+      name,
+      payload: {},
+    });
+    assert.equal(result, "interrupted");
+  }
+  assert.deepEqual(aborts, ["ses_default", "ses_default"]);
+});
+
+test("a missing abort surface produces an actionable error", async () => {
+  const plugin = makePlugin(undefined, { session_reference: "ses_default" });
+  plugin.setOpenCodeClient({ session: {} });
+  await assert.rejects(
+    plugin.dispatch({
+      message_id: "cmd-noabort",
+      type: "command",
+      name: "stop",
+      payload: {},
+    }),
+    /client\.session\.abort is not available/,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Remote control gating
+
+test("remote_control_enabled=false blocks steering and dims capabilities", async () => {
+  const chats = [];
+  const config = { ...baseConfig, remote_control_enabled: false };
+  const plugin = new PreloopOpenCodePlugin();
+  plugin.configure(config);
+  plugin.setOpenCodeClient({
+    session: {
+      chat: async (input) => {
+        chats.push(input);
+        return {};
+      },
+    },
+  });
+
+  await assert.rejects(
+    plugin.dispatch({
+      message_id: "cmd-gated",
+      type: "command",
+      name: "send_message",
+      payload: { text: "hi", target_session_id: "ses_x" },
+    }),
+    /remote control is disabled/,
+  );
+  assert.equal(chats.length, 0);
+
+  const presence = plugin.presenceMessage(config);
+  assert.equal(presence.payload.capabilities.text, false);
+  assert.equal(presence.payload.capabilities.interrupt, false);
+  // Approvals are independent of remote steering.
+  assert.equal(presence.payload.capabilities.tool_approval, true);
+});
+
+test("remoteControlEnabled defaults to on", () => {
+  assert.equal(makePlugin().remoteControlEnabled(), true);
+  assert.equal(
+    makePlugin(undefined, { remote_control_enabled: false }).remoteControlEnabled(),
+    false,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// WS frame handling: ack sequence ordering and replay dedupe
+
+function makeSocket() {
+  return {
+    frames: [],
+    send(data) {
+      this.frames.push(JSON.parse(data));
+    },
+  };
+}
+
+/** Yield so handleFrame's async result/ack chain can settle. */
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+test("handleFrame emits one completed ack per command in order", async () => {
+  const socket = makeSocket();
+  let chatCount = 0;
+  const plugin = makePlugin(undefined, { session_reference: "ses_default" });
+  plugin.setOpenCodeClient({
+    session: {
+      chat: async (input) => {
+        chatCount += 1;
+        return { reply_text: `ack ${chatCount}` };
+      },
+    },
+  });
+
+  await plugin.handleFrame(
+    socket,
+    JSON.stringify({
+      message_id: "ws-1",
+      type: "command",
+      name: "send_message",
+      payload: { text: "first" },
+    }),
+  );
+  await flush();
+  await plugin.handleFrame(
+    socket,
+    JSON.stringify({
+      message_id: "ws-2",
+      type: "command",
+      name: "send_message",
+      payload: { message: "second" },
+    }),
+  );
+  await flush();
+
+  assert.equal(socket.frames.length, 2);
+  assert.deepEqual(
+    socket.frames.map((frame) => [frame.name, frame.message_id]),
+    [
+      ["command_result", "ws-1"],
+      ["command_result", "ws-2"],
+    ],
+  );
+  assert.deepEqual(socket.frames[0].payload, {
+    command_id: "ws-1",
+    status: "completed",
+    result: { reply_text: "ack 1" },
+    reply_text: "ack 1",
+  });
+  assert.equal(chatCount, 2);
+});
+
+test("handleFrame acknowledges a replayed message_id without re-executing", async () => {
+  const socket = makeSocket();
+  let chatCount = 0;
+  const plugin = makePlugin(undefined, { session_reference: "ses_default" });
+  plugin.setOpenCodeClient({
+    session: {
+      chat: async () => {
+        chatCount += 1;
+        return {};
+      },
+    },
+  });
+  const envelope = JSON.stringify({
+    message_id: "ws-dup",
+    type: "command",
+    name: "send_message",
+    payload: { text: "once only" },
+  });
+
+  await plugin.handleFrame(socket, envelope);
+  await flush();
+  await plugin.handleFrame(socket, envelope);
+  await flush();
+
+  assert.equal(chatCount, 1);
+  assert.equal(socket.frames.length, 2);
+  assert.deepEqual(socket.frames[1], {
+    type: "status",
+    name: "command_result",
+    message_id: "ws-dup",
+    payload: {
+      command_id: "ws-dup",
+      status: "completed",
+      duplicate: true,
+    },
+  });
+});
+
+test("handleFrame reports failures as command_error with the command id", async () => {
+  const socket = makeSocket();
+  const plugin = makePlugin(undefined, { session_reference: "ses_default" });
+  plugin.setOpenCodeClient({
+    session: {
+      chat: async () => {
+        throw new Error("session gone");
+      },
+    },
+  });
+
+  await plugin.handleFrame(
+    socket,
+    JSON.stringify({
+      message_id: "ws-fail",
+      type: "command",
+      name: "send_message",
+      payload: { text: "boom" },
+    }),
+  );
+  await flush();
+
+  assert.deepEqual(socket.frames, [
+    {
+      type: "status",
+      name: "command_error",
+      message_id: "ws-fail",
+      payload: {
+        command_id: "ws-fail",
+        status: "failed",
+        error: "session gone",
+      },
+    },
+  ]);
+});
+
+test("handleFrame rejects empty turns and malformed JSON", async () => {
+  const socket = makeSocket();
+  const plugin = makePlugin(undefined, { session_reference: "ses_default" });
+  plugin.setOpenCodeClient({
+    session: { chat: async () => ({}) },
+  });
+
+  await plugin.handleFrame(
+    socket,
+    JSON.stringify({
+      message_id: "ws-empty",
+      type: "command",
+      name: "send_message",
+      payload: {},
+    }),
+  );
+  await flush();
+  await plugin.handleFrame(socket, "{not json");
+  await flush();
+
+  assert.deepEqual(
+    socket.frames.map((frame) => [frame.name, frame.payload.status]),
+    [
+      ["command_error", "failed"],
+      ["command_error", "failed"],
+    ],
+  );
+  assert.match(socket.frames[0].payload.error, /requires non-empty text/);
+  assert.match(socket.frames[1].payload.error, /^invalid_json:/);
 });
 
 // ---------------------------------------------------------------------------

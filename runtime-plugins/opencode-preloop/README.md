@@ -35,6 +35,38 @@ deduped by `message_id` (the backend replays undelivered commands on
 reconnect) and delivered into the targeted OpenCode session through the SDK
 `client.session.chat` surface.
 
+## Remote control
+
+The plugin also steers the local OpenCode agent from the Preloop console, so an
+operator can drive it remotely like `@preloop-ai/openclaw-plugin`,
+`@preloop-ai/claude-plugin` and `preloop-hermes-plugin`:
+
+- **Send a turn** — a `send_message` command is forwarded as a user prompt into
+  the targeted OpenCode session. The plugin prefers the async SDK
+  `client.session.chat(...)` surface and falls back to the documented blocking
+  [`client.session.prompt({ path, body })`](https://opencode.ai/docs/sdk/)
+  (`parts: [{ type: "text", text }]`), bounded by `turn_timeout_ms` (default
+  300 s) so a hung turn cannot stall the acknowledgement forever — the session
+  itself keeps running.
+- **Stop / interrupt** — a `stop` or `interrupt` command (or a `send_message`
+  with `payload.interrupt: true`) maps to
+  [`client.session.abort({ path })`](https://opencode.ai/docs/sdk/), which
+  aborts the running session.
+- **Session targeting** — the target session id comes from the envelope
+  (`target_session_id`, `session_reference`, `runtime_session_id`) with a
+  fallback to `preloop.control.session_reference`. OpenCode sessions are
+  addressed by their native session id; the plugin steers existing sessions and
+  does not create new ones (`new_session: false` in its presence payload).
+- **Status events** — every command emits a `command_result` frame on success
+  (which the backend accepts as the command ack) or `command_error` on
+  failure, mirroring the other runtime plugins. Replayed `message_id`s are
+  acknowledged as completed duplicates without re-executing.
+
+Remote steering can be disabled entirely by setting
+`remote_control_enabled: false`; presence then advertises `text: false` and
+`interrupt: false`, and steering commands are rejected while tool approvals keep
+working.
+
 ### A note on OpenCode's plugin API
 
 OpenCode documents a typed `permission.ask` hook, but as of 2026 the
@@ -77,7 +109,9 @@ Written by `preloop agents enroll` under `preloop.control` in
       "session_reference": "<optional default session>",
       "tool_approval_enabled": true,
       "tool_approval_fail_open": false,
-      "approval_timeout_ms": 310000
+      "approval_timeout_ms": 310000,
+      "remote_control_enabled": true,
+      "turn_timeout_ms": 300000
     }
   }
 }

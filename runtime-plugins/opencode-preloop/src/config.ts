@@ -33,6 +33,17 @@ export type ControlConfig = {
    * the permission-check request for up to ~300 s.
    */
   approval_timeout_ms?: number;
+  /**
+   * Gate remote steering (operator `send_message` / `stop` commands arriving
+   * on the Agent Control WebSocket). Defaults to enabled.
+   */
+  remote_control_enabled?: boolean;
+  /**
+   * Upper bound for waiting on OpenCode's blocking `session.prompt` surface
+   * before reporting a timeout for an operator turn. The session itself keeps
+   * running. Defaults to 300000 ms (mirrors the claude sidecar).
+   */
+  turn_timeout_ms?: number;
 };
 
 export const PROTOCOL = "preloop.agent_control.v1";
@@ -40,6 +51,9 @@ export const RUNTIME = "opencode";
 
 /** Upper bound for the blocking permission check; backend blocks up to ~300s. */
 export const DEFAULT_APPROVAL_TIMEOUT_MS = 310_000;
+
+/** Upper bound for one remote operator turn (mirrors the claude sidecar). */
+export const DEFAULT_TURN_TIMEOUT_MS = 300_000;
 
 const USABLE_KEYS: (keyof ControlConfig)[] = [
   "enabled",

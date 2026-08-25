@@ -25,4 +25,5 @@ Packages:
   Claude Code (no in-process plugin API; built on the Claude Agent SDK)
 - `opencode-preloop`: `@preloop-ai/opencode-plugin` (npm), in-process
   OpenCode plugin (permission prompts bridged via OpenCode's plugin
-  `event` hook)
+  `event` hook; remote steering via the SDK `session.chat`/`session.prompt`
+  and `session.abort` surfaces)

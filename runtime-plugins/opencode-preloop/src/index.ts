@@ -3,6 +3,7 @@ import path from "node:path";
 
 import {
   DEFAULT_APPROVAL_TIMEOUT_MS,
+  DEFAULT_TURN_TIMEOUT_MS,
   PROTOCOL,
   RUNTIME,
   loadControlConfig,
@@ -54,10 +55,24 @@ export type OpenCodeClient = {
     }) => Promise<unknown>;
   };
   session?: {
+    /**
+     * Async prompt surface: enqueues the user message and resolves as soon
+     * as OpenCode accepts it. Present on recent SDK builds.
+     */
     chat?: (input: {
       path: { id: string };
       body: { parts: Array<{ type: "text"; text: string }> };
     }) => Promise<unknown>;
+    /**
+     * Blocking prompt surface (https://opencode.ai/docs/sdk/): resolves with
+     * the assistant's reply once the turn finishes.
+     */
+    prompt?: (input: {
+      path: { id: string };
+      body: { parts: Array<{ type: "text"; text: string }> };
+    }) => Promise<unknown>;
+    /** Abort a running session (https://opencode.ai/docs/sdk/). */
+    abort?: (input: { path: { id: string } }) => Promise<unknown>;
   };
 };
 
@@ -207,59 +222,7 @@ export class PreloopOpenCodePlugin {
     });
 
     socket.addEventListener("message", (event) => {
-      let command: OperatorCommand;
-      try {
-        command = JSON.parse(String(event.data)) as OperatorCommand;
-      } catch (error) {
-        this.sendStatus(socket, {
-          type: "status",
-          name: "command_error",
-          payload: {
-            status: "failed",
-            error: `invalid_json: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          },
-        });
-        return;
-      }
-      const outcome = this.handleCommand(command);
-      if (outcome.duplicate) {
-        // Already applied in a previous connection; acknowledge without
-        // re-executing so the backend can mark it delivered.
-        this.sendStatus(socket, {
-          type: "status",
-          name: "command_result",
-          message_id: command.message_id,
-          payload: {
-            command_id: command.message_id,
-            status: "completed",
-            duplicate: true,
-          },
-        });
-        return;
-      }
-      void Promise.resolve(outcome.result)
-        .then((result) => {
-          this.sendStatus(socket, {
-            type: "status",
-            name: "command_result",
-            message_id: command.message_id,
-            payload: { command_id: command.message_id, status: "completed", result },
-          });
-        })
-        .catch((error: unknown) => {
-          this.sendStatus(socket, {
-            type: "status",
-            name: "command_error",
-            message_id: command.message_id,
-            payload: {
-              command_id: command.message_id,
-              status: "failed",
-              error: error instanceof Error ? error.message : String(error),
-            },
-          });
-        });
+      void this.handleFrame(socket, String(event.data));
     });
 
     const onClose = (): void => {
@@ -278,6 +241,7 @@ export class PreloopOpenCodePlugin {
   }
 
   presenceMessage(config: ControlConfig): Record<string, unknown> {
+    const remoteControl = this.remoteControlEnabled(config);
     return {
       type: "presence",
       name: "capabilities",
@@ -287,17 +251,88 @@ export class PreloopOpenCodePlugin {
         protocol: PROTOCOL,
         runtime: this.runtime,
         capabilities: {
-          new_session: true,
+          // OpenCode sessions are addressed by their native session id; the
+          // plugin steers existing sessions rather than creating new ones.
+          new_session: false,
           existing_session: true,
-          text: true,
+          text: remoteControl,
           voice: false,
-          interrupt: true,
+          interrupt: remoteControl,
           tool_approval: this.toolApprovalEnabled(config),
         },
         runtime_principal_id: config.runtime_principal_id,
         runtime_principal_name: config.runtime_principal_name,
       },
     };
+  }
+
+  /**
+   * Process one inbound control frame. Exposed for tests.
+   *
+   * Emission mirrors the openclaw plugin exactly: a `command_result` frame on
+   * success (which the backend also accepts as the command ack) and a
+   * `command_error` frame on failure. Replayed `message_id`s are acknowledged
+   * as completed duplicates without re-executing.
+   */
+  async handleFrame(socket: WebSocket, data: string): Promise<void> {
+    let command: OperatorCommand;
+    try {
+      command = JSON.parse(data) as OperatorCommand;
+    } catch (error) {
+      this.sendStatus(socket, {
+        type: "status",
+        name: "command_error",
+        payload: {
+          status: "failed",
+          error: `invalid_json: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        },
+      });
+      return;
+    }
+    const outcome = this.handleCommand(command);
+    if (outcome.duplicate) {
+      // Already applied in a previous connection; acknowledge without
+      // re-executing so the backend can mark it delivered.
+      this.sendStatus(socket, {
+        type: "status",
+        name: "command_result",
+        message_id: command.message_id,
+        payload: {
+          command_id: command.message_id,
+          status: "completed",
+          duplicate: true,
+        },
+      });
+      return;
+    }
+    void Promise.resolve(outcome.result)
+      .then((result) => {
+        this.sendStatus(socket, {
+          type: "status",
+          name: "command_result",
+          message_id: command.message_id,
+          payload: {
+            command_id: command.message_id,
+            status: "completed",
+            result,
+            reply_text: this.resultToText(result),
+          },
+        });
+      })
+      .catch((error: unknown) => {
+        this.sendStatus(socket, {
+          type: "status",
+          name: "command_error",
+          message_id: command.message_id,
+          payload: {
+            command_id: command.message_id,
+            status: "failed",
+            error: error instanceof Error ? error.message : String(error),
+          },
+        });
+      });
   }
 
   private sendStatus(socket: WebSocket, frame: Record<string, unknown>): void {
@@ -430,25 +465,128 @@ export class PreloopOpenCodePlugin {
   }
 
   async dispatch(command: OperatorCommand): Promise<unknown> {
-    if (command.type !== "command" || command.name !== "send_message") {
+    if (command.type !== "command") {
       return undefined;
     }
     const payload = command.payload ?? {};
-    const text = payload.text ?? payload.message ?? "";
-    if (payload.interrupt) {
+    const isStop =
+      command.name === "stop" ||
+      command.name === "interrupt" ||
+      payload.interrupt === true;
+    if (!isStop && command.name !== "send_message") {
+      return undefined;
+    }
+    if (!this.remoteControlEnabled()) {
       throw new Error(
-        "OpenCode interrupt is not available over the SDK chat surface",
+        "Preloop remote control is disabled (preloop.control.remote_control_enabled)",
       );
     }
+    if (isStop) {
+      return this.abortSession(payload);
+    }
+    const text = payload.text ?? payload.message ?? "";
+    if (!text.trim()) {
+      throw new Error("send_message requires non-empty text");
+    }
+    return this.sendOperatorTurn(text, payload);
+  }
+
+  /**
+   * Forward an operator turn into the targeted OpenCode session.
+   *
+   * Prefers the async `session.chat` surface (resolves once OpenCode accepts
+   * the user message); falls back to the documented blocking
+   * `session.prompt` (https://opencode.ai/docs/sdk/), bounded by
+   * `turn_timeout_ms` so a hung session cannot stall the command ack forever.
+   */
+  private async sendOperatorTurn(
+    text: string,
+    payload: NonNullable<OperatorCommand["payload"]>,
+  ): Promise<unknown> {
     const sessionId = this.resolveSessionId(payload);
     const chat = this.client?.session?.chat;
-    if (!chat) {
-      throw new Error("OpenCode SDK client.session.chat is not available");
+    if (chat) {
+      return chat({
+        path: { id: sessionId },
+        body: { parts: [{ type: "text", text }] },
+      });
     }
-    return chat({
-      path: { id: sessionId },
-      body: { parts: [{ type: "text", text }] },
+    const prompt = this.client?.session?.prompt;
+    if (prompt) {
+      return this.withTurnTimeout(
+        prompt({
+          path: { id: sessionId },
+          body: { parts: [{ type: "text", text }] },
+        }),
+      );
+    }
+    throw new Error(
+      "OpenCode SDK client.session.chat / client.session.prompt is not available",
+    );
+  }
+
+  /** Map stop/interrupt commands onto OpenCode's `session.abort` API. */
+  private async abortSession(
+    payload: NonNullable<OperatorCommand["payload"]>,
+  ): Promise<"interrupted"> {
+    const sessionId = this.resolveSessionId(payload);
+    const abort = this.client?.session?.abort;
+    if (!abort) {
+      throw new Error("OpenCode SDK client.session.abort is not available");
+    }
+    await abort({ path: { id: sessionId } });
+    return "interrupted";
+  }
+
+  private withTurnTimeout<T>(promise: Promise<T>): Promise<T> {
+    const timeoutMs = this.turnTimeoutMs();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    return Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new Error(
+                `OpenCode turn timed out after ${timeoutMs}ms; ` +
+                  "the session may still be running",
+              ),
+            ),
+          timeoutMs,
+        );
+      }),
+    ]).finally(() => {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
     });
+  }
+
+  remoteControlEnabled(config?: ControlConfig): boolean {
+    const resolved = config ?? this.controlConfig;
+    return resolved?.remote_control_enabled !== false;
+  }
+
+  turnTimeoutMs(config?: ControlConfig): number {
+    const resolved = config ?? this.controlConfig;
+    const value = resolved?.turn_timeout_ms;
+    return typeof value === "number" && value > 0
+      ? value
+      : DEFAULT_TURN_TIMEOUT_MS;
+  }
+
+  private resultToText(result: unknown): string {
+    if (typeof result === "string") return result;
+    if (result && typeof result === "object") {
+      const record = result as Record<string, unknown>;
+      for (const key of ["reply_text", "text", "message", "output"]) {
+        const value = record[key];
+        if (typeof value === "string" && value.trim()) {
+          return value;
+        }
+      }
+    }
+    return "";
   }
 
   resolveSessionId(payload: NonNullable<OperatorCommand["payload"]>): string {
@@ -646,7 +784,8 @@ export const plugin = new PreloopOpenCodePlugin();
  *
  * or drop a shim into `.opencode/plugins/preloop.ts`. OpenCode calls the
  * exported function once per project with an SDK context; we keep the Agent
- * Control websocket alive and bridge `permission.asked` events to Preloop.
+ * Control websocket alive, bridge `permission.asked` events to Preloop, and
+ * forward operator turns and stop commands from Preloop into OpenCode.
  */
 export const PreloopPlugin = async (ctx: {
   client?: OpenCodeClient;
