@@ -2379,6 +2379,17 @@ export interface AvailableModelsResult {
 }
 
 /**
+ * AWS credential fields for the bedrock provider's model listing.
+ * Carried in the POST body for the same reason as `apiKey`.
+ */
+export interface AwsDiscoveryAuth {
+  accessKeyId?: string;
+  secretAccessKey?: string;
+  sessionToken?: string;
+  region?: string;
+}
+
+/**
  * List the models a provider offers, for the model picker.
  *
  * The API key goes in the POST body, never the query string: as a query
@@ -2388,6 +2399,9 @@ export interface AvailableModelsResult {
  * which have no fixed catalog and are listed from the endpoint's own
  * OpenAI-compatible GET /models.
  *
+ * `awsAuth` carries explicit AWS credentials for the bedrock provider; when
+ * omitted the backend falls back to its ambient credential chain.
+ *
  * Tolerates the old bare string[] response (pre-provenance servers) by
  * mapping it to { models, source: 'live' }.
  */
@@ -2395,7 +2409,8 @@ export async function getAvailableModelsForProvider(
   provider: string,
   apiKey?: string,
   modelKind: 'llm' | 'stt' | 'tts' = 'llm',
-  apiEndpoint?: string
+  apiEndpoint?: string,
+  awsAuth?: AwsDiscoveryAuth
 ): Promise<AvailableModelsResult> {
   const url = `/api/v1/ai-models/providers/${provider}/available-models`;
   const response = await fetchWithAuth(url, {
@@ -2405,6 +2420,16 @@ export async function getAvailableModelsForProvider(
       model_kind: modelKind,
       ...(apiKey ? { api_key: apiKey } : {}),
       ...(apiEndpoint ? { api_endpoint: apiEndpoint } : {}),
+      ...(awsAuth?.accessKeyId
+        ? { aws_access_key_id: awsAuth.accessKeyId }
+        : {}),
+      ...(awsAuth?.secretAccessKey
+        ? { aws_secret_access_key: awsAuth.secretAccessKey }
+        : {}),
+      ...(awsAuth?.sessionToken
+        ? { aws_session_token: awsAuth.sessionToken }
+        : {}),
+      ...(awsAuth?.region ? { aws_region_name: awsAuth.region } : {}),
     }),
   });
   if (!response.ok) {

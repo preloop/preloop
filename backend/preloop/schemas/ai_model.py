@@ -271,10 +271,43 @@ class AvailableModelsRequest(BaseModel):
     model_kind: Literal["llm", "stt", "tts"] = Field(
         "llm", description="Model service kind to fetch"
     )
+    aws_access_key_id: Optional[str] = Field(
+        None,
+        description=(
+            "AWS access key id for the bedrock provider. Never logged and "
+            "never persisted by this endpoint."
+        ),
+    )
+    aws_secret_access_key: Optional[str] = Field(
+        None,
+        description=(
+            "AWS secret access key for the bedrock provider. Never logged "
+            "and never persisted by this endpoint."
+        ),
+    )
+    aws_session_token: Optional[str] = Field(
+        None,
+        description=(
+            "Optional temporary-session token for the bedrock provider. "
+            "Never logged and never persisted by this endpoint."
+        ),
+    )
+    aws_region_name: Optional[str] = Field(
+        None,
+        description=(
+            "AWS region for the bedrock provider, e.g. us-east-1. Falls "
+            "back to boto3's default region chain when omitted."
+        ),
+    )
 
     @field_serializer("api_key")
     def _hide_api_key(self, value: Optional[str]) -> Optional[str]:
         """Keep the key out of any serialized copy of this model (logs, traces)."""
+        return "***" if value else value
+
+    @field_serializer("aws_access_key_id", "aws_secret_access_key", "aws_session_token")
+    def _hide_aws_secrets(self, value: Optional[str]) -> Optional[str]:
+        """Keep AWS credential material out of serialized copies (logs, traces)."""
         return "***" if value else value
 
 

@@ -2,6 +2,7 @@ import { html, fixture, expect } from '@open-wc/testing';
 import sinon, { SinonSandbox, SinonStub } from 'sinon';
 import './add-ai-model-modal.ts';
 import { AddAIModelModal } from './add-ai-model-modal';
+import type { AIModel } from '../types';
 
 const SECRET_ID = '11111111-1111-1111-1111-111111111111';
 
@@ -864,6 +865,252 @@ describe('AddAIModelModal edit payload', () => {
     expect(payload).to.not.have.property('credentials_backend_type');
     expect(payload).to.not.have.property('credentials_external_ref');
     expect(payload).to.not.have.property('credentials_meta_data');
+  });
+});
+
+/**
+
+/**
+ * AWS Bedrock as a first-class provider: IAM credentials instead of an API
+ * key/endpoint pair, live model listing through the Bedrock control plane,
+ * and a stored credential JSON blob the gateway already understands.
+ */
+describe('AddAIModelModal Bedrock provider', () => {
+  let element: AddAIModelModal;
+  let sandbox: SinonSandbox;
+  let fetchStub: SinonStub;
+
+  const discoveryCalls = () =>
+    fetchStub
+      .getCalls()
+      .filter((call) => String(call.args[0]).includes('available-models'));
+
+  beforeEach(async () => {
+    localStorage.setItem('accessToken', 'test-access-token');
+    localStorage.setItem('refreshToken', 'test-refresh-token');
+    sandbox = sinon.createSandbox();
+    fetchStub = sandbox.stub(window, 'fetch');
+    fetchStub.callsFake(async (url: any) => {
+      if (String(url).includes('available-models')) {
+        return new Response(
+          JSON.stringify({
+            models: ['anthropic.claude-sonnet-4-5', 'amazon.nova-lite-v1:0'],
+            source: 'live',
+          })
+        );
+      }
+      return new Response(JSON.stringify([]));
+    });
+    element = await fixture(html`<add-ai-model-modal></add-ai-model-modal>`);
+  });
+
+  afterEach(() => {
+    sandbox.restore();
+    localStorage.clear();
+  });
+
+  it('offers Bedrock as an LLM provider', () => {
+    const values = (element as any)._availableProviders.map(
+      (p: { value: string }) => p.value
+    );
+    expect(values).to.contain('bedrock');
+  });
+
+  it('does not offer Bedrock for stt or tts', async () => {
+    (element as any)._currentModel = { model_kind: 'stt' };
+    const values = (element as any)._availableProviders.map(
+      (p: { value: string }) => p.value
+    );
+    expect(values).to.not.contain('bedrock');
+  });
+
+  it('resets AWS fields and clears endpoint/key when Bedrock is chosen', async () => {
+    await (element as any)._handleProviderChange({
+      target: { value: 'bedrock' },
+    } as unknown as Event);
+
+    expect((element as any)._bedrockRegion).to.equal('us-east-1');
+    expect((element as any)._currentModel.api_endpoint).to.equal('');
+    expect((element as any)._currentModel.api_key).to.be.undefined;
+  });
+
+  it('refuses to fetch before the AWS credentials are complete', async () => {
+    (element as any)._currentModel = { provider_name: 'bedrock' };
+    (element as any)._bedrockAccessKeyId = 'AKIAIOSFODNN7EXAMPLE';
+    // Secret key and region still missing.
+
+    await (element as any)._fetchModelsForCurrentProvider();
+
+    expect(discoveryCalls()).to.have.lengthOf(0);
+    expect((element as any)._modelsFetchError).to.contain('AWS');
+  });
+
+  it('sends AWS credential fields in the discovery POST body', async () => {
+    (element as any)._currentModel = { provider_name: 'bedrock' };
+    (element as any)._bedrockAccessKeyId = 'AKIAIOSFODNN7EXAMPLE';
+    (element as any)._bedrockSecretAccessKey = 'shhh';
+    (element as any)._bedrockSessionToken = 'tok';
+    (element as any)._bedrockRegion = 'eu-west-1';
+
+    await (element as any)._fetchModelsForCurrentProvider();
+
+    expect((element as any)._modelSuggestions).to.deep.equal([
+      'anthropic.claude-sonnet-4-5',
+      'amazon.nova-lite-v1:0',
+    ]);
+    const [, init] = discoveryCalls()[0].args;
+    const body = JSON.parse(String(init.body));
+    expect(body.aws_access_key_id).to.equal('AKIAIOSFODNN7EXAMPLE');
+    expect(body.aws_secret_access_key).to.equal('shhh');
+    expect(body.aws_session_token).to.equal('tok');
+    expect(body.aws_region_name).to.equal('eu-west-1');
+    expect(body.model_kind).to.equal('llm');
+  });
+
+  it('submits the gateway credential blob and routing region', async () => {
+    (element as any)._currentModel = {
+      name: 'Claude on Bedrock',
+      provider_name: 'bedrock',
+      model_identifier: 'anthropic.claude-sonnet-4-5',
+      model_kind: 'llm',
+    };
+    (element as any)._bedrockAccessKeyId = 'AKIAIOSFODNN7EXAMPLE';
+    (element as any)._bedrockSecretAccessKey = 'shhh';
+    (element as any)._bedrockSessionToken = 'tok';
+    (element as any)._bedrockRegion = 'eu-west-1';
+    (element as any)._syncBedrockApiKey();
+    (element as any)._modelSuggestions = ['anthropic.claude-sonnet-4-5'];
+    (element as any)._syncFormFromDom = () => {};
+    await element.updateComplete;
+
+    await (element as any)._handleFormSubmit(new Event('submit'));
+
+    const payloads = createdModelPayloads(fetchStub);
+    expect(payloads).to.have.lengthOf(1);
+    const payload = payloads[0];
+
+    // The stored secret IS this JSON blob; the gateway parses it back into
+    // litellm's aws_* kwargs.
+    const blob = JSON.parse(payload.api_key);
+    expect(blob).to.deep.equal({
+      aws_access_key_id: 'AKIAIOSFODNN7EXAMPLE',
+      aws_secret_access_key: 'shhh',
+      aws_session_token: 'tok',
+    });
+    // No HTTP endpoint exists for Bedrock; region travels in metadata.
+    expect(payload.api_endpoint).to.be.null;
+    expect(payload.meta_data.provider_runtime.region).to.equal('eu-west-1');
+    expect(payload.meta_data.gateway.model_alias).to.equal(
+      'bedrock/anthropic.claude-sonnet-4-5'
+    );
+  });
+
+  it('blocks submit until the AWS credentials are complete', async () => {
+    (element as any)._currentModel = {
+      name: 'Claude on Bedrock',
+      provider_name: 'bedrock',
+      model_identifier: 'anthropic.claude-sonnet-4-5',
+      model_kind: 'llm',
+    };
+    (element as any)._bedrockAccessKeyId = 'AKIAIOSFODNN7EXAMPLE';
+    // Secret key missing.
+    (element as any)._syncFormFromDom = () => {};
+
+    await (element as any)._handleFormSubmit(new Event('submit'));
+
+    expect((element as any)._formError).to.contain('AWS');
+    expect(createdModelPayloads(fetchStub)).to.have.lengthOf(0);
+  });
+
+  it('keeps the existing key when editing without retyping credentials', async () => {
+    element.model = {
+      id: 'existing-id',
+      name: 'Claude on Bedrock',
+      provider_name: 'bedrock',
+      model_identifier: 'anthropic.claude-sonnet-4-5',
+      model_kind: 'llm',
+      has_api_key: true,
+      meta_data: {},
+    } as unknown as AIModel;
+    element.open = true;
+    await element.updateComplete;
+    (element as any)._syncFormFromDom = () => {};
+
+    await (element as any)._handleFormSubmit(new Event('submit'));
+
+    expect((element as any)._formError).to.equal(null);
+    const putCalls = fetchStub
+      .getCalls()
+      .filter(
+        (call) =>
+          String(call.args[0]).includes('/api/v1/ai-models/existing-id') &&
+          call.args[1]?.method === 'PUT'
+      );
+    expect(putCalls).to.have.lengthOf(1);
+    const body = JSON.parse(String(putCalls[0].args[1].body));
+    expect(body.api_key).to.be.undefined;
+  });
+
+  it('preserves a stored non-default region when editing', async () => {
+    element.model = {
+      id: 'existing-id',
+      name: 'Claude on Bedrock',
+      provider_name: 'bedrock',
+      model_identifier: 'anthropic.claude-sonnet-4-5',
+      model_kind: 'llm',
+      has_api_key: true,
+      meta_data: {
+        provider_runtime: { region: 'eu-west-1' },
+      },
+    } as unknown as AIModel;
+    element.open = true;
+    await element.updateComplete;
+
+    // The form must show the persisted region, not the default.
+    expect((element as any)._bedrockRegion).to.equal('eu-west-1');
+
+    (element as any)._syncFormFromDom = () => {};
+    await (element as any)._handleFormSubmit(new Event('submit'));
+
+    const putCalls = fetchStub
+      .getCalls()
+      .filter((call) => String(call.args[0]).includes('existing-id'));
+    const body = JSON.parse(String(putCalls[0].args[1].body));
+    // Saving the edit must not silently re-route to us-east-1.
+    expect(body.meta_data.provider_runtime.region).to.equal('eu-west-1');
+  });
+
+  it('requires name and model id before submitting a Bedrock model', async () => {
+    (element as any)._currentModel = { provider_name: 'bedrock' };
+    (element as any)._bedrockAccessKeyId = 'AKIAIOSFODNN7EXAMPLE';
+    (element as any)._bedrockSecretAccessKey = 'shhh';
+    (element as any)._syncFormFromDom = () => {};
+
+    await (element as any)._handleFormSubmit(new Event('submit'));
+
+    // Credentials alone are not enough: missing name/model id must produce
+    // the friendly required-fields error, not a raw backend 422.
+    expect((element as any)._formError).to.contain('required fields');
+    expect(createdModelPayloads(fetchStub)).to.have.lengthOf(0);
+  });
+
+  it('does not duplicate credentials as api_key in discovery requests', async () => {
+    (element as any)._currentModel = { provider_name: 'bedrock' };
+    (element as any)._bedrockAccessKeyId = 'AKIAIOSFODNN7EXAMPLE';
+    (element as any)._bedrockSecretAccessKey = 'shhh';
+    (element as any)._bedrockSessionToken = 'tok';
+    (element as any)._bedrockRegion = 'us-east-1';
+    // The blob mirrors the inputs into api_key for submit/gateway gating.
+    (element as any)._syncBedrockApiKey();
+    expect((element as any)._currentModel.api_key).to.be.a('string');
+
+    await (element as any)._fetchModelsForCurrentProvider();
+
+    const [, init] = discoveryCalls()[0].args;
+    const body = JSON.parse(String(init.body));
+    // Credential material travels once, via the dedicated aws_* fields only.
+    expect(body.api_key).to.be.undefined;
+    expect(body.aws_secret_access_key).to.equal('shhh');
   });
 });
 

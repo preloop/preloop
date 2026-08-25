@@ -7185,6 +7185,41 @@ func claudeUsesBedrock(document map[string]interface{}) bool {
 	return value == "1" || value == "true" || value == "yes" || value == "on"
 }
 
+// claudeShellBedrockOverrideNotes warns when the CLI's own process
+// environment still carries CLAUDE_CODE_USE_BEDROCK. applyClaudeManagedGateway
+// neutralizes Bedrock routing inside settings.json's env block, but values
+// exported in the launching shell (or a shell rc file) survive onboarding and
+// can override what Preloop wrote, silently re-enabling direct-to-Bedrock
+// traffic that bypasses the gateway. AWS credential variables are inert
+// without the flag, so they are only listed alongside it.
+func claudeShellBedrockOverrideNotes() []string {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv("CLAUDE_CODE_USE_BEDROCK")))
+	if value != "1" && value != "true" && value != "yes" && value != "on" {
+		return nil
+	}
+	awsKeys := []string{}
+	for _, key := range []string{
+		"AWS_BEARER_TOKEN_BEDROCK",
+		"AWS_ACCESS_KEY_ID",
+		"AWS_SECRET_ACCESS_KEY",
+		"AWS_SESSION_TOKEN",
+		"AWS_REGION",
+		"AWS_DEFAULT_REGION",
+	} {
+		if strings.TrimSpace(os.Getenv(key)) != "" {
+			awsKeys = append(awsKeys, key)
+		}
+	}
+	note := "CLAUDE_CODE_USE_BEDROCK is exported in your current shell environment; it can override the gateway configuration Preloop just wrote and send Claude Code straight to Bedrock. Run `unset CLAUDE_CODE_USE_BEDROCK` and remove its export from your shell profile, then relaunch Claude Code."
+	if len(awsKeys) > 0 {
+		note += fmt.Sprintf(
+			" Also unset the exported %s so no direct Bedrock credentials remain.",
+			strings.Join(awsKeys, ", "),
+		)
+	}
+	return []string{note}
+}
+
 func augmentDocumentWithShellExports(
 	document map[string]interface{},
 	keys ...string,

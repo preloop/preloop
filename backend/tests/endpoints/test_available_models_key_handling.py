@@ -107,6 +107,7 @@ async def test_get_route_reads_the_key_from_the_header(mocker):
         "sk-or-v1-secret-value",
         "llm",
         "https://openrouter.ai/api/v1",
+        aws_auth=None,
     )
 
 
@@ -138,6 +139,7 @@ async def test_post_route_reads_the_key_from_the_body(mocker):
         "sk-or-v1-secret-value",
         "llm",
         "https://openrouter.ai/api/v1",
+        aws_auth=None,
     )
 
 
@@ -157,7 +159,7 @@ async def test_post_route_works_without_a_body(mocker):
 
     assert result.models == ["gpt-5.4"]
     assert result.source == "fallback"
-    fetch.assert_awaited_once_with("openai", None, "llm", None)
+    fetch.assert_awaited_once_with("openai", None, "llm", None, aws_auth=None)
 
 
 @pytest.mark.asyncio

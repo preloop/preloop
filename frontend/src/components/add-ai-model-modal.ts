@@ -7,6 +7,7 @@ import {
   createAIModel,
   updateAIModel,
   type AvailableModelsResult,
+  type AwsDiscoveryAuth,
 } from '../api';
 import type { AIModel } from '../types';
 import type SlSelect from '@shoelace-style/shoelace/dist/components/select/select.js';
@@ -39,6 +40,7 @@ const PROVIDER_OPTIONS: ProviderOption[] = [
   { value: 'deepseek', label: 'DeepSeek', serviceKinds: ['llm'] },
   { value: 'zai', label: 'Z.ai (GLM)', serviceKinds: ['llm'] },
   { value: 'mistral', label: 'Mistral', serviceKinds: ['llm'] },
+  { value: 'bedrock', label: 'AWS Bedrock', serviceKinds: ['llm'] },
   { value: 'openrouter', label: 'OpenRouter', serviceKinds: ['llm'] },
   {
     value: 'openai-compatible',
@@ -76,6 +78,35 @@ const PROVIDER_DEFAULT_ENDPOINTS: Record<string, string> = {
  * (OpenRouter) that is already satisfied without the user typing anything.
  */
 const ENDPOINT_LISTED_PROVIDERS = ['openai-compatible', 'custom', 'openrouter'];
+
+/**
+ * Default AWS region prefilled for the bedrock provider. Bedrock model
+ * availability is regional, so the region must be resolved before listing.
+ */
+const BEDROCK_DEFAULT_REGION = 'us-east-1';
+
+/**
+ * Assemble the credential blob stored for a bedrock model. The gateway
+ * (openai_gateway._bedrock_credential_kwargs) parses this JSON back into
+ * litellm's aws_* kwargs, so the shape here is load-bearing.
+ */
+function buildBedrockCredentialBlob(creds: {
+  accessKeyId?: string;
+  secretAccessKey?: string;
+  sessionToken?: string;
+}): string | undefined {
+  if (!creds.accessKeyId?.trim() || !creds.secretAccessKey?.trim()) {
+    return undefined;
+  }
+  const payload: Record<string, string> = {
+    aws_access_key_id: creds.accessKeyId.trim(),
+    aws_secret_access_key: creds.secretAccessKey.trim(),
+  };
+  if (creds.sessionToken?.trim()) {
+    payload.aws_session_token = creds.sessionToken.trim();
+  }
+  return JSON.stringify(payload);
+}
 
 /**
  * Human wording for the server's fixed fallback-reason vocabulary.
@@ -154,9 +185,27 @@ export class AddAIModelModal extends LitElement {
   @state() private _additionalModelIds: string[] = [];
   /** When true, register this model for Preloop gateway routing (requires upstream API key). */
   @state() private _preloopGatewayEnabled = true;
+  /** AWS credential inputs for the bedrock provider. */
+  @state() private _bedrockAccessKeyId = '';
+  @state() private _bedrockSecretAccessKey = '';
+  @state() private _bedrockSessionToken = '';
+  @state() private _bedrockRegion = BEDROCK_DEFAULT_REGION;
 
   private get _isEditing(): boolean {
     return !!this.model;
+  }
+
+  private get _isBedrock(): boolean {
+    return this._currentModel.provider_name === 'bedrock';
+  }
+
+  /** True once enough AWS material is present to attempt a live listing. */
+  private get _bedrockCredsComplete(): boolean {
+    return Boolean(
+      this._bedrockAccessKeyId.trim() &&
+      this._bedrockSecretAccessKey.trim() &&
+      this._bedrockRegion.trim()
+    );
   }
 
   private get _canEnablePreloopGateway(): boolean {
@@ -216,6 +265,43 @@ export class AddAIModelModal extends LitElement {
     this._modelsFetchError = null;
     this._modelsSource = null;
     this._modelsFallbackReason = null;
+    this._resetBedrockFields();
+    // Restore the persisted routing region so editing a model configured for
+    // e.g. eu-west-1 does not silently re-route it to the default region on
+    // save (the gateway reads the region from meta_data.provider_runtime).
+    if (this.model) {
+      const runtime = this.model.meta_data?.provider_runtime;
+      const storedRegion =
+        runtime && typeof runtime === 'object'
+          ? (runtime as { region?: unknown }).region
+          : undefined;
+      if (typeof storedRegion === 'string' && storedRegion.trim()) {
+        this._bedrockRegion = storedRegion.trim();
+      }
+    }
+  }
+
+  /** Clear the AWS credential inputs; editing falls back to "keep stored key". */
+  private _resetBedrockFields() {
+    this._bedrockAccessKeyId = '';
+    this._bedrockSecretAccessKey = '';
+    this._bedrockSessionToken = '';
+    this._bedrockRegion = BEDROCK_DEFAULT_REGION;
+  }
+
+  /**
+   * Mirror the assembled AWS credential blob into `api_key` so submit,
+   * gateway gating, and extra-model creation all keep working unchanged:
+   * for bedrock the stored secret IS this JSON payload.
+   */
+  private _syncBedrockApiKey() {
+    if (!this._isBedrock) return;
+    this._currentModel.api_key =
+      buildBedrockCredentialBlob({
+        accessKeyId: this._bedrockAccessKeyId,
+        secretAccessKey: this._bedrockSecretAccessKey,
+        sessionToken: this._bedrockSessionToken,
+      }) || undefined;
   }
 
   /**
@@ -236,12 +322,20 @@ export class AddAIModelModal extends LitElement {
     const provider = this._currentModel.provider_name;
     const modelId = modelIdOverride ?? this._currentModel.model_identifier;
     const modelKind = this._currentModel.model_kind || 'llm';
-    const baseMeta = {
+    const baseMeta: Record<string, unknown> = {
       ...existing,
       service_kind: modelKind,
     };
     if (!provider || !modelId) {
       return baseMeta;
+    }
+    if (provider === 'bedrock') {
+      // The gateway reads the routing region from here
+      // (openai_gateway._bedrock_region) when litellm needs aws_region_name.
+      baseMeta.provider_runtime = {
+        ...(baseMeta.provider_runtime as Record<string, unknown> | undefined),
+        region: this._bedrockRegion.trim() || BEDROCK_DEFAULT_REGION,
+      };
     }
     const gatewayEnabled =
       modelKind === 'llm' &&
@@ -273,9 +367,18 @@ export class AddAIModelModal extends LitElement {
       else if (field === 'api_endpoint' && val)
         this._currentModel.api_endpoint = val;
       else if (field === 'api_key' && val) this._currentModel.api_key = val;
-      else if (field === 'model_identifier')
+      else if (field === 'bedrock_access_key_id') {
+        this._bedrockAccessKeyId = val || '';
+      } else if (field === 'bedrock_secret_access_key') {
+        this._bedrockSecretAccessKey = val || '';
+      } else if (field === 'bedrock_session_token') {
+        this._bedrockSessionToken = val || '';
+      } else if (field === 'bedrock_region') {
+        this._bedrockRegion = val || BEDROCK_DEFAULT_REGION;
+      } else if (field === 'model_identifier')
         this._currentModel.model_identifier = val || undefined;
     }
+    if (this._isBedrock) this._syncBedrockApiKey();
     const serviceKindSelect = this.shadowRoot?.querySelector(
       'sl-select[data-field="model_kind"]'
     ) as SlSelect | null;
@@ -309,6 +412,14 @@ export class AddAIModelModal extends LitElement {
       api_endpoint: PROVIDER_DEFAULT_ENDPOINTS[provider] || '',
       model_identifier: '',
     };
+
+    // Bedrock uses its own credential inputs; start from a clean slate with
+    // a usable default region so only key + secret are required.
+    this._resetBedrockFields();
+    if (provider === 'bedrock') {
+      this._currentModel.api_endpoint = '';
+      this._currentModel.api_key = undefined;
+    }
 
     this._modelSuggestions = [];
     this._isOtherModel = false;
@@ -382,13 +493,15 @@ export class AddAIModelModal extends LitElement {
   private async _fetchModelSuggestionsForProvider(
     provider: string,
     apiKey?: string,
-    apiEndpoint?: string
+    apiEndpoint?: string,
+    awsAuth?: AwsDiscoveryAuth
   ): Promise<AvailableModelsResult> {
     return await getAvailableModelsForProvider(
       provider,
       apiKey,
       this._selectedServiceKind,
-      apiEndpoint
+      apiEndpoint,
+      awsAuth
     );
   }
 
@@ -399,6 +512,21 @@ export class AddAIModelModal extends LitElement {
     }
 
     const provider = this._currentModel.provider_name;
+    // Bedrock authenticates with AWS credential fields, not a key/endpoint.
+    let awsAuth: AwsDiscoveryAuth | undefined;
+    if (provider === 'bedrock') {
+      if (!this._bedrockCredsComplete) {
+        this._modelsFetchError =
+          'Enter the AWS access key, secret key and region first, then fetch models';
+        return;
+      }
+      awsAuth = {
+        accessKeyId: this._bedrockAccessKeyId.trim(),
+        secretAccessKey: this._bedrockSecretAccessKey.trim(),
+        sessionToken: this._bedrockSessionToken.trim() || undefined,
+        region: this._bedrockRegion.trim(),
+      };
+    }
     // A provider with a known base URL can be listed even if the field was
     // cleared: the default stands in, matching the server-side default.
     const apiEndpoint =
@@ -421,8 +549,11 @@ export class AddAIModelModal extends LitElement {
     try {
       const result = await this._fetchModelSuggestionsForProvider(
         provider,
-        this._currentModel.api_key,
-        apiEndpoint
+        // Bedrock credentials travel via the dedicated aws_* body fields;
+        // sending the stored JSON blob as api_key would be redundant.
+        this._isBedrock ? undefined : this._currentModel.api_key,
+        apiEndpoint,
+        awsAuth
       );
       this._modelSuggestions = result.models;
       this._modelsSource = result.source;
@@ -529,12 +660,27 @@ export class AddAIModelModal extends LitElement {
     // Sync values from DOM in case event handlers missed a mutation
     this._syncFormFromDom();
 
+    // Shared required-field guard. Only `api_endpoint` is provider-specific:
+    // Bedrock has no HTTP endpoint (the region travels in meta_data instead).
     if (
       !this._currentModel.name ||
       !this._currentModel.provider_name ||
-      !this._currentModel.model_identifier ||
-      !this._currentModel.api_endpoint
+      !this._currentModel.model_identifier
     ) {
+      this._formError = 'Please fill in all required fields';
+      return;
+    }
+    if (this._isBedrock) {
+      // Blank credential fields on an edited model mean "keep the stored key".
+      const hasStoredBedrockKey = Boolean(
+        this._isEditing && this.model?.has_api_key
+      );
+      if (!hasStoredBedrockKey && !this._bedrockCredsComplete) {
+        this._formError =
+          'Please fill in the AWS access key, secret key and region';
+        return;
+      }
+    } else if (!this._currentModel.api_endpoint) {
       this._formError = 'Please fill in all required fields';
       return;
     }
@@ -565,7 +711,8 @@ export class AddAIModelModal extends LitElement {
         provider_name: this._currentModel.provider_name,
         model_identifier: this._currentModel.model_identifier,
         model_kind: this._currentModel.model_kind,
-        api_endpoint: this._currentModel.api_endpoint,
+        // Bedrock has no HTTP endpoint; region travels in meta_data.
+        api_endpoint: this._isBedrock ? null : this._currentModel.api_endpoint,
         is_default: this._currentModel.is_default,
         meta_data: this._buildMetaDataForSubmit(),
         ...(typedApiKey ? { api_key: typedApiKey } : {}),
@@ -708,76 +855,157 @@ export class AddAIModelModal extends LitElement {
             )}
           </sl-select>
 
-          <sl-input
-            class="full-width"
-            label="API URL"
-            data-field="api_endpoint"
-            .value=${this._currentModel.api_endpoint || ''}
-            @sl-input=${(e: Event) => {
-              this._currentModel.api_endpoint = (
-                e.target as HTMLInputElement
-              ).value;
-              this.requestUpdate();
-            }}
-            ?disabled=${this._isSubmitting}
-          >
-            ${
-              this._currentModel.provider_name === 'qwen'
-                ? html`
+          ${
+            this._isBedrock
+              ? html`
+                  <sl-input
+                    label="AWS Access Key ID"
+                    data-field="bedrock_access_key_id"
+                    .value=${this._bedrockAccessKeyId}
+                    @sl-input=${(e: Event) => {
+                      this._bedrockAccessKeyId = (
+                        e.target as HTMLInputElement
+                      ).value;
+                      this._syncBedrockApiKey();
+                      this.requestUpdate();
+                    }}
+                    placeholder=${
+                      this._isEditing ? 'Leave blank to keep existing key' : ''
+                    }
+                    ?disabled=${this._isSubmitting}
+                  >
                     <div slot="help-text">
-                      Default is China (Beijing):
-                      https://dashscope.aliyuncs.com/compatible-mode/v1.
-                      International (Singapore):
-                      https://dashscope-intl.aliyuncs.com/compatible-mode/v1.
-                      US: https://dashscope-us.aliyuncs.com/compatible-mode/v1.
-                      Keys are not interchangeable across regions.
+                      IAM credentials with Bedrock access. Find them in the AWS
+                      console under IAM &gt; Access keys.
                     </div>
-                  `
-                : ''
-            }
-          </sl-input>
-          <sl-input
-            class="full-width"
-            type="password"
-            label="API Key"
-            data-field="api_key"
-            .value=${this._currentModel.api_key || ''}
-            @sl-input=${(e: Event) => {
-              this._currentModel.api_key = (e.target as HTMLInputElement).value;
-              this.requestUpdate();
-            }}
-            placeholder=${
-              this._isEditing ? 'Leave blank to keep existing key' : ''
-            }
-            ?disabled=${this._isSubmitting}
-          >
-            ${
-              !this._isEditing &&
-              this._getProviderKeyUrl(this._currentModel.provider_name)
-                ? html`
+                  </sl-input>
+                  <sl-input
+                    type="password"
+                    label="AWS Secret Access Key"
+                    data-field="bedrock_secret_access_key"
+                    .value=${this._bedrockSecretAccessKey}
+                    @sl-input=${(e: Event) => {
+                      this._bedrockSecretAccessKey = (
+                        e.target as HTMLInputElement
+                      ).value;
+                      this._syncBedrockApiKey();
+                      this.requestUpdate();
+                    }}
+                    placeholder=${
+                      this._isEditing ? 'Leave blank to keep existing key' : ''
+                    }
+                    ?disabled=${this._isSubmitting}
+                  ></sl-input>
+                  <sl-input
+                    type="password"
+                    label="AWS Session Token"
+                    data-field="bedrock_session_token"
+                    .value=${this._bedrockSessionToken}
+                    @sl-input=${(e: Event) => {
+                      this._bedrockSessionToken = (
+                        e.target as HTMLInputElement
+                      ).value;
+                      this._syncBedrockApiKey();
+                      this.requestUpdate();
+                    }}
+                    placeholder="Optional, for temporary credentials"
+                    ?disabled=${this._isSubmitting}
+                  ></sl-input>
+                  <sl-input
+                    label="AWS Region"
+                    data-field="bedrock_region"
+                    .value=${this._bedrockRegion}
+                    @sl-input=${(e: Event) => {
+                      this._bedrockRegion = (
+                        e.target as HTMLInputElement
+                      ).value;
+                      this.requestUpdate();
+                    }}
+                    placeholder=${BEDROCK_DEFAULT_REGION}
+                    ?disabled=${this._isSubmitting}
+                  >
                     <div slot="help-text">
-                      Enter your API key to fetch available models.
-                      <a
-                        href=${this._getProviderKeyUrl(
-                          this._currentModel.provider_name
-                        )}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        >Get your API key here.</a
-                      >
+                      Bedrock model availability is regional, e.g.
+                      ${BEDROCK_DEFAULT_REGION} or eu-west-1.
                     </div>
-                  `
-                : html`
-                    <div slot="help-text">
-                      ${
-                        this._isEditing
-                          ? ''
-                          : 'Enter your API key to fetch available models'
-                      }
-                    </div>
-                  `
-            }
-          </sl-input>
+                  </sl-input>
+                `
+              : html`
+                  <sl-input
+                    class="full-width"
+                    label="API URL"
+                    data-field="api_endpoint"
+                    .value=${this._currentModel.api_endpoint || ''}
+                    @sl-input=${(e: Event) => {
+                      this._currentModel.api_endpoint = (
+                        e.target as HTMLInputElement
+                      ).value;
+                      this.requestUpdate();
+                    }}
+                    ?disabled=${this._isSubmitting}
+                  >
+                    ${
+                      this._currentModel.provider_name === 'qwen'
+                        ? html`
+                            <div slot="help-text">
+                              Default is China (Beijing):
+                              https://dashscope.aliyuncs.com/compatible-mode/v1.
+                              International (Singapore):
+                              https://dashscope-intl.aliyuncs.com/compatible-mode/v1.
+                              US:
+                              https://dashscope-us.aliyuncs.com/compatible-mode/v1.
+                              Keys are not interchangeable across regions.
+                            </div>
+                          `
+                        : ''
+                    }
+                  </sl-input>
+                  <sl-input
+                    class="full-width"
+                    type="password"
+                    label="API Key"
+                    data-field="api_key"
+                    .value=${this._currentModel.api_key || ''}
+                    @sl-input=${(e: Event) => {
+                      this._currentModel.api_key = (
+                        e.target as HTMLInputElement
+                      ).value;
+                      this.requestUpdate();
+                    }}
+                    placeholder=${
+                      this._isEditing ? 'Leave blank to keep existing key' : ''
+                    }
+                    ?disabled=${this._isSubmitting}
+                  >
+                    ${
+                      !this._isEditing &&
+                      this._getProviderKeyUrl(this._currentModel.provider_name)
+                        ? html`
+                            <div slot="help-text">
+                              Enter your API key to fetch available models.
+                              <a
+                                href=${this._getProviderKeyUrl(
+                                  this._currentModel.provider_name
+                                )}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                >Get your API key here.</a
+                              >
+                            </div>
+                          `
+                        : html`
+                            <div slot="help-text">
+                              ${
+                                this._isEditing
+                                  ? ''
+                                  : 'Enter your API key to fetch available models'
+                              }
+                            </div>
+                          `
+                    }
+                  </sl-input>
+                `
+          }
 
           <div class="full-width">
             <sl-checkbox

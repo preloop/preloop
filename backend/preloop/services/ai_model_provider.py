@@ -10,10 +10,11 @@ vocabulary and never contains raw exception text, which can carry endpoint
 URLs and key material (2026-08-04 key-leak incident).
 """
 
+import asyncio
 import ipaddress
 import logging
 from dataclasses import dataclass, field
-from typing import List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
@@ -167,6 +168,7 @@ SUPPORTED_AUDIO_PROVIDER_KINDS: dict[str, set[ModelKind]] = {
     "moonshot": {"llm"},
     "zai": {"llm"},
     "mistral": {"llm"},
+    "bedrock": {"llm"},
 }
 
 
@@ -175,19 +177,26 @@ async def get_available_models_for_provider(
     api_key: Optional[str] = None,
     model_kind: ModelKind = "llm",
     api_endpoint: Optional[str] = None,
+    *,
+    aws_auth: Optional[Dict[str, Any]] = None,
 ) -> ModelDiscoveryResult:
     """
     Fetch available models from the specified AI provider, with provenance.
 
     Args:
         provider: The provider name (openai, anthropic, google, qwen,
-            deepseek, moonshot, zai, mistral, openai-compatible, custom,
-            openrouter)
+            deepseek, moonshot, zai, mistral, bedrock, openai-compatible,
+            custom, openrouter)
         api_key: Optional API key for authentication
         model_kind: Service kind to fetch (llm, stt, or tts)
         api_endpoint: Base URL of an OpenAI-compatible endpoint. Required for
             the openai-compatible/custom providers, which have no fixed
             catalog; defaulted for providers in DEFAULT_PROVIDER_ENDPOINTS.
+        aws_auth: Optional AWS credential mapping for the bedrock provider,
+            with any of the keys ``aws_access_key_id``,
+            ``aws_secret_access_key``, ``aws_session_token`` and
+            ``aws_region_name``. When omitted, boto3's default credential
+            chain (instance profile, env, ...) is used.
 
     Returns:
         ModelDiscoveryResult with the model identifiers, whether they came
@@ -231,6 +240,8 @@ async def get_available_models_for_provider(
         return await _get_zai_models(api_key)
     elif provider == "mistral":
         return await _get_mistral_models(api_key)
+    elif provider == "bedrock":
+        return await _get_bedrock_models(aws_auth)
     elif provider in OPENAI_COMPATIBLE_PROVIDERS:
         endpoint = (api_endpoint or "").strip() or DEFAULT_PROVIDER_ENDPOINTS.get(
             provider
@@ -987,3 +998,162 @@ async def _get_mistral_models(api_key: Optional[str] = None) -> ModelDiscoveryRe
         known_models=MISTRAL_KNOWN_MODELS,
         api_key=api_key,
     )
+
+
+# Fallback catalog used when the Bedrock listing call cannot be made.
+# Provenance: current on-demand chat model ids from AWS Bedrock documentation;
+# every id also resolves in litellm's price map under bedrock/<id>. Live
+# listing via the Bedrock control plane is always attempted first, so this
+# only surfaces when boto3 is missing or the control plane is unreachable.
+BEDROCK_FALLBACK_MODELS = [
+    "anthropic.claude-opus-4-5",
+    "anthropic.claude-sonnet-4-5",
+    "anthropic.claude-haiku-4-5",
+    "amazon.nova-pro-v1:0",
+    "amazon.nova-lite-v1:0",
+]
+
+# ClientError codes (and HTTP statuses) that mean the AWS credentials were
+# rejected or are missing permissions, mapped to ProviderAuthError so the
+# user learns their key is bad instead of seeing a stale catalog.
+_BEDROCK_AUTH_ERROR_CODES = frozenset(
+    {
+        "unrecognizedclientexception",
+        "invalidclienttokenid",
+        "invalidsignatureexception",
+        "expiredtoken",
+        "expiredtokenexception",
+        "accessdeniedexception",
+        "unauthorizedoperation",
+        "accessdenied",
+    }
+)
+
+
+def _is_bedrock_auth_error(exc: Exception) -> bool:
+    """Whether a botocore exception represents rejected AWS credentials."""
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        http_status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+        if http_status in (401, 403):
+            return True
+        code = str(response.get("Error", {}).get("Code") or "").lower()
+        if code in _BEDROCK_AUTH_ERROR_CODES:
+            return True
+    # NoCredentialsError and friends carry no response payload at all.
+    name = type(exc).__name__.lower()
+    return "nocredentials" in name or "credential" in name
+
+
+def _is_bedrock_chat_model(summary: Any) -> bool:
+    """Keep ACTIVE foundation models that emit text; drop the rest.
+
+    ``list_foundation_models`` also returns embedding, image and video
+    generation models, which the LLM picker cannot use. A summary without an
+    ``outputModalities`` field predates modality reporting and is kept rather
+    than guessed away.
+    """
+    lifecycle = getattr(summary, "modelLifecycle", None)
+    if lifecycle is not None:
+        status = str(getattr(lifecycle, "status", "") or "").upper()
+        if status and status != "ACTIVE":
+            return False
+
+    modalities = getattr(summary, "outputModalities", None) or []
+    if not modalities:
+        return True
+    return any(str(m).upper() == "TEXT" for m in modalities)
+
+
+async def _get_bedrock_models(
+    aws_auth: Optional[Dict[str, Any]] = None,
+) -> ModelDiscoveryResult:
+    """List AWS Bedrock foundation models live via the Bedrock control plane.
+
+    Uses boto3's ``bedrock`` client ``list_foundation_models``, which answers
+    from IAM-authenticated credentials instead of a static key, so both
+    explicit access keys and ambient credentials (instance profile, env,
+    SSO) work. The listing validates the credentials for free — a bad key
+    fails the call with an auth error, which raises ProviderAuthError so the
+    user knows their credentials are wrong.
+
+    Args:
+        aws_auth: Optional mapping with ``aws_access_key_id``,
+            ``aws_secret_access_key``, ``aws_session_token`` and
+            ``aws_region_name``. Missing keys fall back to boto3's default
+            credential/region chain.
+
+    Returns:
+        ModelDiscoveryResult with sorted text-output foundation model ids.
+
+    Raises:
+        ProviderValidationError: When no region can be resolved.
+        ProviderAuthError: When AWS rejects the credentials.
+    """
+    try:
+        import boto3  # type: ignore[import-untyped]
+        from botocore.config import Config  # type: ignore[import-untyped]
+    except ImportError:
+        logger.warning("boto3 package not installed, cannot list Bedrock models")
+        return _fallback(BEDROCK_FALLBACK_MODELS, ERROR_SDK_MISSING)
+
+    auth = {key: str(value).strip() for key, value in (aws_auth or {}).items() if value}
+    session_kwargs = {
+        key: auth[key]
+        for key in ("aws_access_key_id", "aws_secret_access_key", "aws_session_token")
+        if auth.get(key)
+    }
+
+    try:
+        session = boto3.Session(**session_kwargs)
+        region = auth.get("aws_region_name") or session.region_name
+        if not region:
+            raise ProviderValidationError(
+                "AWS region is required. Enter a region (e.g. us-east-1) "
+                "or set AWS_DEFAULT_REGION."
+            )
+        client = session.client(
+            "bedrock",
+            region_name=region,
+            config=Config(
+                connect_timeout=MODEL_DISCOVERY_TIMEOUT_SECONDS,
+                read_timeout=MODEL_DISCOVERY_TIMEOUT_SECONDS,
+                retries={"max_attempts": 1},
+            ),
+        )
+        # list_foundation_models is synchronous; keep it off the event loop.
+        response = await asyncio.to_thread(client.list_foundation_models)
+    except ProviderValidationError:
+        raise
+    except Exception as e:
+        from botocore.exceptions import (  # type: ignore[import-untyped]
+            BotoCoreError,
+            ClientError,
+        )
+
+        if isinstance(e, (ClientError, BotoCoreError)) and _is_bedrock_auth_error(e):
+            logger.warning("Bedrock authentication failed: %s", type(e).__name__)
+            raise ProviderAuthError(
+                "Invalid AWS credentials. Check the access key, secret key "
+                "and region, then try again."
+            ) from e
+        logger.warning(
+            "Failed to list Bedrock models, using bundled fallback: %s",
+            type(e).__name__,
+        )
+        return _fallback(BEDROCK_FALLBACK_MODELS, _classify_fetch_error(e))
+
+    summaries = getattr(response, "modelSummaries", None) or []
+    model_ids = []
+    for summary in summaries:
+        model_id = str(getattr(summary, "modelId", "") or "").strip()
+        if model_id and _is_bedrock_chat_model(summary):
+            model_ids.append(model_id)
+
+    model_ids = sorted(set(model_ids))[:MAX_DISCOVERED_MODELS]
+    if not model_ids:
+        logger.info("Bedrock returned no chat models, using bundled fallback")
+        return _fallback(BEDROCK_FALLBACK_MODELS, ERROR_EMPTY_RESPONSE)
+
+    logger.info("Listed %d Bedrock models", len(model_ids))
+    return _live(model_ids)
