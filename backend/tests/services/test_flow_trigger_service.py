@@ -1116,3 +1116,245 @@ class TestIsPreloopTriggeredEvent:
             "payload": {"sender": {"login": "dimitris"}},
         }
         assert flow_trigger_service._is_preloop_triggered_event(event) is False
+
+
+class TestExtractResourceKeyRelease:
+    """Release events must produce a resource key (issue #241)."""
+
+    def test_github_release_resource_key(self, flow_trigger_service):
+        event = {
+            "source": "github",
+            "type": "release",
+            "payload": {
+                "action": "published",
+                "release": {"tag_name": "v1.2.3"},
+                "repository": {"full_name": "owner/repo"},
+            },
+        }
+        result = flow_trigger_service._extract_resource_key(event)
+        assert result == "github:owner/repo:release:v1.2.3"
+
+    def test_github_release_missing_tag_returns_none(self, flow_trigger_service):
+        event = {
+            "source": "github",
+            "payload": {
+                "release": {},
+                "repository": {"full_name": "owner/repo"},
+            },
+        }
+        assert flow_trigger_service._extract_resource_key(event) is None
+
+    def test_gitlab_release_resource_key(self, flow_trigger_service):
+        event = {
+            "source": "gitlab",
+            "object_kind": "release",
+            "payload": {
+                "object_kind": "release",
+                "release": {"tag": "v2.0.0"},
+                "project": {"path_with_namespace": "group/project"},
+            },
+        }
+        result = flow_trigger_service._extract_resource_key(event)
+        assert result == "gitlab:group/project:release:v2.0.0"
+
+    def test_gitlab_release_missing_project_path_returns_none(
+        self, flow_trigger_service
+    ):
+        event = {
+            "source": "gitlab",
+            "payload": {
+                "object_kind": "release",
+                "release": {"tag": "v2.0.0"},
+            },
+        }
+        assert flow_trigger_service._extract_resource_key(event) is None
+
+
+class TestResolveJsonPath:
+    """Tests for the dotted-path resolver used by webhook dedupe."""
+
+    def test_simple_dict_path(self, flow_trigger_service):
+        assert flow_trigger_service._resolve_json_path({"a": {"b": 1}}, "a.b") == 1
+
+    def test_numeric_index_into_list(self, flow_trigger_service):
+        payload = {"attachments": [{"title_link": "https://example.com/x"}]}
+        assert (
+            flow_trigger_service._resolve_json_path(payload, "attachments.0.title_link")
+            == "https://example.com/x"
+        )
+
+    def test_missing_key_returns_none(self, flow_trigger_service):
+        assert flow_trigger_service._resolve_json_path({"a": {}}, "a.b") is None
+
+    def test_out_of_range_index_returns_none(self, flow_trigger_service):
+        assert flow_trigger_service._resolve_json_path([], "0.x") is None
+
+    def test_non_numeric_index_into_list_returns_none(self, flow_trigger_service):
+        assert flow_trigger_service._resolve_json_path({"a": [1]}, "a.b") is None
+
+    def test_scalar_traversal_returns_none(self, flow_trigger_service):
+        assert flow_trigger_service._resolve_json_path({"a": "str"}, "a.b") is None
+
+
+class TestExtractWebhookResourceKey:
+    """Webhook dedupe key extraction (issue #241)."""
+
+    def _flow(self, webhook_config=None):
+        flow = MagicMock()
+        flow.webhook_config = webhook_config or {}
+        return flow
+
+    def test_default_glitchtip_title_link(self, flow_trigger_service):
+        flow = self._flow()
+        payload = {
+            "text": "alert",
+            "attachments": [{"title_link": "https://glitchtip/issues/42"}],
+        }
+        result = flow_trigger_service._extract_webhook_resource_key(flow, payload)
+        assert result == "webhook:attachments.0.title_link=https://glitchtip/issues/42"
+
+    def test_default_falls_back_to_sentry_issue_id(self, flow_trigger_service):
+        flow = self._flow()
+        payload = {"data": {"issue": {"id": 99}}}
+        result = flow_trigger_service._extract_webhook_resource_key(flow, payload)
+        assert result == "webhook:data.issue.id=99"
+
+    def test_custom_dedupe_path_overrides_defaults(self, flow_trigger_service):
+        flow = self._flow(webhook_config={"dedupe_path": "event_id"})
+        payload = {
+            "event_id": "abc-123",
+            "attachments": [{"title_link": "https://x"}],
+        }
+        result = flow_trigger_service._extract_webhook_resource_key(flow, payload)
+        assert result == "webhook:event_id=abc-123"
+
+    def test_custom_dedupe_path_no_match_returns_none(self, flow_trigger_service):
+        flow = self._flow(webhook_config={"dedupe_path": "missing.path"})
+        assert (
+            flow_trigger_service._extract_webhook_resource_key(flow, {"a": 1}) is None
+        )
+
+    def test_no_defaults_match_returns_none(self, flow_trigger_service):
+        flow = self._flow()
+        assert flow_trigger_service._extract_webhook_resource_key(flow, {}) is None
+
+    def test_empty_string_value_is_skipped(self, flow_trigger_service):
+        flow = self._flow()
+        payload = {"data": {"issue": {"id": ""}}, "other": "v"}
+        assert flow_trigger_service._extract_webhook_resource_key(flow, payload) is None
+
+    def test_non_dict_webhook_config_is_tolerated(self, flow_trigger_service):
+        flow = self._flow()
+        flow.webhook_config = None
+        payload = {"attachments": [{"title_link": "https://x"}]}
+        result = flow_trigger_service._extract_webhook_resource_key(flow, payload)
+        assert result == "webhook:attachments.0.title_link=https://x"
+
+
+class TestFallbackDedupeResourceKey:
+    """The fallback key must apply to webhooks and releases only."""
+
+    @patch("preloop.services.flow_trigger_service.crud_flow_execution")
+    def test_webhook_event_gets_key(self, mock_crud, flow_trigger_service):
+        flow = MagicMock()
+        flow.webhook_config = {}
+        event = {
+            "source": "webhook",
+            "payload": {"data": {"issue": {"id": 7}}},
+        }
+        result = flow_trigger_service._fallback_dedupe_resource_key(flow, event)
+        assert result == "webhook:data.issue.id=7"
+
+    def test_github_issue_event_gets_no_fallback_key(self, flow_trigger_service):
+        """Issue/PR dedup behavior must remain commit-SHA-only."""
+        flow = MagicMock()
+        flow.webhook_config = {}
+        event = {
+            "source": "github",
+            "payload": {
+                "issue": {"number": 5},
+                "repository": {"full_name": "owner/repo"},
+            },
+        }
+        assert flow_trigger_service._fallback_dedupe_resource_key(flow, event) is None
+
+    def test_gitlab_mr_event_gets_no_fallback_key(self, flow_trigger_service):
+        flow = MagicMock()
+        flow.webhook_config = {}
+        event = {
+            "source": "gitlab",
+            "payload": {
+                "object_attributes": {"iid": 9},
+                "project": {"path_with_namespace": "g/p"},
+            },
+        }
+        assert flow_trigger_service._fallback_dedupe_resource_key(flow, event) is None
+
+
+class TestFindDuplicateExecutionResourceKey:
+    """find_duplicate_execution falls back to resource keys when no SHA."""
+
+    def _flow(self):
+        flow = MagicMock()
+        flow.id = uuid.uuid4()
+        flow.account_id = uuid.uuid4()
+        flow.webhook_config = {}
+        return flow
+
+    def _running_execution(self, payload):
+        execution = MagicMock()
+        execution.id = uuid.uuid4()
+        execution.status = "PENDING"
+        execution.trigger_event_details = {
+            "source": "webhook",
+            "type": "webhook",
+            "payload": payload,
+        }
+        return execution
+
+    @patch("preloop.services.flow_trigger_service.crud_flow_execution")
+    def test_commitless_identical_payload_deduplicates(
+        self, mock_crud, flow_trigger_service
+    ):
+        flow = self._flow()
+        payload = {"attachments": [{"title_link": "https://gt/issues/1"}]}
+        mock_crud.get_running_by_flow.return_value = [self._running_execution(payload)]
+
+        duplicate = flow_trigger_service.find_duplicate_execution(
+            flow,
+            {"source": "webhook", "type": "webhook", "payload": dict(payload)},
+        )
+        assert duplicate is not None
+
+    @patch("preloop.services.flow_trigger_service.crud_flow_execution")
+    def test_commitless_different_payload_not_deduplicated(
+        self, mock_crud, flow_trigger_service
+    ):
+        flow = self._flow()
+        mock_crud.get_running_by_flow.return_value = [
+            self._running_execution(
+                {"attachments": [{"title_link": "https://gt/issues/1"}]}
+            )
+        ]
+
+        duplicate = flow_trigger_service.find_duplicate_execution(
+            flow,
+            {
+                "source": "webhook",
+                "type": "webhook",
+                "payload": {"data": {"issue": {"id": 55}}},
+            },
+        )
+        assert duplicate is None
+
+    @patch("preloop.services.flow_trigger_service.crud_flow_execution")
+    def test_payload_without_any_identity_returns_none(
+        self, mock_crud, flow_trigger_service
+    ):
+        flow = self._flow()
+        duplicate = flow_trigger_service.find_duplicate_execution(
+            flow,
+            {"source": "webhook", "type": "webhook", "payload": {"foo": "bar"}},
+        )
+        assert duplicate is None
+        mock_crud.get_running_by_flow.assert_not_called()

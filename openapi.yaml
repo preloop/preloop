@@ -7752,13 +7752,15 @@ paths:
 
         still-running execution of this flow return that execution with
 
-        ``"deduplicated": true`` instead of creating a duplicate. Payloads without
+        ``"deduplicated": true`` instead of creating a duplicate. Commit-less
 
-        a recognizable commit SHA are never deduplicated (same scope as generic
+        payloads (e.g. GlitchTip alerts) are coalesced on a resource key derived
 
-        event matching); commit-less callers that need idempotent redelivery
+        from ``webhook_config.dedupe_path`` or the default paths
 
-        should include a unique ``sha`` field in the payload.'
+        ``attachments.0.title_link`` / ``data.issue.id``; payloads with neither
+
+        identity are never deduplicated.'
       operationId: trigger_flow_via_webhook_api_v1_webhooks_flows__flow_id___webhook_secret__post
       parameters:
       - name: flow_id
@@ -19640,6 +19642,14 @@ components:
           type: string
           title: Webhook Secret
           description: Secure token for authenticating webhook requests (auto-generated)
+        dedupe_path:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Dedupe Path
+          description: Dotted JSON path into the webhook body used to build a deduplication
+            key (e.g. 'data.issue.id'). When unset, defaults to 'attachments.0.title_link'
+            then 'data.issue.id'.
       type: object
       required:
       - webhook_secret
