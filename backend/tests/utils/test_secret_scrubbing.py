@@ -5,6 +5,8 @@ PAT embedded in a git remote URL, surfacing through ``git remote -v`` output
 captured into flow execution logs.
 """
 
+from urllib.parse import urlsplit
+
 from preloop.utils.secret_scrubbing import (
     REDACTED,
     scrub_secret_lines,
@@ -237,7 +239,7 @@ class TestQueryParameterSecrets:
         scrubbed = scrub_secrets(line)
         assert self.GEMINI_KEY not in scrubbed
         assert scrubbed.endswith("models?key=[REDACTED]")
-        assert "generativelanguage.googleapis.com" in scrubbed
+        assert urlsplit(scrubbed).hostname == "generativelanguage.googleapis.com"
 
     def test_api_key_query_param(self) -> None:
         secret = "abcdef1234567890abcdef1234567890"
