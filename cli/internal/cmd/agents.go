@@ -4183,6 +4183,9 @@ func applyClaudeManagedGateway(
 	}
 	plan.ManagedModelAlias = modelAlias
 	plan.ManagedProviderName = "preloop"
+	// Shell-exported Bedrock variables survive the settings.json rewrite;
+	// warn instead of silently letting them override gateway routing.
+	plan.Notes = append(plan.Notes, claudeShellBedrockOverrideNotes()...)
 	plan.Notes = append(
 		plan.Notes,
 		fmt.Sprintf("Model traffic will route through Preloop using %s.", modelAlias),
