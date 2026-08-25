@@ -3028,6 +3028,38 @@ class GitHubTracker(BaseTracker):
         except httpx.RequestError as e:
             raise TrackerConnectionError(f"GitHub connection error: {str(e)}")
 
+    @staticmethod
+    def _match_thread_comment(
+        thread: Dict[str, Any],
+        comment_id: str,
+    ) -> Optional[str]:
+        """Match a comment against a review thread node.
+
+        Tries both the numeric database ID and the GraphQL node ID of every
+        comment in the thread.
+
+        Args:
+            thread: A reviewThread node from the GraphQL response.
+            comment_id: The comment's numeric ID or node_id.
+
+        Returns:
+            The thread node_id (PRRT_*) if matched, None otherwise.
+        """
+        thread_id = thread.get("id")
+        comments = thread.get("comments", {}).get("nodes", [])
+
+        for comment in comments:
+            # Match by database ID (numeric)
+            if str(comment.get("databaseId")) == str(comment_id):
+                logger.info(f"Found thread {thread_id} for comment {comment_id}")
+                return thread_id
+            # Match by node_id
+            if comment.get("id") == comment_id:
+                logger.info(f"Found thread {thread_id} for comment {comment_id}")
+                return thread_id
+
+        return None
+
     @async_retry()
     async def get_thread_id_for_comment(
         self,
@@ -3053,20 +3085,53 @@ class GitHubTracker(BaseTracker):
             logger.warning("Owner/repo not found for thread lookup")
             return None
 
-        # GraphQL query to get review threads and their comments
+        # GraphQL query to page through review threads. Only the first
+        # comments page is fetched here; deeper comment pages are loaded
+        # per-thread via THREAD_COMMENTS_QUERY below so a comments cursor is
+        # never applied to a sibling thread's connection.
         query = """
-            query GetPRReviewThreads($owner: String!, $name: String!, $prNumber: Int!) {
+            query GetPRReviewThreads($owner: String!, $name: String!, $prNumber: Int!, $threadsCursor: String) {
                 repository(owner: $owner, name: $name) {
                     pullRequest(number: $prNumber) {
-                        reviewThreads(first: 100) {
+                        reviewThreads(first: 100, after: $threadsCursor) {
+                            pageInfo {
+                                hasNextPage
+                                endCursor
+                            }
                             nodes {
                                 id
                                 comments(first: 50) {
+                                    pageInfo {
+                                        hasNextPage
+                                        endCursor
+                                    }
                                     nodes {
                                         id
                                         databaseId
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+        """
+
+        # Thread-scoped pagination query: fetches deeper comment pages for a
+        # single review thread via its node id.
+        thread_comments_query = """
+            query GetPRReviewThreadComments($threadId: ID!, $commentsCursor: String) {
+                node(id: $threadId) {
+                    ... on PullRequestReviewThread {
+                        id
+                        comments(first: 50, after: $commentsCursor) {
+                            pageInfo {
+                                hasNextPage
+                                endCursor
+                            }
+                            nodes {
+                                id
+                                databaseId
                             }
                         }
                     }
@@ -3085,50 +3150,94 @@ class GitHubTracker(BaseTracker):
 
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    graphql_url,
-                    headers=headers,
-                    json={"query": query, "variables": variables},
-                    timeout=30.0,
-                )
+                threads_cursor: Optional[str] = None
 
-                if response.status_code >= 400:
-                    logger.warning(f"GraphQL query failed: {response.status_code}")
-                    return None
+                # Outer loop pages through reviewThreads; the inner loop
+                # pages through each thread's comments before moving on.
+                while True:
+                    response = await client.post(
+                        graphql_url,
+                        headers=headers,
+                        json={
+                            "query": query,
+                            "variables": {
+                                **variables,
+                                "threadsCursor": threads_cursor,
+                            },
+                        },
+                        timeout=30.0,
+                    )
 
-                data = response.json()
+                    if response.status_code >= 400:
+                        logger.warning(f"GraphQL query failed: {response.status_code}")
+                        return None
 
-                if "errors" in data:
-                    logger.warning(f"GraphQL errors: {data['errors']}")
-                    return None
+                    data = response.json()
 
-                # Search through threads to find the comment
-                threads = (
-                    data.get("data", {})
-                    .get("repository", {})
-                    .get("pullRequest", {})
-                    .get("reviewThreads", {})
-                    .get("nodes", [])
-                )
+                    if "errors" in data:
+                        logger.warning(f"GraphQL errors: {data['errors']}")
+                        return None
 
-                # Try to match by comment_id (numeric) or node_id (string)
-                for thread in threads:
-                    thread_id = thread.get("id")
-                    comments = thread.get("comments", {}).get("nodes", [])
+                    connection = (
+                        data.get("data", {})
+                        .get("repository", {})
+                        .get("pullRequest", {})
+                        .get("reviewThreads", {})
+                    )
+                    threads = connection.get("nodes", [])
 
-                    for comment in comments:
-                        # Match by database ID (numeric)
-                        if str(comment.get("databaseId")) == str(comment_id):
-                            logger.info(
-                                f"Found thread {thread_id} for comment {comment_id}"
+                    for thread in threads:
+                        thread_id = thread.get("id")
+                        comments_cursor: Optional[str] = None
+
+                        while True:
+                            found = self._match_thread_comment(thread, comment_id)
+                            if found:
+                                return found
+
+                            page_info = thread.get("comments", {}).get("pageInfo", {})
+                            if not page_info.get("hasNextPage") or not page_info.get(
+                                "endCursor"
+                            ):
+                                break
+                            comments_cursor = page_info["endCursor"]
+
+                            response = await client.post(
+                                graphql_url,
+                                headers=headers,
+                                json={
+                                    "query": thread_comments_query,
+                                    "variables": {
+                                        "threadId": thread_id,
+                                        "commentsCursor": comments_cursor,
+                                    },
+                                },
+                                timeout=30.0,
                             )
-                            return thread_id
-                        # Match by node_id
-                        if comment.get("id") == comment_id:
-                            logger.info(
-                                f"Found thread {thread_id} for comment {comment_id}"
-                            )
-                            return thread_id
+
+                            if response.status_code >= 400:
+                                logger.warning(
+                                    f"GraphQL query failed: {response.status_code}"
+                                )
+                                return None
+
+                            data = response.json()
+
+                            if "errors" in data:
+                                logger.warning(f"GraphQL errors: {data['errors']}")
+                                return None
+
+                            updated = data.get("data", {}).get("node", {}) or {}
+                            if not updated or updated.get("id") != thread_id:
+                                break
+                            thread = updated
+
+                    page_info = connection.get("pageInfo", {})
+                    if not page_info.get("hasNextPage") or not page_info.get(
+                        "endCursor"
+                    ):
+                        break
+                    threads_cursor = page_info["endCursor"]
 
                 logger.warning(f"No thread found for comment {comment_id}")
                 return None

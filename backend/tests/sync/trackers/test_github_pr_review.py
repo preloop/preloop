@@ -607,6 +607,201 @@ class TestResolveReviewThread(IsolatedAsyncioTestCase):
             )
 
 
+def _make_threads_response(threads, has_next_page=False, end_cursor=None):
+    """Build a mock GraphQL response for the reviewThreads query."""
+    page_info = {"hasNextPage": has_next_page}
+    if end_cursor:
+        page_info["endCursor"] = end_cursor
+    return {
+        "data": {
+            "repository": {
+                "pullRequest": {
+                    "reviewThreads": {
+                        "pageInfo": page_info,
+                        "nodes": threads,
+                    }
+                }
+            }
+        }
+    }
+
+
+@pytest.mark.asyncio
+class TestGetThreadIdForComment(IsolatedAsyncioTestCase):
+    """Tests for get_thread_id_for_comment method."""
+
+    def _make_tracker(self):
+        connection_details = {"owner": "testowner", "repo": "testrepo"}
+        return GitHubTracker(str(uuid4()), "api-key", connection_details)
+
+    @staticmethod
+    def _mock_client(mock_client_class, responses):
+        mock_client = AsyncMock()
+        mock_client.post.side_effect = responses
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+        mock_client_class.return_value = mock_client
+        return mock_client
+
+    @staticmethod
+    def _graphql_response(payload):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = payload
+        return mock_response
+
+    @patch("preloop.sync.trackers.github.httpx.AsyncClient")
+    async def test_found_by_numeric_database_id(self, mock_client_class):
+        """Test matching a comment by its numeric REST id on the first page."""
+        response = self._graphql_response(
+            _make_threads_response(
+                [
+                    {
+                        "id": "PRRT_kwDOthread1",
+                        "comments": {
+                            "pageInfo": {"hasNextPage": False},
+                            "nodes": [{"id": "PRRC_node1", "databaseId": 111}],
+                        },
+                    },
+                    {
+                        "id": "PRRT_kwDOthread2",
+                        "comments": {
+                            "pageInfo": {"hasNextPage": False},
+                            "nodes": [{"id": "PRRC_node2", "databaseId": 222}],
+                        },
+                    },
+                ]
+            )
+        )
+        mock_client = self._mock_client(mock_client_class, [response])
+        tracker = self._make_tracker()
+
+        result = await tracker.get_thread_id_for_comment(
+            pr_number="42", comment_id="222"
+        )
+
+        self.assertEqual(result, "PRRT_kwDOthread2")
+        self.assertEqual(mock_client.post.call_count, 1)
+
+    @patch("preloop.sync.trackers.github.httpx.AsyncClient")
+    async def test_paginates_through_comment_pages(self, mock_client_class):
+        """Test that comments beyond the first page of a thread are found."""
+        page1 = self._graphql_response(
+            _make_threads_response(
+                [
+                    {
+                        "id": "PRRT_kwDOlongthread",
+                        "comments": {
+                            "pageInfo": {
+                                "hasNextPage": True,
+                                "endCursor": "cursor-c2",
+                            },
+                            "nodes": [{"id": "PRRC_early", "databaseId": 1}],
+                        },
+                    }
+                ]
+            )
+        )
+        page2 = self._graphql_response(
+            {
+                "data": {
+                    "node": {
+                        "id": "PRRT_kwDOlongthread",
+                        "comments": {
+                            "pageInfo": {"hasNextPage": False},
+                            "nodes": [{"id": "PRRC_late", "databaseId": 999}],
+                        },
+                    }
+                }
+            }
+        )
+        mock_client = self._mock_client(mock_client_class, [page1, page2])
+        tracker = self._make_tracker()
+
+        result = await tracker.get_thread_id_for_comment(
+            pr_number="42", comment_id="999"
+        )
+
+        self.assertEqual(result, "PRRT_kwDOlongthread")
+        self.assertEqual(mock_client.post.call_count, 2)
+        second_call = mock_client.post.call_args_list[1][1]["json"]
+        # Deeper comment pages must use the thread-scoped node query so a
+        # comments cursor is never applied to sibling threads' connections.
+        self.assertIn("GetPRReviewThreadComments", second_call["query"])
+        self.assertEqual(
+            second_call["variables"],
+            {"threadId": "PRRT_kwDOlongthread", "commentsCursor": "cursor-c2"},
+        )
+
+    @patch("preloop.sync.trackers.github.httpx.AsyncClient")
+    async def test_paginates_through_thread_pages(self, mock_client_class):
+        """Test that threads beyond the first page are searched."""
+        page1 = self._graphql_response(
+            _make_threads_response(
+                [
+                    {
+                        "id": "PRRT_kwDOearly",
+                        "comments": {
+                            "pageInfo": {"hasNextPage": False},
+                            "nodes": [{"id": "PRRC_a", "databaseId": 1}],
+                        },
+                    }
+                ],
+                has_next_page=True,
+                end_cursor="cursor-t2",
+            )
+        )
+        page2 = self._graphql_response(
+            _make_threads_response(
+                [
+                    {
+                        "id": "PRRT_kwDOlate",
+                        "comments": {
+                            "pageInfo": {"hasNextPage": False},
+                            "nodes": [{"id": "PRRC_b", "databaseId": 777}],
+                        },
+                    }
+                ]
+            )
+        )
+        mock_client = self._mock_client(mock_client_class, [page1, page2])
+        tracker = self._make_tracker()
+
+        result = await tracker.get_thread_id_for_comment(
+            pr_number="42", comment_id="777"
+        )
+
+        self.assertEqual(result, "PRRT_kwDOlate")
+        self.assertEqual(mock_client.post.call_count, 2)
+        second_call_vars = mock_client.post.call_args_list[1][1]["json"]["variables"]
+        self.assertEqual(second_call_vars["threadsCursor"], "cursor-t2")
+
+    @patch("preloop.sync.trackers.github.httpx.AsyncClient")
+    async def test_returns_none_when_comment_not_found(self, mock_client_class):
+        """Test that None is returned when no thread contains the comment."""
+        response = self._graphql_response(
+            _make_threads_response(
+                [
+                    {
+                        "id": "PRRT_kwDOthread1",
+                        "comments": {
+                            "pageInfo": {"hasNextPage": False},
+                            "nodes": [{"id": "PRRC_node1", "databaseId": 111}],
+                        },
+                    }
+                ]
+            )
+        )
+        self._mock_client(mock_client_class, [response])
+        tracker = self._make_tracker()
+
+        result = await tracker.get_thread_id_for_comment(
+            pr_number="42", comment_id="404404"
+        )
+
+        self.assertIsNone(result)
+
+
 @pytest.mark.asyncio
 class TestPRReviewIntegration(IsolatedAsyncioTestCase):
     """Integration-style tests for PR review workflow."""
