@@ -5158,7 +5158,15 @@ class OpenAIGatewayService:
     def _anthropic_stream_error_event(
         self, exc: Exception, error: ModelGatewayAPIError | None = None
     ) -> str:
-        """Render a mid-stream failure as an Anthropic-style SSE error event."""
+        """
+        Render a mid-stream failure as an Anthropic-style SSE error event.
+
+        Args:
+            exc: The mid-stream exception.
+            error: Error already classified by ``_stream_error``; pass it so
+                the admin alert in ``_normalize_upstream_error`` fires once
+                per failure instead of twice.
+        """
         gateway_error = (
             error if error is not None else self._stream_error("anthropic", exc)
         )
