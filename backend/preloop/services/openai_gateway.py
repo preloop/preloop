@@ -5119,6 +5119,16 @@ class OpenAIGatewayService:
     def _openai_stream_error_event(
         self, exc: Exception, error: ModelGatewayAPIError | None = None
     ) -> str:
+        """Render a mid-stream failure as an OpenAI-style SSE error event.
+
+        Args:
+            exc: The mid-stream exception.
+            error: Error already classified by ``_stream_error``; pass it so
+                the admin alert in ``_normalize_upstream_error`` fires once
+                per failure instead of twice (#210).
+        """
+        self, exc: Exception, error: ModelGatewayAPIError | None = None
+    ) -> str:
         """Render a mid-stream failure as an OpenAI-style SSE error event."""
         gateway_error = (
             error if error is not None else self._stream_error("openai", exc)
