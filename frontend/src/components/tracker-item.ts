@@ -5,6 +5,7 @@ import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
+import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 
 export interface Tracker {
   id: string;
@@ -163,6 +164,13 @@ export class TrackerItem extends LitElement {
           ></sl-icon>
           <h3 class="tracker-name">${this.tracker.name}</h3>
           <p class="tracker-type">${this.tracker.tracker_type}</p>
+          <sl-badge
+            variant=${this.tracker.is_valid !== false ? 'success' : 'danger'}
+            size="small"
+            style="margin-top: var(--sl-spacing-2x-small);"
+          >
+            ${this.tracker.is_valid !== false ? 'Connected' : 'Action Required'}
+          </sl-badge>
           <div class="tracker-created">Created: ${createdAt}</div>
         </div>
         <div slot="footer">

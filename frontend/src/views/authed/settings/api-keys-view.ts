@@ -589,7 +589,7 @@ export class ApiKeysView extends LitElement {
                           ${key.name}
                         </a>
                         ${
-                          key.name.toLowerCase().includes('managed agent')
+                          key.managed_agent_id
                             ? html`<sl-badge variant="neutral" size="small"
                                 >Agent</sl-badge
                               >`

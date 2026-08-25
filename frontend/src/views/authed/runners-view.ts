@@ -116,7 +116,7 @@ export class RunnersView extends LitElement {
                       <h3
                         style="margin: 0 0 var(--sl-spacing-x-small); font-size: var(--sl-font-size-large); font-weight: var(--sl-font-weight-semibold); color: var(--sl-color-neutral-900);"
                       >
-                        No Runners Registered
+                        No runners registered
                       </h3>
                       <p
                         class="muted"
