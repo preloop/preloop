@@ -1758,16 +1758,17 @@ class GitLabTracker(BaseTracker):
             mr = await self._make_request(project.mergerequests.get, mr_iid)
 
             # python-gitlab's approve()/unapprove() replace the object's
-            # attrs with the approvals payload, which has no `id` field.
-            # Capture the identity before mutating the object.
-            mr_id = str(getattr(mr, "id", mr.iid))
+            # attrs with the approvals payload, which has neither `id` nor
+            # `iid`. Capture the identity before mutating the object.
+            mr_id = str(getattr(mr, "id", mr_iid))
+            mr_identity_iid = getattr(mr, "iid", mr_iid)
 
             # Approve the merge request
             approval = await self._make_request(mr.approve)
 
             return {
                 "id": mr_id,
-                "iid": mr.iid,
+                "iid": mr_identity_iid,
                 "approved": True,
                 "approval_details": approval if approval else {},
             }
@@ -1802,9 +1803,10 @@ class GitLabTracker(BaseTracker):
 
         try:
             # python-gitlab's unapprove() replaces the object's attrs with
-            # the approvals payload, which has no `id` field. Capture the
-            # identity before mutating the object.
-            mr_id = str(getattr(mr, "id", mr.iid))
+            # the approvals payload, which has neither `id` nor `iid`.
+            # Capture the identity before mutating the object.
+            mr_id = str(getattr(mr, "id", mr_iid))
+            mr_identity_iid = getattr(mr, "iid", mr_iid)
 
             # Unapprove the merge request
             await self._make_request(mr.unapprove)
@@ -1819,8 +1821,8 @@ class GitLabTracker(BaseTracker):
                     f"or approvals not available (404). Treating as no-op."
                 )
                 return {
-                    "id": str(getattr(mr, "id", mr.iid)),
-                    "iid": mr.iid,
+                    "id": str(getattr(mr, "id", mr_iid)),
+                    "iid": getattr(mr, "iid", mr_iid),
                     "approved": False,
                     "skipped": True,
                     "reason": "no approval to revoke (404)",
@@ -1830,7 +1832,7 @@ class GitLabTracker(BaseTracker):
 
         return {
             "id": mr_id,
-            "iid": mr.iid,
+            "iid": mr_identity_iid,
             "approved": False,
         }
 

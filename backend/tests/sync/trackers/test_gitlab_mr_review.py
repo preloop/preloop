@@ -20,8 +20,8 @@ class _AttrsStrippingMR:
     """Stands in for python-gitlab's ProjectMergeRequest post-approval.
 
     approve()/unapprove() call ``_update_attrs`` with the approvals payload,
-    which carries no ``id`` field, so the attribute genuinely disappears
-    after a successful call (#246).
+    which carries neither ``id`` nor ``iid``, so both attributes genuinely
+    disappear after a successful call (#246).
     """
 
     def __init__(self, mr_id: int, iid: int) -> None:
@@ -30,14 +30,18 @@ class _AttrsStrippingMR:
         self.approve_called = False
         self.unapprove_called = False
 
+    def _strip_attrs(self) -> None:
+        del self.id
+        del self.iid
+
     def approve(self, *args, **kwargs):
         self.approve_called = True
-        del self.id
+        self._strip_attrs()
         return {"approved": True}
 
     def unapprove(self, *args, **kwargs):
         self.unapprove_called = True
-        del self.id
+        self._strip_attrs()
 
 
 class TestApproveMergeRequest(unittest.IsolatedAsyncioTestCase):
