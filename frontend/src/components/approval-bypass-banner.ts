@@ -192,10 +192,10 @@ export class ApprovalBypassBanner extends LitElement {
             }
           </div>
         </div>
-        <div style="display: flex; gap: 8px; align-items: center;">
+        <div style="display: flex; gap: 12px; align-items: center;">
           <a
             href="/console/tools"
-            style="color: inherit; text-decoration: underline; font-size: 13px; font-weight: 500; opacity: 0.9; padding: 6px 8px;"
+            style="color: inherit; text-decoration: underline; font-size: 13px; font-weight: 600; opacity: 0.95; padding: 6px 10px; border-radius: var(--sl-border-radius-small);"
           >
             Review policies
           </a>
