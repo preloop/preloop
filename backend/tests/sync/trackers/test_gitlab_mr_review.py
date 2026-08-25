@@ -16,6 +16,34 @@ from preloop.sync.trackers.gitlab import GitLabTracker
 from preloop.sync.exceptions import TrackerResponseError
 
 
+class _AttrsStrippingMR:
+    """Stands in for python-gitlab's ProjectMergeRequest post-approval.
+
+    approve()/unapprove() call ``_update_attrs`` with the approvals payload,
+    which carries neither ``id`` nor ``iid``, so both attributes genuinely
+    disappear after a successful call (#246).
+    """
+
+    def __init__(self, mr_id: int, iid: int) -> None:
+        self.id = mr_id
+        self.iid = iid
+        self.approve_called = False
+        self.unapprove_called = False
+
+    def _strip_attrs(self) -> None:
+        del self.id
+        del self.iid
+
+    def approve(self, *args, **kwargs):
+        self.approve_called = True
+        self._strip_attrs()
+        return {"approved": True}
+
+    def unapprove(self, *args, **kwargs):
+        self.unapprove_called = True
+        self._strip_attrs()
+
+
 class TestApproveMergeRequest(unittest.IsolatedAsyncioTestCase):
     """Tests for approve_merge_request method."""
 
@@ -77,6 +105,35 @@ class TestApproveMergeRequest(unittest.IsolatedAsyncioTestCase):
             await tracker.approve_merge_request("1")
 
         self.assertIn("Failed to approve merge request", str(context.exception))
+
+    @patch("preloop.sync.trackers.gitlab.gitlab.Gitlab")
+    async def test_approve_merge_request_survives_attrs_replacement(
+        self, mock_gitlab_constructor
+    ):
+        """Approving must not crash when python-gitlab replaces MR attrs.
+
+        python-gitlab's approve() updates the object's attrs with the
+        approvals payload, which carries no `id` field. The tracker captured
+        the identity before mutating so a successful approval does not blow
+        up afterwards with AttributeError (#246).
+        """
+        mock_gl_instance = MagicMock()
+        mock_gitlab_constructor.return_value = mock_gl_instance
+        mock_gl_instance.auth.return_value = None
+
+        mock_project = MagicMock()
+        mock_gl_instance.projects.get.return_value = mock_project
+
+        mock_mr = _AttrsStrippingMR(mr_id=12345, iid=6)
+        mock_project.mergerequests.get.return_value = mock_mr
+
+        tracker = GitLabTracker("tracker-1", "api-key", {"project_id": "proj-1"})
+        result = await tracker.approve_merge_request("6")
+
+        self.assertEqual(result["id"], "12345")
+        self.assertEqual(result["iid"], 6)
+        self.assertTrue(result["approved"])
+        self.assertTrue(mock_mr.approve_called)
 
 
 class TestUnapproveMergeRequest(unittest.IsolatedAsyncioTestCase):
@@ -149,6 +206,30 @@ class TestUnapproveMergeRequest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["iid"], 1)
         self.assertFalse(result["approved"])
         self.assertTrue(result["skipped"])
+
+    @patch("preloop.sync.trackers.gitlab.gitlab.Gitlab")
+    async def test_unapprove_merge_request_survives_attrs_replacement(
+        self, mock_gitlab_constructor
+    ):
+        """Unapproving must not crash when python-gitlab replaces MR attrs
+        with the approvals payload, which has no `id` field (#246)."""
+        mock_gl_instance = MagicMock()
+        mock_gitlab_constructor.return_value = mock_gl_instance
+        mock_gl_instance.auth.return_value = None
+
+        mock_project = MagicMock()
+        mock_gl_instance.projects.get.return_value = mock_project
+
+        mock_mr = _AttrsStrippingMR(mr_id=12345, iid=6)
+        mock_project.mergerequests.get.return_value = mock_mr
+
+        tracker = GitLabTracker("tracker-1", "api-key", {"project_id": "proj-1"})
+        result = await tracker.unapprove_merge_request("6")
+
+        self.assertEqual(result["id"], "12345")
+        self.assertEqual(result["iid"], 6)
+        self.assertFalse(result["approved"])
+        self.assertTrue(mock_mr.unapprove_called)
 
     @patch("preloop.sync.trackers.gitlab.gitlab.Gitlab")
     async def test_unapprove_merge_request_api_error(self, mock_gitlab_constructor):
