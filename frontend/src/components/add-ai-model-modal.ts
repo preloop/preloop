@@ -257,21 +257,27 @@ export class AddAIModelModal extends LitElement {
     };
   }
 
-  /** Read current input values directly from shadow DOM elements. */
+  /**
+   * Read current input values directly from shadow DOM elements.
+   *
+   * Fields are located by their stable `data-field` attribute, never by the
+   * visible label text: renaming or translating a label must not silently
+   * stop a field from syncing into the submitted model.
+   */
   private _syncFormFromDom() {
-    const inputs = this.shadowRoot?.querySelectorAll('sl-input') ?? [];
+    const inputs = this.shadowRoot?.querySelectorAll('[data-field]') ?? [];
     for (const input of inputs) {
-      const label = input.getAttribute('label');
+      const field = input.getAttribute('data-field');
       const val = (input as any).value as string;
-      if (label === 'Friendly Name') this._currentModel.name = val || undefined;
-      else if (label === 'API URL' && val)
+      if (field === 'name') this._currentModel.name = val || undefined;
+      else if (field === 'api_endpoint' && val)
         this._currentModel.api_endpoint = val;
-      else if (label === 'API Key' && val) this._currentModel.api_key = val;
-      else if (label === 'Custom Model Name / ID')
+      else if (field === 'api_key' && val) this._currentModel.api_key = val;
+      else if (field === 'model_identifier')
         this._currentModel.model_identifier = val || undefined;
     }
     const serviceKindSelect = this.shadowRoot?.querySelector(
-      'sl-select[label="Service Kind"]'
+      'sl-select[data-field="model_kind"]'
     ) as SlSelect | null;
     if (serviceKindSelect?.value) {
       this._currentModel.model_kind = serviceKindSelect.value as
@@ -669,6 +675,7 @@ export class AddAIModelModal extends LitElement {
           <sl-input
             class="full-width"
             label="Friendly Name"
+            data-field="name"
             .value=${this._currentModel.name || ''}
             @sl-input=${(e: Event) => {
               this._currentModel.name = (e.target as HTMLInputElement).value;
@@ -678,6 +685,7 @@ export class AddAIModelModal extends LitElement {
           ></sl-input>
           <sl-select
             label="Service Kind"
+            data-field="model_kind"
             .value=${this._currentModel.model_kind || 'llm'}
             @sl-change=${this._handleServiceKindChange}
             ?disabled=${this._isSubmitting}
@@ -703,6 +711,7 @@ export class AddAIModelModal extends LitElement {
           <sl-input
             class="full-width"
             label="API URL"
+            data-field="api_endpoint"
             .value=${this._currentModel.api_endpoint || ''}
             @sl-input=${(e: Event) => {
               this._currentModel.api_endpoint = (
@@ -731,6 +740,7 @@ export class AddAIModelModal extends LitElement {
             class="full-width"
             type="password"
             label="API Key"
+            data-field="api_key"
             .value=${this._currentModel.api_key || ''}
             @sl-input=${(e: Event) => {
               this._currentModel.api_key = (e.target as HTMLInputElement).value;
@@ -877,6 +887,7 @@ export class AddAIModelModal extends LitElement {
                       <sl-input
                         class="full-width"
                         label="Custom Model Name / ID"
+                        data-field="model_identifier"
                         placeholder="Enter custom model name"
                         .value=${this._currentModel.model_identifier || ''}
                         @sl-input=${this._handleCustomModelInput}
@@ -913,6 +924,7 @@ export class AddAIModelModal extends LitElement {
                     <sl-input
                       class="full-width"
                       label="Model Name / ID"
+                      data-field="model_identifier"
                       placeholder="Enter model name manually"
                       .value=${this._currentModel.model_identifier || ''}
                       @sl-input=${this._handleCustomModelInput}
