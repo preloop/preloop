@@ -703,17 +703,17 @@ class TestGetThreadIdForComment(IsolatedAsyncioTestCase):
             )
         )
         page2 = self._graphql_response(
-            _make_threads_response(
-                [
-                    {
+            {
+                "data": {
+                    "node": {
                         "id": "PRRT_kwDOlongthread",
                         "comments": {
                             "pageInfo": {"hasNextPage": False},
                             "nodes": [{"id": "PRRC_late", "databaseId": 999}],
                         },
                     }
-                ]
-            )
+                }
+            }
         )
         mock_client = self._mock_client(mock_client_class, [page1, page2])
         tracker = self._make_tracker()
@@ -724,9 +724,14 @@ class TestGetThreadIdForComment(IsolatedAsyncioTestCase):
 
         self.assertEqual(result, "PRRT_kwDOlongthread")
         self.assertEqual(mock_client.post.call_count, 2)
-        second_call_vars = mock_client.post.call_args_list[1][1]["json"]["variables"]
-        self.assertIsNone(second_call_vars["threadsCursor"])
-        self.assertEqual(second_call_vars["commentsCursor"], "cursor-c2")
+        second_call = mock_client.post.call_args_list[1][1]["json"]
+        # Deeper comment pages must use the thread-scoped node query so a
+        # comments cursor is never applied to sibling threads' connections.
+        self.assertIn("GetPRReviewThreadComments", second_call["query"])
+        self.assertEqual(
+            second_call["variables"],
+            {"threadId": "PRRT_kwDOlongthread", "commentsCursor": "cursor-c2"},
+        )
 
     @patch("preloop.sync.trackers.github.httpx.AsyncClient")
     async def test_paginates_through_thread_pages(self, mock_client_class):

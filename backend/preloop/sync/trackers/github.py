@@ -3085,12 +3085,12 @@ class GitHubTracker(BaseTracker):
             logger.warning("Owner/repo not found for thread lookup")
             return None
 
-        # GraphQL query to page through review threads and their comments.
-        # Both connections are paginated via cursors so large PRs with many
-        # review threads or long threads never silently miss the target
-        # comment.
+        # GraphQL query to page through review threads. Only the first
+        # comments page is fetched here; deeper comment pages are loaded
+        # per-thread via THREAD_COMMENTS_QUERY below so a comments cursor is
+        # never applied to a sibling thread's connection.
         query = """
-            query GetPRReviewThreads($owner: String!, $name: String!, $prNumber: Int!, $threadsCursor: String, $commentsCursor: String) {
+            query GetPRReviewThreads($owner: String!, $name: String!, $prNumber: Int!, $threadsCursor: String) {
                 repository(owner: $owner, name: $name) {
                     pullRequest(number: $prNumber) {
                         reviewThreads(first: 100, after: $threadsCursor) {
@@ -3100,7 +3100,7 @@ class GitHubTracker(BaseTracker):
                             }
                             nodes {
                                 id
-                                comments(first: 50, after: $commentsCursor) {
+                                comments(first: 50) {
                                     pageInfo {
                                         hasNextPage
                                         endCursor
@@ -3110,6 +3110,28 @@ class GitHubTracker(BaseTracker):
                                         databaseId
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+        """
+
+        # Thread-scoped pagination query: fetches deeper comment pages for a
+        # single review thread via its node id.
+        thread_comments_query = """
+            query GetPRReviewThreadComments($threadId: ID!, $commentsCursor: String) {
+                node(id: $threadId) {
+                    ... on PullRequestReviewThread {
+                        id
+                        comments(first: 50, after: $commentsCursor) {
+                            pageInfo {
+                                hasNextPage
+                                endCursor
+                            }
+                            nodes {
+                                id
+                                databaseId
                             }
                         }
                     }
@@ -3184,10 +3206,9 @@ class GitHubTracker(BaseTracker):
                                 graphql_url,
                                 headers=headers,
                                 json={
-                                    "query": query,
+                                    "query": thread_comments_query,
                                     "variables": {
-                                        **variables,
-                                        "threadsCursor": threads_cursor,
+                                        "threadId": thread_id,
                                         "commentsCursor": comments_cursor,
                                     },
                                 },
@@ -3206,21 +3227,8 @@ class GitHubTracker(BaseTracker):
                                 logger.warning(f"GraphQL errors: {data['errors']}")
                                 return None
 
-                            refreshed = (
-                                data.get("data", {})
-                                .get("repository", {})
-                                .get("pullRequest", {})
-                                .get("reviewThreads", {})
-                            )
-                            updated = next(
-                                (
-                                    t
-                                    for t in refreshed.get("nodes", [])
-                                    if t.get("id") == thread_id
-                                ),
-                                None,
-                            )
-                            if updated is None:
+                            updated = data.get("data", {}).get("node", {}) or {}
+                            if not updated or updated.get("id") != thread_id:
                                 break
                             thread = updated
 
