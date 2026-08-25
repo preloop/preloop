@@ -30,6 +30,9 @@ _TOKEN_PATTERNS: List[Tuple[Pattern[str], str]] = [
         re.compile(r"\bgl(?:ptt|rt|soat|ft|imt|agent)-[A-Za-z0-9_\-]{16,}"),
         f"gl-token-{REDACTED}",
     ),
+    # Google API keys ("AIza" + 35 chars), used by Gemini/GCP and frequently
+    # echoed inside error text and URLs (issue #184).
+    (re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b"), f"AIza{REDACTED}"),
     # OpenAI and Anthropic keys, which flow through the same containers.
     (re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{16,}"), f"sk-ant-{REDACTED}"),
     (re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}"), f"sk-{REDACTED}"),
@@ -56,6 +59,19 @@ _URL_USERINFO_TOKEN_ONLY = re.compile(
     r"(?P<scheme>[A-Za-z][A-Za-z0-9+.\-]{0,63}://)"
     r"(?P<user>[^\s:/@]{1,4096})"
     r"(?=@[^\s/@]+)"
+)
+
+# Credentials passed as URL query parameters (issue #184), e.g. Gemini's
+#   https://generativelanguage.googleapis.com/...?key=AIza...
+# or xAI's ?api_key=..., OAuth-style ?access_token=.... The VALUE is redacted
+# while the parameter NAME is kept so operators know what to rotate. The
+# parameter name must directly follow "?" or "&" so ordinary words ending in
+# "key" (sort_key=, monkey=) never match.
+_QUERY_PARAM_SECRET = re.compile(
+    r"(?P<prefix>[?&])"
+    r"(?P<param>(?i:key|api_key|access_token))"
+    r"(?P<eq>=)"
+    r"(?P<value>[^\s&\"'<>]{1,4096})"
 )
 
 # Bearer/PRIVATE-TOKEN style headers, as produced by the PR/MR creation curls.
@@ -101,13 +117,26 @@ def _redact_url_credentials(text: str) -> str:
     return _URL_USERINFO_TOKEN_ONLY.sub(_token_only_sub, text)
 
 
+def _redact_query_param_secrets(text: str) -> str:
+    """Blank the value of credential-bearing URL query parameters."""
+
+    def _sub(match: Match[str]) -> str:
+        return (
+            f"{match.group('prefix')}{match.group('param')}"
+            f"{match.group('eq')}{REDACTED}"
+        )
+
+    return _QUERY_PARAM_SECRET.sub(_sub, text)
+
+
 def scrub_secrets(text: Optional[str]) -> Optional[str]:
     """Return ``text`` with known credential formats replaced by placeholders.
 
     Order matters: URL userinfo is blanked first so that a token inside a URL
     becomes ``https://[REDACTED]@host/...`` (hiding the fact that a credential
-    was present at all in that position), and remaining bare tokens elsewhere
-    in the line are then replaced by their prefix-preserving placeholder.
+    was present at all in that position), credential query parameters are then
+    blanked, and remaining bare tokens elsewhere in the line are replaced by
+    their prefix-preserving placeholder.
 
     ``None`` and empty input are passed through so callers can apply this
     without branching.
@@ -117,6 +146,7 @@ def scrub_secrets(text: Optional[str]) -> Optional[str]:
         return text
 
     scrubbed = _redact_url_credentials(text)
+    scrubbed = _redact_query_param_secrets(scrubbed)
 
     for header_pattern in _AUTH_HEADER_PATTERNS:
         scrubbed = header_pattern.sub(

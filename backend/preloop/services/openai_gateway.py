@@ -1682,7 +1682,7 @@ class OpenAIGatewayService:
                 logger.warning(
                     "Gateway anthropic-messages stream failed mid-stream: %s "
                     "provider=%s model=%s error_class=%s",
-                    exc,
+                    type(exc).__name__,
                     getattr(model, "provider_name", None),
                     payload.get("model"),
                     gateway_error.error_class,
@@ -1962,7 +1962,7 @@ class OpenAIGatewayService:
                 logger.warning(
                     "Gateway chat-completions stream failed mid-stream: %s "
                     "provider=%s model=%s error_class=%s",
-                    exc,
+                    type(exc).__name__,
                     getattr(model, "provider_name", None),
                     payload.get("model"),
                     gateway_error.error_class,
@@ -2440,7 +2440,7 @@ class OpenAIGatewayService:
                 logger.warning(
                     "Gateway responses stream failed mid-stream: %s "
                     "provider=%s model=%s error_class=%s",
-                    exc,
+                    type(exc).__name__,
                     getattr(model, "provider_name", None),
                     payload.get("model"),
                     gateway_error.error_class,
@@ -3725,7 +3725,7 @@ class OpenAIGatewayService:
                 logger.warning(
                     "Gateway codex responses stream failed mid-stream: %s "
                     "provider=%s model=%s error_class=%s",
-                    exc,
+                    type(exc).__name__,
                     getattr(ai_model, "provider_name", None),
                     payload.get("model"),
                     gateway_error.error_class,
@@ -3967,7 +3967,7 @@ class OpenAIGatewayService:
                 logger.warning(
                     "Gateway codex chat stream failed mid-stream: %s "
                     "provider=%s model=%s error_class=%s",
-                    exc,
+                    type(exc).__name__,
                     getattr(ai_model, "provider_name", None),
                     payload.get("model"),
                     gateway_error.error_class,
@@ -4621,7 +4621,7 @@ class OpenAIGatewayService:
                 logger.warning(
                     "Gateway anthropic passthrough stream failed mid-stream: %s "
                     "provider=%s model=%s error_class=%s",
-                    exc,
+                    type(exc).__name__,
                     getattr(ai_model, "provider_name", None),
                     requested_model,
                     gateway_error.error_class,
