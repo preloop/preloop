@@ -23,3 +23,6 @@ Packages:
   OpenClaw plugin
 - `claude-preloop`: `@preloop-ai/claude-plugin` (npm), sidecar daemon for
   Claude Code (no in-process plugin API; built on the Claude Agent SDK)
+- `opencode-preloop`: `@preloop-ai/opencode-plugin` (npm), in-process
+  OpenCode plugin (permission prompts bridged via OpenCode's plugin
+  `event` hook)
