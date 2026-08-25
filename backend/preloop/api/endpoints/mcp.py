@@ -2493,6 +2493,16 @@ async def create_pull_request(
         )
 
 
+# Markers indicating an expected client-class failure (comment/thread does not
+# exist or its GraphQL node could not be resolved) rather than a tracker/API
+# failure. Matched case-insensitively against exception messages.
+_EXPECTED_NOT_FOUND_MARKERS = (
+    "not found",
+    "could not resolve",
+    "404",
+)
+
+
 async def update_comment(
     target: str,
     comment_id: str,
@@ -2793,38 +2803,43 @@ async def update_comment(
                     )
 
                 # GitHub's resolve_review_thread requires the thread's GraphQL node_id
-                # (format: "PRRT_..."), not a comment ID (format: "PRRC_...").
-                if not thread_id:
-                    # Check if comment_id looks like a thread ID
-                    if comment_id.startswith("PRRT_"):
-                        # User passed thread_id as comment_id, use it
-                        thread_id = comment_id
+                # (format: "PRRT_..."), not a comment ID. Numeric REST comment ids
+                # (or comment node ids) must be mapped to their containing thread
+                # node id first, otherwise GraphQL fails with "Could not resolve to
+                # a node with the global id of '<numeric-id>'".
+                if not (thread_id and thread_id.startswith("PRRT_")):
+                    candidate_comment_id = thread_id or comment_id
+                    if candidate_comment_id.startswith("PRRT_"):
+                        # User passed the thread node id as comment_id, use it
+                        thread_id = candidate_comment_id
                         logger.info(
                             "Using comment_id as thread_id since it has PRRT_ prefix"
                         )
                     else:
-                        # Try to look up the thread_id from the comment_id
+                        # Look up the thread node id from the comment id
                         logger.info(
-                            f"Attempting to look up thread_id for comment {comment_id}"
+                            f"Attempting to look up thread_id for comment "
+                            f"{candidate_comment_id}"
                         )
                         try:
                             looked_up_thread_id = (
                                 await tracker_client.get_thread_id_for_comment(
                                     pr_number=pr_mr_number,
-                                    comment_id=comment_id,
+                                    comment_id=candidate_comment_id,
                                 )
                             )
                             if looked_up_thread_id:
                                 thread_id = looked_up_thread_id
                                 logger.info(
-                                    f"Found thread_id {thread_id} for comment {comment_id}"
+                                    f"Found thread_id {thread_id} for comment "
+                                    f"{candidate_comment_id}"
                                 )
                             else:
                                 raise HTTPException(
                                     status_code=400,
                                     detail=(
                                         "Could not find thread_id for the given comment_id. "
-                                        f"The comment_id '{comment_id}' may not be a review comment. "
+                                        f"The comment_id '{candidate_comment_id}' may not be a review comment. "
                                         "Thread resolution only works for review comments (inline diff comments). "
                                         "For issue comments, resolution is not supported."
                                     ),
@@ -2936,6 +2951,19 @@ async def update_comment(
     except HTTPException:
         raise
     except Exception as e:
+        error_msg = str(e).lower()
+        is_expected_not_found = any(
+            marker in error_msg for marker in _EXPECTED_NOT_FOUND_MARKERS
+        )
+        if is_expected_not_found:
+            # Expected client-class failure (stale/wrong comment id, unresolvable
+            # GraphQL node): log at warning without exc_info so Sentry/GlitchTip
+            # does not promote it to an exception event.
+            logger.warning(f"Comment {comment_id} not found for {target}: {e}")
+            raise HTTPException(
+                status_code=404,
+                detail=f"Comment {comment_id} not found: {str(e)}",
+            ) from e
         logger.error(
             f"Error updating comment {comment_id} for {target}: {e}",
             exc_info=True,

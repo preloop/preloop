@@ -1931,6 +1931,346 @@ async def test_update_comment_autodetect_body_and_resolve_precheck_fails(
         mock_tracker.update_review_comment.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_update_comment_not_found_maps_to_404_with_warning_log(
+    db_session: Session, test_user: User, caplog
+):
+    """
+    Tests that an expected not-found failure (e.g. GraphQL node could not be
+    resolved because the id is stale/wrong) maps to HTTP 404 and logs at
+    warning level without exc_info (no GlitchTip exception event).
+    """
+    import logging
+
+    from preloop.sync.exceptions import TrackerResponseError
+
+    tracker = Tracker(
+        name="test-tracker",
+        account_id=test_user.account_id,
+        tracker_type="github",
+        api_key="test_key",
+        url="https://github.com",
+    )
+    db_session.add(tracker)
+    db_session.commit()
+
+    organization = Organization(
+        name="test-org",
+        identifier="test-org",
+        tracker_id=tracker.id,
+    )
+    db_session.add(organization)
+    db_session.commit()
+
+    project = Project(
+        name="owner/repo",
+        identifier="owner/repo",
+        slug="owner/repo",
+        organization_id=organization.id,
+    )
+    db_session.add(project)
+    db_session.commit()
+
+    with (
+        patch("preloop.api.endpoints.mcp.get_http_request") as mock_get_request,
+        patch("preloop.api.endpoints.mcp.get_db") as mock_get_db,
+        patch(
+            "preloop.api.endpoints.mcp._get_authenticated_user",
+            new_callable=AsyncMock,
+        ) as mock_auth,
+        patch(
+            "preloop.api.endpoints.mcp.get_tracker_client",
+            new_callable=AsyncMock,
+        ) as mock_get_tracker,
+    ):
+        mock_get_request.return_value.headers = {"authorization": "Bearer testtoken"}
+        mock_get_db.return_value = iter([db_session])
+        mock_auth.return_value = (db_session, test_user)
+
+        mock_tracker = MagicMock()
+        mock_tracker.tracker_type = "github"
+        mock_tracker.resolve_review_thread = AsyncMock(
+            side_effect=TrackerResponseError(
+                "GraphQL errors: Could not resolve to a node with the "
+                "global id of '3755981585'"
+            )
+        )
+        mock_get_tracker.return_value = mock_tracker
+
+        from fastapi import HTTPException
+
+        with caplog.at_level(logging.WARNING):
+            with pytest.raises(HTTPException) as exc_info:
+                await mcp.update_comment(
+                    target="owner/repo#123",
+                    comment_id="3755981585",
+                    resolved=True,
+                    thread_id="PRRT_kwDOCjXy1M5abc123",
+                )
+
+    assert exc_info.value.status_code == 404
+    assert "not found" in str(exc_info.value.detail).lower()
+
+    warning_records = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING and "not found" in r.getMessage().lower()
+    ]
+    assert warning_records, "expected a warning-level log for the not-found case"
+    for record in warning_records:
+        assert record.exc_info in (None, (None, None, None)), (
+            "not-found failures must not log with exc_info"
+        )
+    error_records = [
+        r
+        for r in caplog.records
+        if r.levelno >= logging.ERROR and "updating comment" in r.getMessage()
+    ]
+    assert not error_records, "not-found failures must not be logged as errors"
+
+
+@pytest.mark.asyncio
+async def test_update_comment_genuine_api_failure_maps_to_502_with_error_log(
+    db_session: Session, test_user: User, caplog
+):
+    """
+    Tests that a genuine tracker/API failure still maps to HTTP 502 and is
+    logged as an error with exc_info.
+    """
+    import logging
+
+    from preloop.sync.exceptions import TrackerResponseError
+
+    tracker = Tracker(
+        name="test-tracker",
+        account_id=test_user.account_id,
+        tracker_type="github",
+        api_key="test_key",
+        url="https://github.com",
+    )
+    db_session.add(tracker)
+    db_session.commit()
+
+    organization = Organization(
+        name="test-org",
+        identifier="test-org",
+        tracker_id=tracker.id,
+    )
+    db_session.add(organization)
+    db_session.commit()
+
+    project = Project(
+        name="owner/repo",
+        identifier="owner/repo",
+        slug="owner/repo",
+        organization_id=organization.id,
+    )
+    db_session.add(project)
+    db_session.commit()
+
+    with (
+        patch("preloop.api.endpoints.mcp.get_http_request") as mock_get_request,
+        patch("preloop.api.endpoints.mcp.get_db") as mock_get_db,
+        patch(
+            "preloop.api.endpoints.mcp._get_authenticated_user",
+            new_callable=AsyncMock,
+        ) as mock_auth,
+        patch(
+            "preloop.api.endpoints.mcp.get_tracker_client",
+            new_callable=AsyncMock,
+        ) as mock_get_tracker,
+    ):
+        mock_get_request.return_value.headers = {"authorization": "Bearer testtoken"}
+        mock_get_db.return_value = iter([db_session])
+        mock_auth.return_value = (db_session, test_user)
+
+        mock_tracker = MagicMock()
+        mock_tracker.tracker_type = "github"
+        mock_tracker.resolve_review_thread = AsyncMock(
+            side_effect=TrackerResponseError(
+                "GitHub GraphQL API error: 500 - internal server error"
+            )
+        )
+        mock_get_tracker.return_value = mock_tracker
+
+        from fastapi import HTTPException
+
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(HTTPException) as exc_info:
+                await mcp.update_comment(
+                    target="owner/repo#123",
+                    comment_id="comment-123",
+                    resolved=True,
+                    thread_id="PRRT_kwDOCjXy1M5abc123",
+                )
+
+    assert exc_info.value.status_code == 502
+    error_records = [
+        r
+        for r in caplog.records
+        if r.levelno >= logging.ERROR and "Error updating comment" in r.getMessage()
+    ]
+    assert error_records, "genuine API failures must be logged as errors"
+    assert any(r.exc_info for r in error_records), (
+        "error-level logs should include exc_info"
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_comment_resolve_numeric_comment_id_maps_to_thread_node_id(
+    db_session: Session, test_user: User
+):
+    """
+    Tests that resolving with a numeric REST comment id looks up and uses the
+    containing thread's GraphQL node id instead of passing the numeric id to
+    the GraphQL node lookup (issue #220).
+    """
+    tracker = Tracker(
+        name="test-tracker",
+        account_id=test_user.account_id,
+        tracker_type="github",
+        api_key="test_key",
+        url="https://github.com",
+    )
+    db_session.add(tracker)
+    db_session.commit()
+
+    organization = Organization(
+        name="test-org",
+        identifier="test-org",
+        tracker_id=tracker.id,
+    )
+    db_session.add(organization)
+    db_session.commit()
+
+    project = Project(
+        name="owner/repo",
+        identifier="owner/repo",
+        slug="owner/repo",
+        organization_id=organization.id,
+    )
+    db_session.add(project)
+    db_session.commit()
+
+    with (
+        patch("preloop.api.endpoints.mcp.get_http_request") as mock_get_request,
+        patch("preloop.api.endpoints.mcp.get_db") as mock_get_db,
+        patch(
+            "preloop.api.endpoints.mcp._get_authenticated_user",
+            new_callable=AsyncMock,
+        ) as mock_auth,
+        patch(
+            "preloop.api.endpoints.mcp.get_tracker_client",
+            new_callable=AsyncMock,
+        ) as mock_get_tracker,
+    ):
+        mock_get_request.return_value.headers = {"authorization": "Bearer testtoken"}
+        mock_get_db.return_value = iter([db_session])
+        mock_auth.return_value = (db_session, test_user)
+
+        mock_tracker = MagicMock()
+        mock_tracker.tracker_type = "github"
+        mock_tracker.get_thread_id_for_comment = AsyncMock(
+            return_value="PRRT_kwDOCjXy1M5abc123"
+        )
+        mock_tracker.resolve_review_thread = AsyncMock(return_value={})
+        mock_get_tracker.return_value = mock_tracker
+
+        response = await mcp.update_comment(
+            target="owner/repo#123",
+            comment_id="3755981585",
+            resolved=True,
+        )
+
+    assert response.status == "updated"
+    mock_tracker.get_thread_id_for_comment.assert_called_once_with(
+        pr_number="123",
+        comment_id="3755981585",
+    )
+    mock_tracker.resolve_review_thread.assert_called_once_with(
+        thread_id="PRRT_kwDOCjXy1M5abc123",
+        resolved=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_comment_resolve_numeric_thread_id_is_mapped_via_lookup(
+    db_session: Session, test_user: User
+):
+    """
+    Tests that a non-PRRT_ thread_id (e.g. a numeric REST id mistakenly passed
+    as thread_id) is mapped through the thread lookup instead of being fed to
+    the GraphQL node lookup (issue #220).
+    """
+    tracker = Tracker(
+        name="test-tracker",
+        account_id=test_user.account_id,
+        tracker_type="github",
+        api_key="test_key",
+        url="https://github.com",
+    )
+    db_session.add(tracker)
+    db_session.commit()
+
+    organization = Organization(
+        name="test-org",
+        identifier="test-org",
+        tracker_id=tracker.id,
+    )
+    db_session.add(organization)
+    db_session.commit()
+
+    project = Project(
+        name="owner/repo",
+        identifier="owner/repo",
+        slug="owner/repo",
+        organization_id=organization.id,
+    )
+    db_session.add(project)
+    db_session.commit()
+
+    with (
+        patch("preloop.api.endpoints.mcp.get_http_request") as mock_get_request,
+        patch("preloop.api.endpoints.mcp.get_db") as mock_get_db,
+        patch(
+            "preloop.api.endpoints.mcp._get_authenticated_user",
+            new_callable=AsyncMock,
+        ) as mock_auth,
+        patch(
+            "preloop.api.endpoints.mcp.get_tracker_client",
+            new_callable=AsyncMock,
+        ) as mock_get_tracker,
+    ):
+        mock_get_request.return_value.headers = {"authorization": "Bearer testtoken"}
+        mock_get_db.return_value = iter([db_session])
+        mock_auth.return_value = (db_session, test_user)
+
+        mock_tracker = MagicMock()
+        mock_tracker.tracker_type = "github"
+        mock_tracker.get_thread_id_for_comment = AsyncMock(
+            return_value="PRRT_kwDOCjXy1M5abc123"
+        )
+        mock_tracker.resolve_review_thread = AsyncMock(return_value={})
+        mock_get_tracker.return_value = mock_tracker
+
+        response = await mcp.update_comment(
+            target="owner/repo#123",
+            comment_id="3755981585",
+            resolved=True,
+            thread_id="3755981585",
+        )
+
+    assert response.status == "updated"
+    mock_tracker.get_thread_id_for_comment.assert_called_once_with(
+        pr_number="123",
+        comment_id="3755981585",
+    )
+    mock_tracker.resolve_review_thread.assert_called_once_with(
+        thread_id="PRRT_kwDOCjXy1M5abc123",
+        resolved=True,
+    )
+
+
 # =============================================================================
 # get_pull_request tests - include_comments, include_diff flags
 # =============================================================================
