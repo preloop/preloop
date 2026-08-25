@@ -2499,8 +2499,12 @@ async def create_pull_request(
 _EXPECTED_NOT_FOUND_MARKERS = (
     "not found",
     "could not resolve",
-    "404",
 )
+
+# HTTP-status-style token matched with word boundaries so embedded numeric ids
+# or echoed response bodies containing "404" as a substring are never misread
+# as an HTTP 404 status.
+_HTTP_404_TOKEN_RE = re.compile(r"\b404\b")
 
 
 async def update_comment(
@@ -2952,8 +2956,9 @@ async def update_comment(
         raise
     except Exception as e:
         error_msg = str(e).lower()
-        is_expected_not_found = any(
-            marker in error_msg for marker in _EXPECTED_NOT_FOUND_MARKERS
+        is_expected_not_found = (
+            any(marker in error_msg for marker in _EXPECTED_NOT_FOUND_MARKERS)
+            or _HTTP_404_TOKEN_RE.search(error_msg) is not None
         )
         if is_expected_not_found:
             # Expected client-class failure (stale/wrong comment id, unresolvable

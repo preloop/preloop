@@ -2117,6 +2117,88 @@ async def test_update_comment_genuine_api_failure_maps_to_502_with_error_log(
 
 
 @pytest.mark.asyncio
+async def test_update_comment_404_substring_is_not_misclassified_as_not_found(
+    db_session: Session, test_user: User, caplog
+):
+    """
+    Tests that a genuine tracker/API failure whose message merely *contains*
+    the digits 404 inside a larger token (embedded id, cursor, etc.) is not
+    reclassified as a client not-found: it must stay on the HTTP 502 +
+    error-log path.
+    """
+    import logging
+
+    from preloop.sync.exceptions import TrackerResponseError
+
+    tracker = Tracker(
+        name="test-tracker",
+        account_id=test_user.account_id,
+        tracker_type="github",
+        api_key="test_key",
+        url="https://github.com",
+    )
+    db_session.add(tracker)
+    db_session.commit()
+
+    organization = Organization(
+        name="test-org",
+        identifier="test-org",
+        tracker_id=tracker.id,
+    )
+    db_session.add(organization)
+    db_session.commit()
+
+    project = Project(
+        name="owner/repo",
+        identifier="owner/repo",
+        slug="owner/repo",
+        organization_id=organization.id,
+    )
+    db_session.add(project)
+    db_session.commit()
+
+    with (
+        patch("preloop.api.endpoints.mcp.get_http_request") as mock_get_request,
+        patch("preloop.api.endpoints.mcp.get_db") as mock_get_db,
+        patch(
+            "preloop.api.endpoints.mcp._get_authenticated_user",
+            new_callable=AsyncMock,
+        ) as mock_auth,
+        patch(
+            "preloop.api.endpoints.mcp.get_tracker_client",
+            new_callable=AsyncMock,
+        ) as mock_get_tracker,
+    ):
+        mock_get_request.return_value.headers = {"authorization": "Bearer testtoken"}
+        mock_get_db.return_value = iter([db_session])
+        mock_auth.return_value = (db_session, test_user)
+
+        mock_tracker = MagicMock()
+        mock_tracker.tracker_type = "github"
+        mock_tracker.resolve_review_thread = AsyncMock(
+            side_effect=TrackerResponseError(
+                "GitHub GraphQL API error: 500 - internal failure for "
+                "cursor=14045 batch=40440"
+            )
+        )
+        mock_get_tracker.return_value = mock_tracker
+
+        from fastapi import HTTPException
+
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(HTTPException) as exc_info:
+                await mcp.update_comment(
+                    target="owner/repo#123",
+                    comment_id="comment-123",
+                    resolved=True,
+                    thread_id="PRRT_kwDOCjXy1M5abc123",
+                )
+
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.detail.startswith("Failed to update comment")
+
+
+@pytest.mark.asyncio
 async def test_update_comment_resolve_numeric_comment_id_maps_to_thread_node_id(
     db_session: Session, test_user: User
 ):
