@@ -974,9 +974,7 @@ def test_agent_control_ws_evicts_previous_connection_with_close_4000(
     token_body = _issue_runtime_token(client, session_source_id="openclaw-eviction")
     url = f"/api/v1/agents/control/ws?token={token_body['token']}"
 
-    with caplog.at_level(
-        logging.WARNING, logger="preloop.api.endpoints.agent_control"
-    ):
+    with caplog.at_level(logging.WARNING, logger="preloop.api.endpoints.agent_control"):
         with client.websocket_connect(url) as ws1:
             connected1 = ws1.receive_json()
             assert connected1["type"] == "presence"

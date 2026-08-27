@@ -56,9 +56,7 @@ def test_permanent_control_connection_error_detects_auth_failures() -> None:
 
 
 def test_connection_evicted_error_is_permanent() -> None:
-    assert _is_permanent_control_connection_error(
-        ConnectionEvictedError("superseded")
-    )
+    assert _is_permanent_control_connection_error(ConnectionEvictedError("superseded"))
 
 
 def test_control_config_reads_cli_document() -> None:

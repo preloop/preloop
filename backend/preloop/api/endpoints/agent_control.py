@@ -209,8 +209,7 @@ class AgentControlConnectionManager:
                 )
             except Exception:
                 logger.debug(
-                    "Failed to send close frame to evicted WebSocket "
-                    "for agent %s",
+                    "Failed to send close frame to evicted WebSocket for agent %s",
                     managed_agent_id,
                     exc_info=True,
                 )
