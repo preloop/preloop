@@ -70,6 +70,12 @@ export function controlAuthHeaders(token: string): { Authorization: string } {
   return { Authorization: `Bearer ${token}` };
 }
 
+/**
+ * Close code the server sends when evicting a superseded WebSocket.  Must
+ * match `EVICTION_CLOSE_CODE` on the server and in the Python client.
+ */
+const EVICTION_CLOSE_CODE = 4000;
+
 /** Reconnect backoff bounds and heartbeat cadence (mirror the other plugins). */
 const RECONNECT_BASE_DELAY_MS = 2_000;
 const RECONNECT_MAX_DELAY_MS = 30_000;
@@ -255,7 +261,7 @@ export class PreloopClaudeSidecar {
       if (this.socket === socket) {
         this.socket = undefined;
       }
-      if (code === 4000) {
+      if (code === EVICTION_CLOSE_CODE) {
         const detail = reason
           ? reason.toString()
           : "superseded by newer connection";

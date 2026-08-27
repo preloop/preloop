@@ -112,6 +112,12 @@ export type OperatorCommand = {
   };
 };
 
+/**
+ * Close code the server sends when evicting a superseded WebSocket.  Must
+ * match `EVICTION_CLOSE_CODE` on the server and in the Python client.
+ */
+const EVICTION_CLOSE_CODE = 4000;
+
 /** Reconnect backoff bounds and heartbeat cadence (mirror the Python client). */
 const RECONNECT_BASE_DELAY_MS = 2_000;
 const RECONNECT_MAX_DELAY_MS = 30_000;
@@ -235,7 +241,7 @@ export class PreloopOpenCodePlugin {
       if (this.socket === socket) {
         this.socket = undefined;
       }
-      if (event.code === 4000) {
+      if (event.code === EVICTION_CLOSE_CODE) {
         this.log(
           `Agent Control: evicted by server (${String(event.reason || "superseded by newer connection")}); will not reconnect`,
         );

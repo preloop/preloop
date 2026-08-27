@@ -55,6 +55,12 @@ from preloop.sync.services.event_bus import get_nats_client
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# Close code sent to an evicted WebSocket so clients can distinguish eviction
+# from other closures and skip immediate reconnection.  The Python client
+# already defines the same value as ``EVICTION_CLOSE_CODE`` in
+# ``integrations/agent_control/core.py``; keep them in sync.
+EVICTION_CLOSE_CODE: int = 4000
+
 # Operational failures on the delivery path (NATS / DB / WS). Catch these
 # instead of bare ``Exception`` so programming bugs (AttributeError, TypeError,
 # etc.) still surface.
@@ -179,7 +185,7 @@ class AgentControlConnectionManager:
 
         If another connection is already registered for the same agent,
         the previous connection is evicted: it receives a close frame
-        with code 4000 so the client can distinguish eviction from other
+        with code EVICTION_CLOSE_CODE so the client can distinguish eviction from other
         closures and avoid an immediate reconnect storm.
         """
         connection_id = str(uuid.uuid4())
@@ -204,7 +210,7 @@ class AgentControlConnectionManager:
             )
             try:
                 await evicted_ws.close(
-                    code=4000,
+                    code=EVICTION_CLOSE_CODE,
                     reason="Superseded by a newer connection for this agent",
                 )
             except Exception:
