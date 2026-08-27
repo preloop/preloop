@@ -44,6 +44,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Agent Control eviction now sends close code 4000**: when a second
+  WebSocket connects for the same managed agent, the server closes the
+  previous connection with close code 4000 and a reason string instead
+  of silently orphaning it. All runtime plugin clients (Python shared
+  library, Hermes, OpenClaw, OpenCode, Claude Code sidecar) treat
+  close code 4000 as a non-retryable eviction and stop reconnecting to
+  avoid an eviction ping-pong loop. A warning-level log on the server
+  names both connection identities.
+
 - **Empty upstream streams no longer complete "successfully"**: an
   OpenAI-Responses stream whose upstream produced zero output items
   (or reported an in-band `error` chunk) used to be folded into a
