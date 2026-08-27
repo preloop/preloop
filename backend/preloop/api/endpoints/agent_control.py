@@ -175,16 +175,45 @@ class AgentControlConnectionManager:
         self._lock = asyncio.Lock()
 
     async def connect(self, *, managed_agent_id: str, websocket: WebSocket) -> str:
-        """Register one accepted managed-agent WebSocket."""
+        """Register one accepted managed-agent WebSocket.
+
+        If another connection is already registered for the same agent,
+        the previous connection is evicted: it receives a close frame
+        with code 4000 so the client can distinguish eviction from other
+        closures and avoid an immediate reconnect storm.
+        """
         connection_id = str(uuid.uuid4())
+        evicted_ws: WebSocket | None = None
+        evicted_id: str | None = None
         async with self._lock:
             previous_connection_id = self._agent_connections.get(managed_agent_id)
             if previous_connection_id:
-                self._connections.pop(previous_connection_id, None)
+                evicted_ws = self._connections.pop(previous_connection_id, None)
+                evicted_id = previous_connection_id
                 self._connection_agents.pop(previous_connection_id, None)
             self._connections[connection_id] = websocket
             self._agent_connections[managed_agent_id] = connection_id
             self._connection_agents[connection_id] = managed_agent_id
+        if evicted_ws is not None:
+            logger.warning(
+                "Evicting agent-control connection for managed_agent_id=%s: "
+                "connection %s superseded by %s",
+                managed_agent_id,
+                evicted_id,
+                connection_id,
+            )
+            try:
+                await evicted_ws.close(
+                    code=4000,
+                    reason="Superseded by a newer connection for this agent",
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to send close frame to evicted WebSocket "
+                    "for agent %s",
+                    managed_agent_id,
+                    exc_info=True,
+                )
         return connection_id
 
     async def disconnect(self, connection_id: str) -> bool:
