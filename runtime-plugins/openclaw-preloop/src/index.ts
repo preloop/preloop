@@ -290,10 +290,17 @@ export class PreloopOpenClawPlugin {
       }
     });
 
-    const onClose = (): void => {
+    const onClose = (event: { code?: number; reason?: string }): void => {
       this.stopHeartbeat();
       if (this.socket === socket) {
         this.socket = undefined;
+      }
+      if (event.code === 4000) {
+        this.log(
+          `Agent Control: evicted by server (${event.reason || "superseded by newer connection"}); will not reconnect`,
+        );
+        this.stopped = true;
+        return;
       }
       this.scheduleReconnect();
     };

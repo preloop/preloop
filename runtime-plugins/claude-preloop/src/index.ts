@@ -249,11 +249,21 @@ export class PreloopClaudeSidecar {
       void this.handleFrame(socket, websocketDataToString(data));
     });
 
-    socket.on("close", (code) => {
+    socket.on("close", (code, reason) => {
       this.log(`Agent Control: connection closed (code ${code})`);
       this.stopHeartbeat();
       if (this.socket === socket) {
         this.socket = undefined;
+      }
+      if (code === 4000) {
+        const detail = reason
+          ? reason.toString()
+          : "superseded by newer connection";
+        this.log(
+          `Agent Control: evicted by server (${detail}); will not reconnect`,
+        );
+        this.stopped = true;
+        return;
       }
       this.scheduleReconnect();
     });
