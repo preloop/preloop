@@ -1140,15 +1140,76 @@ class TestProcessEventEdgeCases:
 
 
 class TestIsPreloopTriggeredEvent:
-    """Bot-loop guard: comments/PR edits skip, label hops must pass."""
+    """Bot-loop guard: reaction events from Preloop bots are dropped,
+    but intentional PR/MR opens, label hops, and human events pass."""
+
+    # -- Bot reaction events: MUST be blocked --
 
     def test_github_bot_comment_is_ignored(self, flow_trigger_service):
+        """Bot-posted comments are side-effects and must be dropped."""
         event = {
             "source": "github",
             "type": "comment_created",
             "payload": {"sender": {"login": "preloop[bot]"}},
         }
         assert flow_trigger_service._is_preloop_triggered_event(event) is True
+
+    def test_gitlab_bot_issue_updated_is_ignored(self, flow_trigger_service):
+        """Bot-edited issue bodies are side-effects and must be dropped."""
+        event = {
+            "source": "gitlab",
+            "type": "issue_updated",
+            "payload": {"user": {"username": "preloop"}},
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is True
+
+    def test_github_bot_pr_updated_is_ignored(self, flow_trigger_service):
+        """Bot pushing status/body edits on an existing PR: drop."""
+        event = {
+            "source": "github",
+            "type": "pull_request_updated",
+            "payload": {"sender": {"login": "preloop[bot]"}},
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is True
+
+    # -- Bot-opened PR events: MUST pass (the fix for #306/#307) --
+
+    def test_github_bot_pr_opened_passes(self, flow_trigger_service):
+        """PR opened by the Preloop App is an intentional action, not a
+        loop vector.  This is the core fix for PRs #306 and #307."""
+        event = {
+            "source": "github",
+            "type": "pull_request.opened",
+            "payload": {"sender": {"login": "preloop[bot]"}},
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is False
+
+    def test_github_bot_pr_opened_normalized_passes(self, flow_trigger_service):
+        """Normalized event type variant also passes."""
+        event = {
+            "source": "github",
+            "type": "pull_request_opened",
+            "payload": {"sender": {"login": "preloop[bot]"}},
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is False
+
+    def test_github_bot_pr_reopened_passes(self, flow_trigger_service):
+        event = {
+            "source": "github",
+            "type": "pull_request.reopened",
+            "payload": {"sender": {"login": "preloop[bot]"}},
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is False
+
+    def test_gitlab_bot_mr_opened_passes(self, flow_trigger_service):
+        event = {
+            "source": "gitlab",
+            "type": "merge_request.opened",
+            "payload": {"user": {"username": "preloop"}},
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is False
+
+    # -- Label hop events: MUST pass --
 
     def test_github_bot_issue_labeled_is_not_ignored(self, flow_trigger_service):
         event = {
@@ -1169,19 +1230,60 @@ class TestIsPreloopTriggeredEvent:
         }
         assert flow_trigger_service._is_preloop_triggered_event(event) is False
 
-    def test_gitlab_bot_issue_updated_is_ignored(self, flow_trigger_service):
-        event = {
-            "source": "gitlab",
-            "type": "issue_updated",
-            "payload": {"user": {"username": "preloop"}},
-        }
-        assert flow_trigger_service._is_preloop_triggered_event(event) is True
+    # -- Human events: MUST always pass --
 
     def test_human_issue_labeled_is_not_ignored(self, flow_trigger_service):
         event = {
             "source": "github",
             "type": "issue_labeled",
             "payload": {"sender": {"login": "dimitris"}},
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is False
+
+    def test_human_comment_passes(self, flow_trigger_service):
+        """Human comments must never be blocked."""
+        event = {
+            "source": "github",
+            "type": "comment_created",
+            "payload": {"sender": {"login": "dimitris"}},
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is False
+
+    def test_human_pr_opened_passes(self, flow_trigger_service):
+        event = {
+            "source": "github",
+            "type": "pull_request.opened",
+            "payload": {"sender": {"login": "dimitris"}},
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is False
+
+    # -- Lookalike usernames: MUST pass (no prefix matching) --
+
+    def test_lookalike_username_preloop_fan_passes(self, flow_trigger_service):
+        """A human named 'preloop-fan' must not be caught by the guard.
+        The old startswith('preloop') check would incorrectly drop this."""
+        event = {
+            "source": "github",
+            "type": "comment_created",
+            "payload": {"sender": {"login": "preloop-fan"}},
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is False
+
+    def test_lookalike_username_prelooper_passes(self, flow_trigger_service):
+        """Username 'prelooper' must not be caught."""
+        event = {
+            "source": "github",
+            "type": "pull_request_updated",
+            "payload": {"sender": {"login": "prelooper"}},
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is False
+
+    def test_lookalike_gitlab_username_passes(self, flow_trigger_service):
+        """GitLab user 'preloop-contributor' must not be caught."""
+        event = {
+            "source": "gitlab",
+            "type": "issue_updated",
+            "payload": {"user": {"username": "preloop-contributor"}},
         }
         assert flow_trigger_service._is_preloop_triggered_event(event) is False
 

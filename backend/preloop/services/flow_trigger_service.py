@@ -759,33 +759,82 @@ class FlowTriggerService:
 
         return True
 
+    # Event types that are safe to accept even when the sender is a Preloop
+    # bot account.  These represent *intentional actions* (opening a PR,
+    # reopening one) rather than side-effects of a prior flow execution
+    # (posting a comment, changing a status, editing a body).  A reviewer
+    # flow triggered by a bot-opened PR will post comments or statuses --
+    # those downstream events ARE guarded, so recursion cannot happen.
+    _LOOP_GUARD_EXEMPT_EVENT_TYPES: frozenset = frozenset(
+        {
+            "pull_request.opened",
+            "pull_request.reopened",
+            "merge_request.opened",
+            "merge_request.reopened",
+            # Normalized variants used elsewhere in the codebase
+            "pull_request_opened",
+            "pull_request_reopened",
+            "merge_request_opened",
+            "merge_request_reopened",
+        }
+    )
+
+    # Exact bot identities that Preloop controls.  We intentionally avoid
+    # prefix matching ("preloop*") because that would false-positive on
+    # legitimate human usernames like "preloop-fan".
+    _KNOWN_BOT_IDENTITIES: frozenset = frozenset(
+        {
+            "preloop",
+            "preloop-bot",
+            "preloop-staging",
+            "preloop-dev",
+            "preloop[bot]",  # GitHub App format
+            "preloop-app",
+        }
+    )
+
     def _is_preloop_triggered_event(self, event_data: Dict[str, Any]) -> bool:
-        """
-        Check if an event was triggered by Preloop's own actions.
+        """Check if an event was triggered by Preloop's own actions.
 
         This prevents infinite loops where:
         1. Flow runs and updates a PR (adds comment, modifies body, etc.)
-        2. Update triggers a new webhook event (pull_request_updated, comment_created)
-        3. Event matches another flow -> triggers another execution
+        2. Update triggers a new webhook event (pull_request_updated,
+           comment_created)
+        3. Event matches another flow and triggers another execution
         4. Repeat forever
 
-        We detect Preloop-triggered events by checking the sender/actor field
-        in the webhook payload for known Preloop bot usernames.
+        Two categories of events are allowed through even when the sender
+        is a known Preloop bot:
+
+        * **Label events** (issue_labeled / issue_unlabeled) -- these are
+          the hand-off hop from an intake/dispatch flow onto an
+          implementation flow.
+        * **PR/MR opened/reopened events** -- creating or reopening a PR
+          is an intentional action (e.g. Preloop opens a PR on a human's
+          behalf).  The resulting review flow will post comments or
+          statuses, which are *reaction-type* events that remain guarded,
+          so unbounded recursion cannot occur.
         """
         payload = event_data.get("payload", {})
         source = event_data.get("source", "").lower()
         event_type = event_data.get("type") or ""
 
-        # Applying a label is the hop from intake/dispatch onto an
-        # implementation flow. If we skip Preloop-bot label events, then
+        # Label events are the hop from intake/dispatch onto an
+        # implementation flow.  If we skip Preloop-bot label events, then
         # update_issue(labels=["agent-ready"]) can never start a fixer.
-        # Comment/PR/body updates still loop-guard as before.
         if event_type in {"issue_labeled", "issue_unlabeled"}:
             return False
 
-        # Get the sender/actor who triggered the event
-        # Note: payload may be enriched with filter_fields which can overwrite
-        # dict values (e.g. sender) with strings, so handle both types.
+        # PR/MR opened/reopened events carry real code changes and are
+        # legitimate triggers even when the PR was opened by the App on
+        # a human's behalf.  See class docstring for loop-safety argument.
+        if event_type in self._LOOP_GUARD_EXEMPT_EVENT_TYPES:
+            return False
+
+        # Get the sender/actor who triggered the event.
+        # Note: payload may be enriched with filter_fields which can
+        # overwrite dict values (e.g. sender) with strings, so handle
+        # both types.
         sender = None
         if source == "github":
             sender_obj = payload.get("sender", {})
@@ -814,24 +863,13 @@ class FlowTriggerService:
         if not sender:
             return False
 
-        # Known Preloop bot username patterns
-        # These are typically the usernames of GitHub Apps or GitLab service accounts
-        # that Preloop uses to interact with trackers
-        preloop_patterns = [
-            "preloop",
-            "preloop-bot",
-            "preloop-staging",
-            "preloop-dev",
-            "preloop[bot]",  # GitHub App format
-            "preloop-app",
-        ]
-
-        for pattern in preloop_patterns:
-            if sender == pattern or sender.startswith("preloop"):
-                logger.info(
-                    f"Ignoring event triggered by Preloop bot account: {sender}"
-                )
-                return True
+        # Match against exact known bot identities only -- never use a
+        # prefix/startswith check, which would incorrectly drop events
+        # from legitimate users whose names happen to start with
+        # "preloop" (e.g. "preloop-fan").
+        if sender in self._KNOWN_BOT_IDENTITIES:
+            logger.info(f"Ignoring event triggered by Preloop bot account: {sender}")
+            return True
 
         return False
 
