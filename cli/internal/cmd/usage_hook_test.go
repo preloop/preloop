@@ -450,17 +450,43 @@ func TestUsageHookForwardsAgentIDAndSource(t *testing.T) {
 		`{"conversation_id":"conv-1","generation_id":"gen-1",` +
 			`"hook_event_name":"stop","loop_count":0}`,
 	)
-	if err := cmd.Flags().Set("agent-id", "agent-42"); err != nil {
+	if err := cmd.Flags().Set("agent-id", "a1b2c3d4-e5f6-7890-abcd-ef1234567890"); err != nil {
 		t.Fatalf("set flag: %v", err)
 	}
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 
-	if gotBody["agent_id"] != "agent-42" {
+	if gotBody["agent_id"] != "a1b2c3d4-e5f6-7890-abcd-ef1234567890" {
 		t.Fatalf("unexpected agent_id: %#v", gotBody["agent_id"])
 	}
 	if gotBody["source"] != "cursor" {
 		t.Fatalf("unexpected source: %#v", gotBody["source"])
+	}
+}
+
+func TestUsageHookRejectsNonUUIDAgentID(t *testing.T) {
+	posted := false
+	withUsageHookServer(t, func(w http.ResponseWriter, r *http.Request) {
+		posted = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	cmd, _, stderr := newUsageHookTestCmd(
+		`{"conversation_id":"conv-1","generation_id":"gen-1",` +
+			`"hook_event_name":"stop","loop_count":0}`,
+	)
+	if err := cmd.Flags().Set("agent-id", "not-a-uuid"); err != nil {
+		t.Fatalf("set flag: %v", err)
+	}
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("hook must fail open, got error: %v", err)
+	}
+
+	if posted {
+		t.Fatal("a non-UUID agent-id must not be shipped")
+	}
+	if !strings.Contains(stderr.String(), "must be a UUID") {
+		t.Fatalf("expected a UUID validation warning, got %q", stderr.String())
 	}
 }

@@ -5,11 +5,17 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/preloop/preloop/cli/internal/api"
+)
+
+// uuidRe matches a canonical UUID (8-4-4-4-12 hex).
+var uuidRe = regexp.MustCompile(
+	`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`,
 )
 
 const (
@@ -108,7 +114,7 @@ at docs/guide/cursor-usage-hooks.md.`,
 func init() {
 	usageCmd.AddCommand(usageHookCmd)
 
-	usageHookCmd.Flags().String("agent-id", "", "managed agent to attribute the events to (default: the onboarded Cursor agent)")
+	usageHookCmd.Flags().String("agent-id", "", "managed agent UUID to attribute the events to (default: the onboarded Cursor agent)")
 	usageHookCmd.Flags().String("source", "cursor", "origin label stored on each record")
 	usageHookCmd.Flags().String("parent-conversation-id", "", "conversation this chat was spawned from, when the payload reports none (also PRELOOP_PARENT_CONVERSATION_ID)")
 }
@@ -144,6 +150,9 @@ func runUsageHook(cmd *cobra.Command, _ []string) error {
 		"records": []map[string]interface{}{record},
 	}
 	if agentID != "" {
+		if !uuidRe.MatchString(agentID) {
+			return usageHookFailOpen(cmd, fmt.Errorf("--agent-id must be a UUID, got %q", agentID))
+		}
 		request["agent_id"] = agentID
 	}
 
