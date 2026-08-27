@@ -149,7 +149,7 @@ class HermesPreloopPlugin:
 
     def load_config(self) -> AgentControlConfig:
         """Load the `preloop.control` block from Hermes configuration."""
-        return load_hermes_control_config(self.config_path)
+        return load_hermes_control_config(_discover_config_path(self.config_path))
 
     def capabilities(self) -> AgentControlCapabilities:
         """Advertise the Hermes control surface exposed by this plugin."""
@@ -164,7 +164,7 @@ class HermesPreloopPlugin:
 
     async def start(self, hermes_runtime: Any | None = None) -> AgentControlClient:
         """Create and connect the Preloop WebSocket client."""
-        config_path = self.config_path or Path.home() / ".hermes" / "config.yaml"
+        config_path = _discover_config_path(self.config_path)
 
         async def send_message(command: OperatorCommand) -> AgentControlResult:
             metadata = dict(command.metadata)
@@ -429,7 +429,7 @@ class HermesPreloopPlugin:
 
     def _read_control_block(self) -> dict[str, Any]:
         """Read the raw ``preloop.control`` mapping from Hermes config."""
-        path = self.config_path or Path.home() / ".hermes" / "config.yaml"
+        path = _discover_config_path(self.config_path)
         document = yaml.safe_load(path.read_text())
         if not isinstance(document, dict):
             raise ValueError("Hermes config root must be an object")
@@ -453,7 +453,7 @@ class HermesPreloopPlugin:
 
     def login(self, base_url: str) -> None:
         """Bootstrap Preloop auth and write Hermes Agent Control config."""
-        config_path = self.config_path or Path.home() / ".hermes" / "config.yaml"
+        config_path = _discover_config_path(self.config_path)
         runtime_principal_id = f"hermes-{uuid4()}"
         authorize_url = _build_url(
             base_url,
@@ -547,6 +547,44 @@ def register(ctx: Any) -> None:
     plugin.register(ctx)
 
 
+def _discover_config_path(explicit: Path | None = None) -> Path:
+    """Resolve the Hermes config path using sensible defaults.
+
+    Priority: *explicit* > ``$HERMES_HOME/config.yaml`` >
+    ``~/.hermes/config.yaml``.  Returns the first candidate that exists.
+    When nothing exists yet (first-time login / creation), the preferred
+    fallback is ``$HERMES_HOME/config.yaml`` if the env var is set, so
+    the new file lands where Hermes will actually read it.
+    """
+    if explicit is not None:
+        return explicit
+    hermes_home = os.environ.get("HERMES_HOME")
+    if hermes_home:
+        candidate = Path(hermes_home) / "config.yaml"
+        if candidate.exists():
+            return candidate
+    default = Path.home() / ".hermes" / "config.yaml"
+    if default.exists():
+        return default
+    # Nothing exists yet -- prefer $HERMES_HOME when set so the file is
+    # created where Hermes will look for it.
+    if hermes_home:
+        return Path(hermes_home) / "config.yaml"
+    return default
+
+
+def _config_search_summary(explicit: Path | None = None) -> str:
+    """Build a human-readable list of config paths that were tried."""
+    if explicit is not None:
+        return str(explicit)
+    candidates: list[str] = []
+    hermes_home = os.environ.get("HERMES_HOME")
+    if hermes_home:
+        candidates.append(str(Path(hermes_home) / "config.yaml"))
+    candidates.append(str(Path.home() / ".hermes" / "config.yaml"))
+    return ", ".join(candidates)
+
+
 def main() -> None:
     """CLI helper used by marketplace verification commands."""
     parser = argparse.ArgumentParser()
@@ -555,7 +593,16 @@ def main() -> None:
     parser.add_argument("--base-url", default="https://app.preloop.ai")
     args = parser.parse_args()
 
-    instance = HermesPreloopPlugin(args.config)
+    config_path = _discover_config_path(args.config)
+
+    # login creates the config file; the other commands need it to exist.
+    if args.command != "login" and not config_path.exists():
+        tried = _config_search_summary(args.config)
+        raise SystemExit(
+            f"Hermes config not found (tried: {tried}); pass --config <path>"
+        )
+
+    instance = HermesPreloopPlugin(config_path)
     if args.command == "login":
         instance.login(args.base_url)
         return

@@ -100,14 +100,20 @@ curl -fsSL https://preloop.ai/install/oss | sh
 The plugin ships its own login helper, so you never hand-author a token:
 
 ```bash
-preloop-hermes-plugin login --config ~/.hermes/config.yaml
-preloop-hermes-plugin verify --config ~/.hermes/config.yaml
+preloop-hermes-plugin login
+preloop-hermes-plugin verify
 ```
 
 `login` opens Preloop's OAuth flow, mints a runtime bearer token, and writes the
-`preloop.control` block into `~/.hermes/config.yaml` (backing up the existing
+`preloop.control` block into the discovered config file (backing up the existing
 file alongside it first). `verify` checks the config shape and that the plugin
 loads.
+
+Config discovery order: `--config <path>` (if given) >
+`$HERMES_HOME/config.yaml` > `~/.hermes/config.yaml`. When no config file
+exists yet, `$HERMES_HOME/config.yaml` is preferred if the variable is set so
+the new file lands where Hermes will read it. Pass `--config` explicitly to
+override.
 
 ### Or let the Preloop CLI do all of it
 
@@ -151,7 +157,8 @@ the block plus your reason, and the agent carries on with something else.
 
 ## Configuration
 
-The plugin reads the `preloop.control` block from `~/.hermes/config.yaml`:
+The plugin reads the `preloop.control` block from the discovered Hermes config
+(`$HERMES_HOME/config.yaml` or `~/.hermes/config.yaml`; see [Connect it](#connect-it)):
 
 ```yaml
 preloop:
@@ -197,9 +204,9 @@ hand:
 
 ```bash
 pip install preloop-hermes-plugin
-preloop-hermes-plugin login --config ~/.hermes/config.yaml
-preloop-hermes-plugin verify --config ~/.hermes/config.yaml
-preloop-hermes-plugin run --config ~/.hermes/config.yaml
+preloop-hermes-plugin login          # or: --config /path/to/config.yaml
+preloop-hermes-plugin verify
+preloop-hermes-plugin run
 ```
 
 `run` opens the Agent Control WebSocket and advertises capabilities without
