@@ -1,6 +1,7 @@
 """Endpoint tests for the managed-agent control plane."""
 
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -964,3 +965,89 @@ def test_agent_control_takeover_honors_start_new_session(
     payload = body["command_envelope"]["payload"]
     assert payload["session_mode"] == "new"
     assert payload["spawn_worktree"] is True
+
+
+def test_agent_control_ws_evicts_previous_connection_with_close_4000(
+    client, db_session, test_user, caplog
+):
+    """Second WebSocket for the same agent evicts the first with close 4000."""
+    token_body = _issue_runtime_token(client, session_source_id="openclaw-eviction")
+    url = f"/api/v1/agents/control/ws?token={token_body['token']}"
+
+    with caplog.at_level(logging.WARNING, logger="preloop.api.endpoints.agent_control"):
+        with client.websocket_connect(url) as ws1:
+            connected1 = ws1.receive_json()
+            assert connected1["type"] == "presence"
+            assert connected1["name"] == "connected"
+
+            # Open a second connection for the same agent.
+            with client.websocket_connect(url) as ws2:
+                connected2 = ws2.receive_json()
+                assert connected2["type"] == "presence"
+                assert connected2["name"] == "connected"
+
+                # The first connection must have been evicted with code 4000.
+                with pytest.raises(WebSocketDisconnect) as exc_info:
+                    ws1.receive_json()
+                assert exc_info.value.code == 4000
+
+                # The newest connection receives subsequent commands.
+                ws2.send_json(
+                    {
+                        "type": "heartbeat",
+                        "message_id": "hb-evict",
+                        "payload": {},
+                    }
+                )
+                ack = ws2.receive_json()
+                assert ack["type"] == "ack"
+                assert ack["name"] == "heartbeat"
+                assert ack["message_id"] == "hb-evict"
+
+    # A warning was logged mentioning the eviction.
+    eviction_warnings = [
+        r
+        for r in caplog.records
+        if r.levelno >= logging.WARNING and "Evicting" in r.message
+    ]
+    assert len(eviction_warnings) == 1
+    assert "superseded" in eviction_warnings[0].message
+
+
+def test_agent_control_ws_evicted_connection_does_not_clear_agent_binding(
+    client, db_session, test_user
+):
+    """An evicted connection must not mark the agent offline on teardown."""
+    token_body = _issue_runtime_token(
+        client, session_source_id="openclaw-evict-binding"
+    )
+    managed_agent = crud_managed_agent.get_by_source(
+        db_session,
+        account_id=str(test_user.account_id),
+        session_source_type="openclaw",
+        session_source_id="openclaw-evict-binding",
+    )
+    assert managed_agent is not None
+    url = f"/api/v1/agents/control/ws?token={token_body['token']}"
+
+    with client.websocket_connect(url) as ws1:
+        assert ws1.receive_json()["type"] == "presence"
+
+        with client.websocket_connect(url) as ws2:
+            assert ws2.receive_json()["type"] == "presence"
+
+            # Drain the eviction close on ws1 so its handler finishes.
+            with pytest.raises(WebSocketDisconnect):
+                ws1.receive_json()
+
+        # ws1's handler is done; ws2 just exited its context -- that is
+        # the ACTIVE disconnect. Only ws2 should mark the agent offline.
+        db_session.expire_all()
+        refreshed = crud_managed_agent.get_for_account(
+            db_session,
+            account_id=str(test_user.account_id),
+            agent_id=str(managed_agent.id),
+        )
+        assert refreshed is not None
+        # After ws2 (the active binding) disconnects, the session is cleared.
+        assert refreshed.runtime_session_id is None

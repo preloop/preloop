@@ -11,21 +11,25 @@ from preloop.integrations.agent_control.adapters import (
     load_openclaw_control_config,
 )
 from preloop.integrations.agent_control.core import (
+    EVICTION_CLOSE_CODE,
     AgentControlCapabilities,
     AgentControlClient,
     AgentControlConfig,
     AgentControlResult,
     AgentControlRuntimeHooks,
+    ConnectionEvictedError,
     OperatorCommand,
     dispatch_operator_command,
 )
 
 __all__ = [
+    "EVICTION_CLOSE_CODE",
     "AgentControlCapabilities",
     "AgentControlClient",
     "AgentControlConfig",
     "AgentControlResult",
     "AgentControlRuntimeHooks",
+    "ConnectionEvictedError",
     "HermesAgentControlAdapter",
     "HookedAgentControlAdapter",
     "OpenClawAgentControlAdapter",

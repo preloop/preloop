@@ -21,6 +21,9 @@ import aiohttp
 
 logger = logging.getLogger(__name__)
 
+EVICTION_CLOSE_CODE = 4000
+"""WebSocket close code the server sends when a newer connection supersedes."""
+
 InputMode = Literal["text", "voice", "voice_transcript"]
 SessionMode = Literal["current", "existing", "new"]
 OutboundEnvelope = dict[str, Any]
@@ -179,8 +182,19 @@ class AgentControlRuntimeHooks(Protocol):
         """Attach to an existing session or start a new one and send text."""
 
 
+class ConnectionEvictedError(Exception):
+    """Raised when the server evicts this connection (close code 4000).
+
+    A newer WebSocket for the same managed agent superseded this one.
+    Reconnecting immediately would evict the newer connection in turn,
+    so callers must treat this as a non-retryable shutdown signal.
+    """
+
+
 def _is_permanent_control_connection_error(exc: BaseException) -> bool:
     """Return True when reconnecting would not recover from this failure."""
+    if isinstance(exc, ConnectionEvictedError):
+        return True
     status: int | None = None
     if isinstance(exc, aiohttp.ClientResponseError):
         status = exc.status
@@ -281,6 +295,19 @@ class AgentControlClient:
                 finally:
                     heartbeat_task.cancel()
                     await asyncio.gather(heartbeat_task, return_exceptions=True)
+                # Detect server-initiated eviction after the message loop ends.
+                close_code = getattr(websocket, "close_code", None)
+                if close_code == EVICTION_CLOSE_CODE:
+                    logger.warning(
+                        "Agent control connection evicted by server "
+                        "(close code %d); a newer connection superseded "
+                        "this one -- will not reconnect",
+                        close_code,
+                    )
+                    raise ConnectionEvictedError(
+                        "Connection evicted by server: superseded by a "
+                        "newer connection for this agent (close code 4000)"
+                    )
 
     async def _heartbeat_loop(self, websocket: aiohttp.ClientWebSocketResponse) -> None:
         while not self._stopped.is_set():
