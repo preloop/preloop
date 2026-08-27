@@ -48,10 +48,10 @@ def test_hermes_home_takes_priority(
     assert _discover_config_path() == config
 
 
-def test_hermes_home_skipped_when_file_missing(
+def test_hermes_home_preferred_on_creation_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """$HERMES_HOME dir exists but contains no config.yaml."""
+    """When neither config exists, $HERMES_HOME/config.yaml wins for creation."""
     hermes_home = tmp_path / "hermes-home"
     hermes_home.mkdir()
     # no config.yaml written
@@ -61,7 +61,26 @@ def test_hermes_home_skipped_when_file_missing(
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setenv("HOME", str(fake_home))
 
-    assert _discover_config_path() == fake_home / ".hermes" / "config.yaml"
+    assert _discover_config_path() == hermes_home / "config.yaml"
+
+
+def test_home_fallback_used_when_hermes_home_empty_but_home_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """$HERMES_HOME has no config but ~/.hermes/config.yaml exists."""
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+
+    fake_home = tmp_path / "fakehome"
+    fake_home.mkdir()
+    home_config = fake_home / ".hermes" / "config.yaml"
+    home_config.parent.mkdir(parents=True)
+    home_config.write_text("preloop: {}\n")
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HOME", str(fake_home))
+
+    assert _discover_config_path() == home_config
 
 
 def test_falls_back_to_home_hermes_when_no_env(

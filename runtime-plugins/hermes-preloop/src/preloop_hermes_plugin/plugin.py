@@ -551,9 +551,10 @@ def _discover_config_path(explicit: Path | None = None) -> Path:
     """Resolve the Hermes config path using sensible defaults.
 
     Priority: *explicit* > ``$HERMES_HOME/config.yaml`` >
-    ``~/.hermes/config.yaml``.  Returns the first candidate that exists,
-    or the final fallback when nothing exists yet (so callers that create
-    the file still get a usable path).
+    ``~/.hermes/config.yaml``.  Returns the first candidate that exists.
+    When nothing exists yet (first-time login / creation), the preferred
+    fallback is ``$HERMES_HOME/config.yaml`` if the env var is set, so
+    the new file lands where Hermes will actually read it.
     """
     if explicit is not None:
         return explicit
@@ -562,7 +563,14 @@ def _discover_config_path(explicit: Path | None = None) -> Path:
         candidate = Path(hermes_home) / "config.yaml"
         if candidate.exists():
             return candidate
-    return Path.home() / ".hermes" / "config.yaml"
+    default = Path.home() / ".hermes" / "config.yaml"
+    if default.exists():
+        return default
+    # Nothing exists yet -- prefer $HERMES_HOME when set so the file is
+    # created where Hermes will look for it.
+    if hermes_home:
+        return Path(hermes_home) / "config.yaml"
+    return default
 
 
 def _config_search_summary(explicit: Path | None = None) -> str:
