@@ -24,6 +24,7 @@ from preloop.models.models.user import User
 from preloop.schemas.cost_analytics import (
     CostAnalyticsSummaryResponse,
     CostHealthResponse,
+    ImportedUsageByConversation,
     ImportedUsageByModel,
     ImportedUsageSummary,
     LedgerBackfillBucket,
@@ -113,6 +114,20 @@ def get_cost_summary(
             usage_by_model=[
                 ImportedUsageByModel(**row)
                 for row in crud_api_usage.get_imported_usage_by_model(
+                    db,
+                    account_id=str(account.id),
+                    start_date=summary.period_start,
+                    end_date=summary.period_end,
+                    runtime_principal_id=runtime_principal_id,
+                )
+            ],
+            # Per-conversation rollup for the console: subagent workers
+            # (parent_conversation_id) nest under their parent thread, and
+            # estimated vs reconciled amounts stay separate fields — the UI
+            # must never add them together (design-partner honesty rail).
+            usage_by_conversation=[
+                ImportedUsageByConversation(**row)
+                for row in crud_api_usage.get_imported_usage_by_conversation(
                     db,
                     account_id=str(account.id),
                     start_date=summary.period_start,
