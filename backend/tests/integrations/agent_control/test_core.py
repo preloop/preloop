@@ -17,6 +17,7 @@ from preloop.integrations.agent_control import (
     load_openclaw_control_config,
 )
 from preloop.integrations.agent_control.core import (
+    ConnectionEvictedError,
     _is_permanent_control_connection_error,
     _parse_inbound_message,
 )
@@ -52,6 +53,12 @@ def test_permanent_control_connection_error_detects_auth_failures() -> None:
         )
     )
     assert not _is_permanent_control_connection_error(RuntimeError("temporary"))
+
+
+def test_connection_evicted_error_is_permanent() -> None:
+    assert _is_permanent_control_connection_error(
+        ConnectionEvictedError("superseded")
+    )
 
 
 def test_control_config_reads_cli_document() -> None:
