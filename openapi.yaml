@@ -13630,6 +13630,64 @@ components:
           title: Detail
       type: object
       title: HTTPValidationError
+    ImportedUsageByConversation:
+      properties:
+        conversation_id:
+          type: string
+          title: Conversation Id
+        parent_conversation_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Parent Conversation Id
+        source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source
+        event_count:
+          type: integer
+          title: Event Count
+          default: 0
+        total_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Total Tokens
+        estimated_cost:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Estimated Cost
+        reconciled_cost:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Reconciled Cost
+        last_event_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Event At
+      type: object
+      required:
+      - conversation_id
+      title: ImportedUsageByConversation
+      description: 'Imported usage rolled up by source-side conversation.
+
+
+        ``estimated_cost`` (hook/transcript-derived) and ``reconciled_cost``
+
+        (billing export) are reported as SEPARATE fields and must never be
+
+        summed into one number by any consumer. ``None`` means the source
+
+        reported nothing for that quantity ("not reported") — it is not zero.
+
+        Entries whose ``parent_conversation_id`` matches another entry''s
+
+        ``conversation_id`` are subagent workers of that parent thread.'
     ImportedUsageByModel:
       properties:
         model_alias:
@@ -13682,6 +13740,11 @@ components:
             $ref: '#/components/schemas/ImportedUsageByModel'
           type: array
           title: Usage By Model
+        usage_by_conversation:
+          items:
+            $ref: '#/components/schemas/ImportedUsageByConversation'
+          type: array
+          title: Usage By Conversation
       type: object
       title: ImportedUsageSummary
       description: 'Spend ingested from outside the gateway (``usage_source=''imported''``).
