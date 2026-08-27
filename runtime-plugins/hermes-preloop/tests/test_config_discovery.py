@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any
 
 import pytest
 import yaml
@@ -185,14 +184,14 @@ def test_main_login_does_not_require_existing_config(
     """login creates the config, so it must not exit even if file is absent."""
     monkeypatch.delenv("HERMES_HOME", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setattr(
-        "sys.argv", ["preloop-hermes-plugin", "login"]
-    )
+    monkeypatch.setattr("sys.argv", ["preloop-hermes-plugin", "login"])
 
     # login() will try to interact (input()), so we just verify it does not
     # raise SystemExit with the "config not found" message. We monkeypatch
     # input to raise a controlled error instead.
-    monkeypatch.setattr("builtins.input", lambda _: (_ for _ in ()).throw(KeyboardInterrupt))
+    monkeypatch.setattr(
+        "builtins.input", lambda _: (_ for _ in ()).throw(KeyboardInterrupt)
+    )
 
     with pytest.raises(KeyboardInterrupt):
         main()
