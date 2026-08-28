@@ -215,3 +215,36 @@ class TestSslVerifyOnCompletions:
         kwargs = {"ssl_verify": True}
         apply_preloop_client_headers(kwargs, _model("openai", "gpt-5"))
         assert kwargs["ssl_verify"] is True
+
+    def test_public_openai_does_not_inherit_private_ca(self, monkeypatch, tmp_path):
+        ca = tmp_path / "ca.crt"
+        ca.write_text("dummy-ca")
+        monkeypatch.delenv("PRELOOP_SSL_VERIFY", raising=False)
+        monkeypatch.setenv("SSL_CERT_FILE", str(ca))
+        kwargs: dict = {}
+        apply_preloop_client_headers(kwargs, _model("openai", "gpt-5"))
+        assert "ssl_verify" not in kwargs
+
+    def test_public_anthropic_does_not_inherit_private_ca(self, monkeypatch, tmp_path):
+        ca = tmp_path / "ca.crt"
+        ca.write_text("dummy-ca")
+        monkeypatch.delenv("PRELOOP_SSL_VERIFY", raising=False)
+        monkeypatch.setenv("SSL_CERT_FILE", str(ca))
+        kwargs: dict = {}
+        apply_preloop_client_headers(kwargs, _model("anthropic", "claude-opus-4"))
+        assert "ssl_verify" not in kwargs
+
+    def test_skip_verify_does_not_disable_public_openai(self, monkeypatch):
+        monkeypatch.setenv("PRELOOP_SSL_VERIFY", "false")
+        kwargs: dict = {}
+        apply_preloop_client_headers(kwargs, _model("openai", "gpt-5"))
+        assert "ssl_verify" not in kwargs
+
+    def test_api_base_kwargs_still_get_ssl_verify(self, monkeypatch, tmp_path):
+        ca = tmp_path / "ca.crt"
+        ca.write_text("dummy-ca")
+        monkeypatch.delenv("PRELOOP_SSL_VERIFY", raising=False)
+        monkeypatch.setenv("SSL_CERT_FILE", str(ca))
+        kwargs: dict = {"api_base": "https://gateway.internal/v1"}
+        apply_preloop_client_headers(kwargs)
+        assert kwargs["ssl_verify"] == str(ca)

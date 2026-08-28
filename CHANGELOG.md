@@ -28,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   discovery honor `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE` / `CURL_CA_BUNDLE`
   (and `PRELOOP_SSL_VERIFY=false` as a last resort) so a private
   OpenAI-compatible base URL such as `https://gateway.internal/v1` works
-  with operator PKI.
+  with operator PKI. Public OpenAI/Anthropic keep the default trust store.
 
 - **GitLab `issue_labeled`**: an Issue Hook whose `changes.labels` adds
   a label now normalizes to `issue_labeled` (remove-only is

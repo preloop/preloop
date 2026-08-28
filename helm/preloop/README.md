@@ -166,7 +166,20 @@ secrets in the console (or the API) after install.
 ### Private CA for upstream TLS
 
 Mount your CA and point Python TLS env vars at it. Completions and model
-discovery then trust that bundle.
+discovery then trust that bundle **for OpenAI-compatible (custom
+`api_base`) upstreams**. Public OpenAI, Anthropic, and other cloud
+providers keep the default trust store (certifi / system roots). httpx
+treats a `verify` path as the sole CA bundle, so a file that contains
+only your internal CA would break those public APIs if it were applied
+globally.
+
+If a custom upstream and a public provider must share one file, the
+bundle has to include public roots as well as your CA. Prefer keeping
+the private CA for the custom endpoint only.
+
+`PRELOOP_SSL_VERIFY=false` is the same scope: it skips verification on
+custom OpenAI-compatible upstreams only, not on public clouds. Prefer a
+mounted CA.
 
 ```bash
 kubectl create secret generic private-ca --from-file=ca.crt=./acme-ca.crt
@@ -190,9 +203,10 @@ extraEnv:
     value: /etc/ssl/private-ca/ca.crt
 ```
 
-Those env vars are applied to API, gateway, workers, and jobs. As a last
-resort, `PRELOOP_SSL_VERIFY=false` skips TLS verification; prefer a mounted
-CA.
+Those env vars are applied to API, gateway, workers, and jobs. They
+change TLS only for OpenAI-compatible upstreams (and discovery against
+those endpoints). As a last resort, `PRELOOP_SSL_VERIFY=false` skips
+TLS verification on those custom upstreams; prefer a mounted CA.
 
 ### OpenAI-compatible upstream
 
