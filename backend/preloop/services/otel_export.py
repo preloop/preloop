@@ -67,7 +67,6 @@ _FORBIDDEN_ATTR_PREFIXES = (
 
 _lock = threading.Lock()
 _provider: Optional[TracerProvider] = None
-_meter_provider: Any = None
 _force_enabled = False
 _init_failed = False
 _session_span_context: dict[str, trace.SpanContext] = {}
@@ -232,7 +231,8 @@ def emit_tool_call(
             }
         )
         links: Sequence[Link] = ()
-        parent = _session_span_context.get(str(runtime_session_id))
+        with _lock:
+            parent = _session_span_context.get(str(runtime_session_id))
         if parent is not None and parent.is_valid:
             links = (Link(parent),)
         duration_ns = max(int(duration_ms) * 1_000_000, 0)
@@ -282,19 +282,20 @@ def shutdown_otel() -> None:
 
 
 def _shutdown_locked() -> None:
-    global _provider, _meter_provider, _init_failed, _session_span_context
+    global _provider, _init_failed, _session_span_context
     if _provider is not None:
         try:
             _provider.shutdown()
         except Exception:
             logger.debug("OTLP tracer shutdown failed", exc_info=True)
         _provider = None
-    if _meter_provider is not None:
-        try:
-            _meter_provider.shutdown()
-        except Exception:
-            logger.debug("OTLP meter shutdown failed", exc_info=True)
-        _meter_provider = None
+    try:
+        meter_provider = metrics.get_meter_provider()
+        shutdown = getattr(meter_provider, "shutdown", None)
+        if callable(shutdown) and type(meter_provider).__name__ == "MeterProvider":
+            shutdown()
+    except Exception:
+        logger.debug("OTLP meter shutdown failed", exc_info=True)
     _init_failed = False
     _session_span_context = {}
 
@@ -364,8 +365,11 @@ def _build_otlp_span_exporter(
             OTLPSpanExporter,
         )
 
+        traces_endpoint = _signal_endpoint(endpoint, protocol, "traces")
+        if traces_endpoint is None:
+            traces_endpoint = endpoint.strip().rstrip("/")
         return OTLPSpanExporter(
-            endpoint=_signal_endpoint(endpoint, protocol, "traces"),
+            endpoint=traces_endpoint,
             headers=dict(headers),
         )
     if protocol == "grpc":
@@ -387,7 +391,6 @@ def _init_metrics(
     protocol: str,
     headers: Mapping[str, str],
 ) -> None:
-    global _meter_provider
     try:
         from opentelemetry.sdk.metrics import MeterProvider
         from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
@@ -397,8 +400,12 @@ def _init_metrics(
                 OTLPMetricExporter,
             )
 
+            metrics_endpoint = _signal_endpoint(endpoint, protocol, "metrics")
+            if metrics_endpoint is None:
+                logger.info("OTLP metrics export skipped; endpoint is traces-only")
+                return
             exporter: Any = OTLPMetricExporter(
-                endpoint=_signal_endpoint(endpoint, protocol, "metrics"),
+                endpoint=metrics_endpoint,
                 headers=dict(headers),
             )
         elif protocol == "grpc":
@@ -420,7 +427,6 @@ def _init_metrics(
             metrics.set_meter_provider(provider)
         except Exception:
             logger.debug("Global meter provider already set")
-        _meter_provider = provider
     except Exception:
         logger.warning(
             "OTLP metric exporter setup failed; traces still enabled",
@@ -450,12 +456,25 @@ def _record_duration_metric(attrs: Mapping[str, Any], duration_s: float) -> None
         logger.debug("OTLP duration metric record failed", exc_info=True)
 
 
-def _signal_endpoint(endpoint: str, protocol: str, signal: str) -> str:
+def _signal_endpoint(endpoint: str, protocol: str, signal: str) -> Optional[str]:
+    """Return the HTTP OTLP URL for ``signal``, or None if it would be invalid.
+
+    Collectors that take a base URL get ``/v1/{signal}`` appended. A URL
+    that already ends in that suffix is left alone. A URL that already
+    names a *different* signal (Datadog traces-only intake) returns
+    None so the caller can skip that exporter instead of posting to
+    ``.../v1/traces/v1/metrics``.
+    """
     cleaned = endpoint.strip().rstrip("/")
+    if protocol not in _HTTP_PROTOCOLS:
+        return cleaned
     suffix = f"/v1/{signal}"
-    if protocol in _HTTP_PROTOCOLS and not cleaned.endswith(suffix):
-        return f"{cleaned}{suffix}"
-    return cleaned
+    if cleaned.endswith(suffix):
+        return cleaned
+    for other in ("traces", "metrics", "logs"):
+        if other != signal and cleaned.endswith(f"/v1/{other}"):
+            return None
+    return f"{cleaned}{suffix}"
 
 
 def _grpc_endpoint(endpoint: str) -> tuple[str, bool]:
@@ -529,6 +548,7 @@ def _remember_session_span(session_id: str, span: trace.Span) -> None:
     ctx = span.get_span_context()
     if ctx is None or not ctx.is_valid:
         return
-    if len(_session_span_context) >= _SESSION_CONTEXT_MAX:
-        _session_span_context.pop(next(iter(_session_span_context)))
-    _session_span_context[session_id] = ctx
+    with _lock:
+        if len(_session_span_context) >= _SESSION_CONTEXT_MAX:
+            _session_span_context.pop(next(iter(_session_span_context)))
+        _session_span_context[session_id] = ctx

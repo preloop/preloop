@@ -34,7 +34,9 @@ the same `otlp.*` values into both deployments):
 
 HTTP exporters append `/v1/traces` and `/v1/metrics` when those suffixes
 are missing. Point `OTLP_ENDPOINT` at the collector base URL or at the
-full traces URL.
+full traces URL. If the URL already ends in `/v1/traces` (Datadog direct
+intake), metrics export is skipped so Preloop does not construct
+`.../v1/traces/v1/metrics`.
 
 Exporter errors are logged. The user-facing gateway or MCP response is
 unchanged.

@@ -1328,7 +1328,7 @@ async def {internal_name}({params_str}) -> str:
 
                     activity_status = "failed" if exec_status == "failed" else "success"
                     server_name = self._proxied_tool_server_names.get(
-                        name, "preloop-mcp"
+                        client_tool_name, "preloop-mcp"
                     )
                     db = next(get_db())
                     try:
@@ -1479,7 +1479,7 @@ async def {internal_name}({params_str}) -> str:
                     status=exec_status,
                     duration_ms=elapsed_ms,
                     server_name=self._proxied_tool_server_names.get(
-                        name, "preloop-mcp"
+                        client_tool_name, "preloop-mcp"
                     ),
                 )
             except Exception:

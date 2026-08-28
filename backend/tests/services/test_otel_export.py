@@ -213,3 +213,18 @@ def test_signal_endpoint_appends_traces_path() -> None:
         )
         == "https://otlp.datadoghq.com/v1/traces"
     )
+
+
+def test_signal_endpoint_skips_metrics_on_traces_only_url() -> None:
+    assert (
+        otel_export._signal_endpoint(
+            "https://otlp.datadoghq.com/v1/traces", "http/protobuf", "metrics"
+        )
+        is None
+    )
+    assert (
+        otel_export._signal_endpoint(
+            "http://collector:4318", "http/protobuf", "metrics"
+        )
+        == "http://collector:4318/v1/metrics"
+    )
