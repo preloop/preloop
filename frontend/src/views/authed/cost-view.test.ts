@@ -255,6 +255,143 @@ describe('CostView', () => {
       ).to.not.exist;
       expect(element.shadowRoot?.textContent).to.not.contain('Imported usage');
     });
+
+    describe('conversation rollup', () => {
+      // A parent thread with an estimated and a reconciled record, one
+      // subagent worker conversation, and one unrelated conversation whose
+      // costs were never reported.
+      const conversations = [
+        {
+          conversation_id: 'conv-parent',
+          parent_conversation_id: null,
+          source: 'cursor',
+          event_count: 2,
+          total_tokens: 1200,
+          estimated_cost: 2.0,
+          reconciled_cost: 1.8,
+          last_event_at: '2026-07-31T10:05:00Z',
+        },
+        {
+          conversation_id: 'conv-worker',
+          parent_conversation_id: 'conv-parent',
+          source: 'cursor',
+          event_count: 1,
+          total_tokens: 300,
+          estimated_cost: 0.4,
+          reconciled_cost: null,
+          last_event_at: '2026-07-31T10:04:00Z',
+        },
+        {
+          conversation_id: 'conv-lonely',
+          parent_conversation_id: null,
+          source: 'cursor',
+          event_count: 1,
+          total_tokens: null,
+          estimated_cost: null,
+          reconciled_cost: null,
+          last_event_at: '2026-07-31T09:00:00Z',
+        },
+      ];
+
+      function conversationTable(element: CostView) {
+        return element.shadowRoot?.querySelector(
+          'table[aria-label="Imported usage by conversation"]'
+        );
+      }
+
+      it('nests subagent conversations under their parent thread', async () => {
+        const element = await loadView({
+          ...importedUsage,
+          usage_by_conversation: conversations,
+        });
+
+        const table = conversationTable(element);
+        expect(table).to.exist;
+
+        const rows = [...(table?.querySelectorAll('tbody tr') ?? [])];
+        // parent, nested worker, thread total, lonely conversation.
+        expect(rows.length).to.equal(4);
+        expect(rows[0]?.textContent).to.contain('conv-parent');
+        expect(rows[1]?.textContent).to.contain('conv-worker');
+        expect(
+          rows[1]?.querySelector('.conversation-child-cell'),
+          'worker row must be visually nested under its parent'
+        ).to.exist;
+        expect(rows[3]?.textContent).to.contain('conv-lonely');
+      });
+
+      it('shows per-thread totals with estimated and reconciled kept apart', async () => {
+        const element = await loadView({
+          ...importedUsage,
+          usage_by_conversation: conversations,
+        });
+
+        const totalRow = conversationTable(element)?.querySelector(
+          'tr.conversation-thread-total'
+        );
+        expect(totalRow).to.exist;
+        const text = totalRow?.textContent ?? '';
+        expect(text).to.contain('Thread total');
+        expect(text).to.contain('1,500'); // 1200 + 300 tokens
+        expect(text).to.contain('$2.40'); // estimated: 2.00 + 0.40
+        expect(text).to.contain('$1.80'); // reconciled stays its own figure
+        // The two bases must never be summed into one number.
+        expect(text).to.not.contain('$4.20');
+      });
+
+      it('renders null quantities as "not reported", never as zero', async () => {
+        const element = await loadView({
+          ...importedUsage,
+          usage_by_conversation: conversations,
+        });
+
+        const rows = [
+          ...(conversationTable(element)?.querySelectorAll('tbody tr') ?? []),
+        ];
+        const lonely = rows.find((row) =>
+          row.textContent?.includes('conv-lonely')
+        );
+        expect(lonely).to.exist;
+        expect(lonely?.textContent).to.contain('not reported');
+        expect(lonely?.textContent).to.not.contain('$0.00');
+
+        // The worker's missing reconciled amount is also "not reported".
+        const worker = rows.find((row) =>
+          row.textContent?.includes('conv-worker')
+        );
+        expect(worker?.textContent).to.contain('not reported');
+      });
+
+      it('keeps the estimated and reconciled columns separate', async () => {
+        const element = await loadView({
+          ...importedUsage,
+          usage_by_conversation: conversations,
+        });
+
+        const headers = [
+          ...(conversationTable(element)?.querySelectorAll('th[scope="col"]') ??
+            []),
+        ].map((th) => th.textContent?.trim());
+        expect(headers).to.include('Estimated cost');
+        expect(headers).to.include('Reconciled cost');
+      });
+
+      it('hides the rollup when no conversations are reported', async () => {
+        const element = await loadView({
+          ...importedUsage,
+          usage_by_conversation: [],
+        });
+
+        expect(conversationTable(element)).to.not.exist;
+        expect(element.shadowRoot?.textContent).to.not.contain('Conversations');
+      });
+
+      it('hides the rollup when an older server omits the field', async () => {
+        const element = await loadView(importedUsage);
+
+        expect(conversationTable(element)).to.not.exist;
+      });
+    });
   });
 
   it('renders the page title and description in the view header', async () => {

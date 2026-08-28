@@ -350,3 +350,182 @@ def test_out_of_window_reconciled_does_not_zero_in_window_estimates(
 
     assert abs(in_window["imported_cost"] - 2.00) < 1e-9
     assert abs(later["imported_cost"] - 1.80) < 1e-9
+
+
+def test_by_conversation_groups_threads_and_splits_cost_bases(
+    db_session, create_account
+):
+    """Conversations roll up with estimated and reconciled kept apart.
+
+    The design-partner rail: billed (reconciled) amounts must stay visibly
+    separate from size-proxy (estimated) amounts — the aggregation exposes
+    them as two fields and never one combined number.
+    """
+    account = create_account()
+    now = _utcnow_naive()
+
+    # Parent thread: one estimated record, one reconciled record.
+    _log_imported(
+        db_session,
+        account_id=account.id,
+        conversation_id="conv-parent",
+        cost_usd=2.00,
+        cost_basis="estimated",
+        total_tokens=1000,
+        import_fingerprint="fp-conv-p1",
+    )
+    _log_imported(
+        db_session,
+        account_id=account.id,
+        conversation_id="conv-parent",
+        cost_usd=1.75,
+        cost_basis="reconciled",
+        prompt_tokens=None,
+        completion_tokens=None,
+        import_fingerprint="fp-conv-p2",
+    )
+    # Subagent worker billed on its own conversation, spawned from the parent.
+    _log_imported(
+        db_session,
+        account_id=account.id,
+        conversation_id="conv-worker",
+        parent_conversation_id="conv-parent",
+        cost_usd=0.40,
+        cost_basis="estimated",
+        total_tokens=300,
+        import_fingerprint="fp-conv-w1",
+    )
+    # A CSV-style row without a conversation id never joins the rollup.
+    _log_imported(
+        db_session,
+        account_id=account.id,
+        cost_usd=9.99,
+        import_fingerprint="fp-conv-none",
+    )
+
+    rows = crud_api_usage.get_imported_usage_by_conversation(
+        db_session,
+        account_id=str(account.id),
+        start_date=now - timedelta(hours=1),
+        end_date=now + timedelta(hours=1),
+    )
+
+    assert {row["conversation_id"] for row in rows} == {"conv-parent", "conv-worker"}
+    by_id = {row["conversation_id"]: row for row in rows}
+
+    parent = by_id["conv-parent"]
+    assert parent["parent_conversation_id"] is None
+    assert parent["event_count"] == 2
+    # The reconciled row was logged token-free, so only the estimated
+    # row's 1000 tokens count; token-free rows contribute NULL, not 0.
+    assert parent["total_tokens"] == 1000
+    assert abs(parent["estimated_cost"] - 2.00) < 1e-9
+    assert abs(parent["reconciled_cost"] - 1.75) < 1e-9
+    assert parent["last_event_at"] is not None
+    assert parent["source"] == "cursor"
+
+    worker = by_id["conv-worker"]
+    assert worker["parent_conversation_id"] == "conv-parent"
+    assert worker["event_count"] == 1
+    assert abs(worker["estimated_cost"] - 0.40) < 1e-9
+    # No reconciled record exists for the worker: null, never 0.0.
+    assert worker["reconciled_cost"] is None
+
+
+def test_by_conversation_nulls_stay_null(db_session, create_account):
+    """Lifecycle-only conversations report nulls, never fabricated zeros."""
+    account = create_account()
+    now = _utcnow_naive()
+
+    # A hook lifecycle event: no model, no tokens, no cost.
+    row = crud_api_usage.log_imported_usage_event(
+        db_session,
+        account_id=str(account.id),
+        timestamp=now,
+        model_alias=None,
+        source="cursor",
+        conversation_id="conv-lifecycle",
+        cost_basis="estimated",
+        import_fingerprint="fp-conv-lc1",
+    )
+    assert row is not None
+
+    rows = crud_api_usage.get_imported_usage_by_conversation(
+        db_session,
+        account_id=str(account.id),
+        start_date=now - timedelta(hours=1),
+        end_date=now + timedelta(hours=1),
+    )
+
+    assert len(rows) == 1
+    only = rows[0]
+    assert only["conversation_id"] == "conv-lifecycle"
+    assert only["event_count"] == 1
+    assert only["total_tokens"] is None
+    assert only["estimated_cost"] is None
+    assert only["reconciled_cost"] is None
+
+
+def test_by_conversation_is_account_scoped_windowed_and_filterable(
+    db_session, create_account
+):
+    """Rollup honors the account boundary, the window, and filters."""
+    account = create_account()
+    other = create_account()
+    now = _utcnow_naive()
+
+    _log_imported(
+        db_session,
+        account_id=account.id,
+        conversation_id="conv-in",
+        cost_usd=0.10,
+        cost_basis="estimated",
+        runtime_principal_id="ws-A",
+        import_fingerprint="fp-scope-1",
+    )
+    _log_imported(
+        db_session,
+        account_id=account.id,
+        conversation_id="conv-old",
+        cost_usd=0.20,
+        cost_basis="estimated",
+        timestamp=now - timedelta(days=40),
+        import_fingerprint="fp-scope-2",
+    )
+    _log_imported(
+        db_session,
+        account_id=account.id,
+        conversation_id="conv-windsurf",
+        source="windsurf",
+        cost_usd=0.30,
+        cost_basis="estimated",
+        runtime_principal_id="ws-B",
+        import_fingerprint="fp-scope-3",
+    )
+    _log_imported(
+        db_session,
+        account_id=other.id,
+        conversation_id="conv-other-account",
+        cost_usd=0.40,
+        cost_basis="estimated",
+        import_fingerprint="fp-scope-4",
+    )
+
+    window = dict(
+        account_id=str(account.id),
+        start_date=now - timedelta(days=30),
+        end_date=now + timedelta(hours=1),
+    )
+
+    rows = crud_api_usage.get_imported_usage_by_conversation(db_session, **window)
+    assert {row["conversation_id"] for row in rows} == {"conv-in", "conv-windsurf"}
+
+    by_source = crud_api_usage.get_imported_usage_by_conversation(
+        db_session, source="windsurf", **window
+    )
+    assert [row["conversation_id"] for row in by_source] == ["conv-windsurf"]
+
+    by_principal = crud_api_usage.get_imported_usage_by_conversation(
+        db_session, runtime_principal_id="ws-A", **window
+    )
+    assert [row["conversation_id"] for row in by_principal] == ["conv-in"]

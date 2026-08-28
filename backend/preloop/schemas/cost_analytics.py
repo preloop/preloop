@@ -224,6 +224,27 @@ class ImportedUsageByModel(BaseModel):
     last_event_at: Optional[datetime] = None
 
 
+class ImportedUsageByConversation(BaseModel):
+    """Imported usage rolled up by source-side conversation.
+
+    ``estimated_cost`` (hook/transcript-derived) and ``reconciled_cost``
+    (billing export) are reported as SEPARATE fields and must never be
+    summed into one number by any consumer. ``None`` means the source
+    reported nothing for that quantity ("not reported") — it is not zero.
+    Entries whose ``parent_conversation_id`` matches another entry's
+    ``conversation_id`` are subagent workers of that parent thread.
+    """
+
+    conversation_id: str
+    parent_conversation_id: Optional[str] = None
+    source: Optional[str] = None
+    event_count: int = 0
+    total_tokens: Optional[int] = None
+    estimated_cost: Optional[float] = None
+    reconciled_cost: Optional[float] = None
+    last_event_at: Optional[datetime] = None
+
+
 class ImportedUsageSummary(BaseModel):
     """Spend ingested from outside the gateway (``usage_source='imported'``).
 
@@ -236,6 +257,9 @@ class ImportedUsageSummary(BaseModel):
     total_tokens: int = 0
     imported_cost: float = 0.0
     usage_by_model: List[ImportedUsageByModel] = Field(default_factory=list)
+    usage_by_conversation: List[ImportedUsageByConversation] = Field(
+        default_factory=list
+    )
 
 
 class CostAnalyticsSummaryResponse(BaseModel):

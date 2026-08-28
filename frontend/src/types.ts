@@ -997,11 +997,30 @@ export interface ImportedUsageByModel {
   last_event_at: string | null;
 }
 
+// One source-side conversation (thread) of imported usage. `estimated_cost`
+// (hook/transcript-derived) and `reconciled_cost` (billing export) are kept
+// as SEPARATE fields and must never be summed into one number. `null` means
+// the source reported nothing ("not reported") — it is not zero. Entries
+// whose parent_conversation_id matches another entry's conversation_id are
+// subagent workers of that parent thread.
+export interface ImportedUsageByConversation {
+  conversation_id: string;
+  parent_conversation_id: string | null;
+  source: string | null;
+  event_count: number;
+  total_tokens: number | null;
+  estimated_cost: number | null;
+  reconciled_cost: number | null;
+  last_event_at: string | null;
+}
+
 export interface ImportedUsageSummary {
   event_count: number;
   total_tokens: number;
   imported_cost: number;
   usage_by_model: ImportedUsageByModel[];
+  // Absent on older servers; the console treats missing as "no rollup".
+  usage_by_conversation?: ImportedUsageByConversation[];
 }
 
 export interface CostAnalyticsSummaryResponse extends AccountGatewayUsageSummaryResponse {

@@ -2677,5 +2677,118 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             for row in query.all()
         ]
 
+    def get_imported_usage_by_conversation(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        start_date: datetime,
+        end_date: datetime,
+        runtime_principal_id: Optional[str] = None,
+        source: Optional[str] = None,
+        limit: Optional[int] = 200,
+    ) -> List[Dict[str, Any]]:
+        """Group imported usage by source-side conversation for thread rollup.
+
+        Powers the console's per-conversation rollup: rows sharing a
+        ``conversation_id`` collapse to one entry, and the caller nests
+        entries whose ``parent_conversation_id`` matches another entry
+        (subagent workers billed on separate conversations under their
+        parent thread).
+
+        Honesty contract (design-partner rail):
+          * ``estimated_cost`` sums ONLY ``cost_basis='estimated'`` rows and
+            ``reconciled_cost`` sums ONLY ``cost_basis='reconciled'`` rows.
+            The two bases are never combined into one number here; display
+            layers must keep them separate too. No supersession is applied:
+            both bases are surfaced side by side per conversation.
+          * A sum with no contributing rows is ``None`` ("not reported"),
+            never coerced to 0/0.0. Same for ``total_tokens``.
+          * Rows with a NULL ``cost_basis`` cannot occur with a
+            conversation_id today (only push-ingest writes conversation ids
+            and it always sets a basis); defensively, such cost would be
+            excluded from both sums rather than silently classified.
+
+        Rows without a ``conversation_id`` (CSV/JSON batch imports) are not
+        part of any conversation and are excluded.
+
+        Args:
+            db: Database session.
+            account_id: Account whose imported usage is aggregated.
+            start_date: Inclusive lower bound on event timestamp.
+            end_date: Exclusive upper bound on event timestamp.
+            runtime_principal_id: Restrict to one managed-agent principal.
+            source: Restrict to one import source label.
+            limit: Maximum grouped rows, newest activity first.
+
+        Returns:
+            One dict per (conversation_id, source) group, ordered by last
+            event descending. ``parent_conversation_id`` is the group's
+            maximum non-null value (records of one conversation are expected
+            to agree on their parent; MAX is a deterministic tie-break).
+        """
+        import_source = ApiUsage.meta_data["import_source"].astext
+        estimated_sum = func.sum(
+            case(
+                (ApiUsage.cost_basis == "estimated", ApiUsage.estimated_cost),
+                else_=None,
+            )
+        )
+        reconciled_sum = func.sum(
+            case(
+                (ApiUsage.cost_basis == "reconciled", ApiUsage.estimated_cost),
+                else_=None,
+            )
+        )
+        query = db.query(
+            ApiUsage.conversation_id,
+            func.max(ApiUsage.parent_conversation_id).label("parent_conversation_id"),
+            import_source.label("source"),
+            func.count(ApiUsage.id).label("event_count"),
+            # No COALESCE on purpose: NULL means "not reported", not zero.
+            func.sum(ApiUsage.total_tokens).label("total_tokens"),
+            estimated_sum.label("estimated_cost"),
+            reconciled_sum.label("reconciled_cost"),
+            func.max(ApiUsage.timestamp).label("last_event_at"),
+        ).filter(
+            ApiUsage.action_type == self.IMPORTED_USAGE_ACTION_TYPE,
+            ApiUsage.account_id == account_id,
+            ApiUsage.conversation_id.isnot(None),
+            ApiUsage.timestamp >= start_date,
+            ApiUsage.timestamp < end_date,
+        )
+        if runtime_principal_id:
+            query = query.filter(ApiUsage.runtime_principal_id == runtime_principal_id)
+        if source:
+            query = query.filter(import_source == source)
+        query = query.group_by(ApiUsage.conversation_id, import_source).order_by(
+            func.max(ApiUsage.timestamp).desc()
+        )
+        if limit is not None:
+            query = query.limit(limit)
+        return [
+            {
+                "conversation_id": row.conversation_id,
+                "parent_conversation_id": row.parent_conversation_id,
+                "source": row.source,
+                "event_count": int(row.event_count or 0),
+                "total_tokens": (
+                    int(row.total_tokens) if row.total_tokens is not None else None
+                ),
+                "estimated_cost": (
+                    float(row.estimated_cost)
+                    if row.estimated_cost is not None
+                    else None
+                ),
+                "reconciled_cost": (
+                    float(row.reconciled_cost)
+                    if row.reconciled_cost is not None
+                    else None
+                ),
+                "last_event_at": row.last_event_at,
+            }
+            for row in query.all()
+        ]
+
 
 crud_api_usage = CRUDApiUsage(ApiUsage)

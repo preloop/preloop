@@ -25,6 +25,7 @@ import type {
   CostReconciliationRow,
   GatewayUsageBySession,
   GatewayUsageByTool,
+  ImportedUsageByConversation,
   ImportedUsageByModel,
   ModelPriceOverride,
   ModelPriceOverrideCreate,
@@ -95,6 +96,13 @@ type UserGroupRow = {
   username: string;
   requests: number;
   cost: number;
+};
+
+// One imported-usage thread: a conversation plus the subagent conversations
+// spawned from it (rows whose parent_conversation_id points at it).
+type ImportedConversationThread = {
+  row: ImportedUsageByConversation;
+  children: ImportedUsageByConversation[];
 };
 
 const COST_DATE_RANGE_STORAGE_KEY = 'preloop.cost.dateRange';
@@ -402,6 +410,32 @@ export class CostView extends AuthedElement {
         font-size: 1.25rem;
         font-weight: 700;
         color: var(--sl-color-neutral-950);
+      }
+
+      .imported-conversations-title {
+        margin: var(--sl-spacing-large) 0 var(--sl-spacing-x-small);
+        font-size: var(--sl-font-size-medium);
+        font-weight: 600;
+        color: var(--sl-color-neutral-950);
+      }
+
+      .conversation-child-cell {
+        padding-left: var(--sl-spacing-x-large);
+      }
+
+      .conversation-child-marker {
+        color: var(--sl-color-neutral-500);
+        margin-right: var(--sl-spacing-2x-small);
+      }
+
+      .conversation-thread-total td {
+        font-weight: 600;
+        background: var(--sl-color-neutral-50);
+      }
+
+      .not-reported {
+        color: var(--sl-color-neutral-500);
+        font-style: italic;
       }
 
       .analytics-table-wrap {
@@ -1402,8 +1436,157 @@ export class CostView extends AuthedElement {
               </div>`
             : html`<div class="empty">No per-model imported usage yet.</div>`
         }
+        ${this.renderImportedConversations(imported.usage_by_conversation ?? [])}
       </sl-card>
     `;
+  }
+
+  // Per-conversation rollup of imported usage. Subagent conversations
+  // (parent_conversation_id) nest under the thread that spawned them.
+  // Honesty rails: estimated and reconciled amounts stay in separate
+  // columns — they are NEVER added into one number — and a null quantity
+  // renders as "not reported", never as 0 or $0.00.
+  private renderImportedConversations(rows: ImportedUsageByConversation[]) {
+    if (!rows.length) return nothing;
+    const threads = this.buildConversationThreads(rows);
+    return html`
+      <div class="imported-conversations-title">Conversations</div>
+      <div class="imported-usage-note">
+        Per-thread rollup of imported usage. Subagent conversations are nested
+        under the conversation that spawned them. Estimated amounts (derived
+        from hook or transcript data) and reconciled amounts (from a billing
+        export) are shown separately and are never summed together.
+      </div>
+      <div class="analytics-table-wrap">
+        <table class="styled-table" aria-label="Imported usage by conversation">
+          <thead>
+            <tr>
+              <th scope="col">Conversation</th>
+              <th scope="col">Events</th>
+              <th scope="col">Tokens</th>
+              <th scope="col">Estimated cost</th>
+              <th scope="col">Reconciled cost</th>
+              <th scope="col">Last event</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${threads.map((thread) => this.renderConversationThread(thread))}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  // Group conversations into threads. A row nests under its parent only
+  // when that parent is itself top-level (one nesting level); a deeper
+  // descendant is promoted to top-level instead so no conversation can
+  // ever disappear from the table.
+  private buildConversationThreads(
+    rows: ImportedUsageByConversation[]
+  ): ImportedConversationThread[] {
+    const byId = new Map(rows.map((row) => [row.conversation_id, row]));
+    const hasKnownParent = (row: ImportedUsageByConversation): boolean => {
+      const parent = row.parent_conversation_id;
+      return !!parent && parent !== row.conversation_id && byId.has(parent);
+    };
+    const isNested = (row: ImportedUsageByConversation): boolean => {
+      if (!hasKnownParent(row)) return false;
+      const parent = byId.get(row.parent_conversation_id as string);
+      return !!parent && !hasKnownParent(parent);
+    };
+    const childrenByParent = new Map<string, ImportedUsageByConversation[]>();
+    const roots: ImportedUsageByConversation[] = [];
+    for (const row of rows) {
+      if (isNested(row)) {
+        const parentId = row.parent_conversation_id as string;
+        const list = childrenByParent.get(parentId) ?? [];
+        list.push(row);
+        childrenByParent.set(parentId, list);
+      } else {
+        roots.push(row);
+      }
+    }
+    return roots.map((row) => ({
+      row,
+      children: childrenByParent.get(row.conversation_id) ?? [],
+    }));
+  }
+
+  private renderConversationThread(thread: ImportedConversationThread) {
+    const { row, children } = thread;
+    if (!children.length) return this.renderConversationRow(row, false);
+    const all = [row, ...children];
+    const totalEvents = all.reduce((sum, r) => sum + (r.event_count || 0), 0);
+    // Thread totals keep the two cost bases apart: an estimated total and a
+    // reconciled total, never one combined figure.
+    const totalTokens = this.sumReported(all.map((r) => r.total_tokens));
+    const totalEstimated = this.sumReported(all.map((r) => r.estimated_cost));
+    const totalReconciled = this.sumReported(all.map((r) => r.reconciled_cost));
+    return html`
+      ${this.renderConversationRow(row, false)}
+      ${children.map((child) => this.renderConversationRow(child, true))}
+      <tr class="conversation-thread-total">
+        <td>Thread total (${all.length} conversations)</td>
+        <td>${this.formatNumber(totalEvents)}</td>
+        <td>${this.renderReportedNumber(totalTokens)}</td>
+        <td>${this.renderReportedCurrency(totalEstimated)}</td>
+        <td>${this.renderReportedCurrency(totalReconciled)}</td>
+        <td></td>
+      </tr>
+    `;
+  }
+
+  private renderConversationRow(
+    row: ImportedUsageByConversation,
+    nested: boolean
+  ) {
+    return html`
+      <tr>
+        <td class=${nested ? 'conversation-child-cell' : ''}>
+          ${
+            nested
+              ? html`<span class="conversation-child-marker" aria-hidden="true"
+                  >&#8627;</span
+                >`
+              : nothing
+          }
+          ${row.conversation_id}
+        </td>
+        <td>${this.formatNumber(row.event_count)}</td>
+        <td>${this.renderReportedNumber(row.total_tokens)}</td>
+        <td>${this.renderReportedCurrency(row.estimated_cost)}</td>
+        <td>${this.renderReportedCurrency(row.reconciled_cost)}</td>
+        <td>
+          ${
+            row.last_event_at
+              ? new Date(row.last_event_at).toLocaleString()
+              : html`<span class="not-reported">not reported</span>`
+          }
+        </td>
+      </tr>
+    `;
+  }
+
+  // Null-preserving sum: null when every input is null ("not reported"),
+  // so a missing value can never be laundered into a fabricated zero.
+  private sumReported(values: Array<number | null | undefined>): number | null {
+    const reported = values.filter(
+      (value): value is number => value !== null && value !== undefined
+    );
+    if (!reported.length) return null;
+    return reported.reduce((sum, value) => sum + value, 0);
+  }
+
+  private renderReportedNumber(value?: number | null) {
+    return value === null || value === undefined
+      ? html`<span class="not-reported">not reported</span>`
+      : html`${this.formatNumber(value)}`;
+  }
+
+  private renderReportedCurrency(value?: number | null) {
+    return value === null || value === undefined
+      ? html`<span class="not-reported">not reported</span>`
+      : html`${this.formatCurrency(value)}`;
   }
 
   private renderBreakdown() {

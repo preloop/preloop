@@ -509,3 +509,77 @@ class TestIngestRecords:
         # Event and token truth stays with all rows.
         assert imported["event_count"] == 4
         assert imported["total_tokens"] == 1750
+
+    def test_summary_rolls_up_conversations_with_split_bases(
+        self, client, db_session, test_user
+    ):
+        """The cost summary exposes a per-conversation rollup block.
+
+        The design-partner contract: subagent workers surface under their
+        parent thread via parent_conversation_id, and estimated vs
+        reconciled amounts arrive as separate fields with nulls preserved
+        (never fabricated zeros, never one summed number).
+        """
+        _make_cursor_agent(db_session, test_user.account_id)
+        db_session.commit()
+
+        records = [
+            _record(
+                external_id="turn-parent-1",
+                conversation_id="conv-parent",
+                charged_cost="2.00",
+                input_tokens=1000,
+                output_tokens=200,
+            ),
+            _record(
+                external_id="billing-parent",
+                conversation_id="conv-parent",
+                charged_cost="1.80",
+                cost_basis="reconciled",
+                input_tokens=None,
+                output_tokens=None,
+                cache_read_tokens=None,
+            ),
+            _record(
+                external_id="turn-worker-1",
+                conversation_id="conv-worker",
+                parent_conversation_id="conv-parent",
+                charged_cost="0.40",
+                input_tokens=300,
+                output_tokens=100,
+            ),
+            {
+                "external_id": "gen-worker-start",
+                "timestamp": (datetime.now(UTC) - timedelta(minutes=5)).isoformat(),
+                "event_type": "subagent_start",
+                "conversation_id": "conv-lifecycle-only",
+                "parent_conversation_id": "conv-parent",
+            },
+        ]
+        assert client.post(INGEST_URL, json=_payload(records)).json()["accepted"] == 4
+
+        summary = client.get(COST_SUMMARY_URL).json()
+        conversations = summary["imported_usage"]["usage_by_conversation"]
+        by_id = {row["conversation_id"]: row for row in conversations}
+        assert set(by_id) == {"conv-parent", "conv-worker", "conv-lifecycle-only"}
+
+        parent = by_id["conv-parent"]
+        assert parent["parent_conversation_id"] is None
+        assert parent["event_count"] == 2
+        assert abs(parent["estimated_cost"] - 2.00) < 1e-9
+        assert abs(parent["reconciled_cost"] - 1.80) < 1e-9
+        assert parent["total_tokens"] == 1200
+        assert parent["source"] == "cursor"
+
+        worker = by_id["conv-worker"]
+        assert worker["parent_conversation_id"] == "conv-parent"
+        assert abs(worker["estimated_cost"] - 0.40) < 1e-9
+        # Never billed and never estimated: null, not 0.0.
+        assert worker["reconciled_cost"] is None
+
+        lifecycle = by_id["conv-lifecycle-only"]
+        assert lifecycle["parent_conversation_id"] == "conv-parent"
+        assert lifecycle["event_count"] == 1
+        assert lifecycle["total_tokens"] is None
+        assert lifecycle["estimated_cost"] is None
+        assert lifecycle["reconciled_cost"] is None
